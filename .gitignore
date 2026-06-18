@@ -1,0 +1,27 @@
+# Binary triggers
+main
+morphz
+executor/target/
+dist/
+
+# Database files
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Environment config
+.env
+
+# Models
+models/
+*.safetensors
+*.bin
+
+# Log files
+*.log
+task-*
+.system_generated/
+
+# OS files
+.DS_Store

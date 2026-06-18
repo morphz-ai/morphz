@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package pb;
+
+option go_package = "morphz/pb";
+
+service ExecutorService {
+    // 计算输入文本的语义 Embedding 向量
+    rpc ComputeEmbedding (ComputeEmbeddingRequest) returns (ComputeEmbeddingResponse);
+}
+
+message ComputeEmbeddingRequest {
+    string text = 1;
+}
+
+message ComputeEmbeddingResponse {
+    repeated float embedding = 1;
+}
