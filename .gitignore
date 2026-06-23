@@ -1,5 +1,6 @@
 # Binary triggers
 main
+target/
 executor/target/
 dist/
 

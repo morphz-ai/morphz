@@ -9,7 +9,7 @@ impl SExpr {
     pub fn to_string(&self) -> String {
         match self {
             SExpr::Atom(s) => {
-                // 如果包含空格、括号或双引号，或者为空，则使用双引号包裹并转义
+                // 如果包含空格、括号、双引号、换行等，则使用双引号包裹并转义
                 if s.contains(' ')
                     || s.contains('(')
                     || s.contains(')')
@@ -59,7 +59,6 @@ impl SExpr {
     }
 
     // 根据路径（例如 ["variables", "current_file"]）可变借用查找子节点。
-    // 这对于 push, pop, clear 等原地演算指令非常重要。
     pub fn get_path_mut(&mut self, path: &[&str]) -> Option<&mut SExpr> {
         if path.is_empty() {
             return Some(self);
@@ -132,82 +131,187 @@ pub fn find_sub_idx_in_list(list: &[SExpr], key: &str) -> Option<usize> {
     None
 }
 
-// 自动括号配平的 S-Expression 解析器入口
-pub fn parse(input: &str) -> Result<SExpr, String> {
-    let chars: Vec<char> = input.chars().collect();
-    let mut idx = 0;
-    skip_whitespace(&chars, &mut idx);
-    if idx >= chars.len() {
-        return Err("输入为空或只包含空白字符".to_string());
-    }
-    parse_value(&chars, &mut idx)
+// 工业级结构化解析异常报告
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParserError {
+    pub line: usize,
+    pub column: usize,
+    pub message: String,
+    pub context: String,
 }
 
-fn skip_whitespace(chars: &[char], idx: &mut usize) {
-    while *idx < chars.len() && (chars[*idx].is_whitespace()) {
-        *idx += 1;
+impl std::fmt::Display for ParserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "语法解析错误 [行 {}, 列 {}]: {} 附近上下文: '{}'",
+            self.line, self.column, self.message, self.context
+        )
     }
 }
 
-fn parse_value(chars: &[char], idx: &mut usize) -> Result<SExpr, String> {
-    skip_whitespace(chars, idx);
-    if *idx >= chars.len() {
-        return Err("Unexpected EOF".to_string());
-    }
+impl std::error::Error for ParserError {}
 
-    if chars[*idx] == '(' {
-        *idx += 1;
-        let mut list = Vec::new();
-        loop {
-            skip_whitespace(chars, idx);
-            if *idx >= chars.len() {
-                // 【Auto-balancing 核心机制】
-                // 遇到 EOF 且右括号不匹配时，自动 break 闭合当前列表
-                // 这包容了大模型因为注意力或字数截断导致的括号缺失
-                break;
-            }
-            if chars[*idx] == ')' {
-                *idx += 1;
-                break;
-            }
-            let child = parse_value(chars, idx)?;
-            list.push(child);
+// 零拷贝流式解析状态机
+struct Parser<'a> {
+    input: &'a str,
+    chars: std::str::CharIndices<'a>,
+    current_char: Option<(usize, char)>,
+    line: usize,
+    column: usize,
+}
+
+impl<'a> Parser<'a> {
+    fn new(input: &'a str) -> Self {
+        let mut chars = input.char_indices();
+        let current_char = chars.next();
+        Self {
+            input,
+            chars,
+            current_char,
+            line: 1,
+            column: 1,
         }
-        Ok(SExpr::List(list))
-    } else if chars[*idx] == '"' {
-        *idx += 1;
-        let mut s = String::new();
-        while *idx < chars.len() {
-            if chars[*idx] == '"' {
-                *idx += 1;
-                return Ok(SExpr::Atom(s));
-            }
-            if chars[*idx] == '\\' && *idx + 1 < chars.len() {
-                *idx += 1;
-                s.push(chars[*idx]);
+    }
+
+    fn advance(&mut self) {
+        if let Some((_, c)) = self.current_char {
+            if c == '\n' {
+                self.line += 1;
+                self.column = 1;
             } else {
-                s.push(chars[*idx]);
+                self.column += 1;
             }
-            *idx += 1;
         }
-        // 如果字符串未正常闭合，也做兜底闭合
-        Ok(SExpr::Atom(s))
-    } else {
-        // 解析普通的 Atom 标识符
-        let mut s = String::new();
-        while *idx < chars.len() {
-            let c = chars[*idx];
-            if c.is_whitespace() || c == '(' || c == ')' || c == '"' {
+        self.current_char = self.chars.next();
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.current_char.map(|(_, c)| c)
+    }
+
+    fn current_pos(&self) -> (usize, usize) {
+        (self.line, self.column)
+    }
+
+    fn get_context(&self) -> String {
+        let idx = self.current_char.map(|(i, _)| i).unwrap_or(self.input.len());
+        let start = idx.saturating_sub(15);
+        let end = std::cmp::min(self.input.len(), idx + 15);
+        let snippet = &self.input[start..end];
+        let mut context = String::new();
+        if start > 0 {
+            context.push_str("...");
+        }
+        context.push_str(snippet);
+        if end < self.input.len() {
+            context.push_str("...");
+        }
+        context
+    }
+
+    fn make_error(&self, message: String) -> ParserError {
+        let (line, column) = self.current_pos();
+        ParserError {
+            line,
+            column,
+            message,
+            context: self.get_context(),
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while let Some(c) = self.peek_char() {
+            if c.is_whitespace() {
+                self.advance();
+            } else {
                 break;
             }
-            s.push(c);
-            *idx += 1;
         }
-        if s.is_empty() {
-            return Err("Empty atom".to_string());
-        }
-        Ok(SExpr::Atom(s))
     }
+
+    fn parse_value(&mut self) -> Result<SExpr, ParserError> {
+        self.skip_whitespace();
+        let Some(c) = self.peek_char() else {
+            return Err(self.make_error("Unexpected EOF".to_string()));
+        };
+
+        if c == '(' {
+            self.advance(); // consume '('
+            let mut list = Vec::new();
+            loop {
+                self.skip_whitespace();
+                let Some(next_c) = self.peek_char() else {
+                    // Auto-balancing 括号自动配平机制
+                    break;
+                };
+                if next_c == ')' {
+                    self.advance(); // consume ')'
+                    break;
+                }
+                let child = self.parse_value()?;
+                list.push(child);
+            }
+            Ok(SExpr::List(list))
+        } else if c == '"' {
+            self.advance(); // consume '"'
+            let mut s = String::new();
+            while let Some(next_c) = self.peek_char() {
+                if next_c == '"' {
+                    self.advance(); // consume '"'
+                    return Ok(SExpr::Atom(s));
+                }
+                if next_c == '\\' {
+                    self.advance(); // consume '\\'
+                    if let Some(escaped_c) = self.peek_char() {
+                        self.advance();
+                        match escaped_c {
+                            'n' => s.push('\n'),
+                            't' => s.push('\t'),
+                            'r' => s.push('\r'),
+                            '\\' => s.push('\\'),
+                            '"' => s.push('"'),
+                            other => {
+                                s.push('\\');
+                                s.push(other);
+                            }
+                        }
+                    } else {
+                        s.push('\\');
+                    }
+                } else {
+                    s.push(next_c);
+                    self.advance();
+                }
+            }
+            // 字符串未正常闭合做兜底
+            Ok(SExpr::Atom(s))
+        } else {
+            // 解析普通的 Atom 标识符
+            let mut s = String::new();
+            while let Some(next_c) = self.peek_char() {
+                if next_c.is_whitespace() || next_c == '(' || next_c == ')' || next_c == '"' {
+                    break;
+                }
+                s.push(next_c);
+                self.advance();
+            }
+            if s.is_empty() {
+                return Err(self.make_error("Empty atom".to_string()));
+            }
+            Ok(SExpr::Atom(s))
+        }
+    }
+}
+
+// 自动括号配平的 S-Expression 解析器入口
+pub fn parse(input: &str) -> Result<SExpr, ParserError> {
+    let mut parser = Parser::new(input);
+    parser.skip_whitespace();
+    if parser.peek_char().is_none() {
+        return Err(parser.make_error("输入为空或只包含空白字符".to_string()));
+    }
+    parser.parse_value()
 }
 
 #[cfg(test)]
@@ -228,12 +332,10 @@ mod tests {
 
     #[test]
     fn test_auto_balancing_parentheses() {
-        // 模拟大模型在输出 S-Expression 时，漏掉了一到多层右括号的情形
         let input = "(context (metadata (session \"s1\"";
         let parsed = parse(input).unwrap();
 
         let formatted = parsed.to_string();
-        // 应该自动被配平闭合为 (context (metadata (session s1))) 格式
         assert_eq!(formatted, "(context (metadata (session s1)))");
 
         let input_multi = "(begin (set (variables a) 1";
@@ -243,9 +345,17 @@ mod tests {
 
     #[test]
     fn test_unclosed_string_quote() {
-        // 字符串未闭合兜底
         let input = "(session \"session_123";
         let parsed = parse(input).unwrap();
         assert_eq!(parsed.to_string(), "(session session_123)");
+    }
+
+    #[test]
+    fn test_parser_position_errors() {
+        let input = "   \n  \n   ";
+        let err = parse(input).unwrap_err();
+        assert_eq!(err.line, 3);
+        assert_eq!(err.column, 4);
+        assert!(err.message.contains("输入为空"));
     }
 }

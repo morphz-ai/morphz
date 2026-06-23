@@ -5,9 +5,19 @@ use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{QueryBuilder, Row, SqlitePool};
 use std::collections::HashMap;
+use std::sync::Arc;
+use futures_util::TryStreamExt;
+use lancedb::query::{QueryBase, ExecutableQuery};
+use arrow_array::Array;
+
+
+
 
 pub struct SqliteStore {
     pool: SqlitePool,
+    vector_dim: i32,
+    schema: Arc<arrow_schema::Schema>,
+    lance_table: lancedb::Table,
 }
 
 impl SqliteStore {
@@ -15,11 +25,12 @@ impl SqliteStore {
         let options = SqliteConnectOptions::new()
             .filename(db_path)
             .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal);
+            .journal_mode(SqliteJournalMode::Wal)
+            .busy_timeout(std::time::Duration::from_secs(5)); // 5秒锁重试
 
-        // 限制最大连接数为 1，以与 Go 端保持一致，规避 database is locked 竞争
+        // 启用连接池并发，最大连接数设为 8，利用 WAL 模式的单写多读优势
         let pool = SqlitePoolOptions::new()
-            .max_connections(1)
+            .max_connections(8)
             .connect_with(options)
             .await?;
 
@@ -65,11 +76,90 @@ impl SqliteStore {
         );
         CREATE INDEX IF NOT EXISTS idx_edges_from ON graph_edges(from_node);
         CREATE INDEX IF NOT EXISTS idx_edges_to ON graph_edges(to_node);
+
+        CREATE TABLE IF NOT EXISTS context_snapshots (
+            session_id TEXT NOT NULL,
+            step INTEGER NOT NULL,
+            snapshot_data TEXT NOT NULL,
+            last_event_id TEXT NOT NULL,
+            last_event_time TEXT NOT NULL,
+            PRIMARY KEY (session_id, step)
+        );
+        CREATE INDEX IF NOT EXISTS idx_snapshots_session ON context_snapshots(session_id);
+
+        -- 创建 FTS5 全文检索虚拟表，使用外部内容表指向 graph_nodes
+        CREATE VIRTUAL TABLE IF NOT EXISTS graph_nodes_fts USING fts5(
+            id UNINDEXED,
+            label,
+            properties_text,
+            content="graph_nodes",
+            content_rowid="rowid"
+        );
+
+        -- Trigger: Insert
+        CREATE TRIGGER IF NOT EXISTS graph_nodes_ai AFTER INSERT ON graph_nodes BEGIN
+            INSERT INTO graph_nodes_fts(rowid, id, label, properties_text) 
+            VALUES (new.rowid, new.id, new.label, new.properties);
+        END;
+
+        -- Trigger: Delete
+        CREATE TRIGGER IF NOT EXISTS graph_nodes_ad AFTER DELETE ON graph_nodes BEGIN
+            INSERT INTO graph_nodes_fts(graph_nodes_fts, rowid, id, label, properties_text) 
+            VALUES('delete', old.rowid, old.id, old.label, old.properties);
+        END;
+
+        -- Trigger: Update
+        CREATE TRIGGER IF NOT EXISTS graph_nodes_au AFTER UPDATE ON graph_nodes BEGIN
+            INSERT INTO graph_nodes_fts(graph_nodes_fts, rowid, id, label, properties_text) 
+            VALUES('delete', old.rowid, old.id, old.label, old.properties);
+            INSERT INTO graph_nodes_fts(rowid, id, label, properties_text) 
+            VALUES (new.rowid, new.id, new.label, new.properties);
+        END;
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
 
-        Ok(Self { pool })
+        // 初始化 LanceDB
+        // 根据 db_path 计算出独占的 lancedb 目录，保证单元测试完全隔离并防止并发写冲突
+        let lance_dir = if db_path == "morphz.db" {
+            let home = std::env::var("HOME").unwrap_or_default();
+            std::path::Path::new(&home).join(".morphz").join("lancedb").to_string_lossy().to_string()
+        } else {
+            format!("{}_lancedb", db_path)
+        };
+        
+        let _ = tokio::fs::create_dir_all(&lance_dir).await;
+        let lance_conn = lancedb::connect(&lance_dir).execute().await?;
+
+        // 动态判定向量维数
+        let vector_dim = if std::path::Path::new("models/bge-small-zh-1.5").exists() {
+            512
+        } else {
+            256
+        };
+
+        // 构造 Schema
+        let schema = Arc::new(arrow_schema::Schema::new(vec![
+            arrow_schema::Field::new("id", arrow_schema::DataType::Utf8, false),
+            arrow_schema::Field::new(
+                "vector",
+                arrow_schema::DataType::FixedSizeList(
+                    Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float32, true)),
+                    vector_dim
+                ),
+                false
+            ),
+        ]));
+
+        let table = match lance_conn.open_table("graph_nodes_vector").execute().await {
+            Ok(t) => t,
+            Err(_) => {
+                let empty_batch = arrow_array::RecordBatch::new_empty(schema.clone());
+                lance_conn.create_table("graph_nodes_vector", empty_batch).execute().await?
+            }
+        };
+
+        Ok(Self { pool, vector_dim, schema, lance_table: table })
     }
 }
 
@@ -214,6 +304,52 @@ impl EventStore for SqliteStore {
 
         Ok(events)
     }
+
+    async fn save_snapshot(
+        &self, 
+        session_id: &str, 
+        step: i32, 
+        snapshot_data: &str, 
+        last_event_id: &str, 
+        last_event_time: &str
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let query = r#"
+            INSERT INTO context_snapshots (session_id, step, snapshot_data, last_event_id, last_event_time)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(session_id, step) DO UPDATE SET
+                snapshot_data=excluded.snapshot_data,
+                last_event_id=excluded.last_event_id,
+                last_event_time=excluded.last_event_time
+        "#;
+        sqlx::query(query)
+            .bind(session_id)
+            .bind(step)
+            .bind(snapshot_data)
+            .bind(last_event_id)
+            .bind(last_event_time)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn get_latest_snapshot(
+        &self, 
+        session_id: &str
+    ) -> Result<Option<(i32, String, String, String)>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query("SELECT step, snapshot_data, last_event_id, last_event_time FROM context_snapshots WHERE session_id = ? ORDER BY step DESC LIMIT 1")
+            .bind(session_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        if let Some(r) = row {
+            let step: i32 = r.get("step");
+            let snapshot_data: String = r.get("snapshot_data");
+            let last_event_id: String = r.get("last_event_id");
+            let last_event_time: String = r.get("last_event_time");
+            Ok(Some((step, snapshot_data, last_event_id, last_event_time)))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -244,6 +380,37 @@ impl GraphStore for SqliteStore {
             .bind(&last_acc_str)
             .execute(&self.pool)
             .await?;
+
+        // 同步写入/更新 LanceDB 向量数据
+        if let Some(ref emb) = node.embedding {
+            let _ = self.lance_table.delete(&format!("id = '{}'", node.id)).await;
+
+            use arrow_array::{StringArray, FixedSizeListArray, Float32Array, RecordBatch};
+            
+            let ids = StringArray::from(vec![node.id.as_str()]);
+            let val_array = Float32Array::from(emb.clone());
+            let values_ref: Arc<dyn arrow_array::Array> = Arc::new(val_array);
+            let item_field = Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float32, true));
+            let list_array = FixedSizeListArray::try_new(
+                item_field,
+                self.vector_dim,
+                values_ref,
+                None
+            )?;
+            
+            let batch = RecordBatch::try_new(
+                self.schema.clone(),
+                vec![
+                    Arc::new(ids),
+                    Arc::new(list_array)
+                ]
+            )?;
+
+            self.lance_table.add(batch).execute().await?;
+        } else {
+            let _ = self.lance_table.delete(&format!("id = '{}'", node.id)).await;
+        }
+
 
         Ok(())
     }
@@ -283,6 +450,10 @@ impl GraphStore for SqliteStore {
             .bind(id)
             .execute(&self.pool)
             .await?;
+
+        // 从 LanceDB 中删除对应的向量记录
+        let _ = self.lance_table.delete(&format!("id = '{}'", id)).await;
+
         Ok(())
     }
 
@@ -429,7 +600,50 @@ impl GraphStore for SqliteStore {
 
     async fn search_nodes_by_text(&self, text: &str) -> Result<Vec<Node>, Box<dyn std::error::Error + Send + Sync>> {
         let lower_text = text.to_lowercase();
-        // Go: WHERE ? LIKE '%' || id || '%'
+        
+        // 1. 尝试使用工业级 FTS5 全文检索 (BM25打分排序)
+        let cleaned_match_text = text.replace('"', " ").replace('*', " ").replace('\'', " ");
+        let fts5_query = r#"
+            SELECT n.id, n.label, n.properties, n.embedding, n.is_permanent, n.last_accessed 
+            FROM graph_nodes_fts f
+            JOIN graph_nodes n ON f.rowid = n.rowid
+            WHERE graph_nodes_fts MATCH ? 
+            ORDER BY bm25(graph_nodes_fts) ASC 
+            LIMIT 10
+        "#;
+        
+        if let Ok(rows) = sqlx::query(fts5_query)
+            .bind(&cleaned_match_text)
+            .fetch_all(&self.pool)
+            .await 
+        {
+            if !rows.is_empty() {
+                let mut nodes = Vec::new();
+                for row in rows {
+                    let nid: String = row.get("id");
+                    let label: String = row.get("label");
+                    let properties_str: String = row.get("properties");
+                    let embedding_blob: Option<Vec<u8>> = row.get("embedding");
+                    let is_perm: i32 = row.get("is_permanent");
+                    let last_acc_str: String = row.get("last_accessed");
+
+                    let properties = serde_json::from_str(&properties_str)?;
+                    let embedding = embedding_blob.and_then(|b| decode_embedding(&b));
+
+                    nodes.push(Node {
+                        id: nid,
+                        label,
+                        properties,
+                        embedding,
+                        is_permanent: is_perm == 1,
+                        last_accessed: parse_time(&last_acc_str),
+                    });
+                }
+                return Ok(nodes);
+            }
+        }
+
+        // 2. 降级兜底：FTS5 查询报错或零召回时使用传统的 LIKE 匹配
         let query = "SELECT id, label, properties, embedding, is_permanent, last_accessed FROM graph_nodes WHERE ? LIKE '%' || id || '%'";
         let rows = sqlx::query(query)
             .bind(&lower_text)
@@ -465,13 +679,49 @@ impl GraphStore for SqliteStore {
             return Ok(Vec::new());
         }
 
-        let rows = sqlx::query("SELECT id, label, properties, embedding, is_permanent, last_accessed FROM graph_nodes WHERE embedding IS NOT NULL")
-            .fetch_all(&self.pool)
+        // 1. 使用 LanceDB 进行向量搜索
+        let results = self.lance_table
+            .query()
+            .nearest_to(query_embedding)?
+            .limit(top_k)
+            .execute()
+            .await?
+            .try_collect::<Vec<arrow_array::RecordBatch>>()
             .await?;
 
-        let mut candidates = Vec::new();
+
+        let mut matched_ids = Vec::new();
+        for batch in results {
+            if let Ok(idx) = batch.schema().index_of("id") {
+                let col = batch.column(idx);
+                let id_array = col
+                    .as_any()
+                    .downcast_ref::<arrow_array::StringArray>()
+                    .ok_or_else(|| "Failed to downcast id column to StringArray")?;
+                for i in 0..id_array.len() {
+                    matched_ids.push(id_array.value(i).to_string());
+                }
+            }
+        }
+
+        if matched_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 2. 根据 matched_ids 批量主键查询
+        let mut builder = sqlx::QueryBuilder::new("SELECT id, label, properties, embedding, is_permanent, last_accessed FROM graph_nodes WHERE id IN (");
+        let mut separated = builder.separated(", ");
+        for id in &matched_ids {
+            separated.push_bind(id);
+        }
+        builder.push(")");
+        
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        
+        // 3. 重建 Nodes 列表，维持 matched_ids 排序顺序
+        let mut node_map = HashMap::new();
         for row in rows {
-            let nid: String = row.get("id");
+            let id: String = row.get("id");
             let label: String = row.get("label");
             let properties_str: String = row.get("properties");
             let embedding_blob: Option<Vec<u8>> = row.get("embedding");
@@ -481,34 +731,33 @@ impl GraphStore for SqliteStore {
             let properties = serde_json::from_str(&properties_str)?;
             let embedding = embedding_blob.and_then(|b| decode_embedding(&b));
 
-            if let Some(ref emb) = embedding {
-                let sim = cosine_similarity(query_embedding, emb);
-                let threshold = if query_embedding.len() == 256 { 0.45 } else { 0.70 };
-                if sim >= threshold {
-                    candidates.push((
-                        Node {
-                            id: nid,
-                            label,
-                            properties,
-                            embedding,
-                            is_permanent: is_perm == 1,
-                            last_accessed: parse_time(&last_acc_str),
-                        },
-                        sim,
-                    ));
+            node_map.insert(id.clone(), Node {
+                id,
+                label,
+                properties,
+                embedding,
+                is_permanent: is_perm == 1,
+                last_accessed: parse_time(&last_acc_str),
+            });
+        }
+
+        let mut nodes = Vec::new();
+        let threshold = if query_embedding.len() == 256 { 0.45 } else { 0.70 };
+        for id in &matched_ids {
+            if let Some(node) = node_map.remove(id) {
+                if let Some(ref emb) = node.embedding {
+                    let sim = cosine_similarity(query_embedding, emb);
+                    if sim >= threshold {
+                        nodes.push(node);
+                    }
+                } else {
+                    nodes.push(node);
                 }
             }
         }
 
-        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-        let res = candidates
-            .into_iter()
-            .take(top_k)
-            .map(|c| c.0)
-            .collect();
-
-        Ok(res)
+        Ok(nodes)
     }
 
     async fn get_all_nodes_and_edges(&self) -> Result<(Vec<Node>, Vec<Edge>), Box<dyn std::error::Error + Send + Sync>> {
@@ -727,7 +976,9 @@ impl GraphStore for SqliteStore {
     }
 }
 
+#[allow(dead_code)]
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
@@ -785,11 +1036,16 @@ mod tests {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap()).await.unwrap();
 
+        let mut emb1 = vec![0.0; store.vector_dim as usize];
+        emb1[0] = 1.0;
+        let mut emb2 = vec![0.0; store.vector_dim as usize];
+        emb2[1] = 1.0;
+
         let node1 = Node {
             id: "node_1".to_string(),
             label: "Concept".to_string(),
             properties: HashMap::new(),
-            embedding: Some(vec![1.0, 0.0]),
+            embedding: Some(emb1),
             is_permanent: false,
             last_accessed: Utc::now(),
         };
@@ -798,7 +1054,7 @@ mod tests {
             id: "node_2".to_string(),
             label: "Concept".to_string(),
             properties: HashMap::new(),
-            embedding: Some(vec![0.0, 1.0]),
+            embedding: Some(emb2),
             is_permanent: false,
             last_accessed: Utc::now(),
         };
@@ -825,9 +1081,41 @@ mod tests {
         assert_eq!(edges.len(), 1);
         assert_eq!(edges[0].id, "edge_12");
 
+        let mut search_emb = vec![0.0; store.vector_dim as usize];
+        search_emb[0] = 1.0;
+
         // 测试向量余弦搜索
-        let results = store.search_nodes_by_embedding(&[1.0, 0.0], 5).await.unwrap();
+        let results = store.search_nodes_by_embedding(&search_emb, 5).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "node_1");
+    }
+
+
+    #[tokio::test]
+    async fn test_sqlite_snapshot() {
+        let tmp_file = tempfile::NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap()).await.unwrap();
+
+        let session_id = "sess_1";
+        let step = 10;
+        let snap_data = "(context (metadata (session \"sess_1\") (step 10)))";
+        let last_id = "ev_123";
+        let last_time = "2026-06-24T00:00:00Z";
+
+        // 初始应该为 None
+        let res = store.get_latest_snapshot(session_id).await.unwrap();
+        assert!(res.is_none());
+
+        // 保存快照
+        store.save_snapshot(session_id, step, snap_data, last_id, last_time).await.unwrap();
+
+        // 再次查询
+        let res = store.get_latest_snapshot(session_id).await.unwrap();
+        assert!(res.is_some());
+        let (r_step, r_data, r_id, r_time) = res.unwrap();
+        assert_eq!(r_step, step);
+        assert_eq!(r_data, snap_data);
+        assert_eq!(r_id, last_id);
+        assert_eq!(r_time, last_time);
     }
 }

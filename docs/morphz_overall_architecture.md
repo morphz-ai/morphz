@@ -1,38 +1,39 @@
 # Morphz 整体软件架构设计文档 (High-Level Architecture)
 
-本设计文档规范了下一代智能体框架 `Morphz` 的高层软件架构、子系统职责、进程模型以及通信协议。
+本设计文档规范了下一代智能体框架 `Morphz` 迁移为**纯 Rust 架构**后的高层软件架构、子系统职责、进程模型以及通信协议。
 
 ---
 
 ## 1. 系统设计哲学 (Design Philosophy)
 
 为了实现高安全、强并发、低延迟的智能体框架，Morphz 遵循以下三个核心系统设计哲学：
-1.  **控制与执行分离 (Control-Data separation)**：Go 负责策略编排、状态流转和 I/O (控制面)；Rust 负责代码审计、虚拟化安全沙箱和编译器执行 (数据/执行面)。
-2.  **微内核与故障隔离 (Microkernel & Fault Isolation)**：执行沙箱（Rust Yao-VM）作为独立的守护进程运行，通过 Unix Domain Socket 进行进程间通信。即便 AI 生成的指令导致虚拟机崩溃，控制面依然能够无损重启执行层。
-3.  **反应式事件驱动 (Reactive Event-driven)**：系统一切动作皆由事件总线（Event Bus）驱动，外部传感器（Sensors）检测到任意物理变更并推送到事件总线，完全解耦智能体自身的思考逻辑。
+1.  **纯 Rust 统一底座 (Unified Rust Base)**：编排调度（控制面）与执行引擎全部基于 Rust 构建。通过平铺的模块设计，消除了过去异构跨语言（Go-to-Rust）的多进程 IPC 通信开销，实现了更高性能和零依赖单体部署。
+2.  **双轨持久化中枢 (Separation of Storage Concerns)**：用 SQLite 锁死时序事件（ACID）并提供 CTE 图递归寻路，用 LanceDB 承载多维向量做 K-NN 极速召回，形成优势互补 of 工业级存储模型。
+3.  **反应式事件驱动与背压限制 (Reactive Event-driven with Backpressure)**：系统一切动作皆由 `InMemoryEventBus` 驱动。引入了 Semaphore 并发限制（Attempts Limit = 10），用以抵御高并发下的资源爆发占用，实现自愈和平滑。
 
 ---
 
 ## 2. 进程与拓扑模型 (Process & Topology)
 
-Morphz 部署于宿主机时，物理上划分为三个相互隔离的边界：
+Morphz 部署于宿主机时，物理上划分为两个相互隔离或协作的进程边界：
 
 ```mermaid
 graph TD
-    subgraph Host OS (宿主机边界)
+    subgraph Host OS (宿主机进程边界)
         direction TB
-        A[Go: Morphz Core Daemon] <-->|IPC: UDS + gRPC| B[Rust: Yao-VM Daemon]
-        A <-->|Event Bus| C[IM Gateways: TG/Slack/Canvas]
+        A[Morphz Core Daemon (Rust)] <-->|HTTP Loopback / In-Memory| B[Rust Executor (BGE Inference Server)]
+        A <-->|Event Bus (WebSocket)| C[Web UI Dashboard / IM Gateways]
     end
 
-    subgraph L2 Sandbox (Yao-VM 进程内隔离)
-        B -->|Embeds| D[Wasmtime Instance]
-        D -->|Runs| E[AI yao-lang Skills]
+    subgraph Memory & Database (双轨持久化)
+        A <-->|SQL / FTS5| D[(SQLite: morphz.db)]
+        A <-->|K-NN Query| E[(LanceDB: morphz.db_lancedb)]
     end
 
-    subgraph L3 Sandbox (宿主物理隔离边界)
-        A <-->|FileSync: Tar Streaming| F[L3 Container: Docker/Cloud]
-        F -->|Executes| G[Heavy Tools: npm/python/git]
+    subgraph Tool Sandbox (安全执行边界)
+        A -->|pre_exec: setpgid| F[Subprocess Group (pgid)]
+        F -->|Stdout/Stderr Stream| A
+        A -->|kill_task: SIGKILL broadcast| F
     end
 ```
 
@@ -40,117 +41,83 @@ graph TD
 
 ## 3. 子系统架构与职责
 
-### 3.1 接入层 (IM & Gateway Layer)
-- **职责**：适配异构的用户终端（如 Telegram, Slack, Web Canvas UI）。
-- **设计**：解耦的插件式架构。每个 IM 插件通过 TCP/WebSockets 连入 Go Core，订阅其感兴趣的主题，并将平台的物理交互（如点击 Button，发送文字）转换为 **ACP (Agent Communication Protocol)** 统一格式，推送给事件总线。
+### 3.1 接入层 (IM & Gateway / Web Server)
+- **职责**：适配外部的前端大盘 UI（Dashboard）及 WebSocket 长连接通道。
+- **设计**：由 Axum 驱动的 HTTP/WebSocket 服务器运行在 `127.0.0.1:8080`，提供内存快照、历史事件流订阅，并将用户交互实时转换并推送到事件总线。
 
-### 3.2 消息中枢 (ACP Message Bus)
+### 3.2 消息中枢 (InMemoryEventBus)
 - **职责**：解耦所有内部与外部通信，充当系统的“神经系统”。
-- **设计**：基于 Go Channel 构建的高性能内存事件总线。支持 Topic 模糊订阅、事件防抖（Debounce）与事件回放。
-
-### 3.3 核心协调层 (Orchestrator & Agent Coordinator)
-- **职责**：驱动 Agent 决策流（Attempt DAG）的构建与流转。
 - **设计**：
-  - **无状态 Agent 调度器**：按需实例化无状态的 Agent 处理器，并为其绑定特定的 Context 视口。
-  - **DAG 引擎**：维护动态任务有向无环图，处理重试、异常分叉与任务合并。
+  - 支持 Topic 模糊前缀匹配（如 `chat/*`）。
+  - **背压控制**：内置 `tokio::sync::Semaphore`，将异步处理的最大并发量硬性限制为 10，防止下游 LLM 网络请求或数据库死锁爆仓。
 
-### 3.4 记忆与上下文中枢 (Memory & Context Engine)
-- **职责**：沉淀事实并生成每次 LLM 所需的 Prompt。
+### 3.3 核心协调层 (Orchestrator)
+- **职责**：驱动 Agent 决策流（Attempt Loop）的构建、LLM 驱动与指令执行。
 - **设计**：
-  - **Event Store**：基于 SQLite 存储只增不减的事实日志。
-  - **Graph Engine**：在内存中维护实体与关系的知识网络。
-  - **Context Evaluator**：基于时序衰减和拓扑邻近算法，对记忆进行投影求值。
+  - 基于不可变事件历史（EventHistory）进行动态投影，通过 Fold 算子投射出当前脑 Context 状态。
+  - **零拷贝 S-Expr 解析**：基于字节流 `&str` 的零拷贝 Lisp Parser 迭代器，支持精确到行列号的 `ParserError` 追踪，实现解析异常的高精度大模型自我纠错。
 
-### 3.5 安全执行层 (Rust Yao-VM Daemon)
-- **职责**：对 AI 产出的代码提供绝对安全的进程内拦截与微秒级运行。
+### 3.4 记忆与上下文中枢 (Memory Engine)
+- **职责**：沉淀事实并提供高速向量检索与多维关联。
 - **设计**：
-  - **Yao-Parser**：利用 Rust 构建快速 AST 解析，过滤高危系统调用和外部 FFI。
-  - **WASM VM**：基于 `wasmtime-rust` 嵌入运行时，限制最大内存空间与运行指令数（Gas Limit）。
+  - **SQLiteStore**：承载只增不减的事实日志（Event History）和图数据库中实体与关系的物理边（Edges）。通过 `WITH RECURSIVE` 支持图拓扑的递归漫游寻路。
+  - **LanceDB**：存储节点的向量表。K-NN 检索召回后，由 SQLite 运行 `IN` 批量拼装并辅以余弦相似度阈值（0.45/0.70）过滤。
 
-### 3.6 外部执行层 (L3 Sandbox Manager)
-- **职责**：管理需要重型系统依赖的操作。
+### 3.5 向量推理层 (Rust Executor)
+- **职责**：为整个框架提供快速的向量生成（Embedding）计算。
 - **设计**：
-  - **Container Manager**：负责本地 Docker 容器生命周期及远程 Serverless VM 的调度。
-  - **FileSyncManager**：使用内存 Gzip Tar 流实现宿主机代码工作区与 L3 沙箱间的秒级同步。
+  - 独立运行于 `127.0.0.1:8085` 的 Axum 本地服务，内存加载 BGE 语义模型。
+  - 主 Core 亦支持在冷启动直接在内存中集成该模块，并提供了本地 Hashing Embedding 兜底机制以抵御网络或加载故障。
 
-### 3.7 感知层与动态订阅 (Sensor & Subscription Layer)
-- **职责**：抽象并承载外部物理世界的感知能力，与 Agent 的心智逻辑彻底解耦。
+### 3.6 工具执行层 (Execute & Sandbox Manager)
+- **职责**：管理本地 Shell 命令的执行与生命周期。
 - **设计**：
-  - **自描述传感器 (Self-describing Sensor)**：如 `FileWatcher`、`Timer`、`Webhook`、`GmailMonitor`。它们通过 MCP 协议定义其产生的 Event Schema，并向系统总线动态注册。
-  - **动态订阅（Dynamic Subscription）**：Agent 在运行过程中，可以通过调用系统工具动态声明“我对主题 X 且满足过滤器 Y 的事件感兴趣”（例如监听某文件的变动，或等待特定邮件的到来）。
-  - **租约与生命周期（Lease Mechanism）**：动态订阅绑定到 Agent 会话，拥有 TTL 租约。会话结束或租约过期，控制面自动卸载传感器监听，避免“僵尸订阅（Orphaned Subscriptions）”消耗系统资源。
+  - **异步 Detach 托管**：`exec` 工具可指定 `wait_ms`（默认 `1000ms`），超时未结束的进程自动进入全局后台任务 Map 并解除模型阻塞，stdout/stderr 改为异步流式投递。
+  - **进程组安全强杀**：子进程在 `pre_exec` 中通过 `setpgid` 自立为进程组 Leader，调用 `kill_task` 时使用高精度唯一 task_id，利用负数 `pgid` 对整个下属子孙进程树进行 `SIGKILL` 物理强杀，防止僵尸进程逃逸。
 
 ---
 
-## 4. 内部通信协议 (IPC)
+## 4. 内部通信协议与重试机制
 
-Go Core 与 Rust Yao-VM Daemon 之间通过 **Unix Domain Socket (UDS)** 运行极速的 gRPC 通信。
-
-### 4.1 协议结构定义 (Protobuf 示意)
-```protobuf
-syntax = "proto3";
-package morphz.ipc;
-
-service YaoVMService {
-  // 静态 AST 白盒审计
-  rpc AuditAST(AuditRequest) returns (AuditResponse);
-  
-  // 运行 L2 技能代码
-  rpc ExecuteSkill(ExecuteRequest) returns (ExecuteResponse);
-}
-
-message AuditRequest {
-  string source_code = 1;
-}
-
-message AuditResponse {
-  bool passed = 1;
-  string error_message = 2;
-  repeated string detected_imports = 3;
-}
-
-message ExecuteRequest {
-  string wasm_bytecode = 1;
-  bytes input_payload = 2;
-  int64 max_memory_bytes = 3;
-  int64 max_gas_units = 4;
-}
-
-message ExecuteResponse {
-  int32 exit_code = 1;
-  bytes output_payload = 2;
-  string stdout = 3;
-  string stderr = 4;
-  int64 gas_consumed = 5;
-}
-```
+- **大模型 API 访问**：OpenAI 客户端内置自动指数退避重试，在遭遇网络抖动、429 频次超限或 5xx 错误时以指数退避时间（$1\text{s}, 2\text{s}, 4\text{s}, 8\text{s}$）自愈重试，最大尝试 5 次。
+- **命令行工具调用参数 Schema**：
+  - `exec` 参数包含 `command: String`, `wait_ms: Option<u64>`, `session_id: Option<String>`。
+  - `kill_task` 参数包含 `task_id: String`。
 
 ---
 
 ## 5. 典型请求生命周期与感知链 (Lifecycle Walkthrough)
 
-以下展现 Agent 运行中，**动态注册传感器订阅**并由**传感器事件触发异步唤醒**的完整链路：
+以下展现 Agent 运行中，**异步命令超时托管**并由**后台流式输出唤醒**的完整链路：
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor User as 外部环境 (如 IDE / Github)
-    participant SS as Go: Generic Sensor (如 Webhook)
-    participant EB as Go: Event Bus
-    participant OR as Go: Orchestrator (Session 暂停中)
-    participant AG as Stateless Agent (由调度器拉起)
-    participant DB as SQLite: Event Store
+    actor User as 用户交互 / Stdin
+    participant EB as Rust: Event Bus
+    participant OR as Rust: Orchestrator
+    participant TL as Rust: ExecuteCommandTool
+    participant TS as Rust: BackgroundTaskManager
+    participant CP as Subprocess: Command Process
 
-    Note over AG: Agent 运行中，发现需要等待外部编译通过
-    AG->>OR: 1. 调用工具：SubscribeEvent(Topic="github/build", Filter="status=success")
-    OR->>EB: 2. 动态注册传感器过滤器，并绑定 Session 租约 (Lease)
-    OR->>DB: 3. 挂起 Session，序列化 Context 状态，释放内存
+    User->>EB: 1. 投递用户消息 "运行测试"
+    EB->>OR: 2. 触发 Attempt 循环思考
+    OR->>TL: 3. 调用工具 (exec, command="cargo test", wait_ms=1000)
+    TL->>CP: 4. spawn 子进程，并通过 setpgid 隔离进程组
+    TL->>TS: 5. 登记任务至全局任务 map
+    Note over TL, CP: (等待 1000ms，任务未结束)
+    TL->>TS: 6. 开启 stdout/stderr 异步流式监听
+    TL->>OR: 7. 同步返回 "[任务已转入后台异步运行, task_id=X]"
+    Note over OR: (Orchestrator 解锁并挂起等待事件通知)
 
-    Note over User, SS: (若干分钟后，外部 Github 编译完成)
-    User->>SS: 4. 发送 Webhook 回调
-    SS->>EB: 5. 转换并派发标准 ACP 事件 (Topic="github/build")
-    EB->>OR: 6. 匹配 Session 租约订阅，唤醒调度器
-    OR->>DB: 7. 反序列化，重新加载 Context 状态
-    OR->>AG: 8. 实例化 Agent，注入 Context
-    AG->>User: 9. 继续后续决策，发布执行结果到 IM 消息通道
+    Note over CP: (子进程在后台不断产生编译与测试输出)
+    CP->>TS: 8. 向标准输出写入增量日志
+    TS->>EB: 9. 转换为 Event ("chat/tool_output", payload={text})
+    EB->>OR: 10. 唤醒大模型心智，在前端实时渲染输出增量
+
+    Note over CP: (测试跑完，子进程正常退出)
+    CP->>TS: 11. 进程结束并返回退出码
+    TS->>EB: 12. 发布 Event ("task_exit", code=0)
+    TS->>TS: 13. 从全局任务 map 中注销自身
+    EB->>OR: 14. 投递最终结果，Attempt DAG 进入下一节点决策
 ```

@@ -46,6 +46,26 @@ pub struct QueryFilter {
 pub trait EventStore: Send + Sync {
     async fn append(&self, ev: crate::event::Event) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     async fn query(&self, filter: QueryFilter) -> Result<Vec<crate::event::Event>, Box<dyn std::error::Error + Send + Sync>>;
+    
+    // 保存 Context 状态快照
+    async fn save_snapshot(
+        &self, 
+        _session_id: &str, 
+        _step: i32, 
+        _snapshot_data: &str, 
+        _last_event_id: &str, 
+        _last_event_time: &str
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
+
+    // 获取最新 Context 状态快照，返回 Option<(step, snapshot_data, last_event_id, last_event_time)>
+    async fn get_latest_snapshot(
+        &self, 
+        _session_id: &str
+    ) -> Result<Option<(i32, String, String, String)>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(None)
+    }
 }
 
 // GraphStore 定义了图谱记忆物理读写的核心接口契约

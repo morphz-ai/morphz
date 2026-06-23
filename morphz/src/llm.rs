@@ -211,23 +211,47 @@ impl Client for OpenAIClient {
         };
 
         let url = format!("{}/chat/completions", self.base_url);
-        let resp = self
-            .http_client
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&request_payload)
-            .send()
-            .await?;
+        let mut attempts = 0;
+        let max_attempts = 5;
+        let mut backoff = std::time::Duration::from_secs(1);
+        let resp = loop {
+            attempts += 1;
+            let res = self
+                .http_client
+                .post(&url)
+                .bearer_auth(&self.api_key)
+                .json(&request_payload)
+                .send()
+                .await;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let err_text = resp.text().await?;
-            let mut extra_tip = "";
-            if status.as_u16() == 400 || err_text.contains("INVALID_ARGUMENT") {
-                extra_tip = "\n💡 [排查建议] 400 INVALID_ARGUMENT 错误通常是由于在自定义 API 代理上请求了不支持的模型名称造成的。请确认您的 .env 文件中 OPENAI_MODEL 配置是否与代理端点匹配。";
+            match res {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        break resp;
+                    } else if (status.as_u16() == 429 || status.is_server_error()) && attempts < max_attempts {
+                        eprintln!("⚠️ [LLM 客户端] 遇到 {}，将在 {:?} 后重试 (第 {}/{} 次尝试)", status, backoff, attempts, max_attempts);
+                        tokio::time::sleep(backoff).await;
+                        backoff *= 2;
+                    } else {
+                        let err_text = resp.text().await?;
+                        let mut extra_tip = "";
+                        if status.as_u16() == 400 || err_text.contains("INVALID_ARGUMENT") {
+                            extra_tip = "\n💡 [排查建议] 400 INVALID_ARGUMENT 错误通常是由于在自定义 API 代理上请求了不支持的模型名称造成的。请确认您的 .env 文件中 OPENAI_MODEL 配置是否与代理端点匹配。";
+                        }
+                        return Err(format!("HTTP {} - {}{}", status, err_text, extra_tip).into());
+                    }
+                }
+                Err(e) if attempts < max_attempts => {
+                    eprintln!("⚠️ [LLM 客户端] 网络错误: {:?}，将在 {:?} 后重试 (第 {}/{} 次尝试)", e, backoff, attempts, max_attempts);
+                    tokio::time::sleep(backoff).await;
+                    backoff *= 2;
+                }
+                Err(e) => {
+                    return Err(Box::new(e));
+                }
             }
-            return Err(format!("HTTP {} - {}{}", status, err_text, extra_tip).into());
-        }
+        };
 
         let chat_resp: ChatResponse = resp.json().await?;
         let choice = chat_resp
@@ -262,13 +286,42 @@ impl Client for OpenAIClient {
         };
 
         let url = format!("{}/embeddings", self.base_url);
-        let remote_res = self
-            .http_client
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .json(&request_payload)
-            .send()
-            .await;
+        let mut attempts = 0;
+        let max_attempts = 5;
+        let mut backoff = std::time::Duration::from_secs(1);
+        let remote_res = loop {
+            attempts += 1;
+            let res = self
+                .http_client
+                .post(&url)
+                .bearer_auth(&self.api_key)
+                .json(&request_payload)
+                .send()
+                .await;
+
+            match res {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        break Ok(resp);
+                    } else if (status.as_u16() == 429 || status.is_server_error()) && attempts < max_attempts {
+                        eprintln!("⚠️ [LLM 客户端] Embedding 遇到 {}，将在 {:?} 后重试 (第 {}/{} 次尝试)", status, backoff, attempts, max_attempts);
+                        tokio::time::sleep(backoff).await;
+                        backoff *= 2;
+                    } else {
+                        break Ok(resp);
+                    }
+                }
+                Err(e) if attempts < max_attempts => {
+                    eprintln!("⚠️ [LLM 客户端] Embedding 网络错误: {:?}，将在 {:?} 后重试 (第 {}/{} 次尝试)", e, backoff, attempts, max_attempts);
+                    tokio::time::sleep(backoff).await;
+                    backoff *= 2;
+                }
+                Err(e) => {
+                    break Err(e);
+                }
+            }
+        };
 
         if let Ok(resp) = remote_res {
             if resp.status().is_success() {

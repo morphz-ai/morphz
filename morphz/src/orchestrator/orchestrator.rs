@@ -194,20 +194,38 @@ impl Orchestrator {
         println!("\n🤖 [Agent 唤醒] 触发事件: {} (Actor: {}, Type: {})", ev.topic, ev.actor, ev.event_type);
         println!("[Agent 思考中...] 正在进行 S-Expression Context 折叠与状态求值...");
 
-        // 2.1 动态 Context 求值 (Fold 计算)：基于时序与 Session 进行隔离折叠，求值出当前的 SExpr 状态
+        // 2.1 动态 Context 求值 (Fold 计算)：基于快照与增量折叠，求值出当前的 SExpr 状态
+        let mut start_time = None;
+        let mut last_snapshot_id = None;
+        let mut context_state = if let Some((snap_step, snap_data, snap_id, snap_time)) = self.store.get_latest_snapshot(&session_id).await? {
+            start_time = chrono::DateTime::parse_from_rfc3339(&snap_time)
+                .map(|dt| dt.with_timezone(&Utc))
+                .ok();
+            last_snapshot_id = Some(snap_id);
+            println!("💾 [Snapshot] 命中历史快照 (Step {}), 开启增量折叠重放...", snap_step);
+            crate::sexpr::parse(&snap_data).unwrap()
+        } else {
+            let initial_context_str = format!(
+                r#"(context (metadata (session "{}") (step 0)) (history (summary "") (turns)) (variables) (todo_stack) (graph_anchors))"#,
+                session_id
+            );
+            crate::sexpr::parse(&initial_context_str).unwrap()
+        };
+
         let filter = QueryFilter {
             topic: Some("chat/*".to_string()),
+            start_time,
             ..Default::default()
         };
 
-        let events = self.store.query(filter).await?;
+        let mut events = self.store.query(filter).await?;
 
-        // 初始化 SExpr 状态机 Context
-        let initial_context_str = format!(
-            r#"(context (metadata (session "{}") (step 0)) (history (summary "") (turns)) (variables) (todo_stack) (graph_anchors))"#,
-            session_id
-        );
-        let mut context_state = crate::sexpr::parse(&initial_context_str).unwrap();
+        // 增量去重：如果存在快照，只保留快照之后的事件
+        if let Some(ref last_id) = last_snapshot_id {
+            if let Some(pos) = events.iter().position(|e| &e.id == last_id) {
+                events = events.split_off(pos + 1);
+            }
+        }
 
         for e in &events {
             let sess = match e.payload.get("session_id").and_then(|s| s.as_str()) {
@@ -362,6 +380,31 @@ impl Orchestrator {
                             ]));
                         }
                     }
+                }
+            }
+        }
+
+        // 如果有新事件被折叠，且 step 达到 10 的倍数，在 tokio 异步线程中保存快照
+        if !events.is_empty() {
+            let current_step = match context_state.get_path(&["metadata", "step"]) {
+                Some(crate::sexpr::SExpr::Atom(s)) => s.parse::<i32>().unwrap_or(0),
+                _ => 0,
+            };
+            if current_step > 0 && current_step % 10 == 0 {
+                if let Some(last_ev) = events.last() {
+                    let store = Arc::clone(&self.store);
+                    let session_id_clone = session_id.clone();
+                    let snapshot_data = context_state.to_string();
+                    let last_event_id = last_ev.id.clone();
+                    let last_event_time = last_ev.timestamp.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+                    
+                    tokio::spawn(async move {
+                        if let Err(e) = store.save_snapshot(&session_id_clone, current_step, &snapshot_data, &last_event_id, &last_event_time).await {
+                            eprintln!("⚠️ [Snapshot] 保存快照失败: {}", e);
+                        } else {
+                            println!("💾 [Snapshot] 成功保存 Session {} Step {} 的快照", session_id_clone, current_step);
+                        }
+                    });
                 }
             }
         }
@@ -571,10 +614,11 @@ impl Orchestrator {
         );
         let _ = self.bus.publish(context_ev).await;
 
-        // 2.2 大模型提问改版：提问给 LLM 的请求体只有 system 指导消息和唯一的 user 状态消息
+        // 2.2 大模型提问改版：冷热双轨 Prefix Cache 前缀缓存黄金排布
         let system_prompt = r#"你是一个名为 Morphz 的 AI 助理。
-你运行在一个符号化 S-Expression (Yao-lang 格式) 状态机之上。你当前完整的大脑心智状态 (Context) 将作为单一的 User 消息发送给你。
-你必须根据该状态执行决策。如果你需要修改你的临时变量、任务规划栈 (todo_stack) 或者总结与剪裁对话历史 (history)，你必须调用 eval 工具，传入合法的 begin/set/push/pop/clear 演算指令来维护你自己的大脑状态。
+你运行在一个符号化 S-Expression (Yao-lang 格式) 状态机之上。
+你当前完整的大脑心智状态 (Context) 会被拆分为相对静轨（Memory 长期记忆召回）与动态热轨（当前运行状态）两条消息作为输入发送给你。
+你必须根据当前状态执行决策。如果你需要修改你的临时变量、任务规划栈 (todo_stack) 或者总结与剪裁对话历史 (history)，你必须调用 eval 工具，传入合法的 begin/set/push/pop/clear 演算指令来维护你自己的大脑状态。
 注意：
 1. 你的大脑状态 Context 结构如下：
    (context
@@ -598,24 +642,50 @@ impl Orchestrator {
    - spawn: 派生并发子智能体去解决子任务（需要生成唯一的 sub_session_id 并设定 initial_context）。
 请保持简明扼要的回答。"#;
 
-        let user_message = context_state.to_string();
-
-        let messages = vec![
+        // 绝对静轨
+        let mut messages = vec![
             Message {
                 role: "system".to_string(),
                 content: system_prompt.to_string(),
                 name: None,
                 tool_call_id: None,
                 tool_calls: None,
-            },
-            Message {
-                role: "user".to_string(),
-                content: user_message,
-                name: None,
-                tool_call_id: None,
-                tool_calls: None,
             }
         ];
+
+        // 相对静轨：图谱动态召回 memory/skill anchors
+        let graph_anchors_str = if let Some(anchors) = context_state.get_path(&["graph_anchors"]) {
+            anchors.to_string()
+        } else {
+            "(graph_anchors)".to_string()
+        };
+        messages.push(Message {
+            role: "user".to_string(),
+            content: format!("Memory Recall Context:\n{}", graph_anchors_str),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        });
+
+        // 动态热轨：高频变动的大脑心智状态
+        let metadata_str = context_state.get_path(&["metadata"]).map(|s| s.to_string()).unwrap_or_default();
+        let history_str = context_state.get_path(&["history"]).map(|s| s.to_string()).unwrap_or_default();
+        let variables_str = context_state.get_path(&["variables"]).map(|s| s.to_string()).unwrap_or_default();
+        let todo_stack_str = context_state.get_path(&["todo_stack"]).map(|s| s.to_string()).unwrap_or_default();
+        let hot_context_str = format!(
+            "(context\n  {}\n  {}\n  {}\n  {}\n)",
+            metadata_str,
+            history_str,
+            variables_str,
+            todo_stack_str
+        );
+        messages.push(Message {
+            role: "user".to_string(),
+            content: format!("Current Mental State:\n{}", hot_context_str),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        });
 
         // 统计当前轮次中连续调用 eval 的次数，防止 LLM 在状态机中陷入无限自振荡死循环
         let mut eval_context_count = 0;

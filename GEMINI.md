@@ -16,15 +16,21 @@
 
 ## 2. 核心架构约束
 
--   **扁平化 Go 项目目录**：
-    - 项目不使用 `pkg/` 文件夹。
-    - 所有的功能包直接平铺在根目录下，例如 `/event`、`/memory`。
--   **控制与执行分离**：
-    - Go 负责控制面 (Orchestrator, EventBus, Context Evaluator, L3 沙箱通信)。
-    - Rust 负责安全执行面 (L2 Yao-VM, AST 审计)。两端通过 Unix Domain Socket 运行 gRPC 通信。
--   **无状态 Agent 与共享 Context**：
-    - Agent 本身退化为无状态的处理器 (Processors)。
-    - 共享的 Context 状态是通过 `Fold` 算子基于底层的不可变 `EventHistory` 进行动态求值投射出来的。
+-   **纯 Rust 架构与扁平化目录**：
+    - 项目已从 Go 完全迁移至纯 Rust。
+    - 所有的核心功能包（模块）直接平铺在 `morphz/src/` 目录下，例如 `event.rs`、`tool.rs`、`sexpr.rs`、`llm.rs`，不使用深层嵌套的目录。
+-   **混合双轨持久化中枢 (SQLite + LanceDB)**：
+    - **SQLite**：用于只增不减的时序事件日志（Event Store）、脑状态快照（Context Snapshots）、图关系中的实体关系（Edges），并支持 CTE 递归图寻路和 FTS5 全文索引检索。
+    - **LanceDB**：作为高维向量检索库，物理持久化节点多维向量，用于极速近邻（K-NN）检索与余弦相似度过滤。
+-   **本地向量推理服务**：
+    - `executor` 子项目作为独立的 HTTP 推理服务运行在 `127.0.0.1:8085`，本地加载 BGE 语义模型；控制面亦可选择在冷启动时将其直接载入内存进行零网络开销的向量计算。
+-   **事件总线背压与并发控制**：
+    - `InMemoryEventBus` 内置基于 `tokio::sync::Semaphore` 的背压控制，硬性限制异步 Attempts 最大并发数为 `10`，防范突发的并发大流量与数据库死锁。
+-   **长任务后台托管与安全强杀**：
+    - `exec` 工具执行命令支持设置毫秒级 `wait_ms`（默认 `1000ms`），超时后自动转为后台 Detach 托管长任务。其输出以事件流（`chat/tool_output`）形式异步送达大模型。
+    - 大模型可通过 `kill_task` 传入高精度且并发唯一的 `task_id`（格式为 `task_{nanoseconds}_{pid}`）进行任务终止。系统使用进程组（`pgid`）广播发送 `SIGKILL`，杜绝僵尸进程残留。
+-   **LLM 自动指数退避重试**：
+    - 客户端在网络连接大模型或向量服务发生异常、服务器返回 429 频次限制、5xx 服务端故障时，自动以指数时间（$1\text{s}, 2\text{s}, 4\text{s}...$）退避重试，最大尝试 5 次。
 
 ---
 

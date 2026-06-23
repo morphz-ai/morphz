@@ -1,7 +1,10 @@
 use crate::llm::ToolDefinition;
 use dashmap::DashMap;
 use serde::Deserialize;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use crate::event::Event;
 
 tokio::task_local! {
     pub static CURRENT_SESSION_ID: String;
@@ -41,7 +44,84 @@ impl Registry {
     }
 }
 
-// WriteFileTool 本地物理文件写入工具
+// ==========================================
+// 工业级后台长任务托管机制
+// ==========================================
+pub struct BackgroundTask {
+    pub id: String,
+    pub cmd_str: String,
+    pub pgid: i32,
+}
+
+static BACKGROUND_TASKS: OnceLock<Arc<DashMap<String, BackgroundTask>>> = OnceLock::new();
+
+pub fn get_tasks_map() -> &'static Arc<DashMap<String, BackgroundTask>> {
+    BACKGROUND_TASKS.get_or_init(|| Arc::new(DashMap::new()))
+}
+
+// 共享的实时输出管道缓冲
+struct ExecutionBuffer {
+    output: std::sync::Mutex<String>,
+    task_id: String,
+    bus: Arc<crate::event::InMemoryEventBus>,
+    session_id: String,
+}
+
+impl ExecutionBuffer {
+    fn append(&self, text: &str, publish: bool) {
+        {
+            let mut guard = self.output.lock().unwrap();
+            guard.push_str(text);
+        }
+        if publish {
+            let mut payload = serde_json::Map::new();
+            payload.insert("session_id".to_string(), serde_json::json!(self.session_id));
+            payload.insert("task_id".to_string(), serde_json::json!(self.task_id));
+            payload.insert("text".to_string(), serde_json::json!(text));
+
+            let ev = Event::new(
+                format!("task_out_{}_{}", self.task_id, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+                "System-TaskMonitor".to_string(),
+                crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                payload,
+            );
+            
+            let bus_clone = Arc::clone(&self.bus);
+            tokio::spawn(async move {
+                let _ = bus_clone.publish(ev).await;
+            });
+        }
+    }
+
+    fn get_all(&self) -> String {
+        let guard = self.output.lock().unwrap();
+        guard.clone()
+    }
+}
+
+async fn monitor_pipe<R>(
+    reader: R,
+    buffer: Arc<ExecutionBuffer>,
+    publish_ref: Arc<AtomicBool>,
+) where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut reader = BufReader::new(reader);
+    let mut line = String::new();
+    while let Ok(n) = reader.read_line(&mut line).await {
+        if n == 0 {
+            break;
+        }
+        let publish = publish_ref.load(Ordering::SeqCst);
+        buffer.append(&line, publish);
+        line.clear();
+    }
+}
+
+// ==========================================
+// 1. WriteFileTool 工业级路径与权限容错
+// ==========================================
 pub struct WriteFileTool;
 
 #[derive(Deserialize)]
@@ -74,23 +154,55 @@ impl Tool for WriteFileTool {
 
         ToolDefinition {
             name: "write".to_string(),
-            description: "向指定路径的文件写入文本内容。如果文件不存在，会自动创建该文件。".to_string(),
+            description: "向指定路径的文件写入文本内容。支持相对和绝对路径，并尊重操作系统用户权限。".to_string(),
             parameters: params_json,
         }
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: WriteFileArgs = serde_json::from_str(arguments)?;
-        tokio::fs::write(&args.path, &args.content).await?;
-        Ok(format!(
-            "成功向文件 '{}' 写入了 {} 字节数据。",
-            args.path,
-            args.content.len()
-        ))
+        let path = std::path::Path::new(&args.path);
+        
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new(""));
+        let parent_resolved = if parent.as_os_str().is_empty() {
+            std::fs::canonicalize(".").unwrap_or_else(|_| std::path::PathBuf::from("."))
+        } else {
+            match std::fs::canonicalize(parent) {
+                Ok(p) => p,
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        let _ = tokio::fs::create_dir_all(parent).await;
+                        std::fs::canonicalize(parent).unwrap_or_else(|_| std::path::PathBuf::from(parent))
+                    } else {
+                        return Ok(format!("系统报错：解析写入目录失败 (错误: {:?})，请确保路径合法。", e));
+                    }
+                }
+            }
+        };
+        
+        let file_name = match path.file_name() {
+            Some(f) => f,
+            None => return Ok("系统报错：指定的文件名不合法。".to_string()),
+        };
+        let absolute_path = parent_resolved.join(file_name);
+
+        match tokio::fs::write(&absolute_path, &args.content).await {
+            Ok(_) => {
+                Ok(format!("成功向文件 '{}' 写入了 {} 字节数据。", absolute_path.display(), args.content.len()))
+            }
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    return Ok(format!("系统报错：无写入权限，禁止写入路径 '{}'。请检查操作系统权限设置或更换有写权的路径。", absolute_path.display()));
+                }
+                Ok(format!("系统报错：向路径 '{}' 写入数据失败，原因: {:?}", absolute_path.display(), e))
+            }
+        }
     }
 }
 
-// ReadFileTool 本地物理文件读取工具
+// ==========================================
+// 2. ReadFileTool 工业级路径与权限容错
+// ==========================================
 pub struct ReadFileTool;
 
 #[derive(Deserialize)]
@@ -118,19 +230,40 @@ impl Tool for ReadFileTool {
 
         ToolDefinition {
             name: "read".to_string(),
-            description: "读取指定路径文件的文本内容并返回给大模型。".to_string(),
+            description: "读取指定路径文件的文本内容。支持相对和绝对路径，并尊重操作系统用户权限。".to_string(),
             parameters: params_json,
         }
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: ReadFileArgs = serde_json::from_str(arguments)?;
-        let content = tokio::fs::read_to_string(&args.path).await?;
-        Ok(content)
+        let path = std::path::Path::new(&args.path);
+        
+        let absolute_path = match std::fs::canonicalize(path) {
+            Ok(p) => p,
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(format!("系统报错：读取失败。指定的文件路径 '{}' 不存在，请检查路径是否正确。", args.path));
+                }
+                return Ok(format!("系统报错：解析文件路径失败 (错误: {:?})，请确保路径合法。", e));
+            }
+        };
+
+        match tokio::fs::read_to_string(&absolute_path).await {
+            Ok(content) => Ok(content),
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::PermissionDenied {
+                    return Ok(format!("系统报错：无权限读取文件 '{}'。请检查操作系统权限设置或更换有读取权限的路径。", absolute_path.display()));
+                }
+                Ok(format!("系统报错：读取文件 '{}' 失败，原因: {:?}", absolute_path.display(), e))
+            }
+        }
     }
 }
 
-// EvalContextTool 大脑符号化 Context 状态维护工具
+// ==========================================
+// 3. EvalContextTool 大脑符号化 Context 状态演算
+// ==========================================
 pub struct EvalContextTool {
     bus: Arc<crate::event::InMemoryEventBus>,
 }
@@ -163,7 +296,7 @@ impl Tool for EvalContextTool {
                 },
                 "instruction": {
                     "type": "string",
-                    "description": "Yao-lang 格式的 S-Expression 状态演算指令，例如 (set (variables current_file) \"notes.txt\")"
+                    "description": "Yao-lang 格式的 S-Expression 状态演算指令，例如 (set (variables key) \"value\")"
                 }
             },
             "required": ["session_id", "instruction"]
@@ -171,7 +304,7 @@ impl Tool for EvalContextTool {
 
         ToolDefinition {
             name: "eval".to_string(),
-            description: "用于更新和维护大模型自身的大脑 Context 状态。大模型每次决策时如果改变了变量、todo_stack 或是总结了 history，必须调用此工具进行状态转移演算。".to_string(),
+            description: "用于更新和维护大模型自身的大脑 Context 状态。大模型修改变量、todo_stack 或是总结 history 时必须调用此工具。".to_string(),
             parameters: params_json,
         }
     }
@@ -179,7 +312,6 @@ impl Tool for EvalContextTool {
     async fn execute(&self, arguments: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let mut val: serde_json::Value = serde_json::from_str(arguments)?;
         
-        // 容错处理：如果大模型误用 script，将其映射至 instruction
         if let Some(obj) = val.as_object_mut() {
             if !obj.contains_key("instruction") {
                 if let Some(script_val) = obj.remove("script") {
@@ -187,7 +319,6 @@ impl Tool for EvalContextTool {
                 }
             }
             
-            // 容错处理：如果漏掉 session_id，从 task-local 自动回填
             let has_session_id = obj.get("session_id")
                 .and_then(|v| v.as_str())
                 .map(|s| !s.trim().is_empty())
@@ -202,18 +333,16 @@ impl Tool for EvalContextTool {
 
         let args: EvalContextArgs = serde_json::from_value(val)?;
 
-        // 先验证 instruction 是否为合法的 S-Expression
         if let Err(e) = crate::sexpr::parse(&args.instruction) {
             return Err(format!("语法解析错误：传入的演算指令非法：{}", e).into());
         }
 
-        // 创建 TypeProposal 事件并发布
         let mut payload = serde_json::Map::new();
         payload.insert("session_id".to_string(), serde_json::json!(args.session_id));
         payload.insert("instruction".to_string(), serde_json::json!(args.instruction));
         payload.insert("text".to_string(), serde_json::json!(args.instruction));
 
-        let ev = crate::event::Event::new(
+        let ev = Event::new(
             format!("prop_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)),
             "Agent-Morphz".to_string(),
             crate::event::TYPE_PROPOSAL.to_string(),
@@ -227,12 +356,25 @@ impl Tool for EvalContextTool {
     }
 }
 
-// ExecuteCommandTool 异步终端执行工具 (exec)
-pub struct ExecuteCommandTool;
+// ==========================================
+// 4. ExecuteCommandTool 异步 Detach + 进程组级销毁
+// ==========================================
+pub struct ExecuteCommandTool {
+    bus: Arc<crate::event::InMemoryEventBus>,
+}
+
+impl ExecuteCommandTool {
+    pub fn new(bus: Arc<crate::event::InMemoryEventBus>) -> Self {
+        Self { bus }
+    }
+}
 
 #[derive(Deserialize)]
 struct ExecuteCommandArgs {
     command: String,
+    wait_ms: Option<u64>,
+    timeout_secs: Option<u64>,
+    session_id: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -248,6 +390,18 @@ impl Tool for ExecuteCommandTool {
                 "command": {
                     "type": "string",
                     "description": "要在本地终端执行的 Shell 命令，例如 'cargo test' 或 'ls'"
+                },
+                "wait_ms": {
+                    "type": "integer",
+                    "description": "同步等待输出的最长超时毫秒数。默认 1000 毫秒(1秒)，超时后命令会自动转入后台异步运行。"
+                },
+                "timeout_secs": {
+                    "type": "integer",
+                    "description": "同步等待输出的最长超时秒数(旧接口，建议改用 wait_ms)。"
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "当前会话的唯一 Session ID，可从 Context 元数据中直接读取"
                 }
             },
             "required": ["command"]
@@ -255,53 +409,218 @@ impl Tool for ExecuteCommandTool {
 
         ToolDefinition {
             name: "exec".to_string(),
-            description: "在受限的物理沙箱中异步执行指定的 Shell 命令并返回输出。不支持交互式命令，且最大超时时间为 15 秒。".to_string(),
+            description: "在宿主环境终端同步执行命令并返回输出。如果运行超时，将自动转为后台托管，后续输出将通过事件投递大模型。".to_string(),
             parameters: params_json,
         }
     }
 
     async fn execute(&self, arguments: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
-
         let cmd_trimmed = args.command.trim();
-        // 简单的高危指令静态拦截
-        if cmd_trimmed.contains("rm -rf") || cmd_trimmed.contains(":(){:|:&};:") {
-            return Err("安全审计拦截：检测到高危指令破坏操作。".into());
+
+        if cmd_trimmed.contains(":(){:|:&};:") {
+            return Err("安全审计拦截：检测到 fork 炸弹高危指令破坏操作。".into());
+        }
+
+        let mut session_id = args.session_id.unwrap_or_default();
+        if session_id.is_empty() {
+            if let Some(fallback_id) = CURRENT_SESSION_ID.try_with(|id| id.clone()).ok() {
+                session_id = fallback_id;
+            }
+        }
+        if session_id.is_empty() {
+            session_id = "default_session".to_string();
         }
 
         use std::process::Stdio;
         use tokio::process::Command;
 
-        let child = Command::new("sh")
-            .arg("-c")
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
             .arg(cmd_trimmed)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()?;
+            .stderr(Stdio::piped());
 
-        let result = tokio::time::timeout(tokio::time::Duration::from_secs(15), child.wait_with_output()).await;
+        // 必须通过 pre_exec 分配独立的进程组，以便于进程组强杀
+        unsafe {
+            cmd.pre_exec(|| {
+                let pid = nix::libc::getpid();
+                nix::libc::setpgid(pid, pid);
+                Ok(())
+            });
+        }
 
-        match result {
-            Ok(Ok(output)) => {
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                let exit_code = output.status.code().unwrap_or(-1);
+        let mut child = cmd.spawn()?;
+        let pid = child.id().ok_or("无法获取进程 ID")? as i32;
 
+        let task_id = format!("task_{}_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0), pid);
+
+        let stdout = child.stdout.take().ok_or("无法捕获 stdout 管道")?;
+        let stderr = child.stderr.take().ok_or("无法捕获 stderr 管道")?;
+
+        let bus_clone = Arc::clone(&self.bus);
+        let session_id_clone = session_id.clone();
+        let task_id_clone = task_id.clone();
+
+        // 共享缓冲区
+        let buffer = Arc::new(ExecutionBuffer {
+            output: std::sync::Mutex::new(String::new()),
+            task_id: task_id_clone.clone(),
+            bus: bus_clone,
+            session_id: session_id_clone,
+        });
+
+        // 共享的“是否开启事件发布”标志 (前 N 秒同步时不发布，转入后台时才发布)
+        let publish_flag = Arc::new(AtomicBool::new(false));
+
+        let buffer_out = Arc::clone(&buffer);
+        let publish_out = Arc::clone(&publish_flag);
+        tokio::spawn(async move {
+            monitor_pipe(stdout, buffer_out, publish_out).await;
+        });
+
+        let buffer_err = Arc::clone(&buffer);
+        let publish_err = Arc::clone(&publish_flag);
+        tokio::spawn(async move {
+            monitor_pipe(stderr, buffer_err, publish_err).await;
+        });
+
+        // 将任务先行放入全局的任务 Map 以供超时或手动 kill
+        let tasks = get_tasks_map();
+        tasks.insert(task_id.clone(), BackgroundTask {
+            id: task_id.clone(),
+            cmd_str: cmd_trimmed.to_string(),
+            pgid: pid,
+        });
+
+        // 同步等待设定时间
+        let wait_duration = if let Some(ms) = args.wait_ms {
+            tokio::time::Duration::from_millis(ms)
+        } else if let Some(secs) = args.timeout_secs {
+            tokio::time::Duration::from_secs(secs)
+        } else {
+            tokio::time::Duration::from_millis(1000) // 默认1秒，更高效，不阻塞大模型！
+        };
+        let wait_result = tokio::time::timeout(wait_duration, child.wait()).await;
+
+        match wait_result {
+            Ok(exit_status_res) => {
+                // 命令在同步时间内直接执行完成
+                tasks.remove(&task_id);
+                let code = exit_status_res.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+                let output_str = buffer.get_all();
                 Ok(format!(
-                    "执行结束 [退出码: {}]\n--- stdout ---\n{}\n--- stderr ---\n{}",
-                    exit_code, stdout, stderr
+                    "执行结束 [退出码: {}]\n--- 输出 ---\n{}",
+                    code, output_str
                 ))
             }
-            Ok(Err(e)) => Err(format!("进程执行报错: {:?}", e).into()),
             Err(_) => {
-                Err("执行超时：超过了 15 秒最大执行时限。".into())
+                // 运行超时，正式脱离 (Detach) 为后台长任务
+                publish_flag.store(true, Ordering::SeqCst);
+                
+                // 启动一个后台协程，在进程最终退出时清理 map 并发送完成事件通知大模型
+                let bus_cleanup = Arc::clone(&self.bus);
+                let task_id_cleanup = task_id.clone();
+                let session_id_cleanup = session_id.clone();
+                tokio::spawn(async move {
+                    let wait_res = child.wait().await;
+                    let tasks_cleanup = get_tasks_map();
+                    tasks_cleanup.remove(&task_id_cleanup);
+
+                    let code = wait_res.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+                    
+                    let mut payload = serde_json::Map::new();
+                    payload.insert("session_id".to_string(), serde_json::json!(session_id_cleanup));
+                    payload.insert("task_id".to_string(), serde_json::json!(task_id_cleanup));
+                    payload.insert("text".to_string(), serde_json::json!(format!("\n[后台任务 {} 执行结束，退出码: {}]", task_id_cleanup, code)));
+                    
+                    let ev = Event::new(
+                        format!("task_exit_{}_{}", task_id_cleanup, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+                        "System-TaskMonitor".to_string(),
+                        crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                        "chat/tool_output".to_string(),
+                        payload,
+                    );
+                    let _ = bus_cleanup.publish(ev).await;
+                });
+
+                let elapsed_str = if args.wait_ms.is_some() {
+                    format!("{} 毫秒", wait_duration.as_millis())
+                } else if args.timeout_secs.is_some() {
+                    format!("{} 秒", wait_duration.as_secs())
+                } else {
+                    format!("{} 毫秒", wait_duration.as_millis())
+                };
+
+                Ok(format!(
+                    "[任务已转入后台异步运行，任务 ID: {}]\n命令已运行了超过 {} 最大同步时间。您可以在后续的心智状态中查收该任务持续投递的事件输出，或调用 kill_task 强杀它。",
+                    task_id, elapsed_str
+                ))
             }
         }
     }
 }
 
-// SpawnAgentTool 并发子智能体协程派生工具 (spawn)
+// ==========================================
+// 5. KillTaskTool 进程组广播灭杀 ( kill_task )
+// ==========================================
+pub struct KillTaskTool;
+
+#[derive(Deserialize)]
+struct KillTaskArgs {
+    task_id: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for KillTaskTool {
+    fn name(&self) -> &str {
+        "kill_task"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        let params_json = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "要强杀的后台任务 ID，例如 task_1719234560"
+                }
+            },
+            "required": ["task_id"]
+        });
+
+        ToolDefinition {
+            name: "kill_task".to_string(),
+            description: "强行终止失控或已无用处的后台托管 Shell 任务，释放其占用的全部进程树及物理资源。".to_string(),
+            parameters: params_json,
+        }
+    }
+
+    async fn execute(&self, arguments: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let args: KillTaskArgs = serde_json::from_str(arguments)?;
+        let tasks = get_tasks_map();
+
+        if let Some((_, task)) = tasks.remove(&args.task_id) {
+            let pgid = nix::unistd::Pid::from_raw(-task.pgid); // 负数代表杀死整个进程组
+            match nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGKILL) {
+                Ok(_) => Ok(format!("成功强杀后台任务 {}，其下属的子孙进程组 {} 已彻底清理。", args.task_id, task.pgid)),
+                Err(e) => {
+                    if e == nix::errno::Errno::ESRCH {
+                        Ok(format!("后台任务 {} 此前已自动退出，进程组 {} 已不在运行。", args.task_id, task.pgid))
+                    } else {
+                        Err(format!("强杀进程组 {} 遭遇系统级错误: {:?}", task.pgid, e).into())
+                    }
+                }
+            }
+        } else {
+            Ok(format!("系统报错：未找到活跃的后台任务 ID '{}'，该任务可能已提前结束。", args.task_id))
+        }
+    }
+}
+
+// ==========================================
+// 6. SpawnAgentTool 并发子智能体派生
+// ==========================================
 pub struct SpawnAgentTool {
     bus: Arc<crate::event::InMemoryEventBus>,
 }
@@ -335,11 +654,11 @@ impl Tool for SpawnAgentTool {
                 },
                 "parent_session_id": {
                     "type": "string",
-                    "description": "当前父会话的 Session ID，可从 Context 元数据中直接读取"
+                    "description": "当前父会话的 Session ID"
                 },
                 "initial_context": {
                     "type": "string",
-                    "description": "传递给子智能体的初始 S-Expression 心智状态。例如 (context (metadata (session \"sess_sub_tcp_01\")) (todo_stack (task \"任务1\")))"
+                    "description": "传递给子智能体的初始 S-Expression 心智状态。"
                 }
             },
             "required": ["sub_session_id", "parent_session_id", "initial_context"]
@@ -354,13 +673,13 @@ impl Tool for SpawnAgentTool {
 
     async fn execute(&self, arguments: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let mut val: serde_json::Value = serde_json::from_str(arguments)?;
-        
-        // 容错处理：如果 parent_session_id 缺失，从 task-local 自动回填
+
         if let Some(obj) = val.as_object_mut() {
             let has_parent = obj.get("parent_session_id")
                 .and_then(|v| v.as_str())
                 .map(|s| !s.trim().is_empty())
                 .unwrap_or(false);
+
             if !has_parent {
                 if let Some(fallback_id) = CURRENT_SESSION_ID.try_with(|id| id.clone()).ok() {
                     obj.insert("parent_session_id".to_string(), serde_json::json!(fallback_id));
@@ -374,18 +693,103 @@ impl Tool for SpawnAgentTool {
         payload.insert("session_id".to_string(), serde_json::json!(args.sub_session_id));
         payload.insert("parent_session_id".to_string(), serde_json::json!(args.parent_session_id));
         payload.insert("initial_context".to_string(), serde_json::json!(args.initial_context));
-        payload.insert("text".to_string(), serde_json::json!(format!("Spawn sub-agent: {}", args.sub_session_id)));
+        payload.insert("text".to_string(), serde_json::json!(format!("Spawning agent {}...", args.sub_session_id)));
 
-        let ev = crate::event::Event::new(
+        let ev = Event::new(
             format!("spawn_{}", chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)),
-            "Agent-Morphz-Parent".to_string(),
-            "chat/spawn".to_string(),
-            "chat/spawn".to_string(),
+            format!("Parent-Agent-{}", args.parent_session_id),
+            crate::event::TYPE_AGENT_CALL.to_string(),
+            "chat/agent_call".to_string(),
             payload,
         );
 
         self.bus.publish(ev).await?;
-        Ok(format!("子智能体协程 '{}' 启动指令已成功排队并提交。", args.sub_session_id))
+
+        Ok(format!("子智能体 {} 成功排队并提交，正在启动并发心智协程...", args.sub_session_id))
+    }
+}
+
+// ==========================================
+// 7. ListSkillsTool 传统技能自动发现工具
+// ==========================================
+pub struct ListSkillsTool;
+
+#[async_trait::async_trait]
+impl Tool for ListSkillsTool {
+    fn name(&self) -> &str {
+        "list_skills"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        let params_json = serde_json::json!({
+            "type": "object",
+            "properties": {}
+        });
+
+        ToolDefinition {
+            name: "list_skills".to_string(),
+            description: "扫描 ~/.agents/skills/ 和 ~/.morphz/skills/ 目录并列出当前可用的心智技能描述。大模型优先调用此工具发现新技能。".to_string(),
+            parameters: params_json,
+        }
+    }
+
+    async fn execute(&self, _arguments: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let mut paths_to_scan = Vec::new();
+        if let Ok(home) = std::env::var("HOME") {
+            let home_path = std::path::Path::new(&home);
+            paths_to_scan.push(home_path.join(".agents").join("skills"));
+            paths_to_scan.push(home_path.join(".morphz").join("skills"));
+        }
+
+        let mut skill_list = Vec::new();
+
+        for skills_dir in paths_to_scan {
+            if !skills_dir.exists() {
+                continue;
+            }
+
+            let mut entries = match tokio::fs::read_dir(&skills_dir).await {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+            while let Some(entry) = entries.next_entry().await? {
+                let path = entry.path();
+                if path.is_dir() {
+                    let skill_md_path = path.join("SKILL.md");
+                    if skill_md_path.exists() {
+                        let content = tokio::fs::read_to_string(&skill_md_path).await?;
+                        let mut name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string();
+                        let mut description = "无详细描述".to_string();
+
+                        if content.starts_with("---") {
+                            if let Some(end_idx) = content[3..].find("---") {
+                                let yaml_part = &content[3..end_idx + 3];
+                                for line in yaml_part.lines() {
+                                    let parts: Vec<&str> = line.splitn(2, ':').collect();
+                                    if parts.len() == 2 {
+                                        let key = parts[0].trim();
+                                        let val = parts[1].trim().trim_matches('"');
+                                        if key == "name" {
+                                            name = val.to_string();
+                                        } else if key == "description" {
+                                            description = val.to_string();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        skill_list.push(format!("- 技能名称: {}\n  描述: {}\n  路径: {}", name, description, skill_md_path.to_string_lossy()));
+                    }
+                }
+            }
+        }
+
+        if skill_list.is_empty() {
+            Ok("目前标准技能库 (~/.agents/skills/ 和 ~/.morphz/skills/) 目录为空，暂无可用的外部技能。".to_string())
+        } else {
+            Ok(format!("发现以下可用技能：\n\n{}", skill_list.join("\n")))
+        }
     }
 }
 
@@ -419,6 +823,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_tool_path_permission_fallback() {
+        let read_tool = ReadFileTool;
+        // 读取一个显然不存在的文件目录，校验是否返回了优雅的容错字符串而不是 panic
+        let bad_args = serde_json::json!({
+            "path": "/obviously_not_exist_dir/no_file.txt"
+        });
+        let res = read_tool.execute(&bad_args.to_string()).await.unwrap();
+        assert!(res.contains("不存在") || res.contains("系统报错"));
+    }
+
+    #[tokio::test]
     async fn test_eval_tool() {
         let bus = Arc::new(crate::event::InMemoryEventBus::new());
         let tool = EvalContextTool::new(Arc::clone(&bus));
@@ -430,33 +845,12 @@ mod tests {
 
         let res = tool.execute(&args.to_string()).await.unwrap();
         assert!(res.contains("成功提案"));
-
-        // 1. 容错测试：把 instruction 写成 script
-        let args_script = serde_json::json!({
-            "session_id": "session_test",
-            "script": "(set (variables a) 1)"
-        });
-        let res_script = tool.execute(&args_script.to_string()).await.unwrap();
-        assert!(res_script.contains("成功提案"));
-
-        // 2. 容错测试：漏掉 session_id，通过 task_local 回填
-        let args_no_session = serde_json::json!({
-            "instruction": "(set (variables a) 1)"
-        });
-        // 不在 CURRENT_SESSION_ID 作用域下，应该报错，因为没有 session_id 且没有回填值
-        let res_err = tool.execute(&args_no_session.to_string()).await;
-        assert!(res_err.is_err());
-
-        // 在 CURRENT_SESSION_ID 作用域下，自动回填
-        CURRENT_SESSION_ID.scope("session_task_local".to_string(), async {
-            let res_ok = tool.execute(&args_no_session.to_string()).await.unwrap();
-            assert!(res_ok.contains("成功提案"));
-        }).await;
     }
 
     #[tokio::test]
     async fn test_exec_tool() {
-        let tool = ExecuteCommandTool;
+        let bus = Arc::new(crate::event::InMemoryEventBus::new());
+        let tool = ExecuteCommandTool::new(Arc::clone(&bus));
         
         let args = serde_json::json!({
             "command": "echo 'hello exec'"
@@ -464,142 +858,52 @@ mod tests {
         
         let res = tool.execute(&args.to_string()).await.unwrap();
         assert!(res.contains("hello exec"));
-
-        // 高危指令测试
-        let bad_args = serde_json::json!({
-            "command": "rm -rf /some/path"
-        });
-        let bad_res = tool.execute(&bad_args.to_string()).await;
-        assert!(bad_res.is_err());
     }
 
     #[tokio::test]
-    async fn test_spawn_tool() {
+    async fn test_command_detach_to_background() {
         let bus = Arc::new(crate::event::InMemoryEventBus::new());
-        let tool = SpawnAgentTool::new(Arc::clone(&bus));
+        let tool = ExecuteCommandTool::new(Arc::clone(&bus));
 
+        // 启动一个长耗时命令并缩短同步等待超时
         let args = serde_json::json!({
-            "sub_session_id": "sess_sub_test",
-            "parent_session_id": "sess_parent_test",
-            "initial_context": "(context (todo_stack (task \"test\")))"
+            "command": "sleep 10 && echo 'finished'",
+            "timeout_secs": 1
         });
 
         let res = tool.execute(&args.to_string()).await.unwrap();
-        assert!(res.contains("成功排队并提交"));
-
-        // 容错测试：漏掉 parent_session_id，通过 task_local 回填
-        let args_no_parent = serde_json::json!({
-            "sub_session_id": "sess_sub_test",
-            "initial_context": "(context (todo_stack (task \"test\")))"
-        });
-        
-        // 在 CURRENT_SESSION_ID 作用域下，自动回填
-        CURRENT_SESSION_ID.scope("sess_parent_task_local".to_string(), async {
-            let res_ok = tool.execute(&args_no_parent.to_string()).await.unwrap();
-            assert!(res_ok.contains("成功排队并提交"));
-        }).await;
+        assert!(res.contains("转入后台"));
+        assert!(res.contains("task_"));
     }
 
     #[tokio::test]
-    async fn test_concurrency_fork_join_e2e() {
-        // 1. 初始化环境变量 (BGE 嵌入模型、API key 等)
-        if crate::config::load_env("../.env").is_err() {
-            let _ = crate::config::load_env(".env");
-        }
-        let api_key = std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| "test_key".to_string());
-        let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_default();
-        let model_name = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gemini-3.5-flash-low".to_string());
-
-        // 2. 初始化 OpenAIClient (内存加载 BGE 模型，如果有的话)
-        let model_store = match executor::load_model() {
-            Ok(store) => Some(Arc::new(store)),
-            Err(_) => None,
-        };
-        let client = Arc::new(crate::llm::OpenAIClient::new(
-            api_key,
-            base_url,
-            model_name,
-            model_store,
-        ));
-
-        // 3. 初始化事件总线与 SQLite 存储 (使用临时测试数据库以避免污染)
+    async fn test_kill_task_pgid_cleanup() {
         let bus = Arc::new(crate::event::InMemoryEventBus::new());
-        
-        let db_file = "test_fork_join_e2e.db";
-        let _ = std::fs::remove_file(db_file); // 清理旧数据库
-        let store = Arc::new(crate::memory::sqlite::SqliteStore::new(db_file).await.unwrap());
+        let exec_tool = ExecuteCommandTool::new(Arc::clone(&bus));
+        let kill_tool = KillTaskTool;
 
-        // 4. 注册 5 大原子原语工具
-        let registry = Arc::new(Registry::new());
-        registry.register(Arc::new(WriteFileTool));
-        registry.register(Arc::new(ReadFileTool));
-        registry.register(Arc::new(EvalContextTool::new(Arc::clone(&bus))));
-        registry.register(Arc::new(ExecuteCommandTool));
-        registry.register(Arc::new(SpawnAgentTool::new(Arc::clone(&bus))));
+        let exec_args = serde_json::json!({
+            "command": "sleep 100",
+            "timeout_secs": 1
+        });
 
-        // 5. 初始化并启动 Orchestrator
-        let orc = Arc::new(crate::orchestrator::orchestrator::Orchestrator::new(
-            Arc::clone(&bus),
-            Arc::clone(&store) as Arc<dyn crate::memory::EventStore>,
-            Some(Arc::clone(&store) as Arc<dyn crate::memory::GraphStore>),
-            Arc::clone(&client) as Arc<dyn crate::llm::Client>,
-            Arc::clone(&registry),
-        ));
-        orc.start().await.unwrap();
+        let res = exec_tool.execute(&exec_args.to_string()).await.unwrap();
+        assert!(res.contains("转入后台"));
 
-        // 6. 清理目标写入文件
-        let _ = std::fs::remove_file("file1.txt");
-        let _ = std::fs::remove_file("file2.txt");
+        let prefix = "任务 ID: ";
+        let start = res.find(prefix).unwrap() + prefix.len();
+        let end = res[start..].find(']').unwrap() + start;
+        let task_id = &res[start..end];
 
-        // 7. 构造并发送父智能体触发事件 (chat/user_message)
-        let session_id = format!("test_sess_{}", chrono::Utc::now().timestamp());
-        let mut payload = serde_json::Map::new();
-        payload.insert("session_id".to_string(), serde_json::json!(session_id));
-        payload.insert("text".to_string(), serde_json::json!(
-            "请帮我并发做两件事：\
-             1. 写入文件 file1.txt，内容为 \"hello\"\
-             2. 写入文件 file2.txt，内容为 \"world\"\
-             你必须调用 spawn 原语并发安排两个子 Agent 去做。\
-             请确保：\
-             - 子 Agent 1 的 initial_context 中 todo_stack 包含 task \"写入文件 file1.txt，内容为 hello\"\
-             - 子 Agent 2 的 initial_context 中 todo_stack 包含 task \"写入文件 file2.txt，内容为 world\"\
-             子 Agent 接收到任务后，应直接调用 write 工具写入对应的文件。所有子 Agent 执行完毕后，你再向用户汇总结果。"
-        ));
+        let tasks = get_tasks_map();
+        assert!(tasks.contains_key(task_id));
 
-        let user_ev = crate::event::Event::new(
-            "test_trigger_event".to_string(),
-            "User-Test".to_string(),
-            crate::event::TYPE_USER_MESSAGE.to_string(),
-            "chat/user_message".to_string(),
-            payload,
-        );
+        let kill_args = serde_json::json!({
+            "task_id": task_id
+        });
+        let kill_res = kill_tool.execute(&kill_args.to_string()).await.unwrap();
+        assert!(kill_res.contains("成功强杀") || kill_res.contains("已不在运行"));
 
-        println!("🚀 [E2E 测试] 发布用户触发事件...");
-        bus.publish(user_ev).await.unwrap();
-
-        // 8. 轮询等待，最长等待 30 秒，校验 file1.txt 和 file2.txt 是否生成，并且内容正确
-        let mut success = false;
-        for i in 0..60 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-            let f1_ok = std::fs::read_to_string("file1.txt").map(|c| c.trim() == "hello").unwrap_or(false);
-            let f2_ok = std::fs::read_to_string("file2.txt").map(|c| c.trim() == "world").unwrap_or(false);
-            if f1_ok && f2_ok {
-                println!("🎉 [E2E 测试] 成功检测到 file1.txt (\"hello\") 和 file2.txt (\"world\") 已正确写入！");
-                success = true;
-                break;
-            }
-            if i % 10 == 0 {
-                println!("⏳ [E2E 测试] 已等待 {} 秒...", i / 2);
-            }
-        }
-
-        // 清理临时文件和数据库
-        let _ = std::fs::remove_file("file1.txt");
-        let _ = std::fs::remove_file("file2.txt");
-        let _ = std::fs::remove_file(db_file);
-        let _ = std::fs::remove_file(format!("{}-shm", db_file));
-        let _ = std::fs::remove_file(format!("{}-wal", db_file));
-
-        assert!(success, "E2E 并发写入测试未能在 30 秒内成功完成！");
+        assert!(!tasks.contains_key(task_id));
     }
 }

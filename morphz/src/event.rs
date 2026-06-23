@@ -74,16 +74,22 @@ pub struct InMemoryEventBus {
     error_handler: Arc<
         dyn Fn(Box<dyn std::error::Error + Send + Sync>, Event) + Send + Sync,
     >,
+    semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl InMemoryEventBus {
     pub fn new() -> Self {
+        Self::with_concurrency_limit(10)
+    }
+
+    pub fn with_concurrency_limit(limit: usize) -> Self {
         Self {
             subscriptions: DashMap::new(),
             sub_counter: AtomicU64::new(0),
             error_handler: Arc::new(|err, ev| {
                 eprintln!("\n⚠️ [事件总线错误] 事件ID: {}, 错误: {:?}", ev.id, err);
             }),
+            semaphore: Arc::new(tokio::sync::Semaphore::new(limit)),
         }
     }
 
@@ -144,11 +150,14 @@ impl InMemoryEventBus {
             let ev_clone = ev.clone();
             let ev_clone_for_err = ev_clone.clone();
             let err_handler = Arc::clone(&self.error_handler);
-            tokio::spawn(async move {
-                if let Err(err) = handler(ev_clone).await {
-                    err_handler(err, ev_clone_for_err);
-                }
-            });
+            if let Ok(permit) = self.semaphore.clone().acquire_owned().await {
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    if let Err(err) = handler(ev_clone).await {
+                        err_handler(err, ev_clone_for_err);
+                    }
+                });
+            }
         }
 
         Ok(())
@@ -232,4 +241,60 @@ mod tests {
         assert!(recs.contains(&"audit:chat/msg".to_string()));
         assert!(recs.contains(&"chat/msg".to_string()));
     }
+
+    #[tokio::test]
+    async fn test_event_bus_backpressure() {
+        // 创建限流为 2 的事件总线
+        let bus = Arc::new(InMemoryEventBus::with_concurrency_limit(2));
+        let active_count = Arc::new(Mutex::new(0));
+        let max_concurrent = Arc::new(Mutex::new(0));
+
+        let active_count_clone = Arc::clone(&active_count);
+        let max_concurrent_clone = Arc::clone(&max_concurrent);
+        
+        bus.subscribe(
+            "chat/*".to_string(),
+            Arc::new(move |_ev| {
+                let active = Arc::clone(&active_count_clone);
+                let max_c = Arc::clone(&max_concurrent_clone);
+                Box::pin(async move {
+                    {
+                        let mut act = active.lock().unwrap();
+                        *act += 1;
+                        let mut mc = max_c.lock().unwrap();
+                        if *act > *mc {
+                            *mc = *act;
+                        }
+                    }
+                    // 模拟耗时处理以维持并发
+                    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                    {
+                        let mut act = active.lock().unwrap();
+                        *act -= 1;
+                    }
+                    Ok(())
+                })
+            }),
+        );
+
+        // 并发发布 5 个事件
+        for i in 0..5 {
+            let ev = Event::new(
+                i.to_string(),
+                "actor".to_string(),
+                "type".to_string(),
+                "chat/msg".to_string(),
+                serde_json::Map::new(),
+            );
+            bus.publish(ev).await.unwrap();
+        }
+
+        // 等待所有事件处理完
+        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+        let mc = *max_concurrent.lock().unwrap();
+        // 因为信号量限制为 2，所以同一时间最大并发数量不应超过 2
+        assert!(mc <= 2 && mc > 0, "最大并发数量 {} 应该不超过 2 且大于 0", mc);
+    }
 }
+

@@ -4,7 +4,7 @@ use morphz::event::{Event, InMemoryEventBus};
 use morphz::llm::OpenAIClient;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::orchestrator::orchestrator::Orchestrator;
-use morphz::tool::{ReadFileTool, Registry, WriteFileTool, EvalContextTool, ExecuteCommandTool, SpawnAgentTool};
+use morphz::tool::{ReadFileTool, Registry, WriteFileTool, EvalContextTool, ExecuteCommandTool, KillTaskTool, SpawnAgentTool, ListSkillsTool};
 use morphz::web::Server;
 use std::io::Write;
 use std::sync::Arc;
@@ -59,8 +59,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     registry.register(Arc::new(WriteFileTool));
     registry.register(Arc::new(ReadFileTool));
     registry.register(Arc::new(EvalContextTool::new(Arc::clone(&bus))));
-    registry.register(Arc::new(ExecuteCommandTool));
+    registry.register(Arc::new(ExecuteCommandTool::new(Arc::clone(&bus))));
+    registry.register(Arc::new(KillTaskTool));
     registry.register(Arc::new(SpawnAgentTool::new(Arc::clone(&bus))));
+    registry.register(Arc::new(ListSkillsTool));
 
     // 5. 初始化并启动 Orchestrator
     // 我们的 SqliteStore 同时实现了 EventStore 和 GraphStore，
