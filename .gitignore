@@ -1,6 +1,5 @@
 # Binary triggers
 main
-morphz
 executor/target/
 dist/
 

@@ -1,0 +1,24 @@
+[package]
+name = "morphz"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+axum = { version = "0.7", features = ["ws"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+chrono = { version = "0.4", features = ["serde"] }
+dashmap = "5.5"
+futures-util = "0.3"
+sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
+executor = { path = "../executor" }
+async-trait = "0.1"
+tower-http = { version = "0.5", features = ["cors"] }
+
+
+
+[dev-dependencies]
+tempfile = "3.8"
+
