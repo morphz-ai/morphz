@@ -638,7 +638,7 @@ impl Orchestrator {
    - read: 读取指定文件文本。
    - write: 写入指定文件文本。
    - eval: 状态机心智自省演算更新。
-   - exec: 在隔离沙箱中异步执行 Shell 命令（非交互式，限时 15 秒）。
+   - exec: 在隔离沙箱中执行 Shell 命令。默认同步等待 1 秒，若超时会自动转入后台异步托管运行而不会被杀死。可以通过 wait_ms 参数自定义等待时长。
    - spawn: 派生并发子智能体去解决子任务（需要生成唯一的 sub_session_id 并设定 initial_context）。
 请保持简明扼要的回答。"#;
 
