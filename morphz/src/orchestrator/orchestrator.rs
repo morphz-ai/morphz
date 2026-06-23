@@ -659,13 +659,6 @@ impl Orchestrator {
         } else {
             "(graph_anchors)".to_string()
         };
-        messages.push(Message {
-            role: "user".to_string(),
-            content: graph_anchors_str,
-            name: None,
-            tool_call_id: None,
-            tool_calls: None,
-        });
 
         // 动态热轨：高频变动的大脑心智状态
         let metadata_str = context_state.get_path(&["metadata"]).map(|s| s.to_string()).unwrap_or_default();
@@ -679,9 +672,14 @@ impl Orchestrator {
             variables_str,
             todo_stack_str
         );
+
+        // 合并为一个单一的 user 消息，防止部分严格的大模型接口（如 Gemini、Anthropic/Claude）
+        // 因连续发送相同 role (user) 消息而报错 (Alternating Roles 校验)
+        let combined_user_content = format!("{}\n\n{}", graph_anchors_str, hot_context_str);
+
         messages.push(Message {
             role: "user".to_string(),
-            content: hot_context_str,
+            content: combined_user_content,
             name: None,
             tool_call_id: None,
             tool_calls: None,
