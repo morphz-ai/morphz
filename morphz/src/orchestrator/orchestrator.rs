@@ -661,7 +661,7 @@ impl Orchestrator {
         };
         messages.push(Message {
             role: "user".to_string(),
-            content: format!("Memory Recall Context:\n{}", graph_anchors_str),
+            content: graph_anchors_str,
             name: None,
             tool_call_id: None,
             tool_calls: None,
@@ -681,7 +681,7 @@ impl Orchestrator {
         );
         messages.push(Message {
             role: "user".to_string(),
-            content: format!("Current Mental State:\n{}", hot_context_str),
+            content: hot_context_str,
             name: None,
             tool_call_id: None,
             tool_calls: None,
