@@ -206,7 +206,7 @@ impl Orchestrator {
             crate::sexpr::parse(&snap_data).unwrap()
         } else {
             let initial_context_str = format!(
-                r#"(context (metadata (session "{}") (step 0)) (history (summary "") (turns)) (variables) (todo_stack) (graph_anchors))"#,
+                r#"(context (meta (session "{}")) (facts) (state (plan (goal "") (todo_stack (doing "") (todo) (done))) (registers (role "rust-backend-developer") (last_tool_status success)) (history) (step 0)))"#,
                 session_id
             );
             crate::sexpr::parse(&initial_context_str).unwrap()
@@ -240,30 +240,29 @@ impl Orchestrator {
 
             if e.event_type == TYPE_USER_MESSAGE {
                 // 1. step 计数递增
-                let step_num = match context_state.get_path(&["metadata", "step"]) {
+                let step_num = match context_state.get_path(&["state", "step"]) {
                     Some(crate::sexpr::SExpr::Atom(s)) => s.parse::<i32>().unwrap_or(0),
                     _ => 0,
                 };
                 let next_step = step_num + 1;
-                let _ = context_state.set_path(&["metadata", "step"], crate::sexpr::SExpr::Atom(next_step.to_string()));
+                let _ = context_state.set_path(&["state", "step"], crate::sexpr::SExpr::Atom(next_step.to_string()));
 
-                // 2. 构造并追加新的 turn 到 (history turns)
+                // 2. 构造并追加新的 user 到 (state history)
                 let turn_str = format!(
-                    r#"(turn (step {}) (user "{}") (assistant "pending"))"#,
-                    next_step,
+                    r#"(user "{}")"#,
                     text.replace('\\', "\\\\").replace('"', "\\\"")
                 );
                 if let Ok(turn_sexpr) = crate::sexpr::parse(&turn_str) {
-                    let turns_path = &["history", "turns"];
-                    if let Some(crate::sexpr::SExpr::List(ref mut turns_list)) = context_state.get_path_mut(turns_path) {
-                        turns_list.push(turn_sexpr);
-                        // 维持最近 4 轮 Turns 细节，多余的在 Fold 过程中自动裁剪（首个元素是标识符 turns）
-                        if turns_list.len() > 5 {
-                            turns_list.remove(1);
+                    let history_path = &["state", "history"];
+                    if let Some(crate::sexpr::SExpr::List(ref mut history_list)) = context_state.get_path_mut(history_path) {
+                        history_list.push(turn_sexpr);
+                        // 维持最近 15 个消息节点
+                        if history_list.len() > 16 {
+                            history_list.remove(1);
                         }
                     } else {
-                        let _ = context_state.set_path(turns_path, crate::sexpr::SExpr::List(vec![
-                            crate::sexpr::SExpr::Atom("turns".to_string()),
+                        let _ = context_state.set_path(history_path, crate::sexpr::SExpr::List(vec![
+                            crate::sexpr::SExpr::Atom("history".to_string()),
                             turn_sexpr
                         ]));
                     }
@@ -279,12 +278,12 @@ impl Orchestrator {
                             };
                             let result_text = e.payload.get("text").and_then(|s| s.as_str()).unwrap_or("");
 
-                            // 1. 将子会话的状态与结果投影到变量槽中
-                            let _ = context_state.set_path(&["variables", &format!("{}_status", sub_sess)], crate::sexpr::SExpr::Atom("completed".to_string()));
-                            let _ = context_state.set_path(&["variables", &format!("{}_result", sub_sess)], crate::sexpr::SExpr::Atom(result_text.to_string()));
+                            // 1. 将子会话的状态与结果投影到 registers 中
+                            let _ = context_state.set_path(&["state", "registers", &format!("{}_status", sub_sess)], crate::sexpr::SExpr::Atom("completed".to_string()));
+                            let _ = context_state.set_path(&["state", "registers", &format!("{}_result", sub_sess)], crate::sexpr::SExpr::Atom(result_text.to_string()));
 
                             // 2. 自动在大脑 todo_stack 中将对应的 spawn 任务子节点移除，完成 Barrier 协同
-                            if let Some(crate::sexpr::SExpr::List(ref mut todo_list)) = context_state.get_path_mut(&["todo_stack"]) {
+                            if let Some(crate::sexpr::SExpr::List(ref mut todo_list)) = context_state.get_path_mut(&["state", "plan", "todo_stack", "todo"]) {
                                 let mut remove_idx = None;
                                 for (idx, item) in todo_list.iter().enumerate().skip(1) {
                                     if let crate::sexpr::SExpr::List(kv) = item {
@@ -321,37 +320,26 @@ impl Orchestrator {
                     }
                 }
 
-                // 将最新 turn 的 assistant "pending" 覆盖为实际大模型答复
-                let turns_path = &["history", "turns"];
-                if let Some(crate::sexpr::SExpr::List(ref mut turns_list)) = context_state.get_path_mut(turns_path) {
-                    if turns_list.len() > 1 {
-                        if let Some(crate::sexpr::SExpr::List(ref mut last_turn)) = turns_list.last_mut() {
-                            let mut assistant_idx = None;
-                            for (idx, item) in last_turn.iter().enumerate().skip(1) {
-                                if let crate::sexpr::SExpr::List(kv) = item {
-                                    if let Some(crate::sexpr::SExpr::Atom(k)) = kv.first() {
-                                        if k == "assistant" {
-                                            assistant_idx = Some(idx);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            if let Some(a_idx) = assistant_idx {
-                                let display_text = if text.is_empty() {
-                                    if e.payload.get("tool_calls").is_some() {
-                                        "[决定调用外部工具]"
-                                    } else {
-                                        "..."
-                                    }
-                                } else {
-                                    text
-                                };
-                                last_turn[a_idx] = crate::sexpr::SExpr::List(vec![
-                                    crate::sexpr::SExpr::Atom("assistant".to_string()),
-                                    crate::sexpr::SExpr::Atom(display_text.to_string()),
-                                ]);
-                            }
+                // 将最新 assistant 动作写入 (state history)
+                let display_text = if text.is_empty() {
+                    if e.payload.get("tool_calls").is_some() {
+                        "[决定调用外部工具]"
+                    } else {
+                        "..."
+                    }
+                } else {
+                    text
+                };
+                let assistant_str = format!(
+                    r#"(assistant "{}")"#,
+                    display_text.replace('\\', "\\\\").replace('"', "\\\"")
+                );
+                if let Ok(ass_sexpr) = crate::sexpr::parse(&assistant_str) {
+                    let history_path = &["state", "history"];
+                    if let Some(crate::sexpr::SExpr::List(ref mut history_list)) = context_state.get_path_mut(history_path) {
+                        history_list.push(ass_sexpr);
+                        if history_list.len() > 16 {
+                            history_list.remove(1);
                         }
                     }
                 }
@@ -367,17 +355,19 @@ impl Orchestrator {
             } else if e.event_type == TYPE_TOOL_OUTPUT {
                 // 压缩大体积工具输出，并更新执行状态
                 let compressed_text = self.compressor.compress_tool_output(text);
-                let _ = context_state.set_path(&["variables", "last_tool_status"], crate::sexpr::SExpr::Atom("success".to_string()));
+                let _ = context_state.set_path(&["state", "registers", "last_tool_status"], crate::sexpr::SExpr::Atom("success".to_string()));
 
-                // 将工具输出结果写入 turns 中
-                let turns_path = &["history", "turns"];
-                if let Some(crate::sexpr::SExpr::List(ref mut turns_list)) = context_state.get_path_mut(turns_path) {
-                    if turns_list.len() > 1 {
-                        if let Some(crate::sexpr::SExpr::List(ref mut last_turn)) = turns_list.last_mut() {
-                            last_turn.push(crate::sexpr::SExpr::List(vec![
-                                crate::sexpr::SExpr::Atom("tool_output".to_string()),
-                                crate::sexpr::SExpr::Atom(compressed_text),
-                            ]));
+                // 将工具输出结果写入 (state history) 作为 tool 节点
+                let tool_str = format!(
+                    r#"(tool "{}")"#,
+                    compressed_text.replace('\\', "\\\\").replace('"', "\\\"")
+                );
+                if let Ok(tool_sexpr) = crate::sexpr::parse(&tool_str) {
+                    let history_path = &["state", "history"];
+                    if let Some(crate::sexpr::SExpr::List(ref mut history_list)) = context_state.get_path_mut(history_path) {
+                        history_list.push(tool_sexpr);
+                        if history_list.len() > 16 {
+                            history_list.remove(1);
                         }
                     }
                 }
@@ -386,7 +376,7 @@ impl Orchestrator {
 
         // 如果有新事件被折叠，且 step 达到 10 的倍数，在 tokio 异步线程中保存快照
         if !events.is_empty() {
-            let current_step = match context_state.get_path(&["metadata", "step"]) {
+            let current_step = match context_state.get_path(&["state", "step"]) {
                 Some(crate::sexpr::SExpr::Atom(s)) => s.parse::<i32>().unwrap_or(0),
                 _ => 0,
             };
@@ -411,17 +401,14 @@ impl Orchestrator {
 
         // 2.2 三层记忆融合检索 (L1 EventHistory + L2 GraphMemory -> L3 Context)
         let mut last_user_text = None;
-        if let Some(crate::sexpr::SExpr::List(turns_list)) = context_state.get_path(&["history", "turns"]) {
-            if turns_list.len() > 1 {
-                if let Some(crate::sexpr::SExpr::List(last_turn)) = turns_list.last() {
-                    for item in last_turn {
-                        if let crate::sexpr::SExpr::List(kv) = item {
-                            if let Some(crate::sexpr::SExpr::Atom(k)) = kv.first() {
-                                if k == "user" && kv.len() == 2 {
-                                    if let Some(crate::sexpr::SExpr::Atom(u_text)) = kv.get(1) {
-                                        last_user_text = Some(u_text.clone());
-                                    }
-                                }
+        if let Some(crate::sexpr::SExpr::List(history_list)) = context_state.get_path(&["state", "history"]) {
+            for item in history_list.iter().rev() {
+                if let crate::sexpr::SExpr::List(kv) = item {
+                    if let Some(crate::sexpr::SExpr::Atom(k)) = kv.first() {
+                        if k == "user" && kv.len() == 2 {
+                            if let Some(crate::sexpr::SExpr::Atom(u_text)) = kv.get(1) {
+                                last_user_text = Some(u_text.clone());
+                                break;
                             }
                         }
                     }
@@ -580,13 +567,13 @@ impl Orchestrator {
                     );
                     let _ = self.bus.publish(walk_ev).await;
 
-                    // 长期记忆以只读方式，动态注入 graph_anchors 槽位
+                    // 长期记忆以只读方式，动态注入 facts 槽位
                     if !mem_stories.is_empty() {
-                        let mut anchor_sexprs = vec![crate::sexpr::SExpr::Atom("graph_anchors".to_string())];
+                        let mut facts_sexprs = vec![crate::sexpr::SExpr::Atom("facts".to_string())];
                         for story in mem_stories {
-                            anchor_sexprs.push(crate::sexpr::SExpr::Atom(story));
+                            facts_sexprs.push(crate::sexpr::SExpr::Atom(story));
                         }
-                        let _ = context_state.set_path(&["graph_anchors"], crate::sexpr::SExpr::List(anchor_sexprs));
+                        let _ = context_state.set_path(&["facts"], crate::sexpr::SExpr::List(facts_sexprs));
                         println!("💡 [三层记忆融合] 成功向 SExpr 状态机注入关联图谱记忆。");
                     }
                 }
@@ -614,26 +601,36 @@ impl Orchestrator {
         );
         let _ = self.bus.publish(context_ev).await;
 
-        // 2.2 大模型提问改版：冷热双轨 Prefix Cache 前缀缓存黄金排布
+        // 2.2 大模型提问改版：前缀缓存黄金排布
         let system_prompt = r#"你是一个名为 Morphz 的 AI 助理。
 你运行在一个符号化 S-Expression (Yao-lang 格式) 状态机之上。
-你当前完整的大脑心智状态 (Context) 会被拆分为相对静轨（Memory 长期记忆召回）与动态热轨（当前运行状态）两条消息作为输入发送给你。
+你的大脑心智状态 (Context) 包含元数据、图记忆事实和执行状态。
 你必须根据当前状态执行决策。如果你需要修改你的临时变量、任务规划栈 (todo_stack) 或者总结与剪裁对话历史 (history)，你必须调用 eval 工具，传入合法的 begin/set/push/pop/clear 演算指令来维护你自己的大脑状态。
+
+【核心效率原则（极其重要）】：
+1. 并行调用（eval + 物理工具）：为了提高响应速度并节省 Token，如果你需要先通过 eval 更新大脑状态（例如设置 goal 或 todo），然后再通过物理工具（如 exec, read, write）执行动作，你必须在单次响应中同时（并行）调用它们，而不要分多轮串行调用。
+   - 例如：在面对用户请求时，你应该在同一个 Turn 内同时调用 `eval`（初始化规划栈）和 `exec`（执行对应命令）。
+2. 直接回复：一旦你完成了任务或获得了所需的结果，请直接给出最终答复，不需要在任务结束时再额外调用 eval 去把规划栈设为“已完成”或“无”。只有在后续仍有其他复杂多步任务需要继续进行时，才使用 eval 规划。
+3. 合并演算：如果在单次调用中仅需使用 eval 更新多处大脑状态，请尽量在单次 eval 的 (begin ...) 中合并所有的修改，不要分多次 eval 顺序执行。
+
 注意：
 1. 你的大脑状态 Context 结构如下：
    (context
-     (metadata (session "...") (step X) (parent_session "..."))
-     (history (summary "...") (turns (turn (step X) (user "...") (assistant "..."))))
-     (variables ...)
-     (todo_stack ...)
-     (graph_anchors ...)
+     (meta (session "...") (parent_session "..."))
+     (facts ...)
+     (state
+       (plan (goal "...") (todo_stack (doing "...") (todo ...) (done ...)))
+       (registers (role "...") (key value) ...)
+       (history (user "...") (assistant "...") (tool "..."))
+       (step X)
+     )
    )
-2. (metadata) 节点是只读的，你任何试图修改它的指令都会被安全虚拟机拦截并报错。
+2. (meta) 和 (facts) 节点是只读的，你任何试图修改它们的指令都会被安全虚拟机拦截并报错。
 3. 你的演算指令语法示例：
-   - (set (variables key) value)
-   - (push (todo_stack) (task "具体任务内容"))
-   - (pop (todo_stack))
-   - (clear (history turns)) : 建议在 turns 较长时调用此指令，并将核心经验总结到 (history summary) 中。
+   - (set (state registers key) value)
+   - (push (state plan todo_stack todo) (task "具体任务内容"))
+   - (pop (state plan todo_stack todo))
+   - (clear (state history)) : 建议在 history 较长时自省调用此指令以裁剪你的大脑记忆。
 4. 你只拥有以下 5 个基础原子原语工具，严禁假想其他任何特化工具：
    - read: 读取指定文件文本。
    - write: 写入指定文件文本。
@@ -653,33 +650,20 @@ impl Orchestrator {
             }
         ];
 
-        // 相对静轨：图谱动态召回 memory/skill anchors
-        let graph_anchors_str = if let Some(anchors) = context_state.get_path(&["graph_anchors"]) {
-            anchors.to_string()
-        } else {
-            "(graph_anchors)".to_string()
-        };
-
         // 动态热轨：高频变动的大脑心智状态
-        let metadata_str = context_state.get_path(&["metadata"]).map(|s| s.to_string()).unwrap_or_default();
-        let history_str = context_state.get_path(&["history"]).map(|s| s.to_string()).unwrap_or_default();
-        let variables_str = context_state.get_path(&["variables"]).map(|s| s.to_string()).unwrap_or_default();
-        let todo_stack_str = context_state.get_path(&["todo_stack"]).map(|s| s.to_string()).unwrap_or_default();
+        let meta_str = context_state.get_path(&["meta"]).map(|s| s.to_string()).unwrap_or_default();
+        let facts_str = context_state.get_path(&["facts"]).map(|s| s.to_string()).unwrap_or_default();
+        let state_str = context_state.get_path(&["state"]).map(|s| s.to_string()).unwrap_or_default();
         let hot_context_str = format!(
-            "(context\n  {}\n  {}\n  {}\n  {}\n)",
-            metadata_str,
-            history_str,
-            variables_str,
-            todo_stack_str
+            "(context\n  {}\n  {}\n  {}\n)",
+            meta_str,
+            facts_str,
+            state_str
         );
-
-        // 合并为一个单一的 user 消息，防止部分严格的大模型接口（如 Gemini、Anthropic/Claude）
-        // 因连续发送相同 role (user) 消息而报错 (Alternating Roles 校验)
-        let combined_user_content = format!("{}\n\n{}", graph_anchors_str, hot_context_str);
 
         messages.push(Message {
             role: "user".to_string(),
-            content: combined_user_content,
+            content: hot_context_str,
             name: None,
             tool_call_id: None,
             tool_calls: None,
@@ -695,6 +679,9 @@ impl Orchestrator {
                 if let Some(t_name) = e.payload.get("tool_name").and_then(|s| s.as_str()) {
                     if t_name == "eval" {
                         eval_context_count += 1;
+                    } else {
+                        // 遇到了非 eval 工具的输出，说明连续性已被打破！
+                        break;
                     }
                 }
             }
@@ -750,7 +737,6 @@ impl Orchestrator {
             let mut tasks = Vec::new();
             for tc in resp.tool_calls {
                 let registry = Arc::clone(&self.registry);
-                let bus = Arc::clone(&self.bus);
                 let sess_id = session_id.clone();
                 tasks.push(tokio::spawn(async move {
                     crate::tool::CURRENT_SESSION_ID.scope(sess_id.clone(), async move {
@@ -784,7 +770,7 @@ impl Orchestrator {
                             }
                         };
 
-                        let tool_output_ev = Event::new(
+                        Event::new(
                             format!("output_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
                             "System-Executor".to_string(),
                             TYPE_TOOL_OUTPUT.to_string(),
@@ -797,14 +783,34 @@ impl Orchestrator {
                             ]
                             .into_iter()
                             .collect(),
-                        );
-                        let _ = bus.publish(tool_output_ev).await;
-                    }).await;
+                        )
+                    }).await
                 }));
             }
 
+            let mut completed_events = Vec::new();
             for task in tasks {
-                let _ = task.await;
+                match task.await {
+                    Ok(ev) => completed_events.push(ev),
+                    Err(e) => {
+                        eprintln!("❌ [Orchestrator] 工具执行任务 Join 失败: {:?}", e);
+                    }
+                }
+            }
+
+            let len = completed_events.len();
+            for (i, ev) in completed_events.into_iter().enumerate() {
+                if i < len - 1 {
+                    // 前 N-1 个事件不发布到总线，只直接追加到 store 以供 fold 时读取
+                    if let Err(e) = self.store.append(ev).await {
+                        eprintln!("❌ [Orchestrator] 追加非最后工具输出事件失败: {:?}", e);
+                    }
+                } else {
+                    // 最后一个事件发布到总线，总线拦截器会自动将其追加到 store，并触发下一轮 handle_chat_event
+                    if let Err(e) = self.bus.publish(ev).await {
+                        eprintln!("❌ [Orchestrator] 发布最后工具输出事件失败: {:?}", e);
+                    }
+                }
             }
 
             return Ok(());

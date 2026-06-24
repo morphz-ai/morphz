@@ -82,8 +82,8 @@ impl ExecutionBuffer {
             let ev = Event::new(
                 format!("task_out_{}_{}", self.task_id, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)),
                 "System-TaskMonitor".to_string(),
-                crate::event::TYPE_TOOL_OUTPUT.to_string(),
-                "chat/tool_output".to_string(),
+                "task_output".to_string(),
+                format!("task/output/{}", self.task_id),
                 payload,
             );
             
@@ -398,10 +398,6 @@ impl Tool for ExecuteCommandTool {
                 "timeout_secs": {
                     "type": "integer",
                     "description": "同步等待输出的最长超时秒数(旧接口，建议改用 wait_ms)。"
-                },
-                "session_id": {
-                    "type": "string",
-                    "description": "当前会话的唯一 Session ID，可从 Context 元数据中直接读取"
                 }
             },
             "required": ["command"]
@@ -522,17 +518,22 @@ impl Tool for ExecuteCommandTool {
                 let bus_cleanup = Arc::clone(&self.bus);
                 let task_id_cleanup = task_id.clone();
                 let session_id_cleanup = session_id.clone();
+                let buffer_cleanup = Arc::clone(&buffer);
                 tokio::spawn(async move {
                     let wait_res = child.wait().await;
                     let tasks_cleanup = get_tasks_map();
                     tasks_cleanup.remove(&task_id_cleanup);
 
                     let code = wait_res.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+                    let output_str = buffer_cleanup.get_all();
                     
                     let mut payload = serde_json::Map::new();
                     payload.insert("session_id".to_string(), serde_json::json!(session_id_cleanup));
                     payload.insert("task_id".to_string(), serde_json::json!(task_id_cleanup));
-                    payload.insert("text".to_string(), serde_json::json!(format!("\n[后台任务 {} 执行结束，退出码: {}]", task_id_cleanup, code)));
+                    payload.insert("text".to_string(), serde_json::json!(format!(
+                        "\n[后台任务 {} 执行结束，退出码: {}]\n--- 输出 ---\n{}",
+                        task_id_cleanup, code, output_str
+                    )));
                     
                     let ev = Event::new(
                         format!("task_exit_{}_{}", task_id_cleanup, chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)),

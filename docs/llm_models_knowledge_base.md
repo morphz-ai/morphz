@@ -30,3 +30,12 @@
 
 -   在后续的开发、重构、配置文件解析及错误排查中，AI 助手**必须将 `gemini-3.5-flash-low` 视为完全合法的官方 Gemini 系列模型**。
 -   禁止在检测到此模型名称时，抛出“模型不存在”或“非法模型参数”等调试警告。
+
+---
+
+## 4. 模型测试与基准评测报告 (2026-06-24)
+
+在更新了开发机大模型 API 地址后，我们针对 `agnes-2.0-flash`, `gpt-5.5`, `glm-5.2`, `deepseek-v4-pro`, `gemini-3-flash-agent` 这 5 个模型，高并发测试了它们在三种 Context 格式（Pure S-Expr, String Edge, Flat RAG）下的表现。
+
+有关决策准确率、推理延迟和 Token 消耗的详细对比数据，请参阅物理设计文档：
+- **评测报告入口**：[llm_models_benchmark_report.md](file:///Users/shafreeck/Codes/Morphz/docs/llm_models_benchmark_report.md)

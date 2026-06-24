@@ -21,13 +21,25 @@ impl Compressor {
             return text.to_string();
         }
         let half = self.max_tool_output_len / 2;
-        let final_half = if half > text.len() / 2 { text.len() / 2 } else { half };
-        let truncated = text.len() - (final_half * 2);
+        let mut final_half = if half > text.len() / 2 { text.len() / 2 } else { half };
+        
+        // 寻找头部截断的安全 char 边界
+        while final_half > 0 && !text.is_char_boundary(final_half) {
+            final_half -= 1;
+        }
+        
+        // 寻找尾部截断的安全 char 边界
+        let mut tail_start = text.len() - final_half;
+        while tail_start < text.len() && !text.is_char_boundary(tail_start) {
+            tail_start += 1;
+        }
+
+        let truncated = text.len() - final_half - (text.len() - tail_start);
         format!(
-            "{}\n\n... [已自动截断其核心 {} 字符以保全 Context，首尾展示如下] ...\n\n{}",
+            "{}\n\n... [已自动截断其核心 {} 字节以保全 Context，首尾展示如下] ...\n\n{}",
             &text[..final_half],
             truncated,
-            &text[text.len() - final_half..]
+            &text[tail_start..]
         )
     }
 

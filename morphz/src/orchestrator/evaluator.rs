@@ -5,7 +5,7 @@ fn is_path_restricted(path: &[&str]) -> bool {
     if path.is_empty() {
         return false;
     }
-    path[0] == "metadata"
+    path[0] != "state"
 }
 
 // 解析指令中的路径表达式，如 (variables current_file) -> ["variables", "current_file"]
@@ -91,8 +91,15 @@ pub fn eval_instruction(context: &mut SExpr, instruction: &SExpr) -> Result<(), 
                         return Err(format!("⚠️ [安全警报] 拒绝修改只读路径: {:?}", path_vec));
                     }
 
-                    let target = context.get_path_mut(&path_vec)
-                        .ok_or_else(|| format!("未找到 push 目标路径: {:?}", path_vec))?;
+                    let target = match context.get_path_mut(&path_vec) {
+                        Some(t) => t,
+                        None => {
+                            let last_segment = path_vec.last().ok_or("路径不能为空")?;
+                            let init_val = SExpr::List(vec![SExpr::Atom(last_segment.to_string())]);
+                            context.set_path(&path_vec, init_val)?;
+                            context.get_path_mut(&path_vec).ok_or("自愈初始化失败")?
+                        }
+                    };
 
                     match target {
                         SExpr::List(ref mut t_list) => {
@@ -173,7 +180,7 @@ mod tests {
 
     #[test]
     fn test_eval_root_context_set_and_clear() {
-        let context_str = "(context (metadata (session \"s1\")) (variables (a 1)))";
+        let context_str = "(context (meta (session \"s1\")) (state (registers (a 1))))";
         let mut context = parse(context_str).unwrap();
 
         // 测试对 root context 的 clear
@@ -182,52 +189,52 @@ mod tests {
         assert_eq!(context.to_string(), "(context)");
 
         // 测试对 root context 的 set
-        let set_inst = parse("(set (context) (context (metadata (session \"s2\"))))").unwrap();
+        let set_inst = parse("(set (context) (context (meta (session \"s2\"))))").unwrap();
         eval_instruction(&mut context, &set_inst).unwrap();
-        assert_eq!(context.to_string(), "(context (metadata (session s2)))");
+        assert_eq!(context.to_string(), "(context (meta (session s2)))");
     }
 
     #[test]
     fn test_eval_set_and_begin() {
-        let context_str = "(context (metadata (session \"s1\")) (variables (a 1)))";
+        let context_str = "(context (meta (session \"s1\")) (state (registers (a 1))))";
         let mut context = parse(context_str).unwrap();
 
-        let inst = parse("(begin (set (variables a) 2) (set (variables b) \"hello\"))").unwrap();
+        let inst = parse("(begin (set (state registers a) 2) (set (state registers b) \"hello\"))").unwrap();
         eval_instruction(&mut context, &inst).unwrap();
 
         assert_eq!(
             context.to_string(),
-            "(context (metadata (session s1)) (variables (a 2) (b hello)))"
+            "(context (meta (session s1)) (state (registers (a 2) (b hello))))"
         );
     }
 
     #[test]
     fn test_eval_push_pop_clear() {
-        let context_str = "(context (todo_stack (task \"t1\")))";
+        let context_str = "(context (state (plan (todo_stack (task \"t1\")))))";
         let mut context = parse(context_str).unwrap();
 
         // 测试 push
-        let push_inst = parse("(push (todo_stack) (task \"t2\"))").unwrap();
+        let push_inst = parse("(push (state plan todo_stack) (task \"t2\"))").unwrap();
         eval_instruction(&mut context, &push_inst).unwrap();
-        assert_eq!(context.to_string(), "(context (todo_stack (task t1) (task t2)))");
+        assert_eq!(context.to_string(), "(context (state (plan (todo_stack (task t1) (task t2)))))");
 
         // 测试 pop
-        let pop_inst = parse("(pop (todo_stack))").unwrap();
+        let pop_inst = parse("(pop (state plan todo_stack))").unwrap();
         eval_instruction(&mut context, &pop_inst).unwrap();
-        assert_eq!(context.to_string(), "(context (todo_stack (task t1)))");
+        assert_eq!(context.to_string(), "(context (state (plan (todo_stack (task t1)))))");
 
         // 测试 clear
-        let clear_inst = parse("(clear (todo_stack))").unwrap();
+        let clear_inst = parse("(clear (state plan todo_stack))").unwrap();
         eval_instruction(&mut context, &clear_inst).unwrap();
-        assert_eq!(context.to_string(), "(context (todo_stack))");
+        assert_eq!(context.to_string(), "(context (state (plan (todo_stack))))");
     }
 
     #[test]
     fn test_security_read_only_protection() {
-        let context_str = "(context (metadata (session \"s1\")))";
+        let context_str = "(context (meta (session \"s1\")))";
         let mut context = parse(context_str).unwrap();
 
-        let attack_inst = parse("(set (metadata session) \"s2\")").unwrap();
+        let attack_inst = parse("(set (meta session) \"s2\")").unwrap();
         let res = eval_instruction(&mut context, &attack_inst);
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("安全警报"));
@@ -235,13 +242,22 @@ mod tests {
 
     #[test]
     fn test_security_injection_protection() {
-        let context_str = "(context (variables (a 1)))";
+        let context_str = "(context (state (registers (a 1))))";
         let mut context = parse(context_str).unwrap();
 
-        // 试图注入一个 begin 指令作为数据写入 variables 槽位
-        let attack_inst = parse("(set (variables a) (begin (set (metadata session) \"s2\")))").unwrap();
+        // 试图注入一个 begin 指令作为数据写入 registers 槽位
+        let attack_inst = parse("(set (state registers a) (begin (set (meta session) \"s2\")))").unwrap();
         let res = eval_instruction(&mut context, &attack_inst);
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("注入攻击"));
+    }
+
+    #[test]
+    fn test_nested_chinese_path_eval() {
+        let context_str = r#"(context (metadata (session sess_sub_tcp_01) (step 0)) (history (summary "") (turns)) (variables) (todo_stack) (graph_anchors) (state (plan (goal 列出知乎推荐内容) (todo_stack (todo "搜索 opencli 中知乎相关的命令"))) (registers (current_file "") (last_tool_status success))))"#;
+        let mut context = parse(context_str).unwrap();
+        let inst = parse(r#"(begin (set (state plan goal) "列出当前目录下所有文件和目录") (push (state plan todo_stack todo) (task "run_ls")))"#).unwrap();
+        let res = eval_instruction(&mut context, &inst);
+        assert!(res.is_ok());
     }
 }

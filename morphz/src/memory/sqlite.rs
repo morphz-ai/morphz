@@ -1098,7 +1098,7 @@ mod tests {
 
         let session_id = "sess_1";
         let step = 10;
-        let snap_data = "(context (metadata (session \"sess_1\") (step 10)))";
+        let snap_data = "(context (meta (session \"sess_1\")) (state (step 10)))";
         let last_id = "ev_123";
         let last_time = "2026-06-24T00:00:00Z";
 

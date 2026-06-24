@@ -320,27 +320,27 @@ mod tests {
 
     #[test]
     fn test_normal_parse_and_format() {
-        let input = "(context (metadata (session \"s1\")) (variables (a 1) (b \"hello world\")))";
+        let input = "(context (meta (session \"s1\")) (state (registers (a 1) (b \"hello world\"))))";
         let parsed = parse(input).unwrap();
         
         let formatted = parsed.to_string();
         assert_eq!(
             formatted,
-            "(context (metadata (session s1)) (variables (a 1) (b \"hello world\")))"
+            "(context (meta (session s1)) (state (registers (a 1) (b \"hello world\"))))"
         );
     }
 
     #[test]
     fn test_auto_balancing_parentheses() {
-        let input = "(context (metadata (session \"s1\"";
+        let input = "(context (meta (session \"s1\"";
         let parsed = parse(input).unwrap();
 
         let formatted = parsed.to_string();
-        assert_eq!(formatted, "(context (metadata (session s1)))");
+        assert_eq!(formatted, "(context (meta (session s1)))");
 
-        let input_multi = "(begin (set (variables a) 1";
+        let input_multi = "(begin (set (state registers a) 1";
         let parsed_multi = parse(input_multi).unwrap();
-        assert_eq!(parsed_multi.to_string(), "(begin (set (variables a) 1))");
+        assert_eq!(parsed_multi.to_string(), "(begin (set (state registers a) 1))");
     }
 
     #[test]
