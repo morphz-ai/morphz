@@ -40,14 +40,22 @@ Context 的状态分为三个权限域：
 6. 同一响应最多提交一个 context_tx；把多个修改合并进同一事务，避免版本冲突。
    retire 或 unprotect 时 reason 是必需的，使遗忘与解除保护可审计。
 7. pressure 为 warning/critical 时优先主动释放 Context 预算，但由你决定 retire 哪些内容。
-8. 完成任务前，确认 Mind 中仍需跨轮保留的目标、约束、结论和开放问题已经准确；不再有价值的过程 observation 应由你主动 retire。
+8. 完成任务前，确认 Mind 中仍需跨轮保留的目标、约束、结论和开放问题已经准确；若本回合的物理工具结果改变了任务状态，reply 前必须先 maintain，使 Mind 反映最终状态。不再有价值的过程 observation 应由你主动 retire。
 9. assistant_call 与 context_tx 回执属于 Runtime 控制轨迹，只保存在 Ledger，不会进入 Inbox；不要为了清理 context_tx 自己产生的记录而连续提交 housekeeping transaction。
 10. 每次调用物理工具前，必须确认它是完成当前用户明确任务所必需的新信息。当 Mind/inbox 已足以回答时，立即使用 reply；不要重复验证、扫描工作区或自行发明后续目标。
-11. kernel.turn-budget 是当前用户回合的物理 Attempt 预算。剩余 3 次以内时停止重复验证并收敛；force-final=true 时工具会被移除，你必须基于已有证据给出最终答案或明确说明阻塞原因。
+11. kernel.turn-budget 是当前用户回合的 Attempt 预算。phase=work 时正常工作，剩余 3 次以内应停止重复验证并收敛；phase=context-closure 是一次专用收口阶段，只能调用 context_tx，把最终目标状态、关键结论和证据准确写入 Mind；phase=final-reply 或 force-final=true 时工具会被移除，必须基于已有证据给出最终答案或明确说明阻塞原因。
 12. kernel.wake 说明本次为何被唤醒。context-transaction-result 表示 Mind 修改已经提交；若任务已完成，必须直接 reply，不能把事务回执当作继续行动的理由。
 13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。
 
 Context 的修改是你的元认知行为；read/write/exec/spawn 等工具是对外部世界的行为。保持二者边界清晰。"#;
+
+const CONTEXT_CLOSURE_PROMPT: &str = r#"Runtime 当前处于 context-closure 阶段。这是本回合唯一一次专用 Mind 收口机会，不是继续工作的额外预算。
+- 不得调用任何物理工具，不得继续探索或重复验证。
+- 若 Mind 尚未准确反映最终状态，调用且仅调用一次 context_tx：将目标标记为 completed 或 blocked，写入已确认的关键结论、修改与验证证据，并清理不再有价值的过程信息。
+- 若 Mind 已经准确，无需事务，可直接给出最终回复。
+- context_tx 成功或失败后，Runtime 都会进入无工具 final-reply 阶段。"#;
+
+const FINAL_REPLY_PROMPT: &str = r#"Runtime 当前处于 final-reply 阶段。Context 收口机会已经使用或耗尽；不得调用工具。请基于现有 Mind 与 Inbox 直接给出最终答复，或明确说明阻塞。"#;
 
 pub struct Orchestrator {
     bus: Arc<InMemoryEventBus>,
@@ -236,10 +244,18 @@ impl Orchestrator {
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
         let context = self.context_engine.build_view(session_id).await?;
+        let phase_prompt = match context.turn_budget.phase.as_str() {
+            "context-closure" => Some(CONTEXT_CLOSURE_PROMPT),
+            "final-reply" => Some(FINAL_REPLY_PROMPT),
+            _ => None,
+        };
+        let system_prompt = phase_prompt
+            .map(|prompt| format!("{AGENT_OWNED_CONTEXT_PROMPT}\n\n{prompt}"))
+            .unwrap_or_else(|| AGENT_OWNED_CONTEXT_PROMPT.to_string());
         let messages = vec![
             Message {
                 role: "system".to_string(),
-                content: AGENT_OWNED_CONTEXT_PROMPT.to_string(),
+                content: system_prompt,
                 name: None,
                 tool_call_id: None,
                 tool_calls: None,
@@ -260,29 +276,80 @@ impl Orchestrator {
             .await?;
 
         let mut tools = self.registry.definitions();
-        if context.turn_budget.force_final {
+        if context.turn_budget.phase == "final-reply" {
             tracing::warn!(
                 session_id,
                 attempt = context.turn_budget.attempt,
                 limit = context.turn_budget.limit,
-                "Turn Attempt Budget 已耗尽：强制进入无工具最终答复"
+                "Context 收口机会已使用：进入无工具最终答复"
             );
             tools.clear();
-        } else if context.pressure.level == "critical" {
-            tracing::warn!(
+        } else if context.turn_budget.phase == "context-closure" {
+            tracing::info!(
                 session_id,
-                "Context pressure critical：暂停外部高成本动作，要求 Agent 先维护 Context"
+                attempt = context.turn_budget.attempt,
+                limit = context.turn_budget.limit,
+                "Turn Attempt Budget 已耗尽：进入一次性 Context 收口阶段"
             );
-            tools.retain(|tool| tool.name == "context_tx" || tool.name == "recall");
+            tools.retain(|tool| tool.name == "context_tx");
+        } else {
+            if context.pressure.level == "critical" {
+                tracing::warn!(
+                    session_id,
+                    "Context pressure critical：暂停外部高成本动作，要求 Agent 先维护 Context"
+                );
+                tools.retain(|tool| tool.name == "context_tx" || tool.name == "recall");
+            }
+            if !context.turn_budget.context_tx_available {
+                tracing::warn!(
+                    session_id,
+                    used = context.turn_budget.context_transactions_used,
+                    limit = context.turn_budget.context_transactions_limit,
+                    "普通 work 阶段 Context transaction 预算已耗尽；保留物理工作预算"
+                );
+                tools.retain(|tool| tool.name != "context_tx");
+            }
         }
 
         let _permit = self.concurrency_semaphore.acquire().await?;
         let response = self.client.create_completion(messages, tools).await?;
 
-        if context.turn_budget.force_final && !response.tool_calls.is_empty() {
+        if context.turn_budget.phase == "context-closure" && !response.tool_calls.is_empty() {
+            let valid_closure = response
+                .tool_calls
+                .iter()
+                .all(|call| call.func_name == "context_tx");
+            if valid_closure {
+                self.execute_tool_calls(
+                    session_id,
+                    &attempt_id,
+                    response,
+                    &context.turn_budget.phase,
+                    true,
+                )
+                .await?;
+                return Ok(());
+            }
+            let content = if response.content.trim().is_empty() {
+                "Context 收口阶段只允许一次 context_tx；Runtime 已拒绝其他工具调用并停止本轮执行。"
+                    .to_string()
+            } else {
+                response.content
+            };
+            return self
+                .publish_reply(
+                    session_id,
+                    &attempt_id,
+                    content,
+                    context.parent_session_id.as_deref(),
+                )
+                .await;
+        }
+
+        if context.turn_budget.phase == "final-reply" && !response.tool_calls.is_empty() {
             let content = if response.content.trim().is_empty() {
                 format!(
-                    "本轮已达到 {} 次 Attempt 上限，Runtime 已停止继续执行工具。现有信息不足以形成最终答复，请缩小任务或提供新的指令。",
+                    "本轮已达到 {} 次 Attempt 上限并完成 Context 收口阶段，Runtime 已停止继续执行工具。现有信息不足以形成最终答复，请缩小任务或提供新的指令。",
                     context.turn_budget.limit
                 )
             } else {
@@ -299,8 +366,14 @@ impl Orchestrator {
         }
 
         if !response.tool_calls.is_empty() {
-            self.execute_tool_calls(session_id, &attempt_id, response)
-                .await?;
+            self.execute_tool_calls(
+                session_id,
+                &attempt_id,
+                response,
+                &context.turn_budget.phase,
+                context.turn_budget.context_tx_available,
+            )
+            .await?;
             return Ok(());
         }
 
@@ -345,9 +418,11 @@ impl Orchestrator {
         session_id: &str,
         attempt_id: &str,
         response: crate::llm::Response,
+        phase: &str,
+        context_tx_allowed: bool,
     ) -> Result<(), DynError> {
-        let mapped_tool_calls = response
-            .tool_calls
+        let requested_tool_calls = response.tool_calls;
+        let mapped_tool_calls = requested_tool_calls
             .iter()
             .map(|call| crate::llm::ToolCall {
                 id: call.id.clone(),
@@ -358,6 +433,76 @@ impl Orchestrator {
                 },
             })
             .collect::<Vec<_>>();
+        let mut selected_tool_calls = Vec::with_capacity(requested_tool_calls.len());
+        let mut context_tx_calls = Vec::new();
+        for call in requested_tool_calls {
+            if call.func_name == "context_tx" {
+                context_tx_calls.push(call);
+            } else {
+                selected_tool_calls.push(call);
+            }
+        }
+        let mut deduplicated_context_tx_ids = Vec::new();
+        let mut rejected_context_tx_ids = Vec::new();
+        let mut context_tx_batch_error = None;
+        if !context_tx_allowed && !context_tx_calls.is_empty() {
+            rejected_context_tx_ids.extend(context_tx_calls.into_iter().map(|call| call.id));
+            context_tx_batch_error = Some(format!(
+                "执行拒绝: CONTEXT_TX_BUDGET_EXHAUSTED：普通 work 阶段 Context transaction 已达到 {} 次上限。本轮保留剩余物理工作预算；请继续完成必要工作，Runtime 在最终 context-closure 阶段仍会提供一次专用收口机会。",
+                self.orchestrator_config.max_context_transactions_per_turn.max(1)
+            ));
+        } else {
+            match context_tx_calls.len() {
+                0 => {}
+                1 => selected_tool_calls.push(context_tx_calls.remove(0)),
+                _ => {
+                    let normalized = context_tx_calls
+                        .iter()
+                        .map(|call| normalize_context_tx_key(session_id, &call.arguments))
+                        .collect::<Vec<_>>();
+                    let all_normalized_equal = normalized
+                        .first()
+                        .and_then(|first| first.as_ref().ok())
+                        .is_some_and(|first| {
+                            normalized
+                                .iter()
+                                .all(|key| key.as_ref().is_ok_and(|key| key == first))
+                        });
+                    let all_raw_equal = context_tx_calls
+                        .windows(2)
+                        .all(|pair| pair[0].arguments == pair[1].arguments);
+                    if all_normalized_equal || all_raw_equal {
+                        let first = context_tx_calls.remove(0);
+                        deduplicated_context_tx_ids
+                            .extend(context_tx_calls.into_iter().map(|call| call.id));
+                        selected_tool_calls.push(first);
+                    } else {
+                        rejected_context_tx_ids
+                            .extend(context_tx_calls.into_iter().map(|call| call.id));
+                        context_tx_batch_error = Some(format!(
+                        "执行拒绝: MULTIPLE_DISTINCT_CONTEXT_TX：同一响应请求了 {} 个内容不同的 context_tx。Runtime 未执行其中任何一个；请把所有 create/derive/revise/retire/restore/protect/unprotect/place 操作合并到一个原子 (context-tx ...) 后重新提交。",
+                        rejected_context_tx_ids.len()
+                    ));
+                    }
+                }
+            }
+        }
+        if !deduplicated_context_tx_ids.is_empty() {
+            tracing::warn!(
+                session_id,
+                attempt_id,
+                deduplicated = deduplicated_context_tx_ids.len(),
+                "同一 assistant response 包含重复 context_tx；已规范化去重"
+            );
+        }
+        if !rejected_context_tx_ids.is_empty() {
+            tracing::warn!(
+                session_id,
+                attempt_id,
+                rejected = rejected_context_tx_ids.len(),
+                "同一 assistant response 包含多个不同 context_tx；已全部拒绝并要求合并"
+            );
+        }
         self.bus
             .publish(Event::new(
                 format!("call_{}", attempt_id),
@@ -367,8 +512,17 @@ impl Orchestrator {
                 vec![
                     ("session_id".to_string(), json!(session_id)),
                     ("attempt_id".to_string(), json!(attempt_id)),
+                    ("phase".to_string(), json!(phase)),
                     ("text".to_string(), json!(response.content)),
                     ("tool_calls".to_string(), json!(mapped_tool_calls)),
+                    (
+                        "deduplicated_context_tx_ids".to_string(),
+                        json!(deduplicated_context_tx_ids),
+                    ),
+                    (
+                        "rejected_context_tx_ids".to_string(),
+                        json!(rejected_context_tx_ids),
+                    ),
                 ]
                 .into_iter()
                 .collect(),
@@ -376,7 +530,7 @@ impl Orchestrator {
             .await?;
 
         let mut tasks = Vec::new();
-        for call in response.tool_calls {
+        for call in selected_tool_calls {
             let registry = Arc::clone(&self.registry);
             let session_id = session_id.to_string();
             let attempt_id = attempt_id.to_string();
@@ -420,6 +574,30 @@ impl Orchestrator {
         }
 
         let mut outputs = Vec::new();
+        if let Some(error) = context_tx_batch_error {
+            outputs.push(Event::new(
+                format!("output_{}_context_tx_batch_rejected", attempt_id),
+                "System-ContextGuard".to_string(),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                vec![
+                    ("session_id".to_string(), json!(session_id)),
+                    ("attempt_id".to_string(), json!(attempt_id)),
+                    (
+                        "tool_call_id".to_string(),
+                        json!("context_tx_batch_rejected"),
+                    ),
+                    ("tool_name".to_string(), json!("context_tx")),
+                    (
+                        "context_tx_status".to_string(),
+                        json!("rejected-multiple-distinct"),
+                    ),
+                    ("text".to_string(), json!(error)),
+                ]
+                .into_iter()
+                .collect(),
+            ));
+        }
         for task in tasks {
             match task.await {
                 Ok(output) => outputs.push(output),
@@ -537,4 +715,22 @@ fn required_payload_str<'a>(event: &'a Event, key: &str) -> Result<&'a str, DynE
         .get(key)
         .and_then(|value| value.as_str())
         .ok_or_else(|| format!("事件 '{}' 缺少字符串字段 '{}'", event.id, key).into())
+}
+
+fn normalize_context_tx_key(session_id: &str, arguments: &str) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(arguments).map_err(|error| format!("参数 JSON 非法: {error}"))?;
+    let transaction = value
+        .get("transaction")
+        .and_then(|value| value.as_str())
+        .ok_or("缺少 transaction 字符串")?;
+    let target_session = value
+        .get("session_id")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(session_id);
+    let canonical = crate::sexpr::parse(transaction)
+        .map_err(|error| format!("transaction SExpr 非法: {error}"))?
+        .to_string();
+    Ok(format!("{target_session}\u{0}{canonical}"))
 }

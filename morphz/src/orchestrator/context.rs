@@ -73,7 +73,7 @@ pub fn context_tx_tool_description() -> String {
         .collect::<Vec<_>>()
         .join("；");
     format!(
-        "原子修改你拥有的 Mind Context。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。create/derive/revise 的 BODY 必须恰好是一个 SExpr；多个字段应包在同一个 List 中，例如 (create task (task (goal x) (status active)))。reason 是事务级字段，retire/unprotect 必须提供；不要把 reason 放进操作参数。Context 修改不是给用户的最终回复。"
+        "原子修改你拥有的 Mind Context。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。一个 transaction 可以顺序包含多个不同 operation，并且整体成功或整体回滚；例如 (context-tx (base-version 3) (reason \"完成收口\") (revise task (task (status completed))) (create result (tests passed)) (protect task result) (retire event:1 event:2))。create/derive/revise 的 BODY 必须恰好是一个 SExpr；多个字段应包在同一个 List 中，例如 (create task (task (goal x) (status active)))。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/unprotect 必须提供；不要把 reason 放进操作参数。Context 修改不是给用户的最终回复。"
     )
 }
 
@@ -154,6 +154,11 @@ pub struct TurnBudget {
     pub attempt: usize,
     pub limit: usize,
     pub remaining_including_current: usize,
+    pub context_transactions_used: usize,
+    pub context_transactions_limit: usize,
+    pub context_tx_available: bool,
+    /// `work`、`context-closure` 或 `final-reply`。
+    pub phase: String,
     pub force_final: bool,
 }
 
@@ -286,7 +291,7 @@ impl ContextEngine {
             observations.len(),
             &self.config,
         );
-        let turn_budget = turn_budget_for(&events, self.config.max_attempts_per_turn);
+        let turn_budget = turn_budget_for(&events, &self.config);
         let wake = wake_for(&events);
         let sexpr = render_context(
             session_id,
@@ -720,6 +725,23 @@ fn render_context(
                 atom(turn_budget.remaining_including_current.to_string()),
             ),
             pair(
+                "context-transactions-used",
+                atom(turn_budget.context_transactions_used.to_string()),
+            ),
+            pair(
+                "context-transactions-limit",
+                atom(turn_budget.context_transactions_limit.to_string()),
+            ),
+            pair(
+                "context-tx-available",
+                atom(if turn_budget.context_tx_available {
+                    "true"
+                } else {
+                    "false"
+                }),
+            ),
+            pair("phase", atom(&turn_budget.phase)),
+            pair(
                 "force-final",
                 atom(if turn_budget.force_final {
                     "true"
@@ -890,6 +912,10 @@ fn render_protocol() -> SExpr {
                         "body-example",
                         atom("(create task (task (goal x) (constraints y) (status active)))"),
                     ),
+                    pair(
+                        "compound-example",
+                        atom("(context-tx (base-version 3) (reason \"完成收口\") (revise task (task (status completed))) (create result (tests passed)) (protect task result) (retire event:1 event:2))"),
+                    ),
                     pair("reason-required-for", atom("retire unprotect")),
                     list("operations", operations),
                 ],
@@ -928,23 +954,80 @@ fn pressure_for(
     }
 }
 
-fn turn_budget_for(events: &[Event], configured_limit: usize) -> TurnBudget {
-    let limit = configured_limit.max(1);
+fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget {
+    let limit = config.max_attempts_per_turn.max(1);
+    let context_transactions_limit = config.max_context_transactions_per_turn.max(1);
     let after_last_user = events
         .iter()
         .rposition(|event| event.event_type == TYPE_USER_MESSAGE)
         .map(|index| &events[index + 1..])
         .unwrap_or(events);
-    let previous_attempts = after_last_user
+    let assistant_calls = after_last_user
         .iter()
         .filter(|event| event.topic == "chat/assistant_call")
+        .collect::<Vec<_>>();
+    let closure_attempted = assistant_calls.iter().any(|event| {
+        event.topic == "chat/assistant_call"
+            && event.payload.get("phase").and_then(|value| value.as_str())
+                == Some("context-closure")
+    });
+    let previous_work_attempts = assistant_calls
+        .iter()
+        .filter(|event| {
+            if event.payload.get("phase").and_then(|value| value.as_str())
+                == Some("context-closure")
+            {
+                return false;
+            }
+            event
+                .payload
+                .get("tool_calls")
+                .and_then(|value| value.as_array())
+                .map(|calls| {
+                    calls.iter().any(|call| {
+                        call.get("function")
+                            .and_then(|function| function.get("name"))
+                            .and_then(|value| value.as_str())
+                            != Some("context_tx")
+                    })
+                })
+                .unwrap_or(true)
+        })
         .count();
-    let attempt = previous_attempts.saturating_add(1);
+    let context_transactions_used = assistant_calls
+        .iter()
+        .filter(|event| {
+            event
+                .payload
+                .get("tool_calls")
+                .and_then(|value| value.as_array())
+                .is_some_and(|calls| {
+                    calls.iter().any(|call| {
+                        call.get("function")
+                            .and_then(|function| function.get("name"))
+                            .and_then(|value| value.as_str())
+                            == Some("context_tx")
+                    })
+                })
+        })
+        .count();
+    let attempt = previous_work_attempts.saturating_add(1);
+    let phase = if closure_attempted {
+        "final-reply"
+    } else if attempt < limit {
+        "work"
+    } else {
+        "context-closure"
+    };
     TurnBudget {
         attempt,
         limit,
         remaining_including_current: limit.saturating_sub(attempt).saturating_add(1),
-        force_final: attempt >= limit,
+        context_transactions_used,
+        context_transactions_limit,
+        context_tx_available: context_transactions_used < context_transactions_limit,
+        phase: phase.to_string(),
+        force_final: phase == "final-reply",
     }
 }
 
@@ -1063,7 +1146,11 @@ fn is_observation(event: &Event) -> bool {
             .and_then(|value| value.as_str())
             == Some("context_tx")
     {
-        return false;
+        return event
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str())
+            .is_some_and(|text| text.starts_with("执行失败:") || text.starts_with("执行拒绝:"));
     }
     matches!(
         event.event_type.as_str(),
@@ -1399,6 +1486,10 @@ mod tests {
             attempt: 1,
             limit: 12,
             remaining_including_current: 12,
+            context_transactions_used: 0,
+            context_transactions_limit: 6,
+            context_tx_available: true,
+            phase: "work".to_string(),
             force_final: false,
         };
         let wake = WakeSignal {
@@ -1447,11 +1538,96 @@ mod tests {
                 serde_json::Map::new(),
             )
         };
+        let config = OrchestratorConfig {
+            max_attempts_per_turn: 3,
+            max_context_transactions_per_turn: 2,
+            ..Default::default()
+        };
         let events = vec![call("old"), user, call("new-1"), call("new-2")];
-        let budget = turn_budget_for(&events, 3);
-        assert_eq!(budget.attempt, 3);
-        assert_eq!(budget.remaining_including_current, 1);
-        assert!(budget.force_final);
+        let closure = turn_budget_for(&events, &config);
+        assert_eq!(closure.attempt, 3);
+        assert_eq!(closure.remaining_including_current, 1);
+        assert_eq!(closure.phase, "context-closure");
+        assert!(!closure.force_final);
+
+        let closure_call = Event::new(
+            "closure".to_string(),
+            "Agent".to_string(),
+            TYPE_AGENT_CALL.to_string(),
+            "chat/assistant_call".to_string(),
+            vec![("phase".to_string(), json!("context-closure"))]
+                .into_iter()
+                .collect(),
+        );
+        let final_reply = turn_budget_for(
+            &[
+                call("old"),
+                events[1].clone(),
+                call("new-1"),
+                call("new-2"),
+                closure_call,
+            ],
+            &config,
+        );
+        assert_eq!(final_reply.attempt, 3);
+        assert_eq!(final_reply.phase, "final-reply");
+        assert!(final_reply.force_final);
+    }
+
+    #[test]
+    fn context_only_calls_use_an_independent_budget() {
+        let user = Event::new(
+            "user:1".to_string(),
+            "User".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::Map::new(),
+        );
+        let context_call = |id: &str| {
+            Event::new(
+                id.to_string(),
+                "Agent".to_string(),
+                TYPE_AGENT_CALL.to_string(),
+                "chat/assistant_call".to_string(),
+                vec![(
+                    "tool_calls".to_string(),
+                    json!([{"function": {"name": "context_tx"}}]),
+                )]
+                .into_iter()
+                .collect(),
+            )
+        };
+        let physical_call = Event::new(
+            "read".to_string(),
+            "Agent".to_string(),
+            TYPE_AGENT_CALL.to_string(),
+            "chat/assistant_call".to_string(),
+            vec![(
+                "tool_calls".to_string(),
+                json!([{"function": {"name": "read"}}]),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let config = OrchestratorConfig {
+            max_attempts_per_turn: 4,
+            max_context_transactions_per_turn: 2,
+            ..Default::default()
+        };
+        let budget = turn_budget_for(
+            &[
+                user,
+                context_call("context-1"),
+                context_call("context-2"),
+                physical_call,
+            ],
+            &config,
+        );
+        assert_eq!(budget.attempt, 2);
+        assert_eq!(budget.remaining_including_current, 3);
+        assert_eq!(budget.context_transactions_used, 2);
+        assert!(!budget.context_tx_available);
+        assert_eq!(budget.phase, "work");
     }
 
     #[test]
@@ -1566,9 +1742,25 @@ mod tests {
                 .into_iter()
                 .collect(),
         );
+        let rejected_context = Event::new(
+            "output:ctx-rejected".to_string(),
+            "System-ContextGuard".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![
+                ("tool_name".to_string(), json!("context_tx")),
+                (
+                    "text".to_string(),
+                    json!("执行拒绝: MULTIPLE_DISTINCT_CONTEXT_TX"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
 
         assert!(!is_observation(&assistant_call));
         assert!(!is_observation(&context_receipt));
+        assert!(is_observation(&rejected_context));
         assert!(is_observation(&external_output));
     }
 

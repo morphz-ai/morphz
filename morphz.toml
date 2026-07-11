@@ -14,7 +14,10 @@ context_soft_token_limit = 60000
 context_hard_token_limit = 100000
 context_maintenance_reserve_tokens = 12000
 observation_preview_chars = 4000
+# 达到上限时进入一次 context_tx-only 收口；收口回执后再执行无工具 final reply。
 max_attempts_per_turn = 12
+# Context-only 响应使用独立预算，不占用上述物理工作 Attempt；最终收口另保留一次。
+max_context_transactions_per_turn = 6
 
 [memory]
 sqlite_pool_size = 8

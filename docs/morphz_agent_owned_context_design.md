@@ -285,7 +285,9 @@ Runtime 只能要求“必须释放多少预算”，不能决定“删除哪一
 
 系统必须预留一段不参与普通工作分配的 maintenance reserve，确保进入 `critical` 后仍有足够 Token 让模型读取压力报告、检查 Mind 并提交维护事务。`critical` 阈值必须早于模型真实硬上限；不能等到下一次请求已经无法容纳完整 Mind 时，才要求 Agent 自救。
 
-Context 自主也必须服从外部行动预算。Kernel 应按用户回合公开 `turn-budget`，记录当前 Attempt、上限和剩余额度。接近上限时 Agent 应停止重复验证并收敛；达到上限时 Runtime 移除工具能力，只允许基于现有证据给出最终答复或明确报告阻塞。该机制限制资源消耗，但不替 Agent 判断答案内容。
+首次 Context Pressure Eval 已验证一次真实闭环：在 9,000 模拟硬上限和 2,500 reserve 下，38 条合成长历史产生 9,177 estimated tokens；模型自主创建并保护 `core_facts`、保留五条关键原始证据、退休 33 条陈旧 observation，最终降至 2,140 tokens 和 `normal`。该结果证明机制可行，但模型窗口自动发现、精确 tokenizer、渐进压力成功率和 emergency checkpoint 仍未完成。
+
+Context 自主也必须服从预算，但元认知维护不能挤占物理工作机会。Kernel 按用户回合公开 `turn-budget`，分别记录物理工作 Attempt 和普通 Context transaction 的已用量与上限，并公开 `work/context-closure/final-reply` 三阶段。Context-only assistant call 不计入物理工作 Attempt；普通 work 阶段达到 Context transaction 上限后只移除 `context_tx`，仍保留剩余物理工具。物理 Attempt 达到上限时，Runtime 额外提供一次只暴露 `context_tx` 的 `context-closure`，随后无论事务成功或失败都进入无工具 `final-reply`。这既限制资源消耗，也保证最终 Mind 收口不会被工作预算意外饿死。
 
 ## 7. Agent 的 Context 维护循环
 
@@ -543,7 +545,7 @@ Mind Inspector 至少应支持：
 8. 同一 session 的 Attempt 与 Context transaction 均具有 single-writer 保护；
 9. Context transaction 作为 Event Ledger 事件保存完整 state-after、version 和 Diff；
 10. Dashboard 已能直接观察 Mind Frames、来源、revision、保护状态、Inbox 和 Pressure；
-11. Kernel 已提供并强制执行每用户回合 Attempt Budget，防止模型无界重复探索；
+11. Kernel 已分离物理 Attempt 与 Context transaction 预算，并强制执行一次性 Context closure 和最终回复，防止模型无界探索或元认知循环；
 12. 每轮 Context 已自描述 response contract、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数。
 13. `read` 已支持带行号的文本查询与行范围读取，减少长文件证据在 Inbox 中的重复膨胀。
 14. Coding Tools v1 已提供 `list_files/search/read/edit/write/exec` 最小闭环；文件修改带 SHA-256 版本前提、原子提交、Diff 和 `file_change` Observation。

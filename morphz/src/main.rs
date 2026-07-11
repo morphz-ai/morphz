@@ -161,7 +161,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!(">> 帮我写一个 notes.txt 文件，内容为 Morphz Loop OK");
     tracing::info!("您也可以输入 ctx 随时查看大脑心智状态。");
 
-    let session_id = format!("session_{}", Utc::now().timestamp());
+    let session_id = std::env::var("MORPHZ_SESSION_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("session_{}", Utc::now().timestamp()));
 
     let bus_clone = Arc::clone(&bus);
     let session_id_clone = session_id.clone();

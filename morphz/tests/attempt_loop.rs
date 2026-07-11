@@ -18,6 +18,7 @@ use tempfile::{NamedTempFile, TempDir};
 
 struct MockClient {
     responses: Mutex<VecDeque<Response>>,
+    tools_seen: Mutex<Vec<Vec<String>>>,
 }
 
 struct ConcurrencyProbeClient {
@@ -99,7 +100,12 @@ impl MockClient {
     fn new(responses: Vec<Response>) -> Self {
         Self {
             responses: Mutex::new(VecDeque::from(responses)),
+            tools_seen: Mutex::new(Vec::new()),
         }
+    }
+
+    fn tools_seen(&self) -> Vec<Vec<String>> {
+        self.tools_seen.lock().unwrap().clone()
     }
 }
 
@@ -108,8 +114,12 @@ impl Client for MockClient {
     async fn create_completion(
         &self,
         _messages: Vec<Message>,
-        _tools: Vec<ToolDefinition>,
+        tools: Vec<ToolDefinition>,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.tools_seen
+            .lock()
+            .map_err(|_| "mock tools mutex poisoned")?
+            .push(tools.into_iter().map(|tool| tool.name).collect());
         self.responses
             .lock()
             .map_err(|_| "mock response mutex poisoned")?
@@ -340,6 +350,230 @@ async fn test_attempt_loop_context_tx_failure_does_not_corrupt_mind() {
 }
 
 #[tokio::test]
+async fn test_identical_context_transactions_are_normalized_and_deduplicated() {
+    let session_id = "attempt_duplicate_context_tx";
+    let transaction = |id: &str| ToolCallRepr {
+        id: id.to_string(),
+        r#type: "function".to_string(),
+        func_name: "context_tx".to_string(),
+        arguments: json!({
+            "session_id": session_id,
+            "transaction": "(context-tx (base-version 0) (create first (status active)))"
+        })
+        .to_string(),
+    };
+    let (bus, store, orchestrator, _tmp) = build_orchestrator(vec![
+        Response {
+            content: String::new(),
+            tool_calls: vec![
+                transaction("context-1"),
+                transaction("context-2"),
+                transaction("context-3"),
+            ],
+        },
+        Response {
+            content: "只执行一个 Context transaction".to_string(),
+            tool_calls: Vec::new(),
+        },
+    ])
+    .await;
+
+    publish_user(&bus, session_id, "deduplicate context transactions").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+
+    let commits = wait_for_topic(&store, "chat/context_tx_committed", session_id).await;
+    assert_eq!(commits.len(), 1);
+    let context_outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
+    assert_eq!(context_outputs.len(), 1);
+    assert_eq!(
+        context_outputs[0]
+            .payload
+            .get("tool_name")
+            .and_then(|value| value.as_str()),
+        Some("context_tx")
+    );
+    let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
+    assert_eq!(
+        assistant_calls[0]
+            .payload
+            .get("deduplicated_context_tx_ids")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(2)
+    );
+    let context = orchestrator
+        .get_current_context_view(session_id)
+        .await
+        .unwrap();
+    assert_eq!(context.state.version, 1);
+    assert_eq!(context.state.frames.len(), 1);
+    assert_eq!(context.state.frames[0].id, "first");
+}
+
+#[tokio::test]
+async fn test_distinct_context_transactions_are_rejected_then_combined_atomically() {
+    let session_id = "attempt_distinct_context_tx";
+    let transaction = |id: &str, frame: &str| ToolCallRepr {
+        id: id.to_string(),
+        r#type: "function".to_string(),
+        func_name: "context_tx".to_string(),
+        arguments: json!({
+            "session_id": session_id,
+            "transaction": format!("(context-tx (base-version 0) (create {frame} (status active)))")
+        })
+        .to_string(),
+    };
+    let (bus, store, orchestrator, _tmp) = build_orchestrator(vec![
+        Response {
+            content: String::new(),
+            tool_calls: vec![
+                transaction("context-1", "first"),
+                transaction("context-2", "second"),
+            ],
+        },
+        Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                id: "context-combined".to_string(),
+                r#type: "function".to_string(),
+                func_name: "context_tx".to_string(),
+                arguments: json!({
+                    "session_id": session_id,
+                    "transaction": "(context-tx (base-version 0) (reason \"合并多个修改\") (create first (status active)) (create second (status active)) (protect first second))"
+                })
+                .to_string(),
+            }],
+        },
+        Response {
+            content: "多个修改已在一个事务中提交".to_string(),
+            tool_calls: Vec::new(),
+        },
+    ])
+    .await;
+
+    publish_user(&bus, session_id, "combine distinct context transactions").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+    let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
+    assert_eq!(assistant_calls.len(), 2);
+    assert_eq!(
+        assistant_calls[0]
+            .payload
+            .get("rejected_context_tx_ids")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(2)
+    );
+    let context = orchestrator
+        .get_current_context_view(session_id)
+        .await
+        .unwrap();
+    assert_eq!(context.state.version, 1);
+    assert_eq!(context.state.frames.len(), 2);
+    assert!(context.state.protected.contains("first"));
+    assert!(context.state.protected.contains("second"));
+    assert!(context
+        .observations
+        .iter()
+        .any(|observation| { observation.preview.contains("MULTIPLE_DISTINCT_CONTEXT_TX") }));
+}
+
+#[tokio::test]
+async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
+    let session_id = "attempt_context_budget";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("context-budget.db");
+    let note = NamedTempFile::new().unwrap();
+    std::fs::write(note.path(), "evidence").unwrap();
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    let client = Arc::new(MockClient::new(vec![
+        Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                id: "context-initial".to_string(),
+                r#type: "function".to_string(),
+                func_name: "context_tx".to_string(),
+                arguments: json!({
+                    "session_id": session_id,
+                    "transaction": "(context-tx (base-version 0) (create task (status active)))"
+                })
+                .to_string(),
+            }],
+        },
+        Response {
+            content: String::new(),
+            tool_calls: vec![
+                ToolCallRepr {
+                    id: "context-over-budget".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: json!({
+                        "session_id": session_id,
+                        "transaction": "(context-tx (base-version 1) (revise task (status still-active)))"
+                    })
+                    .to_string(),
+                },
+                ToolCallRepr {
+                    id: "read-still-allowed".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "read".to_string(),
+                    arguments: json!({ "path": note.path().to_string_lossy() }).to_string(),
+                },
+            ],
+        },
+        Response {
+            content: "物理工作仍可继续".to_string(),
+            tool_calls: Vec::new(),
+        },
+    ]));
+    let config = morphz::config::OrchestratorConfig {
+        max_attempts_per_turn: 4,
+        max_context_transactions_per_turn: 1,
+        ..Default::default()
+    };
+    let engine = Arc::new(ContextEngine::new(
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        config.clone(),
+    ));
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(ReadFileTool::default()));
+    registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&client) as Arc<dyn Client>,
+        registry,
+        config,
+        engine,
+    ));
+    orchestrator.clone().start().await.unwrap();
+
+    publish_user(&bus, session_id, "preserve physical work").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+    let tools_seen = client.tools_seen();
+    assert_eq!(tools_seen.len(), 3);
+    assert!(tools_seen[0].contains(&"context_tx".to_string()));
+    assert!(!tools_seen[1].contains(&"context_tx".to_string()));
+    assert!(tools_seen[1].contains(&"read".to_string()));
+
+    let context = orchestrator
+        .get_current_context_view(session_id)
+        .await
+        .unwrap();
+    assert_eq!(context.state.version, 1);
+    assert_eq!(context.turn_budget.attempt, 2);
+    assert_eq!(context.turn_budget.context_transactions_used, 2);
+    assert!(!context.turn_budget.context_tx_available);
+    assert!(context
+        .observations
+        .iter()
+        .any(|observation| { observation.preview.contains("CONTEXT_TX_BUDGET_EXHAUSTED") }));
+}
+
+#[tokio::test]
 async fn test_attempt_loop_parallel_tool_barrier_single_reply() {
     let session_id = "attempt_parallel_barrier";
     let file_a = NamedTempFile::new().unwrap();
@@ -421,7 +655,7 @@ async fn test_turn_attempt_budget_forces_toolless_final_reply() {
         config,
         engine,
     ));
-    orchestrator.start().await.unwrap();
+    orchestrator.clone().start().await.unwrap();
 
     publish_user(&bus, session_id, "keep reading forever").await;
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
@@ -440,6 +674,184 @@ async fn test_turn_attempt_budget_forces_toolless_final_reply() {
             .and_then(|value| value.as_str()),
         Some("budget forced final")
     );
+}
+
+#[tokio::test]
+async fn test_attempt_budget_reserves_context_closure_before_final_reply() {
+    let session_id = "attempt_context_closure";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("context-closure.db");
+    let note = NamedTempFile::new().unwrap();
+    std::fs::write(note.path(), "evidence").unwrap();
+
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    let client = Arc::new(MockClient::new(vec![
+        Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                id: "read-1".to_string(),
+                r#type: "function".to_string(),
+                func_name: "read".to_string(),
+                arguments: json!({ "path": note.path().to_string_lossy() }).to_string(),
+            }],
+        },
+        Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                id: "read-2".to_string(),
+                r#type: "function".to_string(),
+                func_name: "read".to_string(),
+                arguments: json!({ "path": note.path().to_string_lossy() }).to_string(),
+            }],
+        },
+        Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                id: "close-context".to_string(),
+                r#type: "function".to_string(),
+                func_name: "context_tx".to_string(),
+                arguments: json!({
+                    "session_id": session_id,
+                    "transaction": "(context-tx (base-version 0) (create task (task (goal repair) (status completed) (evidence tests-passed))) (protect task))"
+                })
+                .to_string(),
+            }],
+        },
+        Response {
+            content: "修复与 Context 均已收口".to_string(),
+            tool_calls: Vec::new(),
+        },
+    ]));
+    let config = morphz::config::OrchestratorConfig {
+        max_attempts_per_turn: 3,
+        ..Default::default()
+    };
+    let engine = Arc::new(ContextEngine::new(
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        config.clone(),
+    ));
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(ReadFileTool::default()));
+    registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&client) as Arc<dyn Client>,
+        registry,
+        config,
+        Arc::clone(&engine),
+    ));
+    orchestrator.clone().start().await.unwrap();
+
+    publish_user(&bus, session_id, "repair and close context").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0]
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str()),
+        Some("修复与 Context 均已收口")
+    );
+
+    let tools_seen = client.tools_seen();
+    assert_eq!(tools_seen.len(), 4);
+    assert!(tools_seen[0].contains(&"read".to_string()));
+    assert!(tools_seen[1].contains(&"read".to_string()));
+    assert_eq!(tools_seen[2], vec!["context_tx"]);
+    assert!(tools_seen[3].is_empty());
+
+    let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
+    assert_eq!(assistant_calls.len(), 3);
+    assert_eq!(
+        assistant_calls[2]
+            .payload
+            .get("phase")
+            .and_then(|value| value.as_str()),
+        Some("context-closure")
+    );
+    let context = orchestrator
+        .get_current_context_view(session_id)
+        .await
+        .unwrap();
+    assert_eq!(context.state.version, 1);
+    assert_eq!(context.turn_budget.phase, "final-reply");
+    assert!(context.state.frames[0].body.contains("completed"));
+    assert!(context.state.frames[0].body.contains("tests-passed"));
+}
+
+#[tokio::test]
+async fn test_failed_context_closure_still_terminates_with_final_reply() {
+    let session_id = "attempt_failed_context_closure";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("failed-context-closure.db");
+    let note = NamedTempFile::new().unwrap();
+    std::fs::write(note.path(), "evidence").unwrap();
+
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    let client = Arc::new(MockClient::new(vec![
+        Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                id: "read".to_string(),
+                r#type: "function".to_string(),
+                func_name: "read".to_string(),
+                arguments: json!({ "path": note.path().to_string_lossy() }).to_string(),
+            }],
+        },
+        Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                id: "invalid-close".to_string(),
+                r#type: "function".to_string(),
+                func_name: "context_tx".to_string(),
+                arguments: json!({
+                    "session_id": session_id,
+                    "transaction": "(context-tx (base-version 0) (retire missing-frame))"
+                })
+                .to_string(),
+            }],
+        },
+        Response {
+            content: "收口失败但仍然终止".to_string(),
+            tool_calls: Vec::new(),
+        },
+    ]));
+    let config = morphz::config::OrchestratorConfig {
+        max_attempts_per_turn: 2,
+        ..Default::default()
+    };
+    let engine = Arc::new(ContextEngine::new(
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        config.clone(),
+    ));
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(ReadFileTool::default()));
+    registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&client) as Arc<dyn Client>,
+        registry,
+        config,
+        engine,
+    ));
+    orchestrator.clone().start().await.unwrap();
+
+    publish_user(&bus, session_id, "fail closure safely").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(client.tools_seen().len(), 3);
+    assert_eq!(client.tools_seen()[1], vec!["context_tx"]);
+    assert!(client.tools_seen()[2].is_empty());
+    let context = orchestrator
+        .get_current_context_view(session_id)
+        .await
+        .unwrap();
+    assert_eq!(context.state.version, 0);
+    assert_eq!(context.turn_budget.phase, "final-reply");
 }
 
 #[tokio::test]

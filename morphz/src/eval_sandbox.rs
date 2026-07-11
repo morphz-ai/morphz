@@ -8,10 +8,17 @@ use walkdir::WalkDir;
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 const FIXTURE_V1: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/coding_eval_v1");
+const FIXTURE_V2: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/coding_eval_v2");
+const V2_HIDDEN_RETRY_TESTS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/coding_eval_v2_hidden/heldout_retry.rs"
+));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CodingEvalManifest {
     pub id: String,
+    #[serde(default = "default_benchmark")]
+    pub benchmark: String,
     pub created_at: String,
     pub workspace_root: PathBuf,
     pub database_path: PathBuf,
@@ -19,8 +26,10 @@ pub struct CodingEvalManifest {
     pub initial_sha256: BTreeMap<String, String>,
     pub allowed_modified_paths: Vec<String>,
     pub verify_command: String,
-    #[serde(default = "default_required_tools")]
-    pub required_tools: Vec<String>,
+    #[serde(default = "default_tool_coverage_targets", alias = "required_tools")]
+    pub tool_coverage_targets: Vec<String>,
+    #[serde(default)]
+    pub hidden_test_suite: Option<String>,
     pub user_prompt: String,
 }
 
@@ -52,15 +61,29 @@ pub struct CodingEvalScore {
     pub efficiency_points: u32,
     pub recovery_points: u32,
     pub attempts: usize,
+    pub work_attempts: usize,
+    pub context_attempts: usize,
     pub replies: usize,
     pub context_commits: usize,
     pub context_failures: usize,
     pub file_changes: usize,
     pub tools_used: Vec<String>,
-    pub missing_required_tools: Vec<String>,
+    pub uncovered_tool_targets: Vec<String>,
     pub saw_initial_test_failure: bool,
     pub saw_final_test_success: bool,
+    pub verifier_passed: Option<bool>,
     pub scope_audit: CodingEvalAudit,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodingEvalVerification {
+    pub benchmark: String,
+    pub verified_at: String,
+    pub command: String,
+    pub hidden_test_suite: Option<String>,
+    pub success: bool,
+    pub output_sha256: String,
+    pub output: String,
 }
 
 pub fn create_coding_eval_v1(base_dir: Option<&Path>) -> Result<CodingEvalEnvironment, DynError> {
@@ -86,6 +109,7 @@ pub fn create_coding_eval_v1(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
     let manifest_path = run_root.join("manifest.json");
     let manifest = CodingEvalManifest {
         id,
+        benchmark: "coding_eval_v1".to_string(),
         created_at: Utc::now().to_rfc3339(),
         workspace_root: workspace_root.clone(),
         database_path: database_path.clone(),
@@ -93,8 +117,9 @@ pub fn create_coding_eval_v1(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
         initial_sha256: snapshot_workspace(&workspace_root)?,
         allowed_modified_paths: vec!["src/lib.rs".to_string()],
         verify_command: "cargo test".to_string(),
-        required_tools: default_required_tools(),
-        user_prompt: "修复当前 Rust crate 中 parse_retry_after 无法接受首尾 HTTP 空白字符的缺陷。先运行测试复现失败，再定位和修改实现，最后运行完整测试。持续约束：只能修改 src/lib.rs；不得修改或删除测试与 Cargo.toml；不得使用 unsafe；必须使用 list_files/search/read/edit 完成代码发现和修改，exec 仅用于 cargo test；最终结论必须引用 file_change 与通过的测试输出，并把目标、约束和结论维护到 Mind。"
+        tool_coverage_targets: default_tool_coverage_targets(),
+        hidden_test_suite: None,
+        user_prompt: "修复当前 Rust crate 中 parse_retry_after 无法接受首尾 HTTP 空白字符的缺陷。先运行测试复现失败，再定位和修改实现，最后运行完整测试。持续约束：只能修改 src/lib.rs；不得修改或删除测试与 Cargo.toml；不得使用 unsafe；根据任务需要自主选择 list_files/search/read/edit/exec 等工具；最终结论必须引用 file_change 与通过的测试输出，并把目标、约束和结论维护到 Mind。"
             .to_string(),
     };
     std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
@@ -124,7 +149,78 @@ pub fn create_coding_eval_v1(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
     })
 }
 
-fn default_required_tools() -> Vec<String> {
+pub fn create_coding_eval_v2(base_dir: Option<&Path>) -> Result<CodingEvalEnvironment, DynError> {
+    let base = base_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("morphz-evals"));
+    std::fs::create_dir_all(&base)?;
+    let base = std::fs::canonicalize(base)?;
+    let id = format!(
+        "coding-v2-{}-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+        std::process::id()
+    );
+    let run_root = base.join(&id);
+    let workspace_root = run_root.join("workspace");
+    let artifact_dir = run_root.join("artifacts");
+    std::fs::create_dir_all(&workspace_root)?;
+    std::fs::create_dir_all(&artifact_dir)?;
+    set_private_directory_permissions(&run_root)?;
+    copy_fixture(Path::new(FIXTURE_V2), &workspace_root)?;
+
+    let database_path = run_root.join("morphz.db");
+    let manifest_path = run_root.join("manifest.json");
+    let manifest = CodingEvalManifest {
+        id,
+        benchmark: "coding_eval_v2".to_string(),
+        created_at: Utc::now().to_rfc3339(),
+        workspace_root: workspace_root.clone(),
+        database_path: database_path.clone(),
+        artifact_dir: artifact_dir.clone(),
+        initial_sha256: snapshot_workspace(&workspace_root)?,
+        allowed_modified_paths: vec![
+            "src/retry.rs".to_string(),
+            "src/store.rs".to_string(),
+            "src/worker.rs".to_string(),
+        ],
+        verify_command: "cargo test --all-targets".to_string(),
+        tool_coverage_targets: default_tool_coverage_targets(),
+        hidden_test_suite: Some("coding_eval_v2_retry_state_machine".to_string()),
+        user_prompt: "修复当前 Rust crate 中任务队列的重试状态机。临时失败任务的退避时间和最大尝试次数存在错误，已经取消的任务还可能被失败结果重新入队。先运行完整测试复现问题，追踪 claim、执行结果、retry 计算与持久化状态迁移，再完成最小修改并运行完整测试。持续约束：只允许修改 src/retry.rs、src/store.rs、src/worker.rs；不得修改或删除测试、Cargo.toml、公共 API 或其他文件；不得增加依赖、访问网络或使用 unsafe；根据任务需要自主选择工具；最终结论必须引用 file_change 与通过的测试证据，并把目标、已确认的不变量、关键判断和结论维护到 Mind。"
+            .to_string(),
+    };
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+
+    let environment = BTreeMap::from([
+        (
+            "MORPHZ_WORKSPACE_ROOT".to_string(),
+            workspace_root.to_string_lossy().to_string(),
+        ),
+        (
+            "MORPHZ_DB_PATH".to_string(),
+            database_path.to_string_lossy().to_string(),
+        ),
+        (
+            "MORPHZ_ARTIFACT_DIR".to_string(),
+            artifact_dir.to_string_lossy().to_string(),
+        ),
+        ("MORPHZ_EXEC_SEATBELT".to_string(), "true".to_string()),
+        ("MORPHZ_EXEC_NETWORK".to_string(), "false".to_string()),
+        ("MORPHZ_CODING_EVAL_MODE".to_string(), "true".to_string()),
+    ]);
+    Ok(CodingEvalEnvironment {
+        run_root,
+        manifest_path,
+        manifest,
+        environment,
+    })
+}
+
+fn default_benchmark() -> String {
+    "coding_eval_v1".to_string()
+}
+
+fn default_tool_coverage_targets() -> Vec<String> {
     ["list_files", "search", "read", "edit", "exec", "context_tx"]
         .into_iter()
         .map(ToOwned::to_owned)
@@ -143,6 +239,8 @@ pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynEr
     let events = store.query(QueryFilter::default()).await?;
 
     let mut tools_used = BTreeSet::new();
+    let mut work_attempts = 0;
+    let mut context_attempts = 0;
     for event in events
         .iter()
         .filter(|event| event.topic == "chat/assistant_call")
@@ -152,6 +250,8 @@ pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynEr
             .get("tool_calls")
             .and_then(|value| value.as_array())
         {
+            let mut has_physical_tool = false;
+            let mut has_context_tx = false;
             for call in calls {
                 if let Some(name) = call
                     .get("function")
@@ -159,8 +259,12 @@ pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynEr
                     .and_then(|value| value.as_str())
                 {
                     tools_used.insert(name.to_string());
+                    has_context_tx |= name == "context_tx";
+                    has_physical_tool |= name != "context_tx";
                 }
             }
+            work_attempts += usize::from(has_physical_tool);
+            context_attempts += usize::from(has_context_tx);
         }
     }
     let attempts = events
@@ -188,7 +292,9 @@ pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynEr
                     .payload
                     .get("text")
                     .and_then(|value| value.as_str())
-                    .is_some_and(|text| text.starts_with("执行失败:"))
+                    .is_some_and(|text| {
+                        text.starts_with("执行失败:") || text.starts_with("执行拒绝:")
+                    })
         })
         .count();
     let file_changes = events
@@ -215,24 +321,26 @@ pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynEr
         if text.contains("退出码: 101") || text.contains("test result: FAILED") {
             saw_initial_test_failure = true;
         }
-        if text.contains("退出码: 0") && text.contains("3 passed") {
+        if text.contains("退出码: 0") && text.contains("test result: ok") {
             saw_final_test_success = true;
             last_success_at = Some(event.timestamp);
         }
     }
     let tools_used = tools_used.into_iter().collect::<Vec<_>>();
-    let missing_required_tools = manifest
-        .required_tools
+    let uncovered_tool_targets = manifest
+        .tool_coverage_targets
         .iter()
         .filter(|required| !tools_used.contains(required))
         .cloned()
         .collect::<Vec<_>>();
 
-    let correctness_points = u32::from(saw_final_test_success) * 25
-        + u32::from(file_changes == 1) * 10
+    let verification = load_verification(&run_root)?;
+    let verifier_passed = verification.as_ref().map(|report| report.success);
+    let final_correctness = verifier_passed.unwrap_or(saw_final_test_success);
+    let correctness_points = u32::from(final_correctness) * 25
+        + u32::from(!scope_audit.changed_paths.is_empty()) * 10
         + u32::from(context_failures == 0) * 5;
-    let required_points = u32::from(missing_required_tools.is_empty()) * 5;
-    let scope_and_constraint_points = u32::from(scope_audit.clean_scope) * 15 + required_points;
+    let scope_and_constraint_points = u32::from(scope_audit.clean_scope) * 20;
     let latest_commit = commits.last();
     let protected_mind = latest_commit
         .and_then(|event| event.payload.get("state_after"))
@@ -251,9 +359,9 @@ pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynEr
         + u32::from(final_commit_after_test) * 4
         + u32::from(latest_has_frames) * 4;
     let efficiency_points = u32::from(replies == 1) * 5
-        + if attempts <= 6 {
+        + if work_attempts <= 6 {
             5
-        } else if attempts <= 8 {
+        } else if work_attempts <= 8 {
             3
         } else {
             0
@@ -273,16 +381,76 @@ pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynEr
         efficiency_points,
         recovery_points,
         attempts,
+        work_attempts,
+        context_attempts,
         replies,
         context_commits: commits.len(),
         context_failures,
         file_changes,
         tools_used,
-        missing_required_tools,
+        uncovered_tool_targets,
         saw_initial_test_failure,
         saw_final_test_success,
+        verifier_passed,
         scope_audit,
     })
+}
+
+fn load_verification(run_root: &Path) -> Result<Option<CodingEvalVerification>, DynError> {
+    let path = run_root.join("verification.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::from_slice(&std::fs::read(path)?)?))
+}
+
+pub fn prepare_verification_workspace(
+    run_root: &Path,
+    manifest: &CodingEvalManifest,
+) -> Result<PathBuf, DynError> {
+    let run_root = std::fs::canonicalize(run_root)?;
+    let agent_workspace = std::fs::canonicalize(&manifest.workspace_root)?;
+    if !agent_workspace.starts_with(&run_root) {
+        return Err("manifest workspace_root 逃逸 run_root".into());
+    }
+
+    let verification_root = run_root.join("verifier").join(format!(
+        "{}-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%.6fZ"),
+        std::process::id()
+    ));
+    let verification_workspace = verification_root.join("workspace");
+    std::fs::create_dir_all(&verification_workspace)?;
+    set_private_directory_permissions(&verification_root)?;
+    copy_workspace_for_verification(&agent_workspace, &verification_workspace)?;
+    inject_hidden_tests(
+        manifest.hidden_test_suite.as_deref(),
+        &verification_workspace,
+    )?;
+    Ok(verification_workspace)
+}
+
+pub fn record_verification(
+    run_root: &Path,
+    manifest: &CodingEvalManifest,
+    success: bool,
+    output: String,
+) -> Result<CodingEvalVerification, DynError> {
+    let run_root = std::fs::canonicalize(run_root)?;
+    let report = CodingEvalVerification {
+        benchmark: manifest.benchmark.clone(),
+        verified_at: Utc::now().to_rfc3339(),
+        command: manifest.verify_command.clone(),
+        hidden_test_suite: manifest.hidden_test_suite.clone(),
+        success,
+        output_sha256: format!("{:x}", Sha256::digest(output.as_bytes())),
+        output,
+    };
+    std::fs::write(
+        run_root.join("verification.json"),
+        serde_json::to_vec_pretty(&report)?,
+    )?;
+    Ok(report)
 }
 
 pub fn audit_coding_eval(run_root: &Path) -> Result<CodingEvalAudit, DynError> {
@@ -352,6 +520,10 @@ fn copy_fixture(source: &Path, target: &Path) -> Result<(), DynError> {
         if relative.as_os_str().is_empty() {
             continue;
         }
+        let relative_text = relative.to_string_lossy().replace('\\', "/");
+        if is_ignored_runtime_path(&relative_text) {
+            continue;
+        }
         if entry.file_type().is_symlink() {
             return Err(format!("评测 fixture 禁止包含符号链接: {}", relative.display()).into());
         }
@@ -370,6 +542,58 @@ fn copy_fixture(source: &Path, target: &Path) -> Result<(), DynError> {
             std::fs::copy(entry.path(), destination)?;
         }
     }
+    Ok(())
+}
+
+fn copy_workspace_for_verification(source: &Path, target: &Path) -> Result<(), DynError> {
+    let source = std::fs::canonicalize(source)?;
+    for entry in WalkDir::new(&source).follow_links(false) {
+        let entry = entry?;
+        let relative = entry.path().strip_prefix(&source)?;
+        if relative.as_os_str().is_empty() {
+            continue;
+        }
+        let relative_text = relative.to_string_lossy().replace('\\', "/");
+        if is_ignored_runtime_path(&relative_text) {
+            continue;
+        }
+        if entry.file_type().is_symlink() {
+            return Err(format!("Agent workspace 禁止包含符号链接: {}", relative.display()).into());
+        }
+        let destination = target.join(relative);
+        if entry.file_type().is_dir() {
+            std::fs::create_dir_all(destination)?;
+        } else if entry.file_type().is_file() {
+            if entry.metadata()?.len() > 1024 * 1024 {
+                return Err(
+                    format!("Agent workspace 单文件超过 1 MiB: {}", relative.display()).into(),
+                );
+            }
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(entry.path(), destination)?;
+        }
+    }
+    Ok(())
+}
+
+fn inject_hidden_tests(suite: Option<&str>, workspace: &Path) -> Result<(), DynError> {
+    let Some(suite) = suite else {
+        return Ok(());
+    };
+    let (relative, contents) = match suite {
+        "coding_eval_v2_retry_state_machine" => ("tests/heldout_retry.rs", V2_HIDDEN_RETRY_TESTS),
+        other => return Err(format!("未知 verifier-only test suite: {other}").into()),
+    };
+    let destination = workspace.join(relative);
+    if destination.exists() {
+        return Err(format!("隐藏测试目标已存在，拒绝覆盖: {relative}").into());
+    }
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(destination, contents)?;
     Ok(())
 }
 
@@ -464,7 +688,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ledger_score_penalizes_missing_required_tool() {
+    async fn ledger_score_tracks_tool_coverage_without_penalizing_it() {
         let base = TempDir::new().unwrap();
         let environment = create_coding_eval_v1(Some(base.path())).unwrap();
         std::fs::write(
@@ -510,7 +734,7 @@ mod tests {
             ("exec-fail", "执行结束 [退出码: 101] test result: FAILED"),
             (
                 "exec-pass",
-                "执行结束 [退出码: 0] test result: ok. 3 passed",
+                "执行结束 [退出码: 0] test result: ok. 5 passed",
             ),
         ] {
             store
@@ -561,8 +785,29 @@ mod tests {
             .unwrap();
 
         let score = score_coding_eval(&environment.run_root).await.unwrap();
-        assert_eq!(score.score, 95);
-        assert_eq!(score.missing_required_tools, vec!["search"]);
+        assert_eq!(score.score, 100);
+        assert_eq!(score.uncovered_tool_targets, vec!["search"]);
         assert!(score.scope_audit.clean_scope);
+    }
+
+    #[test]
+    fn v2_hidden_tests_only_exist_in_verifier_copy() {
+        let base = TempDir::new().unwrap();
+        let environment = create_coding_eval_v2(Some(base.path())).unwrap();
+        let agent_hidden = environment
+            .manifest
+            .workspace_root
+            .join("tests/heldout_retry.rs");
+        assert!(!agent_hidden.exists());
+
+        let verifier =
+            prepare_verification_workspace(&environment.run_root, &environment.manifest).unwrap();
+        assert!(verifier.join("tests/heldout_retry.rs").exists());
+        assert!(!agent_hidden.exists());
+        assert!(
+            audit_coding_eval(&environment.run_root)
+                .unwrap()
+                .clean_scope
+        );
     }
 }

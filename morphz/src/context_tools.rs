@@ -41,7 +41,7 @@ impl Tool for ContextTxTool {
                     },
                     "transaction": {
                         "type": "string",
-                        "description": "完整的 SExpr 心智事务。reason 只能写成 context-tx 的直接子项；正确：(context-tx (base-version 2) (reason \"证据已摘要\") (retire event:1))；错误：(retire event:1 \"证据已摘要\")"
+                        "description": "完整的单个 SExpr 心智事务。一个 transaction 可包含多个 create/derive/revise/retire/restore/protect/unprotect/place，并整体原子提交；不要为多个修改并行调用多次 context_tx。reason 只能写成 context-tx 的直接子项；示例：(context-tx (base-version 2) (reason \"完成收口\") (revise task (task (status completed))) (create result (tests passed)) (protect task result) (retire event:1 event:2))"
                     }
                 },
                 "required": ["transaction"]

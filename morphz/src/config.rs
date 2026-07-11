@@ -56,8 +56,10 @@ pub struct OrchestratorConfig {
     pub context_maintenance_reserve_tokens: usize,
     /// 单条原始 Observation 在 Context 中展示的最大字符数；原文仍保留在 Ledger
     pub observation_preview_chars: usize,
-    /// 单条用户消息允许触发的最大 Attempt 数；最后一个 Attempt 强制收敛，不再提供工具
+    /// 单条用户消息的 Attempt 上限；达到上限时进入一次 context_tx-only 收口，再无工具回复
     pub max_attempts_per_turn: usize,
+    /// 普通 work 阶段允许提交的 Context transaction 次数；最终收口另有一次保留机会
+    pub max_context_transactions_per_turn: usize,
 }
 
 impl Default for OrchestratorConfig {
@@ -71,6 +73,7 @@ impl Default for OrchestratorConfig {
             context_maintenance_reserve_tokens: 12_000,
             observation_preview_chars: 4_000,
             max_attempts_per_turn: 12,
+            max_context_transactions_per_turn: 6,
         }
     }
 }
@@ -286,8 +289,39 @@ impl AppConfig {
             self.tool_security.exec_network_enabled = parse_env_bool(&value)
                 .ok_or_else(|| format!("MORPHZ_EXEC_NETWORK 不是合法布尔值: {value}"))?;
         }
+        apply_usize_env(
+            "MORPHZ_CONTEXT_SOFT_TOKEN_LIMIT",
+            &mut self.orchestrator.context_soft_token_limit,
+        )?;
+        apply_usize_env(
+            "MORPHZ_CONTEXT_HARD_TOKEN_LIMIT",
+            &mut self.orchestrator.context_hard_token_limit,
+        )?;
+        apply_usize_env(
+            "MORPHZ_CONTEXT_MAINTENANCE_RESERVE_TOKENS",
+            &mut self.orchestrator.context_maintenance_reserve_tokens,
+        )?;
+        apply_usize_env(
+            "MORPHZ_OBSERVATION_PREVIEW_CHARS",
+            &mut self.orchestrator.observation_preview_chars,
+        )?;
         Ok(())
     }
+}
+
+fn apply_usize_env(name: &str, target: &mut usize) -> Result<(), String> {
+    let Ok(value) = std::env::var(name) else {
+        return Ok(());
+    };
+    let parsed = value
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| format!("{name} 不是合法正整数: {value}"))?;
+    if parsed == 0 {
+        return Err(format!("{name} 必须大于 0"));
+    }
+    *target = parsed;
+    Ok(())
 }
 
 fn parse_env_bool(value: &str) -> Option<bool> {
