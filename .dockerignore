@@ -1,0 +1,16 @@
+target/
+**/target/
+.git/
+.github/
+*.db
+*.db-shm
+*.db-wal
+node_modules/
+dashboard/dist/
+dashboard/node_modules/
+.env
+.env.bak
+notes.txt
+docs/
+*.md
+!morphz.toml

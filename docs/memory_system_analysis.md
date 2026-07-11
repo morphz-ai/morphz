@@ -1,5 +1,8 @@
 # openclaw & Hermes 记忆系统 (Memory System) 源码深度剖析
 
+> [!WARNING]
+> 本文的三层自动召回与 Context 装配部分是早期研究结论，不再代表 Morphz 主链路。当前方向见 [Agent-Owned Context](./morphz_agent_owned_context_design.md)：检索只能提供显式 Recall 或候选 Inbox，不能替 Agent 决定 Mind 内容。
+
 本报告深度剖析智能体（Agent）如何维护长期记忆、执行语义召回，并解答关于“记忆泄露防护”与“Prefix Cache 缓存稳定”的核心设计疑问。最后，我们将结合您的 **EventHistory ➔ GraphMemory ➔ Context 三层记忆系统构想**，为 `Morphz` 梳理具体的落地实现方案。
 
 ---

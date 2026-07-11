@@ -2,6 +2,8 @@
 name = "morphz"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.91"
+default-run = "morphz"
 
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }
@@ -20,9 +22,12 @@ lancedb = "0.30.0"
 arrow-array = "58"
 arrow-schema = "58"
 nix = { version = "0.31.3", features = ["signal", "process"] }
-
-
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "time"] }
+toml = "0.8"
+sha2 = "0.10"
+walkdir = "2.5"
+glob = "0.3"
 
 [dev-dependencies]
 tempfile = "3.8"
-

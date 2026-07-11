@@ -1,4 +1,4 @@
-use axum::{routing::post, Json, Router, extract::State};
+use axum::{extract::State, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -28,8 +28,12 @@ async fn main() {
             eprintln!("⚠️ [Rust Executor] 模型加载失败: {e}");
             eprintln!("💡 [排查建议] 请确保本地模型文件齐全：");
             eprintln!("   路径: models/bge-small-zh-1.5/");
-            eprintln!("   文件: model.safetensors (或 pytorch_model.bin), config.json, tokenizer.json");
-            eprintln!("   服务将在未加载模型的状态下启动，并在请求时返回软降级错误，不会导致控制端崩溃。");
+            eprintln!(
+                "   文件: model.safetensors (或 pytorch_model.bin), config.json, tokenizer.json"
+            );
+            eprintln!(
+                "   服务将在未加载模型的状态下启动，并在请求时返回软降级错误，不会导致控制端崩溃。"
+            );
             None
         }
     };
@@ -51,7 +55,10 @@ async fn main() {
         }
     };
 
-    println!("⚙️ [Rust Executor] 本地 HTTP 推理服务已启动，监听: {}", addr);
+    println!(
+        "⚙️ [Rust Executor] 本地 HTTP 推理服务已启动，监听: {}",
+        addr
+    );
 
     if let Err(e) = axum::serve(listener, app).await {
         eprintln!("❌ [Rust Executor] Axum 服务运行出错: {e}");
@@ -67,7 +74,9 @@ async fn handle_embed(
         None => {
             return Json(EmbedResponse {
                 embedding: None,
-                error: Some("本地 BGE 语义模型未加载，请检查 models/ 目录下的权重文件。".to_string()),
+                error: Some(
+                    "本地 BGE 语义模型未加载，请检查 models/ 目录下的权重文件。".to_string(),
+                ),
             });
         }
     };

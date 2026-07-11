@@ -1,5 +1,8 @@
 # Morphz 反应式记忆机制与上下文求值架构设计
 
+> [!WARNING]
+> 本文记录的是早期“由 Runtime 自动评分、召回和压缩 Context”的设计探索，不再代表 Morphz 的 Context 核心方向。当前设计以 [Agent-Owned Context：由 LLM 自主管理的心智上下文](./morphz_agent_owned_context_design.md) 为准：Runtime 提供机制、边界和恢复能力，LLM 通过 SExpr DSL 掌握 Context 的语义维护权。
+
 本设计文档旨在规范 `Morphz` 智能体框架中关于**记忆管理、关系提取与上下文（Context）动态求值**的顶层设计，解决传统 Agent 框架在长任务中面临的“时序遗忘”、“注意力污染”与“上下文膨胀”等硬伤。
 
 ---

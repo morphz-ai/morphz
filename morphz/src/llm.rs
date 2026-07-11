@@ -1,3 +1,4 @@
+use crate::config::LlmConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
@@ -68,16 +69,34 @@ pub struct OpenAIClient {
     base_url: String,
     model_name: String,
     embedding_model: String,
+    max_retries: u32,
+    initial_backoff_secs: u64,
     local_model: Option<Arc<executor::ModelStore>>,
 }
 
 impl OpenAIClient {
     pub fn new(
         api_key: String,
+        base_url: String,
+        model_name: String,
+        local_model: Option<Arc<executor::ModelStore>>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::new_with_config(
+            api_key,
+            base_url,
+            model_name,
+            local_model,
+            &LlmConfig::default(),
+        )
+    }
+
+    pub fn new_with_config(
+        api_key: String,
         mut base_url: String,
         model_name: String,
         local_model: Option<Arc<executor::ModelStore>>,
-    ) -> Self {
+        config: &LlmConfig,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         if !base_url.is_empty() {
             if !base_url.ends_with("/v1") && !base_url.ends_with("/v1/") {
                 base_url = base_url.trim_end_matches('/').to_string() + "/v1";
@@ -87,16 +106,27 @@ impl OpenAIClient {
         }
 
         let embedding_model = std::env::var("OPENAI_EMBEDDING_MODEL")
-            .unwrap_or_else(|_| "text-embedding-3-small".to_string());
+            .unwrap_or_else(|_| config.embedding_model.clone());
 
-        Self {
-            http_client: reqwest::Client::new(),
+        // reqwest 的 macOS 系统代理自动探测在部分无 GUI/沙箱环境中可能触发
+        // system-configuration panic。默认禁用隐式探测；需要代理时使用显式变量。
+        let mut client_builder = reqwest::Client::builder().no_proxy();
+        if let Ok(proxy_url) = std::env::var("OPENAI_HTTP_PROXY") {
+            if !proxy_url.trim().is_empty() {
+                client_builder = client_builder.proxy(reqwest::Proxy::all(&proxy_url)?);
+            }
+        }
+
+        Ok(Self {
+            http_client: client_builder.build()?,
             api_key,
             base_url,
             model_name,
             embedding_model,
+            max_retries: config.max_retries.max(1),
+            initial_backoff_secs: config.initial_backoff_secs,
             local_model,
-        }
+        })
     }
 }
 
@@ -212,8 +242,8 @@ impl Client for OpenAIClient {
 
         let url = format!("{}/chat/completions", self.base_url);
         let mut attempts = 0;
-        let max_attempts = 5;
-        let mut backoff = std::time::Duration::from_secs(1);
+        let max_attempts = self.max_retries;
+        let mut backoff = std::time::Duration::from_secs(self.initial_backoff_secs);
         let resp = loop {
             attempts += 1;
             let res = self
@@ -229,8 +259,10 @@ impl Client for OpenAIClient {
                     let status = resp.status();
                     if status.is_success() {
                         break resp;
-                    } else if (status.as_u16() == 429 || status.is_server_error()) && attempts < max_attempts {
-                        eprintln!("⚠️ [LLM 客户端] 遇到 {}，将在 {:?} 后重试 (第 {}/{} 次尝试)", status, backoff, attempts, max_attempts);
+                    } else if (status.as_u16() == 429 || status.is_server_error())
+                        && attempts < max_attempts
+                    {
+                        tracing::warn!(status = %status, backoff = ?backoff, attempt = attempts, max = max_attempts, "LLM 客户端遇到错误，准备重试");
                         tokio::time::sleep(backoff).await;
                         backoff *= 2;
                     } else {
@@ -243,7 +275,7 @@ impl Client for OpenAIClient {
                     }
                 }
                 Err(e) if attempts < max_attempts => {
-                    eprintln!("⚠️ [LLM 客户端] 网络错误: {:?}，将在 {:?} 后重试 (第 {}/{} 次尝试)", e, backoff, attempts, max_attempts);
+                    tracing::warn!(error = ?e, backoff = ?backoff, attempt = attempts, max = max_attempts, "LLM 客户端网络错误，准备重试");
                     tokio::time::sleep(backoff).await;
                     backoff *= 2;
                 }
@@ -272,7 +304,10 @@ impl Client for OpenAIClient {
             })
             .collect();
 
-        Ok(Response { content, tool_calls })
+        Ok(Response {
+            content,
+            tool_calls,
+        })
     }
 
     async fn create_embedding(
@@ -287,8 +322,8 @@ impl Client for OpenAIClient {
 
         let url = format!("{}/embeddings", self.base_url);
         let mut attempts = 0;
-        let max_attempts = 5;
-        let mut backoff = std::time::Duration::from_secs(1);
+        let max_attempts = self.max_retries;
+        let mut backoff = std::time::Duration::from_secs(self.initial_backoff_secs);
         let remote_res = loop {
             attempts += 1;
             let res = self
@@ -304,8 +339,10 @@ impl Client for OpenAIClient {
                     let status = resp.status();
                     if status.is_success() {
                         break Ok(resp);
-                    } else if (status.as_u16() == 429 || status.is_server_error()) && attempts < max_attempts {
-                        eprintln!("⚠️ [LLM 客户端] Embedding 遇到 {}，将在 {:?} 后重试 (第 {}/{} 次尝试)", status, backoff, attempts, max_attempts);
+                    } else if (status.as_u16() == 429 || status.is_server_error())
+                        && attempts < max_attempts
+                    {
+                        tracing::warn!(status = %status, backoff = ?backoff, attempt = attempts, max = max_attempts, "Embedding 遇到错误，准备重试");
                         tokio::time::sleep(backoff).await;
                         backoff *= 2;
                     } else {
@@ -313,7 +350,13 @@ impl Client for OpenAIClient {
                     }
                 }
                 Err(e) if attempts < max_attempts => {
-                    eprintln!("⚠️ [LLM 客户端] Embedding 网络错误: {:?}，将在 {:?} 后重试 (第 {}/{} 次尝试)", e, backoff, attempts, max_attempts);
+                    tracing::warn!(
+                        "Embedding 网络错误: {:?}，将在 {:?} 后重试 (第 {}/{} 次尝试)",
+                        e,
+                        backoff,
+                        attempts,
+                        max_attempts
+                    );
                     tokio::time::sleep(backoff).await;
                     backoff *= 2;
                 }
@@ -349,7 +392,11 @@ pub fn local_hashing_embedding(text: &str) -> Vec<f32> {
     let text = text.to_lowercase();
     let mut clean_chars = Vec::new();
     for c in text.chars() {
-        if c.is_ascii_alphanumeric() || (c as u32 >= 0x4e00 && c as u32 <= 0x9fff) || c == '(' || c == ')' {
+        if c.is_ascii_alphanumeric()
+            || (c as u32 >= 0x4e00 && c as u32 <= 0x9fff)
+            || c == '('
+            || c == ')'
+        {
             clean_chars.push(c);
         } else {
             clean_chars.push(' ');

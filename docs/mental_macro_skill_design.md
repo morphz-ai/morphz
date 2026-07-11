@@ -1,5 +1,8 @@
 # Morphz 基于 S-Expression 模板展开的“心智宏 (Mental Macro)”技能机制设计
 
+> [!WARNING]
+> 本文依赖固定 `todo_stack/variables` 和旧 `eval` 原语，现作为历史探索保留。任何新的 Mental Macro 必须先建立在 [Agent-Owned Context v1](./morphz_agent_owned_context_design.md) 的 Frame 与 `context_tx` 语义之上。
+
 为了克服传统智能体框架在技能（Skill）使用上面临的高延迟、高 Token 开销和状态容易漂移的硬伤，本方案为 `Morphz` 设计了一套独创的、基于原生 S-Expression 演算底座的**“心智宏 (Mental Macro)”技能机制**。
 
 ---

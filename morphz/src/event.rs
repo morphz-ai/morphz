@@ -13,6 +13,7 @@ pub const TYPE_TOOL_OUTPUT: &str = "tool_output";
 pub const TYPE_FILE_CHANGE: &str = "file_change";
 pub const TYPE_EXCEPTION: &str = "exception";
 pub const TYPE_PROPOSAL: &str = "proposal";
+pub const TYPE_CONTEXT_TRANSACTION: &str = "context_transaction";
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -71,10 +72,14 @@ impl Subscription {
 pub struct InMemoryEventBus {
     subscriptions: DashMap<String, Arc<Subscription>>,
     sub_counter: AtomicU64,
-    error_handler: Arc<
-        dyn Fn(Box<dyn std::error::Error + Send + Sync>, Event) + Send + Sync,
-    >,
+    error_handler: Arc<dyn Fn(Box<dyn std::error::Error + Send + Sync>, Event) + Send + Sync>,
     semaphore: Arc<tokio::sync::Semaphore>,
+}
+
+impl Default for InMemoryEventBus {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InMemoryEventBus {
@@ -87,7 +92,7 @@ impl InMemoryEventBus {
             subscriptions: DashMap::new(),
             sub_counter: AtomicU64::new(0),
             error_handler: Arc::new(|err, ev| {
-                eprintln!("\n⚠️ [事件总线错误] 事件ID: {}, 错误: {:?}", ev.id, err);
+                tracing::error!(event_id = %ev.id, error = ?err, "事件总线错误");
             }),
             semaphore: Arc::new(tokio::sync::Semaphore::new(limit)),
         }
@@ -173,8 +178,7 @@ fn match_topic(pattern: &str, topic: &str) -> bool {
         return true;
     }
     // 支持 prefix/* 前缀通配符匹配
-    if pattern.ends_with("/*") {
-        let prefix = &pattern[..pattern.len() - 2];
+    if let Some(prefix) = pattern.strip_suffix("/*") {
         return topic.starts_with(prefix) && topic[prefix.len()..].starts_with('/');
     }
     false
@@ -251,7 +255,7 @@ mod tests {
 
         let active_count_clone = Arc::clone(&active_count);
         let max_concurrent_clone = Arc::clone(&max_concurrent);
-        
+
         bus.subscribe(
             "chat/*".to_string(),
             Arc::new(move |_ev| {
@@ -294,7 +298,10 @@ mod tests {
 
         let mc = *max_concurrent.lock().unwrap();
         // 因为信号量限制为 2，所以同一时间最大并发数量不应超过 2
-        assert!(mc <= 2 && mc > 0, "最大并发数量 {} 应该不超过 2 且大于 0", mc);
+        assert!(
+            mc <= 2 && mc > 0,
+            "最大并发数量 {} 应该不超过 2 且大于 0",
+            mc
+        );
     }
 }
-

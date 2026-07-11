@@ -4,9 +4,8 @@ pub enum SExpr {
     List(Vec<SExpr>),
 }
 
-impl SExpr {
-    // 格式化输出为 S-Expression 字符串
-    pub fn to_string(&self) -> String {
+impl std::fmt::Display for SExpr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SExpr::Atom(s) => {
                 // 如果包含空格、括号、双引号、换行等，则使用双引号包裹并转义
@@ -19,18 +18,20 @@ impl SExpr {
                     || s.contains('"')
                     || s.is_empty()
                 {
-                    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+                    write!(f, "\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
                 } else {
-                    s.clone()
+                    f.write_str(s)
                 }
             }
             SExpr::List(list) => {
                 let items: Vec<String> = list.iter().map(|item| item.to_string()).collect();
-                format!("({})", items.join(" "))
+                write!(f, "({})", items.join(" "))
             }
         }
     }
+}
 
+impl SExpr {
     // 根据路径（例如 ["variables", "current_file"]）查找子节点的值
     pub fn get_path(&self, path: &[&str]) -> Option<&SExpr> {
         if path.is_empty() {
@@ -195,7 +196,10 @@ impl<'a> Parser<'a> {
     }
 
     fn get_context(&self) -> String {
-        let idx = self.current_char.map(|(i, _)| i).unwrap_or(self.input.len());
+        let idx = self
+            .current_char
+            .map(|(i, _)| i)
+            .unwrap_or(self.input.len());
         let start = idx.saturating_sub(15);
         let end = std::cmp::min(self.input.len(), idx + 15);
         let snippet = &self.input[start..end];
@@ -235,6 +239,14 @@ impl<'a> Parser<'a> {
         let Some(c) = self.peek_char() else {
             return Err(self.make_error("Unexpected EOF".to_string()));
         };
+
+        // Quote 语法糖兼容：Lisp 家族常用 '(...) 表示字面量列表 / 'atom 表示字面量 Atom。
+        // Yao-lang 中列表默认就是数据，无需 quote 防求值，因此直接剥离前缀 ' 并继续解析。
+        // 这避免 LLM 误用 quote 时把整个表达式解析为 [Atom("'"), List(...)] 进而破坏 (set path value) 的 3 段语法。
+        if c == '\'' {
+            self.advance(); // consume '
+            return self.parse_value();
+        }
 
         if c == '(' {
             self.advance(); // consume '('
@@ -290,7 +302,12 @@ impl<'a> Parser<'a> {
             // 解析普通的 Atom 标识符
             let mut s = String::new();
             while let Some(next_c) = self.peek_char() {
-                if next_c.is_whitespace() || next_c == '(' || next_c == ')' || next_c == '"' {
+                if next_c.is_whitespace()
+                    || next_c == '('
+                    || next_c == ')'
+                    || next_c == '"'
+                    || next_c == '\''
+                {
                     break;
                 }
                 s.push(next_c);
@@ -320,13 +337,13 @@ mod tests {
 
     #[test]
     fn test_normal_parse_and_format() {
-        let input = "(context (meta (session \"s1\")) (state (registers (a 1) (b \"hello world\"))))";
+        let input = "(context (kernel (session \"s1\") (version 1)) (mind (frame (id note) (body (text \"hello world\")))) (inbox))";
         let parsed = parse(input).unwrap();
-        
+
         let formatted = parsed.to_string();
         assert_eq!(
             formatted,
-            "(context (meta (session s1)) (state (registers (a 1) (b \"hello world\"))))"
+            "(context (kernel (session s1) (version 1)) (mind (frame (id note) (body (text \"hello world\")))) (inbox))"
         );
     }
 
@@ -338,9 +355,12 @@ mod tests {
         let formatted = parsed.to_string();
         assert_eq!(formatted, "(context (meta (session s1)))");
 
-        let input_multi = "(begin (set (state registers a) 1";
+        let input_multi = "(context-tx (base-version 0) (create note (text hello)";
         let parsed_multi = parse(input_multi).unwrap();
-        assert_eq!(parsed_multi.to_string(), "(begin (set (state registers a) 1))");
+        assert_eq!(
+            parsed_multi.to_string(),
+            "(context-tx (base-version 0) (create note (text hello)))"
+        );
     }
 
     #[test]
@@ -357,5 +377,53 @@ mod tests {
         assert_eq!(err.line, 3);
         assert_eq!(err.column, 4);
         assert!(err.message.contains("输入为空"));
+    }
+
+    #[test]
+    fn test_quote_syntactic_sugar_list() {
+        // Lisp 风格 '(...) 应该被剥离 quote，直接当作普通列表解析
+        let input = "(create tasks '(items \"task1\" \"task2\"))";
+        let parsed = parse(input).unwrap();
+        // 期望：(create, tasks, (items task1 task2)) —— 长度为 3
+        if let SExpr::List(top) = &parsed {
+            assert_eq!(top.len(), 3, "顶层 create 表达式应为 3 段");
+            // 第 3 段应是 list（即被 quote 的内容），不应是孤立 Atom("'")
+            assert!(matches!(top[2], SExpr::List(_)));
+        } else {
+            panic!("解析结果应是 List");
+        }
+    }
+
+    #[test]
+    fn test_quote_syntactic_sugar_atom() {
+        // 'atom 应解析为 Atom("atom")
+        let input = "(create x 'hello)";
+        let parsed = parse(input).unwrap();
+        if let SExpr::List(top) = &parsed {
+            assert_eq!(top.len(), 3);
+            assert_eq!(top[2], SExpr::Atom("hello".to_string()));
+        } else {
+            panic!("解析结果应是 List");
+        }
+    }
+
+    #[test]
+    fn test_quote_inside_context_transaction() {
+        // 真实 LLM 场景复现：context-tx 中含 quote 列表
+        let input = r#"(context-tx
+  (base-version 0)
+  (create current (activity "读取项目"))
+  (create completed '(items "任务A" "任务B"))
+)"#;
+        let parsed = parse(input).unwrap();
+        if let SExpr::List(top) = &parsed {
+            // 期望 4 段：context-tx + base-version + 2 个 create
+            assert_eq!(top.len(), 4);
+            if let SExpr::List(create2) = &top[3] {
+                assert_eq!(create2.len(), 3, "create 指令必须 3 段");
+            } else {
+                panic!("第二个 create 应为 List");
+            }
+        }
     }
 }

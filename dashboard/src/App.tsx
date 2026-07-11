@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { DataSet } from 'vis-data';
 import { Network } from 'vis-network';
+import type { Edge as VisEdge, Node as VisNode } from 'vis-network';
 import { 
   Network as NetIcon, 
   Activity, 
@@ -12,66 +13,136 @@ import {
   Settings 
 } from 'lucide-react';
 
+const CORE_HTTP_URL = import.meta.env.VITE_MORPHZ_HTTP_URL ?? 'http://127.0.0.1:8080';
+const CORE_WS_URL = import.meta.env.VITE_MORPHZ_WS_URL ?? 'ws://127.0.0.1:8080/ws';
+const CORE_TOKEN = import.meta.env.VITE_MORPHZ_TOKEN as string | undefined;
+
 interface GraphNode {
   id: string;
   label: string;
-  properties: { [key: string]: any };
+  properties: Record<string, unknown>;
 }
 
 interface GraphEdge {
   id: string;
   from_node: string;
   to_node: string;
-  type: string;
+  edge_type: string;
 }
 
-interface Event {
+interface TransitionPath {
+  from: string;
+  to: string;
+}
+
+interface Message {
+  role: string;
+  content: string;
+  name?: string;
+  tool_call_id?: string;
+  tool_calls?: unknown[];
+}
+
+interface ContextFrame {
+  id: string;
+  body: string;
+  sources: string[];
+  revision: number;
+  created_version: number;
+  updated_version: number;
+}
+
+interface MindState {
+  version: number;
+  frames: ContextFrame[];
+  retired: string[];
+  protected: string[];
+}
+
+interface ContextObservation {
+  id: string;
+  kind: string;
+  topic: string;
+  actor: string;
+  timestamp: string;
+  preview: string;
+  truncated: boolean;
+  protected: boolean;
+  tool_name?: string;
+}
+
+interface ContextPressure {
+  level: 'normal' | 'notice' | 'warning' | 'critical';
+  estimated_tokens: number;
+  soft_limit: number;
+  hard_limit: number;
+  maintenance_reserve: number;
+  active_frames: number;
+  active_observations: number;
+}
+
+interface TurnBudget {
+  attempt: number;
+  limit: number;
+  remaining_including_current: number;
+  force_final: boolean;
+}
+
+interface WakeSignal {
+  cause: 'session-start' | 'user-message' | 'tool-output' | 'context-transaction-result';
+  event_id?: string;
+  tool_name?: string;
+  visible_in_inbox: boolean;
+}
+
+interface EventPayload {
+  text?: string;
+  messages?: Message[];
+  session_id?: string;
+  anchors?: GraphNode[];
+  neighbor_nodes?: GraphNode[];
+  walked_edges?: GraphEdge[];
+  transition_paths?: TransitionPath[];
+  mind?: MindState;
+  inbox?: ContextObservation[];
+  pressure?: ContextPressure;
+  turn_budget?: TurnBudget;
+  wake?: WakeSignal;
+  [key: string]: unknown;
+}
+
+interface MorphzEvent {
   id: string;
   timestamp: string;
   actor: string;
   type: string;
   topic: string;
-  payload: { [key: string]: any };
-}
-
-interface Message {
-  Role: string;
-  Content: string;
-  Name: string;
-  ToolCallID: string;
-  ToolCalls: any[];
+  payload: EventPayload;
 }
 
 export default function App() {
   const [wsStatus, setWsStatus] = useState<'connected' | 'disconnected' | 'connecting'>('connecting');
-  const [events, setEvents] = useState<Event[]>([]);
+  const [events, setEvents] = useState<MorphzEvent[]>([]);
   const [contextMsgs, setContextMsgs] = useState<Message[]>([]);
+  const [mind, setMind] = useState<MindState | null>(null);
+  const [inbox, setInbox] = useState<ContextObservation[]>([]);
+  const [pressure, setPressure] = useState<ContextPressure | null>(null);
+  const [turnBudget, setTurnBudget] = useState<TurnBudget | null>(null);
+  const [wake, setWake] = useState<WakeSignal | null>(null);
   const [sessionId, setSessionId] = useState<string>('');
   
   const graphRef = useRef<HTMLDivElement>(null);
   const networkRef = useRef<Network | null>(null);
-  const nodesDataSetRef = useRef<DataSet<any> | null>(null);
-  const edgesDataSetRef = useRef<DataSet<any> | null>(null);
+  const nodesDataSetRef = useRef<DataSet<VisNode> | null>(null);
+  const edgesDataSetRef = useRef<DataSet<VisEdge> | null>(null);
   const animationTimersRef = useRef<number[]>([]);
 
-  // 1. 初始化或重新获取 Graph 拓扑数据
-  const fetchGraph = async () => {
-    try {
-      const resp = await fetch('http://127.0.0.1:8080/api/graph');
-      if (!resp.ok) return;
-      const data = await resp.json();
-      updateGraphData(data.nodes || [], data.edges || []);
-    } catch (err) {
-      console.error('Failed to fetch graph data:', err);
-    }
-  };
-
-  const updateGraphData = (nodes: GraphNode[], edges: GraphEdge[]) => {
+  const updateGraphData = useCallback((nodes: GraphNode[], edges: GraphEdge[]) => {
     if (!nodesDataSetRef.current || !edgesDataSetRef.current) return;
 
     // 格式化为 vis.js 所需的数据格式
     const formattedNodes = nodes.map(n => {
-      const displayName = n.properties?.name || n.id;
+      const displayName = typeof n.properties?.name === 'string' ? n.properties.name : n.id;
       return {
         id: n.id,
         label: displayName,
@@ -88,7 +159,7 @@ export default function App() {
       id: e.id,
       from: e.from_node,
       to: e.to_node,
-      label: e.type,
+      label: e.edge_type,
       font: { color: '#94a3b8', size: 10, strokeWidth: 0 }
     }));
 
@@ -100,10 +171,23 @@ export default function App() {
     if (networkRef.current) {
       networkRef.current.fit({ animation: true });
     }
-  };
+  }, []);
+
+  // 1. 初始化或重新获取 Graph 拓扑数据
+  const fetchGraph = useCallback(async () => {
+    try {
+      const headers = CORE_TOKEN ? { Authorization: `Bearer ${CORE_TOKEN}` } : undefined;
+      const resp = await fetch(`${CORE_HTTP_URL}/api/graph`, { headers });
+      if (!resp.ok) return;
+      const data = await resp.json() as { nodes?: GraphNode[]; edges?: GraphEdge[] };
+      updateGraphData(data.nodes ?? [], data.edges ?? []);
+    } catch (err) {
+      console.error('Failed to fetch graph data:', err);
+    }
+  }, [updateGraphData]);
 
   // 1.1 语义漫游实时亮灯动效实现
-  const handleMemoryWalk = (payload: any) => {
+  const handleMemoryWalk = useCallback((payload: EventPayload) => {
     if (!nodesDataSetRef.current || !edgesDataSetRef.current || !networkRef.current) return;
     console.log('💡 [Memory Walk Path] 漫游足迹详情:', payload);
 
@@ -119,17 +203,17 @@ export default function App() {
     const originalNodes = nodesDataSet.get();
     const originalEdges = edgesDataSet.get();
 
-    const anchorIds = new Set((payload.anchors || []).map((n: any) => n.id));
-    const neighborIds = new Set((payload.neighbor_nodes || []).map((n: any) => n.id));
-    const walkedEdgeIds = new Set((payload.walked_edges || []).map((e: any) => e.id));
+    const anchorIds = new Set((payload.anchors ?? []).map(node => node.id));
+    const neighborIds = new Set((payload.neighbor_nodes ?? []).map(node => node.id));
+    const walkedEdgeIds = new Set((payload.walked_edges ?? []).map(edge => edge.id));
     
-    const transitionPaths = payload.transition_paths || [];
-    const transitionIds = new Set(transitionPaths.map((p: any) => p.to));
+    const transitionPaths = payload.transition_paths ?? [];
+    const transitionIds = new Set(transitionPaths.map(path => path.to));
     const tempEdgeIds: string[] = [];
 
     // --- 步骤 0: 暗淡全图 (t = 0ms) ---
-    const dimNodes = originalNodes.map((n: any) => ({
-      id: n.id,
+    const dimNodes = originalNodes.map(node => ({
+      id: node.id,
       color: {
         background: '#0f172a',
         border: '#1e293b',
@@ -137,8 +221,8 @@ export default function App() {
       font: { color: '#475569' },
       size: 14,
     }));
-    const dimEdges = originalEdges.map((e: any) => ({
-      id: e.id,
+    const dimEdges = originalEdges.map(edge => ({
+      id: edge.id,
       color: { color: 'rgba(30, 41, 59, 0.3)' },
       width: 1,
     }));
@@ -149,9 +233,9 @@ export default function App() {
     // --- 步骤 1: 聚焦并点亮金黄色锚点 (t = 300ms) ---
     const t1 = window.setTimeout(() => {
       const activeAnchors = originalNodes
-        .filter((n: any) => anchorIds.has(n.id))
-        .map((n: any) => ({
-          id: n.id,
+        .filter(node => node.id !== undefined && anchorIds.has(String(node.id)))
+        .map(node => ({
+          id: node.id,
           color: {
             background: '#fbbf24',
             border: '#d97706',
@@ -164,7 +248,7 @@ export default function App() {
         nodesDataSet.update(activeAnchors);
         // 平滑聚焦首个锚点
         const firstAnchorId = activeAnchors[0].id;
-        network.focus(firstAnchorId, {
+        if (firstAnchorId !== undefined) network.focus(firstAnchorId, {
           scale: 1.2,
           animation: {
             duration: 1000,
@@ -178,9 +262,9 @@ export default function App() {
     // --- 步骤 2: 点亮类比激活跃迁点，并临时绘制紫色虚线连接 (t = 1500ms) ---
     const t2 = window.setTimeout(() => {
       const activeTransitions = originalNodes
-        .filter((n: any) => transitionIds.has(n.id))
-        .map((n: any) => ({
-          id: n.id,
+        .filter(node => node.id !== undefined && transitionIds.has(String(node.id)))
+        .map(node => ({
+          id: node.id,
           color: {
             background: '#c084fc',
             border: '#7c3aed',
@@ -193,7 +277,7 @@ export default function App() {
         nodesDataSet.update(activeTransitions);
       }
 
-      transitionPaths.forEach((path: any, index: number) => {
+      transitionPaths.forEach((path, index) => {
         if (nodesDataSet.get(path.from) && nodesDataSet.get(path.to)) {
           const tempEdgeId = `temp-trans-${path.from}-${path.to}-${index}`;
           tempEdgeIds.push(tempEdgeId);
@@ -216,9 +300,9 @@ export default function App() {
     // --- 步骤 3: 拓扑扩散，高亮亮绿色的边与翡翠绿的一跳邻节点 (t = 2700ms) ---
     const t3 = window.setTimeout(() => {
       const activeEdges = originalEdges
-        .filter((e: any) => walkedEdgeIds.has(e.id))
-        .map((e: any) => ({
-          id: e.id,
+        .filter(edge => edge.id !== undefined && walkedEdgeIds.has(String(edge.id)))
+        .map(edge => ({
+          id: edge.id,
           color: { color: '#34d399', opacity: 1 },
           width: 4.5,
         }));
@@ -227,9 +311,9 @@ export default function App() {
       }
 
       const activeNeighbors = originalNodes
-        .filter((n: any) => neighborIds.has(n.id))
-        .map((n: any) => ({
-          id: n.id,
+        .filter(node => node.id !== undefined && neighborIds.has(String(node.id)))
+        .map(node => ({
+          id: node.id,
           color: {
             background: '#34d399',
             border: '#059669',
@@ -246,24 +330,20 @@ export default function App() {
 
     // --- 步骤 4: 渐进式淡出复原并清理临时虚线边 (t = 5500ms) ---
     const t4 = window.setTimeout(() => {
-      tempEdgeIds.forEach(id => {
-        try {
-          edgesDataSet.remove(id);
-        } catch (_) {}
-      });
+      tempEdgeIds.forEach(id => edgesDataSet.remove(id));
       nodesDataSet.update(originalNodes);
       edgesDataSet.update(originalEdges);
       network.fit({ animation: true });
     }, 5500);
     animationTimersRef.current.push(t4);
-  };
+  }, []);
 
   // 2. 初始化 vis.js Network 力导向图
   useEffect(() => {
     if (!graphRef.current) return;
 
-    const nodesDataSet = new DataSet([]);
-    const edgesDataSet = new DataSet([]);
+    const nodesDataSet = new DataSet<VisNode>([]);
+    const edgesDataSet = new DataSet<VisEdge>([]);
     nodesDataSetRef.current = nodesDataSet;
     edgesDataSetRef.current = edgesDataSet;
 
@@ -327,16 +407,19 @@ export default function App() {
     return () => {
       network.destroy();
     };
-  }, []);
+  }, [fetchGraph]);
 
   // 3. 建立 WebSocket 通信连接
   useEffect(() => {
     let ws: WebSocket;
-    let reconnectTimer: any;
+    let reconnectTimer: number | undefined;
 
     const connect = () => {
       setWsStatus('connecting');
-      ws = new WebSocket('ws://127.0.0.1:8080/ws');
+      const wsUrl = CORE_TOKEN
+        ? `${CORE_WS_URL}?token=${encodeURIComponent(CORE_TOKEN)}`
+        : CORE_WS_URL;
+      ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
         setWsStatus('connected');
@@ -345,22 +428,31 @@ export default function App() {
 
       ws.onmessage = (eventMsg) => {
         try {
-          const data = JSON.parse(eventMsg.data);
+          const data = JSON.parse(eventMsg.data) as MorphzEvent | {
+            type: 'init_graph';
+            nodes?: GraphNode[];
+            edges?: GraphEdge[];
+          };
 
           // 处理初始化推送数据
-          if (data.type === 'init_graph') {
-            updateGraphData(data.nodes || [], data.edges || []);
+          if (data.type === 'init_graph' && 'nodes' in data) {
+            updateGraphData(data.nodes ?? [], data.edges ?? []);
             return;
           }
 
           // 解析出事件实体
-          const ev: Event = data;
+          const ev = data as MorphzEvent;
           
           // 如果是 L3 Context 监视数据事件
           if (ev.topic === 'chat/context_inspect') {
-            const msgs = ev.payload?.messages || [];
+            const msgs = ev.payload.messages ?? [];
             setContextMsgs(msgs);
-            const sess = ev.payload?.session_id || '';
+            setMind(ev.payload.mind ?? null);
+            setInbox(ev.payload.inbox ?? []);
+            setPressure(ev.payload.pressure ?? null);
+            setTurnBudget(ev.payload.turn_budget ?? null);
+            setWake(ev.payload.wake ?? null);
+            const sess = ev.payload.session_id ?? '';
             setSessionId(sess);
           }
 
@@ -398,9 +490,9 @@ export default function App() {
 
     return () => {
       if (ws) ws.close();
-      clearTimeout(reconnectTimer);
+      if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
     };
-  }, []);
+  }, [fetchGraph, handleMemoryWalk, updateGraphData]);
 
   // 格式化时间戳
   const formatTime = (tsStr: string) => {
@@ -419,7 +511,7 @@ export default function App() {
         <div className="flex items-center gap-3">
           <Activity className="h-6 w-6 text-blue-500 animate-pulse" />
           <h1 className="text-xl font-bold tracking-wider bg-gradient-to-r from-blue-400 to-indigo-400 bg-clip-text text-transparent">
-            MORPHZ <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-white/10 text-white">CORE CANVAS</span>
+            MORPHZ <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-white/10 text-white">MIND INSPECTOR</span>
           </h1>
         </div>
 
@@ -448,15 +540,15 @@ export default function App() {
       {/* 主工作区 */}
       <main className="flex-1 p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 overflow-hidden">
         {/* 左栏：长期记忆网络拓扑 (vis-network) */}
-        <section className="lg:col-span-7 flex flex-col glass-panel rounded-2xl overflow-hidden shadow-2xl relative">
+        <section className="lg:col-span-4 flex flex-col glass-panel rounded-2xl overflow-hidden shadow-2xl relative">
           <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between bg-white/2">
             <div className="flex items-center gap-2">
               <NetIcon className="h-5 w-5 text-blue-400" />
               <h2 className="text-sm font-semibold tracking-wide text-gray-200">
-                L2 长期记忆关联网络 (Graph Memory)
+                Recall 索引实验区 (不自动注入 Mind)
               </h2>
             </div>
-            <span className="text-xs text-gray-400">双击节点可高亮展示，支持拖拽力学缩放</span>
+            <span className="text-xs text-gray-400">仅供观察，不参与 v1 Context 装配</span>
           </div>
 
           {/* vis.js network container */}
@@ -476,20 +568,94 @@ export default function App() {
         </section>
 
         {/* 右栏：Context 监视与事件瀑布 */}
-        <section className="lg:col-span-5 flex flex-col gap-6 overflow-y-auto">
+        <section className="lg:col-span-8 flex flex-col gap-6 overflow-y-auto">
           {/* L3 Context 推理上下文监视 */}
-          <div className="glass-panel rounded-2xl flex flex-col max-h-[350px] overflow-hidden">
+          <div className="glass-panel rounded-2xl flex flex-col max-h-[520px] overflow-hidden">
             <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between bg-white/2">
               <div className="flex items-center gap-2">
                 <Cpu className="h-5 w-5 text-indigo-400" />
                 <h2 className="text-sm font-semibold tracking-wide text-gray-200">
-                  L3 Context 视口监视器 (LLM Inspector)
+                  Agent-Owned Context Inspector
                 </h2>
               </div>
-              {sessionId && <span className="text-[10px] text-gray-400 font-mono">SESS: {sessionId}</span>}
+              <div className="flex items-center gap-2 text-[10px] font-mono">
+                {mind && <span className="text-indigo-300">V{mind.version}</span>}
+                {turnBudget && <span className={turnBudget.force_final ? 'text-rose-300' : 'text-cyan-300'}>A{turnBudget.attempt}/{turnBudget.limit}</span>}
+                {wake && <span className="text-violet-300">WAKE:{wake.cause}{wake.tool_name ? `/${wake.tool_name}` : ''}</span>}
+                {pressure && (
+                  <span className={`px-2 py-0.5 rounded-full border ${
+                    pressure.level === 'critical' ? 'text-rose-300 border-rose-500/30 bg-rose-500/10' :
+                    pressure.level === 'warning' ? 'text-amber-300 border-amber-500/30 bg-amber-500/10' :
+                    pressure.level === 'notice' ? 'text-blue-300 border-blue-500/30 bg-blue-500/10' :
+                    'text-emerald-300 border-emerald-500/30 bg-emerald-500/10'
+                  }`}>{pressure.level}</span>
+                )}
+                {sessionId && <span className="text-gray-400">SESS: {sessionId}</span>}
+              </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
+              {pressure && (
+                <div className="grid grid-cols-3 gap-2 text-[10px] font-mono">
+                  <div className="rounded-lg border border-indigo-500/15 bg-indigo-500/5 p-2">
+                    <div className="text-gray-500">ACTIVE FRAMES</div>
+                    <div className="text-indigo-300 text-sm">{pressure.active_frames}</div>
+                  </div>
+                  <div className="rounded-lg border border-blue-500/15 bg-blue-500/5 p-2">
+                    <div className="text-gray-500">INBOX</div>
+                    <div className="text-blue-300 text-sm">{pressure.active_observations}</div>
+                  </div>
+                  <div className="rounded-lg border border-emerald-500/15 bg-emerald-500/5 p-2">
+                    <div className="text-gray-500">EST. TOKENS</div>
+                    <div className="text-emerald-300 text-sm">{pressure.estimated_tokens.toLocaleString()}</div>
+                  </div>
+                </div>
+              )}
+
+              {mind && mind.frames.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  <div className="text-[10px] uppercase tracking-widest text-gray-500">Agent-Owned Mind Frames</div>
+                  {mind.frames
+                    .filter(frame => !mind.retired.includes(frame.id))
+                    .map(frame => (
+                      <div key={frame.id} className="rounded-xl border border-violet-500/20 bg-violet-950/15 p-3">
+                        <div className="flex items-center justify-between text-[10px] font-mono mb-2">
+                          <span className="text-violet-300">{frame.id}</span>
+                          <span className="text-gray-500">
+                            r{frame.revision}{mind.protected.includes(frame.id) ? ' · protected' : ''}
+                          </span>
+                        </div>
+                        <div className="whitespace-pre-wrap text-[11px] leading-relaxed font-mono text-violet-100">{frame.body}</div>
+                        {frame.sources.length > 0 && (
+                          <div className="mt-2 text-[9px] text-gray-500 font-mono break-all">
+                            FROM: {frame.sources.join(', ')}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                </div>
+              )}
+
+              {inbox.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  <div className="text-[10px] uppercase tracking-widest text-gray-500">Unretired Ledger Observations</div>
+                  {inbox.slice(-8).map(observation => (
+                    <div key={observation.id} className="rounded-xl border border-blue-500/15 bg-blue-950/10 p-3">
+                      <div className="flex items-center justify-between gap-2 text-[9px] font-mono mb-1.5">
+                        <span className="text-blue-300 truncate">{observation.id}</span>
+                        <span className="text-gray-500 shrink-0">{observation.tool_name ?? observation.kind}</span>
+                      </div>
+                      <div className="whitespace-pre-wrap text-[10px] leading-relaxed font-mono text-blue-100 max-h-20 overflow-y-auto">
+                        {observation.preview}
+                      </div>
+                      {observation.truncated && <div className="text-[9px] text-amber-400 mt-1">preview only · recall full-ref</div>}
+                    </div>
+                  ))}
+                  {inbox.length > 8 && <div className="text-[9px] text-gray-500 text-center">仅展示最近 8 条，共 {inbox.length} 条 active observation</div>}
+                </div>
+              )}
+
+              <div className="text-[10px] uppercase tracking-widest text-gray-500 mt-1">Compiled Model Messages</div>
               {contextMsgs.length === 0 ? (
                 <div className="h-32 flex flex-col items-center justify-center text-xs text-gray-500">
                   <span>等待大模型触发推理...</span>
@@ -497,10 +663,10 @@ export default function App() {
                 </div>
               ) : (
                 contextMsgs.map((msg, index) => {
-                  const isSystem = msg.Role === 'system';
-                  const isUser = msg.Role === 'user';
-                  const isAssistant = msg.Role === 'assistant';
-                  const isTool = msg.Role === 'tool';
+                  const isSystem = msg.role === 'system';
+                  const isUser = msg.role === 'user';
+                  const isAssistant = msg.role === 'assistant';
+                  const isTool = msg.role === 'tool';
                   
                   return (
                     <div 
@@ -518,12 +684,12 @@ export default function App() {
                           {isAssistant && <Bot className="h-3 w-3" />}
                           {isTool && <Wrench className="h-3 w-3" />}
                           {isSystem && <Settings className="h-3 w-3" />}
-                          <span>{msg.Role}</span>
+                          <span>{msg.role}</span>
                         </div>
-                        {msg.Name && <span className="font-mono">({msg.Name})</span>}
+                        {msg.name && <span className="font-mono">({msg.name})</span>}
                       </div>
                       <div className="whitespace-pre-wrap leading-relaxed mt-1 font-mono text-[11px]">
-                        {msg.Content}
+                        {msg.content}
                       </div>
                     </div>
                   );

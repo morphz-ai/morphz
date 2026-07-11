@@ -16,7 +16,12 @@ pub fn load_model() -> Result<ModelStore, Box<dyn std::error::Error>> {
     let tokenizer_path = model_dir.join("tokenizer.json");
 
     if !config_path.exists() || !tokenizer_path.exists() {
-        return Err(format!("缺失配置文件 {} 或 {}", config_path.display(), tokenizer_path.display()).into());
+        return Err(format!(
+            "缺失配置文件 {} 或 {}",
+            config_path.display(),
+            tokenizer_path.display()
+        )
+        .into());
     }
 
     // 1. 读取并解析 Config
@@ -37,7 +42,11 @@ pub fn load_model() -> Result<ModelStore, Box<dyn std::error::Error>> {
     } else if bin_path.exists() {
         VarBuilder::from_pth(&bin_path, DType::F32, &device)?
     } else {
-        return Err(format!("未在 models/bge-small-zh-1.5/ 找到 model.safetensors 或 pytorch_model.bin").into());
+        return Err(
+            "未在 models/bge-small-zh-1.5/ 找到 model.safetensors 或 pytorch_model.bin"
+                .to_string()
+                .into(),
+        );
     };
 
     // 4. 加载 BertModel
@@ -50,11 +59,16 @@ pub fn load_model() -> Result<ModelStore, Box<dyn std::error::Error>> {
     })
 }
 
-pub fn compute_embedding(store: &ModelStore, text: &str) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+pub fn compute_embedding(
+    store: &ModelStore,
+    text: &str,
+) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
     // 1. 词例化
-    let tokens = store.tokenizer.encode(text, true)
+    let tokens = store
+        .tokenizer
+        .encode(text, true)
         .map_err(|e| format!("分词失败: {e}"))?;
-    
+
     let ids = tokens.get_ids();
     let token_len = ids.len();
     if token_len == 0 {
@@ -63,13 +77,12 @@ pub fn compute_embedding(store: &ModelStore, text: &str) -> Result<Vec<f32>, Box
 
     // 2. 将数据转为 Tensor [batch=1, seq_len]
     let input_ids = Tensor::new(ids, &store.device)?.unsqueeze(0)?;
-    
+
     // token_type_ids: 单句全是 0
     let token_type_ids = Tensor::zeros((1, token_len), DType::U32, &store.device)?;
 
     // 3. BERT 前向传递
     let sequence_output = store.model.forward(&input_ids, &token_type_ids, None)?;
-
 
     // sequence_output 形状: [1, seq_len, hidden_size]
     // 4. Mean Pooling (对维度 1 沿着 Token 长度方向求平均)

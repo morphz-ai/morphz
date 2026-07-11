@@ -1,5 +1,8 @@
 # Morphz 整体软件架构设计文档 (High-Level Architecture)
 
+> [!WARNING]
+> 本文包含早期固定 Context Fold、自动 GraphMemory 注入和后台语义整理方案。当前 Agent 主链路以 [Agent-Owned Context](./morphz_agent_owned_context_design.md) 为准；本文仅保留为系统工程背景材料。
+
 本设计文档规范了下一代智能体框架 `Morphz` 迁移为**纯 Rust 架构**后的高层软件架构、子系统职责、进程模型以及通信协议。
 
 ---

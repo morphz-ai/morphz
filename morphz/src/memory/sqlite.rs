@@ -1,36 +1,45 @@
+use crate::config::MemoryConfig;
 use crate::event::Event;
 use crate::memory::{Edge, EventStore, GraphStore, Node, QueryFilter};
+use arrow_array::Array;
 use chrono::{DateTime, Utc};
+use futures_util::TryStreamExt;
+use lancedb::query::{ExecutableQuery, QueryBase};
 use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::{QueryBuilder, Row, SqlitePool};
 use std::collections::HashMap;
 use std::sync::Arc;
-use futures_util::TryStreamExt;
-use lancedb::query::{QueryBase, ExecutableQuery};
-use arrow_array::Array;
-
-
-
 
 pub struct SqliteStore {
     pool: SqlitePool,
     vector_dim: i32,
     schema: Arc<arrow_schema::Schema>,
     lance_table: lancedb::Table,
+    /// 基于模型元数据的向量过滤阈值（替代硬编码的 dim==256 判断）
+    pub vector_filter_threshold: f32,
+    fts_search_limit: usize,
+    cte_path_width_limit: usize,
 }
 
 impl SqliteStore {
     pub async fn new(db_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::new_with_config(db_path, &MemoryConfig::default()).await
+    }
+
+    pub async fn new_with_config(
+        db_path: &str,
+        config: &MemoryConfig,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let options = SqliteConnectOptions::new()
             .filename(db_path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .busy_timeout(std::time::Duration::from_secs(5)); // 5秒锁重试
 
-        // 启用连接池并发，最大连接数设为 8，利用 WAL 模式的单写多读优势
+        // 启用连接池并发，利用 WAL 模式的单写多读优势。
         let pool = SqlitePoolOptions::new()
-            .max_connections(8)
+            .max_connections(config.sqlite_pool_size.max(1))
             .connect_with(options)
             .await?;
 
@@ -47,6 +56,7 @@ impl SqliteStore {
             actor TEXT NOT NULL,
             type TEXT NOT NULL,
             topic TEXT NOT NULL,
+            session_id TEXT,
             payload TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
@@ -77,15 +87,12 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_edges_from ON graph_edges(from_node);
         CREATE INDEX IF NOT EXISTS idx_edges_to ON graph_edges(to_node);
 
-        CREATE TABLE IF NOT EXISTS context_snapshots (
-            session_id TEXT NOT NULL,
-            step INTEGER NOT NULL,
-            snapshot_data TEXT NOT NULL,
-            last_event_id TEXT NOT NULL,
-            last_event_time TEXT NOT NULL,
-            PRIMARY KEY (session_id, step)
+        -- 模型元数据表：记录嵌入模型、维度、相似度阈值（消除硬编码的 dim 启发式判断）
+        CREATE TABLE IF NOT EXISTS model_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         );
-        CREATE INDEX IF NOT EXISTS idx_snapshots_session ON context_snapshots(session_id);
 
         -- 创建 FTS5 全文检索虚拟表，使用外部内容表指向 graph_nodes
         CREATE VIRTUAL TABLE IF NOT EXISTS graph_nodes_fts USING fts5(
@@ -119,15 +126,43 @@ impl SqliteStore {
 
         sqlx::query(ddl).execute(&pool).await?;
 
+        // v1 migration：旧 events 表没有 session_id 物理列。Context Engine 必须能按
+        // session 精确查询，不能每轮加载全局事件后在 Rust 中过滤。
+        let columns = sqlx::query("PRAGMA table_info(events)")
+            .fetch_all(&pool)
+            .await?;
+        let has_session_id = columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "session_id");
+        if !has_session_id {
+            sqlx::query("ALTER TABLE events ADD COLUMN session_id TEXT")
+                .execute(&pool)
+                .await?;
+        }
+        sqlx::query(
+            "UPDATE events SET session_id = json_extract(payload, '$.session_id') WHERE session_id IS NULL",
+        )
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_events_session_time ON events(session_id, timestamp)",
+        )
+        .execute(&pool)
+        .await?;
+
         // 初始化 LanceDB
         // 根据 db_path 计算出独占的 lancedb 目录，保证单元测试完全隔离并防止并发写冲突
         let lance_dir = if db_path == "morphz.db" {
             let home = std::env::var("HOME").unwrap_or_default();
-            std::path::Path::new(&home).join(".morphz").join("lancedb").to_string_lossy().to_string()
+            std::path::Path::new(&home)
+                .join(".morphz")
+                .join("lancedb")
+                .to_string_lossy()
+                .to_string()
         } else {
             format!("{}_lancedb", db_path)
         };
-        
+
         let _ = tokio::fs::create_dir_all(&lance_dir).await;
         let lance_conn = lancedb::connect(&lance_dir).execute().await?;
 
@@ -138,16 +173,46 @@ impl SqliteStore {
             256
         };
 
+        // 根据模型类型设定向量过滤阈值，并持久化到元数据表
+        let (model_name, vector_filter_threshold) = if vector_dim == 512 {
+            ("bge-small-zh-1.5", config.vector_filter_threshold_high)
+        } else {
+            ("hashing-ngram-256", config.vector_filter_threshold_low)
+        };
+        let now_str = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        for (key, value) in [
+            ("embedding_model", model_name.to_string()),
+            ("embedding_dim", vector_dim.to_string()),
+            (
+                "vector_filter_threshold",
+                vector_filter_threshold.to_string(),
+            ),
+        ] {
+            sqlx::query(
+                r#"INSERT INTO model_metadata (key, value, updated_at) VALUES (?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at"#,
+            )
+            .bind(key)
+            .bind(&value)
+            .bind(&now_str)
+            .execute(&pool)
+            .await?;
+        }
+
         // 构造 Schema
         let schema = Arc::new(arrow_schema::Schema::new(vec![
             arrow_schema::Field::new("id", arrow_schema::DataType::Utf8, false),
             arrow_schema::Field::new(
                 "vector",
                 arrow_schema::DataType::FixedSizeList(
-                    Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float32, true)),
-                    vector_dim
+                    Arc::new(arrow_schema::Field::new(
+                        "item",
+                        arrow_schema::DataType::Float32,
+                        true,
+                    )),
+                    vector_dim,
                 ),
-                false
+                false,
             ),
         ]));
 
@@ -155,11 +220,22 @@ impl SqliteStore {
             Ok(t) => t,
             Err(_) => {
                 let empty_batch = arrow_array::RecordBatch::new_empty(schema.clone());
-                lance_conn.create_table("graph_nodes_vector", empty_batch).execute().await?
+                lance_conn
+                    .create_table("graph_nodes_vector", empty_batch)
+                    .execute()
+                    .await?
             }
         };
 
-        Ok(Self { pool, vector_dim, schema, lance_table: table })
+        Ok(Self {
+            pool,
+            vector_dim,
+            schema,
+            lance_table: table,
+            vector_filter_threshold,
+            fts_search_limit: config.fts_search_limit,
+            cte_path_width_limit: config.cte_path_width_limit,
+        })
     }
 }
 
@@ -175,17 +251,17 @@ fn encode_embedding(vec: &Option<Vec<f32>>) -> Option<Vec<u8>> {
 }
 
 fn decode_embedding(buf: &[u8]) -> Option<Vec<f32>> {
-    if buf.is_empty() || buf.len() % 4 != 0 {
+    if buf.is_empty() || !buf.len().is_multiple_of(4) {
         return None;
     }
-    let vec = buf
+    let vec: Option<Vec<f32>> = buf
         .chunks_exact(4)
         .map(|chunk| {
-            let bytes = chunk.try_into().unwrap();
-            f32::from_le_bytes(bytes)
+            let bytes: [u8; 4] = chunk.try_into().ok()?;
+            Some(f32::from_le_bytes(bytes))
         })
         .collect();
-    Some(vec)
+    vec
 }
 
 fn parse_time(s: &str) -> DateTime<Utc> {
@@ -197,6 +273,11 @@ fn parse_time(s: &str) -> DateTime<Utc> {
         })
 }
 
+/// 转义 LanceDB 查询中的单引号，防止 SQL 注入
+fn escape_lance_id(id: &str) -> String {
+    id.replace('\'', "''")
+}
+
 #[async_trait::async_trait]
 impl EventStore for SqliteStore {
     async fn append(&self, ev: Event) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -204,13 +285,18 @@ impl EventStore for SqliteStore {
         let time_str = ev
             .timestamp
             .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let session_id = ev
+            .payload
+            .get("session_id")
+            .and_then(|value| value.as_str());
 
-        sqlx::query("INSERT INTO events (id, timestamp, actor, type, topic, payload) VALUES (?, ?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO events (id, timestamp, actor, type, topic, session_id, payload) VALUES (?, ?, ?, ?, ?, ?, ?)")
             .bind(&ev.id)
             .bind(&time_str)
             .bind(&ev.actor)
             .bind(&ev.event_type)
             .bind(&ev.topic)
+            .bind(session_id)
             .bind(&payload_str)
             .execute(&self.pool)
             .await?;
@@ -218,8 +304,18 @@ impl EventStore for SqliteStore {
         Ok(())
     }
 
-    async fn query(&self, filter: QueryFilter) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
-        let mut builder = QueryBuilder::new("SELECT id, timestamp, actor, type, topic, payload FROM events WHERE 1=1");
+    async fn query(
+        &self,
+        filter: QueryFilter,
+    ) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut builder = QueryBuilder::new(
+            "SELECT id, timestamp, actor, type, topic, payload FROM events WHERE 1=1",
+        );
+
+        if let Some(session_id) = filter.session_id {
+            builder.push(" AND session_id = ");
+            builder.push_bind(session_id);
+        }
 
         if let Some(st) = filter.start_time {
             builder.push(" AND timestamp >= ");
@@ -304,52 +400,6 @@ impl EventStore for SqliteStore {
 
         Ok(events)
     }
-
-    async fn save_snapshot(
-        &self, 
-        session_id: &str, 
-        step: i32, 
-        snapshot_data: &str, 
-        last_event_id: &str, 
-        last_event_time: &str
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let query = r#"
-            INSERT INTO context_snapshots (session_id, step, snapshot_data, last_event_id, last_event_time)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(session_id, step) DO UPDATE SET
-                snapshot_data=excluded.snapshot_data,
-                last_event_id=excluded.last_event_id,
-                last_event_time=excluded.last_event_time
-        "#;
-        sqlx::query(query)
-            .bind(session_id)
-            .bind(step)
-            .bind(snapshot_data)
-            .bind(last_event_id)
-            .bind(last_event_time)
-            .execute(&self.pool)
-            .await?;
-        Ok(())
-    }
-
-    async fn get_latest_snapshot(
-        &self, 
-        session_id: &str
-    ) -> Result<Option<(i32, String, String, String)>, Box<dyn std::error::Error + Send + Sync>> {
-        let row = sqlx::query("SELECT step, snapshot_data, last_event_id, last_event_time FROM context_snapshots WHERE session_id = ? ORDER BY step DESC LIMIT 1")
-            .bind(session_id)
-            .fetch_optional(&self.pool)
-            .await?;
-        if let Some(r) = row {
-            let step: i32 = r.get("step");
-            let snapshot_data: String = r.get("snapshot_data");
-            let last_event_id: String = r.get("last_event_id");
-            let last_event_time: String = r.get("last_event_time");
-            Ok(Some((step, snapshot_data, last_event_id, last_event_time)))
-        } else {
-            Ok(None)
-        }
-    }
 }
 
 #[async_trait::async_trait]
@@ -383,34 +433,36 @@ impl GraphStore for SqliteStore {
 
         // 同步写入/更新 LanceDB 向量数据
         if let Some(ref emb) = node.embedding {
-            let _ = self.lance_table.delete(&format!("id = '{}'", node.id)).await;
+            let _ = self
+                .lance_table
+                .delete(&format!("id = '{}'", escape_lance_id(&node.id)))
+                .await;
 
-            use arrow_array::{StringArray, FixedSizeListArray, Float32Array, RecordBatch};
-            
+            use arrow_array::{FixedSizeListArray, Float32Array, RecordBatch, StringArray};
+
             let ids = StringArray::from(vec![node.id.as_str()]);
             let val_array = Float32Array::from(emb.clone());
             let values_ref: Arc<dyn arrow_array::Array> = Arc::new(val_array);
-            let item_field = Arc::new(arrow_schema::Field::new("item", arrow_schema::DataType::Float32, true));
-            let list_array = FixedSizeListArray::try_new(
-                item_field,
-                self.vector_dim,
-                values_ref,
-                None
-            )?;
-            
+            let item_field = Arc::new(arrow_schema::Field::new(
+                "item",
+                arrow_schema::DataType::Float32,
+                true,
+            ));
+            let list_array =
+                FixedSizeListArray::try_new(item_field, self.vector_dim, values_ref, None)?;
+
             let batch = RecordBatch::try_new(
                 self.schema.clone(),
-                vec![
-                    Arc::new(ids),
-                    Arc::new(list_array)
-                ]
+                vec![Arc::new(ids), Arc::new(list_array)],
             )?;
 
             self.lance_table.add(batch).execute().await?;
         } else {
-            let _ = self.lance_table.delete(&format!("id = '{}'", node.id)).await;
+            let _ = self
+                .lance_table
+                .delete(&format!("id = '{}'", escape_lance_id(&node.id)))
+                .await;
         }
-
 
         Ok(())
     }
@@ -452,12 +504,20 @@ impl GraphStore for SqliteStore {
             .await?;
 
         // 从 LanceDB 中删除对应的向量记录
-        let _ = self.lance_table.delete(&format!("id = '{}'", id)).await;
+        let _ = self
+            .lance_table
+            .delete(&format!("id = '{}'", escape_lance_id(id)))
+            .await;
 
         Ok(())
     }
 
-    async fn delete_edge(&self, from_node: &str, to_node: &str, edge_type: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn delete_edge(
+        &self,
+        from_node: &str,
+        to_node: &str,
+        edge_type: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         sqlx::query("DELETE FROM graph_edges WHERE from_node = ? AND to_node = ? AND type = ?")
             .bind(from_node)
             .bind(to_node)
@@ -503,7 +563,10 @@ impl GraphStore for SqliteStore {
         })
     }
 
-    async fn get_neighbors(&self, id: &str) -> Result<(Vec<Node>, Vec<Edge>), Box<dyn std::error::Error + Send + Sync>> {
+    async fn get_neighbors(
+        &self,
+        id: &str,
+    ) -> Result<(Vec<Node>, Vec<Edge>), Box<dyn std::error::Error + Send + Sync>> {
         // 1. 查询相关的边
         let edge_rows = sqlx::query("SELECT id, from_node, to_node, type, properties, weight, is_permanent, last_accessed FROM graph_edges WHERE from_node = ? OR to_node = ?")
             .bind(id)
@@ -573,23 +636,33 @@ impl GraphStore for SqliteStore {
             });
         }
 
-        // 3. 自动将本次访问涉及到的点与边，更新 last_accessed 时间戳
+        // 3. 自动将本次访问涉及到的点与边批量更新 last_accessed 时间戳（消除 N+1 查询）
         let new_last_acc = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        for edge in &edges {
-            sqlx::query("UPDATE graph_edges SET last_accessed = ? WHERE id = ?")
-                .bind(&new_last_acc)
-                .bind(&edge.id)
-                .execute(&self.pool)
-                .await?;
+        if !edges.is_empty() {
+            let mut builder = QueryBuilder::new("UPDATE graph_edges SET last_accessed = ");
+            builder.push_bind(&new_last_acc);
+            builder.push(" WHERE id IN (");
+            let mut sep = builder.separated(", ");
+            for edge in &edges {
+                sep.push_bind(&edge.id);
+            }
+            builder.push(")");
+            builder.build().execute(&self.pool).await?;
         }
-        for node in &nodes {
-            sqlx::query("UPDATE graph_nodes SET last_accessed = ? WHERE id = ?")
-                .bind(&new_last_acc)
-                .bind(&node.id)
-                .execute(&self.pool)
-                .await?;
+
+        if !nodes.is_empty() {
+            let mut builder = QueryBuilder::new("UPDATE graph_nodes SET last_accessed = ");
+            builder.push_bind(&new_last_acc);
+            builder.push(" WHERE id IN (");
+            let mut sep = builder.separated(", ");
+            for node in &nodes {
+                sep.push_bind(&node.id);
+            }
+            builder.push(")");
+            builder.build().execute(&self.pool).await?;
         }
-        sqlx::query("UPDATE graph_nodes SET last_accessed = ? WHERE id = ?")
+
+        sqlx::query("UPDATE graph_nodes SET last_accessed = ?1 WHERE id = ?2")
             .bind(&new_last_acc)
             .bind(id)
             .execute(&self.pool)
@@ -598,24 +671,28 @@ impl GraphStore for SqliteStore {
         Ok((nodes, edges))
     }
 
-    async fn search_nodes_by_text(&self, text: &str) -> Result<Vec<Node>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn search_nodes_by_text(
+        &self,
+        text: &str,
+    ) -> Result<Vec<Node>, Box<dyn std::error::Error + Send + Sync>> {
         let lower_text = text.to_lowercase();
-        
+
         // 1. 尝试使用工业级 FTS5 全文检索 (BM25打分排序)
-        let cleaned_match_text = text.replace('"', " ").replace('*', " ").replace('\'', " ");
+        let cleaned_match_text = text.replace(['"', '*', '\''], " ");
         let fts5_query = r#"
             SELECT n.id, n.label, n.properties, n.embedding, n.is_permanent, n.last_accessed 
             FROM graph_nodes_fts f
             JOIN graph_nodes n ON f.rowid = n.rowid
             WHERE graph_nodes_fts MATCH ? 
             ORDER BY bm25(graph_nodes_fts) ASC 
-            LIMIT 10
+            LIMIT ?
         "#;
-        
+
         if let Ok(rows) = sqlx::query(fts5_query)
             .bind(&cleaned_match_text)
+            .bind(self.fts_search_limit as i64)
             .fetch_all(&self.pool)
-            .await 
+            .await
         {
             if !rows.is_empty() {
                 let mut nodes = Vec::new();
@@ -674,13 +751,18 @@ impl GraphStore for SqliteStore {
         Ok(nodes)
     }
 
-    async fn search_nodes_by_embedding(&self, query_embedding: &[f32], top_k: usize) -> Result<Vec<Node>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn search_nodes_by_embedding(
+        &self,
+        query_embedding: &[f32],
+        top_k: usize,
+    ) -> Result<Vec<Node>, Box<dyn std::error::Error + Send + Sync>> {
         if query_embedding.is_empty() {
             return Ok(Vec::new());
         }
 
         // 1. 使用 LanceDB 进行向量搜索
-        let results = self.lance_table
+        let results = self
+            .lance_table
             .query()
             .nearest_to(query_embedding)?
             .limit(top_k)
@@ -689,7 +771,6 @@ impl GraphStore for SqliteStore {
             .try_collect::<Vec<arrow_array::RecordBatch>>()
             .await?;
 
-
         let mut matched_ids = Vec::new();
         for batch in results {
             if let Ok(idx) = batch.schema().index_of("id") {
@@ -697,7 +778,7 @@ impl GraphStore for SqliteStore {
                 let id_array = col
                     .as_any()
                     .downcast_ref::<arrow_array::StringArray>()
-                    .ok_or_else(|| "Failed to downcast id column to StringArray")?;
+                    .ok_or("Failed to downcast id column to StringArray")?;
                 for i in 0..id_array.len() {
                     matched_ids.push(id_array.value(i).to_string());
                 }
@@ -715,9 +796,9 @@ impl GraphStore for SqliteStore {
             separated.push_bind(id);
         }
         builder.push(")");
-        
+
         let rows = builder.build().fetch_all(&self.pool).await?;
-        
+
         // 3. 重建 Nodes 列表，维持 matched_ids 排序顺序
         let mut node_map = HashMap::new();
         for row in rows {
@@ -731,18 +812,22 @@ impl GraphStore for SqliteStore {
             let properties = serde_json::from_str(&properties_str)?;
             let embedding = embedding_blob.and_then(|b| decode_embedding(&b));
 
-            node_map.insert(id.clone(), Node {
-                id,
-                label,
-                properties,
-                embedding,
-                is_permanent: is_perm == 1,
-                last_accessed: parse_time(&last_acc_str),
-            });
+            node_map.insert(
+                id.clone(),
+                Node {
+                    id,
+                    label,
+                    properties,
+                    embedding,
+                    is_permanent: is_perm == 1,
+                    last_accessed: parse_time(&last_acc_str),
+                },
+            );
         }
 
         let mut nodes = Vec::new();
-        let threshold = if query_embedding.len() == 256 { 0.45 } else { 0.70 };
+        // Phase 2.2: 使用从模型元数据中读取的阈值替代硬编码的 dim==256 判断
+        let threshold = self.vector_filter_threshold;
         for id in &matched_ids {
             if let Some(node) = node_map.remove(id) {
                 if let Some(ref emb) = node.embedding {
@@ -756,14 +841,17 @@ impl GraphStore for SqliteStore {
             }
         }
 
-
         Ok(nodes)
     }
 
-    async fn get_all_nodes_and_edges(&self) -> Result<(Vec<Node>, Vec<Edge>), Box<dyn std::error::Error + Send + Sync>> {
-        let node_rows = sqlx::query("SELECT id, label, properties, embedding, is_permanent, last_accessed FROM graph_nodes")
-            .fetch_all(&self.pool)
-            .await?;
+    async fn get_all_nodes_and_edges(
+        &self,
+    ) -> Result<(Vec<Node>, Vec<Edge>), Box<dyn std::error::Error + Send + Sync>> {
+        let node_rows = sqlx::query(
+            "SELECT id, label, properties, embedding, is_permanent, last_accessed FROM graph_nodes",
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         let mut nodes = Vec::new();
         for row in node_rows {
@@ -819,7 +907,11 @@ impl GraphStore for SqliteStore {
         Ok((nodes, edges))
     }
 
-    async fn query_path(&self, start_node_id: &str, max_depth: usize) -> Result<(Vec<Node>, Vec<Edge>), Box<dyn std::error::Error + Send + Sync>> {
+    async fn query_path(
+        &self,
+        start_node_id: &str,
+        max_depth: usize,
+    ) -> Result<(Vec<Node>, Vec<Edge>), Box<dyn std::error::Error + Send + Sync>> {
         let node_query = r#"
             WITH RECURSIVE path(node_id, depth) AS (
                 SELECT ?, 0
@@ -831,7 +923,7 @@ impl GraphStore for SqliteStore {
                     FROM graph_edges
                 ) e
                 JOIN path p ON e.from_node = p.node_id
-                WHERE p.depth < ? AND e.rn <= 50
+                WHERE p.depth < ? AND e.rn <= ?
             )
             SELECT n.id, n.label, n.properties, n.embedding, n.is_permanent, n.last_accessed
             FROM path p
@@ -841,6 +933,7 @@ impl GraphStore for SqliteStore {
         let node_rows = sqlx::query(node_query)
             .bind(start_node_id)
             .bind(max_depth as i32)
+            .bind(self.cte_path_width_limit as i64)
             .fetch_all(&self.pool)
             .await?;
 
@@ -877,7 +970,7 @@ impl GraphStore for SqliteStore {
                     FROM graph_edges
                 ) e
                 JOIN path p ON e.from_node = p.node_id
-                WHERE p.depth < ? AND e.rn <= 50
+                WHERE p.depth < ? AND e.rn <= ?
             )
             SELECT e.id, e.from_node, e.to_node, e.type, e.properties, e.weight, e.is_permanent, e.last_accessed
             FROM graph_edges e
@@ -888,6 +981,7 @@ impl GraphStore for SqliteStore {
         let edge_rows = sqlx::query(edge_query)
             .bind(start_node_id)
             .bind(max_depth as i32)
+            .bind(self.cte_path_width_limit as i64)
             .fetch_all(&self.pool)
             .await?;
 
@@ -916,27 +1010,130 @@ impl GraphStore for SqliteStore {
             });
         }
 
-        // 3. 将所经过的点和边全部标记为活跃状态（突触加强）
+        // 3. 将所经过的点和边全部标记为活跃状态（批量更新消除 N+1）
         let new_last_acc = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        for edge in &edges {
-            sqlx::query("UPDATE graph_edges SET last_accessed = ? WHERE id = ?")
-                .bind(&new_last_acc)
-                .bind(&edge.id)
-                .execute(&self.pool)
-                .await?;
+        if !edges.is_empty() {
+            let mut builder = QueryBuilder::new("UPDATE graph_edges SET last_accessed = ");
+            builder.push_bind(&new_last_acc);
+            builder.push(" WHERE id IN (");
+            let mut sep = builder.separated(", ");
+            for edge in &edges {
+                sep.push_bind(&edge.id);
+            }
+            builder.push(")");
+            builder.build().execute(&self.pool).await?;
         }
-        for node in &nodes {
-            sqlx::query("UPDATE graph_nodes SET last_accessed = ? WHERE id = ?")
-                .bind(&new_last_acc)
-                .bind(&node.id)
-                .execute(&self.pool)
-                .await?;
+        if !nodes.is_empty() {
+            let mut builder = QueryBuilder::new("UPDATE graph_nodes SET last_accessed = ");
+            builder.push_bind(&new_last_acc);
+            builder.push(" WHERE id IN (");
+            let mut sep = builder.separated(", ");
+            for node in &nodes {
+                sep.push_bind(&node.id);
+            }
+            builder.push(")");
+            builder.build().execute(&self.pool).await?;
         }
 
         Ok((nodes, edges))
     }
 
-    async fn decay_and_prune(&self, decay_factor: f64, threshold: f64, inactive_seconds: i64) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    async fn bulk_upsert_in_transaction(
+        &self,
+        nodes: Vec<Node>,
+        edges: Vec<Edge>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // 使用 SQLite 事务包裹批量写入，保证原子性：任一节点/边写入失败则全部回滚
+        let mut tx = self.pool.begin().await?;
+        let now_str = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+
+        for node in &nodes {
+            let properties_str = serde_json::to_string(&node.properties)?;
+            let embedding_blob = encode_embedding(&node.embedding);
+            let is_perm = if node.is_permanent { 1 } else { 0 };
+
+            sqlx::query(
+                r#"INSERT INTO graph_nodes (id, label, properties, embedding, is_permanent, last_accessed)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       label=excluded.label,
+                       properties=excluded.properties,
+                       embedding=coalesce(excluded.embedding, graph_nodes.embedding),
+                       is_permanent=excluded.is_permanent,
+                       last_accessed=excluded.last_accessed"#,
+            )
+            .bind(&node.id)
+            .bind(&node.label)
+            .bind(&properties_str)
+            .bind(&embedding_blob)
+            .bind(is_perm)
+            .bind(&now_str)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        for edge in &edges {
+            let properties_str = serde_json::to_string(&edge.properties)?;
+            let is_perm = if edge.is_permanent { 1 } else { 0 };
+
+            sqlx::query(
+                r#"INSERT INTO graph_edges (id, from_node, to_node, type, properties, weight, is_permanent, last_accessed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       properties=excluded.properties,
+                       weight=excluded.weight,
+                       is_permanent=excluded.is_permanent,
+                       last_accessed=excluded.last_accessed"#,
+            )
+            .bind(&edge.id)
+            .bind(&edge.from_node)
+            .bind(&edge.to_node)
+            .bind(&edge.edge_type)
+            .bind(&properties_str)
+            .bind(edge.weight)
+            .bind(is_perm)
+            .bind(&now_str)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+
+        // LanceDB 向量数据在事务外异步写入（LanceDB 自身无分布式事务支持）
+        for node in nodes {
+            if let Some(ref emb) = node.embedding {
+                let _ = self
+                    .lance_table
+                    .delete(&format!("id = '{}'", escape_lance_id(&node.id)))
+                    .await;
+                use arrow_array::{FixedSizeListArray, Float32Array, RecordBatch, StringArray};
+                let ids = StringArray::from(vec![node.id.as_str()]);
+                let val_array = Float32Array::from(emb.clone());
+                let values_ref: Arc<dyn arrow_array::Array> = Arc::new(val_array);
+                let item_field = Arc::new(arrow_schema::Field::new(
+                    "item",
+                    arrow_schema::DataType::Float32,
+                    true,
+                ));
+                let list_array =
+                    FixedSizeListArray::try_new(item_field, self.vector_dim, values_ref, None)?;
+                let batch = RecordBatch::try_new(
+                    self.schema.clone(),
+                    vec![Arc::new(ids), Arc::new(list_array)],
+                )?;
+                self.lance_table.add(batch).execute().await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn decay_and_prune(
+        &self,
+        decay_factor: f64,
+        threshold: f64,
+        inactive_seconds: i64,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut tx = self.pool.begin().await?;
 
         // 1. 突触弱化
@@ -949,11 +1146,13 @@ impl GraphStore for SqliteStore {
         let cutoff_time = (Utc::now() - chrono::Duration::seconds(inactive_seconds))
             .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
 
-        sqlx::query("DELETE FROM graph_edges WHERE is_permanent = 0 AND weight < ? AND last_accessed < ?")
-            .bind(threshold)
-            .bind(&cutoff_time)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "DELETE FROM graph_edges WHERE is_permanent = 0 AND weight < ? AND last_accessed < ?",
+        )
+        .bind(threshold)
+        .bind(&cutoff_time)
+        .execute(&mut *tx)
+        .await?;
 
         // 3. 孤立节点物理擦除
         let prune_nodes_sql = r#"
@@ -978,7 +1177,6 @@ impl GraphStore for SqliteStore {
 
 #[allow(dead_code)]
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }
@@ -1005,10 +1203,13 @@ mod tests {
     #[tokio::test]
     async fn test_sqlite_event_store() {
         let tmp_file = NamedTempFile::new().unwrap();
-        let store = SqliteStore::new(tmp_file.path().to_str().unwrap()).await.unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
 
         let mut payload = serde_json::Map::new();
         payload.insert("key".to_string(), serde_json::json!("value"));
+        payload.insert("session_id".to_string(), serde_json::json!("session-a"));
 
         let ev = Event::new(
             "ev_1".to_string(),
@@ -1021,6 +1222,7 @@ mod tests {
         store.append(ev).await.unwrap();
 
         let filter = QueryFilter {
+            session_id: Some("session-a".to_string()),
             topic: Some("chat/*".to_string()),
             ..Default::default()
         };
@@ -1028,13 +1230,66 @@ mod tests {
         let results = store.query(filter).await.unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "ev_1");
-        assert_eq!(results[0].payload.get("key").unwrap().as_str().unwrap(), "value");
+        assert_eq!(
+            results[0].payload.get("key").unwrap().as_str().unwrap(),
+            "value"
+        );
+
+        let other_session = store
+            .query(QueryFilter {
+                session_id: Some("session-b".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(other_session.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_event_schema_migrates_and_backfills_session_id() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let url = format!("sqlite://{}", tmp_file.path().display());
+        let legacy_pool = SqlitePool::connect(&url).await.unwrap();
+        sqlx::query(
+            "CREATE TABLE events (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, actor TEXT NOT NULL, type TEXT NOT NULL, topic TEXT NOT NULL, payload TEXT NOT NULL)",
+        )
+        .execute(&legacy_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO events (id, timestamp, actor, type, topic, payload) VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind("legacy-event")
+        .bind(Utc::now().to_rfc3339())
+        .bind("legacy")
+        .bind("user_message")
+        .bind("chat/user_message")
+        .bind(r#"{"session_id":"legacy-session","text":"hello"}"#)
+        .execute(&legacy_pool)
+        .await
+        .unwrap();
+        legacy_pool.close().await;
+
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let events = store
+            .query(QueryFilter {
+                session_id: Some("legacy-session".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "legacy-event");
     }
 
     #[tokio::test]
     async fn test_sqlite_graph_store() {
         let tmp_file = NamedTempFile::new().unwrap();
-        let store = SqliteStore::new(tmp_file.path().to_str().unwrap()).await.unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
 
         let mut emb1 = vec![0.0; store.vector_dim as usize];
         emb1[0] = 1.0;
@@ -1085,37 +1340,11 @@ mod tests {
         search_emb[0] = 1.0;
 
         // 测试向量余弦搜索
-        let results = store.search_nodes_by_embedding(&search_emb, 5).await.unwrap();
+        let results = store
+            .search_nodes_by_embedding(&search_emb, 5)
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "node_1");
-    }
-
-
-    #[tokio::test]
-    async fn test_sqlite_snapshot() {
-        let tmp_file = tempfile::NamedTempFile::new().unwrap();
-        let store = SqliteStore::new(tmp_file.path().to_str().unwrap()).await.unwrap();
-
-        let session_id = "sess_1";
-        let step = 10;
-        let snap_data = "(context (meta (session \"sess_1\")) (state (step 10)))";
-        let last_id = "ev_123";
-        let last_time = "2026-06-24T00:00:00Z";
-
-        // 初始应该为 None
-        let res = store.get_latest_snapshot(session_id).await.unwrap();
-        assert!(res.is_none());
-
-        // 保存快照
-        store.save_snapshot(session_id, step, snap_data, last_id, last_time).await.unwrap();
-
-        // 再次查询
-        let res = store.get_latest_snapshot(session_id).await.unwrap();
-        assert!(res.is_some());
-        let (r_step, r_data, r_id, r_time) = res.unwrap();
-        assert_eq!(r_step, step);
-        assert_eq!(r_data, snap_data);
-        assert_eq!(r_id, last_id);
-        assert_eq!(r_time, last_time);
     }
 }

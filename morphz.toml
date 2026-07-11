@@ -1,0 +1,61 @@
+# Morphz 工业化配置文件
+# 不存在或字段缺失时使用代码中的默认值。环境变量（如 OPENAI_MODEL）会覆盖此配置。
+
+[server]
+bind = "127.0.0.1:8080"
+database_path = "morphz.db"
+broadcast_capacity = 1000
+
+[orchestrator]
+concurrency_limit = 4
+reply_timeout_secs = 120
+tool_timeout_secs = 30
+context_soft_token_limit = 60000
+context_hard_token_limit = 100000
+context_maintenance_reserve_tokens = 12000
+observation_preview_chars = 4000
+max_attempts_per_turn = 12
+
+[memory]
+sqlite_pool_size = 8
+fts_search_limit = 5
+vector_search_limit = 5
+transition_anchor_count = 3
+semantic_low_threshold = 0.55
+semantic_high_threshold = 0.85
+vector_filter_threshold_low = 0.45
+vector_filter_threshold_high = 0.70
+cte_path_width_limit = 50
+
+[llm]
+model = "gpt-4o-mini"
+embedding_model = "text-embedding-3-small"
+max_retries = 5
+initial_backoff_secs = 1
+
+[tool_security]
+# 默认启用 workspace jail；高级用户可以显式关闭。
+workspace_jail_enabled = true
+workspace_root = "."
+allow_absolute_paths = false
+allow_parent_traversal = false
+extra_read_roots = ["/tmp"]
+extra_write_roots = ["/tmp"]
+deny_patterns = [
+  ".env",
+  ".env.*",
+  ".git/**",
+  "**/.ssh/**",
+  "target/**",
+  "models/**",
+]
+# Coding Eval 可通过 MORPHZ_EXEC_SEATBELT=true 临时开启；普通开发默认关闭。
+exec_seatbelt_enabled = false
+exec_network_enabled = false
+
+[background_task]
+# 后台任务超过该阈值时只唤醒 LLM，不自动 kill。由 LLM 决定继续等还是调用 kill_task。
+timeout_notify_enabled = true
+timeout_notify_secs = 300
+max_output_buffer_bytes = 65536
+artifact_dir = ".morphz/artifacts"
