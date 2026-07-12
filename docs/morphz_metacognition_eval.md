@@ -160,3 +160,17 @@ protocol v6 针对这一剩余失败收紧响应状态机。v5 回归中 GLM 的
 同条件 GLM 128K 的 protocol v6 真实回归已完成 5 次：分数全部为 95/95（当前评分上限），平均 95、标准差 0、严格成功率 100%；对比 v5 的平均 83、标准差 6、严格成功率 20%。Runtime 和 Agent 的 11 项现有准则全部 5/5 通过，其中 `current_fact` 由 1/5 升至 5/5；每次均为 1 次事务提交、1 次最终回复，旧 `final_reply` 参数出现 0 次。Ledger 中真实 `runtime/model_attempt_started` 均值由 3.6 增至 4.2，即用平均 0.6 次额外模型请求换取了这次稳定性提升。
 
 人工复核还暴露了评分器的剩余宽松点：项目代号、当前端口、安全约束和验收口令在最终正文中均为 5/5，但“新版取代旧版”只有 4/5 最终正文明确重述，旧端口数字 `8080` 只有 3/5。现有 `current_fact` 只要 Mind 有 supersedes 且最终正文包含 `9090` 就会通过，因此 v6 已证明终止状态机收敛，但 Reply Fidelity 还应继续拆分为“当前事实”、“取代关系”和“旧值报告”三项。
+
+## 9. protocol v8 标准工具回传探针
+
+此前 Runtime 虽然使用标准 Function Calling schema 接收调用，但工具执行后只把结果写入下一份 Context View，没有按 Chat Completions 训练约定重放原始 `assistant.tool_calls` 和匹配 `tool_call_id` 的 `role=tool` message。这会让模型看不到标准的“调用—结果”闭环，是重复 read/recall/context_tx 的潜在通用原因。
+
+protocol v8 将当前用户回合内的工具链改为临时标准 transcript：
+
+1. 工具结果先写入 Ledger，获得稳定 Observation ref；
+2. 紧接着通过 `assistant(tool_calls) → tool(tool_call_id)` 返回；
+3. 同一模型请求的 Context View 排除这批结果正文，避免重复注入；
+4. 下一用户回合重新编译快照时，未 retire 的结果仍作为普通 Inbox Observation 出现；
+5. 成功但无文本的工具显式返回 `status=success, output_state=empty`，而不是空字符串。
+
+2026-07-12 使用 `gemini-3-flash-agent` 做一次真实兼容性探针：95/95，1 次 Context commit、2 次 recall、3 次模型请求、0 次事务失败。持久化 `context_inspect.messages` 确认请求包含标准 assistant/tool 配对，mini-m4 接口接受该格式。该单样本只证明协议链路可用，不用于声称效率已经改善；正式结论仍需 protocol v7/v8 的 5 次同条件配对实验。

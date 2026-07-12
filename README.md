@@ -16,7 +16,7 @@ Coding Tools v1 提供 `list_files/search/read/edit/write/exec` 最小开发闭�
 
 真实 Coding Agent 测试使用独立 fixture、数据库、Artifact 目录和 macOS Seatbelt exec 边界；v2 提供多文件重试状态机任务，并在 Agent 不可见的 verifier 副本中注入隐藏测试。创建、探针、固定验证、范围审计与 Ledger 评分见 [Coding Eval Sandbox](docs/morphz_coding_eval_sandbox.md)。
 
-Attempt Runtime 将物理工作与 Context transaction 分开计费，并提供一次 `context_tx`-only 最终收口。Protocol v7 保留 v6 的统一 Function Calling 终止语义：任何工具调用都是中间状态，只有无工具纯文本才结束回合。v7 同时明确 `revise` 是完整 body 替换，并增加 Agent 可控的 `checkpoint/rollback/drop-checkpoint`；Runtime 不自动回滚或修补语义。
+Attempt Runtime 将物理工作与 Context transaction 分开计费，并提供一次 `context_tx`-only 最终收口。Protocol v8 保留 v6 的统一终止语义与 v7 的完整 `revise`、Checkpoint，同时在当前用户回合内按标准 `assistant.tool_calls → role=tool/tool_call_id` 回传工具结果；结果立即持久化为 Observation，但不会在同一请求的 Inbox 中重复注入。任何工具调用都是中间状态，只有无工具纯文本才结束回合。
 
 Context Pressure Eval 使用合成长历史和缩小阈值验证 Agent 自主 `derive/protect/retire`：首次真实运行将 estimated tokens 从 9,177 降至 2,140，并完整保留四项长期事实。设计、命令和结论边界见 [Context Pressure Eval](docs/morphz_context_pressure_eval.md)。
 

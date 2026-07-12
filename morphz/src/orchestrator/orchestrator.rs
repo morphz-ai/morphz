@@ -7,7 +7,7 @@ use crate::tool::Registry;
 use chrono::Utc;
 use dashmap::DashMap;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -42,7 +42,7 @@ Context 的状态分为三个权限域：
    用户明确声明“始终、整个任务期间、不得、必须”等持续约束时，应将其写入受保护 frame，直到用户明确撤销或任务生命周期真正结束。
 3. 大段 observation 可先 derive 成忠实摘要，再在同一 transaction 中 retire 原始 observation。不要把假设写成事实。已完成、可从 Ledger 召回且没有改变目标、约束或结论的过程记录应直接 retire，不得为每个批次创建或保护长期 frame。
 4. 用户要求在已知文件中查证具体结论时，直接使用 read.query 取得带行号的窄证据；需要连续上下文时再用 start_line/end_line 精确分页。不要先整读长文件，也不要用 exec/grep 反复产生大段重复输出。Context observation 的 `ref`（如 `@e27`）是 Runtime 提供的稳定短引用；recall 与 context_tx 必须原样使用，不要猜测或抄写隐藏的完整 Event ID。被 truncated 的 observation 可使用 recall 按 ref 分段读取原文；若 recall 返回 next_offset，下一次必须把该值原样作为 offset，不得重复 offset=0 或猜测跳转；已知关键词时优先 query，并使用命中片段或 suggested_recall。exec 若给出 artifact path，则使用 read 按需读取完整归档。recall/read 结果只进入 inbox，你决定是否写入 Mind。
-5. context_tx 可以与不依赖本批新结果的物理工具并行；如果新 frame 依赖工具结果，应等结果进入 inbox 后再提交。任何包含工具调用的响应都是中间状态：正文只作为可见进度，Runtime 执行完工具后必定再次调用你。只有无工具的纯文本响应才是最终 reply。
+5. context_tx 可以与不依赖本批新结果的物理工具并行；如果新 frame 依赖工具结果，应等结果返回后再提交。当前用户回合内，Runtime 按标准 assistant.tool_calls → role=tool/tool_call_id 返回工具结果；物理结果已同时持久化到 Ledger，并带 observation_ref。同一请求的 Context View 不会重复注入这批结果正文，下一独立快照才按 active/retired 状态展示。status=success 且 output_state=empty 表示工具已经完成但没有文本，不得仅因空输出重复调用。任何包含工具调用的响应都是中间状态：正文只作为可见进度，Runtime 执行完工具后必定再次调用你。只有无工具的纯文本响应才是最终 reply。
 6. 同一响应最多提交一个 context_tx；把多个修改合并进同一事务，避免版本冲突。
    retire 或 unprotect 时 reason 是必需的，使遗忘与解除保护可审计。
 7. pressure=normal/notice 时不要仅为降低体积而压缩；只在出现必须跨轮保留的目标、约束或结论变化时做语义维护。pressure=warning 时考虑在最终 reply 前或随 act 提交压缩事务；pressure=critical 时必须先 maintain-only 释放预算。
@@ -82,6 +82,12 @@ struct ToolExecutionOptions {
 #[derive(Debug, Default)]
 struct ToolExecutionOutcome {
     context_tx_succeeded: bool,
+}
+
+#[derive(Debug, Default)]
+struct TurnToolTranscript {
+    messages: Vec<Message>,
+    delivered_output_ids: HashSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -392,13 +398,153 @@ impl Orchestrator {
             .any(|inspection| inspection.timestamp > trigger.timestamp))
     }
 
+    /// Rebuild the standard Function Calling transcript for the active user
+    /// turn. Long-term conversation history is still represented only by the
+    /// compiled Context snapshot; assistant/tool messages here are transient
+    /// protocol messages since the latest user observation.
+    async fn turn_tool_transcript(&self, session_id: &str) -> Result<TurnToolTranscript, DynError> {
+        let events = self
+            .store
+            .query(QueryFilter {
+                session_id: Some(session_id.to_string()),
+                ..Default::default()
+            })
+            .await?;
+        let turn_start = events
+            .iter()
+            .rposition(|event| event.event_type == TYPE_USER_MESSAGE)
+            .unwrap_or(0);
+        let turn_events = &events[turn_start..];
+        let mut outputs = HashMap::<(String, String), Event>::new();
+        for event in turn_events {
+            if event.event_type != TYPE_TOOL_OUTPUT {
+                continue;
+            }
+            let Some(attempt_id) = event
+                .payload
+                .get("attempt_id")
+                .and_then(|value| value.as_str())
+            else {
+                continue;
+            };
+            let Some(tool_call_id) = event
+                .payload
+                .get("tool_call_id")
+                .and_then(|value| value.as_str())
+            else {
+                continue;
+            };
+            outputs.insert(
+                (attempt_id.to_string(), tool_call_id.to_string()),
+                event.clone(),
+            );
+        }
+
+        let mut transcript = TurnToolTranscript::default();
+        for event in turn_events {
+            if event.topic != "chat/assistant_call" {
+                continue;
+            }
+            let Some(attempt_id) = event
+                .payload
+                .get("attempt_id")
+                .and_then(|value| value.as_str())
+            else {
+                continue;
+            };
+            let calls_value = event
+                .payload
+                .get("transcript_tool_calls")
+                .or_else(|| event.payload.get("tool_calls"));
+            let Some(calls_value) = calls_value else {
+                continue;
+            };
+            let calls = serde_json::from_value::<Vec<crate::llm::ToolCall>>(calls_value.clone())?;
+            let calls = calls
+                .into_iter()
+                .filter(|call| outputs.contains_key(&(attempt_id.to_string(), call.id.clone())))
+                .collect::<Vec<_>>();
+            if calls.is_empty() {
+                continue;
+            }
+
+            transcript.messages.push(Message {
+                role: "assistant".to_string(),
+                content: event
+                    .payload
+                    .get("text")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: Some(calls.clone()),
+            });
+            for call in calls {
+                let Some(output) = outputs.get(&(attempt_id.to_string(), call.id.clone())) else {
+                    continue;
+                };
+                transcript.delivered_output_ids.insert(output.id.clone());
+                transcript
+                    .messages
+                    .push(self.standard_tool_result_message(&call, output));
+            }
+        }
+        Ok(transcript)
+    }
+
+    fn standard_tool_result_message(&self, call: &crate::llm::ToolCall, output: &Event) -> Message {
+        let text = output
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let status = output
+            .payload
+            .get("tool_status")
+            .and_then(|value| value.as_str())
+            .unwrap_or_else(|| infer_tool_status(text));
+        let output_state = if text.trim().is_empty() {
+            "empty"
+        } else {
+            "content"
+        };
+        let recallable = call.function.name != "context_tx"
+            || text.starts_with("执行失败:")
+            || text.starts_with("执行拒绝:");
+        let observation_ref = recallable.then(|| self.context_engine.event_reference(output));
+        let guidance = (status == "success" && output_state == "empty").then_some(
+            "工具已成功完成但没有返回文本；不要仅因输出为空而重复调用。若工具具有副作用，请依据后续 file_change 或状态证据判断。",
+        );
+        let content = serde_json::to_string(&json!({
+            "status": status,
+            "output_state": output_state,
+            "observation_ref": observation_ref,
+            "tool_name": call.function.name,
+            "result": text,
+            "guidance": guidance,
+        }))
+        .unwrap_or_else(|_| text.to_string());
+        Message {
+            role: "tool".to_string(),
+            content,
+            name: None,
+            tool_call_id: Some(call.id.clone()),
+            tool_calls: None,
+        }
+    }
+
     async fn run_attempt(&self, session_id: &str) -> Result<(), DynError> {
         let attempt_id = format!(
             "attempt_{}_{}",
             session_id,
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
-        let context = self.context_engine.build_view(session_id).await?;
+        let transcript = self.turn_tool_transcript(session_id).await?;
+        let context = self
+            .context_engine
+            .build_view_excluding(session_id, &transcript.delivered_output_ids)
+            .await?;
         let maintenance_budget_exhausted = should_force_final_for_maintenance(
             &context.turn_budget.phase,
             &context.pressure.level,
@@ -425,7 +571,7 @@ impl Orchestrator {
         let system_prompt = phase_prompt
             .map(|prompt| format!("{AGENT_OWNED_CONTEXT_PROMPT}\n\n{prompt}"))
             .unwrap_or_else(|| AGENT_OWNED_CONTEXT_PROMPT.to_string());
-        let messages = vec![
+        let mut messages = vec![
             Message {
                 role: "system".to_string(),
                 content: system_prompt,
@@ -444,6 +590,7 @@ impl Orchestrator {
                 tool_calls: None,
             },
         ];
+        messages.extend(transcript.messages);
 
         self.record_context_inspect(session_id, &attempt_id, &context, &messages);
 
@@ -882,6 +1029,31 @@ impl Orchestrator {
                 ),
             }
         }
+        let mut transcript_tool_calls = selected_tool_calls
+            .iter()
+            .map(|call| crate::llm::ToolCall {
+                id: call.id.clone(),
+                r#type: call.r#type.clone(),
+                function: crate::llm::FunctionCall {
+                    name: call.func_name.clone(),
+                    arguments: call.arguments.clone(),
+                },
+            })
+            .collect::<Vec<_>>();
+        if context_tx_batch_error.is_some() {
+            transcript_tool_calls.push(crate::llm::ToolCall {
+                id: "context_tx_batch_rejected".to_string(),
+                r#type: "function".to_string(),
+                function: crate::llm::FunctionCall {
+                    name: "context_tx".to_string(),
+                    arguments: json!({
+                        "runtime_rejected_batch": true,
+                        "status": context_tx_batch_status,
+                    })
+                    .to_string(),
+                },
+            });
+        }
         self.bus
             .publish(Event::new(
                 format!("call_{}", attempt_id),
@@ -894,6 +1066,10 @@ impl Orchestrator {
                     ("phase".to_string(), json!(phase)),
                     ("text".to_string(), json!(response.content)),
                     ("tool_calls".to_string(), json!(mapped_tool_calls)),
+                    (
+                        "transcript_tool_calls".to_string(),
+                        json!(transcript_tool_calls),
+                    ),
                     (
                         "deduplicated_context_tx_ids".to_string(),
                         json!(deduplicated_context_tx_ids),
@@ -953,6 +1129,7 @@ impl Orchestrator {
                             ("attempt_id".to_string(), json!(attempt_id)),
                             ("tool_call_id".to_string(), json!(call.id)),
                             ("tool_name".to_string(), json!(call.func_name)),
+                            ("tool_status".to_string(), json!("guarded")),
                             ("read_guard_status".to_string(), json!("already-covered")),
                             ("text".to_string(), json!(output)),
                         ]
@@ -979,11 +1156,17 @@ impl Orchestrator {
                             },
                         )
                         .await;
-                        let output = match result {
-                            Ok(Ok(output)) => output,
-                            Ok(Err(error)) => format!("执行失败: {}", error),
-                            Err(_) => format!("执行超时: 超过 {} 秒限额", timeout_secs),
+                        let (output, tool_status) = match result {
+                            Ok(Ok(output)) => {
+                                let status = infer_tool_status(&output);
+                                (output, status)
+                            }
+                            Ok(Err(error)) => (format!("执行失败: {}", error), "error"),
+                            Err(_) => {
+                                (format!("执行超时: 超过 {} 秒限额", timeout_secs), "timeout")
+                            }
                         };
+                        let output_empty = output.trim().is_empty();
                         Event::new(
                             format!("output_{}_{}", attempt_id, call.id),
                             "System-Executor".to_string(),
@@ -994,6 +1177,8 @@ impl Orchestrator {
                                 ("attempt_id".to_string(), json!(attempt_id)),
                                 ("tool_call_id".to_string(), json!(call.id)),
                                 ("tool_name".to_string(), json!(call.func_name)),
+                                ("tool_status".to_string(), json!(tool_status)),
+                                ("output_empty".to_string(), json!(output_empty)),
                                 ("text".to_string(), json!(output)),
                             ]
                             .into_iter()
@@ -1019,6 +1204,7 @@ impl Orchestrator {
                         json!("context_tx_batch_rejected"),
                     ),
                     ("tool_name".to_string(), json!("context_tx")),
+                    ("tool_status".to_string(), json!("rejected")),
                     (
                         "context_tx_status".to_string(),
                         json!(context_tx_batch_status.as_deref().unwrap_or("rejected")),
@@ -1201,6 +1387,21 @@ fn context_tx_output_succeeded(event: &Event) -> bool {
         .is_some_and(|value| {
             value.get("status").and_then(|status| status.as_str()) == Some("committed")
         })
+}
+
+fn infer_tool_status(text: &str) -> &'static str {
+    if text.starts_with("执行失败:")
+        || text.starts_with("系统报错:")
+        || text.starts_with("系统报错：")
+    {
+        "error"
+    } else if text.starts_with("执行超时:") {
+        "timeout"
+    } else if text.starts_with("执行拒绝:") || text.starts_with("READ_ALREADY_COVERED:") {
+        "rejected"
+    } else {
+        "success"
+    }
 }
 
 fn context_tx_receipt_for_event(event: &Event) -> ContextTxReceipt {

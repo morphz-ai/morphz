@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 7;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 8;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 
 struct ContextOperationSpec {
@@ -237,6 +237,10 @@ pub struct ContextObservation {
     pub retrievable: bool,
     pub protected: bool,
     pub tool_name: Option<String>,
+    #[serde(default)]
+    pub tool_status: Option<String>,
+    #[serde(default)]
+    pub output_empty: Option<bool>,
     pub resource: Option<ContextResource>,
     pub freshness: ContextFreshness,
     pub usage: ContextUsage,
@@ -395,6 +399,20 @@ impl ContextEngine {
     }
 
     pub async fn build_view(&self, session_id: &str) -> Result<ContextView, DynError> {
+        self.build_view_excluding(session_id, &HashSet::new()).await
+    }
+
+    /// Compile the current Context while omitting observations that are being
+    /// delivered through the standard turn-local `role=tool` channel.
+    ///
+    /// The observations remain persisted in the Ledger and active in Mind
+    /// lifecycle state. A later independent Context snapshot will include them
+    /// unless the Agent explicitly retires them.
+    pub async fn build_view_excluding(
+        &self,
+        session_id: &str,
+        excluded_observation_ids: &HashSet<String>,
+    ) -> Result<ContextView, DynError> {
         let events = self.session_events(session_id).await?;
         let references = ContextReferences::from_events(&events);
         let state = load_mind_from_events(&events)?;
@@ -411,6 +429,7 @@ impl ContextEngine {
             .iter()
             .filter(|event| is_observation(event))
             .filter(|event| !state.retired.contains(&event.id))
+            .filter(|event| !excluded_observation_ids.contains(&event.id))
             .map(|event| {
                 self.to_observation(
                     event,
@@ -594,6 +613,15 @@ impl ContextEngine {
                 .get("tool_name")
                 .and_then(|value| value.as_str())
                 .map(ToOwned::to_owned),
+            tool_status: event
+                .payload
+                .get("tool_status")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned),
+            output_empty: event
+                .payload
+                .get("output_empty")
+                .and_then(|value| value.as_bool()),
             resource: metadata.resource,
             freshness: metadata.freshness,
             usage: metadata.usage,
@@ -1596,6 +1624,15 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         if let Some(tool_name) = &observation.tool_name {
             fields.insert(5, pair("tool", atom(tool_name)));
         }
+        if let Some(tool_status) = &observation.tool_status {
+            fields.push(pair("tool-status", atom(tool_status)));
+        }
+        if let Some(output_empty) = observation.output_empty {
+            fields.push(pair(
+                "output-empty",
+                atom(if output_empty { "true" } else { "false" }),
+            ));
+        }
         if let Some(resource) = &observation.resource {
             let mut resource_fields = vec![
                 pair("kind", atom(&resource.kind)),
@@ -1805,6 +1842,31 @@ fn render_protocol() -> SExpr {
                                 atom("Runtime 必定再次调用；非 critical 时冷却 context_tx，必须 reply 或 act"),
                             ),
                         ],
+                    ),
+                ],
+            ),
+            list(
+                "tool-result-contract",
+                vec![
+                    pair(
+                        "immediate-delivery",
+                        atom("当前用户回合内按标准 assistant.tool_calls → role=tool/tool_call_id 返回"),
+                    ),
+                    pair(
+                        "persistence",
+                        atom("物理工具结果在返回前已写入 Ledger，并在 tool result 中提供 observation_ref"),
+                    ),
+                    pair(
+                        "no-duplicate",
+                        atom("同一模型请求中，经 role=tool 交付的结果正文不会同时重复出现在 inbox"),
+                    ),
+                    pair(
+                        "later-context",
+                        atom("下一独立 Context 快照会按 active/retired 状态重新展示历史工具 observation"),
+                    ),
+                    pair(
+                        "empty-output",
+                        atom("status=success 且 output_state=empty 表示工具已完成但无文本；不得仅因空输出重复调用"),
                     ),
                 ],
             ),
@@ -2537,7 +2599,7 @@ mod tests {
         let parsed = parse(&rendered).unwrap();
         assert_eq!(
             parsed.get_path(&["protocol", "version"]),
-            Some(&SExpr::Atom("7".to_string()))
+            Some(&SExpr::Atom(CONTEXT_PROTOCOL_VERSION.to_string()))
         );
         assert_eq!(
             parsed.get_path(&["kernel", "version"]),

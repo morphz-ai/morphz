@@ -1,6 +1,6 @@
 # Morphz Agent-Owned Context：由 LLM 自主管理的心智上下文
 
-> 状态：核心设计基线；Agent-Owned Context protocol v7 已实现并进入评测
+> 状态：核心设计基线；Agent-Owned Context protocol v8 已实现并进入评测
 > 适用范围：Morphz Agent Runtime、SExpr DSL、Context 生命周期、记忆召回与产品调试界面
 > 设计优先级：本文件用于澄清 Morphz 的核心方向；当既有文档中的“自动评分、自动裁剪、自动摘要、自动注入”与本文冲突时，应以本文的职责划分为准。
 
@@ -567,7 +567,7 @@ Mind Inspector 至少应支持：
 | 可解释性 | 只能看到最终 Prompt | 能看到每次心智变化及原因 |
 | 核心能力 | Runtime 管理历史 | Agent 管理自己的注意力 |
 
-## 16. protocol v7 实现状态与剩余边界
+## 16. protocol v8 实现状态与剩余边界
 
 第一版已经完成以下纵向闭环：
 
@@ -582,7 +582,7 @@ Mind Inspector 至少应支持：
 9. Context transaction 作为 Event Ledger 事件保存完整 state-after、version 和 Diff；
 10. Dashboard 已能直接观察 Mind Frames、来源、revision、保护状态、Inbox 和 Pressure；
 11. Kernel 已分离物理 Attempt 与 Context transaction 预算，并强制执行一次性 Context closure 和最终回复，防止模型无界探索或元认知循环；
-12. 每轮 Context 已自描述 response contract、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数；protocol v7 同时说明稳定短引用、多 BODY 规范化、完整 revise 替换、恢复点和统一的无工具终止规则。
+12. 每轮 Context 已自描述 response contract、工具结果回传契约、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数；protocol v8 同时说明稳定短引用、多 BODY 规范化、完整 revise 替换、恢复点、标准工具回传和统一的无工具终止规则。
 13. `read` 已支持带行号的文本查询与行范围读取，减少长文件证据在 Inbox 中的重复膨胀。
 14. Coding Tools v1 已提供 `list_files/search/read/edit/write/exec` 最小闭环；文件修改带 SHA-256 版本前提、原子提交、Diff 和 `file_change` Observation。
 15. Event Ledger 通过 SQLite `rowid` 暴露稳定写入 `sequence`，并为 Observation 提供 turn、attempt、caused-by、residency、resource、freshness 与 usage。
@@ -592,6 +592,7 @@ Mind Inspector 至少应支持：
 19. `create/derive/revise` 正式接受 `BODY...`；多项由 Runtime 确定性规范化为 `(context-body BODY...)`，单项保持原样。`create` 不接受 `from`，`derive/revise` 的来源必须紧跟 ID，避免容错掩盖证据血缘错误。
 20. `context_tx.final_reply` 已从 Function Calling schema 和 Runtime 终止逻辑中移除；任何工具响应都展示为进度并续跑，只有无工具纯文本才成为 `chat/reply`。
 21. `revise` 的完整替换语义已在三层契约中显式公开；`checkpoint/rollback/drop-checkpoint` 提供 Agent 可控、可重放的 Mind 恢复。
+22. 当前用户回合内建立临时标准 Function Calling transcript：工具输出先写 Ledger，再以匹配原始 `tool_call_id` 的 `role=tool` message 返回；同一请求从 Inbox 排除这批结果正文，下一独立 Context 快照再按 active/retired 状态恢复为 Observation。空输出使用显式 `status=success, output_state=empty`，避免模型把沉默误判为未执行。
 
 v1 有意尚未覆盖的边界：
 

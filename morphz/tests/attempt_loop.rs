@@ -19,6 +19,7 @@ use tempfile::{NamedTempFile, TempDir};
 struct MockClient {
     responses: Mutex<VecDeque<Response>>,
     tools_seen: Mutex<Vec<Vec<String>>>,
+    messages_seen: Mutex<Vec<Vec<Message>>>,
 }
 
 struct ConcurrencyProbeClient {
@@ -38,6 +39,30 @@ struct FailingClient;
 struct HangingClient;
 
 struct BlockingClient;
+
+struct EmptyOutputTool;
+
+#[async_trait::async_trait]
+impl Tool for EmptyOutputTool {
+    fn name(&self) -> &str {
+        "empty_output"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "Completes successfully without textual output".to_string(),
+            parameters: json!({ "type": "object", "properties": {} }),
+        }
+    }
+
+    async fn execute(
+        &self,
+        _arguments: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(String::new())
+    }
+}
 
 #[async_trait::async_trait]
 impl Client for FailingClient {
@@ -163,11 +188,16 @@ impl MockClient {
         Self {
             responses: Mutex::new(VecDeque::from(responses)),
             tools_seen: Mutex::new(Vec::new()),
+            messages_seen: Mutex::new(Vec::new()),
         }
     }
 
     fn tools_seen(&self) -> Vec<Vec<String>> {
         self.tools_seen.lock().unwrap().clone()
+    }
+
+    fn messages_seen(&self) -> Vec<Vec<Message>> {
+        self.messages_seen.lock().unwrap().clone()
     }
 }
 
@@ -175,13 +205,17 @@ impl MockClient {
 impl Client for MockClient {
     async fn create_completion(
         &self,
-        _messages: Vec<Message>,
+        messages: Vec<Message>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
         self.tools_seen
             .lock()
             .map_err(|_| "mock tools mutex poisoned")?
             .push(tools.into_iter().map(|tool| tool.name).collect());
+        self.messages_seen
+            .lock()
+            .map_err(|_| "mock messages mutex poisoned")?
+            .push(messages);
         self.responses
             .lock()
             .map_err(|_| "mock response mutex poisoned")?
@@ -283,6 +317,15 @@ async fn publish_tool_output(bus: &Arc<InMemoryEventBus>, session_id: &str, id: 
 }
 
 async fn wait_for_topic(store: &Arc<SqliteStore>, topic: &str, session_id: &str) -> Vec<Event> {
+    wait_for_topic_count(store, topic, session_id, 1).await
+}
+
+async fn wait_for_topic_count(
+    store: &Arc<SqliteStore>,
+    topic: &str,
+    session_id: &str,
+    expected: usize,
+) -> Vec<Event> {
     for _ in 0..80 {
         let events = store
             .query(QueryFilter {
@@ -293,7 +336,7 @@ async fn wait_for_topic(store: &Arc<SqliteStore>, topic: &str, session_id: &str)
             .await
             .unwrap();
         let matched: Vec<Event> = events;
-        if !matched.is_empty() {
+        if matched.len() >= expected {
             return matched;
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -557,24 +600,30 @@ async fn test_compiled_context_uses_kernel_mind_inbox_without_legacy_schema() {
 #[tokio::test]
 async fn test_attempt_loop_tool_call_then_reply() {
     let session_id = "attempt_tool_then_reply";
-    let note = NamedTempFile::new().unwrap();
+    let note = NamedTempFile::new_in(".").unwrap();
     std::fs::write(note.path(), "hello from note").unwrap();
 
-    let (bus, store, _orc, _tmp) = build_orchestrator(vec![
-        Response {
-            content: "".to_string(),
-            tool_calls: vec![ToolCallRepr {
-                id: "call_read".to_string(),
-                r#type: "function".to_string(),
-                func_name: "read".to_string(),
-                arguments: json!({ "path": note.path().to_string_lossy() }).to_string(),
-            }],
-        },
-        Response {
-            content: "已读取 notes".to_string(),
-            tool_calls: Vec::new(),
-        },
-    ])
+    let (bus, store, _orc, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            Response {
+                content: "".to_string(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "call_read".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "read".to_string(),
+                    arguments: json!({
+                        "path": note.path().file_name().unwrap().to_string_lossy()
+                    })
+                    .to_string(),
+                }],
+            },
+            Response {
+                content: "已读取 notes".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ],
+        morphz::config::OrchestratorConfig::default(),
+    )
     .await;
 
     publish_user(&bus, session_id, "read note").await;
@@ -589,6 +638,191 @@ async fn test_attempt_loop_tool_call_then_reply() {
         replies[0].payload.get("text").and_then(|v| v.as_str()),
         Some("已读取 notes")
     );
+    let messages_seen = client.messages_seen();
+    assert_eq!(messages_seen.len(), 2);
+    let continuation = &messages_seen[1];
+    assert_eq!(
+        continuation
+            .iter()
+            .map(|message| message.role.as_str())
+            .collect::<Vec<_>>(),
+        vec!["system", "user", "assistant", "tool"]
+    );
+    let assistant = &continuation[2];
+    assert_eq!(
+        assistant
+            .tool_calls
+            .as_ref()
+            .and_then(|calls| calls.first())
+            .map(|call| call.id.as_str()),
+        Some("call_read")
+    );
+    let tool = &continuation[3];
+    assert_eq!(tool.tool_call_id.as_deref(), Some("call_read"));
+    let envelope: serde_json::Value = serde_json::from_str(&tool.content).unwrap();
+    assert_eq!(
+        envelope.get("status").and_then(|value| value.as_str()),
+        Some("success")
+    );
+    assert_eq!(
+        envelope
+            .get("output_state")
+            .and_then(|value| value.as_str()),
+        Some("content")
+    );
+    assert!(envelope
+        .get("observation_ref")
+        .and_then(|value| value.as_str())
+        .is_some_and(|reference| reference.starts_with("@e")));
+    assert!(
+        envelope
+            .get("result")
+            .and_then(|value| value.as_str())
+            .is_some_and(|result| result.contains("hello from note")),
+        "unexpected tool envelope: {envelope}"
+    );
+    assert!(!continuation[1].content.contains("hello from note"));
+}
+
+#[tokio::test]
+async fn test_tool_result_returns_to_next_independent_context_as_observation() {
+    let session_id = "tool_result_later_context";
+    let note = NamedTempFile::new_in(".").unwrap();
+    std::fs::write(note.path(), "durable tool evidence").unwrap();
+    let (bus, store, _orc, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "read-durable".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "read".to_string(),
+                    arguments: json!({
+                        "path": note.path().file_name().unwrap().to_string_lossy()
+                    })
+                    .to_string(),
+                }],
+            },
+            Response {
+                content: "first turn done".to_string(),
+                tool_calls: Vec::new(),
+            },
+            Response {
+                content: "second turn done".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ],
+        morphz::config::OrchestratorConfig::default(),
+    )
+    .await;
+
+    publish_user(&bus, session_id, "read durable evidence").await;
+    assert_eq!(
+        wait_for_topic_count(&store, "chat/reply", session_id, 1)
+            .await
+            .len(),
+        1
+    );
+    publish_user(&bus, session_id, "use prior evidence").await;
+    assert_eq!(
+        wait_for_topic_count(&store, "chat/reply", session_id, 2)
+            .await
+            .len(),
+        2
+    );
+
+    let messages = client.messages_seen();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(
+        messages[2]
+            .iter()
+            .map(|message| message.role.as_str())
+            .collect::<Vec<_>>(),
+        vec!["system", "user"]
+    );
+    assert!(messages[2][1].content.contains("durable tool evidence"));
+}
+
+#[tokio::test]
+async fn test_empty_tool_output_is_explicit_success_and_does_not_require_retry() {
+    let session_id = "empty_tool_result";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("empty-tool.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    let client = Arc::new(MockClient::new(vec![
+        Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                id: "empty-call".to_string(),
+                r#type: "function".to_string(),
+                func_name: "empty_output".to_string(),
+                arguments: "{}".to_string(),
+            }],
+        },
+        Response {
+            content: "empty tool completed".to_string(),
+            tool_calls: Vec::new(),
+        },
+        Response {
+            content: "empty tool history recognized".to_string(),
+            tool_calls: Vec::new(),
+        },
+    ]));
+    let config = morphz::config::OrchestratorConfig::default();
+    let context_engine = Arc::new(ContextEngine::new(
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        config.clone(),
+    ));
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(EmptyOutputTool));
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&client) as Arc<dyn Client>,
+        registry,
+        config,
+        context_engine,
+    ));
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, session_id, "run empty tool once").await;
+    assert_eq!(
+        wait_for_topic(&store, "chat/reply", session_id).await.len(),
+        1
+    );
+    let messages = client.messages_seen();
+    assert_eq!(messages.len(), 2);
+    let tool = messages[1]
+        .iter()
+        .find(|message| message.role == "tool")
+        .unwrap();
+    let envelope: serde_json::Value = serde_json::from_str(&tool.content).unwrap();
+    assert_eq!(envelope["status"], "success");
+    assert_eq!(envelope["output_state"], "empty");
+    assert_eq!(envelope["result"], "");
+    assert!(envelope["guidance"]
+        .as_str()
+        .unwrap()
+        .contains("不要仅因输出为空而重复调用"));
+    let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(
+        outputs[0].payload.get("tool_status"),
+        Some(&json!("success"))
+    );
+    assert_eq!(outputs[0].payload.get("output_empty"), Some(&json!(true)));
+    publish_user(&bus, session_id, "inspect prior empty result").await;
+    assert_eq!(
+        wait_for_topic_count(&store, "chat/reply", session_id, 2)
+            .await
+            .len(),
+        2
+    );
+    let messages = client.messages_seen();
+    assert_eq!(messages.len(), 3);
+    assert!(messages[2][1].content.contains("(tool-status success)"));
+    assert!(messages[2][1].content.contains("(output-empty true)"));
 }
 
 #[tokio::test]
@@ -779,6 +1013,23 @@ async fn test_context_only_call_commits_then_cooldown_forces_user_response() {
     assert_eq!(tools_seen.len(), 2);
     assert!(tools_seen[0].contains(&"context_tx".to_string()));
     assert!(!tools_seen[1].contains(&"context_tx".to_string()));
+    let messages = client.messages_seen();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(
+        messages[1]
+            .iter()
+            .map(|message| message.role.as_str())
+            .collect::<Vec<_>>(),
+        vec!["system", "user", "assistant", "tool"]
+    );
+    assert!(messages[1][1].content.contains("(id state)"));
+    assert_eq!(messages[1][3].tool_call_id.as_deref(), Some("context-only"));
+    let receipt: serde_json::Value = serde_json::from_str(&messages[1][3].content).unwrap();
+    assert_eq!(receipt["status"], "success");
+    assert_eq!(receipt["observation_ref"], serde_json::Value::Null);
+    assert!(receipt["result"]
+        .as_str()
+        .is_some_and(|result| result.contains("committed")));
     let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
     assert_eq!(outputs.len(), 1);
     assert_eq!(
@@ -1205,35 +1456,38 @@ async fn test_attempt_loop_parallel_tool_barrier_single_reply() {
     std::fs::write(file_b.path(), "B").unwrap();
     std::fs::write(file_c.path(), "C").unwrap();
 
-    let (bus, store, _orc, _tmp) = build_orchestrator(vec![
-        Response {
-            content: "".to_string(),
-            tool_calls: vec![
-                ToolCallRepr {
-                    id: "read_a".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "read".to_string(),
-                    arguments: json!({ "path": file_a.path().to_string_lossy() }).to_string(),
-                },
-                ToolCallRepr {
-                    id: "read_b".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "read".to_string(),
-                    arguments: json!({ "path": file_b.path().to_string_lossy() }).to_string(),
-                },
-                ToolCallRepr {
-                    id: "read_c".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "read".to_string(),
-                    arguments: json!({ "path": file_c.path().to_string_lossy() }).to_string(),
-                },
-            ],
-        },
-        Response {
-            content: "三文件已读取".to_string(),
-            tool_calls: Vec::new(),
-        },
-    ])
+    let (bus, store, _orc, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            Response {
+                content: "".to_string(),
+                tool_calls: vec![
+                    ToolCallRepr {
+                        id: "read_a".to_string(),
+                        r#type: "function".to_string(),
+                        func_name: "read".to_string(),
+                        arguments: json!({ "path": file_a.path().to_string_lossy() }).to_string(),
+                    },
+                    ToolCallRepr {
+                        id: "read_b".to_string(),
+                        r#type: "function".to_string(),
+                        func_name: "read".to_string(),
+                        arguments: json!({ "path": file_b.path().to_string_lossy() }).to_string(),
+                    },
+                    ToolCallRepr {
+                        id: "read_c".to_string(),
+                        r#type: "function".to_string(),
+                        func_name: "read".to_string(),
+                        arguments: json!({ "path": file_c.path().to_string_lossy() }).to_string(),
+                    },
+                ],
+            },
+            Response {
+                content: "三文件已读取".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ],
+        morphz::config::OrchestratorConfig::default(),
+    )
     .await;
 
     publish_user(&bus, session_id, "read three files").await;
@@ -1242,6 +1496,16 @@ async fn test_attempt_loop_parallel_tool_barrier_single_reply() {
 
     assert_eq!(replies.len(), 1);
     assert_eq!(tool_outputs.len(), 3);
+    let messages = client.messages_seen();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(
+        messages[1]
+            .iter()
+            .map(|message| message.role.as_str())
+            .collect::<Vec<_>>(),
+        vec!["system", "user", "assistant", "tool", "tool", "tool"]
+    );
+    assert_eq!(messages[1][2].tool_calls.as_ref().map(Vec::len), Some(3));
 }
 
 #[tokio::test]
