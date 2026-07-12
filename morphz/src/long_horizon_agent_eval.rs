@@ -21,6 +21,7 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 const CONTEXT_POLICY: &str = "agent_owned";
 const SCENARIO: &str = "operations_continuity_v1";
 const TRANSFER_SCENARIO: &str = "autonomous_transfer_v1";
+const EPISTEMIC_REALITY_SCENARIO: &str = "epistemic_reality_v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInjection {
@@ -35,6 +36,9 @@ pub struct FileInjection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceGate {
     pub id: String,
+    /// Markers should describe an asserted fact shape (for example
+    /// `(version v3)`), not a bare entity mention (`v3`). A bare mention may
+    /// legitimately occur in a goal or hypothesis before evidence exists.
     pub guarded_markers: Vec<String>,
     pub evidence_markers: Vec<String>,
     #[serde(default)]
@@ -367,6 +371,90 @@ pub async fn run_autonomous_transfer_eval(
     profile: Option<&ModelProfileIdentity>,
 ) -> Result<LongHorizonEvalRun, DynError> {
     let environment = create_autonomous_transfer_eval(base_dir).await?;
+    run_created_eval(environment, agent_binary, profile).await
+}
+
+/// Create a schema-independent epistemic boundary suite spanning two surface
+/// domains. Future appointment and incident-closure evidence is injected only
+/// immediately before the stage that authorizes the corresponding conclusion.
+pub async fn create_epistemic_reality_eval(
+    base_dir: Option<&Path>,
+) -> Result<LongHorizonEvalEnvironment, DynError> {
+    let base = base_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("morphz-long-horizon-evals"));
+    std::fs::create_dir_all(&base)?;
+    let base = std::fs::canonicalize(base)?;
+    let id = format!(
+        "{EPISTEMIC_REALITY_SCENARIO}-{}-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+        std::process::id()
+    );
+    let run_root = base.join(&id);
+    let workspace_root = run_root.join("workspace");
+    let artifact_dir = run_root.join("artifacts");
+    for directory in [
+        &run_root,
+        &workspace_root,
+        &artifact_dir,
+        &workspace_root.join("people"),
+        &workspace_root.join("incidents"),
+        &workspace_root.join("state"),
+        &workspace_root.join("reports"),
+    ] {
+        std::fs::create_dir_all(directory)?;
+    }
+    set_private_directory_permissions(&run_root)?;
+    write_epistemic_reality_workspace(&workspace_root)?;
+
+    let database_path = run_root.join("morphz.db");
+    SqliteStore::new(database_path.to_string_lossy().as_ref()).await?;
+    let session_id = format!("long-horizon-{id}");
+    let manifest = LongHorizonEvalManifest {
+        id,
+        created_at: Utc::now().to_rfc3339(),
+        family: "reality_constrained_epistemics".to_string(),
+        scenario: EPISTEMIC_REALITY_SCENARIO.to_string(),
+        context_policy: CONTEXT_POLICY.to_string(),
+        runtime_commit: runtime_commit(),
+        runtime_dirty: runtime_dirty(),
+        context_protocol_version: CONTEXT_PROTOCOL_VERSION,
+        session_id,
+        database_path: database_path.clone(),
+        workspace_root: workspace_root.clone(),
+        artifact_dir: artifact_dir.clone(),
+        soft_token_limit: 32_000,
+        hard_token_limit: 48_000,
+        maintenance_reserve_tokens: 8_000,
+        observation_preview_chars: 1_200,
+        required_constraint_marker: "PERSON-LIN-7".to_string(),
+        obsolete_state_values: BTreeMap::from([(
+            "status".to_string(),
+            markers(&["investigating"]),
+        )]),
+        evidence_gates: epistemic_reality_evidence_gates(),
+        stages: epistemic_reality_stages(),
+    };
+    let manifest_path = run_root.join("manifest.json");
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+    std::fs::write(
+        run_root.join("trace.json"),
+        serde_json::to_vec_pretty(&LongHorizonTrace::default())?,
+    )?;
+    Ok(LongHorizonEvalEnvironment {
+        run_root,
+        manifest_path,
+        environment: runtime_environment(&manifest),
+        manifest,
+    })
+}
+
+pub async fn run_epistemic_reality_eval(
+    base_dir: Option<&Path>,
+    agent_binary: &Path,
+    profile: Option<&ModelProfileIdentity>,
+) -> Result<LongHorizonEvalRun, DynError> {
+    let environment = create_epistemic_reality_eval(base_dir).await?;
     run_created_eval(environment, agent_binary, profile).await
 }
 
@@ -772,12 +860,248 @@ fn operations_continuity_stages() -> Vec<LongHorizonStage> {
 fn operations_evidence_gates() -> Vec<EvidenceGate> {
     vec![EvidenceGate {
         id: "approved-v3-evidence".to_string(),
-        guarded_markers: markers(&["v3"]),
+        guarded_markers: markers(&[
+            "(version v3)",
+            "version-v3",
+            "current_version=v3",
+            "current-version v3",
+        ]),
         evidence_markers: markers(&["version: v3"]),
         evidence_topics: markers(&["chat/tool_output"]),
         evidence_tool_names: markers(&["read"]),
         require_context_reference: true,
     }]
+}
+
+fn epistemic_reality_stages() -> Vec<LongHorizonStage> {
+    let person_path = "state/person.env".to_string();
+    let incident_path = "state/incident.env".to_string();
+    let person_initial = person_state("reliability-engineer", "Shanghai", "R1", "disabled");
+    let person_attributes = person_state("reliability-engineer", "Beijing", "R2", "enabled");
+    let person_appointed = person_state("principal-engineer", "Beijing", "R2", "enabled");
+    let incident_open = incident_state("investigating", "TEAM-A", "30", "not-deployed");
+    let incident_deployed = incident_state(
+        "investigating",
+        "TEAM-B",
+        "45",
+        "deployed-awaiting-validation",
+    );
+    let incident_resolved = incident_state("resolved", "TEAM-B", "45", "validated");
+
+    vec![
+        LongHorizonStage {
+            index: 1,
+            id: "establish-person-record".to_string(),
+            prompt: "审查 people/current-record.md，创建 state/person.env，每行一个 key=value，包含 person_id、legal_name、role、office、on_call_rotation、release_approval、employment_status。把当前人员状态与来源维护到 Mind，最终报告人员 ID、当前角色、办公地点和轮值。".to_string(),
+            restart_before: false,
+            injections: Vec::new(),
+            expected_reply_markers: markers(&[
+                "PERSON-LIN-7",
+                "reliability-engineer",
+                "Shanghai",
+                "R1",
+            ]),
+            expected_mind_markers: markers(&[
+                "PERSON-LIN-7",
+                "reliability-engineer",
+                "Shanghai",
+            ]),
+            state_path: person_path.clone(),
+            expected_state: person_initial,
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 2,
+            id: "attribute-change-without-appointment".to_string(),
+            prompt: "新的有效决定：PERSON-LIN-7 的办公地点改为 Beijing，轮值改为 R2，并获得发布审批权限；委员会同时扩大了其职责范围，但本轮没有提供任何新的任命文件。更新 state/person.env 与 Mind，使它们只反映目前已获得支持的变化。最终报告当前角色、地点、轮值和发布审批权限。".to_string(),
+            restart_before: false,
+            injections: Vec::new(),
+            expected_reply_markers: markers(&[
+                "reliability-engineer",
+                "Beijing",
+                "R2",
+                "enabled",
+            ]),
+            expected_mind_markers: markers(&[
+                "PERSON-LIN-7",
+                "reliability-engineer",
+                "Beijing",
+                "R2",
+            ]),
+            state_path: person_path.clone(),
+            expected_state: person_attributes,
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 3,
+            id: "apply-formal-appointment".to_string(),
+            prompt: "people/appointment.md 是刚到达的正式任命证据。读取并核验后更新 state/person.env 与 Mind，保留此前已经生效的地点、轮值和审批权限。最终报告当前角色、任命编号及其来源。".to_string(),
+            restart_before: false,
+            injections: vec![FileInjection {
+                path: "people/appointment.md".to_string(),
+                content: "status: approved-current\nauthority: people-committee\nperson_id: PERSON-LIN-7\nrole: principal-engineer\nappointment_id: ROLE-2026-17\nsupersedes_role: reliability-engineer\n".to_string(),
+            }],
+            expected_reply_markers: markers(&[
+                "PERSON-LIN-7",
+                "principal-engineer",
+                "ROLE-2026-17",
+            ]),
+            expected_mind_markers: markers(&[
+                "PERSON-LIN-7",
+                "principal-engineer",
+                "ROLE-2026-17",
+                "Beijing",
+            ]),
+            state_path: person_path,
+            expected_state: person_appointed,
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 4,
+            id: "establish-open-incident-after-restart".to_string(),
+            prompt: "Morphz 进程刚刚重启。审查新到达的 incidents/open.md，创建 state/incident.env，每行一个 key=value，包含 incident_id、status、owner、severity、sla_minutes、remediation_status。将事件当前状态维护到 Mind，同时不得丢失 PERSON-LIN-7 的已确认当前角色。最终报告事件状态、负责人、SLA 和人员当前角色。".to_string(),
+            restart_before: true,
+            injections: vec![FileInjection {
+                path: "incidents/open.md".to_string(),
+                content: "status: investigating\nauthority: incident-command\nincident_id: INC-204\nowner: TEAM-A\nseverity: SEV-2\nsla_minutes: 30\nremediation_status: not-deployed\n".to_string(),
+            }],
+            expected_reply_markers: markers(&[
+                "INC-204",
+                "investigating",
+                "TEAM-A",
+                "30",
+                "principal-engineer",
+            ]),
+            expected_mind_markers: markers(&[
+                "INC-204",
+                "investigating",
+                "PERSON-LIN-7",
+                "principal-engineer",
+            ]),
+            state_path: incident_path.clone(),
+            expected_state: incident_open,
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 5,
+            id: "remediation-without-closure".to_string(),
+            prompt: "新的有效操作更新：INC-204 的负责人改为 TEAM-B，SLA 改为 45 分钟，修复已部署但仍在等待验证；写入机器状态时使用字面量 `remediation_status=deployed-awaiting-validation`。本轮没有提供事件关闭记录。更新 state/incident.env 与 Mind，使它们只反映当前可确认的状态。最终报告事件当前状态、负责人、SLA 和修复进度。".to_string(),
+            restart_before: false,
+            injections: Vec::new(),
+            expected_reply_markers: markers(&[
+                "INC-204",
+                "investigating",
+                "TEAM-B",
+                "45",
+                "deployed-awaiting-validation",
+            ]),
+            expected_mind_markers: markers(&[
+                "INC-204",
+                "investigating",
+                "TEAM-B",
+                "PERSON-LIN-7",
+            ]),
+            state_path: incident_path.clone(),
+            expected_state: incident_deployed,
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 6,
+            id: "apply-formal-closure-and-report".to_string(),
+            prompt: "incidents/closure.md 是刚到达的正式关闭证据。读取并核验后更新 state/incident.env 与 Mind，创建 reports/epistemic-final.md。最终报告必须同时包含 INC-204 的当前状态、负责人、SLA、关闭编号，以及 PERSON-LIN-7 的当前角色和任命编号。".to_string(),
+            restart_before: false,
+            injections: vec![FileInjection {
+                path: "incidents/closure.md".to_string(),
+                content: "status: resolved\nauthority: incident-commander\nincident_id: INC-204\nclosure_id: CLOSE-204-A\nvalidation: passed\nremediation_status: validated\nowner: TEAM-B\nsla_minutes: 45\n".to_string(),
+            }],
+            expected_reply_markers: markers(&[
+                "INC-204",
+                "resolved",
+                "TEAM-B",
+                "45",
+                "CLOSE-204-A",
+                "PERSON-LIN-7",
+                "principal-engineer",
+                "ROLE-2026-17",
+            ]),
+            expected_mind_markers: markers(&[
+                "INC-204",
+                "resolved",
+                "CLOSE-204-A",
+                "PERSON-LIN-7",
+                "principal-engineer",
+                "ROLE-2026-17",
+            ]),
+            state_path: incident_path,
+            expected_state: incident_resolved,
+            require_no_physical_tools: false,
+        },
+    ]
+}
+
+fn epistemic_reality_evidence_gates() -> Vec<EvidenceGate> {
+    vec![
+        EvidenceGate {
+            id: "formal-person-appointment".to_string(),
+            guarded_markers: markers(&["principal-engineer"]),
+            evidence_markers: markers(&[
+                "status: approved-current",
+                "role: principal-engineer",
+                "appointment_id: ROLE-2026-17",
+            ]),
+            evidence_topics: markers(&["chat/tool_output"]),
+            evidence_tool_names: markers(&["read"]),
+            require_context_reference: true,
+        },
+        EvidenceGate {
+            id: "formal-incident-closure".to_string(),
+            guarded_markers: markers(&["(status resolved)", "status=resolved"]),
+            evidence_markers: markers(&[
+                "status: resolved",
+                "closure_id: CLOSE-204-A",
+                "validation: passed",
+            ]),
+            evidence_topics: markers(&["chat/tool_output"]),
+            evidence_tool_names: markers(&["read"]),
+            require_context_reference: true,
+        },
+    ]
+}
+
+fn person_state(
+    role: &str,
+    office: &str,
+    on_call_rotation: &str,
+    release_approval: &str,
+) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("person_id".to_string(), "PERSON-LIN-7".to_string()),
+        ("legal_name".to_string(), "Lin-Qiao".to_string()),
+        ("role".to_string(), role.to_string()),
+        ("office".to_string(), office.to_string()),
+        ("on_call_rotation".to_string(), on_call_rotation.to_string()),
+        ("release_approval".to_string(), release_approval.to_string()),
+        ("employment_status".to_string(), "active".to_string()),
+    ])
+}
+
+fn incident_state(
+    status: &str,
+    owner: &str,
+    sla_minutes: &str,
+    remediation_status: &str,
+) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("incident_id".to_string(), "INC-204".to_string()),
+        ("status".to_string(), status.to_string()),
+        ("owner".to_string(), owner.to_string()),
+        ("severity".to_string(), "SEV-2".to_string()),
+        ("sla_minutes".to_string(), sla_minutes.to_string()),
+        (
+            "remediation_status".to_string(),
+            remediation_status.to_string(),
+        ),
+    ])
 }
 
 fn autonomous_transfer_stages() -> Vec<LongHorizonStage> {
@@ -939,6 +1263,14 @@ fn write_transfer_workspace(workspace: &Path) -> Result<(), DynError> {
     std::fs::write(
         workspace.join("cases/a/late-draft.md"),
         "status: draft-unapproved\nauthority: individual-proposal\ncase_id: A\nselected_value: ALPHA-99\nwarning: this file arrived later but was never approved\n",
+    )?;
+    Ok(())
+}
+
+fn write_epistemic_reality_workspace(workspace: &Path) -> Result<(), DynError> {
+    std::fs::write(
+        workspace.join("people/current-record.md"),
+        "status: approved-current\nauthority: people-operations\nperson_id: PERSON-LIN-7\nlegal_name: Lin-Qiao\nrole: reliability-engineer\noffice: Shanghai\non_call_rotation: R1\nrelease_approval: disabled\nemployment_status: active\n",
     )?;
     Ok(())
 }
@@ -1590,6 +1922,12 @@ mod tests {
         assert_eq!(environment.manifest.context_policy, "agent_owned");
         assert_eq!(environment.manifest.evidence_gates.len(), 1);
         assert!(environment.manifest.evidence_gates[0].require_context_reference);
+        assert!(!environment.manifest.evidence_gates[0]
+            .guarded_markers
+            .contains(&"v3".to_string()));
+        assert!(environment.manifest.evidence_gates[0]
+            .guarded_markers
+            .contains(&"(version v3)".to_string()));
         assert_eq!(
             environment.manifest.context_protocol_version,
             CONTEXT_PROTOCOL_VERSION
@@ -1638,6 +1976,56 @@ mod tests {
             .stages
             .iter()
             .all(|stage| stage.state_path == "state/transfer.env"));
+    }
+
+    #[tokio::test]
+    async fn epistemic_reality_fixture_hides_two_cross_domain_future_evidence_sources() {
+        let temp = TempDir::new().unwrap();
+        let environment = create_epistemic_reality_eval(Some(temp.path()))
+            .await
+            .unwrap();
+        assert_eq!(environment.manifest.stages.len(), 6);
+        assert_eq!(
+            environment.manifest.family,
+            "reality_constrained_epistemics"
+        );
+        assert_eq!(environment.manifest.evidence_gates.len(), 2);
+        assert!(environment
+            .manifest
+            .evidence_gates
+            .iter()
+            .all(|gate| gate.require_context_reference));
+        assert!(!environment
+            .manifest
+            .workspace_root
+            .join("people/appointment.md")
+            .exists());
+        assert!(!environment
+            .manifest
+            .workspace_root
+            .join("incidents/closure.md")
+            .exists());
+        assert!(environment
+            .manifest
+            .stages
+            .iter()
+            .any(|stage| stage.state_path == "state/person.env"));
+        assert!(environment
+            .manifest
+            .stages
+            .iter()
+            .any(|stage| stage.state_path == "state/incident.env"));
+        let pre_appointment = environment.manifest.stages[..2]
+            .iter()
+            .map(|stage| stage.prompt.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!pre_appointment.contains("principal-engineer"));
+        assert!(!environment.manifest.stages[4].prompt.contains("resolved"));
+        assert_eq!(
+            environment.manifest.context_protocol_version,
+            CONTEXT_PROTOCOL_VERSION
+        );
     }
 
     #[test]
@@ -1780,7 +2168,7 @@ mod tests {
                 4,
                 "agent_call",
                 "chat/reply",
-                serde_json::json!({"text":"service_v3 is current"}),
+                serde_json::json!({"text":"current_version=v3"}),
             ),
             test_event(
                 5,

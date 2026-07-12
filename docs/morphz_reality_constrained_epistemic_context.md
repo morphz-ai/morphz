@@ -1,10 +1,12 @@
 # Morphz 现实约束下的自主认知 Context
 
 > 英文名称：Reality-Constrained Epistemic Context  
-> 状态：设计基线，先冻结原则与边界，尚未按本文推进 Runtime 实现  
+> 状态：设计基线；Reality Contract v1 已按本文实现并完成首轮验证
 > 更新时间：2026-07-12  
 > 适用范围：Agent-Owned Context、Kernel/Protocol 自描述、Event Ledger、Context transaction、元认知评测与未来多会话共享  
 > 与其他文档的关系：[`morphz_agent_owned_context_design.md`](morphz_agent_owned_context_design.md) 定义 Agent 的 Context 主权；本文定义与之配对的 Runtime 现实约束与控制反馈；[`morphz_shared_context_multisession_architecture.md`](morphz_shared_context_multisession_architecture.md) 将这套分工扩展到多 Session、共享 Context 和多 Sub Agent。
+
+实现与真实回归结果见 [`morphz_reality_contract_v1_validation.md`](morphz_reality_contract_v1_validation.md)。
 
 ## 1. 为什么需要这篇文档
 
@@ -338,6 +340,35 @@ reply already committed
 
 Runtime 不应反馈未经证明的业务答案，例如“正确版本一定是 v3”。
 
+### 7.4 Prefix Cache 友好的 Context 编排
+
+长程 Agent 会在同一任务中反复提交大体相同的系统契约、DSL 说明和工具定义。如果高频变化的 `timestamp`、`attempt`、pressure、Mind 或 Inbox 出现在这些稳定内容之前，任何后续差异都会提前截断大模型服务的 Prefix Cache（前缀缓存），显著增加输入计算成本和响应延迟。
+
+因此请求必须遵循从稳定到易变的顺序：
+
+```text
+稳定 System Prompt
+→ 稳定 Reality / Epistemic Contract
+→ 稳定工具定义与 Context Protocol
+→ 动态 phase 后缀
+→ 动态 kernel
+→ 动态 mind
+→ 动态 inbox
+→ 当前回合 tool transcript
+```
+
+具体约束：
+
+1. Reality/Epistemic Contract 必须由单一事实源确定性渲染，不能因 HashMap 顺序、时间戳或 Session 改变；
+2. Context SExpr 固定保持 `protocol → kernel → mind → inbox`，所有高频字段位于 protocol 之后；
+3. phase、cooldown、closure 等短期指令追加在稳定 System Prompt 之后，不能插入其开头；
+4. 工具定义保持确定顺序和确定 JSON Schema；只有确实进入权限或阶段边界时才改变可用工具集合；
+5. Runtime 应读取兼容后端返回的 `cached_tokens` 等用量字段，以便评测真实命中率；
+6. Prefix Cache 只是一项性能优化，正确性不能依赖缓存存在，后端不支持缓存时行为必须完全一致；
+7. 不得为了提高缓存命中而把属于当前 Session 的动态或敏感状态错误共享给其他 Session。
+
+第一版不绑定某一家模型服务的显式 cache-control 参数，而是先保证 provider-independent（服务商无关）的精确前缀稳定性。未来只有在真实指标证明有收益时，才增加按 Provider 配置的显式缓存策略。
+
 ## 8. Runtime 能强制什么，不能强制什么
 
 | 问题 | Runtime 可确定 | 必须由 Agent 判断 |
@@ -371,6 +402,7 @@ Runtime 不应反馈未经证明的业务答案，例如“正确版本一定是
 - checkpoint/rollback；
 - standard `assistant.tool_calls → role=tool` 结果回传；
 - tool status 与显式 empty output；
+- `protocol → kernel → mind → inbox` 的稳定到动态编排；
 - Context Pressure、Attempt/transaction budget 和 closure/final-reply 阶段；
 - 物理工具的 SHA-256/CAS、Workspace Jail 和副作用 Observation；
 - EvidenceGate 对旧轨迹的时序与来源评测。

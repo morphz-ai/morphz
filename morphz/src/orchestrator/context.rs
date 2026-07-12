@@ -4,18 +4,22 @@ use crate::event::{
     TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use crate::memory::{EventStore, QueryFilter};
+use crate::orchestrator::context_contract::{
+    render_context_tx_epistemic_guidance, ContractClause, EPISTEMIC_CONTRACT,
+    EPISTEMIC_CONTRACT_NAME, REALITY_CONTRACT, REALITY_CONTRACT_NAME,
+};
 use crate::sexpr::{parse, SExpr};
 use chrono::Utc;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 8;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 9;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 
 struct ContextOperationSpec {
@@ -99,8 +103,13 @@ pub fn context_tx_tool_description() -> String {
         .collect::<Vec<_>>()
         .join("；");
     format!(
-        "原子修改你拥有的 Mind Context。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Context 修改不是给用户的最终回复。"
+        "原子修改你拥有的 Mind Context。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Context 修改不是给用户的最终回复。提交 BODY 时还必须遵守由协议单一事实源生成的认识契约：{}",
+        render_context_tx_epistemic_guidance()
     )
+}
+
+pub fn context_tx_parameter_description() -> &'static str {
+    "完整的单个 SExpr 心智事务；可在一个 transaction 内顺序组合多个 operation 并原子提交。create/derive/revise 接受一个或多个 BODY，revise 完整替换旧 BODY；from 紧跟 ID。具体语法、来源纪律与全部认识契约以本工具 description 和 Context protocol 为准。"
 }
 
 #[derive(Debug, Clone)]
@@ -1655,14 +1664,24 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         inbox.push(list("observation", fields));
     }
 
-    SExpr::List(vec![
-        atom("context"),
-        render_protocol(),
+    // Keep the large, deterministic protocol before every high-churn field so
+    // provider-side prefix caches can reuse it across attempts and turns.
+    // Phase-specific instructions are likewise appended after the stable
+    // system prompt by the orchestrator.
+    format!(
+        "{} {} {} {})",
+        stable_context_prefix(),
         SExpr::List(kernel),
         SExpr::List(mind),
-        SExpr::List(inbox),
-    ])
-    .to_string()
+        SExpr::List(inbox)
+    )
+}
+
+fn stable_context_prefix() -> &'static str {
+    static PREFIX: OnceLock<String> = OnceLock::new();
+    PREFIX
+        .get_or_init(|| format!("(context {}", render_protocol()))
+        .as_str()
 }
 
 fn freshness_for_id(state: &MindState, id: &str) -> ContextFreshness {
@@ -1755,6 +1774,16 @@ fn render_protocol() -> SExpr {
         "protocol",
         vec![
             pair("version", atom(CONTEXT_PROTOCOL_VERSION.to_string())),
+            render_contract(
+                "reality-contract",
+                REALITY_CONTRACT_NAME,
+                REALITY_CONTRACT,
+            ),
+            render_contract(
+                "epistemic-contract",
+                EPISTEMIC_CONTRACT_NAME,
+                EPISTEMIC_CONTRACT,
+            ),
             list(
                 "metadata-semantics",
                 vec![
@@ -1915,6 +1944,30 @@ fn render_protocol() -> SExpr {
                     ),
                     list("operations", operations),
                 ],
+            ),
+        ],
+    )
+}
+
+fn render_contract(section: &str, contract_name: &str, clauses: &[ContractClause]) -> SExpr {
+    list(
+        section,
+        vec![
+            pair("name", atom(contract_name)),
+            list(
+                "clauses",
+                clauses
+                    .iter()
+                    .map(|clause| {
+                        list(
+                            "clause",
+                            vec![
+                                pair("name", atom(clause.key)),
+                                pair("meaning", atom(clause.meaning)),
+                            ],
+                        )
+                    })
+                    .collect(),
             ),
         ],
     )
@@ -2569,7 +2622,7 @@ mod tests {
             active_frames: 1,
             active_observations: 0,
         };
-        let budget = TurnBudget {
+        let mut budget = TurnBudget {
             attempt: 1,
             limit: 12,
             remaining_including_current: 12,
@@ -2610,6 +2663,14 @@ mod tests {
             Some(&SExpr::Atom("user-message".to_string()))
         );
         assert!(rendered.contains("(response-contract"));
+        assert!(rendered.contains("(reality-contract"));
+        assert!(rendered.contains("(name reality-contract-v1)"));
+        assert!(rendered.contains("(epistemic-contract"));
+        assert!(rendered.contains("(name epistemic-contract-v1)"));
+        for clause in REALITY_CONTRACT.iter().chain(EPISTEMIC_CONTRACT.iter()) {
+            assert!(rendered.contains(clause.key));
+            assert!(rendered.contains(clause.meaning));
+        }
         assert!(rendered.contains("(context-tx-contract"));
         assert!(rendered.contains("(body-arity \"create derive revise one-or-more\")"));
         assert!(rendered.contains("(body-normalization"));
@@ -2620,6 +2681,26 @@ mod tests {
         assert!(rendered.contains("(mind (frame"));
         assert!(rendered.contains("(inbox)"));
         assert!(!rendered.contains("todo_stack"));
+
+        let first_dynamic_field = rendered.find(" (kernel").unwrap();
+        assert_eq!(&rendered[..first_dynamic_field], stable_context_prefix());
+        budget.attempt = 2;
+        let changed = render_context(ContextRenderInput {
+            session_id: "s2",
+            parent_session_id: None,
+            state: &state,
+            observations: &[],
+            pressure: &pressure,
+            turn_budget: &budget,
+            wake: &wake,
+            references: &references,
+        });
+        assert_ne!(rendered, changed);
+        let changed_first_dynamic_field = changed.find(" (kernel").unwrap();
+        assert_eq!(
+            &changed[..changed_first_dynamic_field],
+            stable_context_prefix()
+        );
     }
 
     #[test]

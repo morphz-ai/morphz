@@ -14,13 +14,15 @@ Morphz 是一个由 Rust 实现、能够通过 SExpr DSL 自主管理自身 Cont
 
 Agent 拥有 Mind 的认识论与语义控制权；Runtime 则负责不可伪造的事件顺序、直接因果、身份、来源、版本、事务、权限和控制反馈。Runtime 不替 Agent 判断业务真理，而是为自由认知提供符合现实的坐标系。该分工见 [现实约束下的自主认知 Context](docs/morphz_reality_constrained_epistemic_context.md)。
 
+Reality Contract v1 已将上述现实约束与认识纪律统一生成到 System Prompt、Context Protocol 和 `context_tx` 工具说明，并完成 Gemini 跨领域五次回归。实现细节、Prefix Cache 编排和真实结果见 [Reality Contract v1 验证报告](docs/morphz_reality_contract_v1_validation.md)。
+
 当前各项真实测试的最终结果、模型身份、结论边界和未完成项见 [Morphz 当前评测状态总览](docs/morphz_eval_status.md)。日常主测 Agent 为 `gemini-3-flash-agent`，其他模型用于对照与兼容性验证。
 
 Coding Tools v1 提供 `list_files/search/read/edit/write/exec` 最小开发闭环：`read` 返回 SHA-256 文件版本，`edit` 使用版本前提执行唯一匹配的原子局部修改，`write` 只允许显式 create 或带版本前提的 overwrite，所有成功修改都会产生带 Diff 的 `file_change` Observation。接口与安全边界见 [Coding Tools v1](docs/morphz_coding_tools_v1.md)。
 
 真实 Coding Agent 测试使用独立 fixture、数据库、Artifact 目录和 macOS Seatbelt exec 边界；v2 提供多文件重试状态机任务，并在 Agent 不可见的 verifier 副本中注入隐藏测试。创建、探针、固定验证、范围审计与 Ledger 评分见 [Coding Eval Sandbox](docs/morphz_coding_eval_sandbox.md)。
 
-Attempt Runtime 将物理工作与 Context transaction 分开计费，并提供一次 `context_tx`-only 最终收口。Protocol v8 保留 v6 的统一终止语义与 v7 的完整 `revise`、Checkpoint，同时在当前用户回合内按标准 `assistant.tool_calls → role=tool/tool_call_id` 回传工具结果；结果立即持久化为 Observation，但不会在同一请求的 Inbox 中重复注入。任何工具调用都是中间状态，只有无工具纯文本才结束回合。
+Attempt Runtime 将物理工作与 Context transaction 分开计费，并提供一次 `context_tx`-only 最终收口。Protocol v9 在 v8 工具结果回传语义之上增加 Reality/Epistemic Contract，同时保留 v6 的统一终止语义与 v7 的完整 `revise`、Checkpoint；当前用户回合内按标准 `assistant.tool_calls → role=tool/tool_call_id` 回传工具结果，结果立即持久化为 Observation，但不会在同一请求的 Inbox 中重复注入。任何工具调用都是中间状态，只有无工具纯文本才结束回合。
 
 Context Pressure Eval 使用合成长历史和缩小阈值验证 Agent 自主 `derive/protect/retire`：首次真实运行将 estimated tokens 从 9,177 降至 2,140，并完整保留四项长期事实。设计、命令和结论边界见 [Context Pressure Eval](docs/morphz_context_pressure_eval.md)。
 

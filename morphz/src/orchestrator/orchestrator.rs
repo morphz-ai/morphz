@@ -3,17 +3,18 @@ use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_TOOL_OUTPUT, T
 use crate::llm::{Client, Message};
 use crate::memory::{EventStore, QueryFilter};
 use crate::orchestrator::context::{ContextEngine, ContextView};
+use crate::orchestrator::context_contract::render_system_contract;
 use crate::tool::Registry;
 use chrono::Utc;
 use dashmap::DashMap;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-const AGENT_OWNED_CONTEXT_PROMPT: &str = r#"你是 Morphz，一个能够管理自身工作 Context 的 AI Agent。
+const AGENT_OWNED_CONTEXT_PROMPT_BASE: &str = r#"你是 Morphz，一个能够管理自身工作 Context 的 AI Agent。
 
 Runtime 每轮提供一份自描述 Context。`protocol` 是当前响应模式与 Context DSL 的权威契约；先读取它，再决策。
 
@@ -55,6 +56,18 @@ Context 的状态分为三个权限域：
 13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。相互独立的文件读取必须在同一响应中并行调用；已经进入 Inbox 且 sha256 未被 file_change 改变的内容不得重复 read。完成必要定位后立即修改并验证，不能把整个 Attempt 预算消耗在反复扫描与阅读上。
 
 Context 的修改是你的元认知行为；read/write/exec/spawn 等工具是对外部世界的行为。保持二者边界清晰。"#;
+
+fn agent_owned_context_prompt() -> &'static str {
+    static PROMPT: OnceLock<String> = OnceLock::new();
+    PROMPT
+        .get_or_init(|| {
+            format!(
+                "{AGENT_OWNED_CONTEXT_PROMPT_BASE}\n\n{}",
+                render_system_contract()
+            )
+        })
+        .as_str()
+}
 
 const CONTEXT_CLOSURE_PROMPT: &str = r#"Runtime 当前处于 context-closure 阶段。这是本回合唯一一次专用 Mind 收口机会，不是继续工作的额外预算。
 - 不得调用任何物理工具，不得继续探索或重复验证。
@@ -568,9 +581,10 @@ impl Orchestrator {
             _ if context_tx_cooldown => Some(CONTEXT_TX_COOLDOWN_PROMPT),
             _ => None,
         };
+        let stable_system_prompt = agent_owned_context_prompt();
         let system_prompt = phase_prompt
-            .map(|prompt| format!("{AGENT_OWNED_CONTEXT_PROMPT}\n\n{prompt}"))
-            .unwrap_or_else(|| AGENT_OWNED_CONTEXT_PROMPT.to_string());
+            .map(|prompt| format!("{stable_system_prompt}\n\n{prompt}"))
+            .unwrap_or_else(|| stable_system_prompt.to_string());
         let mut messages = vec![
             Message {
                 role: "system".to_string(),
@@ -1455,7 +1469,18 @@ fn normalize_context_tx_key(session_id: &str, arguments: &str) -> Result<String,
 
 #[cfg(test)]
 mod tests {
-    use super::{should_force_final_for_maintenance, ReadTurnGuard};
+    use super::{agent_owned_context_prompt, should_force_final_for_maintenance, ReadTurnGuard};
+
+    #[test]
+    fn system_prompt_has_a_deterministic_generated_contract_prefix() {
+        let first = agent_owned_context_prompt();
+        let second = agent_owned_context_prompt();
+        assert_eq!(first, second);
+        assert!(first.contains("Runtime Reality Contract（现实契约）"));
+        assert!(first.contains("Agent Epistemic Contract（认识契约）"));
+        assert!(first.contains("claims-no-stronger-than-sources"));
+        assert!(first.contains("不规定 Mind BODY 的结构"));
+    }
 
     #[test]
     fn critical_pressure_with_exhausted_maintenance_budget_forces_final_reply() {

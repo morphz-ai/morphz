@@ -196,6 +196,14 @@ struct ChatUsage {
     completion_tokens: Option<u64>,
     #[serde(default)]
     total_tokens: Option<u64>,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+#[derive(Deserialize)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -329,6 +337,11 @@ impl Client for OpenAIClient {
             prompt_tokens = ?chat_resp.usage.as_ref().and_then(|usage| usage.prompt_tokens),
             completion_tokens = ?chat_resp.usage.as_ref().and_then(|usage| usage.completion_tokens),
             total_tokens = ?chat_resp.usage.as_ref().and_then(|usage| usage.total_tokens),
+            cached_prompt_tokens = ?chat_resp
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.prompt_tokens_details.as_ref())
+                .and_then(|details| details.cached_tokens),
             tool_argument_chars = ?tool_argument_chars,
             "LLM completion 元数据"
         );
@@ -572,6 +585,32 @@ mod tests {
         let value = serde_json::to_value(request).unwrap();
 
         assert_eq!(value["max_tokens"], 131_072);
+    }
+
+    #[test]
+    fn chat_usage_accepts_openai_compatible_cached_prompt_tokens() {
+        let response: ChatResponse = serde_json::from_value(serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"content": "done", "tool_calls": null}
+            }],
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 10,
+                "total_tokens": 1210,
+                "prompt_tokens_details": {"cached_tokens": 900}
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            response
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.prompt_tokens_details.as_ref())
+                .and_then(|details| details.cached_tokens),
+            Some(900)
+        );
     }
 
     #[tokio::test]

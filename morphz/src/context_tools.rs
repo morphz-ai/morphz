@@ -1,6 +1,8 @@
 use crate::event::Event;
 use crate::llm::ToolDefinition;
-use crate::orchestrator::context::{context_tx_tool_description, ContextEngine};
+use crate::orchestrator::context::{
+    context_tx_parameter_description, context_tx_tool_description, ContextEngine,
+};
 use crate::tool::{Tool, CURRENT_SESSION_ID};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -41,7 +43,7 @@ impl Tool for ContextTxTool {
                     },
                     "transaction": {
                         "type": "string",
-                        "description": "完整的单个 SExpr 心智事务。create/derive/revise 可直接并列一个或多个 BODY，Runtime 会把多项规范化为 (context-body BODY...)。revise 会完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 重述。create 不接受 from，有来源时使用 derive，derive/revise 的 (from SOURCE...) 必须紧跟 ID。一个 transaction 可包含多个 create/derive/revise/retire/restore/protect/unprotect/place/relate/unrelate/checkpoint/rollback/drop-checkpoint，并整体原子提交。高风险重组前可 checkpoint，rollback 和 drop-checkpoint 必须在 transaction 级提供 reason。不要为多个修改并行调用多次 context_tx。"
+                        "description": context_tx_parameter_description()
                     }
                 },
                 "required": ["transaction"]
