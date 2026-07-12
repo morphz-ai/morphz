@@ -3,7 +3,8 @@ use morphz::long_horizon_agent_eval::{
     create_autonomous_transfer_eval, create_epistemic_reality_eval,
     create_experience_transfer_arm_eval, create_operations_continuity_eval,
     inspect_long_horizon_eval, run_autonomous_transfer_eval, run_epistemic_reality_eval,
-    run_experience_transfer_suite, run_operations_continuity_eval, ExperienceTransferArm,
+    run_experience_transfer_prompt_ab, run_experience_transfer_suite,
+    run_operations_continuity_eval, ExperienceTransferArm,
 };
 use std::path::Path;
 
@@ -126,9 +127,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .await?;
             println!("{}", serde_json::to_string_pretty(&run)?);
         }
+        [command, profiles, base] if command == "run-experience-prompt-ab" => {
+            let profiles = load_model_profiles(Path::new(profiles))?;
+            if profiles.profiles.len() != 1 {
+                return Err(
+                    "long-horizon run-experience-prompt-ab 当前要求 profile 文件恰好包含一个模型"
+                        .into(),
+                );
+            }
+            let binary = default_morphz_agent_binary()?;
+            let run = run_experience_transfer_prompt_ab(
+                Some(Path::new(base)),
+                &binary,
+                profiles.profiles.first(),
+            )
+            .await?;
+            println!("{}", serde_json::to_string_pretty(&run)?);
+        }
         _ => {
             eprintln!(
-                "usage:\n  cargo run -p morphz --bin long_horizon_agent_eval -- create [BASE_DIR]\n  cargo run -p morphz --bin long_horizon_agent_eval -- create-transfer [BASE_DIR]\n  cargo run -p morphz --bin long_horizon_agent_eval -- create-epistemic [BASE_DIR]\n  cargo run -p morphz --bin long_horizon_agent_eval -- create-experience ARM [BASE_DIR]\n  cargo run -p morphz --bin long_horizon_agent_eval -- inspect RUN_ROOT\n  cargo run -p morphz --bin long_horizon_agent_eval -- run PROFILES.toml BASE_DIR\n  cargo run -p morphz --bin long_horizon_agent_eval -- run-transfer PROFILES.toml BASE_DIR\n  cargo run -p morphz --bin long_horizon_agent_eval -- run-epistemic PROFILES.toml BASE_DIR\n  cargo run -p morphz --bin long_horizon_agent_eval -- run-experience PROFILES.toml BASE_DIR\n\nARM: related_experience | unrelated_experience | fresh"
+                "usage:\n  cargo run -p morphz --bin long_horizon_agent_eval -- create [BASE_DIR]\n  cargo run -p morphz --bin long_horizon_agent_eval -- create-transfer [BASE_DIR]\n  cargo run -p morphz --bin long_horizon_agent_eval -- create-epistemic [BASE_DIR]\n  cargo run -p morphz --bin long_horizon_agent_eval -- create-experience ARM [BASE_DIR]\n  cargo run -p morphz --bin long_horizon_agent_eval -- inspect RUN_ROOT\n  cargo run -p morphz --bin long_horizon_agent_eval -- run PROFILES.toml BASE_DIR\n  cargo run -p morphz --bin long_horizon_agent_eval -- run-transfer PROFILES.toml BASE_DIR\n  cargo run -p morphz --bin long_horizon_agent_eval -- run-epistemic PROFILES.toml BASE_DIR\n  cargo run -p morphz --bin long_horizon_agent_eval -- run-experience PROFILES.toml BASE_DIR\n  cargo run -p morphz --bin long_horizon_agent_eval -- run-experience-prompt-ab PROFILES.toml BASE_DIR\n\nARM: related_experience | unrelated_experience | fresh"
             );
             std::process::exit(64);
         }

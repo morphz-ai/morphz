@@ -18,7 +18,11 @@ Reality Contract v1 已将上述现实约束与认识纪律统一生成到 Syste
 
 当前各项真实测试的最终结果、模型身份、结论边界和未完成项见 [Morphz 当前评测状态总览](docs/morphz_eval_status.md)。日常主测 Agent 为 `gemini-3-flash-agent`，其他模型用于对照与兼容性验证。
 
-Experience Transfer v1 以相关经验、无关经验和全新 Agent 三 arm 同条件比较已有 Mind 对后续任务的影响。首批 Gemini 五次正式重复显示经验历史与更低执行成本存在信号，但尚未证明相关经验带来正确率优势或稳定形成抽象原则；设计、无效夹具排除和最终 Mind 结构见 [Experience Transfer Benchmark v1](docs/morphz_experience_transfer_benchmark_v1.md)。
+Experience Transfer v1 以相关经验、无关经验和全新 Agent 三 arm 同条件比较已有 Mind 对后续任务的影响。初版结果后来发现 Inbox 可以替 Mind 通过的评分缺陷；当前已改为严格检查活动 Mind Frame/Relation。场景设计、无效夹具与历史结果更正见 [Experience Transfer Benchmark v1](docs/morphz_experience_transfer_benchmark_v1.md)。
+
+Cognitive SExpr VM Prompt 将 LLM 定义为持续运行的 S 表达式认知机器的非确定性语义处理器。严格 Mind-only 评分下的五次 Gemini 配对实验中，VM related 为 15/15、原 Agent Prompt 为 14/15，三 arm 总语义为 31/45 对 26/45；模型尝试略降但物理工具增加，且尚未形成显式抽象原则。候选已证明当前任务族中非退化，完整判据、Mind 审计和结论见 [Cognitive S-Expression VM Prompt A/B](docs/morphz_cognitive_sexpr_vm_prompt_ab.md)。
+
+Runtime 默认使用 `cognitive_sexpr_vm`；如需回归旧身份，可设置 `MORPHZ_SYSTEM_PROMPT_MODE=agent_owned_context`。这只切换稳定 System Prompt，Context Protocol、DSL、工具和持久化状态保持一致。
 
 Coding Tools v1 提供 `list_files/search/read/edit/write/exec` 最小开发闭环：`read` 返回 SHA-256 文件版本，`edit` 使用版本前提执行唯一匹配的原子局部修改，`write` 只允许显式 create 或带版本前提的 overwrite，所有成功修改都会产生带 Diff 的 `file_change` Observation。接口与安全边界见 [Coding Tools v1](docs/morphz_coding_tools_v1.md)。
 

@@ -4,7 +4,10 @@ use crate::event::Event;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{EventStore, QueryFilter};
 use crate::orchestrator::context::CONTEXT_PROTOCOL_VERSION;
-use crate::orchestrator::context::{ContextEngine, ContextPressure, ContextRelation};
+use crate::orchestrator::context::{ContextEngine, ContextPressure, ContextRelation, MindState};
+use crate::orchestrator::orchestrator::{
+    BASELINE_SYSTEM_PROMPT_MODE, COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE, SYSTEM_PROMPT_MODE_ENV,
+};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -221,6 +224,22 @@ pub enum ExperienceTransferArm {
     Fresh,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExperienceTransferPromptMode {
+    AgentOwnedContext,
+    CognitiveSexprVm,
+}
+
+impl ExperienceTransferPromptMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentOwnedContext => BASELINE_SYSTEM_PROMPT_MODE,
+            Self::CognitiveSexprVm => COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE,
+        }
+    }
+}
+
 impl ExperienceTransferArm {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -250,6 +269,9 @@ pub struct MindStructureSnapshot {
     pub relation_count: usize,
     pub protected_entry_count: usize,
     pub retired_entry_count: usize,
+    pub case_bound_frame_count: usize,
+    pub multi_case_frame_count: usize,
+    pub abstraction_candidate_frame_ids: Vec<String>,
     pub frames: Vec<MindFrameSnapshot>,
     pub relations: Vec<ContextRelation>,
 }
@@ -306,11 +328,33 @@ pub struct ExperienceTransferSuiteRun {
     pub id: String,
     pub created_at: String,
     pub suite_root: PathBuf,
+    pub system_prompt_mode: ExperienceTransferPromptMode,
     pub model_profile: Option<ModelProfileIdentity>,
     pub related_experience: ExperienceTransferArmReport,
     pub unrelated_experience: ExperienceTransferArmReport,
     pub fresh: ExperienceTransferArmReport,
     pub comparison: ExperienceTransferComparison,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExperienceTransferPromptArmDelta {
+    pub arm: ExperienceTransferArm,
+    pub candidate_minus_baseline_semantic_pass_rate: f64,
+    pub candidate_minus_baseline_strict_pass_rate: f64,
+    pub candidate_minus_baseline_model_attempts: i64,
+    pub candidate_minus_baseline_physical_tool_calls: i64,
+    pub candidate_minus_baseline_context_commits: i64,
+    pub candidate_minus_baseline_abstraction_candidates: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExperienceTransferPromptAbRun {
+    pub id: String,
+    pub created_at: String,
+    pub run_root: PathBuf,
+    pub baseline: ExperienceTransferSuiteRun,
+    pub cognitive_sexpr_vm: ExperienceTransferSuiteRun,
+    pub arm_deltas: Vec<ExperienceTransferPromptArmDelta>,
 }
 
 pub async fn create_operations_continuity_eval(
@@ -640,7 +684,28 @@ pub async fn run_experience_transfer_arm_eval(
     agent_binary: &Path,
     profile: Option<&ModelProfileIdentity>,
 ) -> Result<LongHorizonEvalRun, DynError> {
-    let environment = create_experience_transfer_arm_eval(base_dir, arm).await?;
+    run_experience_transfer_arm_eval_with_prompt(
+        base_dir,
+        arm,
+        agent_binary,
+        profile,
+        ExperienceTransferPromptMode::CognitiveSexprVm,
+    )
+    .await
+}
+
+async fn run_experience_transfer_arm_eval_with_prompt(
+    base_dir: Option<&Path>,
+    arm: ExperienceTransferArm,
+    agent_binary: &Path,
+    profile: Option<&ModelProfileIdentity>,
+    prompt_mode: ExperienceTransferPromptMode,
+) -> Result<LongHorizonEvalRun, DynError> {
+    let mut environment = create_experience_transfer_arm_eval(base_dir, arm).await?;
+    environment.environment.insert(
+        SYSTEM_PROMPT_MODE_ENV.to_string(),
+        prompt_mode.as_str().to_string(),
+    );
     run_created_eval(environment, agent_binary, profile).await
 }
 
@@ -648,6 +713,21 @@ pub async fn run_experience_transfer_suite(
     base_dir: Option<&Path>,
     agent_binary: &Path,
     profile: Option<&ModelProfileIdentity>,
+) -> Result<ExperienceTransferSuiteRun, DynError> {
+    run_experience_transfer_suite_with_prompt(
+        base_dir,
+        agent_binary,
+        profile,
+        ExperienceTransferPromptMode::CognitiveSexprVm,
+    )
+    .await
+}
+
+pub async fn run_experience_transfer_suite_with_prompt(
+    base_dir: Option<&Path>,
+    agent_binary: &Path,
+    profile: Option<&ModelProfileIdentity>,
+    prompt_mode: ExperienceTransferPromptMode,
 ) -> Result<ExperienceTransferSuiteRun, DynError> {
     let base = base_dir
         .map(Path::to_path_buf)
@@ -670,23 +750,26 @@ pub async fn run_experience_transfer_suite(
     let unrelated_profile = profile.cloned();
     let fresh_profile = profile.cloned();
     let (related_run, unrelated_run, fresh_run) = tokio::try_join!(
-        run_experience_transfer_arm_eval(
+        run_experience_transfer_arm_eval_with_prompt(
             Some(&related_root),
             ExperienceTransferArm::RelatedExperience,
             agent_binary,
             related_profile.as_ref(),
+            prompt_mode,
         ),
-        run_experience_transfer_arm_eval(
+        run_experience_transfer_arm_eval_with_prompt(
             Some(&unrelated_root),
             ExperienceTransferArm::UnrelatedExperience,
             agent_binary,
             unrelated_profile.as_ref(),
+            prompt_mode,
         ),
-        run_experience_transfer_arm_eval(
+        run_experience_transfer_arm_eval_with_prompt(
             Some(&fresh_root),
             ExperienceTransferArm::Fresh,
             agent_binary,
             fresh_profile.as_ref(),
+            prompt_mode,
         ),
     )?;
 
@@ -706,6 +789,7 @@ pub async fn run_experience_transfer_suite(
         id,
         created_at: Utc::now().to_rfc3339(),
         suite_root: suite_root.clone(),
+        system_prompt_mode: prompt_mode,
         model_profile: profile.cloned(),
         related_experience,
         unrelated_experience,
@@ -717,6 +801,69 @@ pub async fn run_experience_transfer_suite(
         serde_json::to_vec_pretty(&suite)?,
     )?;
     Ok(suite)
+}
+
+pub async fn run_experience_transfer_prompt_ab(
+    base_dir: Option<&Path>,
+    agent_binary: &Path,
+    profile: Option<&ModelProfileIdentity>,
+) -> Result<ExperienceTransferPromptAbRun, DynError> {
+    let base = base_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("morphz-experience-prompt-ab"));
+    std::fs::create_dir_all(&base)?;
+    let base = std::fs::canonicalize(base)?;
+    let id = format!(
+        "{EXPERIENCE_TRANSFER_SCENARIO}-prompt-ab-{}-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+        std::process::id()
+    );
+    let run_root = base.join(&id);
+    std::fs::create_dir_all(&run_root)?;
+    set_private_directory_permissions(&run_root)?;
+
+    let baseline_root = run_root.join(ExperienceTransferPromptMode::AgentOwnedContext.as_str());
+    let candidate_root = run_root.join(ExperienceTransferPromptMode::CognitiveSexprVm.as_str());
+    let baseline_profile = profile.cloned();
+    let candidate_profile = profile.cloned();
+    let (baseline, cognitive_sexpr_vm) = tokio::try_join!(
+        run_experience_transfer_suite_with_prompt(
+            Some(&baseline_root),
+            agent_binary,
+            baseline_profile.as_ref(),
+            ExperienceTransferPromptMode::AgentOwnedContext,
+        ),
+        run_experience_transfer_suite_with_prompt(
+            Some(&candidate_root),
+            agent_binary,
+            candidate_profile.as_ref(),
+            ExperienceTransferPromptMode::CognitiveSexprVm,
+        ),
+    )?;
+    let arm_deltas = vec![
+        prompt_arm_delta(
+            &baseline.related_experience,
+            &cognitive_sexpr_vm.related_experience,
+        ),
+        prompt_arm_delta(
+            &baseline.unrelated_experience,
+            &cognitive_sexpr_vm.unrelated_experience,
+        ),
+        prompt_arm_delta(&baseline.fresh, &cognitive_sexpr_vm.fresh),
+    ];
+    let run = ExperienceTransferPromptAbRun {
+        id,
+        created_at: Utc::now().to_rfc3339(),
+        run_root: run_root.clone(),
+        baseline,
+        cognitive_sexpr_vm,
+        arm_deltas,
+    };
+    std::fs::write(
+        run_root.join("prompt_ab_report.json"),
+        serde_json::to_vec_pretty(&run)?,
+    )?;
+    Ok(run)
 }
 
 async fn experience_transfer_arm_report(
@@ -827,6 +974,15 @@ async fn final_mind_structure(run_root: &Path) -> Result<MindStructureSnapshot, 
         .iter()
         .filter(|frame| view.state.retired.contains(&frame.id))
         .count();
+    let case_counts = active_frames
+        .iter()
+        .map(|frame| frame.body.matches("(case_id").count())
+        .collect::<Vec<_>>();
+    let abstraction_candidate_frame_ids = active_frames
+        .iter()
+        .filter(|frame| is_abstraction_candidate(&frame.body))
+        .map(|frame| frame.id.clone())
+        .collect::<Vec<_>>();
     Ok(MindStructureSnapshot {
         version: view.state.version,
         active_frame_count: active_frames.len(),
@@ -834,9 +990,35 @@ async fn final_mind_structure(run_root: &Path) -> Result<MindStructureSnapshot, 
         relation_count: view.state.relations.len(),
         protected_entry_count: view.state.protected.len(),
         retired_entry_count: view.state.retired.len(),
+        case_bound_frame_count: case_counts.iter().filter(|count| **count > 0).count(),
+        multi_case_frame_count: case_counts.iter().filter(|count| **count > 1).count(),
+        abstraction_candidate_frame_ids,
         frames: active_frames,
         relations: view.state.relations,
     })
+}
+
+fn is_abstraction_candidate(body: &str) -> bool {
+    let normalized = body.to_lowercase();
+    [
+        "(principle",
+        "(rule",
+        "(policy",
+        "(strategy",
+        "(procedure",
+        "(pattern",
+        "(heuristic",
+        "(abstraction",
+        "(原则",
+        "(规则",
+        "(策略",
+        "(过程",
+        "(模式",
+        "(启发",
+        "(抽象",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
 }
 
 fn compare_experience_transfer_arms(
@@ -870,8 +1052,61 @@ fn compare_experience_transfer_arms(
     }
 }
 
+fn prompt_arm_delta(
+    baseline: &ExperienceTransferArmReport,
+    candidate: &ExperienceTransferArmReport,
+) -> ExperienceTransferPromptArmDelta {
+    debug_assert_eq!(baseline.arm, candidate.arm);
+    ExperienceTransferPromptArmDelta {
+        arm: baseline.arm,
+        candidate_minus_baseline_semantic_pass_rate: candidate.target.semantic_pass_rate
+            - baseline.target.semantic_pass_rate,
+        candidate_minus_baseline_strict_pass_rate: candidate.target.strict_pass_rate
+            - baseline.target.strict_pass_rate,
+        candidate_minus_baseline_model_attempts: signed_delta(
+            candidate.target.model_attempts,
+            baseline.target.model_attempts,
+        ),
+        candidate_minus_baseline_physical_tool_calls: signed_delta(
+            candidate.target.physical_tool_calls,
+            baseline.target.physical_tool_calls,
+        ),
+        candidate_minus_baseline_context_commits: signed_delta(
+            candidate.target.context_commits,
+            baseline.target.context_commits,
+        ),
+        candidate_minus_baseline_abstraction_candidates: signed_delta(
+            candidate.final_mind.abstraction_candidate_frame_ids.len(),
+            baseline.final_mind.abstraction_candidate_frame_ids.len(),
+        ),
+    }
+}
+
 fn signed_delta(left: usize, right: usize) -> i64 {
     left as i64 - right as i64
+}
+
+fn active_mind_evaluation_text(state: &MindState) -> String {
+    let mut text = String::new();
+    for frame in state
+        .frames
+        .iter()
+        .filter(|frame| !state.retired.contains(&frame.id))
+    {
+        text.push_str(&frame.id);
+        text.push('\n');
+        text.push_str(&frame.body);
+        text.push('\n');
+    }
+    for relation in &state.relations {
+        text.push_str(&relation.subject);
+        text.push(' ');
+        text.push_str(&relation.relation);
+        text.push(' ');
+        text.push_str(&relation.object);
+        text.push('\n');
+    }
+    text
 }
 
 async fn run_created_eval(
@@ -926,7 +1161,8 @@ async fn run_created_eval(
             .build_view(&environment.manifest.session_id)
             .await?;
         let missing_reply_markers = missing_markers(&reply, &stage.expected_reply_markers);
-        let missing_mind_markers = missing_markers(&view.sexpr, &stage.expected_mind_markers);
+        let mind_text = active_mind_evaluation_text(&view.state);
+        let missing_mind_markers = missing_markers(&mind_text, &stage.expected_mind_markers);
         let state_mismatches = state_mismatches(
             &environment.manifest.workspace_root.join(&stage.state_path),
             &stage.expected_state,
@@ -2807,6 +3043,67 @@ mod tests {
         assert_eq!(comparison.related_minus_fresh_physical_tool_calls, -1);
         assert_eq!(comparison.unrelated_minus_fresh_model_attempts, 1);
         assert_eq!(comparison.unrelated_minus_fresh_physical_tool_calls, 1);
+    }
+
+    #[test]
+    fn abstraction_signal_only_labels_explicit_reusable_structures() {
+        assert!(is_abstraction_candidate(
+            "(principle (when repeated-conflict) (prefer supported-current))"
+        ));
+        assert!(is_abstraction_candidate(
+            "(规则 (适用范围 多任务) (反例 未知来源))"
+        ));
+        assert!(!is_abstraction_candidate(
+            "(context-body (case_id A) (selected_value ALPHA-17) (basis approved-current))"
+        ));
+        assert_eq!(
+            ExperienceTransferPromptMode::AgentOwnedContext.as_str(),
+            "agent_owned_context"
+        );
+        assert_eq!(
+            ExperienceTransferPromptMode::CognitiveSexprVm.as_str(),
+            "cognitive_sexpr_vm"
+        );
+    }
+
+    #[test]
+    fn mind_scoring_excludes_inbox_text_and_retired_frames() {
+        let state: MindState = serde_json::from_value(serde_json::json!({
+            "version": 2,
+            "frames": [
+                {
+                    "id": "active",
+                    "body": "(fact MIND-ONLY)",
+                    "sources": [],
+                    "revision": 1,
+                    "created_version": 1,
+                    "updated_version": 1
+                },
+                {
+                    "id": "retired-frame",
+                    "body": "(fact RETIRED-ONLY)",
+                    "sources": [],
+                    "revision": 1,
+                    "created_version": 1,
+                    "updated_version": 1
+                }
+            ],
+            "relations": [{
+                "subject": "active",
+                "relation": "supports",
+                "object": "MIND-RELATION",
+                "created_version": 2
+            }],
+            "retired": ["retired-frame"],
+            "protected": [],
+            "checkpoints": []
+        }))
+        .unwrap();
+        let text = active_mind_evaluation_text(&state);
+        assert!(text.contains("MIND-ONLY"));
+        assert!(text.contains("MIND-RELATION"));
+        assert!(!text.contains("RETIRED-ONLY"));
+        assert!(!text.contains("INBOX-ONLY"));
     }
 
     fn target_stages(manifest: &LongHorizonEvalManifest) -> Vec<&LongHorizonStage> {

@@ -13,7 +13,7 @@
 - Operations v9 五次修正 Gate 回归把真实证据前 v3 从 v8 的 4/5 降到 1/5，Mind 仍为 30/30，Attempt 持平、物理工具下降 3.9%、Context commit 增加 6.3%；
 - Coding Agent 的最小工具链和多文件修复能力已有真实通过记录；
 - Agent 自主压缩 Context、保留稳定事实、重启恢复、正迁移和反例修正均已有至少一次真实成功证据；
-- Experience Transfer v1 已完成 Gemini 相关经验/无关经验/全新三 arm 的 5 次正式重复：语义 13/15、15/15、13/15，严格均为 13/15；经验组成本更低，但尚未形成稳定抽象原则或正确率优势；
+- Experience Transfer 的 Mind-only 评分缺陷已修正；新五次 Agent Prompt 基线 related/unrelated/fresh 为 14/15、7/15、5/15，Cognitive SExpr VM Prompt 为 15/15、11/15、5/15；候选非退化，但尚未形成显式抽象原则；
 - protocol v8 的一次 Gemini 元认知探针为 95/95；升级前 5 次基线的语义正确性为 5/5，但严格效率成功率只有 2/5；
 - protocol v8 的两项 Gemini 长程测试各 5 个样本现在作为升级前比较基线；
 - v9 仍有一条 Operations 轨迹没有遵守 `current_port/current_endpoint/security_rule` 的机器字段字面契约，另有一条跨领域轨迹两次漏写 `from`；回复完整性也尚未完全收敛；
@@ -27,12 +27,14 @@
 
 | 测试 | 主测模型 | 样本量 | 当前结果 | 判断 |
 | --- | --- | ---: | --- | --- |
-| Rust/Runtime 自动测试 | 不使用模型 | 117 库 + 4 CLI + 27 集成 | 全部通过；严格 Clippy 通过 | 已通过 |
+| Rust/Runtime 自动测试 | 不使用模型 | 120 库 + 4 CLI + 27 集成 | 全部通过；严格 Clippy 通过 | 已通过 |
 | Epistemic Reality v1 | Gemini 3 Flash Agent | 5 | State/Mind 30/30；时序两个领域 5/5；来源两个领域 4/5；严格 22/30 | 认识时序通过，来源/回复待优化 |
 | Operations Continuity v1，v9 | Gemini 3 Flash Agent | 5 | 提前 v3 1/5；Mind 30/30；State 24/30；严格 23/30 | 时序达标，机器字段失败需独立处理 |
-| Experience Transfer v1 | Gemini 3 Flash Agent | 5 个三 arm suite | 相关/无关/全新语义 13/15、15/15、13/15；严格均 13/15；平均请求 6.8/8.0/9.0 | 成本信号成立，抽象与正确率优势未证明 |
+| Experience Transfer Prompt A/B | Gemini 3 Flash Agent | 5 个六轨迹配对 | Agent→VM：三 arm 总语义 26/45→31/45；related 14/15→15/15；请求 124→122；工具 102→110；抽象 Frame 0→0 | VM 身份非退化通过，抽象能力待研究 |
 
 Prefix Cache 的稳定前缀顺序与确定性已由测试锁定，客户端也能解析兼容后端的 `cached_tokens`；本轮产物没有保留真实命中值，因此命中率仍未验证。
+
+`cognitive_sexpr_vm` 现为默认 System Prompt；`MORPHZ_SYSTEM_PROMPT_MODE=agent_owned_context` 可切回旧身份用于回归。
 
 ## 3. protocol v8 单次诊断与升级前基线（历史比较）
 
@@ -138,6 +140,6 @@ protocol v8 已完成标准工具结果回传改造，并通过一次 Gemini 元
 5. 每份报告必须记录模型、Runtime commit、protocol version、输出预算、Context 预算和是否 dirty；
 6. 主报告同时展示语义正确性、严格通过率和效率，不能只给一个总分。
 
-Experience Transfer v1 的实现、夹具校准、五次结果和 Mind 结构见 [Experience Transfer Benchmark v1](morphz_experience_transfer_benchmark_v1.md)。
+Experience Transfer v1 的实现和夹具校准见 [Experience Transfer Benchmark v1](morphz_experience_transfer_benchmark_v1.md)；严格 Mind-only 修正和 Cognitive SExpr VM 五次配对结果见 [Cognitive S-Expression VM Prompt A/B](morphz_cognitive_sexpr_vm_prompt_ab.md)。
 
 下一轮主测试顺序是：扩展 Experience Transfer 的任务族与无提示抽象探针 → Gemini 当前协议 gradual long-run → Gemini 复杂 Coding Evolution → 跨 Session 共享 Mind → 四模型对照。

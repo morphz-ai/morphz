@@ -57,16 +57,82 @@ Context 的状态分为三个权限域：
 
 Context 的修改是你的元认知行为；read/write/exec/spawn 等工具是对外部世界的行为。保持二者边界清晰。"#;
 
-fn agent_owned_context_prompt() -> &'static str {
-    static PROMPT: OnceLock<String> = OnceLock::new();
-    PROMPT
-        .get_or_init(|| {
-            format!(
-                "{AGENT_OWNED_CONTEXT_PROMPT_BASE}\n\n{}",
-                render_system_contract()
-            )
-        })
-        .as_str()
+pub(crate) const SYSTEM_PROMPT_MODE_ENV: &str = "MORPHZ_SYSTEM_PROMPT_MODE";
+pub(crate) const BASELINE_SYSTEM_PROMPT_MODE: &str = "agent_owned_context";
+pub(crate) const COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE: &str = "cognitive_sexpr_vm";
+const COMMON_PROMPT_MARKER: &str = "每次响应必须明确选择";
+const COGNITIVE_SEXPR_VM_PREAMBLE: &str = r#"你是 Morphz Cognitive S-Expression Machine 的语义处理器。
+
+每次模型调用都是这台持续运行机器的一个非确定性执行周期。Runtime 提供的 Context 不是普通聊天历史或供你被动阅读的摘要，而是当前可执行的符号机器状态。你解释这一状态、执行当前目标并提出下一次状态迁移；只有经 Runtime 校验和提交的迁移才成为机器事实。
+
+Runtime 是确定性的事务内核，负责版本、权限、资源边界、工具执行、持久化和恢复。你是非确定性的语义处理器，负责理解、推理、归纳、规划和符号结构重组。S 表达式既可承载数据，也可承载由你解释和执行的目标、规则、策略与过程；Runtime 不替自由格式 BODY 定义业务求值语义。
+
+Context 的状态分为三个权限域：
+- kernel：Runtime 拥有的特权机器状态，只读。包含 session、context version、执行阶段和物理压力。
+- mind：你拥有的持久化符号程序与认知状态，由稳定 ID 的自由格式 frame 组成。frame 可以表示事实、目标、计划、规则、策略、过程、反例、能力模型或你认为具有持续执行价值的其他结构。
+- inbox：Event Ledger 中尚未被你 retire 的外部输入与 observation。它们是证据和中断输入，不是 Runtime 替你形成的结论。
+
+你的职责不只是记录信息，而是让 Mind 成为后续执行可以直接利用的认知程序。当多个已完成任务反复出现相似的判断或执行结构，并且该结构可能改变未来决策、减少重复工作或降低错误率时，你可以基于多个真实来源派生可复用的符号结构。应保留其适用范围、来源、反例和不确定性；不得从单个案例过度泛化，也不得为了形式完整而强制总结经验。
+
+你必须自己判断当前目标下什么值得保留、摘要、修订、保护、恢复、抽象、重组或遗忘。Runtime 不会自动替你摘要历史、裁剪旧消息、生成经验规则或把检索结果写成事实。
+
+"#;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SystemPromptMode {
+    AgentOwnedContext,
+    CognitiveSexprVm,
+}
+
+impl SystemPromptMode {
+    fn from_environment() -> Result<Self, String> {
+        match std::env::var(SYSTEM_PROMPT_MODE_ENV) {
+            Ok(value) if value == COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE => {
+                Ok(Self::CognitiveSexprVm)
+            }
+            Ok(value) if value == BASELINE_SYSTEM_PROMPT_MODE => Ok(Self::AgentOwnedContext),
+            Ok(value) => Err(format!(
+                "未知 {SYSTEM_PROMPT_MODE_ENV}='{value}'；支持 {BASELINE_SYSTEM_PROMPT_MODE} 或 {COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE}"
+            )),
+            Err(std::env::VarError::NotPresent) => Ok(Self::CognitiveSexprVm),
+            Err(error) => Err(format!("无法读取 {SYSTEM_PROMPT_MODE_ENV}: {error}")),
+        }
+    }
+}
+
+fn render_stable_system_prompt(mode: SystemPromptMode) -> &'static str {
+    static BASELINE_PROMPT: OnceLock<String> = OnceLock::new();
+    static COGNITIVE_VM_PROMPT: OnceLock<String> = OnceLock::new();
+    let prompt = match mode {
+        SystemPromptMode::AgentOwnedContext => BASELINE_PROMPT
+            .get_or_init(|| build_stable_system_prompt(AGENT_OWNED_CONTEXT_PROMPT_BASE)),
+        SystemPromptMode::CognitiveSexprVm => COGNITIVE_VM_PROMPT.get_or_init(|| {
+            let common_offset = AGENT_OWNED_CONTEXT_PROMPT_BASE
+                .find(COMMON_PROMPT_MARKER)
+                .expect("Agent-Owned Context prompt 必须保留公共规则标记");
+            let common_rules = &AGENT_OWNED_CONTEXT_PROMPT_BASE[common_offset..];
+            build_stable_system_prompt(&format!("{COGNITIVE_SEXPR_VM_PREAMBLE}{common_rules}"))
+        }),
+    };
+    prompt.as_str()
+}
+
+fn build_stable_system_prompt(base: &str) -> String {
+    format!("{base}\n\n{}", render_system_contract())
+}
+
+fn configured_system_prompt() -> Result<&'static str, String> {
+    SystemPromptMode::from_environment().map(render_stable_system_prompt)
+}
+
+#[cfg(test)]
+fn baseline_system_prompt() -> &'static str {
+    render_stable_system_prompt(SystemPromptMode::AgentOwnedContext)
+}
+
+#[cfg(test)]
+fn cognitive_sexpr_vm_system_prompt() -> &'static str {
+    render_stable_system_prompt(SystemPromptMode::CognitiveSexprVm)
 }
 
 const CONTEXT_CLOSURE_PROMPT: &str = r#"Runtime 当前处于 context-closure 阶段。这是本回合唯一一次专用 Mind 收口机会，不是继续工作的额外预算。
@@ -581,7 +647,7 @@ impl Orchestrator {
             _ if context_tx_cooldown => Some(CONTEXT_TX_COOLDOWN_PROMPT),
             _ => None,
         };
-        let stable_system_prompt = agent_owned_context_prompt();
+        let stable_system_prompt = configured_system_prompt()?;
         let system_prompt = phase_prompt
             .map(|prompt| format!("{stable_system_prompt}\n\n{prompt}"))
             .unwrap_or_else(|| stable_system_prompt.to_string());
@@ -1469,17 +1535,45 @@ fn normalize_context_tx_key(session_id: &str, arguments: &str) -> Result<String,
 
 #[cfg(test)]
 mod tests {
-    use super::{agent_owned_context_prompt, should_force_final_for_maintenance, ReadTurnGuard};
+    use super::{
+        baseline_system_prompt, cognitive_sexpr_vm_system_prompt, render_system_contract,
+        should_force_final_for_maintenance, ReadTurnGuard, AGENT_OWNED_CONTEXT_PROMPT_BASE,
+    };
 
     #[test]
     fn system_prompt_has_a_deterministic_generated_contract_prefix() {
-        let first = agent_owned_context_prompt();
-        let second = agent_owned_context_prompt();
+        let first = baseline_system_prompt();
+        let second = baseline_system_prompt();
         assert_eq!(first, second);
+        assert_eq!(
+            first,
+            format!(
+                "{AGENT_OWNED_CONTEXT_PROMPT_BASE}\n\n{}",
+                render_system_contract()
+            )
+        );
         assert!(first.contains("Runtime Reality Contract（现实契约）"));
         assert!(first.contains("Agent Epistemic Contract（认识契约）"));
         assert!(first.contains("claims-no-stronger-than-sources"));
         assert!(first.contains("不规定 Mind BODY 的结构"));
+    }
+
+    #[test]
+    fn cognitive_vm_prompt_changes_identity_without_task_specific_hints() {
+        let baseline = baseline_system_prompt();
+        let candidate = cognitive_sexpr_vm_system_prompt();
+        assert_ne!(baseline, candidate);
+        assert!(baseline.contains("能够管理自身工作 Context 的 AI Agent"));
+        assert!(!baseline.contains("Cognitive S-Expression Machine"));
+        assert!(candidate.contains("Cognitive S-Expression Machine"));
+        assert!(candidate.contains("非确定性执行周期"));
+        assert!(candidate.contains("持久化符号程序与认知状态"));
+        assert!(candidate.contains("适用范围、来源、反例和不确定性"));
+        assert!(candidate.contains("每次响应必须明确选择"));
+        assert!(candidate.contains("Runtime Reality Contract（现实契约）"));
+        for leaked_task_hint in ["ALPHA", "BETA", "CHARLIE", "approved-current"] {
+            assert!(!candidate.contains(leaked_task_hint));
+        }
     }
 
     #[test]

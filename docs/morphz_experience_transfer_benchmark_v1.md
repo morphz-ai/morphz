@@ -3,6 +3,8 @@
 > 状态：v1 已实现并完成 Gemini 5 次真实重复实验  
 > 主问题：拥有既往 Mind 的 Agent，面对同一组新任务时，是否比全新 Agent 更正确、更高效，并形成可迁移的自主认知结构？
 
+> **评分修正（2026-07-12）**：初版 `mind_passed` 在完整 Context SExpr 上搜索标记，Inbox 中的事实可以替已经丢失的 Mind Frame 通过。下文第 5 节的首次正式结果保留为历史执行记录，但其中 Mind/semantic 数值不能继续作为严格 Mind 保持结论。修正后的同任务五次基线为：related 14/15、unrelated 7/15、fresh 5/15；新评分只检查活动 Mind Frame/Relation。修正原因、Agent Prompt 基线与 Cognitive SExpr VM 对照见 [Cognitive S-Expression VM Prompt A/B](morphz_cognitive_sexpr_vm_prompt_ab.md)。
+
 ## 1. 评测边界
 
 这个基准评价 Agent 自己维护的 Mind，不在 Runtime 中加入任务答案、业务规则或专用验证器。Runtime 只提供相同的 Context、工具、事务、持久化和重启能力；任务正确性由场景的外部状态、Mind 必需事实、回复和工具约束共同评分。

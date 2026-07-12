@@ -134,6 +134,7 @@ cargo run -p morphz --bin long_horizon_agent_eval -- run-transfer PROFILES.toml 
 # Experience Transfer 三 arm 对照
 cargo run -p morphz --bin long_horizon_agent_eval -- create-experience ARM [BASE_DIR]
 cargo run -p morphz --bin long_horizon_agent_eval -- run-experience PROFILES.toml BASE_DIR
+cargo run -p morphz --bin long_horizon_agent_eval -- run-experience-prompt-ab PROFILES.toml BASE_DIR
 
 # 两类场景共用检查器
 cargo run -p morphz --bin long_horizon_agent_eval -- inspect RUN_ROOT
@@ -258,6 +259,6 @@ Read guard 现在为每一种 full/range/query 覆盖记录最初 read 的 tool-
 
 ## 15. Experience Transfer v1：有经验与全新 Agent 对照
 
-Experience Transfer v1 已实现相关经验、无关经验和全新三个隔离 arm，并用完全相同、无迁移提示的目标任务并发比较。2026-07-12 的 Gemini 5 次正式重复中，相关经验、无关经验、全新的语义通过分别为 13/15、15/15、13/15；严格通过均为 13/15。平均模型尝试分别为 6.8、8.0、9.0，平均物理工具分别为 5.8、6.8、7.0。
+Experience Transfer v1 已实现相关经验、无关经验和全新三个隔离 arm，并用完全相同、无迁移提示的目标任务并发比较。初版五次结果后来发现 `mind_passed` 会被 Inbox 标记误通过，不能继续作为严格 Mind 结论。修正为只评分活动 Mind 后，Agent Prompt 的五次新基线中，相关经验、无关经验、全新的语义通过分别为 14/15、7/15、5/15；该差异说明此前大量“重启恢复”实际依赖 Inbox，而不是持久 Mind。
 
-已有 Mind 与更低执行成本存在信号，但相关经验没有提高总体正确率，且模型没有稳定形成独立的通用原则 frame。当前只证明“经验可进入后续任务并可能缩短路径”，不能声称已经实现稳定自主进化。三 arm 设计、被排除的夹具污染、逐次结果和最终 Mind 结构见 [Experience Transfer Benchmark v1](morphz_experience_transfer_benchmark_v1.md)。
+在同一严格评分下，Cognitive SExpr VM Prompt 的五次 related 结果为 15/15，基线为 14/15；模型尝试 38 对 40、工具 36 对 34、Context commit 10 对 11。它通过了当前任务族的非退化要求，但没有形成显式通用原则 Frame。三 arm 设计和夹具历史见 [Experience Transfer Benchmark v1](morphz_experience_transfer_benchmark_v1.md)，Prompt A/B 见 [Cognitive S-Expression VM Prompt A/B](morphz_cognitive_sexpr_vm_prompt_ab.md)。
