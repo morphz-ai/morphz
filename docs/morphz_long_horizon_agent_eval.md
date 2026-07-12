@@ -2,6 +2,8 @@
 
 > 状态：v1 评测规范与首个场景实现中
 > 目标：在相同模型、工具、任务和预算下，可证伪地比较 Agent-Owned Context 与固定窗口、Runtime compaction 等对照策略。
+>
+> 当前最终状态和主测模型口径见 [Morphz 当前评测状态总览](morphz_eval_status.md)。本文件保留场景设计、历史轨迹和失败分析。
 
 ## 1. 为什么需要新基准
 
