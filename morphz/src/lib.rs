@@ -6,6 +6,7 @@ pub mod context_tools;
 pub mod eval_sandbox;
 pub mod event;
 pub mod llm;
+pub mod long_horizon_agent_eval;
 pub mod memory;
 pub mod orchestrator;
 pub mod sexpr;

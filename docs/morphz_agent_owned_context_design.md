@@ -1,6 +1,6 @@
 # Morphz Agent-Owned Context：由 LLM 自主管理的心智上下文
 
-> 状态：核心设计基线；Agent-Owned Context protocol v6 已实现并进入评测
+> 状态：核心设计基线；Agent-Owned Context protocol v7 已实现并进入评测
 > 适用范围：Morphz Agent Runtime、SExpr DSL、Context 生命周期、记忆召回与产品调试界面
 > 设计优先级：本文件用于澄清 Morphz 的核心方向；当既有文档中的“自动评分、自动裁剪、自动摘要、自动注入”与本文冲突时，应以本文的职责划分为准。
 
@@ -279,6 +279,8 @@ Agent 负责语义判断，不等于 Runtime 应让它在信息不完备的情�
 protocol v6 不再向模型暴露 `final_reply` 布尔参数，也不再提供“事务与最终正文同响应终止”的快速路径。终止条件只由响应形态决定：有工具则继续，无工具纯文本则结束。这与主流模型的 Function Calling 训练分布一致，也避免模型同时判断事务语义和终止语义。
 
 Context 修改继续只暴露一个标准 Function Calling 工具：`context_tx(transaction: string)`。外层遵循模型训练过的标准工具调用接口，内部参数保留 canonical SExpr；暂不把 operations 改成结构化 JSON。真实测试发现，多种模型会自然地把 goal、status、source 等多个字段写成并列 BODY；这些表达语义明确，没有必要要求模型添加无业务含义的 `record/frame` 外壳。protocol v5 因此正式接受 `BODY...`，由 Runtime 规范化为单一 `(context-body ...)` 后写入 Ledger。来源语义仍保持严格：`create` 不接受 `from`，有来源时使用 `derive`，避免容错吞掉证据血缘。
+
+Operations Continuity 长程基线暴露了 `revise` 契约歧义：Runtime 一直执行完整 body 替换，而模型将“修订”理解为局部 merge，导致稳定字段在后续 revision 中消失。protocol v7 因此把“完整替换，仍需的旧字段必须重述”写入 System Prompt、Context 自描述和工具描述。v7 还增加 `checkpoint/rollback/drop-checkpoint`：快照由 Agent 显式建立，回滚必须提供 reason，Runtime 只负责确定性恢复和审计。
 
 为避免 System Prompt、工具描述与 Context 协议发生漂移，正式原语的名称、语法和含义由 Runtime 中同一份协议定义生成。错误反馈也应给出可执行的正确形式，例如明确提示 `retire` 只接受 ID，reason 必须提升为事务级字段。
 
@@ -565,7 +567,7 @@ Mind Inspector 至少应支持：
 | 可解释性 | 只能看到最终 Prompt | 能看到每次心智变化及原因 |
 | 核心能力 | Runtime 管理历史 | Agent 管理自己的注意力 |
 
-## 16. protocol v6 实现状态与剩余边界
+## 16. protocol v7 实现状态与剩余边界
 
 第一版已经完成以下纵向闭环：
 
@@ -580,7 +582,7 @@ Mind Inspector 至少应支持：
 9. Context transaction 作为 Event Ledger 事件保存完整 state-after、version 和 Diff；
 10. Dashboard 已能直接观察 Mind Frames、来源、revision、保护状态、Inbox 和 Pressure；
 11. Kernel 已分离物理 Attempt 与 Context transaction 预算，并强制执行一次性 Context closure 和最终回复，防止模型无界探索或元认知循环；
-12. 每轮 Context 已自描述 response contract、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数；protocol v6 同时说明稳定短引用、多 BODY 规范化和统一的无工具终止规则。
+12. 每轮 Context 已自描述 response contract、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数；protocol v7 同时说明稳定短引用、多 BODY 规范化、完整 revise 替换、恢复点和统一的无工具终止规则。
 13. `read` 已支持带行号的文本查询与行范围读取，减少长文件证据在 Inbox 中的重复膨胀。
 14. Coding Tools v1 已提供 `list_files/search/read/edit/write/exec` 最小闭环；文件修改带 SHA-256 版本前提、原子提交、Diff 和 `file_change` Observation。
 15. Event Ledger 通过 SQLite `rowid` 暴露稳定写入 `sequence`，并为 Observation 提供 turn、attempt、caused-by、residency、resource、freshness 与 usage。
@@ -589,11 +591,12 @@ Mind Inspector 至少应支持：
 18. Observation、wake、frame sources、freshness 与 relation 在模型视口中统一使用 `@eN`；Runtime 只解析操作参数中的引用位，Ledger transaction 与 Mind state 始终保存完整 canonical ID，保证确定性重放与旧数据兼容。
 19. `create/derive/revise` 正式接受 `BODY...`；多项由 Runtime 确定性规范化为 `(context-body BODY...)`，单项保持原样。`create` 不接受 `from`，`derive/revise` 的来源必须紧跟 ID，避免容错掩盖证据血缘错误。
 20. `context_tx.final_reply` 已从 Function Calling schema 和 Runtime 终止逻辑中移除；任何工具响应都展示为进度并续跑，只有无工具纯文本才成为 `chat/reply`。
+21. `revise` 的完整替换语义已在三层契约中显式公开；`checkpoint/rollback/drop-checkpoint` 提供 Agent 可控、可重放的 Mind 恢复。
 
 v1 有意尚未覆盖的边界：
 
 - exec 已将完整原始输出持续归档到独立文件，Context 只展示受控 preview 与路径；后续仍需把本地文件归档升级为内容寻址、可迁移的 Artifact Store；
-- Checkpoint、branch、跨版本 undo 和摘要血缘可视化尚未实现；
+- branch、一般化跨版本 undo 和摘要血缘可视化尚未实现；checkpoint/rollback 已实现为 Agent 显式原语；
 - Token 数量目前是保守估算，尚未接入具体模型 tokenizer；
 - v1 为简化重启恢复，在每条 Context transaction 事件中保存完整 `state_after`；长期运行后应改为增量 transaction + 周期物化快照，避免账本体积呈二次增长；
 - GraphMemory 尚未重构为纯候选 Recall Provider；v1 主链路暂时完全不自动使用它；

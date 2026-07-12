@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 6;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 7;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 
 struct ContextOperationSpec {
@@ -38,7 +38,7 @@ const CONTEXT_OPERATIONS: &[ContextOperationSpec] = &[
     ContextOperationSpec {
         name: "revise",
         syntax: "(revise ID BODY...) | (revise ID (from SOURCE_ID...) BODY...)",
-        meaning: "修订既有 frame 并递增 revision；可选 from 固定在 ID 后，随后可写一个或多个 BODY",
+        meaning: "用新 BODY 完整替换既有 frame body 并递增 revision；不是局部 merge，仍需保留的旧字段必须在新 BODY 中重述；可选 from 固定在 ID 后",
     },
     ContextOperationSpec {
         name: "retire",
@@ -75,6 +75,21 @@ const CONTEXT_OPERATIONS: &[ContextOperationSpec] = &[
         syntax: "(unrelate SUBJECT RELATION OBJECT)",
         meaning: "撤销错误关系；必须在事务级提供 reason",
     },
+    ContextOperationSpec {
+        name: "checkpoint",
+        syntax: "(checkpoint ID)",
+        meaning: "保存当前 Mind 的完整可回滚快照；Runtime 只显示快照元数据，不把快照内容重复注入 Context",
+    },
+    ContextOperationSpec {
+        name: "rollback",
+        syntax: "(rollback CHECKPOINT_ID)",
+        meaning: "显式恢复 checkpoint 中的 frames、relations、retired 与 protected；必须在事务级提供 reason",
+    },
+    ContextOperationSpec {
+        name: "drop-checkpoint",
+        syntax: "(drop-checkpoint ID...)",
+        meaning: "删除不再需要的恢复点；必须在事务级提供 reason",
+    },
 ];
 
 pub fn context_tx_tool_description() -> String {
@@ -84,7 +99,7 @@ pub fn context_tx_tool_description() -> String {
         .collect::<Vec<_>>()
         .join("；");
     format!(
-        "原子修改你拥有的 Mind Context。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)，无需手工添加 record/frame 外壳。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。一个 transaction 可以顺序包含多个不同 operation，并且整体成功或整体回滚；例如 (context-tx (base-version 3) (reason \"完成收口\") (revise task (status completed) (next none)) (derive result (from @e27) (tests passed) (confidence high)) (relate result supersedes old-result) (protect task result) (retire @e21 @e22))。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/unprotect/unrelate 必须提供；不要把 reason 放进操作参数。Context 修改不是给用户的最终回复。"
+        "原子修改你拥有的 Mind Context。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Context 修改不是给用户的最终回复。"
     )
 }
 
@@ -157,6 +172,18 @@ pub struct ContextRelation {
     pub created_version: u64,
 }
 
+/// Agent 显式建立的 Mind 恢复点。快照不包含其他 checkpoint，
+/// 避免递归复制；Runtime 只在 Context 中展示元数据。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MindCheckpoint {
+    pub id: String,
+    pub frames: Vec<ContextFrame>,
+    pub relations: Vec<ContextRelation>,
+    pub retired: BTreeSet<String>,
+    pub protected: BTreeSet<String>,
+    pub created_version: u64,
+}
+
 /// Agent 拥有的 Mind 持久状态。
 ///
 /// `retired` 同时可以包含 frame ID 和 Event Ledger 中的 observation ID。
@@ -169,6 +196,8 @@ pub struct MindState {
     pub relations: Vec<ContextRelation>,
     pub retired: BTreeSet<String>,
     pub protected: BTreeSet<String>,
+    #[serde(default)]
+    pub checkpoints: Vec<MindCheckpoint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1208,9 +1237,71 @@ fn apply_parsed_transaction(
                     Some(format!("{} {}", relation, object)),
                 ));
             }
+            "checkpoint" => {
+                require_len(op, 2, "(checkpoint ID)")?;
+                let id = validated_id(atom_at(op, 1, "checkpoint id")?)?;
+                if next
+                    .checkpoints
+                    .iter()
+                    .any(|checkpoint| checkpoint.id == id)
+                    || next.frames.iter().any(|frame| frame.id == id)
+                    || observation_ids.contains(id)
+                {
+                    return Err(format!("Checkpoint ID '{}' 已存在", id));
+                }
+                next.checkpoints.push(MindCheckpoint {
+                    id: id.to_string(),
+                    frames: next.frames.clone(),
+                    relations: next.relations.clone(),
+                    retired: next.retired.clone(),
+                    protected: next.protected.clone(),
+                    created_version: next_version,
+                });
+                changes.push(change(
+                    "checkpoint",
+                    id,
+                    Some(format!("frames={}", next.frames.len())),
+                ));
+            }
+            "rollback" => {
+                require_len(op, 2, "(rollback CHECKPOINT_ID)")?;
+                let reason = tx
+                    .reason
+                    .as_ref()
+                    .ok_or("rollback 会恢复旧 Mind，transaction 必须提供 (reason \"...\")")?;
+                let id = validated_id(atom_at(op, 1, "checkpoint id")?)?;
+                let checkpoint = next
+                    .checkpoints
+                    .iter()
+                    .find(|checkpoint| checkpoint.id == id)
+                    .cloned()
+                    .ok_or_else(|| format!("checkpoint '{}' 不存在", id))?;
+                next.frames = checkpoint.frames;
+                next.relations = checkpoint.relations;
+                next.retired = checkpoint.retired;
+                next.protected = checkpoint.protected;
+                changes.push(change("rollback", id, Some(reason.clone())));
+            }
+            "drop-checkpoint" => {
+                require_min_len(op, 2, "(drop-checkpoint ID...)")?;
+                let reason = tx
+                    .reason
+                    .as_ref()
+                    .ok_or("drop-checkpoint 会删除恢复点，transaction 必须提供 (reason \"...\")")?;
+                for item in op.iter().skip(1) {
+                    let id = validated_id(as_atom(item, "checkpoint id")?)?;
+                    let index = next
+                        .checkpoints
+                        .iter()
+                        .position(|checkpoint| checkpoint.id == id)
+                        .ok_or_else(|| format!("checkpoint '{}' 不存在", id))?;
+                    next.checkpoints.remove(index);
+                    changes.push(change("drop-checkpoint", id, Some(reason.clone())));
+                }
+            }
             other => {
                 return Err(format!(
-                    "未知 Context 原语 '{}'。v3 支持 create/derive/revise/retire/restore/protect/unprotect/place/relate/unrelate",
+                    "未知 Context 原语 '{}'。当前支持 create/derive/revise/retire/restore/protect/unprotect/place/relate/unrelate/checkpoint/rollback/drop-checkpoint",
                     other
                 ));
             }
@@ -1429,6 +1520,29 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                                 "created-version",
                                 atom(relation.created_version.to_string()),
                             ),
+                        ],
+                    )
+                })
+                .collect(),
+        ));
+    }
+    if !state.checkpoints.is_empty() {
+        mind.push(list(
+            "checkpoints",
+            state
+                .checkpoints
+                .iter()
+                .map(|checkpoint| {
+                    list(
+                        "checkpoint",
+                        vec![
+                            pair("id", atom(&checkpoint.id)),
+                            pair(
+                                "created-version",
+                                atom(checkpoint.created_version.to_string()),
+                            ),
+                            pair("frames", atom(checkpoint.frames.len().to_string())),
+                            pair("relations", atom(checkpoint.relations.len().to_string())),
                         ],
                     )
                 })
@@ -1710,6 +1824,10 @@ fn render_protocol() -> SExpr {
                         atom("多个 BODY 由 Runtime 确定性保存为 (context-body BODY...)；单 BODY 保持原样"),
                     ),
                     pair(
+                        "revise-semantics",
+                        atom("完整替换 frame body，不是局部 merge；所有仍需保留的字段必须重述"),
+                    ),
+                    pair(
                         "source-placement",
                         atom("create 不接受 from；derive/revise 的可选 (from SOURCE...) 必须紧跟 ID，且 from 之后至少有一个 BODY"),
                     ),
@@ -1721,7 +1839,14 @@ fn render_protocol() -> SExpr {
                         "compound-example",
                         atom("(context-tx (base-version 3) (reason \"完成收口\") (revise task (status completed) (next none)) (derive result (from @e27) (tests passed) (confidence high)) (protect task result) (retire @e21 @e22))"),
                     ),
-                    pair("reason-required-for", atom("retire unprotect unrelate")),
+                    pair(
+                        "reason-required-for",
+                        atom("retire unprotect unrelate rollback drop-checkpoint"),
+                    ),
+                    pair(
+                        "checkpoint-policy",
+                        atom("由 Agent 在高风险重组前显式建立；Runtime 不自动回滚或修补语义"),
+                    ),
                     pair(
                         "relation-policy",
                         atom("Runtime 只解释 supersedes 的新旧关系；其他 relation 保持 Agent 语义"),
@@ -2087,9 +2212,15 @@ fn ensure_unknown(
     observation_ids: &HashSet<String>,
     id: &str,
 ) -> Result<(), String> {
-    if state.frames.iter().any(|frame| frame.id == id) || observation_ids.contains(id) {
+    if state.frames.iter().any(|frame| frame.id == id)
+        || state
+            .checkpoints
+            .iter()
+            .any(|checkpoint| checkpoint.id == id)
+        || observation_ids.contains(id)
+    {
         Err(format!(
-            "Context ID '{}' 已存在，不能重复 create/derive",
+            "Context ID '{}' 已存在，不能重复 create/derive/checkpoint",
             id
         ))
     } else {
@@ -2324,7 +2455,7 @@ mod tests {
         let parsed = parse(&rendered).unwrap();
         assert_eq!(
             parsed.get_path(&["protocol", "version"]),
-            Some(&SExpr::Atom("6".to_string()))
+            Some(&SExpr::Atom("7".to_string()))
         );
         assert_eq!(
             parsed.get_path(&["kernel", "version"]),
@@ -2338,6 +2469,8 @@ mod tests {
         assert!(rendered.contains("(context-tx-contract"));
         assert!(rendered.contains("(body-arity \"create derive revise one-or-more\")"));
         assert!(rendered.contains("(body-normalization"));
+        assert!(rendered.contains("(revise-semantics"));
+        assert!(rendered.contains("(checkpoint-policy"));
         assert!(rendered.contains("(source-placement"));
         assert!(rendered.contains("(syntax \"(retire ID...)\")"));
         assert!(rendered.contains("(mind (frame"));
@@ -2805,6 +2938,48 @@ mod tests {
         .unwrap();
         assert_eq!(state.version, 2);
         assert!(state.relations.is_empty());
+        assert!(state.checkpoints.is_empty());
+    }
+
+    #[test]
+    fn checkpoint_rollback_restores_complete_frame_after_lossy_revision() {
+        let observations = HashSet::new();
+        let create = parse_transaction(
+            "(context-tx (base-version 0) (create project (project ORBIT-42) (port 9090) (timezone UTC)) (protect project))",
+        )
+        .unwrap();
+        let (state, _) =
+            apply_parsed_transaction(&MindState::default(), &create, &observations).unwrap();
+        let checkpoint =
+            parse_transaction("(context-tx (base-version 1) (checkpoint before-policy-change))")
+                .unwrap();
+        let (state, _) = apply_parsed_transaction(&state, &checkpoint, &observations).unwrap();
+        assert_eq!(state.checkpoints.len(), 1);
+
+        let lossy = parse_transaction(
+            "(context-tx (base-version 2) (revise project (timezone Asia/Shanghai)))",
+        )
+        .unwrap();
+        let (state, _) = apply_parsed_transaction(&state, &lossy, &observations).unwrap();
+        assert!(!state.frames[0].body.contains("ORBIT-42"));
+
+        let rollback = parse_transaction(
+            "(context-tx (base-version 3) (reason \"stable identity was lost\") (rollback before-policy-change))",
+        )
+        .unwrap();
+        let (state, changes) = apply_parsed_transaction(&state, &rollback, &observations).unwrap();
+        assert!(state.frames[0].body.contains("ORBIT-42"));
+        assert!(state.frames[0].body.contains("9090"));
+        assert!(state.protected.contains("project"));
+        assert_eq!(state.checkpoints.len(), 1);
+        assert_eq!(changes[0].operation, "rollback");
+
+        let drop_checkpoint = parse_transaction(
+            "(context-tx (base-version 4) (reason \"recovery verified\") (drop-checkpoint before-policy-change))",
+        )
+        .unwrap();
+        let (state, _) = apply_parsed_transaction(&state, &drop_checkpoint, &observations).unwrap();
+        assert!(state.checkpoints.is_empty());
     }
 
     #[test]

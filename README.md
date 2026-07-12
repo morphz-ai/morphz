@@ -8,13 +8,13 @@ Morphz 是一个由 Rust 实现、能够通过 SExpr DSL 自主管理自身 Cont
 - `mind`：LLM 拥有的自由格式 Context Frames；
 - `inbox`：Event Ledger 中尚未被 Agent 主动退役的原始 Observation。
 
-`context_tx` 提供 `create/derive/revise/retire/restore/protect/unprotect/place` 原语；`recall` 用于按稳定引用分页读取 Ledger 原文或恢复 Frame。主链路不会自动摘要历史、按轮数裁剪信息或把 Graph 检索结果静默注入 Mind。完整设计见 [Agent-Owned Context 设计文档](docs/morphz_agent_owned_context_design.md)。
+`context_tx` 提供 `create/derive/revise/retire/restore/protect/unprotect/place/relate/unrelate/checkpoint/rollback/drop-checkpoint` 原语；`recall` 用于按稳定引用分页读取 Ledger 原文或恢复 Frame。主链路不会自动摘要历史、按轮数裁剪信息或把 Graph 检索结果静默注入 Mind。完整设计见 [Agent-Owned Context 设计文档](docs/morphz_agent_owned_context_design.md)。
 
 Coding Tools v1 提供 `list_files/search/read/edit/write/exec` 最小开发闭环：`read` 返回 SHA-256 文件版本，`edit` 使用版本前提执行唯一匹配的原子局部修改，`write` 只允许显式 create 或带版本前提的 overwrite，所有成功修改都会产生带 Diff 的 `file_change` Observation。接口与安全边界见 [Coding Tools v1](docs/morphz_coding_tools_v1.md)。
 
 真实 Coding Agent 测试使用独立 fixture、数据库、Artifact 目录和 macOS Seatbelt exec 边界；v2 提供多文件重试状态机任务，并在 Agent 不可见的 verifier 副本中注入隐藏测试。创建、探针、固定验证、范围审计与 Ledger 评分见 [Coding Eval Sandbox](docs/morphz_coding_eval_sandbox.md)。
 
-Attempt Runtime 将物理工作与 Context transaction 分开计费，并提供一次 `context_tx`-only 最终收口。Protocol v6 遵循统一的标准 Function Calling 终止语义：任何包含工具调用的响应都是中间状态，正文作为可见进度，Runtime 执行后必定再次调用模型；只有无工具纯文本才结束用户回合。复合 transaction 支持多 operation 原子提交。
+Attempt Runtime 将物理工作与 Context transaction 分开计费，并提供一次 `context_tx`-only 最终收口。Protocol v7 保留 v6 的统一 Function Calling 终止语义：任何工具调用都是中间状态，只有无工具纯文本才结束回合。v7 同时明确 `revise` 是完整 body 替换，并增加 Agent 可控的 `checkpoint/rollback/drop-checkpoint`；Runtime 不自动回滚或修补语义。
 
 Context Pressure Eval 使用合成长历史和缩小阈值验证 Agent 自主 `derive/protect/retire`：首次真实运行将 estimated tokens 从 9,177 降至 2,140，并完整保留四项长期事实。设计、命令和结论边界见 [Context Pressure Eval](docs/morphz_context_pressure_eval.md)。
 
