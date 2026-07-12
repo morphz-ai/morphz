@@ -6,6 +6,8 @@
 
 > 长期 Context 拓扑说明：本文件第 10.5、11 节描述的是当前 v1 的保守单写者/独立子 Mind 策略。关于 Session 共享、Shared Mind、多 Sub Agent、COW 分支、Context Generation 和状态/算力分离的北极星设计，以 [`morphz_shared_context_multisession_architecture.md`](morphz_shared_context_multisession_architecture.md) 为准。
 
+> 现实约束与认识论说明：Agent 拥有 Context 语义，不等于 Runtime 只提供存储。Runtime 还应提供不可伪造的顺序、直接因果、身份、来源、版本、事务和控制反馈，但不能替 Agent 认证业务真理。完整契约见 [`morphz_reality_constrained_epistemic_context.md`](morphz_reality_constrained_epistemic_context.md)。
+
 ## 1. 设计命题
 
 Morphz 的 Context 不是由 Runtime 按固定规则拼装出来的一份“结构化 Prompt”，也不是一段只能随对话线性增长、最终由框架统一压缩的聊天历史。

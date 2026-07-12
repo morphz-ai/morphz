@@ -5,6 +5,8 @@
 > 适用范围：Agent 身份、Session、多 Sub Agent、Context 拓扑、并发事务、分布式算力与长期演化  
 > 与现有设计的关系：本文扩展并修正 [`morphz_agent_owned_context_design.md`](morphz_agent_owned_context_design.md) 和 [`morphz_memory_scope_design.md`](morphz_memory_scope_design.md) 中把 Session/Scope 主要视为隔离边界、把 Sub Agent 固定为独立 Mind 的早期假设。旧文档仍描述当前 v1 实现；涉及长期 Context 拓扑与共享语义时，以本文为方向依据。
 
+> 认识论前置约束：共享会同时放大正确经验和错误认识。Runtime 应如何用顺序、直接因果、来源、版本和控制反馈约束 Agent 的自由认知，见 [`morphz_reality_constrained_epistemic_context.md`](morphz_reality_constrained_epistemic_context.md)。
+
 ## 1. 文档目的
 
 Morphz 已经初步验证：LLM 可以通过 SExpr DSL 自主创建、修订、保护、退役和恢复自由格式的 Context Frame，并在同一 Session 内形成策略、接受反例修正、建立来源关系和完成重启恢复。
@@ -624,4 +626,3 @@ Morphz 的长期架构可以用以下几句话定义：
 6. **Runtime 保证事务、并发、路由、权限、恢复与一致性；模型负责语义、注意力、共享意图和冲突判断。**
 7. **Context 可以从模板创建新 generation，清除 LLM 生成状态，同时保留可审计历史或按策略 Purge。**
 8. **最终目标不是许多彼此失忆的聊天 Agent，而是一个通过多条连接与多个算力节点持续理解世界、并行行动和自主演化的统一 Agent。**
-
