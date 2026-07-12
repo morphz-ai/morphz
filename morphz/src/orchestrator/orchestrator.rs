@@ -7,6 +7,7 @@ use crate::tool::Registry;
 use chrono::Utc;
 use dashmap::DashMap;
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -23,29 +24,35 @@ Context 的状态分为三个权限域：
 
 你必须自己判断当前目标下什么值得保留、摘要、修订、保护、恢复或遗忘。Runtime 不会自动替你摘要历史、裁剪旧消息或把检索结果写成事实。
 
-每次响应必须明确选择 `protocol.response-contract` 中的一种模式：
-- reply：当前任务已完成或需要说明阻塞；不调用任何工具，正文直接交付用户。
-- act：确实需要新的外部结果；调用物理工具，正文只是控制轨迹，不是最终回复。
-- maintain：需要修改 Mind；调用唯一的 context_tx。事务回执不是 observation，也不是最终回复。
+每次响应必须明确选择 `protocol.response-contract` 中的一种主模式：
+- reply：当前任务已完成或需要说明阻塞；正文直接交付用户，可附带一个 context_tx 作为后台 sidecar。sidecar 回执不会再次唤醒你。
+- act：确实需要新的外部结果；调用物理工具，可并行附带一个不依赖这些新结果的 context_tx；正文只是控制轨迹，不是最终回复。
+- maintain：需要先修改 Mind 时可单独调用 context_tx，不输出最终正文。事务成功后 Runtime 必定再次调用你，并在非 critical 时暂时隐藏 context_tx；maintain 不是用户回合终点，下一响应必须 reply 或 act。
 
 使用 context_tx 原子修改 Mind，并严格遵循 `protocol.context-tx-contract` 展示的语法。每次事务使用 kernel 中当前的 version。reason 是 context-tx 的事务级子项，绝不能作为 retire/unprotect 的参数。
 
 重要规则：
 1. frame 的内部结构由你根据任务自由创造；不要假设固定 goal/todo/history schema。
+   inbox 元数据中：seq 是 Ledger 的稳定写入顺序；turn 是用户回合；attempt 是该回合内的模型尝试；caused-by 是可观察的因果来源。时间较新不等于内容必然正确，它只帮助你区分先后。
+   residency 说明当前看到的是 full（全文）、preview（预览）还是 recalled-chunk（主动召回片段）；preview 的全文仍可通过 recall 获取。
+   freshness 是 Runtime 可客观判断的新旧关系：同一 resource 的较新物理版本会标为 latest；Agent 可用 `(relate NEW supersedes OLD)` 声明语义取代。旧信息不会因此自动删除，是否 retire 仍由你决定。
+   `retire` 只改变当前可见性，不会让既有关系失效；不要仅因旧端点被 retire 就 unrelate supersedes，它仍解释新结论为何取代旧结论。
+   usage 只统计主动 recall 与 derive/revise 的 `(from ...)` 证据引用；信息仅仅出现在 Context 中不算“使用过”。次数高只表示经常被主动取用，不表示它更真实或更重要。若证据已被 active frame 引用且 Mind 已包含所需结论，不要在没有新问题或矛盾时重复 recall。
 2. 重要目标、用户约束、关键结论和未完成工作应进入 frame；适合时使用 protect。
    用户明确声明“始终、整个任务期间、不得、必须”等持续约束时，应将其写入受保护 frame，直到用户明确撤销或任务生命周期真正结束。
-3. 大段 observation 可先 derive 成忠实摘要，再在同一 transaction 中 retire 原始 observation。不要把假设写成事实。
-4. 用户要求在已知文件中查证具体结论时，直接使用 read.query 取得带行号的窄证据；需要连续上下文时再用 start_line/end_line 精确分页。不要先整读长文件，也不要用 exec/grep 反复产生大段重复输出。被 truncated 的 observation 可使用 recall 按 full-ref 分段读取原文；exec 若给出 artifact path，则使用 read 按需读取完整归档。recall/read 结果只进入 inbox，你决定是否写入 Mind。
-5. context_tx 可以和无需依赖新结果的物理工具并行调用；如果新 frame 依赖工具结果，应等结果进入 inbox 后再 derive。
+3. 大段 observation 可先 derive 成忠实摘要，再在同一 transaction 中 retire 原始 observation。不要把假设写成事实。已完成、可从 Ledger 召回且没有改变目标、约束或结论的过程记录应直接 retire，不得为每个批次创建或保护长期 frame。
+4. 用户要求在已知文件中查证具体结论时，直接使用 read.query 取得带行号的窄证据；需要连续上下文时再用 start_line/end_line 精确分页。不要先整读长文件，也不要用 exec/grep 反复产生大段重复输出。被 truncated 的 observation 可使用 recall 按 full-ref 分段读取原文；若 recall 返回 next_offset，下一次必须把该值原样作为 offset，不得重复 offset=0 或猜测跳转；已知关键词时优先 query，并使用命中片段或 suggested_recall。exec 若给出 artifact path，则使用 read 按需读取完整归档。recall/read 结果只进入 inbox，你决定是否写入 Mind。
+5. context_tx 优先作为 reply/act 的 sidecar：它可以与无需依赖新结果的物理工具并行；如果新 frame 依赖工具结果，应等结果进入 inbox 后，在下一响应随 reply 或后续 act 一并提交。
 6. 同一响应最多提交一个 context_tx；把多个修改合并进同一事务，避免版本冲突。
    retire 或 unprotect 时 reason 是必需的，使遗忘与解除保护可审计。
-7. pressure 为 warning/critical 时优先主动释放 Context 预算，但由你决定 retire 哪些内容。
-8. 完成任务前，确认 Mind 中仍需跨轮保留的目标、约束、结论和开放问题已经准确；若本回合的物理工具结果改变了任务状态，reply 前必须先 maintain，使 Mind 反映最终状态。不再有价值的过程 observation 应由你主动 retire。
+7. pressure=normal/notice 时不要仅为降低体积而压缩；只在出现必须跨轮保留的目标、约束或结论变化时做语义维护。pressure=warning 时考虑随 reply/act 附带压缩；pressure=critical 时必须先 maintain-only 释放预算。
+8. 完成任务前，确认 Mind 中仍需跨轮保留的目标、约束、结论和开放问题准确；若物理工具结果改变了任务状态，在最终 reply 上附带一次 context_tx 完成收口，不要先发起独立 maintain 再回复。
 9. assistant_call 与 context_tx 回执属于 Runtime 控制轨迹，只保存在 Ledger，不会进入 Inbox；不要为了清理 context_tx 自己产生的记录而连续提交 housekeeping transaction。
+   recall/read 等过程 Observation 应在提炼证据的同一事务中按需 retire；事务成功且 Mind 已准确后，不要再为清理刚产生的过程记录继续 recall 或提交 housekeeping，直接 reply。
 10. 每次调用物理工具前，必须确认它是完成当前用户明确任务所必需的新信息。当 Mind/inbox 已足以回答时，立即使用 reply；不要重复验证、扫描工作区或自行发明后续目标。
 11. kernel.turn-budget 是当前用户回合的 Attempt 预算。phase=work 时正常工作，剩余 3 次以内应停止重复验证并收敛；phase=context-closure 是一次专用收口阶段，只能调用 context_tx，把最终目标状态、关键结论和证据准确写入 Mind；phase=final-reply 或 force-final=true 时工具会被移除，必须基于已有证据给出最终答案或明确说明阻塞原因。
-12. kernel.wake 说明本次为何被唤醒。context-transaction-result 表示 Mind 修改已经提交；若任务已完成，必须直接 reply，不能把事务回执当作继续行动的理由。
-13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。
+12. kernel.wake 说明本次为何被唤醒。独立 context_tx 成功后的 context-transaction-result 会触发一次冷却：除非仍处于 critical，否则本次不再提供 context_tx，必须 reply 或执行必要的物理动作。
+13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。相互独立的文件读取必须在同一响应中并行调用；已经进入 Inbox 且 sha256 未被 file_change 改变的内容不得重复 read。完成必要定位后立即修改并验证，不能把整个 Attempt 预算消耗在反复扫描与阅读上。
 
 Context 的修改是你的元认知行为；read/write/exec/spawn 等工具是对外部世界的行为。保持二者边界清晰。"#;
 
@@ -56,16 +63,115 @@ const CONTEXT_CLOSURE_PROMPT: &str = r#"Runtime 当前处于 context-closure 阶
 - context_tx 成功或失败后，Runtime 都会进入无工具 final-reply 阶段。"#;
 
 const FINAL_REPLY_PROMPT: &str = r#"Runtime 当前处于 final-reply 阶段。Context 收口机会已经使用或耗尽；不得调用工具。请基于现有 Mind 与 Inbox 直接给出最终答复，或明确说明阻塞。"#;
+const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context 已处于 critical，且本回合普通 context_tx 额度已经耗尽。为避免在不可执行的维护请求中循环，本次强制进入无工具最终回复。不得调用任何工具；请如实说明已完成状态、最近一次可靠验证和剩余工作。"#;
+
+const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请直接回复用户，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ContextTxReceipt {
+    None,
+    Committed,
+    Failed,
+}
+
+#[derive(Debug)]
+struct ToolExecutionOptions {
+    context_tx_allowed: bool,
+    wake_on_output: bool,
+}
+
+#[derive(Debug, Default)]
+struct ToolExecutionOutcome {
+    context_tx_succeeded: bool,
+}
+
+#[derive(Debug, Default)]
+struct ReadTurnGuard {
+    files: HashMap<String, ReadCoverage>,
+}
+
+#[derive(Debug, Default)]
+struct ReadCoverage {
+    full: bool,
+    ranges: Vec<(usize, usize)>,
+    queries: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ReadGuardArgs {
+    path: String,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    query: Option<String>,
+    context_lines: Option<usize>,
+    max_matches: Option<usize>,
+}
+
+impl ReadTurnGuard {
+    fn reserve(&mut self, arguments: &str) -> Option<String> {
+        let args: ReadGuardArgs = serde_json::from_str(arguments).ok()?;
+        let coverage = self.files.entry(args.path.clone()).or_default();
+        let duplicate =
+            if coverage.full {
+                true
+            } else if let Some(query) = args.query.as_deref() {
+                let signature = format!(
+                    "{}\u{0}{}\u{0}{}",
+                    query.to_lowercase(),
+                    args.context_lines.unwrap_or(3),
+                    args.max_matches.unwrap_or(20)
+                );
+                if coverage.queries.contains(&signature) {
+                    true
+                } else {
+                    coverage.queries.push(signature);
+                    false
+                }
+            } else if args.start_line.is_none() && args.end_line.is_none() {
+                coverage.full = true;
+                false
+            } else {
+                let start = args.start_line.unwrap_or(1);
+                let end = args.end_line.unwrap_or(usize::MAX);
+                if coverage.ranges.iter().any(|(covered_start, covered_end)| {
+                    start >= *covered_start && end <= *covered_end
+                }) {
+                    true
+                } else {
+                    coverage.ranges.push((start, end));
+                    false
+                }
+            };
+
+        duplicate.then(|| {
+            format!(
+                "READ_ALREADY_COVERED: '{}' 的相同版本内容已在本轮 Inbox 中完整覆盖；本次未再次读取，也不会复制旧内容。请使用已有 sha256 直接 edit/write，执行必要测试，或回复用户。仅在 file_change 后才需要重新 read。",
+                args.path
+            )
+        })
+    }
+
+    fn invalidate_path_from_arguments(&mut self, arguments: &str) {
+        let Some(path) = serde_json::from_str::<serde_json::Value>(arguments)
+            .ok()
+            .and_then(|value| value.get("path")?.as_str().map(ToOwned::to_owned))
+        else {
+            return;
+        };
+        self.files.remove(&path);
+    }
+}
 
 pub struct Orchestrator {
     bus: Arc<InMemoryEventBus>,
     store: Arc<dyn EventStore>,
     client: Arc<dyn Client>,
     registry: Arc<Registry>,
+    tool_definitions: Vec<crate::llm::ToolDefinition>,
     context_engine: Arc<ContextEngine>,
     orchestrator_config: OrchestratorConfig,
     pub concurrency_semaphore: Arc<tokio::sync::Semaphore>,
     session_locks: DashMap<String, Arc<Mutex<()>>>,
+    read_turn_guards: DashMap<String, Arc<Mutex<ReadTurnGuard>>>,
 }
 
 impl Orchestrator {
@@ -101,15 +207,18 @@ impl Orchestrator {
         let concurrency_semaphore = Arc::new(tokio::sync::Semaphore::new(
             orchestrator_config.concurrency_limit.max(1),
         ));
+        let tool_definitions = registry.definitions();
         Self {
             bus,
             store,
             client,
             registry,
+            tool_definitions,
             context_engine,
             orchestrator_config,
             concurrency_semaphore,
             session_locks: DashMap::new(),
+            read_turn_guards: DashMap::new(),
         }
     }
 
@@ -201,22 +310,52 @@ impl Orchestrator {
         if event.event_type != TYPE_USER_MESSAGE && event.event_type != TYPE_TOOL_OUTPUT {
             return Ok(());
         }
-
-        let lock = self.session_lock(&session_id);
-        let _session_guard = lock.lock().await;
-        if event.event_type == TYPE_TOOL_OUTPUT
-            && self
-                .tool_output_already_covered(&session_id, &event)
-                .await?
-        {
-            tracing::debug!(
-                session_id,
-                event_id = %event.id,
-                "跳过已被更新 Context view 覆盖的排队 tool wakeup"
-            );
-            return Ok(());
+        if event.event_type == TYPE_USER_MESSAGE {
+            self.read_turn_guards.remove(&session_id);
         }
-        self.run_attempt(&session_id).await
+
+        let deadline = std::time::Duration::from_secs(
+            self.orchestrator_config
+                .model_attempt_timeout_secs
+                .max(1)
+                .saturating_add(1),
+        );
+        let watchdog_attempt_id = format!(
+            "attempt_watchdog_{}_{}",
+            session_id,
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let attempt = tokio::time::timeout(deadline, async {
+            let lock = self.session_lock(&session_id);
+            let _session_guard = lock.lock().await;
+            if event.event_type == TYPE_TOOL_OUTPUT
+                && self
+                    .tool_output_already_covered(&session_id, &event)
+                    .await?
+            {
+                tracing::debug!(
+                    session_id,
+                    event_id = %event.id,
+                    "跳过已被更新 Context view 覆盖的排队 tool wakeup"
+                );
+                return Ok(());
+            }
+            self.run_attempt(&session_id).await
+        })
+        .await;
+        match attempt {
+            Ok(result) => result,
+            Err(error) => {
+                self.publish_runtime_failure(
+                    &session_id,
+                    &watchdog_attempt_id,
+                    "attempt_watchdog",
+                    &error,
+                    None,
+                )
+                .await
+            }
+        }
     }
 
     async fn tool_output_already_covered(
@@ -244,9 +383,27 @@ impl Orchestrator {
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
         let context = self.context_engine.build_view(session_id).await?;
-        let phase_prompt = match context.turn_budget.phase.as_str() {
+        let maintenance_budget_exhausted = should_force_final_for_maintenance(
+            &context.turn_budget.phase,
+            &context.pressure.level,
+            context.turn_budget.context_tx_available,
+        );
+        let effective_phase = if maintenance_budget_exhausted {
+            "final-reply"
+        } else {
+            context.turn_budget.phase.as_str()
+        };
+        let context_tx_receipt = self.context_tx_receipt(&context).await?;
+        let context_tx_cooldown = effective_phase == "work"
+            && context.pressure.level != "critical"
+            && context_tx_receipt == ContextTxReceipt::Committed;
+        let phase_prompt = match effective_phase {
+            "final-reply" if maintenance_budget_exhausted => {
+                Some(MAINTENANCE_BUDGET_EXHAUSTED_PROMPT)
+            }
             "context-closure" => Some(CONTEXT_CLOSURE_PROMPT),
             "final-reply" => Some(FINAL_REPLY_PROMPT),
+            _ if context_tx_cooldown => Some(CONTEXT_TX_COOLDOWN_PROMPT),
             _ => None,
         };
         let system_prompt = phase_prompt
@@ -272,19 +429,19 @@ impl Orchestrator {
             },
         ];
 
-        self.publish_context_inspect(session_id, &attempt_id, &context, &messages)
-            .await?;
+        self.record_context_inspect(session_id, &attempt_id, &context, &messages);
 
-        let mut tools = self.registry.definitions();
-        if context.turn_budget.phase == "final-reply" {
+        let mut tools = self.tool_definitions.clone();
+        if effective_phase == "final-reply" {
             tracing::warn!(
                 session_id,
                 attempt = context.turn_budget.attempt,
                 limit = context.turn_budget.limit,
+                maintenance_budget_exhausted,
                 "Context 收口机会已使用：进入无工具最终答复"
             );
             tools.clear();
-        } else if context.turn_budget.phase == "context-closure" {
+        } else if effective_phase == "context-closure" {
             tracing::info!(
                 session_id,
                 attempt = context.turn_budget.attempt,
@@ -309,12 +466,83 @@ impl Orchestrator {
                 );
                 tools.retain(|tool| tool.name != "context_tx");
             }
+            if context_tx_cooldown {
+                tracing::info!(
+                    session_id,
+                    "独立 context_tx 已成功：本次冷却并隐藏 context_tx"
+                );
+                tools.retain(|tool| tool.name != "context_tx");
+            }
         }
-
+        let deadline = std::time::Duration::from_secs(
+            self.orchestrator_config.model_attempt_timeout_secs.max(1),
+        );
         let _permit = self.concurrency_semaphore.acquire().await?;
-        let response = self.client.create_completion(messages, tools).await?;
+        self.record_model_attempt_started(session_id, &attempt_id, effective_phase, tools.len());
+        let client = Arc::clone(&self.client);
+        let (model_tx, model_rx) = tokio::sync::oneshot::channel();
+        if let Err(error) = std::thread::Builder::new()
+            .name(format!("morphz-llm-{attempt_id}"))
+            .spawn(move || {
+                let result = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| Box::new(error) as DynError)
+                    .and_then(|runtime| {
+                        runtime.block_on(client.create_completion(messages, tools))
+                    });
+                let _ = model_tx.send(result);
+            })
+        {
+            return self
+                .publish_runtime_failure(
+                    session_id,
+                    &attempt_id,
+                    "llm_thread_spawn",
+                    &error,
+                    context.parent_session_id.as_deref(),
+                )
+                .await;
+        }
+        let completion = tokio::time::timeout(deadline, model_rx).await;
+        let response = match completion {
+            Ok(Ok(Ok(response))) => response,
+            Ok(Ok(Err(error))) => {
+                return self
+                    .publish_runtime_failure(
+                        session_id,
+                        &attempt_id,
+                        "llm_completion",
+                        error.as_ref(),
+                        context.parent_session_id.as_deref(),
+                    )
+                    .await;
+            }
+            Ok(Err(error)) => {
+                return self
+                    .publish_runtime_failure(
+                        session_id,
+                        &attempt_id,
+                        "llm_worker_channel",
+                        &error,
+                        context.parent_session_id.as_deref(),
+                    )
+                    .await;
+            }
+            Err(error) => {
+                return self
+                    .publish_runtime_failure(
+                        session_id,
+                        &attempt_id,
+                        "llm_completion",
+                        &error,
+                        context.parent_session_id.as_deref(),
+                    )
+                    .await;
+            }
+        };
 
-        if context.turn_budget.phase == "context-closure" && !response.tool_calls.is_empty() {
+        if effective_phase == "context-closure" && !response.tool_calls.is_empty() {
             let valid_closure = response
                 .tool_calls
                 .iter()
@@ -324,8 +552,11 @@ impl Orchestrator {
                     session_id,
                     &attempt_id,
                     response,
-                    &context.turn_budget.phase,
-                    true,
+                    effective_phase,
+                    ToolExecutionOptions {
+                        context_tx_allowed: true,
+                        wake_on_output: true,
+                    },
                 )
                 .await?;
                 return Ok(());
@@ -346,12 +577,16 @@ impl Orchestrator {
                 .await;
         }
 
-        if context.turn_budget.phase == "final-reply" && !response.tool_calls.is_empty() {
+        if effective_phase == "final-reply" && !response.tool_calls.is_empty() {
             let content = if response.content.trim().is_empty() {
-                format!(
-                    "本轮已达到 {} 次 Attempt 上限并完成 Context 收口阶段，Runtime 已停止继续执行工具。现有信息不足以形成最终答复，请缩小任务或提供新的指令。",
-                    context.turn_budget.limit
-                )
+                if maintenance_budget_exhausted {
+                    "Context 已达到 critical 且本回合维护事务额度耗尽，Runtime 已停止继续执行工具以避免循环。请在新回合继续未完成工作；现有文件修改与 Ledger 均已保留。".to_string()
+                } else {
+                    format!(
+                        "本轮已达到 {} 次 Attempt 上限并完成 Context 收口阶段，Runtime 已停止继续执行工具。现有信息不足以形成最终答复，请缩小任务或提供新的指令。",
+                        context.turn_budget.limit
+                    )
+                }
             } else {
                 response.content
             };
@@ -366,14 +601,48 @@ impl Orchestrator {
         }
 
         if !response.tool_calls.is_empty() {
-            self.execute_tool_calls(
-                session_id,
-                &attempt_id,
-                response,
-                &context.turn_budget.phase,
-                context.turn_budget.context_tx_available,
-            )
-            .await?;
+            let has_context_tx = response
+                .tool_calls
+                .iter()
+                .any(|call| call.func_name == "context_tx");
+            let has_physical_tool = response
+                .tool_calls
+                .iter()
+                .any(|call| call.func_name != "context_tx");
+            let attached_reply = effective_phase == "work"
+                && context.pressure.level != "critical"
+                && has_context_tx
+                && !has_physical_tool
+                && !response.content.trim().is_empty();
+            let reply_content = response.content.clone();
+            let outcome = self
+                .execute_tool_calls(
+                    session_id,
+                    &attempt_id,
+                    response,
+                    effective_phase,
+                    ToolExecutionOptions {
+                        context_tx_allowed: context.turn_budget.context_tx_available
+                            && !context_tx_cooldown,
+                        wake_on_output: !attached_reply,
+                    },
+                )
+                .await?;
+            if attached_reply {
+                tracing::info!(
+                    session_id,
+                    context_tx_succeeded = outcome.context_tx_succeeded,
+                    "Context sidecar 已执行：直接发布同一响应文本，不重新唤醒模型"
+                );
+                return self
+                    .publish_reply(
+                        session_id,
+                        &attempt_id,
+                        reply_content,
+                        context.parent_session_id.as_deref(),
+                    )
+                    .await;
+            }
             return Ok(());
         }
 
@@ -413,14 +682,99 @@ impl Orchestrator {
         Ok(())
     }
 
+    async fn publish_runtime_failure(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        stage: &str,
+        error: &(dyn std::error::Error + Send + Sync),
+        parent_session_id: Option<&str>,
+    ) -> Result<(), DynError> {
+        let error_text: String = error.to_string().chars().take(2_000).collect();
+        tracing::error!(
+            session_id,
+            attempt_id,
+            error = %error_text,
+            "LLM 请求在重试后失败；终止本回合并向用户返回可见错误"
+        );
+        self.bus
+            .publish(Event::new(
+                format!(
+                    "runtime_error_{}",
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
+                "Runtime-Orchestrator".to_string(),
+                "runtime_error".to_string(),
+                "chat/runtime_error".to_string(),
+                vec![
+                    ("session_id".to_string(), json!(session_id)),
+                    ("attempt_id".to_string(), json!(attempt_id)),
+                    ("stage".to_string(), json!(stage)),
+                    ("error".to_string(), json!(error_text)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await?;
+
+        let user_message = if stage == "llm_completion" {
+            "模型请求在重试后仍然失败，Runtime 已停止本回合，未继续执行任何工具。请稍后重试；当前 Session、Mind 与已提交文件修改均已保留。"
+        } else {
+            "Runtime 的完整 Attempt 超过执行期限，已取消本回合以避免用户一直等待。当前 Session、Mind 与已提交文件修改均已保留；请重试或缩小单次任务。"
+        };
+        self.publish_reply(
+            session_id,
+            attempt_id,
+            user_message.to_string(),
+            parent_session_id,
+        )
+        .await
+    }
+
+    fn record_model_attempt_started(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        phase: &str,
+        tool_count: usize,
+    ) {
+        let bus = Arc::clone(&self.bus);
+        let event = Event::new(
+            format!(
+                "model_attempt_started_{}",
+                Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            ),
+            "Runtime-Orchestrator".to_string(),
+            "runtime_control".to_string(),
+            "runtime/model_attempt_started".to_string(),
+            vec![
+                ("session_id".to_string(), json!(session_id)),
+                ("attempt_id".to_string(), json!(attempt_id)),
+                ("phase".to_string(), json!(phase)),
+                ("tool_count".to_string(), json!(tool_count)),
+                (
+                    "deadline_secs".to_string(),
+                    json!(self.orchestrator_config.model_attempt_timeout_secs.max(1)),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        tokio::spawn(async move {
+            if let Err(error) = bus.publish(event).await {
+                tracing::error!(?error, "记录 model_attempt_started 失败");
+            }
+        });
+    }
+
     async fn execute_tool_calls(
         &self,
         session_id: &str,
         attempt_id: &str,
         response: crate::llm::Response,
         phase: &str,
-        context_tx_allowed: bool,
-    ) -> Result<(), DynError> {
+        options: ToolExecutionOptions,
+    ) -> Result<ToolExecutionOutcome, DynError> {
         let requested_tool_calls = response.tool_calls;
         let mapped_tool_calls = requested_tool_calls
             .iter()
@@ -445,8 +799,10 @@ impl Orchestrator {
         let mut deduplicated_context_tx_ids = Vec::new();
         let mut rejected_context_tx_ids = Vec::new();
         let mut context_tx_batch_error = None;
-        if !context_tx_allowed && !context_tx_calls.is_empty() {
+        let mut context_tx_batch_status = None;
+        if !options.context_tx_allowed && !context_tx_calls.is_empty() {
             rejected_context_tx_ids.extend(context_tx_calls.into_iter().map(|call| call.id));
+            context_tx_batch_status = Some("budget-exhausted".to_string());
             context_tx_batch_error = Some(format!(
                 "执行拒绝: CONTEXT_TX_BUDGET_EXHAUSTED：普通 work 阶段 Context transaction 已达到 {} 次上限。本轮保留剩余物理工作预算；请继续完成必要工作，Runtime 在最终 context-closure 阶段仍会提供一次专用收口机会。",
                 self.orchestrator_config.max_context_transactions_per_turn.max(1)
@@ -479,6 +835,7 @@ impl Orchestrator {
                     } else {
                         rejected_context_tx_ids
                             .extend(context_tx_calls.into_iter().map(|call| call.id));
+                        context_tx_batch_status = Some("multiple-distinct".to_string());
                         context_tx_batch_error = Some(format!(
                         "执行拒绝: MULTIPLE_DISTINCT_CONTEXT_TX：同一响应请求了 {} 个内容不同的 context_tx。Runtime 未执行其中任何一个；请把所有 create/derive/revise/retire/restore/protect/unprotect/place 操作合并到一个原子 (context-tx ...) 后重新提交。",
                         rejected_context_tx_ids.len()
@@ -496,12 +853,20 @@ impl Orchestrator {
             );
         }
         if !rejected_context_tx_ids.is_empty() {
-            tracing::warn!(
-                session_id,
-                attempt_id,
-                rejected = rejected_context_tx_ids.len(),
-                "同一 assistant response 包含多个不同 context_tx；已全部拒绝并要求合并"
-            );
+            match context_tx_batch_status.as_deref() {
+                Some("budget-exhausted") => tracing::warn!(
+                    session_id,
+                    attempt_id,
+                    rejected = rejected_context_tx_ids.len(),
+                    "Context transaction 预算已耗尽"
+                ),
+                _ => tracing::warn!(
+                    session_id,
+                    attempt_id,
+                    rejected = rejected_context_tx_ids.len(),
+                    "同一 assistant response 包含多个不同 context_tx；已全部拒绝并要求合并"
+                ),
+            }
         }
         self.bus
             .publish(Event::new(
@@ -523,6 +888,10 @@ impl Orchestrator {
                         "rejected_context_tx_ids".to_string(),
                         json!(rejected_context_tx_ids),
                     ),
+                    (
+                        "context_tx_rejection_status".to_string(),
+                        json!(context_tx_batch_status),
+                    ),
                 ]
                 .into_iter()
                 .collect(),
@@ -530,7 +899,40 @@ impl Orchestrator {
             .await?;
 
         let mut tasks = Vec::new();
+        let mut guarded_outputs = Vec::new();
         for call in selected_tool_calls {
+            if matches!(call.func_name.as_str(), "write" | "edit") {
+                self.read_guard(session_id)
+                    .lock()
+                    .await
+                    .invalidate_path_from_arguments(&call.arguments);
+            }
+            if call.func_name == "read" {
+                let duplicate = self
+                    .read_guard(session_id)
+                    .lock()
+                    .await
+                    .reserve(&call.arguments);
+                if let Some(output) = duplicate {
+                    guarded_outputs.push(Event::new(
+                        format!("output_{}_{}", attempt_id, call.id),
+                        "System-ReadGuard".to_string(),
+                        TYPE_TOOL_OUTPUT.to_string(),
+                        "chat/tool_output".to_string(),
+                        vec![
+                            ("session_id".to_string(), json!(session_id)),
+                            ("attempt_id".to_string(), json!(attempt_id)),
+                            ("tool_call_id".to_string(), json!(call.id)),
+                            ("tool_name".to_string(), json!(call.func_name)),
+                            ("read_guard_status".to_string(), json!("already-covered")),
+                            ("text".to_string(), json!(output)),
+                        ]
+                        .into_iter()
+                        .collect(),
+                    ));
+                    continue;
+                }
+            }
             let registry = Arc::clone(&self.registry);
             let session_id = session_id.to_string();
             let attempt_id = attempt_id.to_string();
@@ -573,7 +975,7 @@ impl Orchestrator {
             }));
         }
 
-        let mut outputs = Vec::new();
+        let mut outputs = guarded_outputs;
         if let Some(error) = context_tx_batch_error {
             outputs.push(Event::new(
                 format!("output_{}_context_tx_batch_rejected", attempt_id),
@@ -590,7 +992,7 @@ impl Orchestrator {
                     ("tool_name".to_string(), json!("context_tx")),
                     (
                         "context_tx_status".to_string(),
-                        json!("rejected-multiple-distinct"),
+                        json!(context_tx_batch_status.as_deref().unwrap_or("rejected")),
                     ),
                     ("text".to_string(), json!(error)),
                 ]
@@ -607,46 +1009,83 @@ impl Orchestrator {
         if outputs.is_empty() {
             return Err("所有工具任务都在产生结果前异常终止".into());
         }
+        let mut outcome = ToolExecutionOutcome::default();
+        for output in &outputs {
+            if output
+                .payload
+                .get("tool_name")
+                .and_then(|value| value.as_str())
+                == Some("context_tx")
+            {
+                outcome.context_tx_succeeded = context_tx_output_succeeded(output);
+            }
+        }
         let output_count = outputs.len();
         for (index, output) in outputs.into_iter().enumerate() {
-            if index + 1 == output_count {
+            if options.wake_on_output && index + 1 == output_count {
                 self.bus.publish(output).await?;
             } else {
                 self.store.append(output).await?;
             }
         }
-        Ok(())
+        Ok(outcome)
     }
 
-    async fn publish_context_inspect(
+    async fn context_tx_receipt(
+        &self,
+        context: &ContextView,
+    ) -> Result<ContextTxReceipt, DynError> {
+        if context.wake.tool_name.as_deref() != Some("context_tx") {
+            return Ok(ContextTxReceipt::None);
+        }
+        let Some(event_id) = context.wake.event_id.as_deref() else {
+            return Ok(ContextTxReceipt::None);
+        };
+        Ok(self
+            .context_engine
+            .find_event(&context.session_id, event_id)
+            .await?
+            .as_ref()
+            .map(context_tx_receipt_for_event)
+            .unwrap_or(ContextTxReceipt::None))
+    }
+
+    fn record_context_inspect(
         &self,
         session_id: &str,
         attempt_id: &str,
         context: &ContextView,
         messages: &[Message],
-    ) -> Result<(), DynError> {
-        self.bus
-            .publish(Event::new(
-                format!("context_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
-                "System-ContextKernel".to_string(),
-                crate::event::TYPE_PROPOSAL.to_string(),
-                "chat/context_inspect".to_string(),
-                vec![
-                    ("session_id".to_string(), json!(session_id)),
-                    ("attempt_id".to_string(), json!(attempt_id)),
-                    ("text".to_string(), json!(context.sexpr)),
-                    ("messages".to_string(), json!(messages)),
-                    ("mind".to_string(), json!(context.state)),
-                    ("inbox".to_string(), json!(context.observations)),
-                    ("pressure".to_string(), json!(context.pressure)),
-                    ("turn_budget".to_string(), json!(context.turn_budget)),
-                    ("wake".to_string(), json!(context.wake)),
-                ]
-                .into_iter()
-                .collect(),
-            ))
-            .await?;
-        Ok(())
+    ) {
+        let bus = Arc::clone(&self.bus);
+        let event = Event::new(
+            format!("context_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+            "System-ContextKernel".to_string(),
+            crate::event::TYPE_PROPOSAL.to_string(),
+            "chat/context_inspect".to_string(),
+            vec![
+                ("session_id".to_string(), json!(session_id)),
+                ("attempt_id".to_string(), json!(attempt_id)),
+                ("text".to_string(), json!(context.sexpr)),
+                ("messages".to_string(), json!(messages)),
+                ("mind".to_string(), json!(context.state)),
+                ("inbox".to_string(), json!(context.observations)),
+                ("pressure".to_string(), json!(context.pressure)),
+                ("turn_budget".to_string(), json!(context.turn_budget)),
+                (
+                    "model_attempt_timeout_secs".to_string(),
+                    json!(self.orchestrator_config.model_attempt_timeout_secs),
+                ),
+                ("wake".to_string(), json!(context.wake)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        tokio::spawn(async move {
+            if let Err(error) = bus.publish(event).await {
+                tracing::error!(?error, "记录 context_inspect 失败");
+            }
+        });
     }
 
     async fn wake_parent_if_needed(&self, event: &Event, session_id: &str) -> Result<(), DynError> {
@@ -693,6 +1132,13 @@ impl Orchestrator {
             .clone()
     }
 
+    fn read_guard(&self, session_id: &str) -> Arc<Mutex<ReadTurnGuard>> {
+        self.read_turn_guards
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(ReadTurnGuard::default())))
+            .clone()
+    }
+
     pub async fn get_current_context(
         &self,
         session_id: &str,
@@ -709,12 +1155,54 @@ impl Orchestrator {
     }
 }
 
+fn context_tx_output_succeeded(event: &Event) -> bool {
+    if event
+        .payload
+        .get("tool_name")
+        .and_then(|value| value.as_str())
+        != Some("context_tx")
+    {
+        return false;
+    }
+    event
+        .payload
+        .get("text")
+        .and_then(|value| value.as_str())
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        .is_some_and(|value| {
+            value.get("status").and_then(|status| status.as_str()) == Some("committed")
+        })
+}
+
+fn context_tx_receipt_for_event(event: &Event) -> ContextTxReceipt {
+    if event
+        .payload
+        .get("tool_name")
+        .and_then(|value| value.as_str())
+        != Some("context_tx")
+    {
+        return ContextTxReceipt::None;
+    }
+    if context_tx_output_succeeded(event) {
+        return ContextTxReceipt::Committed;
+    }
+    ContextTxReceipt::Failed
+}
+
 fn required_payload_str<'a>(event: &'a Event, key: &str) -> Result<&'a str, DynError> {
     event
         .payload
         .get(key)
         .and_then(|value| value.as_str())
         .ok_or_else(|| format!("事件 '{}' 缺少字符串字段 '{}'", event.id, key).into())
+}
+
+fn should_force_final_for_maintenance(
+    phase: &str,
+    pressure: &str,
+    context_tx_available: bool,
+) -> bool {
+    phase == "work" && pressure == "critical" && !context_tx_available
 }
 
 fn normalize_context_tx_key(session_id: &str, arguments: &str) -> Result<String, String> {
@@ -733,4 +1221,65 @@ fn normalize_context_tx_key(session_id: &str, arguments: &str) -> Result<String,
         .map_err(|error| format!("transaction SExpr 非法: {error}"))?
         .to_string();
     Ok(format!("{target_session}\u{0}{canonical}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_force_final_for_maintenance, ReadTurnGuard};
+
+    #[test]
+    fn critical_pressure_with_exhausted_maintenance_budget_forces_final_reply() {
+        assert!(should_force_final_for_maintenance(
+            "work", "critical", false
+        ));
+        assert!(!should_force_final_for_maintenance(
+            "work", "warning", false
+        ));
+        assert!(!should_force_final_for_maintenance(
+            "work", "critical", true
+        ));
+        assert!(!should_force_final_for_maintenance(
+            "context-closure",
+            "critical",
+            false
+        ));
+    }
+
+    #[test]
+    fn full_file_read_blocks_rephrased_reads_until_file_changes() {
+        let mut guard = ReadTurnGuard::default();
+        assert!(guard.reserve(r#"{"path":"src/lib.rs"}"#).is_none());
+        assert!(guard
+            .reserve(r#"{"path":"src/lib.rs","start_line":1,"end_line":20}"#)
+            .is_some());
+        assert!(guard
+            .reserve(r#"{"path":"src/lib.rs","query":"struct App"}"#)
+            .is_some());
+
+        guard.invalidate_path_from_arguments(r#"{"path":"src/lib.rs","edits":[]}"#);
+        assert!(guard
+            .reserve(r#"{"path":"src/lib.rs","start_line":1,"end_line":20}"#)
+            .is_none());
+    }
+
+    #[test]
+    fn covered_ranges_and_queries_are_deduplicated_per_path() {
+        let mut guard = ReadTurnGuard::default();
+        assert!(guard
+            .reserve(r#"{"path":"src/lib.rs","start_line":10,"end_line":40}"#)
+            .is_none());
+        assert!(guard
+            .reserve(r#"{"path":"src/lib.rs","start_line":15,"end_line":25}"#)
+            .is_some());
+        assert!(guard
+            .reserve(r#"{"path":"src/lib.rs","start_line":41,"end_line":60}"#)
+            .is_none());
+        assert!(guard
+            .reserve(r#"{"path":"src/lib.rs","query":"TODO","context_lines":2}"#)
+            .is_none());
+        assert!(guard
+            .reserve(r#"{"path":"src/lib.rs","query":"todo","context_lines":2}"#)
+            .is_some());
+        assert!(guard.reserve(r#"{"path":"src/main.rs"}"#).is_none());
+    }
 }

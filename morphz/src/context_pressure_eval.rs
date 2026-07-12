@@ -165,6 +165,7 @@ pub async fn create_context_pressure_eval(
             artifact_dir.to_string_lossy().to_string(),
         ),
         ("MORPHZ_CODING_EVAL_MODE".to_string(), "true".to_string()),
+        ("MORPHZ_CONTEXT_EVAL_MODE".to_string(), "true".to_string()),
         (
             "MORPHZ_CONTEXT_SOFT_TOKEN_LIMIT".to_string(),
             soft_token_limit.to_string(),

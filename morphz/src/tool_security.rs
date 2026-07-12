@@ -135,7 +135,7 @@ fn matches_simple_pattern(
         ".git/**" => components.iter().any(|c| c == ".git"),
         "**/.ssh/**" => components.iter().any(|c| c == ".ssh"),
         "target/**" => components.iter().any(|c| c == "target"),
-        "models/**" => components.iter().any(|c| c == "models"),
+        other if other.starts_with("*.") => file_name.ends_with(&other[1..]),
         other if other.ends_with("/**") => {
             let prefix = other.trim_end_matches("/**");
             components.iter().any(|c| c == prefix)
@@ -218,6 +218,23 @@ mod tests {
         cfg.workspace_jail_enabled = false;
         cfg.allow_absolute_paths = true;
         let err = resolve_tool_path(path.to_str().unwrap(), ToolAccess::Read, &cfg).unwrap_err();
+        assert!(err.contains("敏感路径"));
+    }
+
+    #[test]
+    fn business_models_directory_is_allowed_but_weight_files_are_denied() {
+        let tmp = TempDir::new().unwrap();
+        let models_dir = tmp.path().join("models");
+        std::fs::create_dir(&models_dir).unwrap();
+        let source = models_dir.join("models.go");
+        let weights = models_dir.join("model.safetensors");
+        std::fs::write(&source, "package models").unwrap();
+        std::fs::write(&weights, "weights").unwrap();
+        let cfg = base_config(tmp.path());
+
+        assert!(resolve_tool_path("models/models.go", ToolAccess::Read, &cfg).is_ok());
+        let err =
+            resolve_tool_path("models/model.safetensors", ToolAccess::Read, &cfg).unwrap_err();
         assert!(err.contains("敏感路径"));
     }
 

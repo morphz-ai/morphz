@@ -1,6 +1,6 @@
 # Morphz Agent-Owned Context：由 LLM 自主管理的心智上下文
 
-> 状态：核心设计基线；Agent-Owned Context v1 已进入实现
+> 状态：核心设计基线；Agent-Owned Context protocol v3 已实现并进入评测
 > 适用范围：Morphz Agent Runtime、SExpr DSL、Context 生命周期、记忆召回与产品调试界面
 > 设计优先级：本文件用于澄清 Morphz 的核心方向；当既有文档中的“自动评分、自动裁剪、自动摘要、自动注入”与本文冲突时，应以本文的职责划分为准。
 
@@ -194,6 +194,7 @@ v1 放弃以 `set/push/pop/clear` 作为正式认知接口。它们暴露的是�
 | `restore` | 恢复被 retire 的 Frame 或 Observation |
 | `protect` / `unprotect` | 建立或解除由 Kernel 强制执行的遗忘保护 |
 | `place` | 调整 Frame 的注意力顺序 |
+| `relate` / `unrelate` | 建立或撤销两个稳定 ID 之间的开放语义关系；Runtime 只特别解释 `supersedes` |
 
 摘要不是 Runtime 原语。LLM 通过 `derive` 自己写出摘要 body，并在同一事务中显式 retire 被替代的原始 Observation：
 
@@ -239,13 +240,38 @@ v1 使用乐观并发版本，防止过期 Attempt 覆盖新的 Mind：
 
 若当前版本已不是 42，Runtime 应拒绝提交并要求 LLM 基于最新 Mind 重新决策，而不是静默合并。
 
-### 5.4 自描述协议与工具调用边界
+### 5.4 元认知元数据（Metacognitive Metadata）
+
+Agent 负责语义判断，不等于 Runtime 应让它在信息不完备的情况下猜测。Runtime 应把自己能够客观测量的事实紧凑地附在 Observation 上，但不输出“重要性分数”。protocol v3 提供以下属性：
+
+| 英文属性 | 中文解释 | 所有者与用途 |
+| --- | --- | --- |
+| `seq` / sequence | 账本写入顺序 | Runtime 生成的单调顺序，帮助 Agent 判断物理先后 |
+| `turn` | 用户回合 | 该 Observation 属于第几个用户回合 |
+| `attempt` | 回合内尝试次数 | 该 Observation 来自本回合第几次模型执行 |
+| `caused-by` | 可观察的因果来源 | 例如产生工具结果的 tool call 或 attempt |
+| `residency` | 当前驻留形态 | `full` 是全文、`preview` 是截断预览、`recalled-chunk` 是主动召回片段；同时公开可见字符数、总字符数和是否可召回 |
+| `resource` | 外部物理资源身份 | Provider 可声明资源种类、稳定 key 和版本；Runtime 只比较同一 key 的物理版本 |
+| `freshness` | 新旧/取代状态 | `latest` 表示同一物理资源中的最新版本；`supersedes` 表示 Agent 声明的语义取代 |
+| `usage` | 有效使用记录 | 只统计主动 `recall` 与 `derive/revise` 的 `(from ...)` 证据引用 |
+
+关键边界如下：
+
+1. `latest` 只表示“物理上较新”，不表示“语义上必然正确”；Agent 仍需结合证据判断。
+2. Observation 只是被呈现在 Context 中，不计为“使用”。只有 Agent 主动召回或把它作为推导/修订来源，才增加 usage。
+3. usage 次数高不等于更重要、更可信；它只让 Agent 感知自己过去是否反复依赖过该证据。
+4. `relate SUBJECT supersedes OBJECT` 只声明新内容取代旧内容。旧内容仍留在 Ledger 和当前 Context，除非 Agent 另行 `retire`。
+5. 除 `supersedes` 外，`relate` 的 relation 名称保持开放，Runtime 不解释业务含义，避免形成固定心智本体。
+
+这套分工的目的不是用更多字段替 Agent 思考，而是让它能看到时间、驻留、血缘、物理版本与真实使用历史，从而做出更有根据的自主维护决策。
+
+### 5.5 自描述协议与工具调用边界
 
 每轮 Context 必须携带由 Runtime 生成的 `protocol`，使 Agent 不依赖隐藏约定猜测自己的操作方式。协议至少自描述：
 
-- `reply`：不产生任何 tool call，正文直接交付用户；
-- `act`：调用物理工具以取得完成当前任务所必需的新结果，正文不是最终回复；
-- `maintain`：调用唯一的 `context_tx` 修改 Mind，事务回执不是 Observation，也不是最终回复；
+- `reply`：正文直接交付用户，可附带一个 `context_tx` sidecar；Runtime 执行 sidecar 后直接发布正文，不再用回执唤醒模型；
+- `act`：调用物理工具以取得必要的新结果，可附带一个不依赖本批新结果的 `context_tx` sidecar，正文不是最终回复；
+- `maintain`：可单独调用 `context_tx`；它不是用户回合终点，Runtime 执行后必须再次调用模型，且非 critical 时下一响应冷却 `context_tx`；
 - `context-tx-contract`：事务骨架、reason 作用域及全部可用原语的准确语法；
 - `kernel.wake`：本轮由用户消息、外部工具结果还是 Context transaction 回执唤醒。
 
@@ -274,11 +300,11 @@ LLM 自主管理不等于 Runtime 什么都不做。Runtime 必须把不可见�
   (maintenance-required-before-next-tool false))
 ```
 
-压力协议建议分为四级：
+压力协议分为四级：
 
-- `normal`：Agent 可自由决定是否维护；
-- `notice`：提示增长趋势，但不强制动作；
-- `warning`：要求 Agent 在近期 Attempt 内主动整理；
+- `normal`：不得仅为降低体积压缩，只维护确实改变的长期目标、约束或结论；
+- `notice`：只提示增长趋势，不因容量触发维护；
+- `warning`：优先随当前 `reply/act` 附带压缩 sidecar；
 - `critical`：暂停新的高成本动作，要求先提交一次 Context maintenance transaction。
 
 Runtime 只能要求“必须释放多少预算”，不能决定“删除哪一段”。如果 Agent 多次无法在硬限制内生成有效维护指令，Kernel 才可进入紧急模式：冻结当前 Mind、创建 Checkpoint，并启动显式恢复流程。紧急模式不是普通 Compaction，也不能静默丢弃语义内容。
@@ -287,25 +313,35 @@ Runtime 只能要求“必须释放多少预算”，不能决定“删除哪一
 
 首次 Context Pressure Eval 已验证一次真实闭环：在 9,000 模拟硬上限和 2,500 reserve 下，38 条合成长历史产生 9,177 estimated tokens；模型自主创建并保护 `core_facts`、保留五条关键原始证据、退休 33 条陈旧 observation，最终降至 2,140 tokens 和 `normal`。该结果证明机制可行，但模型窗口自动发现、精确 tokenizer、渐进压力成功率和 emergency checkpoint 仍未完成。
 
-Context 自主也必须服从预算，但元认知维护不能挤占物理工作机会。Kernel 按用户回合公开 `turn-budget`，分别记录物理工作 Attempt 和普通 Context transaction 的已用量与上限，并公开 `work/context-closure/final-reply` 三阶段。Context-only assistant call 不计入物理工作 Attempt；普通 work 阶段达到 Context transaction 上限后只移除 `context_tx`，仍保留剩余物理工具。物理 Attempt 达到上限时，Runtime 额外提供一次只暴露 `context_tx` 的 `context-closure`，随后无论事务成功或失败都进入无工具 `final-reply`。这既限制资源消耗，也保证最终 Mind 收口不会被工作预算意外饿死。
+后续 Context Long-Run Eval 从 normal 开始连续运行六轮。模型在峰值 4,491/8,000 时仍未进入 warning/critical，三次在 notice 主动维护，退休全部 56 条原始历史，并在隐藏核验中保持六项事实和接口作废关系；容量与语义保真通过。但它提交 18 次事务、三个回合耗尽 Attempt，并把每个批次过程都创建为受保护 Frame，导致 Mind 结构线性增长。由此确认“避免物理溢出”和“形成可持续长期心智”是两个不同验收目标。Runtime 随后实现 protocol v2：sidecar 作为可选快速路径；独立事务保留标准 Function Calling 形态，但成功后只允许一次回执唤醒且下一响应冷却 `context_tx`。Prompt 同时禁止 normal/notice 容量压缩和低价值批次升格。frame consolidation 仍需继续验证。
+
+Context 自主也必须服从预算，但元认知维护不能挤占物理工作机会。Kernel 按用户回合公开 `turn-budget`，分别记录物理工作 Attempt 和 Context transaction 的已用量与上限，并公开 `work/context-closure/final-reply` 三阶段。普通 sidecar 不产生新的 LLM Attempt；独立 context-only 调用不计入物理工作 Attempt，但成功后若已脱离 critical，下一响应隐藏 `context_tx`，直到新的 user/tool observation 到达。失败事务保留修复机会。物理 Attempt 达到上限时，Runtime 仍提供一次只暴露 `context_tx` 的 `context-closure`，随后进入无工具 `final-reply`。
 
 ## 7. Agent 的 Context 维护循环
 
-Context 维护是 Agent Loop 的一部分，而不是后台清洁线程的副作用。
+Context 维护是 Agent 的语义决策。sidecar 是可选快速路径；若模型偏好空正文工具调用，独立维护必须由 Runtime 继续驱动到 reply/act，不能成为用户回合终点。
+
+评估 Context 生命周期时可以启用 `MORPHZ_CONTEXT_EVAL_MODE=true`，此时 Runtime 只注册
+`context_tx`，以排除 recall、文件和命令工具对轨迹的干扰。该开关仅用于隔离评估，不改变生产工具集。真实六轮复测中，六个有新事实的回合均为“一次 standalone transaction + 一次冷却 reply”，无变化对照直接 reply；因此 standalone 偏好由 Runtime 收敛，而非依赖模型同时输出正文和工具调用。
 
 ```mermaid
 stateDiagram-v2
     [*] --> Observe
     Observe --> Reason: 读取 Kernel + Mind + 新事件
-    Reason --> Act: 信息足够
+    Reason --> Reply: 可以直接交付
+    Reason --> Act: 需要外部结果
     Reason --> Recall: 缺少历史或证据
     Recall --> Reason: 候选内容进入 recall inbox
     Act --> Observe: 工具/用户/子 Agent 产生新事件
-    Reason --> Maintain: 目标变化、阶段结束或 Context 压力
-    Maintain --> Validate: 提交 SExpr transaction
-    Validate --> Observe: 提交成功
-    Validate --> Maintain: 校验失败并返回原因
-    Reason --> Finish: 成功标准满足
+    Reply --> Sidecar: 可选 context_tx
+    Act --> Sidecar: 可选且不依赖新结果
+    Sidecar --> Validate: 提交 SExpr transaction
+    Validate --> Finish: reply sidecar 后直接交付
+    Validate --> Observe: act sidecar 与工具结果形成一次 barrier
+    Reason --> Maintain: 需要先修改 Mind
+    Maintain --> Validate
+    Validate --> Reason: 独立事务后重新调用并冷却 context_tx
+    Reply --> Finish: 无需维护
     Finish --> [*]
 ```
 
@@ -531,7 +567,7 @@ Mind Inspector 至少应支持：
 | 可解释性 | 只能看到最终 Prompt | 能看到每次心智变化及原因 |
 | 核心能力 | Runtime 管理历史 | Agent 管理自己的注意力 |
 
-## 16. v1 实现状态与剩余边界
+## 16. protocol v3 实现状态与剩余边界
 
 第一版已经完成以下纵向闭环：
 
@@ -546,9 +582,12 @@ Mind Inspector 至少应支持：
 9. Context transaction 作为 Event Ledger 事件保存完整 state-after、version 和 Diff；
 10. Dashboard 已能直接观察 Mind Frames、来源、revision、保护状态、Inbox 和 Pressure；
 11. Kernel 已分离物理 Attempt 与 Context transaction 预算，并强制执行一次性 Context closure 和最终回复，防止模型无界探索或元认知循环；
-12. 每轮 Context 已自描述 response contract、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数。
+12. 每轮 Context 已自描述 response contract、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数；protocol v3 新增中英文元认知属性说明。
 13. `read` 已支持带行号的文本查询与行范围读取，减少长文件证据在 Inbox 中的重复膨胀。
 14. Coding Tools v1 已提供 `list_files/search/read/edit/write/exec` 最小闭环；文件修改带 SHA-256 版本前提、原子提交、Diff 和 `file_change` Observation。
+15. Event Ledger 通过 SQLite `rowid` 暴露稳定写入 `sequence`，并为 Observation 提供 turn、attempt、caused-by、residency、resource、freshness 与 usage。
+16. DSL 已增加开放的 `relate/unrelate`；Runtime 只对 `supersedes` 建立新旧解释，旧证据不会被自动删除。
+17. 已建立 `context_metacognition_eval` 黑盒评测，分别评分 Runtime 契约与 Agent 元认知策略，并支持基线/候选对比。
 
 v1 有意尚未覆盖的边界：
 
@@ -627,7 +666,21 @@ Morphz 是否优于 OpenClaw、Hermes 或传统 Agent，不应以“支持 SExpr
 - Context 修改不可追踪、不可回滚或无法说明来源；
 - 把 Event Ledger、长期记忆、Prompt 和 Mind Context 混为同一概念。
 
-## 20. 最终定义
+## 20. 与当前研究的关系
+
+Morphz 的方向与近年的 Agent Memory 研究一致，但组合方式不同：
+
+- [MemGPT](https://arxiv.org/abs/2310.08560) 把长上下文建模为由模型管理的分层虚拟内存，支持显式换入换出；Morphz 进一步把可审计的 Mind 修改收口为事务 DSL。
+- [Reflexion](https://papers.neurips.cc/paper_files/paper/2023/hash/1b44b878bb782e6954cd888628510e90-Abstract-Conference.html) 证明语言反思写入 episodic memory 能改善后续决策；Morphz 将“写入什么、何时修订/退休”扩展成通用元认知控制面。
+- [A-MEM](https://arxiv.org/abs/2502.12110) 使用动态 note 属性、链接与记忆演化；Morphz 的开放 Frame 与 `relate` 与其方向相近，但刻意不让 Runtime 固化语义 schema。
+- [MemInsight](https://aclanthology.org/2025.emnlp-main.1683/) 强调自主语义增强；Morphz 让 Agent 自己形成 body、来源与关系，同时保留 Ledger 原始证据。
+- [AgeMem](https://aclanthology.org/2026.acl-long.981/) 把记忆操作作为工具行为，并通过分阶段强化学习训练策略；这表明“有操作接口”并不足够，后续仍需训练或优化 Morphz 的维护策略。
+- [MMPO](https://arxiv.org/abs/2605.30159) 指出递归摘要会丢失任务状态，并用 belief entropy 评估记忆质量；这支持 Morphz 保留原始 Ledger、来源血缘和避免摘要套摘要的原则。
+- [MemBench](https://arxiv.org/abs/2506.21605) 把记忆评测拆为效果、效率和容量；Morphz 的评测同样分开报告 Runtime 可观测性、Agent 保真/选择策略与执行开销。
+
+因此，Morphz 当前可以称为“研究方向先进、机制组合有独特性”，但不能仅凭架构自称领先。真正需要证明的是：在相同模型、任务和预算下，它是否比滑动窗口、Runtime 自动摘要和自动 RAG 获得更高的长期成功率、更低的自我失忆率以及可接受的维护开销。
+
+## 21. 最终定义
 
 Morphz 的 Context 系统可以用下面四句话定义：
 

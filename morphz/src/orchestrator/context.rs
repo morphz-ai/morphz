@@ -9,13 +9,13 @@ use chrono::Utc;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 1;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 3;
 
 struct ContextOperationSpec {
     name: &'static str,
@@ -64,6 +64,16 @@ const CONTEXT_OPERATIONS: &[ContextOperationSpec] = &[
         syntax: "(place FRAME first|last|(before FRAME)|(after FRAME))",
         meaning: "调整 frame 的注意力顺序",
     },
+    ContextOperationSpec {
+        name: "relate",
+        syntax: "(relate SUBJECT RELATION OBJECT)",
+        meaning: "由 Agent 声明两个稳定 Context ID 的语义关系；supersedes 表示新信息取代旧信息",
+    },
+    ContextOperationSpec {
+        name: "unrelate",
+        syntax: "(unrelate SUBJECT RELATION OBJECT)",
+        meaning: "撤销错误关系；必须在事务级提供 reason",
+    },
 ];
 
 pub fn context_tx_tool_description() -> String {
@@ -73,7 +83,7 @@ pub fn context_tx_tool_description() -> String {
         .collect::<Vec<_>>()
         .join("；");
     format!(
-        "原子修改你拥有的 Mind Context。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。一个 transaction 可以顺序包含多个不同 operation，并且整体成功或整体回滚；例如 (context-tx (base-version 3) (reason \"完成收口\") (revise task (task (status completed))) (create result (tests passed)) (protect task result) (retire event:1 event:2))。create/derive/revise 的 BODY 必须恰好是一个 SExpr；多个字段应包在同一个 List 中，例如 (create task (task (goal x) (status active)))。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/unprotect 必须提供；不要把 reason 放进操作参数。Context 修改不是给用户的最终回复。"
+        "原子修改你拥有的 Mind Context。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。一个 transaction 可以顺序包含多个不同 operation，并且整体成功或整体回滚；例如 (context-tx (base-version 3) (reason \"完成收口\") (revise task (task (status completed))) (derive result (from test-output) (tests passed)) (relate result supersedes old-result) (protect task result) (retire event:1 event:2))。create/derive/revise 的 BODY 必须恰好是一个 SExpr；多个字段应包在同一个 List 中。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/unprotect/unrelate 必须提供；不要把 reason 放进操作参数。Context 修改不是给用户的最终回复。"
     )
 }
 
@@ -97,6 +107,16 @@ pub struct ContextFrame {
     pub updated_version: u64,
 }
 
+/// Agent 主动声明的语义关系。Runtime 只特别解释 `supersedes` 的新旧含义，
+/// 其他 relation 名称保持开放，不擅自做业务推理。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextRelation {
+    pub subject: String,
+    pub relation: String,
+    pub object: String,
+    pub created_version: u64,
+}
+
 /// Agent 拥有的 Mind 持久状态。
 ///
 /// `retired` 同时可以包含 frame ID 和 Event Ledger 中的 observation ID。
@@ -105,6 +125,8 @@ pub struct ContextFrame {
 pub struct MindState {
     pub version: u64,
     pub frames: Vec<ContextFrame>,
+    #[serde(default)]
+    pub relations: Vec<ContextRelation>,
     pub retired: BTreeSet<String>,
     pub protected: BTreeSet<String>,
 }
@@ -128,14 +150,50 @@ pub struct ContextCommit {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextObservation {
     pub id: String,
+    pub sequence: u64,
+    pub turn: usize,
+    pub attempt: Option<usize>,
+    pub caused_by: Option<String>,
     pub kind: String,
     pub topic: String,
     pub actor: String,
     pub timestamp: String,
     pub preview: String,
     pub truncated: bool,
+    pub representation: String,
+    pub visible_chars: usize,
+    pub total_chars: usize,
+    pub retrievable: bool,
     pub protected: bool,
     pub tool_name: Option<String>,
+    pub resource: Option<ContextResource>,
+    pub freshness: ContextFreshness,
+    pub usage: ContextUsage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextResource {
+    pub kind: String,
+    pub key: String,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextFreshness {
+    pub latest: Option<bool>,
+    pub supersedes: Vec<String>,
+    pub superseded_by: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextUsage {
+    pub recall_count_total: usize,
+    pub recall_count_recent: usize,
+    pub last_recalled_sequence: Option<u64>,
+    pub reference_count_total: usize,
+    pub reference_count_recent: usize,
+    pub last_referenced_sequence: Option<u64>,
+    pub referenced_by_active_frames: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,6 +259,15 @@ impl ContextEngine {
         }
     }
 
+    /// Maximum event-text slice that a recall result can deliver without its
+    /// JSON envelope being preview-truncated again by this Context engine.
+    pub(crate) fn recall_chunk_chars(&self) -> usize {
+        self.config
+            .observation_preview_chars
+            .saturating_sub(512)
+            .clamp(4_000, 20_000)
+    }
+
     pub async fn apply_transaction(
         &self,
         session_id: &str,
@@ -256,6 +323,7 @@ impl ContextEngine {
     pub async fn build_view(&self, session_id: &str) -> Result<ContextView, DynError> {
         let events = self.session_events(session_id).await?;
         let state = load_mind_from_events(&events)?;
+        let metadata = observation_metadata(&events, &state);
         let parent_session_id = events.iter().find_map(|event| {
             event
                 .payload
@@ -268,7 +336,13 @@ impl ContextEngine {
             .iter()
             .filter(|event| is_observation(event))
             .filter(|event| !state.retired.contains(&event.id))
-            .map(|event| self.to_observation(event, &state))
+            .map(|event| {
+                self.to_observation(
+                    event,
+                    &state,
+                    metadata.get(&event.id).cloned().unwrap_or_default(),
+                )
+            })
             .collect::<Vec<_>>();
 
         let active_frames = state
@@ -282,7 +356,7 @@ impl ContextEngine {
             .sum::<usize>()
             + observations
                 .iter()
-                .map(|observation| estimate_text_tokens(&observation.preview) + 64)
+                .map(|observation| estimate_text_tokens(&observation.preview) + 128)
                 .sum::<usize>()
             + 1_000; // Kernel、DSL contract 与工具定义的保守固定开销
         let pressure = pressure_for(
@@ -379,25 +453,290 @@ impl ContextEngine {
         Ok(events)
     }
 
-    fn to_observation(&self, event: &Event, state: &MindState) -> ContextObservation {
+    fn to_observation(
+        &self,
+        event: &Event,
+        state: &MindState,
+        metadata: ObservationMetadata,
+    ) -> ContextObservation {
         let text = event_text(event);
-        let (preview, truncated) = preview_text(&text, self.config.observation_preview_chars);
+        let total_chars = text.chars().count();
+        let full_recall_chunk = event
+            .payload
+            .get("tool_name")
+            .and_then(|value| value.as_str())
+            == Some("recall")
+            && serde_json::from_str::<serde_json::Value>(&text)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("context_delivery")
+                        .and_then(|marker| marker.as_str())
+                        .map(ToOwned::to_owned)
+                })
+                .as_deref()
+                == Some("full-event-chunk");
+        let (preview, truncated) = if full_recall_chunk {
+            (text, false)
+        } else {
+            preview_text(&text, self.config.observation_preview_chars)
+        };
+        let visible_chars = preview.chars().count();
+        let representation = if full_recall_chunk {
+            "recalled-chunk"
+        } else if truncated {
+            "preview"
+        } else {
+            "full"
+        };
         ContextObservation {
             id: event.id.clone(),
+            sequence: metadata.sequence,
+            turn: metadata.turn,
+            attempt: metadata.attempt,
+            caused_by: metadata.caused_by,
             kind: event.event_type.clone(),
             topic: event.topic.clone(),
             actor: event.actor.clone(),
             timestamp: event.timestamp.to_rfc3339(),
             preview,
             truncated,
+            representation: representation.to_string(),
+            visible_chars,
+            total_chars,
+            retrievable: true,
             protected: state.protected.contains(&event.id),
             tool_name: event
                 .payload
                 .get("tool_name")
                 .and_then(|value| value.as_str())
                 .map(ToOwned::to_owned),
+            resource: metadata.resource,
+            freshness: metadata.freshness,
+            usage: metadata.usage,
         }
     }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ObservationMetadata {
+    sequence: u64,
+    turn: usize,
+    attempt: Option<usize>,
+    caused_by: Option<String>,
+    resource: Option<ContextResource>,
+    freshness: ContextFreshness,
+    usage: ContextUsage,
+}
+
+type ResourceVersions = BTreeMap<(String, String), Vec<(String, u64, Option<String>)>>;
+
+fn observation_metadata(
+    events: &[Event],
+    state: &MindState,
+) -> HashMap<String, ObservationMetadata> {
+    let mut event_turns = HashMap::new();
+    let mut attempt_ids = HashMap::new();
+    let mut current_turn = 0usize;
+    let mut current_attempt = 0usize;
+    for event in events {
+        if event.event_type == TYPE_USER_MESSAGE {
+            current_turn += 1;
+            current_attempt = 0;
+        }
+        if event.topic == "chat/assistant_call" {
+            current_attempt += 1;
+            if let Some(attempt_id) = event
+                .payload
+                .get("attempt_id")
+                .and_then(|value| value.as_str())
+            {
+                attempt_ids.insert(attempt_id.to_string(), current_attempt);
+            }
+        }
+        event_turns.insert(event.id.clone(), current_turn);
+    }
+
+    let latest_turn = current_turn;
+    let mut metadata = events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| is_observation(event))
+        .map(|(index, event)| {
+            let sequence = event.sequence.unwrap_or((index + 1) as u64);
+            let attempt = event
+                .payload
+                .get("attempt_id")
+                .and_then(|value| value.as_str())
+                .and_then(|id| attempt_ids.get(id).copied());
+            let caused_by = ["source_event_id", "tool_call_id", "attempt_id"]
+                .iter()
+                .find_map(|key| {
+                    event
+                        .payload
+                        .get(*key)
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned)
+                });
+            (
+                event.id.clone(),
+                ObservationMetadata {
+                    sequence,
+                    turn: event_turns.get(&event.id).copied().unwrap_or(0),
+                    attempt,
+                    caused_by,
+                    resource: context_resource(event),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    for relation in &state.relations {
+        if relation.relation != "supersedes" {
+            continue;
+        }
+        if let Some(subject) = metadata.get_mut(&relation.subject) {
+            subject.freshness.latest.get_or_insert(true);
+            subject.freshness.supersedes.push(relation.object.clone());
+        }
+        if let Some(object) = metadata.get_mut(&relation.object) {
+            object.freshness.latest = Some(false);
+            object
+                .freshness
+                .superseded_by
+                .push(relation.subject.clone());
+        }
+    }
+
+    let mut resources = ResourceVersions::new();
+    for (id, item) in &metadata {
+        if state.retired.contains(id) {
+            continue;
+        }
+        if let Some(resource) = &item.resource {
+            resources
+                .entry((resource.kind.clone(), resource.key.clone()))
+                .or_default()
+                .push((id.clone(), item.sequence, resource.version.clone()));
+        }
+    }
+    for entries in resources.values_mut() {
+        entries.sort_by_key(|(_, sequence, _)| *sequence);
+        let Some((latest_id, _, latest_version)) = entries.last().cloned() else {
+            continue;
+        };
+        if let Some(latest) = metadata.get_mut(&latest_id) {
+            latest.freshness.latest = Some(true);
+        }
+        for (id, _, version) in entries.iter().take(entries.len().saturating_sub(1)) {
+            if version == &latest_version {
+                continue;
+            }
+            if let Some(older) = metadata.get_mut(id) {
+                older.freshness.latest = Some(false);
+                if !older.freshness.superseded_by.contains(&latest_id) {
+                    older.freshness.superseded_by.push(latest_id.clone());
+                }
+            }
+        }
+    }
+
+    let mut usage = HashMap::<String, ContextUsage>::new();
+    for (index, event) in events.iter().enumerate() {
+        let sequence = event.sequence.unwrap_or((index + 1) as u64);
+        let event_turn = event_turns.get(&event.id).copied().unwrap_or(0);
+        let recent = event_turn.saturating_add(2) >= latest_turn;
+        if event.event_type == TYPE_TOOL_OUTPUT
+            && event
+                .payload
+                .get("tool_name")
+                .and_then(|value| value.as_str())
+                == Some("recall")
+        {
+            let recalled_id = event
+                .payload
+                .get("text")
+                .and_then(|value| value.as_str())
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+                .and_then(|value| {
+                    value
+                        .get("event_id")
+                        .and_then(|id| id.as_str())
+                        .map(ToOwned::to_owned)
+                });
+            if let Some(recalled_id) = recalled_id {
+                let item = usage.entry(recalled_id).or_default();
+                item.recall_count_total += 1;
+                item.recall_count_recent += usize::from(recent);
+                item.last_recalled_sequence = Some(sequence);
+            }
+        }
+        if event.event_type == TYPE_CONTEXT_TRANSACTION
+            && event.topic == "chat/context_tx_committed"
+        {
+            let parsed = event
+                .payload
+                .get("transaction")
+                .and_then(|value| value.as_str())
+                .and_then(|transaction| parse_transaction(transaction).ok());
+            if let Some(parsed) = parsed {
+                for source in transaction_sources(&parsed) {
+                    let item = usage.entry(source).or_default();
+                    item.reference_count_total += 1;
+                    item.reference_count_recent += usize::from(recent);
+                    item.last_referenced_sequence = Some(sequence);
+                }
+            }
+        }
+    }
+    for frame in state
+        .frames
+        .iter()
+        .filter(|frame| !state.retired.contains(&frame.id))
+    {
+        for source in &frame.sources {
+            usage
+                .entry(source.clone())
+                .or_default()
+                .referenced_by_active_frames += 1;
+        }
+    }
+    for (id, item) in usage {
+        if let Some(target) = metadata.get_mut(&id) {
+            target.usage = item;
+        }
+    }
+    metadata
+}
+
+fn transaction_sources(transaction: &ParsedTransaction) -> Vec<String> {
+    transaction
+        .operations
+        .iter()
+        .filter_map(|operation| as_list(operation, "context operation").ok())
+        .filter(|operation| {
+            operation
+                .first()
+                .and_then(|item| as_atom(item, "operation").ok())
+                .is_some_and(|name| name == "derive" || name == "revise")
+        })
+        .filter_map(|operation| operation.get(2))
+        .filter_map(|item| parse_sources(item).ok())
+        .flatten()
+        .collect()
+}
+
+fn context_resource(event: &Event) -> Option<ContextResource> {
+    let value = event.payload.get("context_resource")?.as_object()?;
+    Some(ContextResource {
+        kind: value.get("kind")?.as_str()?.to_string(),
+        key: value.get("key")?.as_str()?.to_string(),
+        version: value
+            .get("version")
+            .and_then(|version| version.as_str())
+            .map(ToOwned::to_owned),
+    })
 }
 
 fn parse_transaction(input: &str) -> Result<ParsedTransaction, String> {
@@ -619,9 +958,58 @@ fn apply_parsed_transaction(
                 place_frame(&mut next, id, &op[2])?;
                 changes.push(change("place", id, Some(op[2].to_string())));
             }
+            "relate" | "unrelate" => {
+                require_len(
+                    op,
+                    4,
+                    "(relate SUBJECT RELATION OBJECT) / (unrelate SUBJECT RELATION OBJECT)",
+                )?;
+                if name == "unrelate" && tx.reason.is_none() {
+                    return Err(
+                        "unrelate 会撤销既有语义关系，transaction 必须提供 (reason \"...\")"
+                            .to_string(),
+                    );
+                }
+                let subject = validated_id(atom_at(op, 1, "relation subject")?)?;
+                let relation = validated_id(atom_at(op, 2, "relation name")?)?;
+                let object = validated_id(atom_at(op, 3, "relation object")?)?;
+                ensure_known(&next, observation_ids, subject)?;
+                ensure_known(&next, observation_ids, object)?;
+                let existing = next.relations.iter().position(|candidate| {
+                    candidate.subject == subject
+                        && candidate.relation == relation
+                        && candidate.object == object
+                });
+                if name == "relate" {
+                    if existing.is_some() {
+                        return Err(format!(
+                            "关系 '{} {} {}' 已存在，无需重复建立",
+                            subject, relation, object
+                        ));
+                    }
+                    next.relations.push(ContextRelation {
+                        subject: subject.to_string(),
+                        relation: relation.to_string(),
+                        object: object.to_string(),
+                        created_version: next_version,
+                    });
+                } else if let Some(index) = existing {
+                    next.relations.remove(index);
+                } else {
+                    return Err(format!(
+                        "关系 '{} {} {}' 不存在，无法撤销",
+                        subject, relation, object
+                    ));
+                }
+                changes.push(change(
+                    name,
+                    subject,
+                    Some(format!("{} {}", relation, object)),
+                ));
+            }
             other => {
                 return Err(format!(
-                    "未知 Context 原语 '{}'。v1 支持 create/derive/revise/retire/restore/protect/unprotect/place",
+                    "未知 Context 原语 '{}'。v3 支持 create/derive/revise/retire/restore/protect/unprotect/place/relate/unrelate",
                     other
                 ));
             }
@@ -763,22 +1151,70 @@ fn render_context(
             "sources",
             frame.sources.iter().map(atom).collect::<Vec<SExpr>>(),
         );
-        mind.push(list(
-            "frame",
-            vec![
-                pair("id", atom(&frame.id)),
-                pair("revision", atom(frame.revision.to_string())),
-                pair(
-                    "protected",
-                    atom(if state.protected.contains(&frame.id) {
-                        "true"
-                    } else {
-                        "false"
-                    }),
+        let mut fields = vec![
+            pair("id", atom(&frame.id)),
+            pair("revision", atom(frame.revision.to_string())),
+            pair("created-version", atom(frame.created_version.to_string())),
+            pair("updated-version", atom(frame.updated_version.to_string())),
+            pair(
+                "protected",
+                atom(if state.protected.contains(&frame.id) {
+                    "true"
+                } else {
+                    "false"
+                }),
+            ),
+            sources,
+            pair("body", body),
+        ];
+        let freshness = freshness_for_id(state, &frame.id);
+        if freshness.latest.is_some()
+            || !freshness.supersedes.is_empty()
+            || !freshness.superseded_by.is_empty()
+        {
+            fields.insert(5, render_freshness(&freshness));
+        }
+        let active_references = state
+            .frames
+            .iter()
+            .filter(|candidate| !state.retired.contains(&candidate.id))
+            .filter(|candidate| candidate.sources.contains(&frame.id))
+            .count();
+        if active_references > 0 {
+            fields.insert(
+                5,
+                list(
+                    "usage",
+                    vec![pair(
+                        "referenced-by-active-frames",
+                        atom(active_references.to_string()),
+                    )],
                 ),
-                sources,
-                pair("body", body),
-            ],
+            );
+        }
+        mind.push(list("frame", fields));
+    }
+    if !state.relations.is_empty() {
+        mind.push(list(
+            "relations",
+            state
+                .relations
+                .iter()
+                .map(|relation| {
+                    list(
+                        "relation",
+                        vec![
+                            pair("subject", atom(&relation.subject)),
+                            pair("type", atom(&relation.relation)),
+                            pair("object", atom(&relation.object)),
+                            pair(
+                                "created-version",
+                                atom(relation.created_version.to_string()),
+                            ),
+                        ],
+                    )
+                })
+                .collect(),
         ));
     }
 
@@ -786,6 +1222,8 @@ fn render_context(
     for observation in observations {
         let mut fields = vec![
             pair("id", atom(&observation.id)),
+            pair("seq", atom(observation.sequence.to_string())),
+            pair("turn", atom(observation.turn.to_string())),
             pair("kind", atom(&observation.kind)),
             pair("topic", atom(&observation.topic)),
             pair("actor", atom(&observation.actor)),
@@ -798,19 +1236,53 @@ fn render_context(
                     "false"
                 }),
             ),
-            pair(
-                "truncated",
-                atom(if observation.truncated {
-                    "true"
-                } else {
-                    "false"
-                }),
+            list(
+                "residency",
+                vec![
+                    pair("state", atom("active")),
+                    pair("representation", atom(&observation.representation)),
+                    pair("visible-chars", atom(observation.visible_chars.to_string())),
+                    pair("total-chars", atom(observation.total_chars.to_string())),
+                    pair(
+                        "retrievable",
+                        atom(if observation.retrievable {
+                            "true"
+                        } else {
+                            "false"
+                        }),
+                    ),
+                ],
             ),
             pair("full-ref", atom(&observation.id)),
             pair("preview", atom(&observation.preview)),
         ];
+        if let Some(attempt) = observation.attempt {
+            fields.insert(3, pair("attempt", atom(attempt.to_string())));
+        }
+        if let Some(caused_by) = &observation.caused_by {
+            fields.insert(4, pair("caused-by", atom(caused_by)));
+        }
         if let Some(tool_name) = &observation.tool_name {
-            fields.insert(3, pair("tool", atom(tool_name)));
+            fields.insert(5, pair("tool", atom(tool_name)));
+        }
+        if let Some(resource) = &observation.resource {
+            let mut resource_fields = vec![
+                pair("kind", atom(&resource.kind)),
+                pair("key", atom(&resource.key)),
+            ];
+            if let Some(version) = &resource.version {
+                resource_fields.push(pair("version", atom(version)));
+            }
+            fields.push(list("resource", resource_fields));
+        }
+        if observation.freshness.latest.is_some()
+            || !observation.freshness.supersedes.is_empty()
+            || !observation.freshness.superseded_by.is_empty()
+        {
+            fields.push(render_freshness(&observation.freshness));
+        }
+        if observation.usage != ContextUsage::default() {
+            fields.push(render_usage(&observation.usage));
         }
         inbox.push(list("observation", fields));
     }
@@ -823,6 +1295,69 @@ fn render_context(
         SExpr::List(inbox),
     ])
     .to_string()
+}
+
+fn freshness_for_id(state: &MindState, id: &str) -> ContextFreshness {
+    let mut freshness = ContextFreshness::default();
+    for relation in &state.relations {
+        if relation.relation != "supersedes" {
+            continue;
+        }
+        if relation.subject == id {
+            freshness.latest.get_or_insert(true);
+            freshness.supersedes.push(relation.object.clone());
+        }
+        if relation.object == id {
+            freshness.latest = Some(false);
+            freshness.superseded_by.push(relation.subject.clone());
+        }
+    }
+    freshness
+}
+
+fn render_freshness(freshness: &ContextFreshness) -> SExpr {
+    let mut fields = Vec::new();
+    if let Some(latest) = freshness.latest {
+        fields.push(pair("latest", atom(if latest { "true" } else { "false" })));
+    }
+    if !freshness.supersedes.is_empty() {
+        fields.push(list(
+            "supersedes",
+            freshness.supersedes.iter().map(atom).collect(),
+        ));
+    }
+    if !freshness.superseded_by.is_empty() {
+        fields.push(list(
+            "superseded-by",
+            freshness.superseded_by.iter().map(atom).collect(),
+        ));
+    }
+    list("freshness", fields)
+}
+
+fn render_usage(usage: &ContextUsage) -> SExpr {
+    let mut fields = Vec::new();
+    for (name, value) in [
+        ("recall-count-total", usage.recall_count_total),
+        ("recall-count-recent", usage.recall_count_recent),
+        ("reference-count-total", usage.reference_count_total),
+        ("reference-count-recent", usage.reference_count_recent),
+        (
+            "referenced-by-active-frames",
+            usage.referenced_by_active_frames,
+        ),
+    ] {
+        if value > 0 {
+            fields.push(pair(name, atom(value.to_string())));
+        }
+    }
+    if let Some(sequence) = usage.last_recalled_sequence {
+        fields.push(pair("last-recalled-seq", atom(sequence.to_string())));
+    }
+    if let Some(sequence) = usage.last_referenced_sequence {
+        fields.push(pair("last-referenced-seq", atom(sequence.to_string())));
+    }
+    list("usage", fields)
 }
 
 fn render_protocol() -> SExpr {
@@ -845,14 +1380,43 @@ fn render_protocol() -> SExpr {
         vec![
             pair("version", atom(CONTEXT_PROTOCOL_VERSION.to_string())),
             list(
+                "metadata-semantics",
+                vec![
+                    pair("seq", atom("全局稳定顺序号；越大表示越晚写入 Ledger")),
+                    pair("turn", atom("所属用户回合；用于区分近期与历史")),
+                    pair("attempt", atom("所属模型执行尝试")),
+                    pair("caused-by", atom("产生本 observation 的调用或事件")),
+                    pair(
+                        "residency",
+                        atom("当前可见状态：full 全文、preview 预览、recalled-chunk 召回片段"),
+                    ),
+                    pair(
+                        "freshness",
+                        atom("新旧关系；latest 只表示较新，不自动代表更正确"),
+                    ),
+                    pair(
+                        "usage",
+                        atom("只统计主动 recall 与 from 语义引用；被动展示不算有效使用"),
+                    ),
+                    pair(
+                        "resource",
+                        atom("工具可选提供的通用资源 kind/key/version；不限定为代码文件"),
+                    ),
+                ],
+            ),
+            list(
                 "response-contract",
                 vec![
                     list(
                         "reply",
                         vec![
                             pair("when", atom("当前用户任务已经完成，或必须向用户说明阻塞")),
-                            pair("tool-calls", atom("none")),
+                            pair("tool-calls", atom("none | one context_tx sidecar")),
                             pair("content", atom("直接交付给用户的最终答复")),
+                            pair(
+                                "sidecar-result",
+                                atom("Runtime 执行后直接发布正文，不因回执再次唤醒"),
+                            ),
                             list(
                                 "preflight",
                                 vec![
@@ -875,7 +1439,10 @@ fn render_protocol() -> SExpr {
                         "act",
                         vec![
                             pair("when", atom("完成当前用户任务确实还需要新的外部结果")),
-                            pair("tool-calls", atom("physical-tools")),
+                            pair(
+                                "tool-calls",
+                                atom("physical-tools + optional independent context_tx sidecar"),
+                            ),
                             pair("content", atom("控制轨迹，不是最终答复")),
                             pair(
                                 "scope",
@@ -886,12 +1453,15 @@ fn render_protocol() -> SExpr {
                     list(
                         "maintain",
                         vec![
-                            pair("when", atom("需要修改自己的 Mind")),
+                            pair(
+                                "when",
+                                atom("需要先修改 Mind；normal/notice 不得仅为降低体积而维护"),
+                            ),
                             pair("tool", atom("context_tx")),
-                            pair("content", atom("事务调用不是最终答复")),
+                            pair("content", atom("empty; 事务调用不是最终答复")),
                             pair(
                                 "after-commit",
-                                atom("若任务已经完成，下一次响应必须使用 reply，不再调用工具"),
+                                atom("Runtime 必定再次调用；非 critical 时冷却 context_tx，必须 reply 或 act"),
                             ),
                         ],
                     ),
@@ -916,7 +1486,11 @@ fn render_protocol() -> SExpr {
                         "compound-example",
                         atom("(context-tx (base-version 3) (reason \"完成收口\") (revise task (task (status completed))) (create result (tests passed)) (protect task result) (retire event:1 event:2))"),
                     ),
-                    pair("reason-required-for", atom("retire unprotect")),
+                    pair("reason-required-for", atom("retire unprotect unrelate")),
+                    pair(
+                        "relation-policy",
+                        atom("Runtime 只解释 supersedes 的新旧关系；其他 relation 保持 Agent 语义"),
+                    ),
                     list("operations", operations),
                 ],
             ),
@@ -1136,6 +1710,8 @@ fn is_observation(event: &Event) -> bool {
     if event.topic == "chat/assistant_call"
         || event.topic == "chat/context_inspect"
         || event.topic == "chat/context_tx_committed"
+        || event.topic == "chat/runtime_error"
+        || event.topic.starts_with("runtime/")
     {
         return false;
     }
@@ -1502,7 +2078,7 @@ mod tests {
         let parsed = parse(&rendered).unwrap();
         assert_eq!(
             parsed.get_path(&["protocol", "version"]),
-            Some(&SExpr::Atom("1".to_string()))
+            Some(&SExpr::Atom("3".to_string()))
         );
         assert_eq!(
             parsed.get_path(&["kernel", "version"]),
@@ -1660,13 +2236,55 @@ mod tests {
             "Executor".to_string(),
             TYPE_TOOL_OUTPUT.to_string(),
             "chat/tool_output".to_string(),
-            vec![("tool_name".to_string(), json!("context_tx"))]
-                .into_iter()
-                .collect(),
+            vec![
+                ("tool_name".to_string(), json!("context_tx")),
+                ("text".to_string(), json!(r#"{"status":"committed"}"#)),
+            ]
+            .into_iter()
+            .collect(),
         );
-        let receipt = wake_for(&[user, context_output]);
+        let receipt = wake_for(&[user.clone(), context_output]);
         assert_eq!(receipt.cause, "context-transaction-result");
         assert!(!receipt.visible_in_inbox);
+
+        let failure = Event::new(
+            "output:context-failure".to_string(),
+            "Executor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![
+                ("tool_name".to_string(), json!("context_tx")),
+                ("text".to_string(), json!("执行失败: stale version")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let failure_wake = wake_for(&[user.clone(), failure]);
+        assert_eq!(failure_wake.cause, "context-transaction-result");
+        assert!(failure_wake.visible_in_inbox);
+
+        let policy = Event::new(
+            "output:context-policy".to_string(),
+            "Executor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![
+                ("tool_name".to_string(), json!("context_tx")),
+                (
+                    "context_tx_status".to_string(),
+                    json!("attachment-required"),
+                ),
+                (
+                    "text".to_string(),
+                    json!("执行拒绝: CONTEXT_TX_ATTACHMENT_REQUIRED"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let policy_wake = wake_for(&[user, policy]);
+        assert_eq!(policy_wake.cause, "context-transaction-result");
+        assert!(policy_wake.visible_in_inbox);
     }
 
     #[test]
@@ -1713,6 +2331,230 @@ mod tests {
         assert!(truncated);
         assert!(preview.starts_with("abc"));
         assert!(preview.ends_with("hij"));
+    }
+
+    #[test]
+    fn supersedes_relation_marks_freshness_without_deleting_history() {
+        let old = Event::new(
+            "config:old".to_string(),
+            "Tool".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![
+                ("tool_name".to_string(), json!("configuration")),
+                ("text".to_string(), json!("port=8080")),
+                (
+                    "context_resource".to_string(),
+                    json!({"kind":"configuration", "key":"service-port", "version":"v1"}),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let new = Event::new(
+            "config:new".to_string(),
+            "Tool".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![
+                ("tool_name".to_string(), json!("configuration")),
+                ("text".to_string(), json!("port=9090")),
+                (
+                    "context_resource".to_string(),
+                    json!({"kind":"configuration", "key":"service-port", "version":"v2"}),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let tx = parse_transaction(
+            "(context-tx (base-version 0) (relate config:new supersedes config:old))",
+        )
+        .unwrap();
+        let ids = observations(&["config:old", "config:new"]);
+        let (state, _) = apply_parsed_transaction(&MindState::default(), &tx, &ids).unwrap();
+        let metadata = observation_metadata(&[old, new], &state);
+
+        assert_eq!(metadata["config:new"].freshness.latest, Some(true));
+        assert_eq!(metadata["config:old"].freshness.latest, Some(false));
+        assert_eq!(
+            metadata["config:old"].freshness.superseded_by,
+            vec!["config:new"]
+        );
+        assert!(!state.retired.contains("config:old"));
+
+        let remove = parse_transaction(
+            "(context-tx (base-version 1) (reason \"关系判断已撤销\") (unrelate config:new supersedes config:old))",
+        )
+        .unwrap();
+        let (state, _) = apply_parsed_transaction(&state, &remove, &ids).unwrap();
+        assert!(state.relations.is_empty());
+    }
+
+    #[test]
+    fn usage_counts_only_active_recall_and_semantic_sources() {
+        let source = Event::new(
+            "evidence:1".to_string(),
+            "Tool".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![
+                ("tool_name".to_string(), json!("source")),
+                ("text".to_string(), json!("important evidence")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let recall = Event::new(
+            "recall:1".to_string(),
+            "System-Executor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![
+                ("tool_name".to_string(), json!("recall")),
+                (
+                    "text".to_string(),
+                    json!(
+                        json!({"event_id":"evidence:1", "text":"important evidence"}).to_string()
+                    ),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let transaction =
+            "(context-tx (base-version 0) (derive finding (from evidence:1) (fact verified)))";
+        let committed = Event::new(
+            "context:1".to_string(),
+            "Agent-Context".to_string(),
+            TYPE_CONTEXT_TRANSACTION.to_string(),
+            "chat/context_tx_committed".to_string(),
+            vec![("transaction".to_string(), json!(transaction))]
+                .into_iter()
+                .collect(),
+        );
+        let mut state = MindState::default();
+        state.frames.push(ContextFrame {
+            id: "finding".to_string(),
+            body: "(fact verified)".to_string(),
+            sources: vec!["evidence:1".to_string()],
+            revision: 1,
+            created_version: 1,
+            updated_version: 1,
+        });
+        let metadata = observation_metadata(&[source, recall, committed], &state);
+        let usage = &metadata["evidence:1"].usage;
+        assert_eq!(usage.recall_count_total, 1);
+        assert_eq!(usage.reference_count_total, 1);
+        assert_eq!(usage.referenced_by_active_frames, 1);
+
+        let merely_present = Event::new(
+            "evidence:2".to_string(),
+            "Tool".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![("text".to_string(), json!("only shown"))]
+                .into_iter()
+                .collect(),
+        );
+        let metadata = observation_metadata(&[merely_present], &MindState::default());
+        assert_eq!(metadata["evidence:2"].usage, ContextUsage::default());
+    }
+
+    #[test]
+    fn chronology_and_causality_are_runtime_facts() {
+        let mut user = Event::new(
+            "user:1".to_string(),
+            "User".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::Map::new(),
+        );
+        user.sequence = Some(41);
+        let call = Event::new(
+            "call:1".to_string(),
+            "Agent-Morphz".to_string(),
+            TYPE_AGENT_CALL.to_string(),
+            "chat/assistant_call".to_string(),
+            vec![("attempt_id".to_string(), json!("attempt:1"))]
+                .into_iter()
+                .collect(),
+        );
+        let mut output = Event::new(
+            "output:1".to_string(),
+            "System-Executor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![
+                ("attempt_id".to_string(), json!("attempt:1")),
+                ("tool_call_id".to_string(), json!("tool-call:1")),
+                ("text".to_string(), json!("result")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        output.sequence = Some(43);
+
+        let metadata = observation_metadata(&[user, call, output], &MindState::default());
+        assert_eq!(metadata["output:1"].sequence, 43);
+        assert_eq!(metadata["output:1"].turn, 1);
+        assert_eq!(metadata["output:1"].attempt, Some(1));
+        assert_eq!(
+            metadata["output:1"].caused_by.as_deref(),
+            Some("tool-call:1")
+        );
+    }
+
+    #[test]
+    fn legacy_mind_state_without_relations_remains_readable() {
+        let state: MindState = serde_json::from_value(json!({
+            "version": 2,
+            "frames": [],
+            "retired": [],
+            "protected": []
+        }))
+        .unwrap();
+        assert_eq!(state.version, 2);
+        assert!(state.relations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn event_recall_chunks_are_not_previewed_a_second_time() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("recall-preview.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        let config = OrchestratorConfig {
+            observation_preview_chars: 1_200,
+            ..Default::default()
+        };
+        let engine = ContextEngine::new(store, config);
+        assert_eq!(engine.recall_chunk_chars(), 4_000);
+
+        let text = serde_json::json!({
+            "context_delivery": "full-event-chunk",
+            "event_id": "source-event",
+            "text": "x".repeat(1_500),
+        })
+        .to_string();
+        let event = Event::new(
+            "recall-output".to_string(),
+            "System-Executor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![
+                ("tool_name".to_string(), json!("recall")),
+                ("text".to_string(), json!(text)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let observation = engine.to_observation(
+            &event,
+            &MindState::default(),
+            ObservationMetadata::default(),
+        );
+        assert!(!observation.truncated);
+        assert!(observation.preview.contains(&"x".repeat(1_500)));
     }
 
     #[test]

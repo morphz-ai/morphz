@@ -14,9 +14,11 @@ Coding Tools v1 提供 `list_files/search/read/edit/write/exec` 最小开发闭�
 
 真实 Coding Agent 测试使用独立 fixture、数据库、Artifact 目录和 macOS Seatbelt exec 边界；v2 提供多文件重试状态机任务，并在 Agent 不可见的 verifier 副本中注入隐藏测试。创建、探针、固定验证、范围审计与 Ledger 评分见 [Coding Eval Sandbox](docs/morphz_coding_eval_sandbox.md)。
 
-Attempt Runtime 将物理工作与 Context transaction 分开计费，并提供一次 `context_tx`-only 最终收口。复合 transaction 支持多 operation 原子提交；相同的并行 transaction 会去重，不同 transaction 会被拒绝并要求合并。
+Attempt Runtime 将物理工作与 Context transaction 分开计费，并提供一次 `context_tx`-only 最终收口。Protocol v2 支持可选的 `reply/act + context_tx` sidecar；模型也可按标准 Function Calling 习惯单独维护，Runtime 执行后必定再次调用模型，并在非 critical 时暂时隐藏 `context_tx`，确保用户回合继续收敛到 reply/act。复合 transaction 支持多 operation 原子提交。
 
 Context Pressure Eval 使用合成长历史和缩小阈值验证 Agent 自主 `derive/protect/retire`：首次真实运行将 estimated tokens 从 9,177 降至 2,140，并完整保留四项长期事实。设计、命令和结论边界见 [Context Pressure Eval](docs/morphz_context_pressure_eval.md)。
+
+Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估容量、语义保真和维护效率。首次完整运行的 Capacity/Fidelity 通过、Efficiency 未通过：56 条原始历史全部退休且峰值仅 4,491/8,000，但模型发生多事务循环并线性保护批次 Frame。协议、轨迹与下一步见 [Context Long-Run Eval](docs/morphz_context_long_run_eval.md)。
 
 ## 本地启动
 
@@ -27,6 +29,10 @@ Context Pressure Eval 使用合成长历史和缩小阈值验证 Agent 自主 `d
    ```bash
    cargo run -p morphz
    ```
+
+   终端默认按回车发送单行消息。长任务规格可使用显式多行模式：先输入
+   `/multi`，粘贴任意多行正文，再单独输入 `/send` 原子发送；使用
+   `/cancel` 放弃当前多行输入。多行正文中的 `ctx`、`exit` 等文本不会被解释为终端命令。
 
 4. 另一个终端启动 Dashboard：
 

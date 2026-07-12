@@ -6,12 +6,12 @@ use dashmap::DashMap;
 use glob::Pattern;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{OpenOptions, Permissions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use walkdir::WalkDir;
 
@@ -30,7 +30,12 @@ pub trait Tool: Send + Sync {
 }
 
 pub struct Registry {
-    tools: DashMap<String, Arc<dyn Tool>>,
+    tools: RwLock<HashMap<String, RegisteredTool>>,
+}
+
+struct RegisteredTool {
+    tool: Arc<dyn Tool>,
+    definition: ToolDefinition,
 }
 
 impl Default for Registry {
@@ -42,20 +47,34 @@ impl Default for Registry {
 impl Registry {
     pub fn new() -> Self {
         Self {
-            tools: DashMap::new(),
+            tools: RwLock::new(HashMap::new()),
         }
     }
 
     pub fn register(&self, tool: Arc<dyn Tool>) {
-        self.tools.insert(tool.name().to_string(), tool);
+        let name = tool.name().to_string();
+        let definition = tool.definition();
+        self.tools
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(name, RegisteredTool { tool, definition });
     }
 
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        self.tools.get(name).map(|r| Arc::clone(r.value()))
+        self.tools
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(name)
+            .map(|entry| Arc::clone(&entry.tool))
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.tools.iter().map(|r| r.value().definition()).collect()
+        self.tools
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .map(|entry| entry.definition.clone())
+            .collect()
     }
 }
 
@@ -2090,7 +2109,62 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Weak;
     use tempfile::{NamedTempFile, TempDir};
+
+    struct ReplacementDefinitionTool;
+
+    #[async_trait::async_trait]
+    impl Tool for ReplacementDefinitionTool {
+        fn name(&self) -> &str {
+            "reentrant-definition"
+        }
+
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: self.name().to_string(),
+                description: "replacement".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            _arguments: &str,
+        ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(String::new())
+        }
+    }
+
+    struct ReentrantDefinitionTool {
+        registry: Weak<Registry>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for ReentrantDefinitionTool {
+        fn name(&self) -> &str {
+            "reentrant-definition"
+        }
+
+        fn definition(&self) -> ToolDefinition {
+            self.registry
+                .upgrade()
+                .unwrap()
+                .register(Arc::new(ReplacementDefinitionTool));
+            ToolDefinition {
+                name: self.name().to_string(),
+                description: "original".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            }
+        }
+
+        async fn execute(
+            &self,
+            _arguments: &str,
+        ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(String::new())
+        }
+    }
 
     /// 测试用：关闭 workspace jail 与绝对路径限制，允许任意路径访问
     fn permissive_security() -> Arc<ToolSecurityConfig> {
@@ -2121,6 +2195,20 @@ mod tests {
             .and_then(|header| header.split("sha256=").nth(1))
             .and_then(|tail| tail.strip_suffix(']'))
             .expect("read output should contain sha256 header")
+    }
+
+    #[test]
+    fn registry_caches_definitions_without_running_tool_code_during_reads() {
+        let registry = Arc::new(Registry::new());
+        registry.register(Arc::new(ReentrantDefinitionTool {
+            registry: Arc::downgrade(&registry),
+        }));
+
+        let definitions = registry.definitions();
+
+        assert_eq!(definitions.len(), 1);
+        assert_eq!(definitions[0].description, "original");
+        assert_eq!(registry.definitions()[0].description, "original");
     }
 
     #[tokio::test]

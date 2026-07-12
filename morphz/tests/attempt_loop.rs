@@ -33,6 +33,68 @@ struct BudgetProbeClient {
     read_path: String,
 }
 
+struct FailingClient;
+
+struct HangingClient;
+
+struct BlockingClient;
+
+#[async_trait::async_trait]
+impl Client for FailingClient {
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        Err("simulated LLM transport timeout".into())
+    }
+
+    async fn create_embedding(
+        &self,
+        _text: &str,
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for HangingClient {
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        unreachable!("orchestrator deadline must cancel the hanging client")
+    }
+
+    async fn create_embedding(
+        &self,
+        _text: &str,
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Vec::new())
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for BlockingClient {
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        std::thread::sleep(std::time::Duration::from_secs(10));
+        unreachable!("isolated blocking client must not hold the caller task")
+    }
+
+    async fn create_embedding(
+        &self,
+        _text: &str,
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Vec::new())
+    }
+}
+
 #[async_trait::async_trait]
 impl Client for BudgetProbeClient {
     async fn create_completion(
@@ -143,12 +205,27 @@ async fn build_orchestrator(
     Arc<Orchestrator>,
     TempDir,
 ) {
+    let (bus, store, orchestrator, _client, tmp) =
+        build_orchestrator_with_config(responses, morphz::config::OrchestratorConfig::default())
+            .await;
+    (bus, store, orchestrator, tmp)
+}
+
+async fn build_orchestrator_with_config(
+    responses: Vec<Response>,
+    orchestrator_config: morphz::config::OrchestratorConfig,
+) -> (
+    Arc<InMemoryEventBus>,
+    Arc<SqliteStore>,
+    Arc<Orchestrator>,
+    Arc<MockClient>,
+    TempDir,
+) {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("attempt_loop.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     let client = Arc::new(MockClient::new(responses));
-    let orchestrator_config = morphz::config::OrchestratorConfig::default();
     let context_engine = Arc::new(ContextEngine::new(
         Arc::clone(&store) as Arc<dyn EventStore>,
         orchestrator_config.clone(),
@@ -162,13 +239,13 @@ async fn build_orchestrator(
     let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
         Arc::clone(&bus),
         Arc::clone(&store) as Arc<dyn EventStore>,
-        client as Arc<dyn Client>,
+        Arc::clone(&client) as Arc<dyn Client>,
         registry,
         orchestrator_config,
         context_engine,
     ));
     orchestrator.clone().start().await.unwrap();
-    (bus, store, orchestrator, tmp)
+    (bus, store, orchestrator, client, tmp)
 }
 
 async fn publish_user(bus: &Arc<InMemoryEventBus>, session_id: &str, text: &str) {
@@ -244,6 +321,193 @@ async fn test_attempt_loop_no_tool_final_reply() {
 }
 
 #[tokio::test]
+async fn test_llm_failure_is_audited_and_always_replies_to_user() {
+    let session_id = "attempt_llm_failure";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("llm-failure.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(ContextEngine::new(
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        config.clone(),
+    ));
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::new(FailingClient) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    ));
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, session_id, "do work").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    let failures = wait_for_topic(&store, "chat/runtime_error", session_id).await;
+
+    assert_eq!(replies.len(), 1);
+    assert!(replies[0]
+        .payload
+        .get("text")
+        .and_then(|value| value.as_str())
+        .unwrap()
+        .contains("模型请求在重试后仍然失败"));
+    assert_eq!(failures.len(), 1);
+    assert_eq!(
+        failures[0]
+            .payload
+            .get("stage")
+            .and_then(|value| value.as_str()),
+        Some("llm_completion")
+    );
+    assert!(failures[0]
+        .payload
+        .get("error")
+        .and_then(|value| value.as_str())
+        .unwrap()
+        .contains("simulated LLM transport timeout"));
+}
+
+#[tokio::test]
+async fn test_orchestrator_deadline_cancels_hanging_client_and_replies() {
+    let session_id = "attempt_llm_deadline";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("llm-deadline.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    let config = morphz::config::OrchestratorConfig {
+        model_attempt_timeout_secs: 1,
+        ..Default::default()
+    };
+    let engine = Arc::new(ContextEngine::new(
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        config.clone(),
+    ));
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::new(HangingClient) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    ));
+    orchestrator.start().await.unwrap();
+
+    let started = std::time::Instant::now();
+    publish_user(&bus, session_id, "do work").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    let failures = wait_for_topic(&store, "chat/runtime_error", session_id).await;
+    let starts = wait_for_topic(&store, "runtime/model_attempt_started", session_id).await;
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert_eq!(replies.len(), 1);
+    assert_eq!(failures.len(), 1);
+    assert_eq!(starts.len(), 1);
+    assert_eq!(
+        starts[0]
+            .payload
+            .get("deadline_secs")
+            .and_then(|value| value.as_u64()),
+        Some(1)
+    );
+    assert!(failures[0]
+        .payload
+        .get("error")
+        .and_then(|value| value.as_str())
+        .unwrap()
+        .contains("deadline has elapsed"));
+}
+
+#[tokio::test]
+async fn test_orchestrator_deadline_covers_waiting_for_concurrency_permit() {
+    let session_id = "attempt_permit_deadline";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("permit-deadline.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    let client = Arc::new(MockClient::new(vec![Response {
+        content: "must not be called".to_string(),
+        tool_calls: Vec::new(),
+    }]));
+    let config = morphz::config::OrchestratorConfig {
+        concurrency_limit: 1,
+        model_attempt_timeout_secs: 1,
+        ..Default::default()
+    };
+    let engine = Arc::new(ContextEngine::new(
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        config.clone(),
+    ));
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    ));
+    orchestrator.clone().start().await.unwrap();
+    let held_permit = orchestrator
+        .concurrency_semaphore
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
+
+    publish_user(&bus, session_id, "do work").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    let failures = wait_for_topic(&store, "chat/runtime_error", session_id).await;
+
+    assert_eq!(replies.len(), 1);
+    assert_eq!(failures.len(), 1);
+    assert!(client.tools_seen().is_empty());
+    drop(held_permit);
+}
+
+#[tokio::test]
+async fn test_orchestrator_deadline_isolates_synchronously_blocking_client() {
+    let session_id = "attempt_blocking_client";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("blocking-client.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    let config = morphz::config::OrchestratorConfig {
+        model_attempt_timeout_secs: 1,
+        ..Default::default()
+    };
+    let engine = Arc::new(ContextEngine::new(
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        config.clone(),
+    ));
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::new(BlockingClient) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    ));
+    orchestrator.start().await.unwrap();
+
+    let started = std::time::Instant::now();
+    publish_user(&bus, session_id, "do work").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    let failures = wait_for_topic(&store, "chat/runtime_error", session_id).await;
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert_eq!(replies.len(), 1);
+    assert_eq!(failures.len(), 1);
+    assert_eq!(
+        failures[0]
+            .payload
+            .get("stage")
+            .and_then(|value| value.as_str()),
+        Some("llm_completion")
+    );
+}
+
+#[tokio::test]
 async fn test_compiled_context_uses_kernel_mind_inbox_without_legacy_schema() {
     let session_id = "attempt_context_shape";
     let (bus, store, _orc, _tmp) = build_orchestrator(vec![Response {
@@ -272,6 +536,15 @@ async fn test_compiled_context_uses_kernel_mind_inbox_without_legacy_schema() {
     assert!(payload.get("mind").is_some());
     assert!(payload.get("inbox").is_some());
     assert!(payload.get("pressure").is_some());
+    assert_eq!(
+        payload
+            .get("model_attempt_timeout_secs")
+            .and_then(|value| value.as_u64()),
+        Some(180)
+    );
+    let messages = serde_json::to_string(payload.get("messages").unwrap()).unwrap();
+    assert!(messages.contains("相互独立的文件读取必须在同一响应中并行调用"));
+    assert!(messages.contains("sha256 未被 file_change 改变的内容不得重复 read"));
     assert_eq!(
         payload
             .get("wake")
@@ -350,6 +623,261 @@ async fn test_attempt_loop_context_tx_failure_does_not_corrupt_mind() {
 }
 
 #[tokio::test]
+async fn test_reply_with_context_sidecar_commits_and_does_not_wake_again() {
+    let session_id = "attempt_context_sidecar_reply";
+    let (bus, store, orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![Response {
+            content: "任务完成，Context 已在后台收口".to_string(),
+            tool_calls: vec![ToolCallRepr {
+                id: "context-sidecar".to_string(),
+                r#type: "function".to_string(),
+                func_name: "context_tx".to_string(),
+                arguments: json!({
+                    "session_id": session_id,
+                    "transaction": "(context-tx (base-version 0) (reason \"sidecar 收口\") (create result (result (status completed))) (protect result))"
+                })
+                .to_string(),
+            }],
+        }],
+        morphz::config::OrchestratorConfig::default(),
+    )
+    .await;
+
+    publish_user(&bus, session_id, "finish with sidecar").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0]
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str()),
+        Some("任务完成，Context 已在后台收口")
+    );
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    assert_eq!(client.tools_seen().len(), 1);
+    assert_eq!(
+        wait_for_topic(&store, "chat/tool_output", session_id)
+            .await
+            .len(),
+        1
+    );
+    let context = orchestrator
+        .get_current_context_view(session_id)
+        .await
+        .unwrap();
+    assert_eq!(context.state.version, 1);
+    assert!(context.state.protected.contains("result"));
+}
+
+#[tokio::test]
+async fn test_context_only_call_commits_then_cooldown_forces_user_response() {
+    let session_id = "attempt_context_cooldown_reply";
+    let (bus, store, orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "context-only".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: json!({
+                        "session_id": session_id,
+                        "transaction": "(context-tx (base-version 0) (create state (state active)))"
+                    })
+                    .to_string(),
+                }],
+            },
+            Response {
+                content: "维护完成后回复用户".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ],
+        morphz::config::OrchestratorConfig::default(),
+    )
+    .await;
+
+    publish_user(&bus, session_id, "maintain then answer").await;
+    assert_eq!(
+        wait_for_topic(&store, "chat/reply", session_id).await.len(),
+        1
+    );
+    let tools_seen = client.tools_seen();
+    assert_eq!(tools_seen.len(), 2);
+    assert!(tools_seen[0].contains(&"context_tx".to_string()));
+    assert!(!tools_seen[1].contains(&"context_tx".to_string()));
+    let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
+    assert_eq!(outputs.len(), 1);
+    assert_eq!(
+        orchestrator
+            .get_current_context_view(session_id)
+            .await
+            .unwrap()
+            .state
+            .version,
+        1
+    );
+}
+
+#[tokio::test]
+async fn test_failed_context_only_call_keeps_context_tool_for_repair() {
+    let session_id = "attempt_context_failure_repair";
+    let (bus, store, orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "invalid-context".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: json!({
+                        "session_id": session_id,
+                        "transaction": "(context-tx (base-version 0) (retire missing))"
+                    })
+                    .to_string(),
+                }],
+            },
+            Response {
+                content: "修复后完成".to_string(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "repaired-context".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: json!({
+                        "session_id": session_id,
+                        "transaction": "(context-tx (base-version 0) (create repaired (status completed)))"
+                    })
+                    .to_string(),
+                }],
+            },
+        ],
+        morphz::config::OrchestratorConfig::default(),
+    )
+    .await;
+
+    publish_user(&bus, session_id, "repair failed transaction").await;
+    assert_eq!(
+        wait_for_topic(&store, "chat/reply", session_id).await.len(),
+        1
+    );
+    let tools_seen = client.tools_seen();
+    assert_eq!(tools_seen.len(), 2);
+    assert!(tools_seen[1].contains(&"context_tx".to_string()));
+    let context = orchestrator
+        .get_current_context_view(session_id)
+        .await
+        .unwrap();
+    assert_eq!(context.state.version, 1);
+    assert_eq!(context.state.frames[0].id, "repaired");
+}
+
+#[tokio::test]
+async fn test_critical_transaction_that_relieves_pressure_cools_down_next_attempt() {
+    let session_id = "attempt_context_critical_then_cooldown";
+    let config = morphz::config::OrchestratorConfig {
+        context_soft_token_limit: 1_200,
+        context_hard_token_limit: 1_600,
+        context_maintenance_reserve_tokens: 300,
+        ..Default::default()
+    };
+    let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "critical-release".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: json!({
+                        "session_id": session_id,
+                        "transaction": "(context-tx (base-version 0) (reason \"释放 critical 压力\") (retire critical-seed))"
+                    })
+                    .to_string(),
+                }],
+            },
+            Response {
+                content: "压力解除后直接回复".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ],
+        config,
+    )
+    .await;
+    store
+        .append(Event::new(
+            "critical-seed".to_string(),
+            "Synthetic".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![
+                ("session_id".to_string(), json!(session_id)),
+                ("tool_name".to_string(), json!("synthetic")),
+                (
+                    "text".to_string(),
+                    json!("需要在压力解除后退休的一次性中文过程数据。".repeat(20)),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ))
+        .await
+        .unwrap();
+
+    publish_user(&bus, session_id, "relieve critical pressure").await;
+    assert_eq!(
+        wait_for_topic(&store, "chat/reply", session_id).await.len(),
+        1
+    );
+    let tools_seen = client.tools_seen();
+    assert_eq!(tools_seen.len(), 2);
+    assert_eq!(tools_seen[0], vec!["context_tx"]);
+    assert!(!tools_seen[1].contains(&"context_tx".to_string()));
+}
+
+#[tokio::test]
+async fn test_critical_pressure_does_not_cool_down_context_tool() {
+    let session_id = "attempt_context_critical_no_cooldown";
+    let config = morphz::config::OrchestratorConfig {
+        context_soft_token_limit: 100,
+        context_hard_token_limit: 200,
+        context_maintenance_reserve_tokens: 20,
+        ..Default::default()
+    };
+    let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "critical-context".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: json!({
+                        "session_id": session_id,
+                        "transaction": "(context-tx (base-version 0) (create checkpoint (status partial)))"
+                    })
+                    .to_string(),
+                }],
+            },
+            Response {
+                content: "仍处于 critical，可以继续维护".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ],
+        config,
+    )
+    .await;
+
+    publish_user(&bus, session_id, "critical maintenance").await;
+    assert_eq!(
+        wait_for_topic(&store, "chat/reply", session_id).await.len(),
+        1
+    );
+    let tools_seen = client.tools_seen();
+    assert_eq!(tools_seen.len(), 2);
+    assert_eq!(tools_seen[0], vec!["context_tx"]);
+    assert_eq!(tools_seen[1], vec!["context_tx"]);
+}
+
+#[tokio::test]
 async fn test_identical_context_transactions_are_normalized_and_deduplicated() {
     let session_id = "attempt_duplicate_context_tx";
     let transaction = |id: &str| ToolCallRepr {
@@ -362,20 +890,14 @@ async fn test_identical_context_transactions_are_normalized_and_deduplicated() {
         })
         .to_string(),
     };
-    let (bus, store, orchestrator, _tmp) = build_orchestrator(vec![
-        Response {
-            content: String::new(),
-            tool_calls: vec![
-                transaction("context-1"),
-                transaction("context-2"),
-                transaction("context-3"),
-            ],
-        },
-        Response {
-            content: "只执行一个 Context transaction".to_string(),
-            tool_calls: Vec::new(),
-        },
-    ])
+    let (bus, store, orchestrator, _tmp) = build_orchestrator(vec![Response {
+        content: "只执行一个 Context transaction".to_string(),
+        tool_calls: vec![
+            transaction("context-1"),
+            transaction("context-2"),
+            transaction("context-3"),
+        ],
+    }])
     .await;
 
     publish_user(&bus, session_id, "deduplicate context transactions").await;
@@ -414,6 +936,8 @@ async fn test_identical_context_transactions_are_normalized_and_deduplicated() {
 #[tokio::test]
 async fn test_distinct_context_transactions_are_rejected_then_combined_atomically() {
     let session_id = "attempt_distinct_context_tx";
+    let note = NamedTempFile::new().unwrap();
+    std::fs::write(note.path(), "evidence").unwrap();
     let transaction = |id: &str, frame: &str| ToolCallRepr {
         id: id.to_string(),
         r#type: "function".to_string(),
@@ -430,10 +954,16 @@ async fn test_distinct_context_transactions_are_rejected_then_combined_atomicall
             tool_calls: vec![
                 transaction("context-1", "first"),
                 transaction("context-2", "second"),
+                ToolCallRepr {
+                    id: "read-evidence".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "read".to_string(),
+                    arguments: json!({ "path": note.path().to_string_lossy() }).to_string(),
+                },
             ],
         },
         Response {
-            content: String::new(),
+            content: "多个修改已在一个事务中提交".to_string(),
             tool_calls: vec![ToolCallRepr {
                 id: "context-combined".to_string(),
                 r#type: "function".to_string(),
@@ -444,10 +974,6 @@ async fn test_distinct_context_transactions_are_rejected_then_combined_atomicall
                 })
                 .to_string(),
             }],
-        },
-        Response {
-            content: "多个修改已在一个事务中提交".to_string(),
-            tool_calls: Vec::new(),
         },
     ])
     .await;
@@ -491,16 +1017,24 @@ async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
     let client = Arc::new(MockClient::new(vec![
         Response {
             content: String::new(),
-            tool_calls: vec![ToolCallRepr {
-                id: "context-initial".to_string(),
-                r#type: "function".to_string(),
-                func_name: "context_tx".to_string(),
-                arguments: json!({
-                    "session_id": session_id,
-                    "transaction": "(context-tx (base-version 0) (create task (status active)))"
-                })
-                .to_string(),
-            }],
+            tool_calls: vec![
+                ToolCallRepr {
+                    id: "context-initial".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: json!({
+                        "session_id": session_id,
+                        "transaction": "(context-tx (base-version 0) (create task (status active)))"
+                    })
+                    .to_string(),
+                },
+                ToolCallRepr {
+                    id: "read-initial".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "read".to_string(),
+                    arguments: json!({ "path": note.path().to_string_lossy() }).to_string(),
+                },
+            ],
         },
         Response {
             content: String::new(),
@@ -564,13 +1098,23 @@ async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
         .await
         .unwrap();
     assert_eq!(context.state.version, 1);
-    assert_eq!(context.turn_budget.attempt, 2);
+    assert_eq!(context.turn_budget.attempt, 3);
     assert_eq!(context.turn_budget.context_transactions_used, 2);
     assert!(!context.turn_budget.context_tx_available);
     assert!(context
         .observations
         .iter()
         .any(|observation| { observation.preview.contains("CONTEXT_TX_BUDGET_EXHAUSTED") }));
+    assert!(wait_for_topic(&store, "chat/tool_output", session_id)
+        .await
+        .iter()
+        .any(|event| {
+            event
+                .payload
+                .get("text")
+                .and_then(|value| value.as_str())
+                .is_some_and(|text| text.contains("CONTEXT_TX_BUDGET_EXHAUSTED"))
+        }));
 }
 
 #[tokio::test]

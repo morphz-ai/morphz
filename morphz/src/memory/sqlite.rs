@@ -309,7 +309,7 @@ impl EventStore for SqliteStore {
         filter: QueryFilter,
     ) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
         let mut builder = QueryBuilder::new(
-            "SELECT id, timestamp, actor, type, topic, payload FROM events WHERE 1=1",
+            "SELECT rowid AS event_sequence, id, timestamp, actor, type, topic, payload FROM events WHERE 1=1",
         );
 
         if let Some(session_id) = filter.session_id {
@@ -378,6 +378,7 @@ impl EventStore for SqliteStore {
 
         let mut events = Vec::new();
         for row in rows {
+            let sequence: i64 = row.get("event_sequence");
             let id: String = row.get("id");
             let timestamp_str: String = row.get("timestamp");
             let actor: String = row.get("actor");
@@ -390,6 +391,7 @@ impl EventStore for SqliteStore {
 
             events.push(Event {
                 id,
+                sequence: u64::try_from(sequence).ok(),
                 timestamp,
                 actor,
                 event_type,

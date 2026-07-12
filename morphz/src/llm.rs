@@ -110,7 +110,12 @@ impl OpenAIClient {
 
         // reqwest 的 macOS 系统代理自动探测在部分无 GUI/沙箱环境中可能触发
         // system-configuration panic。默认禁用隐式探测；需要代理时使用显式变量。
-        let mut client_builder = reqwest::Client::builder().no_proxy();
+        let mut client_builder =
+            reqwest::Client::builder()
+                .no_proxy()
+                .timeout(std::time::Duration::from_secs(
+                    config.request_timeout_secs.max(1),
+                ));
         if let Ok(proxy_url) = std::env::var("OPENAI_HTTP_PROXY") {
             if !proxy_url.trim().is_empty() {
                 client_builder = client_builder.proxy(reqwest::Proxy::all(&proxy_url)?);
@@ -450,5 +455,47 @@ mod tests {
         assert_eq!(vec1.len(), 256);
         assert_eq!(vec1, vec2);
         assert_ne!(vec1, vec3);
+    }
+
+    #[tokio::test]
+    async fn completion_request_times_out_when_server_never_responds() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        });
+        let config = crate::config::LlmConfig {
+            request_timeout_secs: 1,
+            max_retries: 1,
+            ..Default::default()
+        };
+        let client = OpenAIClient::new_with_config(
+            "test-key".to_string(),
+            format!("http://{address}"),
+            "test-model".to_string(),
+            None,
+            &config,
+        )
+        .unwrap();
+        let started = std::time::Instant::now();
+
+        let error = client
+            .create_completion(
+                vec![Message {
+                    role: "user".to_string(),
+                    content: "hello".to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }],
+                Vec::new(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        assert!(error.to_string().contains("timed out"));
+        server.abort();
     }
 }

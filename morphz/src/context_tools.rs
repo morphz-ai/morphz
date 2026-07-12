@@ -102,9 +102,10 @@ impl Tool for RecallTool {
     }
 
     fn definition(&self) -> ToolDefinition {
+        let max_chunk_chars = self.context_engine.recall_chunk_chars();
         ToolDefinition {
             name: "recall".to_string(),
-            description: "按稳定引用或查询词主动读取 Event Ledger 原文及已退役 frame。用于验证摘要、恢复遗忘内容或分段读取被 preview 截断的大型输出；结果只进入 inbox，不会自动写入 Mind。".to_string(),
+            description: format!("按稳定引用或查询词主动读取 Event Ledger 原文及已退役 frame。用于验证摘要、恢复遗忘内容或分段读取被 preview 截断的大型输出；结果只进入 inbox，不会自动写入 Mind。event_id 模式单次最多返回 {max_chunk_chars} 个字符；如果 next_offset 非空，下一次必须把它原样作为 offset 继续读取，不要重复 offset=0 或猜测偏移。query 模式返回命中位置附近的片段和建议 offset。"),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -112,8 +113,8 @@ impl Tool for RecallTool {
                     "event_id": { "type": "string", "description": "Context observation 的 full-ref" },
                     "frame_id": { "type": "string", "description": "已存在或已退役的 frame ID" },
                     "query": { "type": "string", "description": "在当前 session Ledger 中搜索" },
-                    "offset": { "type": "integer", "minimum": 0, "description": "读取 event 原文的字符偏移" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 20000, "description": "单次返回字符数，默认 4000" }
+                    "offset": { "type": "integer", "minimum": 0, "description": "读取 event 原文的字符偏移；连续分页时必须使用上次结果的 next_offset" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": max_chunk_chars, "description": format!("单次返回字符数，上限 {max_chunk_chars}") }
                 }
             }),
         }
@@ -151,7 +152,12 @@ impl Tool for RecallTool {
                 .find_event(&args.session_id, &event_id)
                 .await?
                 .ok_or_else(|| format!("event '{}' 不存在或不属于当前 session", event_id))?;
-            return event_chunk(event, args.offset.unwrap_or(0), args.limit.unwrap_or(4_000));
+            return event_chunk(
+                event,
+                args.offset.unwrap_or(0),
+                args.limit.unwrap_or(4_000),
+                self.context_engine.recall_chunk_chars(),
+            );
         }
 
         let query = args.query.unwrap_or_default();
@@ -160,11 +166,13 @@ impl Tool for RecallTool {
             .context_engine
             .search_events(&args.session_id, &query, limit)
             .await?;
+        let max_chunk_chars = self.context_engine.recall_chunk_chars();
         let matches = events
             .into_iter()
             .map(|event| {
                 let text = recall_event_text(&event);
-                let preview = text.chars().take(500).collect::<String>();
+                let (preview, match_offset) = query_preview(&text, &query, 500);
+                let suggested_offset = match_offset.map(|offset| offset.saturating_sub(250));
                 serde_json::json!({
                     "event_id": event.id,
                     "kind": event.event_type,
@@ -172,6 +180,12 @@ impl Tool for RecallTool {
                     "timestamp": event.timestamp,
                     "preview": preview,
                     "truncated": text.chars().count() > 500,
+                    "match_offset": match_offset,
+                    "suggested_recall": suggested_offset.map(|offset| serde_json::json!({
+                        "event_id": event.id,
+                        "offset": offset,
+                        "limit": max_chunk_chars,
+                    })),
                 })
             })
             .collect::<Vec<_>>();
@@ -186,15 +200,19 @@ fn event_chunk(
     event: Event,
     requested_offset: usize,
     requested_limit: usize,
+    max_visible_chars: usize,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let text = recall_event_text(&event);
     let total_chars = text.chars().count();
     let offset = requested_offset.min(total_chars);
-    let limit = requested_limit.clamp(1, 20_000);
+    let limit = requested_limit
+        .clamp(1, 20_000)
+        .min(max_visible_chars.max(1));
     let chunk = text.chars().skip(offset).take(limit).collect::<String>();
     let next_offset =
         (offset + chunk.chars().count() < total_chars).then_some(offset + chunk.chars().count());
     Ok(serde_json::to_string_pretty(&serde_json::json!({
+        "context_delivery": "full-event-chunk",
         "event_id": event.id,
         "kind": event.event_type,
         "topic": event.topic,
@@ -203,6 +221,7 @@ fn event_chunk(
         "offset": offset,
         "total_chars": total_chars,
         "next_offset": next_offset,
+        "paging_instruction": next_offset.map(|next| format!("下一次对同一 event_id 使用 offset={next}")),
         "text": chunk,
     }))?)
 }
@@ -216,6 +235,23 @@ fn recall_event_text(event: &Event) -> String {
         .map(ToOwned::to_owned)
         .or_else(|| event.payload.get("tool_calls").map(ToString::to_string))
         .unwrap_or_else(|| serde_json::Value::Object(event.payload.clone()).to_string())
+}
+
+fn query_preview(text: &str, query: &str, width: usize) -> (String, Option<usize>) {
+    let chars = text.chars().collect::<Vec<_>>();
+    let query_chars = query.chars().collect::<Vec<_>>();
+    if query_chars.is_empty() || query_chars.len() > chars.len() {
+        return (chars.into_iter().take(width).collect(), None);
+    }
+    let match_offset = chars
+        .windows(query_chars.len())
+        .position(|window| window == query_chars.as_slice());
+    let Some(match_offset) = match_offset else {
+        return (chars.into_iter().take(width).collect(), None);
+    };
+    let start = match_offset.saturating_sub(width / 2);
+    let end = (start + width).min(chars.len());
+    (chars[start..end].iter().collect(), Some(match_offset))
 }
 
 #[cfg(test)]
@@ -297,5 +333,14 @@ mod tests {
         assert_eq!(result["text"], "丙丁戊");
         assert_eq!(result["next_offset"], 5);
         assert_eq!(result["total_chars"], 6);
+    }
+
+    #[test]
+    fn query_preview_is_centered_on_the_match_and_reports_character_offset() {
+        let text = format!("{}LANTERN-731{}", "前".repeat(800), "后".repeat(800));
+        let (preview, offset) = query_preview(&text, "LANTERN-731", 500);
+        assert_eq!(offset, Some(800));
+        assert!(preview.contains("LANTERN-731"));
+        assert_eq!(preview.chars().count(), 500);
     }
 }

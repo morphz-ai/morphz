@@ -48,6 +48,8 @@ pub struct OrchestratorConfig {
     pub reply_timeout_secs: u64,
     /// 工具执行超时（秒）
     pub tool_timeout_secs: u64,
+    /// 完整一次 LLM Attempt 的绝对超时（包含 Client 内部重试与响应解析）
+    pub model_attempt_timeout_secs: u64,
     /// Agent-Owned Context 的 warning 软阈值（估算 Token）
     pub context_soft_token_limit: usize,
     /// Agent-Owned Context 的物理硬阈值（估算 Token）
@@ -68,10 +70,11 @@ impl Default for OrchestratorConfig {
             concurrency_limit: 4,
             reply_timeout_secs: 120,
             tool_timeout_secs: 30,
-            context_soft_token_limit: 60_000,
-            context_hard_token_limit: 100_000,
-            context_maintenance_reserve_tokens: 12_000,
-            observation_preview_chars: 4_000,
+            model_attempt_timeout_secs: 180,
+            context_soft_token_limit: 196_608,
+            context_hard_token_limit: 262_144,
+            context_maintenance_reserve_tokens: 32_768,
+            observation_preview_chars: 16_000,
             max_attempts_per_turn: 12,
             max_context_transactions_per_turn: 6,
         }
@@ -152,6 +155,8 @@ pub struct LlmConfig {
     pub max_retries: u32,
     /// 初始重试退避秒数
     pub initial_backoff_secs: u64,
+    /// 单次 HTTP 请求（包含响应体读取）的超时秒数
+    pub request_timeout_secs: u64,
 }
 
 impl Default for LlmConfig {
@@ -161,6 +166,7 @@ impl Default for LlmConfig {
             embedding_model: "text-embedding-3-small".to_string(),
             max_retries: 5,
             initial_backoff_secs: 1,
+            request_timeout_secs: 120,
         }
     }
 }
@@ -197,7 +203,8 @@ impl Default for ToolSecurityConfig {
                 ".git/**".to_string(),
                 "**/.ssh/**".to_string(),
                 "target/**".to_string(),
-                "models/**".to_string(),
+                "*.safetensors".to_string(),
+                "*.onnx".to_string(),
             ],
             exec_seatbelt_enabled: false,
             exec_network_enabled: false,
@@ -305,6 +312,15 @@ impl AppConfig {
             "MORPHZ_OBSERVATION_PREVIEW_CHARS",
             &mut self.orchestrator.observation_preview_chars,
         )?;
+        apply_u64_env(
+            "MORPHZ_LLM_REQUEST_TIMEOUT_SECS",
+            &mut self.llm.request_timeout_secs,
+        )?;
+        apply_u64_env(
+            "MORPHZ_MODEL_ATTEMPT_TIMEOUT_SECS",
+            &mut self.orchestrator.model_attempt_timeout_secs,
+        )?;
+        apply_u32_env("MORPHZ_LLM_MAX_RETRIES", &mut self.llm.max_retries)?;
         Ok(())
     }
 }
@@ -316,6 +332,36 @@ fn apply_usize_env(name: &str, target: &mut usize) -> Result<(), String> {
     let parsed = value
         .trim()
         .parse::<usize>()
+        .map_err(|_| format!("{name} 不是合法正整数: {value}"))?;
+    if parsed == 0 {
+        return Err(format!("{name} 必须大于 0"));
+    }
+    *target = parsed;
+    Ok(())
+}
+
+fn apply_u64_env(name: &str, target: &mut u64) -> Result<(), String> {
+    let Ok(value) = std::env::var(name) else {
+        return Ok(());
+    };
+    let parsed = value
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| format!("{name} 不是合法正整数: {value}"))?;
+    if parsed == 0 {
+        return Err(format!("{name} 必须大于 0"));
+    }
+    *target = parsed;
+    Ok(())
+}
+
+fn apply_u32_env(name: &str, target: &mut u32) -> Result<(), String> {
+    let Ok(value) = std::env::var(name) else {
+        return Ok(());
+    };
+    let parsed = value
+        .trim()
+        .parse::<u32>()
         .map_err(|_| format!("{name} 不是合法正整数: {value}"))?;
     if parsed == 0 {
         return Err(format!("{name} 必须大于 0"));
@@ -374,6 +420,7 @@ mod tests {
         assert_eq!(cfg.orchestrator.concurrency_limit, 4);
         assert_eq!(cfg.memory.sqlite_pool_size, 8);
         assert_eq!(cfg.llm.max_retries, 5);
+        assert_eq!(cfg.llm.request_timeout_secs, 120);
         assert!(cfg.tool_security.workspace_jail_enabled);
         assert_eq!(cfg.background_task.timeout_notify_secs, 300);
     }
@@ -409,5 +456,18 @@ mod tests {
         assert_eq!(cfg.orchestrator.concurrency_limit, 2);
         assert_eq!(cfg.orchestrator.tool_timeout_secs, 30);
         assert_eq!(cfg.server.bind, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn test_partial_llm_section_configures_request_timeout_and_retries() {
+        let mut tmp_file = NamedTempFile::new().unwrap();
+        writeln!(tmp_file, "[llm]").unwrap();
+        writeln!(tmp_file, "request_timeout_secs = 7").unwrap();
+        writeln!(tmp_file, "max_retries = 1").unwrap();
+
+        let cfg = AppConfig::load_or_default(tmp_file.path().to_str().unwrap());
+        assert_eq!(cfg.llm.request_timeout_secs, 7);
+        assert_eq!(cfg.llm.max_retries, 1);
+        assert_eq!(cfg.llm.model, "gpt-4o-mini");
     }
 }

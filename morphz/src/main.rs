@@ -11,7 +11,7 @@ use morphz::tool::{
     Registry, SearchTool, SpawnAgentTool, WriteFileTool,
 };
 use morphz::web::Server;
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::sync::Arc;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -93,37 +93,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     ));
     let tool_security = Arc::new(app_config.tool_security.clone());
     let background_config = Arc::new(app_config.background_task.clone());
-    registry.register(Arc::new(WriteFileTool::new_with_bus(
-        Arc::clone(&tool_security),
-        Arc::clone(&bus),
-    )));
-    registry.register(Arc::new(ReadFileTool::new(Arc::clone(&tool_security))));
-    registry.register(Arc::new(EditFileTool::new_with_bus(
-        Arc::clone(&tool_security),
-        Arc::clone(&bus),
-    )));
-    registry.register(Arc::new(ListFilesTool::new(Arc::clone(&tool_security))));
-    registry.register(Arc::new(SearchTool::new(Arc::clone(&tool_security))));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&context_engine))));
-    registry.register(Arc::new(RecallTool::new(Arc::clone(&context_engine))));
-    registry.register(Arc::new(ExecuteCommandTool::new_with_configs(
-        Arc::clone(&bus),
-        Arc::clone(&background_config),
-        Arc::clone(&tool_security),
-        app_config.orchestrator.tool_timeout_secs,
-    )));
-    registry.register(Arc::new(KillTaskTool));
-    let coding_eval_mode = std::env::var("MORPHZ_CODING_EVAL_MODE")
-        .ok()
-        .is_some_and(|value| {
-            matches!(
-                value.to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        });
-    if !coding_eval_mode {
-        registry.register(Arc::new(SpawnAgentTool::new(Arc::clone(&bus))));
-        registry.register(Arc::new(ListSkillsTool));
+    let context_eval_mode = env_flag_enabled("MORPHZ_CONTEXT_EVAL_MODE");
+    if !context_eval_mode {
+        registry.register(Arc::new(WriteFileTool::new_with_bus(
+            Arc::clone(&tool_security),
+            Arc::clone(&bus),
+        )));
+        registry.register(Arc::new(ReadFileTool::new(Arc::clone(&tool_security))));
+        registry.register(Arc::new(EditFileTool::new_with_bus(
+            Arc::clone(&tool_security),
+            Arc::clone(&bus),
+        )));
+        registry.register(Arc::new(ListFilesTool::new(Arc::clone(&tool_security))));
+        registry.register(Arc::new(SearchTool::new(Arc::clone(&tool_security))));
+        registry.register(Arc::new(RecallTool::new(Arc::clone(&context_engine))));
+        registry.register(Arc::new(ExecuteCommandTool::new_with_configs(
+            Arc::clone(&bus),
+            Arc::clone(&background_config),
+            Arc::clone(&tool_security),
+            app_config.orchestrator.tool_timeout_secs,
+        )));
+        registry.register(Arc::new(KillTaskTool));
+        if !env_flag_enabled("MORPHZ_CODING_EVAL_MODE") {
+            registry.register(Arc::new(SpawnAgentTool::new(Arc::clone(&bus))));
+            registry.register(Arc::new(ListSkillsTool));
+        }
     }
 
     // 5. 初始化并启动 Orchestrator
@@ -160,6 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!("您可以通过指令命令它做事情，例如：");
     tracing::info!(">> 帮我写一个 notes.txt 文件，内容为 Morphz Loop OK");
     tracing::info!("您也可以输入 ctx 随时查看大脑心智状态。");
+    tracing::info!("多行输入：先输入 /multi，正文结束后单独输入 /send；使用 /cancel 取消。");
 
     let session_id = std::env::var("MORPHZ_SESSION_ID")
         .ok()
@@ -197,35 +193,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Handle::current();
         let mut msg_counter = 0;
-        let mut input = String::new();
+        let stdin = std::io::stdin();
+        let mut stdin = stdin.lock();
+        // Do not keep a StdoutLock alive while waiting for the Agent. Tracing and
+        // tool execution may also write to the process output; retaining the lock
+        // across `rt.block_on` can deadlock the attempt that is supposed to
+        // produce the reply we are waiting for. `Stdout` locks only per write.
+        let mut stdout = std::io::stdout();
         loop {
-            print!("> ");
-            let _ = std::io::stdout().flush();
-            input.clear();
-            // Ctrl-D / EOF 检测：read_line 返回 Ok(0) 表示流结束
-            match std::io::stdin().read_line(&mut input) {
-                Ok(0) => {
-                    // Ctrl-D / EOF
-                    println!("\n[EOF] 退出 Morphz。");
-                    std::process::exit(0);
-                }
-                Ok(_) => {}
+            let _ = write!(stdout, "> ");
+            let _ = stdout.flush();
+            let console_input = match read_console_input(&mut stdin, &mut stdout) {
+                Ok(input) => input,
                 Err(e) => {
-                    eprintln!("\n[stdin 错误] {}，退出 Morphz。", e);
+                    let _ = writeln!(stdout, "\n[stdin 错误] {}，退出 Morphz。", e);
                     std::process::exit(1);
                 }
-            }
-            let text = input.trim();
-            if text.is_empty() {
-                continue;
-            }
-            if text == "exit" || text == "quit" {
-                println!("退出 Morphz。");
+            };
+
+            let (text, commands_allowed) = match console_input {
+                ConsoleInput::Eof => {
+                    let _ = writeln!(stdout, "\n[EOF] 退出 Morphz。");
+                    std::process::exit(0);
+                }
+                ConsoleInput::Empty | ConsoleInput::Cancelled => continue,
+                ConsoleInput::SingleLine(text) => (text, true),
+                ConsoleInput::Multiline(text) => (text, false),
+            };
+
+            if commands_allowed && (text == "exit" || text == "quit") {
+                let _ = writeln!(stdout, "退出 Morphz。");
                 std::process::exit(0);
             }
 
             let parts: Vec<&str> = text.split_whitespace().collect();
-            if !parts.is_empty() && parts[0] == "ctx" {
+            if commands_allowed && !parts.is_empty() && parts[0] == "ctx" {
                 let sess_id = if parts.len() > 1 {
                     parts[1].to_string()
                 } else {
@@ -233,18 +235,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 };
 
                 let orc_inner = Arc::clone(&orc_clone);
-                rt.block_on(async move {
-                    match orc_inner.get_current_context(&sess_id).await {
-                        Ok(ctx_state) => {
-                            println!("--- 动态求值 Context SExpr 状态 (Session: {}) ---", sess_id);
-                            println!("{}", ctx_state);
-                            println!("--------------------------------------------------");
-                        }
-                        Err(e) => {
-                            println!("无法获取 Context: {:?}", e);
-                        }
+                let sess_id_label = sess_id.clone();
+                let context_result =
+                    rt.block_on(async move { orc_inner.get_current_context(&sess_id).await });
+                match context_result {
+                    Ok(ctx_state) => {
+                        let _ = writeln!(
+                            stdout,
+                            "--- 动态求值 Context SExpr 状态 (Session: {}) ---",
+                            sess_id_label
+                        );
+                        let _ = writeln!(stdout, "{}", ctx_state);
+                        let _ =
+                            writeln!(stdout, "--------------------------------------------------");
                     }
-                });
+                    Err(e) => {
+                        let _ = writeln!(stdout, "无法获取 Context: {:?}", e);
+                    }
+                }
                 continue;
             }
 
@@ -258,7 +266,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 "session_id".to_string(),
                 serde_json::json!(session_id_clone),
             );
-            payload.insert("text".to_string(), serde_json::json!(text));
+            payload.insert("text".to_string(), serde_json::json!(&text));
 
             let ev = Event::new(
                 format!(
@@ -283,18 +291,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 tokio::time::timeout(std::time::Duration::from_secs(reply_timeout_secs), async {
                     while let Some((sess, reply)) = reply_rx.recv().await {
                         if sess == sess_id_to_wait {
-                            println!("\n{}\n", reply);
-                            break;
+                            return Some(reply);
                         }
                     }
+                    None
                 })
                 .await
             });
-            if wait_result.is_err() {
-                println!(
-                    "等待 Agent 回复超过 {} 秒，可继续输入或使用 ctx 检查状态。",
-                    reply_timeout_secs
-                );
+            match wait_result {
+                Ok(Some(reply)) => {
+                    let _ = writeln!(stdout, "\n{}\n", reply);
+                }
+                Ok(None) | Err(_) => {
+                    let _ = writeln!(
+                        stdout,
+                        "等待 Agent 回复超过 {} 秒，可继续输入或使用 ctx 检查状态。",
+                        reply_timeout_secs
+                    );
+                }
             }
 
             std::thread::sleep(std::time::Duration::from_millis(150));
@@ -313,6 +327,72 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     #[allow(unreachable_code)]
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ConsoleInput {
+    Eof,
+    Empty,
+    Cancelled,
+    SingleLine(String),
+    Multiline(String),
+}
+
+fn read_console_input<R: BufRead, W: Write>(
+    reader: &mut R,
+    output: &mut W,
+) -> std::io::Result<ConsoleInput> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(ConsoleInput::Eof);
+    }
+
+    let line = trim_line_ending(&line);
+    if line.trim() != "/multi" {
+        let text = line.trim();
+        return Ok(if text.is_empty() {
+            ConsoleInput::Empty
+        } else {
+            ConsoleInput::SingleLine(text.to_string())
+        });
+    }
+
+    writeln!(
+        output,
+        "[多行模式] 单独输入 /send 发送，或输入 /cancel 取消。"
+    )?;
+    let mut lines = Vec::new();
+    loop {
+        write!(output, "... ")?;
+        output.flush()?;
+
+        let mut next = String::new();
+        if reader.read_line(&mut next)? == 0 {
+            return Ok(ConsoleInput::Eof);
+        }
+        let next = trim_line_ending(&next);
+        match next.trim() {
+            "/send" => {
+                let text = lines.join("\n");
+                return Ok(if text.trim().is_empty() {
+                    ConsoleInput::Empty
+                } else {
+                    ConsoleInput::Multiline(text)
+                });
+            }
+            "/cancel" => {
+                writeln!(output, "[多行模式] 已取消。")?;
+                return Ok(ConsoleInput::Cancelled);
+            }
+            _ => lines.push(next.to_string()),
+        }
+    }
+}
+
+fn trim_line_ending(line: &str) -> &str {
+    line.strip_suffix("\r\n")
+        .or_else(|| line.strip_suffix('\n'))
+        .unwrap_or(line)
 }
 
 /// 等待 Ctrl+C 或 SIGTERM 信号
@@ -339,5 +419,74 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+    }
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name).ok().is_some_and(|value| {
+        matches!(
+            value.to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_console_input, ConsoleInput};
+    use std::io::Cursor;
+
+    #[test]
+    fn single_line_input_remains_backward_compatible() {
+        let mut input = Cursor::new("  hello Morphz  \n");
+        let mut output = Vec::new();
+
+        assert_eq!(
+            read_console_input(&mut input, &mut output).unwrap(),
+            ConsoleInput::SingleLine("hello Morphz".to_string())
+        );
+    }
+
+    #[test]
+    fn multiline_input_is_returned_as_one_message_with_newlines_preserved() {
+        let mut input = Cursor::new(
+            "/multi\nBuild a news collector.\n\nRequirements:\n- RSS\n- JSON Feed\n/send\n",
+        );
+        let mut output = Vec::new();
+
+        assert_eq!(
+            read_console_input(&mut input, &mut output).unwrap(),
+            ConsoleInput::Multiline(
+                "Build a news collector.\n\nRequirements:\n- RSS\n- JSON Feed".to_string()
+            )
+        );
+        assert!(String::from_utf8(output).unwrap().contains("/send"));
+    }
+
+    #[test]
+    fn multiline_commands_are_preserved_as_message_content() {
+        let mut input = Cursor::new("/multi\nctx\nexit\n/send\n");
+        let mut output = Vec::new();
+
+        assert_eq!(
+            read_console_input(&mut input, &mut output).unwrap(),
+            ConsoleInput::Multiline("ctx\nexit".to_string())
+        );
+    }
+
+    #[test]
+    fn multiline_input_can_be_cancelled_or_aborted_by_eof() {
+        let mut cancelled = Cursor::new("/multi\nignored\n/cancel\n");
+        let mut output = Vec::new();
+        assert_eq!(
+            read_console_input(&mut cancelled, &mut output).unwrap(),
+            ConsoleInput::Cancelled
+        );
+
+        let mut eof = Cursor::new("/multi\nincomplete");
+        assert_eq!(
+            read_console_input(&mut eof, &mut Vec::new()).unwrap(),
+            ConsoleInput::Eof
+        );
     }
 }

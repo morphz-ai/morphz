@@ -21,6 +21,9 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub id: String,
+    /// Event Store 中稳定、单调递增的物理插入顺序。内存中新建但尚未落盘时为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence: Option<u64>,
     pub timestamp: DateTime<Utc>,
     pub actor: String,
     #[serde(rename = "type")]
@@ -39,6 +42,7 @@ impl Event {
     ) -> Self {
         Self {
             id,
+            sequence: None,
             timestamp: Utc::now(),
             actor,
             event_type,
@@ -74,6 +78,7 @@ pub struct InMemoryEventBus {
     sub_counter: AtomicU64,
     error_handler: Arc<dyn Fn(Box<dyn std::error::Error + Send + Sync>, Event) + Send + Sync>,
     semaphore: Arc<tokio::sync::Semaphore>,
+    sync_handler_timeout: std::time::Duration,
 }
 
 impl Default for InMemoryEventBus {
@@ -88,6 +93,10 @@ impl InMemoryEventBus {
     }
 
     pub fn with_concurrency_limit(limit: usize) -> Self {
+        Self::with_limits(limit, std::time::Duration::from_secs(5))
+    }
+
+    fn with_limits(limit: usize, sync_handler_timeout: std::time::Duration) -> Self {
         Self {
             subscriptions: DashMap::new(),
             sub_counter: AtomicU64::new(0),
@@ -95,6 +104,7 @@ impl InMemoryEventBus {
                 tracing::error!(event_id = %ev.id, error = ?err, "事件总线错误");
             }),
             semaphore: Arc::new(tokio::sync::Semaphore::new(limit)),
+            sync_handler_timeout,
         }
     }
 
@@ -144,8 +154,20 @@ impl InMemoryEventBus {
             let ev_clone = ev.clone();
             let ev_clone_for_err = ev_clone.clone();
             let err_handler = Arc::clone(&self.error_handler);
-            if let Err(err) = handler(ev_clone).await {
-                err_handler(err, ev_clone_for_err);
+            match tokio::time::timeout(self.sync_handler_timeout, handler(ev_clone)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => err_handler(error, ev_clone_for_err),
+                Err(_) => err_handler(
+                    std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        format!(
+                            "全局事件审计 handler 超过 {:?} 未完成",
+                            self.sync_handler_timeout
+                        ),
+                    )
+                    .into(),
+                    ev_clone_for_err,
+                ),
             }
         }
 
@@ -155,14 +177,15 @@ impl InMemoryEventBus {
             let ev_clone = ev.clone();
             let ev_clone_for_err = ev_clone.clone();
             let err_handler = Arc::clone(&self.error_handler);
-            if let Ok(permit) = self.semaphore.clone().acquire_owned().await {
-                tokio::spawn(async move {
+            let semaphore = Arc::clone(&self.semaphore);
+            tokio::spawn(async move {
+                if let Ok(permit) = semaphore.acquire_owned().await {
                     let _permit = permit;
                     if let Err(err) = handler(ev_clone).await {
                         err_handler(err, ev_clone_for_err);
                     }
-                });
-            }
+                }
+            });
         }
 
         Ok(())
@@ -303,5 +326,108 @@ mod tests {
             "最大并发数量 {} 应该不超过 2 且大于 0",
             mc
         );
+    }
+
+    #[tokio::test]
+    async fn nested_async_publish_does_not_deadlock_when_bus_is_at_capacity() {
+        let bus = Arc::new(InMemoryEventBus::with_concurrency_limit(1));
+        let nested_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let nested_seen_handler = Arc::clone(&nested_seen);
+        bus.subscribe(
+            "runtime/nested".to_string(),
+            Arc::new(move |_event| {
+                let nested_seen = Arc::clone(&nested_seen_handler);
+                Box::pin(async move {
+                    nested_seen.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+            }),
+        );
+
+        let nested_bus = Arc::clone(&bus);
+        bus.subscribe(
+            "chat/start".to_string(),
+            Arc::new(move |_event| {
+                let nested_bus = Arc::clone(&nested_bus);
+                Box::pin(async move {
+                    nested_bus
+                        .publish(Event::new(
+                            "nested".to_string(),
+                            "test".to_string(),
+                            "runtime_control".to_string(),
+                            "runtime/nested".to_string(),
+                            serde_json::Map::new(),
+                        ))
+                        .await
+                })
+            }),
+        );
+
+        bus.publish(Event::new(
+            "start".to_string(),
+            "test".to_string(),
+            "user_message".to_string(),
+            "chat/start".to_string(),
+            serde_json::Map::new(),
+        ))
+        .await
+        .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !nested_seen.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("nested publish should complete after the outer handler releases its permit");
+    }
+
+    #[tokio::test]
+    async fn stalled_global_audit_does_not_block_business_subscribers() {
+        let bus = Arc::new(InMemoryEventBus::with_limits(
+            2,
+            std::time::Duration::from_millis(20),
+        ));
+        let business_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        bus.subscribe(
+            "*".to_string(),
+            Arc::new(move |_event| {
+                Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    Ok(())
+                })
+            }),
+        );
+        let business_seen_handler = Arc::clone(&business_seen);
+        bus.subscribe(
+            "chat/test".to_string(),
+            Arc::new(move |_event| {
+                let business_seen = Arc::clone(&business_seen_handler);
+                Box::pin(async move {
+                    business_seen.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+            }),
+        );
+
+        bus.publish(Event::new(
+            "audit-timeout".to_string(),
+            "test".to_string(),
+            "user_message".to_string(),
+            "chat/test".to_string(),
+            serde_json::Map::new(),
+        ))
+        .await
+        .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !business_seen.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("business subscriber should run after audit timeout");
     }
 }
