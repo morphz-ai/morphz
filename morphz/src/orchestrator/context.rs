@@ -2037,8 +2037,9 @@ fn load_mind_from_events(events: &[Event]) -> Result<MindState, String> {
         .map_err(|error| format!("Context transaction '{}' 状态损坏: {}", event.id, error))?;
         if recorded_state != candidate {
             return Err(format!(
-                "Context transaction '{}' 的 state_after 与 SExpr 重放结果不一致",
-                event.id
+                "Context transaction '{}' 的 state_after 与 SExpr 重放结果不一致: {}",
+                event.id,
+                mind_state_mismatch(&recorded_state, &candidate)
             ));
         }
         if let Some(recorded_changes) = event.payload.get("changes") {
@@ -2056,6 +2057,72 @@ fn load_mind_from_events(events: &[Event]) -> Result<MindState, String> {
         state = candidate;
     }
     Ok(state)
+}
+
+fn mind_state_mismatch(recorded: &MindState, replayed: &MindState) -> String {
+    if recorded.version != replayed.version {
+        return format!(
+            "version recorded={} replayed={}",
+            recorded.version, replayed.version
+        );
+    }
+    if recorded.frames != replayed.frames {
+        let differing_index = recorded
+            .frames
+            .iter()
+            .zip(&replayed.frames)
+            .position(|(left, right)| left != right);
+        return match differing_index {
+            Some(index) => format!(
+                "frame[{index}] recorded={:?} replayed={:?}",
+                recorded.frames[index], replayed.frames[index]
+            ),
+            None => format!(
+                "frames length recorded={} replayed={}",
+                recorded.frames.len(),
+                replayed.frames.len()
+            ),
+        };
+    }
+    if recorded.relations != replayed.relations {
+        return format!(
+            "relations recorded={:?} replayed={:?}",
+            recorded.relations, replayed.relations
+        );
+    }
+    if recorded.retired != replayed.retired {
+        return format!(
+            "retired recorded_only={:?} replayed_only={:?}",
+            recorded
+                .retired
+                .difference(&replayed.retired)
+                .collect::<Vec<_>>(),
+            replayed
+                .retired
+                .difference(&recorded.retired)
+                .collect::<Vec<_>>()
+        );
+    }
+    if recorded.protected != replayed.protected {
+        return format!(
+            "protected recorded_only={:?} replayed_only={:?}",
+            recorded
+                .protected
+                .difference(&replayed.protected)
+                .collect::<Vec<_>>(),
+            replayed
+                .protected
+                .difference(&recorded.protected)
+                .collect::<Vec<_>>()
+        );
+    }
+    if recorded.checkpoints != replayed.checkpoints {
+        return format!(
+            "checkpoints recorded={:?} replayed={:?}",
+            recorded.checkpoints, replayed.checkpoints
+        );
+    }
+    "unknown field mismatch".to_string()
 }
 
 fn observation_ids(events: &[Event]) -> HashSet<String> {
@@ -2402,6 +2469,21 @@ mod tests {
         let tx = parse_transaction("(context-tx (base-version 3) (create x (note y)))").unwrap();
         let error = apply_parsed_transaction(&state, &tx, &HashSet::new()).unwrap_err();
         assert!(error.contains("版本冲突"));
+    }
+
+    #[test]
+    fn canonical_transaction_replays_multilingual_body_atoms() {
+        let input = r#"(context-tx (base-version 0) (reason "从案例 A 提炼可复用证据优先级策略，长期维护") (create EVIDENCE-AUTHORITY-BEFORE-RECENCY (context-body (strategy "判断相互冲突的证据时，按以下优先级排序：1) 明确取代关系（supersedes）最优先；2) 权威性与批准状态高于单纯到达顺序；3) 到达先后仅作为同权威同批准状态下的次要参考。") (applicability 适用于来源权威性或批准状态可明确区分的证据冲突场景。) (boundary 本策略不否定已批准的更新证据合法取代旧结论——当新证据同样获得同等或更高权威批准时，应采信新证据。权威与批准状态始终是核心判据，到达顺序仅在权威和批准状态均相当时才作为参考。) (non-absolute "不可将权威优先绝对化为'旧权威永远正确'；若新证据已获同等或更高批准，则取代有效。") (derived-from case-a-decision))))"#;
+        let parsed = parse_transaction(input).unwrap();
+        let canonical = render_parsed_transaction(&parsed);
+        let replayed = parse_transaction(&canonical).unwrap();
+        let (recorded, recorded_changes) =
+            apply_parsed_transaction(&MindState::default(), &parsed, &HashSet::new()).unwrap();
+        let (candidate, replayed_changes) =
+            apply_parsed_transaction(&MindState::default(), &replayed, &HashSet::new()).unwrap();
+
+        assert_eq!(recorded, candidate, "canonical={canonical}");
+        assert_eq!(recorded_changes, replayed_changes);
     }
 
     #[test]

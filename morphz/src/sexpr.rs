@@ -12,6 +12,7 @@ impl std::fmt::Display for SExpr {
                 if s.contains(' ')
                     || s.contains('(')
                     || s.contains(')')
+                    || s.contains('\'')
                     || s.contains('\n')
                     || s.contains('\r')
                     || s.contains('\t')
@@ -425,5 +426,17 @@ mod tests {
                 panic!("第二个 create 应为 List");
             }
         }
+    }
+
+    #[test]
+    fn display_quotes_atoms_containing_single_quote_for_round_trip() {
+        let original = SExpr::List(vec![
+            SExpr::Atom("note".to_string()),
+            SExpr::Atom("不可绝对化为'旧权威永远正确'。".to_string()),
+        ]);
+        let rendered = original.to_string();
+
+        assert_eq!(rendered, "(note \"不可绝对化为'旧权威永远正确'。\")");
+        assert_eq!(parse(&rendered).unwrap(), original);
     }
 }

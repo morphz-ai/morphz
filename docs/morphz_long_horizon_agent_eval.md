@@ -49,7 +49,7 @@ v1 定义三个互补族，每个族至少有一个可离线重放场景：
 
 | 策略 ID | 含义 | 状态 |
 | --- | --- | --- |
-| `agent_owned_v6` | LLM 通过 `context_tx` 自主维护 Mind，Runtime 只管机制 | 当前候选基线 |
+| `agent_owned` | LLM 通过 `context_tx` 自主维护 Mind，Runtime 只管机制 | 当前候选基线（manifest 另存 protocol version） |
 | `fixed_window` | 仅保留固定近期事件，不自主摘要和召回 | 待实现对照适配器 |
 | `runtime_compaction` | Runtime 在阈值处生成统一摘要 | 待实现对照适配器 |
 | `retrieval_only` | 原始 Ledger + 被动检索，没有 Agent-Owned Mind | 可选扩展对照 |
@@ -118,6 +118,21 @@ v1 定义三个互补族，每个族至少有一个可离线重放场景：
 - 质量收益大于 Context 维护额外成本；
 - 改动能够用通用 Agent 语义解释，不依赖某个场景的关键词。
 
+本地入口：
+
+```bash
+# Operations Continuity
+cargo run -p morphz --bin long_horizon_agent_eval -- create [BASE_DIR]
+cargo run -p morphz --bin long_horizon_agent_eval -- run PROFILES.toml BASE_DIR
+
+# Autonomous Transfer
+cargo run -p morphz --bin long_horizon_agent_eval -- create-transfer [BASE_DIR]
+cargo run -p morphz --bin long_horizon_agent_eval -- run-transfer PROFILES.toml BASE_DIR
+
+# 两类场景共用检查器
+cargo run -p morphz --bin long_horizon_agent_eval -- inspect RUN_ROOT
+```
+
 ## 9. 首次不改 Runtime 基线
 
 2026-07-12 在 Runtime commit `5b25904` 上使用 GLM-5.2、128K 最大输出和 `agent_owned_v6` 跑完 Operations Continuity v1。六个阶段全部执行，5/6 严格通过；最终文件、最终回复、安全约束和过期信息拒绝均正确。
@@ -166,3 +181,42 @@ v7 的三层契约明确说明 `revise` 是完整替换。GLM 在保留期/时�
 - 证据定位循环：热修复阶段已有 read 输出进入 Inbox，模型仍反复 read/recall，产生 15 次模型请求、18 次物理工具调用和 3 次 Context commit。整轨迹为 32 次请求、33 次物理工具和 8 次 commit，明显高于 v6 样本的 21/17/6。
 
 v7 新增的 checkpoint 在该轨迹中调用 0 次，因此效率差异不能归因于快照存储，也不能从单个随机样本归因于 protocol v7。下一个通用 Runtime 改进候选应针对“重复读取被拒绝时，如何精确指回已有证据”，并必须用配对多样本验证。
+
+## 11. Autonomous Transfer v1：自主进化初验
+
+第二个可执行场景不要求模型记住某个业务答案，而是观察它能否从反馈中形成一般策略、迁移到新任务、接受反例修正，并在进程重启后恢复：
+
+1. 案例 A：从 approved-current 与晚到但未批准的草案中选择 `ALPHA-17`；
+2. 用户确认结果，要求提炼 `EVIDENCE-AUTHORITY-BEFORE-RECENCY`；
+3. 案例 B：正迁移，拒绝晚到 archive，选择 `BETA-42`；
+4. 案例 C：反例压力，较新的 approved hotfix 明确取代旧值，必须选择 `GAMMA-2`；
+5. 根据反例修订策略边界，同时保留三个正确示例；
+6. 重启进程，禁止读取 workspace/召回 Ledger，只从恢复的 Mind 报告策略和示例。
+
+2026-07-12 的首次 GLM-5.2 样本完成 6/6 阶段，严格通过 5/6；状态、Mind、正迁移、反例修正和重启恢复均通过。唯一严格扣分是第 2 阶段：规则 ID 已正确写入 Mind，回复表达了规则含义，但没有逐字报告 ID。
+
+| 指标 | 结果 |
+| --- | ---: |
+| 阶段完成 | 6 / 6 |
+| 严格阶段通过 | 5 / 6 |
+| 正迁移 / 反例修正 | 通过 / 通过 |
+| 重启后无工具恢复 | 通过 |
+| 最终状态 / Mind / 回复 | 通过 / 通过 / 通过 |
+| 过期值复活 | 0 |
+| 模型请求 / 物理工具 | 22 / 19 |
+| Context commit / failure | 7 / 0 |
+| 峰值 estimated tokens | 4,275 |
+
+这只证明了**同一 session 内形成、修订和恢复可复用策略的可行性**。它尚未证明跨 session、跨 project 的长期进化，也尚未达到 5 个配对随机样本的发布门槛。
+
+首次运行还暴露并定位了一个通用 Runtime 缺陷：含英文单引号的 SExpr Atom 在 canonical serialization 时没有重新加双引号，导致事务已提交后无法确定性重放。修复后新增了 Atom 与完整 transaction 的 round-trip 回归测试，并在干净运行中实现 7 次 commit、0 次失败。
+
+## 12. 由真实轨迹驱动的通用工具反馈
+
+Operations Continuity 的 v7 诊断样本出现 5 次 `READ_ALREADY_COVERED`，Autonomous Transfer 首样本出现 1 次。这说明重复读取不是新闻系统或某个业务场景的特例。
+
+Read guard 现在为每一种 full/range/query 覆盖记录最初 read 的 tool-output Event ID。后续重复 read 被拒绝时，如果原证据已经进入 Ledger，反馈会提供其稳定短引用（例如 `@e27`），使模型能回到已有 read 结果与 sha256，而不是只收到“已经读过”的否定信息。同一批并行调用尚未写入 Ledger 时，反馈明确指向本批较早的 read 输出。
+
+该改动只改善证据寻址，不替模型摘要、不判断业务真伪，也不把特定任务规则写入 Runtime。其效率收益仍需 5 次配对样本验证。
+
+评测报告同时修正了一个指标语义问题：`stage_completion_rate` 现在表示已执行阶段/计划阶段；新增 `strict_stage_pass_rate` 表示严格通过阶段/已执行阶段，避免把“全部执行但一项回复扣分”误报为未完成。

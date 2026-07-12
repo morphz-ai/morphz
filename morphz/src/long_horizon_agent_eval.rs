@@ -19,6 +19,7 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 const CONTEXT_POLICY: &str = "agent_owned";
 const SCENARIO: &str = "operations_continuity_v1";
+const TRANSFER_SCENARIO: &str = "autonomous_transfer_v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInjection {
@@ -35,6 +36,8 @@ pub struct LongHorizonStage {
     pub injections: Vec<FileInjection>,
     pub expected_reply_markers: Vec<String>,
     pub expected_mind_markers: Vec<String>,
+    #[serde(default = "default_state_path")]
+    pub state_path: String,
     pub expected_state: BTreeMap<String, String>,
     pub require_no_physical_tools: bool,
 }
@@ -59,6 +62,10 @@ pub struct LongHorizonEvalManifest {
     pub hard_token_limit: usize,
     pub maintenance_reserve_tokens: usize,
     pub observation_preview_chars: usize,
+    #[serde(default = "default_constraint_marker")]
+    pub required_constraint_marker: String,
+    #[serde(default)]
+    pub obsolete_state_values: BTreeMap<String, Vec<String>>,
     pub stages: Vec<LongHorizonStage>,
 }
 
@@ -104,6 +111,7 @@ pub struct LongHorizonEvalReport {
     pub completed_stages: usize,
     pub passed_stages: usize,
     pub stage_completion_rate: f64,
+    pub strict_stage_pass_rate: f64,
     pub restart_recovery_passed: bool,
     pub final_state_matches: bool,
     pub final_reply_fidelity: bool,
@@ -180,6 +188,14 @@ pub async fn create_operations_continuity_eval(
         hard_token_limit: 48_000,
         maintenance_reserve_tokens: 8_000,
         observation_preview_chars: 1_200,
+        required_constraint_marker: "NEVER-LOG-SECRETS".to_string(),
+        obsolete_state_values: BTreeMap::from([
+            ("current_port".to_string(), vec!["8080".to_string()]),
+            (
+                "current_endpoint".to_string(),
+                vec!["/v1/events".to_string()],
+            ),
+        ]),
         stages: operations_continuity_stages(),
     };
     let manifest_path = run_root.join("manifest.json");
@@ -202,6 +218,93 @@ pub async fn run_operations_continuity_eval(
     profile: Option<&ModelProfileIdentity>,
 ) -> Result<LongHorizonEvalRun, DynError> {
     let environment = create_operations_continuity_eval(base_dir).await?;
+    run_created_eval(environment, agent_binary, profile).await
+}
+
+pub async fn create_autonomous_transfer_eval(
+    base_dir: Option<&Path>,
+) -> Result<LongHorizonEvalEnvironment, DynError> {
+    let base = base_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("morphz-long-horizon-evals"));
+    std::fs::create_dir_all(&base)?;
+    let base = std::fs::canonicalize(base)?;
+    let id = format!(
+        "{TRANSFER_SCENARIO}-{}-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+        std::process::id()
+    );
+    let run_root = base.join(&id);
+    let workspace_root = run_root.join("workspace");
+    let artifact_dir = run_root.join("artifacts");
+    for directory in [
+        &run_root,
+        &workspace_root,
+        &artifact_dir,
+        &workspace_root.join("cases"),
+        &workspace_root.join("state"),
+        &workspace_root.join("reports"),
+    ] {
+        std::fs::create_dir_all(directory)?;
+    }
+    set_private_directory_permissions(&run_root)?;
+    write_transfer_workspace(&workspace_root)?;
+
+    let database_path = run_root.join("morphz.db");
+    SqliteStore::new(database_path.to_string_lossy().as_ref()).await?;
+    let session_id = format!("long-horizon-{id}");
+    let manifest = LongHorizonEvalManifest {
+        id,
+        created_at: Utc::now().to_rfc3339(),
+        family: "autonomous_evolution".to_string(),
+        scenario: TRANSFER_SCENARIO.to_string(),
+        context_policy: CONTEXT_POLICY.to_string(),
+        runtime_commit: runtime_commit(),
+        runtime_dirty: runtime_dirty(),
+        context_protocol_version: CONTEXT_PROTOCOL_VERSION,
+        session_id,
+        database_path: database_path.clone(),
+        workspace_root: workspace_root.clone(),
+        artifact_dir: artifact_dir.clone(),
+        soft_token_limit: 32_000,
+        hard_token_limit: 48_000,
+        maintenance_reserve_tokens: 8_000,
+        observation_preview_chars: 1_200,
+        required_constraint_marker: "EVIDENCE-AUTHORITY-BEFORE-RECENCY".to_string(),
+        obsolete_state_values: BTreeMap::from([(
+            "selected_value".to_string(),
+            markers(&["ALPHA-99", "BETA-00", "GAMMA-1"]),
+        )]),
+        stages: autonomous_transfer_stages(),
+    };
+    let manifest_path = run_root.join("manifest.json");
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+    std::fs::write(
+        run_root.join("trace.json"),
+        serde_json::to_vec_pretty(&LongHorizonTrace::default())?,
+    )?;
+    Ok(LongHorizonEvalEnvironment {
+        run_root,
+        manifest_path,
+        environment: runtime_environment(&manifest),
+        manifest,
+    })
+}
+
+pub async fn run_autonomous_transfer_eval(
+    base_dir: Option<&Path>,
+    agent_binary: &Path,
+    profile: Option<&ModelProfileIdentity>,
+) -> Result<LongHorizonEvalRun, DynError> {
+    let environment = create_autonomous_transfer_eval(base_dir).await?;
+    run_created_eval(environment, agent_binary, profile).await
+}
+
+async fn run_created_eval(
+    environment: LongHorizonEvalEnvironment,
+    agent_binary: &Path,
+    profile: Option<&ModelProfileIdentity>,
+) -> Result<LongHorizonEvalRun, DynError> {
     let stdout_path = environment.run_root.join("agent.stdout.log");
     let stderr_path = environment.run_root.join("agent.stderr.log");
     File::create(&stdout_path)?;
@@ -251,10 +354,7 @@ pub async fn run_operations_continuity_eval(
         let missing_reply_markers = missing_markers(&reply, &stage.expected_reply_markers);
         let missing_mind_markers = missing_markers(&view.sexpr, &stage.expected_mind_markers);
         let state_mismatches = state_mismatches(
-            &environment
-                .manifest
-                .workspace_root
-                .join("state/current.env"),
+            &environment.manifest.workspace_root.join(&stage.state_path),
             &stage.expected_state,
         );
         let physical_tool_calls = after.physical_tool_calls - before.physical_tool_calls;
@@ -325,7 +425,7 @@ pub async fn inspect_long_horizon_eval(
     let final_stage = trace.stages.last();
     let final_state_matches = manifest.stages.last().is_some_and(|stage| {
         state_mismatches(
-            &manifest.workspace_root.join("state/current.env"),
+            &manifest.workspace_root.join(&stage.state_path),
             &stage.expected_state,
         )
         .is_empty()
@@ -333,16 +433,26 @@ pub async fn inspect_long_horizon_eval(
     let final_reply_fidelity = final_stage.is_some_and(|stage| {
         stage.missing_reply_markers.is_empty() && !stage.reply.trim().is_empty()
     });
-    let constraint_retained = normalized_contains(&final_view.sexpr, "NEVER-LOG-SECRETS")
-        && final_stage.is_some_and(|stage| normalized_contains(&stage.reply, "NEVER-LOG-SECRETS"));
-    let current_state = parse_state_file(&manifest.workspace_root.join("state/current.env"));
+    let constraint_retained =
+        normalized_contains(&final_view.sexpr, &manifest.required_constraint_marker)
+            && final_stage.is_some_and(|stage| {
+                normalized_contains(&stage.reply, &manifest.required_constraint_marker)
+            });
+    let final_state_path = manifest
+        .stages
+        .last()
+        .map(|stage| stage.state_path.as_str())
+        .unwrap_or("state/current.env");
+    let current_state = parse_state_file(&manifest.workspace_root.join(final_state_path));
     let obsolete_fact_reused = current_state.as_ref().is_ok_and(|state| {
-        state
-            .get("current_port")
-            .is_some_and(|value| value == "8080")
-            || state
-                .get("current_endpoint")
-                .is_some_and(|value| value == "/v1/events")
+        manifest
+            .obsolete_state_values
+            .iter()
+            .any(|(key, obsolete)| {
+                state
+                    .get(key)
+                    .is_some_and(|value| obsolete.iter().any(|candidate| candidate == value))
+            })
     });
     let passed_stages = trace.stages.iter().filter(|stage| stage.passed).count();
     let restart_recovery_passed = trace
@@ -358,7 +468,8 @@ pub async fn inspect_long_horizon_eval(
         .unwrap_or_default();
     let counts = event_counts(&store, &manifest.session_id).await?;
     let completed_stages = trace.stages.len();
-    let success = completed_stages == manifest.stages.len()
+    let expected_stages = manifest.stages.len();
+    let success = completed_stages == expected_stages
         && passed_stages == completed_stages
         && restart_recovery_passed
         && final_state_matches
@@ -373,7 +484,8 @@ pub async fn inspect_long_horizon_eval(
         model_profile: profile,
         completed_stages,
         passed_stages,
-        stage_completion_rate: ratio(passed_stages, completed_stages),
+        stage_completion_rate: ratio(completed_stages, expected_stages),
+        strict_stage_pass_rate: ratio(passed_stages, completed_stages),
         restart_recovery_passed,
         final_state_matches,
         final_reply_fidelity,
@@ -405,6 +517,7 @@ fn operations_continuity_stages() -> Vec<LongHorizonStage> {
             injections: Vec::new(),
             expected_reply_markers: markers(&["ORBIT-42", "9090", "/v2/events", "NEVER-LOG-SECRETS"]),
             expected_mind_markers: markers(&["ORBIT-42", "9090", "/v2/events", "NEVER-LOG-SECRETS", "8080"]),
+            state_path: default_state_path(),
             expected_state: state_v2,
             require_no_physical_tools: false,
         },
@@ -416,6 +529,7 @@ fn operations_continuity_stages() -> Vec<LongHorizonStage> {
             injections: Vec::new(),
             expected_reply_markers: markers(&["45", "Asia/Shanghai"]),
             expected_mind_markers: markers(&["45", "Asia/Shanghai", "NEVER-LOG-SECRETS"]),
+            state_path: default_state_path(),
             expected_state: state_revised,
             require_no_physical_tools: false,
         },
@@ -430,6 +544,7 @@ fn operations_continuity_stages() -> Vec<LongHorizonStage> {
             }],
             expected_reply_markers: markers(&["9443", "/v3/events"]),
             expected_mind_markers: markers(&["9443", "/v3/events", "9090", "NEVER-LOG-SECRETS"]),
+            state_path: default_state_path(),
             expected_state: state_v3.clone(),
             require_no_physical_tools: false,
         },
@@ -441,6 +556,7 @@ fn operations_continuity_stages() -> Vec<LongHorizonStage> {
             injections: Vec::new(),
             expected_reply_markers: markers(&["ORBIT-42", "9443", "/v3/events", "45", "Asia/Shanghai", "NEVER-LOG-SECRETS"]),
             expected_mind_markers: markers(&["ORBIT-42", "9443", "/v3/events", "45", "Asia/Shanghai", "NEVER-LOG-SECRETS"]),
+            state_path: default_state_path(),
             expected_state: state_v3.clone(),
             require_no_physical_tools: true,
         },
@@ -455,6 +571,7 @@ fn operations_continuity_stages() -> Vec<LongHorizonStage> {
             }],
             expected_reply_markers: markers(&["9443", "/v3/events", "archived"]),
             expected_mind_markers: markers(&["9443", "/v3/events", "NEVER-LOG-SECRETS"]),
+            state_path: default_state_path(),
             expected_state: state_v3.clone(),
             require_no_physical_tools: false,
         },
@@ -466,10 +583,117 @@ fn operations_continuity_stages() -> Vec<LongHorizonStage> {
             injections: Vec::new(),
             expected_reply_markers: markers(&["ORBIT-42", "9443", "/v3/events", "45", "Asia/Shanghai", "NEVER-LOG-SECRETS", "8080", "9090"]),
             expected_mind_markers: markers(&["ORBIT-42", "9443", "/v3/events", "45", "Asia/Shanghai", "NEVER-LOG-SECRETS"]),
+            state_path: default_state_path(),
             expected_state: state_v3,
             require_no_physical_tools: false,
         },
     ]
+}
+
+fn autonomous_transfer_stages() -> Vec<LongHorizonStage> {
+    let state_path = "state/transfer.env".to_string();
+    let state_a = transfer_state("A", "ALPHA-17");
+    let state_b = transfer_state("B", "BETA-42");
+    let state_c = transfer_state("C", "GAMMA-2");
+    vec![
+        LongHorizonStage {
+            index: 1,
+            id: "learn-from-case-a".to_string(),
+            prompt: "审查 cases/a 目录中的全部证据，判断哪一个值具有当前权威性。不要把文件到达得更晚等同于更可信。创建 state/transfer.env，每行一个 key=value，写入 case_id 与 selected_value；把决定依据和被拒绝的候选维护到 Mind。最终报告选择结果及理由。".to_string(),
+            restart_before: false,
+            injections: Vec::new(),
+            expected_reply_markers: markers(&["ALPHA-17", "ALPHA-99"]),
+            expected_mind_markers: markers(&["ALPHA-17", "ALPHA-99"]),
+            state_path: state_path.clone(),
+            expected_state: state_a.clone(),
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 2,
+            id: "consolidate-general-policy".to_string(),
+            prompt: "反馈：你在案例 A 中选择 ALPHA-17 是正确的。现在不调用任何物理工具，只基于已有证据提炼一条可复用但不过度绝对化的判断策略，并以字面 ID `EVIDENCE-AUTHORITY-BEFORE-RECENCY` 长期维护到 Mind。策略必须表达：证据的权威性、批准状态和明确取代关系优先于单纯到达顺序；更新且已批准的当前证据仍可合法取代旧结论。最终说明策略及其适用边界。".to_string(),
+            restart_before: false,
+            injections: Vec::new(),
+            expected_reply_markers: markers(&["EVIDENCE-AUTHORITY-BEFORE-RECENCY", "ALPHA-17"]),
+            expected_mind_markers: markers(&["EVIDENCE-AUTHORITY-BEFORE-RECENCY", "ALPHA-17"]),
+            state_path: state_path.clone(),
+            expected_state: state_a,
+            require_no_physical_tools: true,
+        },
+        LongHorizonStage {
+            index: 3,
+            id: "positive-transfer-case-b".to_string(),
+            prompt: "新的案例 B 已放入 cases/b。应用你已形成的一般证据策略，而不是复用案例 A 的具体答案。核验全部文件，更新 state/transfer.env 与 Mind，并最终报告选择结果、被拒绝值和使用的策略 ID。".to_string(),
+            restart_before: false,
+            injections: vec![
+                FileInjection {
+                    path: "cases/b/approved-current.md".to_string(),
+                    content: "status: approved-current\nauthority: change-control-board\ncase_id: B\nselected_value: BETA-42\n".to_string(),
+                },
+                FileInjection {
+                    path: "cases/b/late-archive.md".to_string(),
+                    content: "status: archived\nauthority: historical-import\ncase_id: B\nselected_value: BETA-00\nwarning: later arrival does not restore this value\n".to_string(),
+                },
+            ],
+            expected_reply_markers: markers(&["BETA-42", "BETA-00", "EVIDENCE-AUTHORITY-BEFORE-RECENCY"]),
+            expected_mind_markers: markers(&["BETA-42", "EVIDENCE-AUTHORITY-BEFORE-RECENCY"]),
+            state_path: state_path.clone(),
+            expected_state: state_b,
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 4,
+            id: "counterexample-case-c".to_string(),
+            prompt: "新的案例 C 已放入 cases/c。这是对既有策略的反例压力测试：不得把‘较晚证据’一概判为无效。读取并根据批准状态与明确取代关系判断，更新 state/transfer.env 与 Mind。最终报告当前值、旧值以及为何这次较新的证据有效。".to_string(),
+            restart_before: false,
+            injections: vec![
+                FileInjection {
+                    path: "cases/c/earlier-approved.md".to_string(),
+                    content: "status: superseded\nauthority: release-board\ncase_id: C\nselected_value: GAMMA-1\nsuperseded_by: gamma-hotfix\n".to_string(),
+                },
+                FileInjection {
+                    path: "cases/c/later-approved-hotfix.md".to_string(),
+                    content: "status: approved-current\nauthority: emergency-change-board\ncase_id: C\nchange_id: gamma-hotfix\nselected_value: GAMMA-2\nsupersedes: GAMMA-1\n".to_string(),
+                },
+            ],
+            expected_reply_markers: markers(&["GAMMA-2", "GAMMA-1"]),
+            expected_mind_markers: markers(&["GAMMA-2", "EVIDENCE-AUTHORITY-BEFORE-RECENCY"]),
+            state_path: state_path.clone(),
+            expected_state: state_c.clone(),
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 5,
+            id: "revise-policy-from-counterexample".to_string(),
+            prompt: "反馈：案例 C 选择 GAMMA-2 正确。不要调用物理工具。检查并在必要时修订 Mind 中的通用策略，使 `EVIDENCE-AUTHORITY-BEFORE-RECENCY` 同时覆盖案例 A/B 的抗陈旧能力和案例 C 的合法更新能力；保留三个正确示例 ALPHA-17、BETA-42、GAMMA-2。最终给出修订后的规则和边界。".to_string(),
+            restart_before: false,
+            injections: Vec::new(),
+            expected_reply_markers: markers(&["EVIDENCE-AUTHORITY-BEFORE-RECENCY", "ALPHA-17", "BETA-42", "GAMMA-2"]),
+            expected_mind_markers: markers(&["EVIDENCE-AUTHORITY-BEFORE-RECENCY", "ALPHA-17", "BETA-42", "GAMMA-2"]),
+            state_path: state_path.clone(),
+            expected_state: state_c.clone(),
+            require_no_physical_tools: true,
+        },
+        LongHorizonStage {
+            index: 6,
+            id: "restart-transfer-recovery".to_string(),
+            prompt: "Morphz 进程刚刚重启。这一轮禁止读取 workspace、召回 Ledger 或调用任何物理工具。只根据恢复的 Mind，完整报告策略 ID `EVIDENCE-AUTHORITY-BEFORE-RECENCY`、它的判断边界，以及案例 A/B/C 的正确结果 ALPHA-17、BETA-42、GAMMA-2。".to_string(),
+            restart_before: true,
+            injections: Vec::new(),
+            expected_reply_markers: markers(&["EVIDENCE-AUTHORITY-BEFORE-RECENCY", "ALPHA-17", "BETA-42", "GAMMA-2"]),
+            expected_mind_markers: markers(&["EVIDENCE-AUTHORITY-BEFORE-RECENCY", "ALPHA-17", "BETA-42", "GAMMA-2"]),
+            state_path,
+            expected_state: state_c,
+            require_no_physical_tools: true,
+        },
+    ]
+}
+
+fn transfer_state(case_id: &str, selected_value: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("case_id".to_string(), case_id.to_string()),
+        ("selected_value".to_string(), selected_value.to_string()),
+    ])
 }
 
 fn expected_state(
@@ -488,6 +712,14 @@ fn expected_state(
     ])
 }
 
+fn default_state_path() -> String {
+    "state/current.env".to_string()
+}
+
+fn default_constraint_marker() -> String {
+    "NEVER-LOG-SECRETS".to_string()
+}
+
 fn markers(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_string()).collect()
 }
@@ -504,6 +736,19 @@ fn write_initial_workspace(workspace: &Path) -> Result<(), DynError> {
     std::fs::write(
         workspace.join("sources/security-policy.md"),
         "status: active-until-explicitly-revoked\nrule: NEVER-LOG-SECRETS\nmeaning: logs and public reports must not contain keys, tokens, or private credentials\n",
+    )?;
+    Ok(())
+}
+
+fn write_transfer_workspace(workspace: &Path) -> Result<(), DynError> {
+    std::fs::create_dir_all(workspace.join("cases/a"))?;
+    std::fs::write(
+        workspace.join("cases/a/approved-current.md"),
+        "status: approved-current\nauthority: release-board\ncase_id: A\nselected_value: ALPHA-17\n",
+    )?;
+    std::fs::write(
+        workspace.join("cases/a/late-draft.md"),
+        "status: draft-unapproved\nauthority: individual-proposal\ncase_id: A\nselected_value: ALPHA-99\nwarning: this file arrived later but was never approved\n",
     )?;
     Ok(())
 }
@@ -860,6 +1105,50 @@ mod tests {
             environment.manifest.context_protocol_version,
             CONTEXT_PROTOCOL_VERSION
         );
+    }
+
+    #[tokio::test]
+    async fn transfer_fixture_covers_positive_negative_and_restart_transfer() {
+        let temp = TempDir::new().unwrap();
+        let environment = create_autonomous_transfer_eval(Some(temp.path()))
+            .await
+            .unwrap();
+        assert_eq!(environment.manifest.stages.len(), 6);
+        assert_eq!(environment.manifest.family, "autonomous_evolution");
+        assert_eq!(
+            environment.manifest.required_constraint_marker,
+            "EVIDENCE-AUTHORITY-BEFORE-RECENCY"
+        );
+        assert!(environment
+            .manifest
+            .stages
+            .iter()
+            .any(|stage| stage.id == "positive-transfer-case-b"));
+        assert!(environment
+            .manifest
+            .stages
+            .iter()
+            .any(|stage| stage.id == "counterexample-case-c"));
+        assert!(environment
+            .manifest
+            .stages
+            .last()
+            .is_some_and(|stage| stage.restart_before && stage.require_no_physical_tools));
+        assert!(!environment
+            .manifest
+            .workspace_root
+            .join("cases/b/approved-current.md")
+            .exists());
+        assert!(!environment
+            .manifest
+            .workspace_root
+            .join("cases/c/later-approved-hotfix.md")
+            .exists());
+        assert!(environment
+            .manifest
+            .stages
+            .iter()
+            .all(|stage| stage.state_path == "state/transfer.env"));
     }
 
     #[test]

@@ -91,9 +91,15 @@ struct ReadTurnGuard {
 
 #[derive(Debug, Default)]
 struct ReadCoverage {
-    full: bool,
-    ranges: Vec<(usize, usize)>,
-    queries: Vec<String>,
+    full: Option<String>,
+    ranges: Vec<(usize, usize, String)>,
+    queries: Vec<(String, String)>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ReadDuplicate {
+    path: String,
+    evidence_event_id: String,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -107,46 +113,56 @@ struct ReadGuardArgs {
 }
 
 impl ReadTurnGuard {
-    fn reserve(&mut self, arguments: &str) -> Option<String> {
+    fn reserve(&mut self, arguments: &str, evidence_event_id: &str) -> Option<ReadDuplicate> {
         let args: ReadGuardArgs = serde_json::from_str(arguments).ok()?;
         let coverage = self.files.entry(args.path.clone()).or_default();
-        let duplicate =
-            if coverage.full {
-                true
-            } else if let Some(query) = args.query.as_deref() {
-                let signature = format!(
-                    "{}\u{0}{}\u{0}{}",
-                    query.to_lowercase(),
-                    args.context_lines.unwrap_or(3),
-                    args.max_matches.unwrap_or(20)
-                );
-                if coverage.queries.contains(&signature) {
-                    true
-                } else {
-                    coverage.queries.push(signature);
-                    false
-                }
-            } else if args.start_line.is_none() && args.end_line.is_none() {
-                coverage.full = true;
-                false
+        let covered_by = if let Some(event_id) = coverage.full.as_ref() {
+            Some(event_id.clone())
+        } else if let Some(query) = args.query.as_deref() {
+            let signature = format!(
+                "{}\u{0}{}\u{0}{}",
+                query.to_lowercase(),
+                args.context_lines.unwrap_or(3),
+                args.max_matches.unwrap_or(20)
+            );
+            if let Some((_, event_id)) = coverage
+                .queries
+                .iter()
+                .find(|(candidate, _)| candidate == &signature)
+            {
+                Some(event_id.clone())
             } else {
-                let start = args.start_line.unwrap_or(1);
-                let end = args.end_line.unwrap_or(usize::MAX);
-                if coverage.ranges.iter().any(|(covered_start, covered_end)| {
-                    start >= *covered_start && end <= *covered_end
-                }) {
-                    true
-                } else {
-                    coverage.ranges.push((start, end));
-                    false
-                }
-            };
+                coverage
+                    .queries
+                    .push((signature, evidence_event_id.to_string()));
+                None
+            }
+        } else if args.start_line.is_none() && args.end_line.is_none() {
+            coverage.full = Some(evidence_event_id.to_string());
+            None
+        } else {
+            let start = args.start_line.unwrap_or(1);
+            let end = args.end_line.unwrap_or(usize::MAX);
+            if let Some((_, _, event_id)) =
+                coverage
+                    .ranges
+                    .iter()
+                    .find(|(covered_start, covered_end, _)| {
+                        start >= *covered_start && end <= *covered_end
+                    })
+            {
+                Some(event_id.clone())
+            } else {
+                coverage
+                    .ranges
+                    .push((start, end, evidence_event_id.to_string()));
+                None
+            }
+        };
 
-        duplicate.then(|| {
-            format!(
-                "READ_ALREADY_COVERED: '{}' 的相同版本内容已在本轮 Inbox 中完整覆盖；本次未再次读取，也不会复制旧内容。请使用已有 sha256 直接 edit/write，执行必要测试，或回复用户。仅在 file_change 后才需要重新 read。",
-                args.path
-            )
+        covered_by.map(|evidence_event_id| ReadDuplicate {
+            path: args.path,
+            evidence_event_id,
         })
     }
 
@@ -906,12 +922,27 @@ impl Orchestrator {
                     .invalidate_path_from_arguments(&call.arguments);
             }
             if call.func_name == "read" {
+                let evidence_event_id = format!("output_{}_{}", attempt_id, call.id);
                 let duplicate = self
                     .read_guard(session_id)
                     .lock()
                     .await
-                    .reserve(&call.arguments);
-                if let Some(output) = duplicate {
+                    .reserve(&call.arguments, &evidence_event_id);
+                if let Some(duplicate) = duplicate {
+                    let reference = self
+                        .context_engine
+                        .find_event(session_id, &duplicate.evidence_event_id)
+                        .await?
+                        .as_ref()
+                        .map(|event| self.context_engine.event_reference(event));
+                    let evidence_hint = reference.map_or_else(
+                        || "本批较早的 read 输出".to_string(),
+                        |reference| format!("已有证据 {reference}"),
+                    );
+                    let output = format!(
+                        "READ_ALREADY_COVERED: '{}' 的相同版本内容已在本轮 Inbox 中覆盖；本次未再次读取，也不会复制旧内容。{evidence_hint} 包含原 read 结果与 sha256，请直接使用它进行 edit/write、必要测试或回复用户。仅在 file_change 后才需要重新 read。",
+                        duplicate.path
+                    );
                     guarded_outputs.push(Event::new(
                         format!("output_{}_{}", attempt_id, call.id),
                         "System-ReadGuard".to_string(),
@@ -1246,17 +1277,30 @@ mod tests {
     #[test]
     fn full_file_read_blocks_rephrased_reads_until_file_changes() {
         let mut guard = ReadTurnGuard::default();
-        assert!(guard.reserve(r#"{"path":"src/lib.rs"}"#).is_none());
         assert!(guard
-            .reserve(r#"{"path":"src/lib.rs","start_line":1,"end_line":20}"#)
-            .is_some());
-        assert!(guard
-            .reserve(r#"{"path":"src/lib.rs","query":"struct App"}"#)
-            .is_some());
+            .reserve(r#"{"path":"src/lib.rs"}"#, "read-full")
+            .is_none());
+        let range_duplicate = guard
+            .reserve(
+                r#"{"path":"src/lib.rs","start_line":1,"end_line":20}"#,
+                "read-range",
+            )
+            .unwrap();
+        assert_eq!(range_duplicate.evidence_event_id, "read-full");
+        let query_duplicate = guard
+            .reserve(
+                r#"{"path":"src/lib.rs","query":"struct App"}"#,
+                "read-query",
+            )
+            .unwrap();
+        assert_eq!(query_duplicate.evidence_event_id, "read-full");
 
         guard.invalidate_path_from_arguments(r#"{"path":"src/lib.rs","edits":[]}"#);
         assert!(guard
-            .reserve(r#"{"path":"src/lib.rs","start_line":1,"end_line":20}"#)
+            .reserve(
+                r#"{"path":"src/lib.rs","start_line":1,"end_line":20}"#,
+                "read-after-edit"
+            )
             .is_none());
     }
 
@@ -1264,20 +1308,39 @@ mod tests {
     fn covered_ranges_and_queries_are_deduplicated_per_path() {
         let mut guard = ReadTurnGuard::default();
         assert!(guard
-            .reserve(r#"{"path":"src/lib.rs","start_line":10,"end_line":40}"#)
+            .reserve(
+                r#"{"path":"src/lib.rs","start_line":10,"end_line":40}"#,
+                "read-range-1"
+            )
+            .is_none());
+        let range_duplicate = guard
+            .reserve(
+                r#"{"path":"src/lib.rs","start_line":15,"end_line":25}"#,
+                "read-range-2",
+            )
+            .unwrap();
+        assert_eq!(range_duplicate.evidence_event_id, "read-range-1");
+        assert!(guard
+            .reserve(
+                r#"{"path":"src/lib.rs","start_line":41,"end_line":60}"#,
+                "read-range-3"
+            )
             .is_none());
         assert!(guard
-            .reserve(r#"{"path":"src/lib.rs","start_line":15,"end_line":25}"#)
-            .is_some());
-        assert!(guard
-            .reserve(r#"{"path":"src/lib.rs","start_line":41,"end_line":60}"#)
+            .reserve(
+                r#"{"path":"src/lib.rs","query":"TODO","context_lines":2}"#,
+                "read-query-1"
+            )
             .is_none());
+        let query_duplicate = guard
+            .reserve(
+                r#"{"path":"src/lib.rs","query":"todo","context_lines":2}"#,
+                "read-query-2",
+            )
+            .unwrap();
+        assert_eq!(query_duplicate.evidence_event_id, "read-query-1");
         assert!(guard
-            .reserve(r#"{"path":"src/lib.rs","query":"TODO","context_lines":2}"#)
+            .reserve(r#"{"path":"src/main.rs"}"#, "read-other-file")
             .is_none());
-        assert!(guard
-            .reserve(r#"{"path":"src/lib.rs","query":"todo","context_lines":2}"#)
-            .is_some());
-        assert!(guard.reserve(r#"{"path":"src/main.rs"}"#).is_none());
     }
 }
