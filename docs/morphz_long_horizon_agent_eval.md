@@ -222,3 +222,32 @@ Read guard 现在为每一种 full/range/query 覆盖记录最初 read 的 tool-
 该改动只改善证据寻址，不替模型摘要、不判断业务真伪，也不把特定任务规则写入 Runtime。其效率收益仍需 5 次配对样本验证。
 
 评测报告同时修正了一个指标语义问题：`stage_completion_rate` 现在表示已执行阶段/计划阶段；新增 `strict_stage_pass_rate` 表示严格通过阶段/已执行阶段，避免把“全部执行但一项回复扣分”误报为未完成。
+
+## 13. protocol v8 标准工具结果回传诊断
+
+2026-07-12 在 Runtime commit `341cd7d` 上，以 `gemini-3-flash-agent` 和 128K 最大输出分别为 Operations Continuity v1 与 Autonomous Transfer v1 收集 5 个样本。10 条轨迹的最终状态、Mind、约束、迁移和重启恢复均正确。加入证据时序评分后，Operations 为语义阶段 26/30、回复阶段 29/30、严格完整运行 0/5；Transfer 为语义阶段 30/30、回复阶段 27/30、严格完整运行 2/5。
+
+| 场景 | 升级前单次请求 / 工具 | v8 平均请求 / 工具 | v8 完全重复 / 同路径重读 / Read guard | standalone 空正文 transaction |
+| --- | ---: | ---: | ---: | ---: |
+| Operations Continuity | 30 / 31 | 20.0 / 15.2 | 0 / 0 / 0 | 11 |
+| Autonomous Transfer | 33 / 35 | 19.0 / 14.6 | 0 / 0 / 0 | 13 |
+
+“完全重复”定义为同一用户轮次内函数名和完整参数相同的额外调用；同路径重读还会捕获参数不同但目标文件相同的调用；Read guard 表示 Runtime 拒绝的已覆盖读取。三类指标在 10 条 v8 轨迹中都为 0，说明把当前工具结果同时作为标准 `assistant(tool_calls)` / `tool` 消息回传，能够让模型直接建立调用与结果的对应关系，避免把 Context View 中的 Observation 误判为缺失的接口结果。
+
+该结果同时暴露了两个未解决问题。第一，10 条轨迹仍有 24 次空正文 standalone `context_tx`，占 195 次模型请求的 12.3%；其中 Operations 有 2 次事务因维护预算耗尽被拒绝。第二，Operations 的策略修订阶段有 4/5 样本在热修复 read 证据出现前过早引入 `v3`。这没有破坏文件和最终 Mind，却属于明确的语义时序错误。先前人工统计只匹配两个 frame 名称，漏掉了 `release-v3`；新的证据门按事实标记和 Ledger 顺序捕获了全部四条。
+
+升级前只有每个场景一个同模型样本，因此 30 → 20.0、31 → 15.2 等差异仍是强信号而不是完整配对因果结论。确认 Runtime 改进的最低下一步是保留这 5 个 v8 样本，并补齐相同场景的升级前 5 样本对照，或使用可复现 seed 做真正的配对实验。
+
+## 14. 证据时序与分层评分框架
+
+长程 manifest 现在支持声明通用 `EvidenceGate`：场景配置被保护的事实标记、什么 topic/tool/内容构成证据，以及首次写入 Mind 时是否必须引用证据 Event。评测器按 Ledger sequence 处理事件：事实先于证据进入 `context_tx` 或最终回复记为 temporal violation；证据已出现但首次 Context 写入没有引用对应 `@eN` 记为 provenance violation。规则只存在于评测场景，不改变 Runtime，也不替 Agent 判断业务事实。
+
+`inspect` 会根据 `chat/user_message` 重建阶段边界，因此旧数据库无需重新调用模型即可重新评分。每阶段及总报告新增：
+
+- Context transaction 尝试、standalone/空正文 standalone、被拒绝事务；
+- 完全重复物理调用、同工具同路径重复、Read guard 拒绝；
+- temporal/provenance violations；
+- `state_passed`、`mind_passed`、`behavior_passed`、`semantic_passed`、`reply_passed` 和最终严格 `passed`；
+- 聚合后的 semantic/reply/strict 阶段通过率。
+
+用新框架回放既有 10 条 v8 轨迹后，物理重复三项仍全部为 0；Operations 检出 9 个提前事实事件，分布在 4 个样本的 `revise-policy` 阶段，来源完整性违规为 0；Transfer 没有时序或来源违规。由此可以把“Agent 最终状态正确”和“Agent 在过程中是否基于当时证据正确推理”明确区分。

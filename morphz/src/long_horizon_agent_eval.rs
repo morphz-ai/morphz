@@ -1,12 +1,13 @@
 use crate::config::OrchestratorConfig;
 use crate::context_metacognition_eval::ModelProfileIdentity;
+use crate::event::Event;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{EventStore, QueryFilter};
 use crate::orchestrator::context::CONTEXT_PROTOCOL_VERSION;
 use crate::orchestrator::context::{ContextEngine, ContextPressure};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -25,6 +26,23 @@ const TRANSFER_SCENARIO: &str = "autonomous_transfer_v1";
 pub struct FileInjection {
     pub path: String,
     pub content: String,
+}
+
+/// 声明一个“事实必须晚于证据出现”的通用评测门。
+///
+/// 场景只描述事实标记与什么事件构成证据；评测器负责按 Ledger 顺序检查，
+/// 不把任何业务事实或版本命名写入 Runtime。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceGate {
+    pub id: String,
+    pub guarded_markers: Vec<String>,
+    pub evidence_markers: Vec<String>,
+    #[serde(default)]
+    pub evidence_topics: Vec<String>,
+    #[serde(default)]
+    pub evidence_tool_names: Vec<String>,
+    #[serde(default)]
+    pub require_context_reference: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +84,8 @@ pub struct LongHorizonEvalManifest {
     pub required_constraint_marker: String,
     #[serde(default)]
     pub obsolete_state_values: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub evidence_gates: Vec<EvidenceGate>,
     pub stages: Vec<LongHorizonStage>,
 }
 
@@ -92,6 +112,34 @@ pub struct LongHorizonStageResult {
     pub context_commits: usize,
     pub context_failures: usize,
     pub model_attempts: usize,
+    #[serde(default)]
+    pub context_tx_attempts: usize,
+    #[serde(default)]
+    pub standalone_context_tx_attempts: usize,
+    #[serde(default)]
+    pub empty_standalone_context_tx_attempts: usize,
+    #[serde(default)]
+    pub rejected_context_tx_attempts: usize,
+    #[serde(default)]
+    pub exact_duplicate_physical_tool_calls: usize,
+    #[serde(default)]
+    pub same_path_repeat_physical_tool_calls: usize,
+    #[serde(default)]
+    pub read_guard_rejections: usize,
+    #[serde(default)]
+    pub temporal_violations: Vec<String>,
+    #[serde(default)]
+    pub provenance_violations: Vec<String>,
+    #[serde(default)]
+    pub state_passed: bool,
+    #[serde(default)]
+    pub mind_passed: bool,
+    #[serde(default)]
+    pub behavior_passed: bool,
+    #[serde(default)]
+    pub semantic_passed: bool,
+    #[serde(default)]
+    pub reply_passed: bool,
     pub pressure: ContextPressure,
     pub passed: bool,
 }
@@ -112,6 +160,16 @@ pub struct LongHorizonEvalReport {
     pub passed_stages: usize,
     pub stage_completion_rate: f64,
     pub strict_stage_pass_rate: f64,
+    pub state_passed_stages: usize,
+    pub state_stage_pass_rate: f64,
+    pub mind_passed_stages: usize,
+    pub mind_stage_pass_rate: f64,
+    pub behavior_passed_stages: usize,
+    pub behavior_stage_pass_rate: f64,
+    pub semantic_passed_stages: usize,
+    pub semantic_stage_pass_rate: f64,
+    pub reply_passed_stages: usize,
+    pub reply_stage_pass_rate: f64,
     pub restart_recovery_passed: bool,
     pub final_state_matches: bool,
     pub final_reply_fidelity: bool,
@@ -121,6 +179,16 @@ pub struct LongHorizonEvalReport {
     pub total_physical_tool_calls: usize,
     pub total_context_commits: usize,
     pub total_context_failures: usize,
+    pub total_context_tx_attempts: usize,
+    pub total_standalone_context_tx_attempts: usize,
+    pub total_empty_standalone_context_tx_attempts: usize,
+    pub standalone_context_tx_attempt_rate: f64,
+    pub total_rejected_context_tx_attempts: usize,
+    pub total_exact_duplicate_physical_tool_calls: usize,
+    pub total_same_path_repeat_physical_tool_calls: usize,
+    pub total_read_guard_rejections: usize,
+    pub total_temporal_violations: usize,
+    pub total_provenance_violations: usize,
     pub peak_estimated_tokens: usize,
     pub final_pressure: ContextPressure,
     pub ledger_events: usize,
@@ -196,6 +264,7 @@ pub async fn create_operations_continuity_eval(
                 vec!["/v1/events".to_string()],
             ),
         ]),
+        evidence_gates: operations_evidence_gates(),
         stages: operations_continuity_stages(),
     };
     let manifest_path = run_root.join("manifest.json");
@@ -275,6 +344,7 @@ pub async fn create_autonomous_transfer_eval(
             "selected_value".to_string(),
             markers(&["ALPHA-99", "BETA-00", "GAMMA-1"]),
         )]),
+        evidence_gates: Vec::new(),
         stages: autonomous_transfer_stages(),
     };
     let manifest_path = run_root.join("manifest.json");
@@ -359,10 +429,12 @@ async fn run_created_eval(
         );
         let physical_tool_calls = after.physical_tool_calls - before.physical_tool_calls;
         let no_tools_ok = !stage.require_no_physical_tools || physical_tool_calls == 0;
-        let passed = missing_reply_markers.is_empty()
-            && missing_mind_markers.is_empty()
-            && state_mismatches.is_empty()
-            && no_tools_ok;
+        let state_passed = state_mismatches.is_empty();
+        let mind_passed = missing_mind_markers.is_empty();
+        let behavior_passed = no_tools_ok;
+        let semantic_passed = state_passed && mind_passed && behavior_passed;
+        let reply_passed = missing_reply_markers.is_empty() && !reply.trim().is_empty();
+        let passed = semantic_passed && reply_passed;
         trace.stages.push(LongHorizonStageResult {
             index: stage.index,
             id: stage.id.clone(),
@@ -377,6 +449,20 @@ async fn run_created_eval(
             context_commits: after.context_commits - before.context_commits,
             context_failures: after.context_failures - before.context_failures,
             model_attempts: after.model_attempts - before.model_attempts,
+            context_tx_attempts: 0,
+            standalone_context_tx_attempts: 0,
+            empty_standalone_context_tx_attempts: 0,
+            rejected_context_tx_attempts: 0,
+            exact_duplicate_physical_tool_calls: 0,
+            same_path_repeat_physical_tool_calls: 0,
+            read_guard_rejections: 0,
+            temporal_violations: Vec::new(),
+            provenance_violations: Vec::new(),
+            state_passed,
+            mind_passed,
+            behavior_passed,
+            semantic_passed,
+            reply_passed,
             pressure: view.pressure,
             passed,
         });
@@ -407,8 +493,11 @@ pub async fn inspect_long_horizon_eval(
     profile: Option<ModelProfileIdentity>,
 ) -> Result<LongHorizonEvalReport, DynError> {
     let run_root = std::fs::canonicalize(run_root)?;
-    let manifest: LongHorizonEvalManifest =
+    let mut manifest: LongHorizonEvalManifest =
         serde_json::from_slice(&std::fs::read(run_root.join("manifest.json"))?)?;
+    if manifest.evidence_gates.is_empty() && manifest.scenario == SCENARIO {
+        manifest.evidence_gates = operations_evidence_gates();
+    }
     let trace: LongHorizonTrace =
         serde_json::from_slice(&std::fs::read(run_root.join("trace.json"))?)?;
     let store =
@@ -419,10 +508,44 @@ pub async fn inspect_long_horizon_eval(
             ..Default::default()
         })
         .await?;
+    let stage_event_metrics = analyze_stage_events(&events, &manifest);
+    let mut stages = trace.stages;
+    for (position, stage_result) in stages.iter_mut().enumerate() {
+        let Some(stage_manifest) = manifest.stages.get(position) else {
+            break;
+        };
+        let metrics = stage_event_metrics
+            .get(position)
+            .cloned()
+            .unwrap_or_default();
+        stage_result.context_tx_attempts = metrics.context_tx_attempts;
+        stage_result.standalone_context_tx_attempts = metrics.standalone_context_tx_attempts;
+        stage_result.empty_standalone_context_tx_attempts =
+            metrics.empty_standalone_context_tx_attempts;
+        stage_result.rejected_context_tx_attempts = metrics.rejected_context_tx_attempts;
+        stage_result.exact_duplicate_physical_tool_calls =
+            metrics.exact_duplicate_physical_tool_calls;
+        stage_result.same_path_repeat_physical_tool_calls =
+            metrics.same_path_repeat_physical_tool_calls;
+        stage_result.read_guard_rejections = metrics.read_guard_rejections;
+        stage_result.temporal_violations = metrics.temporal_violations;
+        stage_result.provenance_violations = metrics.provenance_violations;
+        stage_result.state_passed = stage_result.state_mismatches.is_empty();
+        stage_result.mind_passed = stage_result.missing_mind_markers.is_empty();
+        stage_result.behavior_passed = (!stage_manifest.require_no_physical_tools
+            || stage_result.physical_tool_calls == 0)
+            && stage_result.temporal_violations.is_empty()
+            && stage_result.provenance_violations.is_empty();
+        stage_result.semantic_passed =
+            stage_result.state_passed && stage_result.mind_passed && stage_result.behavior_passed;
+        stage_result.reply_passed =
+            stage_result.missing_reply_markers.is_empty() && !stage_result.reply.trim().is_empty();
+        stage_result.passed = stage_result.semantic_passed && stage_result.reply_passed;
+    }
     let final_view = context_engine(Arc::clone(&store), &manifest)
         .build_view(&manifest.session_id)
         .await?;
-    let final_stage = trace.stages.last();
+    let final_stage = stages.last();
     let final_state_matches = manifest.stages.last().is_some_and(|stage| {
         state_mismatches(
             &manifest.workspace_root.join(&stage.state_path),
@@ -454,21 +577,54 @@ pub async fn inspect_long_horizon_eval(
                     .is_some_and(|value| obsolete.iter().any(|candidate| candidate == value))
             })
     });
-    let passed_stages = trace.stages.iter().filter(|stage| stage.passed).count();
-    let restart_recovery_passed = trace
-        .stages
+    let passed_stages = stages.iter().filter(|stage| stage.passed).count();
+    let state_passed_stages = stages.iter().filter(|stage| stage.state_passed).count();
+    let mind_passed_stages = stages.iter().filter(|stage| stage.mind_passed).count();
+    let behavior_passed_stages = stages.iter().filter(|stage| stage.behavior_passed).count();
+    let semantic_passed_stages = stages.iter().filter(|stage| stage.semantic_passed).count();
+    let reply_passed_stages = stages.iter().filter(|stage| stage.reply_passed).count();
+    let restart_recovery_passed = stages
         .iter()
         .filter(|stage| stage.restarted_before)
         .all(|stage| stage.passed);
-    let peak_estimated_tokens = trace
-        .stages
+    let peak_estimated_tokens = stages
         .iter()
         .map(|stage| stage.pressure.estimated_tokens)
         .max()
         .unwrap_or_default();
     let counts = event_counts(&store, &manifest.session_id).await?;
-    let completed_stages = trace.stages.len();
+    let completed_stages = stages.len();
     let expected_stages = manifest.stages.len();
+    let total_context_tx_attempts = stages.iter().map(|stage| stage.context_tx_attempts).sum();
+    let total_standalone_context_tx_attempts = stages
+        .iter()
+        .map(|stage| stage.standalone_context_tx_attempts)
+        .sum();
+    let total_empty_standalone_context_tx_attempts = stages
+        .iter()
+        .map(|stage| stage.empty_standalone_context_tx_attempts)
+        .sum();
+    let total_rejected_context_tx_attempts = stages
+        .iter()
+        .map(|stage| stage.rejected_context_tx_attempts)
+        .sum();
+    let total_exact_duplicate_physical_tool_calls = stages
+        .iter()
+        .map(|stage| stage.exact_duplicate_physical_tool_calls)
+        .sum();
+    let total_same_path_repeat_physical_tool_calls = stages
+        .iter()
+        .map(|stage| stage.same_path_repeat_physical_tool_calls)
+        .sum();
+    let total_read_guard_rejections = stages.iter().map(|stage| stage.read_guard_rejections).sum();
+    let total_temporal_violations = stages
+        .iter()
+        .map(|stage| stage.temporal_violations.len())
+        .sum();
+    let total_provenance_violations = stages
+        .iter()
+        .map(|stage| stage.provenance_violations.len())
+        .sum();
     let success = completed_stages == expected_stages
         && passed_stages == completed_stages
         && restart_recovery_passed
@@ -486,6 +642,16 @@ pub async fn inspect_long_horizon_eval(
         passed_stages,
         stage_completion_rate: ratio(completed_stages, expected_stages),
         strict_stage_pass_rate: ratio(passed_stages, completed_stages),
+        state_passed_stages,
+        state_stage_pass_rate: ratio(state_passed_stages, completed_stages),
+        mind_passed_stages,
+        mind_stage_pass_rate: ratio(mind_passed_stages, completed_stages),
+        behavior_passed_stages,
+        behavior_stage_pass_rate: ratio(behavior_passed_stages, completed_stages),
+        semantic_passed_stages,
+        semantic_stage_pass_rate: ratio(semantic_passed_stages, completed_stages),
+        reply_passed_stages,
+        reply_stage_pass_rate: ratio(reply_passed_stages, completed_stages),
         restart_recovery_passed,
         final_state_matches,
         final_reply_fidelity,
@@ -495,12 +661,25 @@ pub async fn inspect_long_horizon_eval(
         total_physical_tool_calls: counts.physical_tool_calls,
         total_context_commits: counts.context_commits,
         total_context_failures: counts.context_failures,
+        total_context_tx_attempts,
+        total_standalone_context_tx_attempts,
+        total_empty_standalone_context_tx_attempts,
+        standalone_context_tx_attempt_rate: ratio(
+            total_empty_standalone_context_tx_attempts,
+            counts.model_attempts,
+        ),
+        total_rejected_context_tx_attempts,
+        total_exact_duplicate_physical_tool_calls,
+        total_same_path_repeat_physical_tool_calls,
+        total_read_guard_rejections,
+        total_temporal_violations,
+        total_provenance_violations,
         peak_estimated_tokens,
         final_pressure: final_view.pressure,
         ledger_events: events.len(),
         database_bytes: sqlite_storage_bytes(&manifest.database_path),
         success,
-        stages: trace.stages,
+        stages,
     })
 }
 
@@ -588,6 +767,17 @@ fn operations_continuity_stages() -> Vec<LongHorizonStage> {
             require_no_physical_tools: false,
         },
     ]
+}
+
+fn operations_evidence_gates() -> Vec<EvidenceGate> {
+    vec![EvidenceGate {
+        id: "approved-v3-evidence".to_string(),
+        guarded_markers: markers(&["v3"]),
+        evidence_markers: markers(&["version: v3"]),
+        evidence_topics: markers(&["chat/tool_output"]),
+        evidence_tool_names: markers(&["read"]),
+        require_context_reference: true,
+    }]
 }
 
 fn autonomous_transfer_stages() -> Vec<LongHorizonStage> {
@@ -887,6 +1077,303 @@ struct EventCounts {
     context_failures: usize,
 }
 
+#[derive(Debug, Clone, Default)]
+struct StageEventMetrics {
+    context_tx_attempts: usize,
+    standalone_context_tx_attempts: usize,
+    empty_standalone_context_tx_attempts: usize,
+    rejected_context_tx_attempts: usize,
+    exact_duplicate_physical_tool_calls: usize,
+    same_path_repeat_physical_tool_calls: usize,
+    read_guard_rejections: usize,
+    temporal_violations: Vec<String>,
+    provenance_violations: Vec<String>,
+}
+
+fn analyze_stage_events(
+    events: &[Event],
+    manifest: &LongHorizonEvalManifest,
+) -> Vec<StageEventMetrics> {
+    let mut metrics = vec![StageEventMetrics::default(); manifest.stages.len()];
+    let mut current_stage = None;
+    let mut seen_tool_calls = vec![HashSet::<String>::new(); manifest.stages.len()];
+    let mut seen_tool_paths = vec![HashSet::<String>::new(); manifest.stages.len()];
+    let mut evidence_references = manifest
+        .evidence_gates
+        .iter()
+        .map(|gate| (gate.id.clone(), Vec::<String>::new()))
+        .collect::<HashMap<_, _>>();
+    let mut established_evidence_gates = HashSet::<String>::new();
+
+    for event in events {
+        if event.topic == "chat/user_message" {
+            current_stage = Some(current_stage.map_or(0, |index| index + 1));
+        }
+
+        for gate in &manifest.evidence_gates {
+            if evidence_event_matches(event, gate) {
+                evidence_references
+                    .entry(gate.id.clone())
+                    .or_default()
+                    .push(event_reference(event));
+            }
+        }
+
+        let Some(stage_index) = current_stage.filter(|index| *index < metrics.len()) else {
+            continue;
+        };
+        let stage = &mut metrics[stage_index];
+
+        if event
+            .payload
+            .get("read_guard_status")
+            .is_some_and(|value| !value.is_null())
+            || event_payload_text(event)
+                .is_some_and(|text| normalized_contains(text, "READ_ALREADY_COVERED"))
+        {
+            stage.read_guard_rejections += 1;
+        }
+
+        if event.topic == "chat/reply" {
+            if let Some(text) = event_payload_text(event) {
+                inspect_evidence_gates(
+                    text,
+                    event,
+                    EvidenceInspectionChannel::Reply,
+                    &mut EvidenceGateState {
+                        gates: &manifest.evidence_gates,
+                        evidence_references: &evidence_references,
+                        established_gates: &mut established_evidence_gates,
+                    },
+                    stage,
+                );
+            }
+            continue;
+        }
+
+        if event.topic != "chat/assistant_call" {
+            continue;
+        }
+
+        let calls = event
+            .payload
+            .get("tool_calls")
+            .and_then(|value| value.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let mut context_transactions = Vec::new();
+        let mut physical_calls = 0usize;
+
+        for call in calls {
+            let Some(name) = tool_call_name(call) else {
+                continue;
+            };
+            let arguments = tool_call_arguments(call).unwrap_or_default();
+            if name == "context_tx" {
+                stage.context_tx_attempts += 1;
+                context_transactions.push(context_transaction_text(arguments));
+                continue;
+            }
+
+            physical_calls += 1;
+            let signature = format!("{name}\u{0}{arguments}");
+            if !seen_tool_calls[stage_index].insert(signature) {
+                stage.exact_duplicate_physical_tool_calls += 1;
+            }
+            if let Some(path) = tool_call_path(arguments) {
+                let path_signature = format!("{name}\u{0}{path}");
+                if !seen_tool_paths[stage_index].insert(path_signature) {
+                    stage.same_path_repeat_physical_tool_calls += 1;
+                }
+            }
+        }
+
+        if !context_transactions.is_empty() && physical_calls == 0 {
+            stage.standalone_context_tx_attempts += 1;
+            let empty_text = event
+                .payload
+                .get("text")
+                .and_then(|value| value.as_str())
+                .is_none_or(|text| text.trim().is_empty());
+            if empty_text {
+                stage.empty_standalone_context_tx_attempts += 1;
+            }
+        }
+
+        let rejected_ids = event
+            .payload
+            .get("rejected_context_tx_ids")
+            .and_then(|value| value.as_array())
+            .map(Vec::len)
+            .unwrap_or_default();
+        if rejected_ids > 0 {
+            stage.rejected_context_tx_attempts += rejected_ids;
+        } else if event
+            .payload
+            .get("context_tx_rejection_status")
+            .is_some_and(|value| !value.is_null())
+        {
+            stage.rejected_context_tx_attempts += 1;
+        }
+
+        for transaction in context_transactions {
+            inspect_evidence_gates(
+                &transaction,
+                event,
+                EvidenceInspectionChannel::ContextTransaction,
+                &mut EvidenceGateState {
+                    gates: &manifest.evidence_gates,
+                    evidence_references: &evidence_references,
+                    established_gates: &mut established_evidence_gates,
+                },
+                stage,
+            );
+        }
+    }
+
+    metrics
+}
+
+#[derive(Debug, Clone, Copy)]
+enum EvidenceInspectionChannel {
+    Reply,
+    ContextTransaction,
+}
+
+impl EvidenceInspectionChannel {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Reply => "reply",
+            Self::ContextTransaction => "context_tx",
+        }
+    }
+
+    fn checks_provenance(self) -> bool {
+        matches!(self, Self::ContextTransaction)
+    }
+}
+
+struct EvidenceGateState<'a> {
+    gates: &'a [EvidenceGate],
+    evidence_references: &'a HashMap<String, Vec<String>>,
+    established_gates: &'a mut HashSet<String>,
+}
+
+fn inspect_evidence_gates(
+    text: &str,
+    event: &Event,
+    channel: EvidenceInspectionChannel,
+    state: &mut EvidenceGateState<'_>,
+    metrics: &mut StageEventMetrics,
+) {
+    for gate in state.gates {
+        if !gate
+            .guarded_markers
+            .iter()
+            .any(|marker| normalized_contains(text, marker))
+        {
+            continue;
+        }
+        let references = state
+            .evidence_references
+            .get(&gate.id)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        if references.is_empty() {
+            metrics.temporal_violations.push(format!(
+                "gate={} channel={} event={} fact appeared before evidence",
+                gate.id,
+                channel.label(),
+                event_reference(event)
+            ));
+        } else if channel.checks_provenance() && !state.established_gates.contains(&gate.id) {
+            if gate.require_context_reference
+                && !references
+                    .iter()
+                    .any(|reference| normalized_contains(text, reference))
+            {
+                metrics.provenance_violations.push(format!(
+                    "gate={} channel={} event={} missing evidence reference; expected one of {}",
+                    gate.id,
+                    channel.label(),
+                    event_reference(event),
+                    references.join(",")
+                ));
+            } else {
+                state.established_gates.insert(gate.id.clone());
+            }
+        }
+    }
+}
+
+fn evidence_event_matches(event: &Event, gate: &EvidenceGate) -> bool {
+    if !gate.evidence_topics.is_empty() && !gate.evidence_topics.contains(&event.topic) {
+        return false;
+    }
+    if !gate.evidence_tool_names.is_empty()
+        && !event
+            .payload
+            .get("tool_name")
+            .and_then(|value| value.as_str())
+            .is_some_and(|name| {
+                gate.evidence_tool_names
+                    .iter()
+                    .any(|allowed| allowed == name)
+            })
+    {
+        return false;
+    }
+    !gate.evidence_markers.is_empty()
+        && event_payload_text(event).is_some_and(|text| {
+            gate.evidence_markers
+                .iter()
+                .all(|marker| normalized_contains(text, marker))
+        })
+}
+
+fn event_payload_text(event: &Event) -> Option<&str> {
+    event.payload.get("text").and_then(|value| value.as_str())
+}
+
+fn event_reference(event: &Event) -> String {
+    event
+        .sequence
+        .map(|sequence| format!("@e{sequence}"))
+        .unwrap_or_else(|| event.id.clone())
+}
+
+fn tool_call_name(call: &serde_json::Value) -> Option<&str> {
+    call.get("function")
+        .and_then(|value| value.get("name"))
+        .and_then(|value| value.as_str())
+}
+
+fn tool_call_arguments(call: &serde_json::Value) -> Option<&str> {
+    call.get("function")
+        .and_then(|value| value.get("arguments"))
+        .and_then(|value| value.as_str())
+}
+
+fn context_transaction_text(arguments: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("transaction")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| arguments.to_string())
+}
+
+fn tool_call_path(arguments: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()?
+        .get("path")?
+        .as_str()
+        .map(str::to_string)
+}
+
 async fn event_counts(store: &Arc<SqliteStore>, session_id: &str) -> Result<EventCounts, DynError> {
     let events = store
         .query(QueryFilter {
@@ -1101,6 +1588,8 @@ mod tests {
             .join("sources/late-archived-v1.md")
             .exists());
         assert_eq!(environment.manifest.context_policy, "agent_owned");
+        assert_eq!(environment.manifest.evidence_gates.len(), 1);
+        assert!(environment.manifest.evidence_gates[0].require_context_reference);
         assert_eq!(
             environment.manifest.context_protocol_version,
             CONTEXT_PROTOCOL_VERSION
@@ -1174,5 +1663,188 @@ mod tests {
         assert!(safe_relative_path("sources/hotfix.md").is_ok());
         assert!(safe_relative_path("../manifest.json").is_err());
         assert!(safe_relative_path("/tmp/outside").is_err());
+    }
+
+    #[tokio::test]
+    async fn event_metrics_separate_standalone_transactions_and_physical_duplicates() {
+        let temp = TempDir::new().unwrap();
+        let manifest = create_operations_continuity_eval(Some(temp.path()))
+            .await
+            .unwrap()
+            .manifest;
+        let events = vec![
+            test_event(
+                1,
+                "user_message",
+                "chat/user_message",
+                serde_json::json!({"text":"go"}),
+            ),
+            test_event(
+                2,
+                "agent_call",
+                "chat/assistant_call",
+                serde_json::json!({
+                    "text":"",
+                    "tool_calls":[
+                        test_tool_call("context_tx", r#"{"transaction":"(context-tx (base-version 0) (create task (status active)))"}"#),
+                        test_tool_call("read", r#"{"path":"sources/a.md"}"#)
+                    ]
+                }),
+            ),
+            test_event(
+                3,
+                "agent_call",
+                "chat/assistant_call",
+                serde_json::json!({
+                    "text":"",
+                    "tool_calls":[test_tool_call("context_tx", r#"{"transaction":"(context-tx (base-version 1) (revise task (status done)))"}"#)],
+                    "context_tx_rejection_status":"budget-exhausted",
+                    "rejected_context_tx_ids":["tx-2"]
+                }),
+            ),
+            test_event(
+                4,
+                "agent_call",
+                "chat/assistant_call",
+                serde_json::json!({
+                    "text":"", "tool_calls":[test_tool_call("read", r#"{"path":"sources/a.md"}"#)]
+                }),
+            ),
+            test_event(
+                5,
+                "agent_call",
+                "chat/assistant_call",
+                serde_json::json!({
+                    "text":"", "tool_calls":[test_tool_call("read", r#"{"path":"sources/a.md"}"#)]
+                }),
+            ),
+            test_event(
+                6,
+                "agent_call",
+                "chat/assistant_call",
+                serde_json::json!({
+                    "text":"", "tool_calls":[test_tool_call("read", r#"{"path":"sources/a.md","start_line":2}"#)]
+                }),
+            ),
+            test_event(
+                7,
+                "tool_output",
+                "chat/tool_output",
+                serde_json::json!({
+                    "text":"READ_ALREADY_COVERED", "tool_name":"read", "tool_status":"rejected"
+                }),
+            ),
+        ];
+
+        let metrics = analyze_stage_events(&events, &manifest);
+        let stage = &metrics[0];
+        assert_eq!(stage.context_tx_attempts, 2);
+        assert_eq!(stage.standalone_context_tx_attempts, 1);
+        assert_eq!(stage.empty_standalone_context_tx_attempts, 1);
+        assert_eq!(stage.rejected_context_tx_attempts, 1);
+        assert_eq!(stage.exact_duplicate_physical_tool_calls, 2);
+        assert_eq!(stage.same_path_repeat_physical_tool_calls, 3);
+        assert_eq!(stage.read_guard_rejections, 1);
+    }
+
+    #[tokio::test]
+    async fn evidence_gate_detects_early_facts_and_missing_provenance() {
+        let temp = TempDir::new().unwrap();
+        let manifest = create_operations_continuity_eval(Some(temp.path()))
+            .await
+            .unwrap()
+            .manifest;
+        let events = vec![
+            test_event(
+                1,
+                "user_message",
+                "chat/user_message",
+                serde_json::json!({"text":"stage 1"}),
+            ),
+            test_event(
+                2,
+                "user_message",
+                "chat/user_message",
+                serde_json::json!({"text":"stage 2"}),
+            ),
+            test_event(
+                3,
+                "agent_call",
+                "chat/assistant_call",
+                serde_json::json!({
+                    "text":"",
+                    "tool_calls":[test_tool_call("context_tx", r#"{"transaction":"(context-tx (base-version 1) (derive service_v3 (from @e2) (version v3)))"}"#)]
+                }),
+            ),
+            test_event(
+                4,
+                "agent_call",
+                "chat/reply",
+                serde_json::json!({"text":"service_v3 is current"}),
+            ),
+            test_event(
+                5,
+                "user_message",
+                "chat/user_message",
+                serde_json::json!({"text":"stage 3"}),
+            ),
+            test_event(
+                6,
+                "tool_output",
+                "chat/tool_output",
+                serde_json::json!({
+                    "text":"status: approved-current\nversion: v3\n", "tool_name":"read", "tool_status":"success"
+                }),
+            ),
+            test_event(
+                7,
+                "agent_call",
+                "chat/assistant_call",
+                serde_json::json!({
+                    "text":"",
+                    "tool_calls":[test_tool_call("context_tx", r#"{"transaction":"(context-tx (base-version 2) (derive release-v3 (from @e5) (version v3)))"}"#)]
+                }),
+            ),
+            test_event(
+                8,
+                "agent_call",
+                "chat/assistant_call",
+                serde_json::json!({
+                    "text":"",
+                    "tool_calls":[test_tool_call("context_tx", r#"{"transaction":"(context-tx (base-version 2) (derive release-v3 (from @e6) (version v3)))"}"#)]
+                }),
+            ),
+        ];
+
+        let metrics = analyze_stage_events(&events, &manifest);
+        assert_eq!(metrics[1].temporal_violations.len(), 2);
+        assert!(metrics[1].provenance_violations.is_empty());
+        assert!(metrics[2].temporal_violations.is_empty());
+        assert_eq!(metrics[2].provenance_violations.len(), 1);
+    }
+
+    fn test_tool_call(name: &str, arguments: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": format!("{name}-call"),
+            "type":"function",
+            "function":{"name":name,"arguments":arguments}
+        })
+    }
+
+    fn test_event(
+        sequence: u64,
+        event_type: &str,
+        topic: &str,
+        payload: serde_json::Value,
+    ) -> Event {
+        let mut event = Event::new(
+            format!("event-{sequence}"),
+            "test".to_string(),
+            event_type.to_string(),
+            topic.to_string(),
+            payload.as_object().unwrap().clone(),
+        );
+        event.sequence = Some(sequence);
+        event
     }
 }
