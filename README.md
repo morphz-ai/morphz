@@ -10,6 +10,8 @@ Morphz 是一个由 Rust 实现、能够通过 SExpr DSL 自主管理自身 Cont
 
 `context_tx` 提供 `create/derive/revise/retire/restore/protect/unprotect/place/relate/unrelate/checkpoint/rollback/drop-checkpoint` 原语；`recall` 用于按稳定引用分页读取 Ledger 原文或恢复 Frame。主链路不会自动摘要历史、按轮数裁剪信息或把 Graph 检索结果静默注入 Mind。完整设计见 [Agent-Owned Context 设计文档](docs/morphz_agent_owned_context_design.md)。
 
+长期架构把 Agent 视为持续存在的逻辑认知主体，把 Session 视为可多路复用的交互连接，把 Context 视为可共享、COW 分支、合并和重置的一等版本化对象；多个 Session 可以共享一个 Mind，一个 Session 也可以由多个 Sub Agent/算力节点并行推进。该方向不代表当前能力已经全部实现，完整边界见 [共享 Context、多会话与并行认知架构](docs/morphz_shared_context_multisession_architecture.md)。
+
 当前各项真实测试的最终结果、模型身份、结论边界和未完成项见 [Morphz 当前评测状态总览](docs/morphz_eval_status.md)。日常主测 Agent 为 `gemini-3-flash-agent`，其他模型用于对照与兼容性验证。
 
 Coding Tools v1 提供 `list_files/search/read/edit/write/exec` 最小开发闭环：`read` 返回 SHA-256 文件版本，`edit` 使用版本前提执行唯一匹配的原子局部修改，`write` 只允许显式 create 或带版本前提的 overwrite，所有成功修改都会产生带 Diff 的 `file_change` Observation。接口与安全边界见 [Coding Tools v1](docs/morphz_coding_tools_v1.md)。

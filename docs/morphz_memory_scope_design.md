@@ -2,6 +2,8 @@
 
 > 状态：实现前设计冻结；Checkpoint/rollback 已进入 protocol v7，跨 session scope 尚未写入 Runtime
 
+> 方向修订：本文的 `session/project/agent` Scope 继续作为可见性、来源和生命周期机制，但不再被理解为固定隔离树。Session 可以挂载 Shared Agent Context、Project Context 或 COW Overlay；多个 Session/Sub Agent 也可以共享同一 Context Head。完整北极星设计见 [`morphz_shared_context_multisession_architecture.md`](morphz_shared_context_multisession_architecture.md)。
+
 ## 1. 问题
 
 当前 Mind 由 `session_id` 定位。只要使用同一个 session，进程重启后可以确定性恢复；Operations Continuity v1 已验证这一点。但“Agent 运行越久越聪明”不能依赖所有任务永久共用一个无限 session，也不能把一个项目的经验无条件暴露给另一个项目。

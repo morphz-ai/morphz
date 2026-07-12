@@ -4,6 +4,8 @@
 > 适用范围：Morphz Agent Runtime、SExpr DSL、Context 生命周期、记忆召回与产品调试界面
 > 设计优先级：本文件用于澄清 Morphz 的核心方向；当既有文档中的“自动评分、自动裁剪、自动摘要、自动注入”与本文冲突时，应以本文的职责划分为准。
 
+> 长期 Context 拓扑说明：本文件第 10.5、11 节描述的是当前 v1 的保守单写者/独立子 Mind 策略。关于 Session 共享、Shared Mind、多 Sub Agent、COW 分支、Context Generation 和状态/算力分离的北极星设计，以 [`morphz_shared_context_multisession_architecture.md`](morphz_shared_context_multisession_architecture.md) 为准。
+
 ## 1. 设计命题
 
 Morphz 的 Context 不是由 Runtime 按固定规则拼装出来的一份“结构化 Prompt”，也不是一段只能随对话线性增长、最终由框架统一压缩的聊天历史。
