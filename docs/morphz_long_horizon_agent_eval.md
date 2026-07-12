@@ -131,6 +131,10 @@ cargo run -p morphz --bin long_horizon_agent_eval -- run PROFILES.toml BASE_DIR
 cargo run -p morphz --bin long_horizon_agent_eval -- create-transfer [BASE_DIR]
 cargo run -p morphz --bin long_horizon_agent_eval -- run-transfer PROFILES.toml BASE_DIR
 
+# Experience Transfer 三 arm 对照
+cargo run -p morphz --bin long_horizon_agent_eval -- create-experience ARM [BASE_DIR]
+cargo run -p morphz --bin long_horizon_agent_eval -- run-experience PROFILES.toml BASE_DIR
+
 # 两类场景共用检查器
 cargo run -p morphz --bin long_horizon_agent_eval -- inspect RUN_ROOT
 ```
@@ -251,3 +255,9 @@ Read guard 现在为每一种 full/range/query 覆盖记录最初 read 的 tool-
 - 聚合后的 semantic/reply/strict 阶段通过率。
 
 用新框架回放既有 10 条 v8 轨迹后，物理重复三项仍全部为 0；Operations 检出 9 个提前事实事件，分布在 4 个样本的 `revise-policy` 阶段，来源完整性违规为 0；Transfer 没有时序或来源违规。由此可以把“Agent 最终状态正确”和“Agent 在过程中是否基于当时证据正确推理”明确区分。
+
+## 15. Experience Transfer v1：有经验与全新 Agent 对照
+
+Experience Transfer v1 已实现相关经验、无关经验和全新三个隔离 arm，并用完全相同、无迁移提示的目标任务并发比较。2026-07-12 的 Gemini 5 次正式重复中，相关经验、无关经验、全新的语义通过分别为 13/15、15/15、13/15；严格通过均为 13/15。平均模型尝试分别为 6.8、8.0、9.0，平均物理工具分别为 5.8、6.8、7.0。
+
+已有 Mind 与更低执行成本存在信号，但相关经验没有提高总体正确率，且模型没有稳定形成独立的通用原则 frame。当前只证明“经验可进入后续任务并可能缩短路径”，不能声称已经实现稳定自主进化。三 arm 设计、被排除的夹具污染、逐次结果和最终 Mind 结构见 [Experience Transfer Benchmark v1](morphz_experience_transfer_benchmark_v1.md)。

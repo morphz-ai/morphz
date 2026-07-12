@@ -4,7 +4,7 @@ use crate::event::Event;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{EventStore, QueryFilter};
 use crate::orchestrator::context::CONTEXT_PROTOCOL_VERSION;
-use crate::orchestrator::context::{ContextEngine, ContextPressure};
+use crate::orchestrator::context::{ContextEngine, ContextPressure, ContextRelation};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -22,6 +22,8 @@ const CONTEXT_POLICY: &str = "agent_owned";
 const SCENARIO: &str = "operations_continuity_v1";
 const TRANSFER_SCENARIO: &str = "autonomous_transfer_v1";
 const EPISTEMIC_REALITY_SCENARIO: &str = "epistemic_reality_v1";
+const EXPERIENCE_TRANSFER_SCENARIO: &str = "experience_transfer_v1";
+const TARGET_STAGE_PREFIX: &str = "target-";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileInjection {
@@ -209,6 +211,106 @@ pub struct LongHorizonEvalRun {
     pub stderr_path: PathBuf,
     pub model_profile: Option<ModelProfileIdentity>,
     pub report: LongHorizonEvalReport,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExperienceTransferArm {
+    RelatedExperience,
+    UnrelatedExperience,
+    Fresh,
+}
+
+impl ExperienceTransferArm {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RelatedExperience => "related_experience",
+            Self::UnrelatedExperience => "unrelated_experience",
+            Self::Fresh => "fresh",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MindFrameSnapshot {
+    pub id: String,
+    pub body: String,
+    pub revision: u64,
+    pub created_version: u64,
+    pub updated_version: u64,
+    pub source_count: usize,
+    pub protected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MindStructureSnapshot {
+    pub version: u64,
+    pub active_frame_count: usize,
+    pub retired_frame_count: usize,
+    pub relation_count: usize,
+    pub protected_entry_count: usize,
+    pub retired_entry_count: usize,
+    pub frames: Vec<MindFrameSnapshot>,
+    pub relations: Vec<ContextRelation>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExperienceTransferTargetMetrics {
+    pub target_stages: usize,
+    pub state_passed_stages: usize,
+    pub mind_passed_stages: usize,
+    pub behavior_passed_stages: usize,
+    pub semantic_passed_stages: usize,
+    pub reply_passed_stages: usize,
+    pub strict_passed_stages: usize,
+    pub state_pass_rate: f64,
+    pub mind_pass_rate: f64,
+    pub semantic_pass_rate: f64,
+    pub strict_pass_rate: f64,
+    pub restart_recovery_passed: bool,
+    pub model_attempts: usize,
+    pub physical_tool_calls: usize,
+    pub context_commits: usize,
+    pub empty_standalone_context_tx_attempts: usize,
+    pub temporal_violations: usize,
+    pub provenance_violations: usize,
+    pub exact_duplicate_physical_tool_calls: usize,
+    pub same_path_repeat_physical_tool_calls: usize,
+    pub read_guard_rejections: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExperienceTransferArmReport {
+    pub arm: ExperienceTransferArm,
+    pub run_root: PathBuf,
+    pub full_run_success: bool,
+    pub training_stages: usize,
+    pub target: ExperienceTransferTargetMetrics,
+    pub final_mind: MindStructureSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExperienceTransferComparison {
+    pub related_minus_fresh_semantic_pass_rate: f64,
+    pub related_minus_fresh_strict_pass_rate: f64,
+    pub related_minus_fresh_model_attempts: i64,
+    pub related_minus_fresh_physical_tool_calls: i64,
+    pub unrelated_minus_fresh_semantic_pass_rate: f64,
+    pub unrelated_minus_fresh_strict_pass_rate: f64,
+    pub unrelated_minus_fresh_model_attempts: i64,
+    pub unrelated_minus_fresh_physical_tool_calls: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ExperienceTransferSuiteRun {
+    pub id: String,
+    pub created_at: String,
+    pub suite_root: PathBuf,
+    pub model_profile: Option<ModelProfileIdentity>,
+    pub related_experience: ExperienceTransferArmReport,
+    pub unrelated_experience: ExperienceTransferArmReport,
+    pub fresh: ExperienceTransferArmReport,
+    pub comparison: ExperienceTransferComparison,
 }
 
 pub async fn create_operations_continuity_eval(
@@ -456,6 +558,320 @@ pub async fn run_epistemic_reality_eval(
 ) -> Result<LongHorizonEvalRun, DynError> {
     let environment = create_epistemic_reality_eval(base_dir).await?;
     run_created_eval(environment, agent_binary, profile).await
+}
+
+pub async fn create_experience_transfer_arm_eval(
+    base_dir: Option<&Path>,
+    arm: ExperienceTransferArm,
+) -> Result<LongHorizonEvalEnvironment, DynError> {
+    let base = base_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("morphz-experience-transfer-evals"));
+    std::fs::create_dir_all(&base)?;
+    let base = std::fs::canonicalize(base)?;
+    let id = format!(
+        "{EXPERIENCE_TRANSFER_SCENARIO}-{}-{}-{}",
+        arm.as_str(),
+        Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+        std::process::id()
+    );
+    let run_root = base.join(&id);
+    let workspace_root = run_root.join("workspace");
+    let artifact_dir = run_root.join("artifacts");
+    for directory in [
+        &run_root,
+        &workspace_root,
+        &artifact_dir,
+        &workspace_root.join("training"),
+        &workspace_root.join("challenge"),
+        &workspace_root.join("state"),
+        &workspace_root.join("reports"),
+    ] {
+        std::fs::create_dir_all(directory)?;
+    }
+    set_private_directory_permissions(&run_root)?;
+
+    let database_path = run_root.join("morphz.db");
+    SqliteStore::new(database_path.to_string_lossy().as_ref()).await?;
+    let session_id = format!("experience-transfer-{id}");
+    let stages = experience_transfer_stages(arm);
+    let manifest = LongHorizonEvalManifest {
+        id,
+        created_at: Utc::now().to_rfc3339(),
+        family: "experience_transfer".to_string(),
+        scenario: format!("{EXPERIENCE_TRANSFER_SCENARIO}-{}", arm.as_str()),
+        context_policy: CONTEXT_POLICY.to_string(),
+        runtime_commit: runtime_commit(),
+        runtime_dirty: runtime_dirty(),
+        context_protocol_version: CONTEXT_PROTOCOL_VERSION,
+        session_id,
+        database_path: database_path.clone(),
+        workspace_root: workspace_root.clone(),
+        artifact_dir: artifact_dir.clone(),
+        soft_token_limit: 32_000,
+        hard_token_limit: 48_000,
+        maintenance_reserve_tokens: 8_000,
+        observation_preview_chars: 1_200,
+        required_constraint_marker: "GAMMA-2".to_string(),
+        obsolete_state_values: BTreeMap::from([(
+            "selected_value".to_string(),
+            markers(&["GAMMA-1"]),
+        )]),
+        evidence_gates: Vec::new(),
+        stages,
+    };
+    let manifest_path = run_root.join("manifest.json");
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+    std::fs::write(
+        run_root.join("trace.json"),
+        serde_json::to_vec_pretty(&LongHorizonTrace::default())?,
+    )?;
+    Ok(LongHorizonEvalEnvironment {
+        run_root,
+        manifest_path,
+        environment: runtime_environment(&manifest),
+        manifest,
+    })
+}
+
+pub async fn run_experience_transfer_arm_eval(
+    base_dir: Option<&Path>,
+    arm: ExperienceTransferArm,
+    agent_binary: &Path,
+    profile: Option<&ModelProfileIdentity>,
+) -> Result<LongHorizonEvalRun, DynError> {
+    let environment = create_experience_transfer_arm_eval(base_dir, arm).await?;
+    run_created_eval(environment, agent_binary, profile).await
+}
+
+pub async fn run_experience_transfer_suite(
+    base_dir: Option<&Path>,
+    agent_binary: &Path,
+    profile: Option<&ModelProfileIdentity>,
+) -> Result<ExperienceTransferSuiteRun, DynError> {
+    let base = base_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("morphz-experience-transfer-suites"));
+    std::fs::create_dir_all(&base)?;
+    let base = std::fs::canonicalize(base)?;
+    let id = format!(
+        "{EXPERIENCE_TRANSFER_SCENARIO}-suite-{}-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+        std::process::id()
+    );
+    let suite_root = base.join(&id);
+    std::fs::create_dir_all(&suite_root)?;
+    set_private_directory_permissions(&suite_root)?;
+
+    let related_root = suite_root.join(ExperienceTransferArm::RelatedExperience.as_str());
+    let unrelated_root = suite_root.join(ExperienceTransferArm::UnrelatedExperience.as_str());
+    let fresh_root = suite_root.join(ExperienceTransferArm::Fresh.as_str());
+    let related_profile = profile.cloned();
+    let unrelated_profile = profile.cloned();
+    let fresh_profile = profile.cloned();
+    let (related_run, unrelated_run, fresh_run) = tokio::try_join!(
+        run_experience_transfer_arm_eval(
+            Some(&related_root),
+            ExperienceTransferArm::RelatedExperience,
+            agent_binary,
+            related_profile.as_ref(),
+        ),
+        run_experience_transfer_arm_eval(
+            Some(&unrelated_root),
+            ExperienceTransferArm::UnrelatedExperience,
+            agent_binary,
+            unrelated_profile.as_ref(),
+        ),
+        run_experience_transfer_arm_eval(
+            Some(&fresh_root),
+            ExperienceTransferArm::Fresh,
+            agent_binary,
+            fresh_profile.as_ref(),
+        ),
+    )?;
+
+    let related_experience =
+        experience_transfer_arm_report(ExperienceTransferArm::RelatedExperience, &related_run)
+            .await?;
+    let unrelated_experience =
+        experience_transfer_arm_report(ExperienceTransferArm::UnrelatedExperience, &unrelated_run)
+            .await?;
+    let fresh = experience_transfer_arm_report(ExperienceTransferArm::Fresh, &fresh_run).await?;
+    let comparison = compare_experience_transfer_arms(
+        &related_experience.target,
+        &unrelated_experience.target,
+        &fresh.target,
+    );
+    let suite = ExperienceTransferSuiteRun {
+        id,
+        created_at: Utc::now().to_rfc3339(),
+        suite_root: suite_root.clone(),
+        model_profile: profile.cloned(),
+        related_experience,
+        unrelated_experience,
+        fresh,
+        comparison,
+    };
+    std::fs::write(
+        suite_root.join("suite_report.json"),
+        serde_json::to_vec_pretty(&suite)?,
+    )?;
+    Ok(suite)
+}
+
+async fn experience_transfer_arm_report(
+    arm: ExperienceTransferArm,
+    run: &LongHorizonEvalRun,
+) -> Result<ExperienceTransferArmReport, DynError> {
+    let target = experience_transfer_target_metrics(&run.report);
+    let final_mind = final_mind_structure(&run.run_root).await?;
+    Ok(ExperienceTransferArmReport {
+        arm,
+        run_root: run.run_root.clone(),
+        full_run_success: run.report.success,
+        training_stages: run
+            .report
+            .stages
+            .iter()
+            .filter(|stage| !stage.id.starts_with(TARGET_STAGE_PREFIX))
+            .count(),
+        target,
+        final_mind,
+    })
+}
+
+fn experience_transfer_target_metrics(
+    report: &LongHorizonEvalReport,
+) -> ExperienceTransferTargetMetrics {
+    let stages = report
+        .stages
+        .iter()
+        .filter(|stage| stage.id.starts_with(TARGET_STAGE_PREFIX))
+        .collect::<Vec<_>>();
+    let target_stages = stages.len();
+    let state_passed_stages = stages.iter().filter(|stage| stage.state_passed).count();
+    let mind_passed_stages = stages.iter().filter(|stage| stage.mind_passed).count();
+    let behavior_passed_stages = stages.iter().filter(|stage| stage.behavior_passed).count();
+    let semantic_passed_stages = stages.iter().filter(|stage| stage.semantic_passed).count();
+    let reply_passed_stages = stages.iter().filter(|stage| stage.reply_passed).count();
+    let strict_passed_stages = stages.iter().filter(|stage| stage.passed).count();
+    ExperienceTransferTargetMetrics {
+        target_stages,
+        state_passed_stages,
+        mind_passed_stages,
+        behavior_passed_stages,
+        semantic_passed_stages,
+        reply_passed_stages,
+        strict_passed_stages,
+        state_pass_rate: ratio(state_passed_stages, target_stages),
+        mind_pass_rate: ratio(mind_passed_stages, target_stages),
+        semantic_pass_rate: ratio(semantic_passed_stages, target_stages),
+        strict_pass_rate: ratio(strict_passed_stages, target_stages),
+        restart_recovery_passed: stages
+            .iter()
+            .filter(|stage| stage.restarted_before)
+            .all(|stage| stage.semantic_passed),
+        model_attempts: stages.iter().map(|stage| stage.model_attempts).sum(),
+        physical_tool_calls: stages.iter().map(|stage| stage.physical_tool_calls).sum(),
+        context_commits: stages.iter().map(|stage| stage.context_commits).sum(),
+        empty_standalone_context_tx_attempts: stages
+            .iter()
+            .map(|stage| stage.empty_standalone_context_tx_attempts)
+            .sum(),
+        temporal_violations: stages
+            .iter()
+            .map(|stage| stage.temporal_violations.len())
+            .sum(),
+        provenance_violations: stages
+            .iter()
+            .map(|stage| stage.provenance_violations.len())
+            .sum(),
+        exact_duplicate_physical_tool_calls: stages
+            .iter()
+            .map(|stage| stage.exact_duplicate_physical_tool_calls)
+            .sum(),
+        same_path_repeat_physical_tool_calls: stages
+            .iter()
+            .map(|stage| stage.same_path_repeat_physical_tool_calls)
+            .sum(),
+        read_guard_rejections: stages.iter().map(|stage| stage.read_guard_rejections).sum(),
+    }
+}
+
+async fn final_mind_structure(run_root: &Path) -> Result<MindStructureSnapshot, DynError> {
+    let manifest: LongHorizonEvalManifest =
+        serde_json::from_slice(&std::fs::read(run_root.join("manifest.json"))?)?;
+    let store =
+        Arc::new(SqliteStore::new(manifest.database_path.to_string_lossy().as_ref()).await?);
+    let view = context_engine(store, &manifest)
+        .build_view(&manifest.session_id)
+        .await?;
+    let active_frames = view
+        .state
+        .frames
+        .iter()
+        .filter(|frame| !view.state.retired.contains(&frame.id))
+        .map(|frame| MindFrameSnapshot {
+            id: frame.id.clone(),
+            body: frame.body.clone(),
+            revision: frame.revision,
+            created_version: frame.created_version,
+            updated_version: frame.updated_version,
+            source_count: frame.sources.len(),
+            protected: view.state.protected.contains(&frame.id),
+        })
+        .collect::<Vec<_>>();
+    let retired_frame_count = view
+        .state
+        .frames
+        .iter()
+        .filter(|frame| view.state.retired.contains(&frame.id))
+        .count();
+    Ok(MindStructureSnapshot {
+        version: view.state.version,
+        active_frame_count: active_frames.len(),
+        retired_frame_count,
+        relation_count: view.state.relations.len(),
+        protected_entry_count: view.state.protected.len(),
+        retired_entry_count: view.state.retired.len(),
+        frames: active_frames,
+        relations: view.state.relations,
+    })
+}
+
+fn compare_experience_transfer_arms(
+    related: &ExperienceTransferTargetMetrics,
+    unrelated: &ExperienceTransferTargetMetrics,
+    fresh: &ExperienceTransferTargetMetrics,
+) -> ExperienceTransferComparison {
+    ExperienceTransferComparison {
+        related_minus_fresh_semantic_pass_rate: related.semantic_pass_rate
+            - fresh.semantic_pass_rate,
+        related_minus_fresh_strict_pass_rate: related.strict_pass_rate - fresh.strict_pass_rate,
+        related_minus_fresh_model_attempts: signed_delta(
+            related.model_attempts,
+            fresh.model_attempts,
+        ),
+        related_minus_fresh_physical_tool_calls: signed_delta(
+            related.physical_tool_calls,
+            fresh.physical_tool_calls,
+        ),
+        unrelated_minus_fresh_semantic_pass_rate: unrelated.semantic_pass_rate
+            - fresh.semantic_pass_rate,
+        unrelated_minus_fresh_strict_pass_rate: unrelated.strict_pass_rate - fresh.strict_pass_rate,
+        unrelated_minus_fresh_model_attempts: signed_delta(
+            unrelated.model_attempts,
+            fresh.model_attempts,
+        ),
+        unrelated_minus_fresh_physical_tool_calls: signed_delta(
+            unrelated.physical_tool_calls,
+            fresh.physical_tool_calls,
+        ),
+    }
+}
+
+fn signed_delta(left: usize, right: usize) -> i64 {
+    left as i64 - right as i64
 }
 
 async fn run_created_eval(
@@ -1101,6 +1517,246 @@ fn incident_state(
             "remediation_status".to_string(),
             remediation_status.to_string(),
         ),
+    ])
+}
+
+fn experience_transfer_stages(arm: ExperienceTransferArm) -> Vec<LongHorizonStage> {
+    let mut stages = match arm {
+        ExperienceTransferArm::RelatedExperience => related_experience_training_stages(),
+        ExperienceTransferArm::UnrelatedExperience => unrelated_experience_training_stages(),
+        ExperienceTransferArm::Fresh => Vec::new(),
+    };
+    let start_index = stages.len() + 1;
+    stages.extend(experience_transfer_target_stages(start_index));
+    stages
+}
+
+fn related_experience_training_stages() -> Vec<LongHorizonStage> {
+    let state_path = "state/training.env".to_string();
+    vec![
+        LongHorizonStage {
+            index: 1,
+            id: "training-related-late-draft".to_string(),
+            prompt: "读取 training/related/a/approved.md 和 training/related/a/late-draft.md，判断当前应采用哪个值。创建 state/training.env，每行一个 key=value，包含 case_id、selected_value、rejected_value；将后续工作可能需要的当前决定和依据维护到 Mind，最终报告采用值和拒绝值。".to_string(),
+            restart_before: false,
+            injections: vec![
+                FileInjection {
+                    path: "training/related/a/approved.md".to_string(),
+                    content: "status: approved-current\nauthority: release-board\ncase_id: A\nselected_value: ALPHA-17\n".to_string(),
+                },
+                FileInjection {
+                    path: "training/related/a/late-draft.md".to_string(),
+                    content: "status: draft-unapproved\nauthority: individual-proposal\ncase_id: A\nselected_value: ALPHA-99\n".to_string(),
+                },
+            ],
+            expected_reply_markers: markers(&["ALPHA-17", "ALPHA-99"]),
+            expected_mind_markers: markers(&["ALPHA-17", "ALPHA-99"]),
+            state_path: state_path.clone(),
+            expected_state: transfer_choice_state("A", "ALPHA-17", "ALPHA-99"),
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 2,
+            id: "training-related-approved-update".to_string(),
+            prompt: "读取 training/related/b/earlier.md 和 training/related/b/approved-amendment.md，判断案例 B 的当前值，更新 state/training.env 与 Mind。最终报告当前采用值、旧值和判断依据。".to_string(),
+            restart_before: false,
+            injections: vec![
+                FileInjection {
+                    path: "training/related/b/earlier.md".to_string(),
+                    content: "status: superseded\nauthority: release-board\ncase_id: B\nselected_value: BETA-17\nsuperseded_by: amendment-b\n".to_string(),
+                },
+                FileInjection {
+                    path: "training/related/b/approved-amendment.md".to_string(),
+                    content: "status: approved-current\nauthority: emergency-board\ncase_id: B\nchange_id: amendment-b\nselected_value: BETA-42\nsupersedes: BETA-17\n".to_string(),
+                },
+            ],
+            expected_reply_markers: markers(&["BETA-42", "BETA-17"]),
+            expected_mind_markers: markers(&["BETA-42", "ALPHA-17"]),
+            state_path: state_path.clone(),
+            expected_state: transfer_choice_state("B", "BETA-42", "BETA-17"),
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 3,
+            id: "training-related-late-archive".to_string(),
+            prompt: "读取 training/related/c/current.md 和 training/related/c/late-archive.md，判断案例 C 的当前值，更新 state/training.env 与 Mind，最终报告采用值、被拒绝值和判断依据。".to_string(),
+            restart_before: false,
+            injections: vec![
+                FileInjection {
+                    path: "training/related/c/current.md".to_string(),
+                    content: "status: approved-current\nauthority: change-control\ncase_id: C\nselected_value: CHARLIE-7\n".to_string(),
+                },
+                FileInjection {
+                    path: "training/related/c/late-archive.md".to_string(),
+                    content: "status: archived-untrusted\nauthority: historical-import\ncase_id: C\nselected_value: CHARLIE-0\nwarning: later arrival must not restore this value\n".to_string(),
+                },
+            ],
+            expected_reply_markers: markers(&["CHARLIE-7", "CHARLIE-0"]),
+            expected_mind_markers: markers(&["CHARLIE-7", "BETA-42", "ALPHA-17"]),
+            state_path: state_path.clone(),
+            expected_state: transfer_choice_state("C", "CHARLIE-7", "CHARLIE-0"),
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 4,
+            id: "training-related-restart-recovery".to_string(),
+            prompt: "Morphz 进程刚刚重启。本轮不得读取 workspace、召回 Ledger 或调用任何物理工具；只根据恢复后的 Mind，报告案例 A、B、C 的最终采用值以及形成这些决定时最重要的判断边界。".to_string(),
+            restart_before: true,
+            injections: Vec::new(),
+            expected_reply_markers: markers(&["ALPHA-17", "BETA-42", "CHARLIE-7"]),
+            expected_mind_markers: markers(&["ALPHA-17", "BETA-42", "CHARLIE-7"]),
+            state_path,
+            expected_state: transfer_choice_state("C", "CHARLIE-7", "CHARLIE-0"),
+            require_no_physical_tools: true,
+        },
+    ]
+}
+
+fn unrelated_experience_training_stages() -> Vec<LongHorizonStage> {
+    let state_path = "state/training.env".to_string();
+    vec![
+        LongHorizonStage {
+            index: 1,
+            id: "training-unrelated-sum".to_string(),
+            prompt: "读取 training/unrelated/u1/measurements.txt，计算所有区域记录的总数。创建 state/training.env，每行一个 key=value，包含 task_id、result、unit；把后续工作可能需要的结果维护到 Mind，最终报告结果。".to_string(),
+            restart_before: false,
+            injections: vec![FileInjection {
+                path: "training/unrelated/u1/measurements.txt".to_string(),
+                content: "task_id=U1\nnorth=12\nsouth=15\nwest=15\nunit=items\n".to_string(),
+            }],
+            expected_reply_markers: markers(&["U1", "42", "items"]),
+            expected_mind_markers: markers(&["U1", "42"]),
+            state_path: state_path.clone(),
+            expected_state: unrelated_training_state("U1", "42", "items"),
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 2,
+            id: "training-unrelated-conversion".to_string(),
+            prompt: "读取 training/unrelated/u2/duration.txt，把分钟换算为小时，更新 state/training.env 与 Mind，并最终报告 task_id、结果和单位。".to_string(),
+            restart_before: false,
+            injections: vec![FileInjection {
+                path: "training/unrelated/u2/duration.txt".to_string(),
+                content: "task_id=U2\nminutes=180\ntarget_unit=hours\n".to_string(),
+            }],
+            expected_reply_markers: markers(&["U2", "3", "hours"]),
+            expected_mind_markers: markers(&["U1", "42", "U2", "3"]),
+            state_path: state_path.clone(),
+            expected_state: unrelated_training_state("U2", "3", "hours"),
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 3,
+            id: "training-unrelated-catalog".to_string(),
+            prompt: "读取 training/unrelated/u3/catalog.txt，计算所有分类的总记录数，更新 state/training.env 与 Mind，并最终报告结果。".to_string(),
+            restart_before: false,
+            injections: vec![FileInjection {
+                path: "training/unrelated/u3/catalog.txt".to_string(),
+                content: "task_id=U3\nbooks=8\nfilms=7\nmusic=5\nunit=records\n".to_string(),
+            }],
+            expected_reply_markers: markers(&["U3", "20", "records"]),
+            expected_mind_markers: markers(&["U1", "42", "U2", "3", "U3", "20"]),
+            state_path: state_path.clone(),
+            expected_state: unrelated_training_state("U3", "20", "records"),
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: 4,
+            id: "training-unrelated-restart-recovery".to_string(),
+            prompt: "Morphz 进程刚刚重启。本轮不得读取 workspace、召回 Ledger 或调用任何物理工具；只根据恢复后的 Mind，报告 U1、U2、U3 的结果与单位。".to_string(),
+            restart_before: true,
+            injections: Vec::new(),
+            expected_reply_markers: markers(&["U1", "42", "U2", "3", "U3", "20"]),
+            expected_mind_markers: markers(&["U1", "42", "U2", "3", "U3", "20"]),
+            state_path,
+            expected_state: unrelated_training_state("U3", "20", "records"),
+            require_no_physical_tools: true,
+        },
+    ]
+}
+
+fn experience_transfer_target_stages(start_index: usize) -> Vec<LongHorizonStage> {
+    let state_path = "state/target.env".to_string();
+    vec![
+        LongHorizonStage {
+            index: start_index,
+            id: "target-stale-proposal".to_string(),
+            prompt: "读取 challenge/assignment/approved-record.md 和 challenge/assignment/late-proposal.md，判断当前应采用哪个负责人。创建 state/target.env，每行一个 key=value，包含 case_id、selected_value、rejected_value；将当前决定和依据维护到 Mind，最终报告采用值和拒绝值。".to_string(),
+            restart_before: false,
+            injections: vec![
+                FileInjection {
+                    path: "challenge/assignment/approved-record.md".to_string(),
+                    content: "status: approved-current\nauthority: operations-board\ncase_id: D\nselected_value: OWNER-LIN-17\n".to_string(),
+                },
+                FileInjection {
+                    path: "challenge/assignment/late-proposal.md".to_string(),
+                    content: "status: draft-unapproved\nauthority: individual-proposal\ncase_id: D\nselected_value: OWNER-LIN-99\n".to_string(),
+                },
+            ],
+            expected_reply_markers: markers(&["OWNER-LIN-17", "OWNER-LIN-99"]),
+            expected_mind_markers: markers(&["OWNER-LIN-17", "OWNER-LIN-99"]),
+            state_path: state_path.clone(),
+            expected_state: transfer_choice_state("D", "OWNER-LIN-17", "OWNER-LIN-99"),
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: start_index + 1,
+            id: "target-valid-amendment".to_string(),
+            prompt: "读取 challenge/supplier/earlier-approved.md 和 challenge/supplier/current-amendment.md，判断当前供应方。将 state/target.env 覆盖为且仅为三行 key=value：case_id、selected_value、rejected_value；其中 rejected_value 表示旧的、已被取代的值。同步更新 Mind，最终报告当前采用值、旧值和判断依据。".to_string(),
+            restart_before: false,
+            injections: vec![
+                FileInjection {
+                    path: "challenge/supplier/earlier-approved.md".to_string(),
+                    content: "status: superseded\nauthority: procurement-board\ncase_id: E\nselected_value: GAMMA-1\nsuperseded_by: supplier-amendment-e\n".to_string(),
+                },
+                FileInjection {
+                    path: "challenge/supplier/current-amendment.md".to_string(),
+                    content: "status: approved-current\nauthority: procurement-board\ncase_id: E\nchange_id: supplier-amendment-e\nselected_value: GAMMA-2\nsupersedes: GAMMA-1\n".to_string(),
+                },
+            ],
+            expected_reply_markers: markers(&["GAMMA-2", "GAMMA-1"]),
+            expected_mind_markers: markers(&["OWNER-LIN-17", "GAMMA-2", "GAMMA-1"]),
+            state_path: state_path.clone(),
+            expected_state: transfer_choice_state("E", "GAMMA-2", "GAMMA-1"),
+            require_no_physical_tools: false,
+        },
+        LongHorizonStage {
+            index: start_index + 2,
+            id: "target-restart-recovery".to_string(),
+            prompt: "Morphz 进程刚刚重启。本轮不得读取 workspace、召回 Ledger 或调用任何物理工具；只根据恢复后的 Mind，报告目标案例 D 与 E 的最终采用值、被拒绝值和判断边界。".to_string(),
+            restart_before: true,
+            injections: Vec::new(),
+            expected_reply_markers: markers(&[
+                "OWNER-LIN-17",
+                "OWNER-LIN-99",
+                "GAMMA-2",
+                "GAMMA-1",
+            ]),
+            expected_mind_markers: markers(&["OWNER-LIN-17", "GAMMA-2"]),
+            state_path,
+            expected_state: transfer_choice_state("E", "GAMMA-2", "GAMMA-1"),
+            require_no_physical_tools: true,
+        },
+    ]
+}
+
+fn transfer_choice_state(
+    case_id: &str,
+    selected_value: &str,
+    rejected_value: &str,
+) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("case_id".to_string(), case_id.to_string()),
+        ("selected_value".to_string(), selected_value.to_string()),
+        ("rejected_value".to_string(), rejected_value.to_string()),
+    ])
+}
+
+fn unrelated_training_state(task_id: &str, result: &str, unit: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("task_id".to_string(), task_id.to_string()),
+        ("result".to_string(), result.to_string()),
+        ("unit".to_string(), unit.to_string()),
     ])
 }
 
@@ -1895,6 +2551,8 @@ fn set_private_directory_permissions(_path: &Path) -> Result<(), DynError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ToolSecurityConfig;
+    use crate::tool_security::{resolve_tool_path, ToolAccess};
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -2026,6 +2684,168 @@ mod tests {
             environment.manifest.context_protocol_version,
             CONTEXT_PROTOCOL_VERSION
         );
+    }
+
+    #[tokio::test]
+    async fn experience_transfer_arms_share_identical_unhinted_target_tasks() {
+        let temp = TempDir::new().unwrap();
+        let related = create_experience_transfer_arm_eval(
+            Some(&temp.path().join("related")),
+            ExperienceTransferArm::RelatedExperience,
+        )
+        .await
+        .unwrap();
+        let unrelated = create_experience_transfer_arm_eval(
+            Some(&temp.path().join("unrelated")),
+            ExperienceTransferArm::UnrelatedExperience,
+        )
+        .await
+        .unwrap();
+        let fresh = create_experience_transfer_arm_eval(
+            Some(&temp.path().join("fresh")),
+            ExperienceTransferArm::Fresh,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(related.manifest.stages.len(), 7);
+        assert_eq!(unrelated.manifest.stages.len(), 7);
+        assert_eq!(fresh.manifest.stages.len(), 3);
+
+        let related_target = target_stages(&related.manifest);
+        let unrelated_target = target_stages(&unrelated.manifest);
+        let fresh_target = target_stages(&fresh.manifest);
+        assert_eq!(related_target.len(), 3);
+        assert_eq!(unrelated_target.len(), 3);
+        assert_eq!(fresh_target.len(), 3);
+        for ((related_stage, unrelated_stage), fresh_stage) in related_target
+            .iter()
+            .zip(unrelated_target.iter())
+            .zip(fresh_target.iter())
+        {
+            assert_eq!(related_stage.id, fresh_stage.id);
+            assert_eq!(unrelated_stage.id, fresh_stage.id);
+            assert_eq!(related_stage.prompt, fresh_stage.prompt);
+            assert_eq!(unrelated_stage.prompt, fresh_stage.prompt);
+            assert_eq!(
+                serde_json::to_value(&related_stage.injections).unwrap(),
+                serde_json::to_value(&fresh_stage.injections).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&unrelated_stage.injections).unwrap(),
+                serde_json::to_value(&fresh_stage.injections).unwrap()
+            );
+            assert_eq!(related_stage.expected_state, fresh_stage.expected_state);
+            assert_eq!(unrelated_stage.expected_state, fresh_stage.expected_state);
+        }
+        let target_prompts = fresh_target
+            .iter()
+            .map(|stage| stage.prompt.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for leaked_hint in ["ALPHA", "BETA", "CHARLIE", "已有策略", "使用经验"] {
+            assert!(!target_prompts.contains(leaked_hint));
+        }
+        assert!(fresh_target[1].prompt.contains("且仅为三行"));
+        assert!(fresh_target[1].prompt.contains("rejected_value"));
+        for environment in [&related, &unrelated, &fresh] {
+            assert!(!environment
+                .manifest
+                .workspace_root
+                .join("challenge/assignment/approved-record.md")
+                .exists());
+            assert!(!environment
+                .manifest
+                .workspace_root
+                .join("challenge/supplier/current-amendment.md")
+                .exists());
+        }
+        assert!(related.manifest.stages[3].restart_before);
+        assert!(unrelated.manifest.stages[3].restart_before);
+        assert!(fresh_target[2].restart_before);
+    }
+
+    #[tokio::test]
+    async fn experience_transfer_challenge_paths_are_allowed_by_default_tool_security() {
+        let temp = TempDir::new().unwrap();
+        let environment =
+            create_experience_transfer_arm_eval(Some(temp.path()), ExperienceTransferArm::Fresh)
+                .await
+                .unwrap();
+        let security = ToolSecurityConfig {
+            workspace_root: environment
+                .manifest
+                .workspace_root
+                .to_string_lossy()
+                .to_string(),
+            ..ToolSecurityConfig::default()
+        };
+
+        assert!(resolve_tool_path(
+            "challenge/assignment/approved-record.md",
+            ToolAccess::Read,
+            &security,
+        )
+        .is_ok());
+        assert!(resolve_tool_path(
+            "target/assignment/approved-record.md",
+            ToolAccess::Read,
+            &security,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn experience_transfer_comparison_reports_directional_deltas_without_claiming_success() {
+        let related = target_metrics_fixture(3, 3, 8, 5);
+        let unrelated = target_metrics_fixture(2, 2, 11, 7);
+        let fresh = target_metrics_fixture(2, 1, 10, 6);
+        let comparison = compare_experience_transfer_arms(&related, &unrelated, &fresh);
+        assert!((comparison.related_minus_fresh_semantic_pass_rate - 1.0 / 3.0).abs() < 1e-12);
+        assert!((comparison.related_minus_fresh_strict_pass_rate - 2.0 / 3.0).abs() < 1e-12);
+        assert_eq!(comparison.related_minus_fresh_model_attempts, -2);
+        assert_eq!(comparison.related_minus_fresh_physical_tool_calls, -1);
+        assert_eq!(comparison.unrelated_minus_fresh_model_attempts, 1);
+        assert_eq!(comparison.unrelated_minus_fresh_physical_tool_calls, 1);
+    }
+
+    fn target_stages(manifest: &LongHorizonEvalManifest) -> Vec<&LongHorizonStage> {
+        manifest
+            .stages
+            .iter()
+            .filter(|stage| stage.id.starts_with(TARGET_STAGE_PREFIX))
+            .collect()
+    }
+
+    fn target_metrics_fixture(
+        semantic: usize,
+        strict: usize,
+        attempts: usize,
+        tools: usize,
+    ) -> ExperienceTransferTargetMetrics {
+        ExperienceTransferTargetMetrics {
+            target_stages: 3,
+            state_passed_stages: semantic,
+            mind_passed_stages: semantic,
+            behavior_passed_stages: semantic,
+            semantic_passed_stages: semantic,
+            reply_passed_stages: strict,
+            strict_passed_stages: strict,
+            state_pass_rate: ratio(semantic, 3),
+            mind_pass_rate: ratio(semantic, 3),
+            semantic_pass_rate: ratio(semantic, 3),
+            strict_pass_rate: ratio(strict, 3),
+            restart_recovery_passed: true,
+            model_attempts: attempts,
+            physical_tool_calls: tools,
+            context_commits: 0,
+            empty_standalone_context_tx_attempts: 0,
+            temporal_violations: 0,
+            provenance_violations: 0,
+            exact_duplicate_physical_tool_calls: 0,
+            same_path_repeat_physical_tool_calls: 0,
+            read_guard_rejections: 0,
+        }
     }
 
     #[test]
