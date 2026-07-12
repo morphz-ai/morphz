@@ -105,7 +105,9 @@ cargo run -p morphz --bin context_long_run_eval -- inspect RUN_ROOT
 
 但当前还不能称为理想的长期 Context：模型把“压缩原始 observation”误当成“所有完成过程都应升格为长期 Frame”，并在 Context transaction 回执后继续 housekeeping。结果是 Inbox 很干净，Mind frame 数却随批次线性增长；若运行足够久，压力会从 observation 转移到受保护 frame。
 
-本次结果之后，protocol v2 已实现前三项收敛措施：
+以下 protocol v2 记录是当时的历史实验。其中“`reply + context_tx` 同响应终止”的 sidecar 快速路径已被 protocol v6 取代：当前 Runtime 会在任何工具调用后续跑，只有无工具纯文本才结束回合。
+
+本次结果之后，protocol v2 当时实现了前三项收敛措施：
 
 1. **附着式维护**：`reply + context_tx` 执行后直接交付同一正文，不再用成功回执唤醒模型；`act` 也可携带不依赖新工具结果的 sidecar。
 2. **事务回执冷却**：独立 Context transaction 成功且脱离 critical 后，下一次响应不再暴露 `context_tx`；新 user/tool observation 到达后恢复。失败事务和仍处于 critical 的状态保留修复机会。
@@ -150,6 +152,6 @@ cargo run -p morphz --bin context_long_run_eval -- inspect RUN_ROOT
 六个发生语义变化的回合均采用同一轨迹：模型先以空正文提交一个 standalone
 `context_tx`，Runtime 成功执行后重新调用，并在冷却轮隐藏 `context_tx`，随后产生用户正文。没有连续 housekeeping、事务重试或用户无响应。无变化对照则只发生一次 `chat/reply`，commit 数保持为 6，说明模型没有形成“每回合必维护”的机械习惯。
 
-这一结果不证明模型会偏好 sidecar；相反，它再次确认当前模型强烈偏好标准 Function Calling 的“空正文工具调用 → 等待结果 → 最终正文”。但 Runtime 已把该偏好吸收为安全的中间态：standalone 维护永远不是用户回合终点，成功后最多再开放一次冷却响应。sidecar 仍保留为零额外唤醒的可选优化，不能作为正确性的前提。
+这一结果不证明模型会偏好 sidecar；相反，它再次确认当前模型强烈偏好标准 Function Calling 的“空正文工具调用 → 等待结果 → 最终正文”。Runtime 已把该偏好吸收为安全的中间态：Context 维护永远不是用户回合终点，成功后进入冷却响应。protocol v6 已取消零额外唤醒的终止型 sidecar，不再让正确性依赖模型额外的布尔判断。
 
 本轮 `inspect` 的旧 Capacity 总分仍为 false，因为当前评分器要求观测到至少两个离散压缩周期，而本次只记录了每轮维护后的快照，连续 commit 被合并为一个周期；该分数不用于判断此次响应收敛实验。后续容量测试应同时记录每轮注入前后快照，响应协议则使用上述事件计数独立验收。

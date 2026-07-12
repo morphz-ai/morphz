@@ -25,8 +25,8 @@ Context 的状态分为三个权限域：
 你必须自己判断当前目标下什么值得保留、摘要、修订、保护、恢复或遗忘。Runtime 不会自动替你摘要历史、裁剪旧消息或把检索结果写成事实。
 
 每次响应必须明确选择 `protocol.response-contract` 中的一种主模式：
-- reply：当前任务已完成或需要说明阻塞；正文直接交付用户，可附带一个 context_tx 作为后台 sidecar。sidecar 回执不会再次唤醒你。
-- act：确实需要新的外部结果；调用物理工具，可并行附带一个不依赖这些新结果的 context_tx；正文只是控制轨迹，不是最终回复。
+- reply：当前任务已完成或需要说明阻塞；不调用任何工具，正文直接交付用户并结束当前回合。
+- act：确实需要新的外部结果；调用物理工具，可并行附带一个不依赖这些新结果的 context_tx；若有正文则只是可见进度，Runtime 执行工具后必定再次调用你。
 - maintain：需要先修改 Mind 时可单独调用 context_tx，不输出最终正文。事务成功后 Runtime 必定再次调用你，并在非 critical 时暂时隐藏 context_tx；maintain 不是用户回合终点，下一响应必须 reply 或 act。
 
 使用 context_tx 原子修改 Mind，并严格遵循 `protocol.context-tx-contract` 展示的语法。每次事务使用 kernel 中当前的 version。reason 是 context-tx 的事务级子项，绝不能作为 retire/unprotect 的参数。
@@ -41,12 +41,12 @@ Context 的状态分为三个权限域：
 2. 重要目标、用户约束、关键结论和未完成工作应进入 frame；适合时使用 protect。
    用户明确声明“始终、整个任务期间、不得、必须”等持续约束时，应将其写入受保护 frame，直到用户明确撤销或任务生命周期真正结束。
 3. 大段 observation 可先 derive 成忠实摘要，再在同一 transaction 中 retire 原始 observation。不要把假设写成事实。已完成、可从 Ledger 召回且没有改变目标、约束或结论的过程记录应直接 retire，不得为每个批次创建或保护长期 frame。
-4. 用户要求在已知文件中查证具体结论时，直接使用 read.query 取得带行号的窄证据；需要连续上下文时再用 start_line/end_line 精确分页。不要先整读长文件，也不要用 exec/grep 反复产生大段重复输出。被 truncated 的 observation 可使用 recall 按 full-ref 分段读取原文；若 recall 返回 next_offset，下一次必须把该值原样作为 offset，不得重复 offset=0 或猜测跳转；已知关键词时优先 query，并使用命中片段或 suggested_recall。exec 若给出 artifact path，则使用 read 按需读取完整归档。recall/read 结果只进入 inbox，你决定是否写入 Mind。
-5. context_tx 优先作为 reply/act 的 sidecar：它可以与无需依赖新结果的物理工具并行；如果新 frame 依赖工具结果，应等结果进入 inbox 后，在下一响应随 reply 或后续 act 一并提交。
+4. 用户要求在已知文件中查证具体结论时，直接使用 read.query 取得带行号的窄证据；需要连续上下文时再用 start_line/end_line 精确分页。不要先整读长文件，也不要用 exec/grep 反复产生大段重复输出。Context observation 的 `ref`（如 `@e27`）是 Runtime 提供的稳定短引用；recall 与 context_tx 必须原样使用，不要猜测或抄写隐藏的完整 Event ID。被 truncated 的 observation 可使用 recall 按 ref 分段读取原文；若 recall 返回 next_offset，下一次必须把该值原样作为 offset，不得重复 offset=0 或猜测跳转；已知关键词时优先 query，并使用命中片段或 suggested_recall。exec 若给出 artifact path，则使用 read 按需读取完整归档。recall/read 结果只进入 inbox，你决定是否写入 Mind。
+5. context_tx 可以与不依赖本批新结果的物理工具并行；如果新 frame 依赖工具结果，应等结果进入 inbox 后再提交。任何包含工具调用的响应都是中间状态：正文只作为可见进度，Runtime 执行完工具后必定再次调用你。只有无工具的纯文本响应才是最终 reply。
 6. 同一响应最多提交一个 context_tx；把多个修改合并进同一事务，避免版本冲突。
    retire 或 unprotect 时 reason 是必需的，使遗忘与解除保护可审计。
-7. pressure=normal/notice 时不要仅为降低体积而压缩；只在出现必须跨轮保留的目标、约束或结论变化时做语义维护。pressure=warning 时考虑随 reply/act 附带压缩；pressure=critical 时必须先 maintain-only 释放预算。
-8. 完成任务前，确认 Mind 中仍需跨轮保留的目标、约束、结论和开放问题准确；若物理工具结果改变了任务状态，在最终 reply 上附带一次 context_tx 完成收口，不要先发起独立 maintain 再回复。
+7. pressure=normal/notice 时不要仅为降低体积而压缩；只在出现必须跨轮保留的目标、约束或结论变化时做语义维护。pressure=warning 时考虑在最终 reply 前或随 act 提交压缩事务；pressure=critical 时必须先 maintain-only 释放预算。
+8. 完成任务前，确认 Mind 中仍需跨轮保留的目标、约束、结论和开放问题准确；若物理工具结果改变了任务状态，在最终 reply 之前用一次 context_tx 完成收口。Runtime 会在事务回执后再次调用你，届时用无工具文本交付最终结果。
 9. assistant_call 与 context_tx 回执属于 Runtime 控制轨迹，只保存在 Ledger，不会进入 Inbox；不要为了清理 context_tx 自己产生的记录而连续提交 housekeeping transaction。
    recall/read 等过程 Observation 应在提炼证据的同一事务中按需 retire；事务成功且 Mind 已准确后，不要再为清理刚产生的过程记录继续 recall 或提交 housekeeping，直接 reply。
 10. 每次调用物理工具前，必须确认它是完成当前用户明确任务所必需的新信息。当 Mind/inbox 已足以回答时，立即使用 reply；不要重复验证、扫描工作区或自行发明后续目标。
@@ -601,48 +601,22 @@ impl Orchestrator {
         }
 
         if !response.tool_calls.is_empty() {
-            let has_context_tx = response
-                .tool_calls
-                .iter()
-                .any(|call| call.func_name == "context_tx");
-            let has_physical_tool = response
-                .tool_calls
-                .iter()
-                .any(|call| call.func_name != "context_tx");
-            let attached_reply = effective_phase == "work"
-                && context.pressure.level != "critical"
-                && has_context_tx
-                && !has_physical_tool
-                && !response.content.trim().is_empty();
-            let reply_content = response.content.clone();
-            let outcome = self
-                .execute_tool_calls(
-                    session_id,
-                    &attempt_id,
-                    response,
-                    effective_phase,
-                    ToolExecutionOptions {
-                        context_tx_allowed: context.turn_budget.context_tx_available
-                            && !context_tx_cooldown,
-                        wake_on_output: !attached_reply,
-                    },
-                )
-                .await?;
-            if attached_reply {
-                tracing::info!(
-                    session_id,
-                    context_tx_succeeded = outcome.context_tx_succeeded,
-                    "Context sidecar 已执行：直接发布同一响应文本，不重新唤醒模型"
-                );
-                return self
-                    .publish_reply(
-                        session_id,
-                        &attempt_id,
-                        reply_content,
-                        context.parent_session_id.as_deref(),
-                    )
-                    .await;
+            if !response.content.trim().is_empty() {
+                self.publish_progress(session_id, &attempt_id, response.content.clone())
+                    .await?;
             }
+            self.execute_tool_calls(
+                session_id,
+                &attempt_id,
+                response,
+                effective_phase,
+                ToolExecutionOptions {
+                    context_tx_allowed: context.turn_budget.context_tx_available
+                        && !context_tx_cooldown,
+                    wake_on_output: true,
+                },
+            )
+            .await?;
             return Ok(());
         }
 
@@ -677,6 +651,30 @@ impl Orchestrator {
                 TYPE_AGENT_CALL.to_string(),
                 "chat/reply".to_string(),
                 payload.into_iter().collect(),
+            ))
+            .await?;
+        Ok(())
+    }
+
+    async fn publish_progress(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        content: String,
+    ) -> Result<(), DynError> {
+        self.bus
+            .publish(Event::new(
+                format!("progress_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+                "Agent-Morphz".to_string(),
+                TYPE_AGENT_CALL.to_string(),
+                "chat/progress".to_string(),
+                vec![
+                    ("session_id".to_string(), json!(session_id)),
+                    ("attempt_id".to_string(), json!(attempt_id)),
+                    ("text".to_string(), json!(content)),
+                ]
+                .into_iter()
+                .collect(),
             ))
             .await?;
         Ok(())

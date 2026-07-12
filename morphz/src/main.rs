@@ -167,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let orc_clone = Arc::clone(&orc);
     let reply_timeout_secs = app_config.orchestrator.reply_timeout_secs;
 
-    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel::<(String, String)>(100);
+    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel::<(String, String, bool)>(100);
     let reply_tx_clone = reply_tx.clone();
 
     bus.subscribe(
@@ -182,7 +182,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         .and_then(|value| value.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let _ = tx.send((sess_id.to_string(), text)).await;
+                    let _ = tx.send((sess_id.to_string(), text, true)).await;
+                }
+                Ok(())
+            })
+        }),
+    );
+    let progress_tx = reply_tx.clone();
+    bus.subscribe(
+        "chat/progress".to_string(),
+        Arc::new(move |ev| {
+            let tx = progress_tx.clone();
+            Box::pin(async move {
+                if let Some(sess_id) = ev.payload.get("session_id").and_then(|s| s.as_str()) {
+                    let text = ev
+                        .payload
+                        .get("text")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let _ = tx.send((sess_id.to_string(), text, false)).await;
                 }
                 Ok(())
             })
@@ -289,9 +308,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             let sess_id_to_wait = session_id_clone.clone();
             let wait_result = rt.block_on(async {
                 tokio::time::timeout(std::time::Duration::from_secs(reply_timeout_secs), async {
-                    while let Some((sess, reply)) = reply_rx.recv().await {
-                        if sess == sess_id_to_wait {
-                            return Some(reply);
+                    while let Some((sess, text, is_final)) = reply_rx.recv().await {
+                        if sess != sess_id_to_wait {
+                            continue;
+                        }
+                        if is_final {
+                            return Some(text);
+                        }
+                        if !text.trim().is_empty() {
+                            let mut stdout = std::io::stdout();
+                            let _ = writeln!(stdout, "\n[Agent 进度] {}", text);
+                            let _ = stdout.flush();
                         }
                     }
                     None

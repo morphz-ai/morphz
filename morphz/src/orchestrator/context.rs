@@ -15,7 +15,8 @@ use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 3;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 6;
+const EVENT_REFERENCE_PREFIX: &str = "@e";
 
 struct ContextOperationSpec {
     name: &'static str,
@@ -26,18 +27,18 @@ struct ContextOperationSpec {
 const CONTEXT_OPERATIONS: &[ContextOperationSpec] = &[
     ContextOperationSpec {
         name: "create",
-        syntax: "(create ID BODY)",
-        meaning: "创建具有稳定 ID 的自由格式 frame",
+        syntax: "(create ID BODY...)",
+        meaning: "创建具有稳定 ID 的自由格式 frame；一个或多个 BODY 均可，多项由 Runtime 规范化为 context-body；不接受 from",
     },
     ContextOperationSpec {
         name: "derive",
-        syntax: "(derive ID (from SOURCE_ID...) BODY)",
-        meaning: "基于 observation/frame 创建带血缘的新 frame",
+        syntax: "(derive ID (from SOURCE_ID...) BODY...)",
+        meaning: "基于 observation/frame 创建带血缘的新 frame；from 固定在 ID 后，随后可写一个或多个 BODY",
     },
     ContextOperationSpec {
         name: "revise",
-        syntax: "(revise ID BODY) | (revise ID (from SOURCE_ID...) BODY)",
-        meaning: "修订既有 frame 并递增 revision",
+        syntax: "(revise ID BODY...) | (revise ID (from SOURCE_ID...) BODY...)",
+        meaning: "修订既有 frame 并递增 revision；可选 from 固定在 ID 后，随后可写一个或多个 BODY",
     },
     ContextOperationSpec {
         name: "retire",
@@ -83,7 +84,7 @@ pub fn context_tx_tool_description() -> String {
         .collect::<Vec<_>>()
         .join("；");
     format!(
-        "原子修改你拥有的 Mind Context。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。一个 transaction 可以顺序包含多个不同 operation，并且整体成功或整体回滚；例如 (context-tx (base-version 3) (reason \"完成收口\") (revise task (task (status completed))) (derive result (from test-output) (tests passed)) (relate result supersedes old-result) (protect task result) (retire event:1 event:2))。create/derive/revise 的 BODY 必须恰好是一个 SExpr；多个字段应包在同一个 List 中。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/unprotect/unrelate 必须提供；不要把 reason 放进操作参数。Context 修改不是给用户的最终回复。"
+        "原子修改你拥有的 Mind Context。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)，无需手工添加 record/frame 外壳。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。一个 transaction 可以顺序包含多个不同 operation，并且整体成功或整体回滚；例如 (context-tx (base-version 3) (reason \"完成收口\") (revise task (status completed) (next none)) (derive result (from @e27) (tests passed) (confidence high)) (relate result supersedes old-result) (protect task result) (retire @e21 @e22))。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/unprotect/unrelate 必须提供；不要把 reason 放进操作参数。Context 修改不是给用户的最终回复。"
     )
 }
 
@@ -92,6 +93,45 @@ struct ParsedTransaction {
     base_version: u64,
     reason: Option<String>,
     operations: Vec<SExpr>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ContextReferences {
+    alias_to_id: HashMap<String, String>,
+    id_to_alias: HashMap<String, String>,
+}
+
+impl ContextReferences {
+    fn from_events(events: &[Event]) -> Self {
+        let mut references = Self::default();
+        for event in events.iter().filter(|event| is_observation(event)) {
+            let Some(sequence) = event.sequence else {
+                continue;
+            };
+            let alias = format!("{EVENT_REFERENCE_PREFIX}{sequence}");
+            references
+                .alias_to_id
+                .insert(alias.clone(), event.id.clone());
+            references.id_to_alias.insert(event.id.clone(), alias);
+        }
+        references
+    }
+
+    fn display<'a>(&'a self, id: &'a str) -> &'a str {
+        self.id_to_alias.get(id).map(String::as_str).unwrap_or(id)
+    }
+
+    fn resolve(&self, reference: &str) -> Result<String, String> {
+        if !reference.starts_with(EVENT_REFERENCE_PREFIX) {
+            return Ok(reference.to_string());
+        }
+        self.alias_to_id.get(reference).cloned().ok_or_else(|| {
+            format!(
+                "Context 短引用 '{}' 不存在；请使用当前 Context 展示的 ref，不要猜测或改写",
+                reference
+            )
+        })
+    }
 }
 
 /// LLM 自己创建的一个认知单元。
@@ -150,6 +190,8 @@ pub struct ContextCommit {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextObservation {
     pub id: String,
+    /// 当前 session 内由 Ledger sequence 派生的确定性短引用，例如 @e27。
+    pub reference: String,
     pub sequence: u64,
     pub turn: usize,
     pub attempt: Option<usize>,
@@ -273,11 +315,14 @@ impl ContextEngine {
         session_id: &str,
         transaction: &str,
     ) -> Result<ContextCommit, DynError> {
-        let parsed = parse_transaction(transaction)?;
+        let mut parsed = parse_transaction(transaction)?;
         let lock = self.session_lock(session_id);
         let _guard = lock.lock().await;
 
         let events = self.session_events(session_id).await?;
+        let references = ContextReferences::from_events(&events);
+        resolve_transaction_references(&mut parsed, &references)?;
+        let canonical_transaction = render_parsed_transaction(&parsed);
         let current = load_mind_from_events(&events)?;
         let observation_ids = observation_ids(&events);
         let (next, changes) = apply_parsed_transaction(&current, &parsed, &observation_ids)?;
@@ -290,13 +335,13 @@ impl ContextEngine {
         let payload = vec![
             ("session_id".to_string(), json!(session_id)),
             ("transaction_id".to_string(), json!(tx_id)),
-            ("transaction".to_string(), json!(transaction)),
+            ("transaction".to_string(), json!(&canonical_transaction)),
             ("before_version".to_string(), json!(current.version)),
             ("after_version".to_string(), json!(next.version)),
             ("reason".to_string(), json!(&parsed.reason)),
             ("changes".to_string(), json!(changes)),
             ("state_after".to_string(), json!(next)),
-            ("text".to_string(), json!(transaction)),
+            ("text".to_string(), json!(&canonical_transaction)),
         ]
         .into_iter()
         .collect();
@@ -322,6 +367,7 @@ impl ContextEngine {
 
     pub async fn build_view(&self, session_id: &str) -> Result<ContextView, DynError> {
         let events = self.session_events(session_id).await?;
+        let references = ContextReferences::from_events(&events);
         let state = load_mind_from_events(&events)?;
         let metadata = observation_metadata(&events, &state);
         let parent_session_id = events.iter().find_map(|event| {
@@ -367,15 +413,16 @@ impl ContextEngine {
         );
         let turn_budget = turn_budget_for(&events, &self.config);
         let wake = wake_for(&events);
-        let sexpr = render_context(
+        let sexpr = render_context(ContextRenderInput {
             session_id,
-            parent_session_id.as_deref(),
-            &state,
-            &observations,
-            &pressure,
-            &turn_budget,
-            &wake,
-        );
+            parent_session_id: parent_session_id.as_deref(),
+            state: &state,
+            observations: &observations,
+            pressure: &pressure,
+            turn_budget: &turn_budget,
+            wake: &wake,
+            references: &references,
+        });
 
         Ok(ContextView {
             session_id: session_id.to_string(),
@@ -394,11 +441,17 @@ impl ContextEngine {
         session_id: &str,
         event_id: &str,
     ) -> Result<Option<Event>, DynError> {
-        Ok(self
-            .session_events(session_id)
-            .await?
-            .into_iter()
-            .find(|event| event.id == event_id))
+        let events = self.session_events(session_id).await?;
+        let references = ContextReferences::from_events(&events);
+        let canonical_id = references.resolve(event_id)?;
+        Ok(events.into_iter().find(|event| event.id == canonical_id))
+    }
+
+    pub fn event_reference(&self, event: &Event) -> String {
+        event
+            .sequence
+            .map(|sequence| format!("{EVENT_REFERENCE_PREFIX}{sequence}"))
+            .unwrap_or_else(|| event.id.clone())
     }
 
     pub async fn find_frame(
@@ -491,6 +544,7 @@ impl ContextEngine {
         };
         ContextObservation {
             id: event.id.clone(),
+            reference: self.event_reference(event),
             sequence: metadata.sequence,
             turn: metadata.turn,
             attempt: metadata.attempt,
@@ -535,6 +589,7 @@ fn observation_metadata(
     events: &[Event],
     state: &MindState,
 ) -> HashMap<String, ObservationMetadata> {
+    let references = ContextReferences::from_events(events);
     let mut event_turns = HashMap::new();
     let mut attempt_ids = HashMap::new();
     let mut current_turn = 0usize;
@@ -663,7 +718,7 @@ fn observation_metadata(
                     value
                         .get("event_id")
                         .and_then(|id| id.as_str())
-                        .map(ToOwned::to_owned)
+                        .and_then(|id| references.resolve(id).ok())
                 });
             if let Some(recalled_id) = recalled_id {
                 let item = usage.entry(recalled_id).or_default();
@@ -772,11 +827,160 @@ fn parse_transaction(input: &str) -> Result<ParsedTransaction, String> {
     if operations.is_empty() {
         return Err("context-tx 至少需要一个修改操作".to_string());
     }
-    Ok(ParsedTransaction {
+    let mut transaction = ParsedTransaction {
         base_version: base_version.ok_or("缺少 (base-version N)")?,
         reason,
         operations,
-    })
+    };
+    normalize_transaction_bodies(&mut transaction)?;
+    Ok(transaction)
+}
+
+fn normalize_transaction_bodies(transaction: &mut ParsedTransaction) -> Result<(), String> {
+    for operation in &mut transaction.operations {
+        let items = match operation {
+            SExpr::List(items) => items,
+            _ => return Err("context operation 必须是 SExpr List".to_string()),
+        };
+        let name = atom_at(items, 0, "operation name")?.to_string();
+        match name.as_str() {
+            "create" => {
+                if items.len() < 3 {
+                    return Err("create 至少需要一个 BODY：(create ID BODY...)".to_string());
+                }
+                if items.iter().skip(2).any(is_from_expression) {
+                    return Err(
+                        "create 不接受 (from SOURCE...)；有证据来源时请使用 (derive ID (from SOURCE...) BODY...)"
+                            .to_string(),
+                    );
+                }
+                normalize_body_tail(items, 2);
+            }
+            "derive" => {
+                if items.len() < 4 || !items.get(2).is_some_and(is_from_expression) {
+                    return Err(
+                        "derive 必须把来源放在 ID 后，并至少提供一个 BODY：(derive ID (from SOURCE...) BODY...)"
+                            .to_string(),
+                    );
+                }
+                normalize_body_tail(items, 3);
+            }
+            "revise" => {
+                if items.len() < 3 {
+                    return Err(
+                        "revise 至少需要一个 BODY：(revise ID BODY...) 或 (revise ID (from SOURCE...) BODY...)"
+                            .to_string(),
+                    );
+                }
+                let body_start = if items.get(2).is_some_and(is_from_expression) {
+                    if items.len() < 4 {
+                        return Err("revise 的 (from SOURCE...) 后至少需要一个 BODY".to_string());
+                    }
+                    3
+                } else {
+                    2
+                };
+                normalize_body_tail(items, body_start);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn normalize_body_tail(items: &mut Vec<SExpr>, body_start: usize) {
+    if items.len().saturating_sub(body_start) <= 1 {
+        return;
+    }
+    let bodies = items.drain(body_start..).collect::<Vec<_>>();
+    items.push(list("context-body", bodies));
+}
+
+fn is_from_expression(expression: &SExpr) -> bool {
+    matches!(
+        expression,
+        SExpr::List(items)
+            if matches!(items.first(), Some(SExpr::Atom(head)) if head == "from")
+    )
+}
+
+fn resolve_transaction_references(
+    transaction: &mut ParsedTransaction,
+    references: &ContextReferences,
+) -> Result<(), String> {
+    for operation in &mut transaction.operations {
+        let items = match operation {
+            SExpr::List(items) => items,
+            _ => return Err("context operation 必须是 SExpr List".to_string()),
+        };
+        let name = atom_at(items, 0, "operation name")?.to_string();
+        match name.as_str() {
+            "derive" => resolve_from_references(
+                items.get_mut(2).ok_or("derive 缺少 (from SOURCE...)")?,
+                references,
+            )?,
+            "revise" if items.len() == 4 => resolve_from_references(
+                items.get_mut(2).ok_or("revise 缺少 (from SOURCE...)")?,
+                references,
+            )?,
+            "retire" | "restore" | "protect" | "unprotect" => {
+                for item in items.iter_mut().skip(1) {
+                    resolve_reference_atom(item, references)?;
+                }
+            }
+            "relate" | "unrelate" => {
+                for index in [1, 3] {
+                    let item = items.get_mut(index).ok_or_else(|| {
+                        format!("{} 缺少引用参数，需提供 SUBJECT RELATION OBJECT", name)
+                    })?;
+                    resolve_reference_atom(item, references)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn resolve_from_references(
+    expression: &mut SExpr,
+    references: &ContextReferences,
+) -> Result<(), String> {
+    let items = match expression {
+        SExpr::List(items) => items,
+        _ => return Err("from 必须是 SExpr List".to_string()),
+    };
+    expect_head(items, "from")?;
+    for item in items.iter_mut().skip(1) {
+        resolve_reference_atom(item, references)?;
+    }
+    Ok(())
+}
+
+fn resolve_reference_atom(
+    expression: &mut SExpr,
+    references: &ContextReferences,
+) -> Result<(), String> {
+    let SExpr::Atom(reference) = expression else {
+        return Err("Context 引用必须是 Atom".to_string());
+    };
+    *reference = references.resolve(reference)?;
+    Ok(())
+}
+
+fn render_parsed_transaction(transaction: &ParsedTransaction) -> String {
+    let mut items = vec![
+        atom("context-tx"),
+        list(
+            "base-version",
+            vec![atom(transaction.base_version.to_string())],
+        ),
+    ];
+    if let Some(reason) = &transaction.reason {
+        items.push(list("reason", vec![atom(reason)]));
+    }
+    items.extend(transaction.operations.iter().cloned());
+    SExpr::List(items).to_string()
 }
 
 fn apply_parsed_transaction(
@@ -801,10 +1005,7 @@ fn apply_parsed_transaction(
         match name {
             "create" => {
                 if op.len() != 3 {
-                    return Err(
-                        "create 必须且只能有一个 BODY：(create ID BODY)。若要保存 goal、constraints、status 等多个字段，请包成 (create ID (frame (goal ...) (constraints ...) (status ...)))"
-                            .to_string(),
-                    );
+                    return Err("create BODY 规范化失败；期望 (create ID BODY)".to_string());
                 }
                 let id = validated_id(atom_at(op, 1, "frame id")?)?;
                 ensure_unknown(&next, observation_ids, id)?;
@@ -822,7 +1023,7 @@ fn apply_parsed_transaction(
             "derive" => {
                 if op.len() != 4 {
                     return Err(
-                        "derive 必须且只能有一个 BODY：(derive ID (from SOURCE...) BODY)。若要保存 goal、constraints、status 等多个字段，请先把它们包在同一个 SExpr List 中作为 BODY"
+                        "derive BODY 规范化失败；期望 (derive ID (from SOURCE...) BODY)"
                             .to_string(),
                     );
                 }
@@ -844,7 +1045,7 @@ fn apply_parsed_transaction(
             "revise" => {
                 if op.len() != 3 && op.len() != 4 {
                     return Err(
-                        "revise 必须且只能有一个 BODY：(revise ID BODY) 或 (revise ID (from SOURCE...) BODY)。多个字段必须包在同一个 SExpr List 中"
+                        "revise BODY 规范化失败；期望 (revise ID BODY) 或 (revise ID (from SOURCE...) BODY)"
                             .to_string(),
                     );
                 }
@@ -1050,15 +1251,28 @@ fn place_frame(state: &mut MindState, id: &str, position: &SExpr) -> Result<(), 
     Ok(())
 }
 
-fn render_context(
-    session_id: &str,
-    parent_session_id: Option<&str>,
-    state: &MindState,
-    observations: &[ContextObservation],
-    pressure: &ContextPressure,
-    turn_budget: &TurnBudget,
-    wake: &WakeSignal,
-) -> String {
+struct ContextRenderInput<'a> {
+    session_id: &'a str,
+    parent_session_id: Option<&'a str>,
+    state: &'a MindState,
+    observations: &'a [ContextObservation],
+    pressure: &'a ContextPressure,
+    turn_budget: &'a TurnBudget,
+    wake: &'a WakeSignal,
+    references: &'a ContextReferences,
+}
+
+fn render_context(input: ContextRenderInput<'_>) -> String {
+    let ContextRenderInput {
+        session_id,
+        parent_session_id,
+        state,
+        observations,
+        pressure,
+        turn_budget,
+        wake,
+        references,
+    } = input;
     let mut kernel = vec![atom("kernel"), pair("session", atom(session_id))];
     if let Some(parent) = parent_session_id {
         kernel.push(pair("parent-session", atom(parent)));
@@ -1076,7 +1290,7 @@ fn render_context(
         ),
     ];
     if let Some(event_id) = &wake.event_id {
-        wake_fields.push(pair("event", atom(event_id)));
+        wake_fields.push(pair("event", atom(references.display(event_id))));
     }
     if let Some(tool_name) = &wake.tool_name {
         wake_fields.push(pair("tool", atom(tool_name)));
@@ -1149,7 +1363,11 @@ fn render_context(
         let body = parse(&frame.body).unwrap_or_else(|_| atom(&frame.body));
         let sources = list(
             "sources",
-            frame.sources.iter().map(atom).collect::<Vec<SExpr>>(),
+            frame
+                .sources
+                .iter()
+                .map(|source| atom(references.display(source)))
+                .collect::<Vec<SExpr>>(),
         );
         let mut fields = vec![
             pair("id", atom(&frame.id)),
@@ -1172,7 +1390,7 @@ fn render_context(
             || !freshness.supersedes.is_empty()
             || !freshness.superseded_by.is_empty()
         {
-            fields.insert(5, render_freshness(&freshness));
+            fields.insert(5, render_freshness(&freshness, references));
         }
         let active_references = state
             .frames
@@ -1204,9 +1422,9 @@ fn render_context(
                     list(
                         "relation",
                         vec![
-                            pair("subject", atom(&relation.subject)),
+                            pair("subject", atom(references.display(&relation.subject))),
                             pair("type", atom(&relation.relation)),
-                            pair("object", atom(&relation.object)),
+                            pair("object", atom(references.display(&relation.object))),
                             pair(
                                 "created-version",
                                 atom(relation.created_version.to_string()),
@@ -1221,7 +1439,7 @@ fn render_context(
     let mut inbox = vec![atom("inbox")];
     for observation in observations {
         let mut fields = vec![
-            pair("id", atom(&observation.id)),
+            pair("ref", atom(&observation.reference)),
             pair("seq", atom(observation.sequence.to_string())),
             pair("turn", atom(observation.turn.to_string())),
             pair("kind", atom(&observation.kind)),
@@ -1253,7 +1471,6 @@ fn render_context(
                     ),
                 ],
             ),
-            pair("full-ref", atom(&observation.id)),
             pair("preview", atom(&observation.preview)),
         ];
         if let Some(attempt) = observation.attempt {
@@ -1279,7 +1496,7 @@ fn render_context(
             || !observation.freshness.supersedes.is_empty()
             || !observation.freshness.superseded_by.is_empty()
         {
-            fields.push(render_freshness(&observation.freshness));
+            fields.push(render_freshness(&observation.freshness, references));
         }
         if observation.usage != ContextUsage::default() {
             fields.push(render_usage(&observation.usage));
@@ -1315,7 +1532,7 @@ fn freshness_for_id(state: &MindState, id: &str) -> ContextFreshness {
     freshness
 }
 
-fn render_freshness(freshness: &ContextFreshness) -> SExpr {
+fn render_freshness(freshness: &ContextFreshness, references: &ContextReferences) -> SExpr {
     let mut fields = Vec::new();
     if let Some(latest) = freshness.latest {
         fields.push(pair("latest", atom(if latest { "true" } else { "false" })));
@@ -1323,13 +1540,21 @@ fn render_freshness(freshness: &ContextFreshness) -> SExpr {
     if !freshness.supersedes.is_empty() {
         fields.push(list(
             "supersedes",
-            freshness.supersedes.iter().map(atom).collect(),
+            freshness
+                .supersedes
+                .iter()
+                .map(|id| atom(references.display(id)))
+                .collect(),
         ));
     }
     if !freshness.superseded_by.is_empty() {
         fields.push(list(
             "superseded-by",
-            freshness.superseded_by.iter().map(atom).collect(),
+            freshness
+                .superseded_by
+                .iter()
+                .map(|id| atom(references.display(id)))
+                .collect(),
         ));
     }
     list("freshness", fields)
@@ -1382,6 +1607,10 @@ fn render_protocol() -> SExpr {
             list(
                 "metadata-semantics",
                 vec![
+                    pair(
+                        "ref",
+                        atom("@eN 是由 Ledger sequence 派生的稳定短引用；recall 与 context_tx 原样使用，Runtime 提交前解析为完整 ID"),
+                    ),
                     pair("seq", atom("全局稳定顺序号；越大表示越晚写入 Ledger")),
                     pair("turn", atom("所属用户回合；用于区分近期与历史")),
                     pair("attempt", atom("所属模型执行尝试")),
@@ -1411,12 +1640,9 @@ fn render_protocol() -> SExpr {
                         "reply",
                         vec![
                             pair("when", atom("当前用户任务已经完成，或必须向用户说明阻塞")),
-                            pair("tool-calls", atom("none | one context_tx sidecar")),
+                            pair("tool-calls", atom("none")),
                             pair("content", atom("直接交付给用户的最终答复")),
-                            pair(
-                                "sidecar-result",
-                                atom("Runtime 执行后直接发布正文，不因回执再次唤醒"),
-                            ),
+                            pair("terminal", atom("只有无工具纯文本响应才结束用户回合")),
                             list(
                                 "preflight",
                                 vec![
@@ -1441,9 +1667,10 @@ fn render_protocol() -> SExpr {
                             pair("when", atom("完成当前用户任务确实还需要新的外部结果")),
                             pair(
                                 "tool-calls",
-                                atom("physical-tools + optional independent context_tx sidecar"),
+                                atom("physical-tools + optional independent context_tx"),
                             ),
-                            pair("content", atom("控制轨迹，不是最终答复")),
+                            pair("content", atom("可见进度，不是最终答复")),
+                            pair("after-tools", atom("Runtime 必定再次调用模型")),
                             pair(
                                 "scope",
                                 atom("只执行当前明确任务所必需的动作，不自行扩张探索"),
@@ -1458,7 +1685,7 @@ fn render_protocol() -> SExpr {
                                 atom("需要先修改 Mind；normal/notice 不得仅为降低体积而维护"),
                             ),
                             pair("tool", atom("context_tx")),
-                            pair("content", atom("empty; 事务调用不是最终答复")),
+                            pair("content", atom("empty | visible progress; 不是最终答复")),
                             pair(
                                 "after-commit",
                                 atom("Runtime 必定再次调用；非 critical 时冷却 context_tx，必须 reply 或 act"),
@@ -1477,14 +1704,22 @@ fn render_protocol() -> SExpr {
                         atom("(context-tx (base-version N) (reason \"...\") OP...)"),
                     ),
                     pair("reason-scope", atom("transaction-only")),
-                    pair("body-arity", atom("create derive revise exactly-one")),
+                    pair("body-arity", atom("create derive revise one-or-more")),
+                    pair(
+                        "body-normalization",
+                        atom("多个 BODY 由 Runtime 确定性保存为 (context-body BODY...)；单 BODY 保持原样"),
+                    ),
+                    pair(
+                        "source-placement",
+                        atom("create 不接受 from；derive/revise 的可选 (from SOURCE...) 必须紧跟 ID，且 from 之后至少有一个 BODY"),
+                    ),
                     pair(
                         "body-example",
-                        atom("(create task (task (goal x) (constraints y) (status active)))"),
+                        atom("(create task (goal x) (constraints y) (status active))"),
                     ),
                     pair(
                         "compound-example",
-                        atom("(context-tx (base-version 3) (reason \"完成收口\") (revise task (task (status completed))) (create result (tests passed)) (protect task result) (retire event:1 event:2))"),
+                        atom("(context-tx (base-version 3) (reason \"完成收口\") (revise task (status completed) (next none)) (derive result (from @e27) (tests passed) (confidence high)) (protect task result) (retire @e21 @e22))"),
                     ),
                     pair("reason-required-for", atom("retire unprotect unrelate")),
                     pair(
@@ -1708,6 +1943,7 @@ fn observation_ids(events: &[Event]) -> HashSet<String> {
 
 fn is_observation(event: &Event) -> bool {
     if event.topic == "chat/assistant_call"
+        || event.topic == "chat/progress"
         || event.topic == "chat/context_inspect"
         || event.topic == "chat/context_tx_committed"
         || event.topic == "chat/runtime_error"
@@ -1787,7 +2023,7 @@ fn preview_text(text: &str, max_chars: usize) -> (String, bool) {
         .collect::<String>();
     (
         format!(
-            "{}\n...[原文共 {} 字符，使用 recall 按 full-ref 分段读取]...\n{}",
+            "{}\n...[原文共 {} 字符，使用 recall 按 ref 分段读取]...\n{}",
             head, total, tail
         ),
         true,
@@ -1862,8 +2098,8 @@ fn ensure_unknown(
 }
 
 fn validated_id(id: &str) -> Result<&str, String> {
-    if id.is_empty() || id.len() > 128 {
-        return Err("Context ID 长度必须在 1..=128 之间".to_string());
+    if id.is_empty() || id.len() > 512 {
+        return Err("Context ID 长度必须在 1..=512 之间".to_string());
     }
     if !id
         .chars()
@@ -2074,11 +2310,21 @@ mod tests {
             tool_name: None,
             visible_in_inbox: true,
         };
-        let rendered = render_context("s1", None, &state, &[], &pressure, &budget, &wake);
+        let references = ContextReferences::default();
+        let rendered = render_context(ContextRenderInput {
+            session_id: "s1",
+            parent_session_id: None,
+            state: &state,
+            observations: &[],
+            pressure: &pressure,
+            turn_budget: &budget,
+            wake: &wake,
+            references: &references,
+        });
         let parsed = parse(&rendered).unwrap();
         assert_eq!(
             parsed.get_path(&["protocol", "version"]),
-            Some(&SExpr::Atom("3".to_string()))
+            Some(&SExpr::Atom("6".to_string()))
         );
         assert_eq!(
             parsed.get_path(&["kernel", "version"]),
@@ -2090,6 +2336,9 @@ mod tests {
         );
         assert!(rendered.contains("(response-contract"));
         assert!(rendered.contains("(context-tx-contract"));
+        assert!(rendered.contains("(body-arity \"create derive revise one-or-more\")"));
+        assert!(rendered.contains("(body-normalization"));
+        assert!(rendered.contains("(source-placement"));
         assert!(rendered.contains("(syntax \"(retire ID...)\")"));
         assert!(rendered.contains("(mind (frame"));
         assert!(rendered.contains("(inbox)"));
@@ -2301,28 +2550,68 @@ mod tests {
     }
 
     #[test]
-    fn derive_multiple_bodies_returns_actionable_error() {
+    fn derive_multiple_bodies_are_canonicalized_without_losing_sources() {
         let tx = parse_transaction(
             "(context-tx (base-version 0) (derive task (from user:1) (goal x) (status active)))",
         )
         .unwrap();
-        let error =
+        let (state, _) =
             apply_parsed_transaction(&MindState::default(), &tx, &observations(&["user:1"]))
-                .unwrap_err();
-        assert!(error.contains("只能有一个 BODY"));
-        assert!(error.contains("包在同一个 SExpr List"));
+                .unwrap();
+        assert_eq!(state.frames[0].sources, vec!["user:1"]);
+        assert_eq!(
+            state.frames[0].body,
+            "(context-body (goal x) (status active))"
+        );
     }
 
     #[test]
-    fn create_multiple_bodies_returns_actionable_error() {
+    fn create_multiple_bodies_are_canonicalized_and_single_body_stays_compatible() {
         let tx = parse_transaction(
-            "(context-tx (base-version 0) (create task (goal x) (status active)))",
+            "(context-tx (base-version 0) (create task (goal x) (status active)) (create note (note y)))",
         )
         .unwrap();
-        let error =
-            apply_parsed_transaction(&MindState::default(), &tx, &HashSet::new()).unwrap_err();
-        assert!(error.contains("只能有一个 BODY"));
-        assert!(error.contains("(create ID (frame"));
+        let (state, _) =
+            apply_parsed_transaction(&MindState::default(), &tx, &HashSet::new()).unwrap();
+        assert_eq!(
+            state.frames[0].body,
+            "(context-body (goal x) (status active))"
+        );
+        assert_eq!(state.frames[1].body, "(note y)");
+    }
+
+    #[test]
+    fn revise_multiple_bodies_supports_optional_sources() {
+        let mut state = MindState::default();
+        state.frames.push(ContextFrame {
+            id: "task".to_string(),
+            body: "(status pending)".to_string(),
+            sources: Vec::new(),
+            revision: 1,
+            created_version: 0,
+            updated_version: 0,
+        });
+        let tx = parse_transaction(
+            "(context-tx (base-version 0) (revise task (from user:1) (status completed) (next none)))",
+        )
+        .unwrap();
+        let (state, _) = apply_parsed_transaction(&state, &tx, &observations(&["user:1"])).unwrap();
+        assert_eq!(state.frames[0].sources, vec!["user:1"]);
+        assert_eq!(
+            state.frames[0].body,
+            "(context-body (status completed) (next none))"
+        );
+        assert_eq!(state.frames[0].revision, 2);
+    }
+
+    #[test]
+    fn create_with_from_is_rejected_in_favor_of_explicit_derive() {
+        let error = parse_transaction(
+            "(context-tx (base-version 0) (create task (from user:1) (status active)))",
+        )
+        .unwrap_err();
+        assert!(error.contains("create 不接受"));
+        assert!(error.contains("derive"));
     }
 
     #[test]
@@ -2516,6 +2805,97 @@ mod tests {
         .unwrap();
         assert_eq!(state.version, 2);
         assert!(state.relations.is_empty());
+    }
+
+    #[test]
+    fn runtime_generated_long_event_ids_remain_valid_context_references() {
+        let id = format!(
+            "output_attempt_{}_call_{}",
+            "session".repeat(35),
+            "a".repeat(64)
+        );
+        assert!(id.len() > 128);
+        assert_eq!(validated_id(&id).unwrap(), id);
+    }
+
+    #[tokio::test]
+    async fn short_event_references_are_rendered_resolved_and_canonicalized_for_replay() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("short-event-references.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        let session_id = "short-reference-session";
+        let long_id = format!(
+            "output_attempt_{}_call_{}",
+            "session".repeat(25),
+            "a".repeat(48)
+        );
+        store
+            .append(Event::new(
+                long_id.clone(),
+                "System-Executor".to_string(),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                vec![
+                    ("session_id".to_string(), json!(session_id)),
+                    ("text".to_string(), json!("stable evidence")),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await
+            .unwrap();
+        let config = OrchestratorConfig::default();
+        let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone());
+
+        let before = engine.build_view(session_id).await.unwrap();
+        assert_eq!(before.observations[0].reference, "@e1");
+        assert!(before.sexpr.contains("(ref @e1)"));
+        assert!(before.sexpr.contains("(event @e1)"));
+        assert!(!before.sexpr.contains(&long_id));
+
+        engine
+            .apply_transaction(
+                session_id,
+                r#"(context-tx (base-version 0) (reason "evidence absorbed")
+                    (derive finding (from @e1) (finding stable) (confidence high))
+                    (relate finding supersedes @e1)
+                    (protect finding)
+                    (retire @e1))"#,
+            )
+            .await
+            .unwrap();
+
+        let after = engine.build_view(session_id).await.unwrap();
+        assert_eq!(after.state.frames[0].sources, vec![long_id.clone()]);
+        assert_eq!(
+            after.state.frames[0].body,
+            "(context-body (finding stable) (confidence high))"
+        );
+        assert_eq!(after.state.relations[0].object, long_id);
+        assert!(after
+            .state
+            .retired
+            .contains(&after.state.frames[0].sources[0]));
+        assert!(after.sexpr.contains("(sources @e1)"));
+        assert!(after.sexpr.contains("(object @e1)"));
+        assert!(!after.sexpr.contains(&after.state.frames[0].sources[0]));
+        let committed = store
+            .query(QueryFilter {
+                session_id: Some(session_id.to_string()),
+                topic: Some("chat/context_tx_committed".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let canonical = committed[0].payload["transaction"].as_str().unwrap();
+        assert!(canonical.contains(&after.state.frames[0].sources[0]));
+        assert!(!canonical.contains("@e1"));
+
+        let restarted = ContextEngine::new(store, config);
+        assert_eq!(
+            restarted.build_view(session_id).await.unwrap().state,
+            after.state
+        );
     }
 
     #[tokio::test]

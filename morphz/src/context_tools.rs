@@ -41,7 +41,7 @@ impl Tool for ContextTxTool {
                     },
                     "transaction": {
                         "type": "string",
-                        "description": "完整的单个 SExpr 心智事务。一个 transaction 可包含多个 create/derive/revise/retire/restore/protect/unprotect/place，并整体原子提交；不要为多个修改并行调用多次 context_tx。reason 只能写成 context-tx 的直接子项；示例：(context-tx (base-version 2) (reason \"完成收口\") (revise task (task (status completed))) (create result (tests passed)) (protect task result) (retire event:1 event:2))"
+                        "description": "完整的单个 SExpr 心智事务。create/derive/revise 可直接并列一个或多个 BODY，Runtime 会把多项规范化为 (context-body BODY...)；create 不接受 from，有来源时使用 derive，derive/revise 的 (from SOURCE...) 必须紧跟 ID。一个 transaction 可包含多个 create/derive/revise/retire/restore/protect/unprotect/place/relate/unrelate，并整体原子提交；不要为多个修改并行调用多次 context_tx。reason 只能写成 context-tx 的直接子项；示例：(context-tx (base-version 2) (reason \"完成收口\") (revise task (status completed) (next none)) (derive result (from @e27) (tests passed) (confidence high)) (protect task result) (retire @e21 @e22))"
                     }
                 },
                 "required": ["transaction"]
@@ -105,12 +105,12 @@ impl Tool for RecallTool {
         let max_chunk_chars = self.context_engine.recall_chunk_chars();
         ToolDefinition {
             name: "recall".to_string(),
-            description: format!("按稳定引用或查询词主动读取 Event Ledger 原文及已退役 frame。用于验证摘要、恢复遗忘内容或分段读取被 preview 截断的大型输出；结果只进入 inbox，不会自动写入 Mind。event_id 模式单次最多返回 {max_chunk_chars} 个字符；如果 next_offset 非空，下一次必须把它原样作为 offset 继续读取，不要重复 offset=0 或猜测偏移。query 模式返回命中位置附近的片段和建议 offset。"),
+            description: format!("按稳定短引用或查询词主动读取 Event Ledger 原文及已退役 frame。Context 中 observation 的 ref 形如 @e27，由 Ledger sequence 确定性派生；event_id 参数优先使用该 ref，Runtime 会解析为完整 ID。用于验证摘要、恢复遗忘内容或分段读取被 preview 截断的大型输出；结果只进入 inbox，不会自动写入 Mind。event_id 模式单次最多返回 {max_chunk_chars} 个字符；如果 next_offset 非空，下一次必须把它原样作为 offset 继续读取，不要重复 offset=0 或猜测偏移。query 模式返回命中位置附近的片段和建议 offset。"),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "session_id": { "type": "string", "description": "通常省略，由 Runtime 注入" },
-                    "event_id": { "type": "string", "description": "Context observation 的 full-ref" },
+                    "event_id": { "type": "string", "description": "Context observation 的稳定短 ref（如 @e27）；兼容完整 Ledger event ID" },
                     "frame_id": { "type": "string", "description": "已存在或已退役的 frame ID" },
                     "query": { "type": "string", "description": "在当前 session Ledger 中搜索" },
                     "offset": { "type": "integer", "minimum": 0, "description": "读取 event 原文的字符偏移；连续分页时必须使用上次结果的 next_offset" },
@@ -125,6 +125,9 @@ impl Tool for RecallTool {
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let mut args: RecallArgs = serde_json::from_str(arguments)?;
+        args.event_id = non_empty(args.event_id);
+        args.frame_id = non_empty(args.frame_id);
+        args.query = non_empty(args.query);
         if args.session_id.trim().is_empty() {
             args.session_id = CURRENT_SESSION_ID
                 .try_with(Clone::clone)
@@ -152,8 +155,10 @@ impl Tool for RecallTool {
                 .find_event(&args.session_id, &event_id)
                 .await?
                 .ok_or_else(|| format!("event '{}' 不存在或不属于当前 session", event_id))?;
+            let event_reference = self.context_engine.event_reference(&event);
             return event_chunk(
                 event,
+                event_reference,
                 args.offset.unwrap_or(0),
                 args.limit.unwrap_or(4_000),
                 self.context_engine.recall_chunk_chars(),
@@ -170,11 +175,12 @@ impl Tool for RecallTool {
         let matches = events
             .into_iter()
             .map(|event| {
+                let event_reference = self.context_engine.event_reference(&event);
                 let text = recall_event_text(&event);
                 let (preview, match_offset) = query_preview(&text, &query, 500);
                 let suggested_offset = match_offset.map(|offset| offset.saturating_sub(250));
                 serde_json::json!({
-                    "event_id": event.id,
+                    "event_id": event_reference,
                     "kind": event.event_type,
                     "topic": event.topic,
                     "timestamp": event.timestamp,
@@ -182,7 +188,7 @@ impl Tool for RecallTool {
                     "truncated": text.chars().count() > 500,
                     "match_offset": match_offset,
                     "suggested_recall": suggested_offset.map(|offset| serde_json::json!({
-                        "event_id": event.id,
+                        "event_id": event_reference,
                         "offset": offset,
                         "limit": max_chunk_chars,
                     })),
@@ -196,8 +202,16 @@ impl Tool for RecallTool {
     }
 }
 
+fn non_empty(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
 fn event_chunk(
     event: Event,
+    event_reference: String,
     requested_offset: usize,
     requested_limit: usize,
     max_visible_chars: usize,
@@ -213,7 +227,7 @@ fn event_chunk(
         (offset + chunk.chars().count() < total_chars).then_some(offset + chunk.chars().count());
     Ok(serde_json::to_string_pretty(&serde_json::json!({
         "context_delivery": "full-event-chunk",
-        "event_id": event.id,
+        "event_id": event_reference,
         "kind": event.event_type,
         "topic": event.topic,
         "actor": event.actor,
@@ -272,6 +286,12 @@ mod tests {
             OrchestratorConfig::default(),
         ));
         let tool = ContextTxTool::new(Arc::clone(&engine));
+        let definition = tool.definition();
+        assert!(definition.parameters["properties"]["final_reply"].is_null());
+        assert_eq!(
+            definition.parameters["required"],
+            serde_json::json!(["transaction"])
+        );
         let result = tool
             .execute(
                 &serde_json::json!({
@@ -331,8 +351,69 @@ mod tests {
             .unwrap();
         let result: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(result["text"], "丙丁戊");
+        assert_eq!(result["event_id"], "@e1");
         assert_eq!(result["next_offset"], 5);
         assert_eq!(result["total_chars"], 6);
+
+        let aliased = tool
+            .execute(
+                &serde_json::json!({
+                    "session_id": "recall-session",
+                    "event_id": "@e1",
+                    "offset": 0,
+                    "limit": 2
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap();
+        let aliased: serde_json::Value = serde_json::from_str(&aliased).unwrap();
+        assert_eq!(aliased["text"], "甲乙");
+        assert_eq!(aliased["event_id"], "@e1");
+    }
+
+    #[tokio::test]
+    async fn recall_ignores_empty_optional_selector_fields_from_compatible_proxies() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("recall-empty-fields.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .append(Event::new(
+                "event:source".to_string(),
+                "Tool".to_string(),
+                crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                vec![
+                    (
+                        "session_id".to_string(),
+                        serde_json::json!("recall-session"),
+                    ),
+                    ("text".to_string(), serde_json::json!("evidence")),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await
+            .unwrap();
+        let engine = Arc::new(ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        ));
+        let result = RecallTool::new(engine)
+            .execute(
+                &serde_json::json!({
+                    "session_id": "recall-session",
+                    "event_id": "event:source",
+                    "frame_id": "",
+                    "query": "",
+                    "offset": 0,
+                    "limit": 100
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(result.contains("evidence"));
     }
 
     #[test]

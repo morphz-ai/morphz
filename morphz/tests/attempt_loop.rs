@@ -623,27 +623,34 @@ async fn test_attempt_loop_context_tx_failure_does_not_corrupt_mind() {
 }
 
 #[tokio::test]
-async fn test_reply_with_context_sidecar_commits_and_does_not_wake_again() {
-    let session_id = "attempt_context_sidecar_reply";
+async fn test_deprecated_final_reply_flag_is_ignored_and_tool_loop_continues() {
+    let session_id = "attempt_deprecated_context_final_reply";
     let (bus, store, orchestrator, client, _tmp) = build_orchestrator_with_config(
-        vec![Response {
-            content: "任务完成，Context 已在后台收口".to_string(),
-            tool_calls: vec![ToolCallRepr {
-                id: "context-sidecar".to_string(),
-                r#type: "function".to_string(),
-                func_name: "context_tx".to_string(),
-                arguments: json!({
-                    "session_id": session_id,
-                    "transaction": "(context-tx (base-version 0) (reason \"sidecar 收口\") (create result (result (status completed))) (protect result))"
-                })
-                .to_string(),
-            }],
-        }],
+        vec![
+            Response {
+                content: "我现在提交 Context 收口，稍后给出最终结果。".to_string(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "context-with-deprecated-final-reply".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: json!({
+                        "session_id": session_id,
+                        "transaction": "(context-tx (base-version 0) (reason \"收口\") (create result (result (status completed))) (protect result))",
+                        "final_reply": true
+                    })
+                    .to_string(),
+                }],
+            },
+            Response {
+                content: "任务完成，Context 已收口。".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ],
         morphz::config::OrchestratorConfig::default(),
     )
     .await;
 
-    publish_user(&bus, session_id, "finish with sidecar").await;
+    publish_user(&bus, session_id, "finish after context transaction").await;
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
     assert_eq!(replies.len(), 1);
     assert_eq!(
@@ -651,10 +658,19 @@ async fn test_reply_with_context_sidecar_commits_and_does_not_wake_again() {
             .payload
             .get("text")
             .and_then(|value| value.as_str()),
-        Some("任务完成，Context 已在后台收口")
+        Some("任务完成，Context 已收口。")
+    );
+    let progress = wait_for_topic(&store, "chat/progress", session_id).await;
+    assert_eq!(progress.len(), 1);
+    assert_eq!(
+        progress[0]
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str()),
+        Some("我现在提交 Context 收口，稍后给出最终结果。")
     );
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-    assert_eq!(client.tools_seen().len(), 1);
+    assert_eq!(client.tools_seen().len(), 2);
     assert_eq!(
         wait_for_topic(&store, "chat/tool_output", session_id)
             .await
@@ -667,6 +683,64 @@ async fn test_reply_with_context_sidecar_commits_and_does_not_wake_again() {
         .unwrap();
     assert_eq!(context.state.version, 1);
     assert!(context.state.protected.contains("result"));
+}
+
+#[tokio::test]
+async fn test_tool_call_preamble_is_progress_and_does_not_end_the_loop() {
+    let session_id = "attempt_context_progress_then_reply";
+    let (bus, store, orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            Response {
+                content: "我现在执行 Context 维护，稍后给出最终答案。".to_string(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "context-progress".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: json!({
+                        "session_id": session_id,
+                        "transaction": "(context-tx (base-version 0) (create result (status completed)))"
+                    })
+                    .to_string(),
+                }],
+            },
+            Response {
+                content: "最终答案已经完整交付。".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ],
+        morphz::config::OrchestratorConfig::default(),
+    )
+    .await;
+
+    publish_user(&bus, session_id, "maintain with visible progress").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0]
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str()),
+        Some("最终答案已经完整交付。")
+    );
+    let progress = wait_for_topic(&store, "chat/progress", session_id).await;
+    assert_eq!(progress.len(), 1);
+    assert_eq!(
+        progress[0]
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str()),
+        Some("我现在执行 Context 维护，稍后给出最终答案。")
+    );
+    assert_eq!(client.tools_seen().len(), 2);
+    assert_eq!(
+        orchestrator
+            .get_current_context_view(session_id)
+            .await
+            .unwrap()
+            .state
+            .version,
+        1
+    );
 }
 
 #[tokio::test]
@@ -737,7 +811,7 @@ async fn test_failed_context_only_call_keeps_context_tool_for_repair() {
                 }],
             },
             Response {
-                content: "修复后完成".to_string(),
+                content: "Context 事务已修复，正在收口。".to_string(),
                 tool_calls: vec![ToolCallRepr {
                     id: "repaired-context".to_string(),
                     r#type: "function".to_string(),
@@ -748,6 +822,10 @@ async fn test_failed_context_only_call_keeps_context_tool_for_repair() {
                     })
                     .to_string(),
                 }],
+            },
+            Response {
+                content: "修复后完成".to_string(),
+                tool_calls: Vec::new(),
             },
         ],
         morphz::config::OrchestratorConfig::default(),
@@ -760,7 +838,7 @@ async fn test_failed_context_only_call_keeps_context_tool_for_repair() {
         1
     );
     let tools_seen = client.tools_seen();
-    assert_eq!(tools_seen.len(), 2);
+    assert_eq!(tools_seen.len(), 3);
     assert!(tools_seen[1].contains(&"context_tx".to_string()));
     let context = orchestrator
         .get_current_context_view(session_id)

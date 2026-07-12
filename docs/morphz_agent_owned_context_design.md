@@ -1,6 +1,6 @@
 # Morphz Agent-Owned Context：由 LLM 自主管理的心智上下文
 
-> 状态：核心设计基线；Agent-Owned Context protocol v3 已实现并进入评测
+> 状态：核心设计基线；Agent-Owned Context protocol v6 已实现并进入评测
 > 适用范围：Morphz Agent Runtime、SExpr DSL、Context 生命周期、记忆召回与产品调试界面
 > 设计优先级：本文件用于澄清 Morphz 的核心方向；当既有文档中的“自动评分、自动裁剪、自动摘要、自动注入”与本文冲突时，应以本文的职责划分为准。
 
@@ -234,7 +234,7 @@ v1 使用乐观并发版本，防止过期 Attempt 覆盖新的 Mind：
   (reason "记录下一步及新验证证据")
   (create next-action (plan "运行并发测试"))
   (derive evidence
-    (from event:01J...)
+    (from @e27)
     (verified "并发测试已通过")))
 ```
 
@@ -242,10 +242,11 @@ v1 使用乐观并发版本，防止过期 Attempt 覆盖新的 Mind：
 
 ### 5.4 元认知元数据（Metacognitive Metadata）
 
-Agent 负责语义判断，不等于 Runtime 应让它在信息不完备的情况下猜测。Runtime 应把自己能够客观测量的事实紧凑地附在 Observation 上，但不输出“重要性分数”。protocol v3 提供以下属性：
+Agent 负责语义判断，不等于 Runtime 应让它在信息不完备的情况下猜测。Runtime 应把自己能够客观测量的事实紧凑地附在 Observation 上，但不输出“重要性分数”。protocol v5 提供以下属性：
 
 | 英文属性 | 中文解释 | 所有者与用途 |
 | --- | --- | --- |
+| `ref` | 稳定短引用 | Runtime 从 Ledger sequence 确定性派生，例如 `@e27`；Agent 在 recall/context_tx 中原样使用，提交前解析为完整 Event ID |
 | `seq` / sequence | 账本写入顺序 | Runtime 生成的单调顺序，帮助 Agent 判断物理先后 |
 | `turn` | 用户回合 | 该 Observation 属于第几个用户回合 |
 | `attempt` | 回合内尝试次数 | 该 Observation 来自本回合第几次模型执行 |
@@ -269,13 +270,15 @@ Agent 负责语义判断，不等于 Runtime 应让它在信息不完备的情�
 
 每轮 Context 必须携带由 Runtime 生成的 `protocol`，使 Agent 不依赖隐藏约定猜测自己的操作方式。协议至少自描述：
 
-- `reply`：正文直接交付用户，可附带一个 `context_tx` sidecar；Runtime 执行 sidecar 后直接发布正文，不再用回执唤醒模型；
-- `act`：调用物理工具以取得必要的新结果，可附带一个不依赖本批新结果的 `context_tx` sidecar，正文不是最终回复；
+- `reply`：不调用任何工具，正文直接交付用户并结束当前回合；
+- `act`：调用物理工具以取得必要的新结果，可并行附带一个不依赖本批新结果的 `context_tx`；正文只是可见进度，工具执行后 Runtime 必定再次调用模型；
 - `maintain`：可单独调用 `context_tx`；它不是用户回合终点，Runtime 执行后必须再次调用模型，且非 critical 时下一响应冷却 `context_tx`；
 - `context-tx-contract`：事务骨架、reason 作用域及全部可用原语的准确语法；
 - `kernel.wake`：本轮由用户消息、外部工具结果还是 Context transaction 回执唤醒。
 
-Context 修改继续只暴露一个标准 Function Calling 工具：`context_tx(transaction: string)`。外层遵循模型训练过的标准工具调用接口，内部参数保留 canonical SExpr；暂不把 operations 改成结构化 JSON。首批真实模型测试的 33 次事务中，31 次成功提交且没有 SExpr parser 语法失败；后续收敛测试又发现模型偶尔会给 `create/derive` 传入多个并列 BODY，但均能根据错误反馈在下一次调用自行修复。协议现已明确 BODY arity 和包装示例。当前主要收敛问题仍来自响应模式、任务范围和证据定位，而不是需要放弃 SExpr。
+protocol v6 不再向模型暴露 `final_reply` 布尔参数，也不再提供“事务与最终正文同响应终止”的快速路径。终止条件只由响应形态决定：有工具则继续，无工具纯文本则结束。这与主流模型的 Function Calling 训练分布一致，也避免模型同时判断事务语义和终止语义。
+
+Context 修改继续只暴露一个标准 Function Calling 工具：`context_tx(transaction: string)`。外层遵循模型训练过的标准工具调用接口，内部参数保留 canonical SExpr；暂不把 operations 改成结构化 JSON。真实测试发现，多种模型会自然地把 goal、status、source 等多个字段写成并列 BODY；这些表达语义明确，没有必要要求模型添加无业务含义的 `record/frame` 外壳。protocol v5 因此正式接受 `BODY...`，由 Runtime 规范化为单一 `(context-body ...)` 后写入 Ledger。来源语义仍保持严格：`create` 不接受 `from`，有来源时使用 `derive`，避免容错吞掉证据血缘。
 
 为避免 System Prompt、工具描述与 Context 协议发生漂移，正式原语的名称、语法和含义由 Runtime 中同一份协议定义生成。错误反馈也应给出可执行的正确形式，例如明确提示 `retire` 只接受 ID，reason 必须提升为事务级字段。
 
@@ -304,7 +307,7 @@ LLM 自主管理不等于 Runtime 什么都不做。Runtime 必须把不可见�
 
 - `normal`：不得仅为降低体积压缩，只维护确实改变的长期目标、约束或结论；
 - `notice`：只提示增长趋势，不因容量触发维护；
-- `warning`：优先随当前 `reply/act` 附带压缩 sidecar；
+- `warning`：优先在最终 `reply` 前或随当前 `act` 提交压缩事务；
 - `critical`：暂停新的高成本动作，要求先提交一次 Context maintenance transaction。
 
 Runtime 只能要求“必须释放多少预算”，不能决定“删除哪一段”。如果 Agent 多次无法在硬限制内生成有效维护指令，Kernel 才可进入紧急模式：冻结当前 Mind、创建 Checkpoint，并启动显式恢复流程。紧急模式不是普通 Compaction，也不能静默丢弃语义内容。
@@ -313,13 +316,13 @@ Runtime 只能要求“必须释放多少预算”，不能决定“删除哪一
 
 首次 Context Pressure Eval 已验证一次真实闭环：在 9,000 模拟硬上限和 2,500 reserve 下，38 条合成长历史产生 9,177 estimated tokens；模型自主创建并保护 `core_facts`、保留五条关键原始证据、退休 33 条陈旧 observation，最终降至 2,140 tokens 和 `normal`。该结果证明机制可行，但模型窗口自动发现、精确 tokenizer、渐进压力成功率和 emergency checkpoint 仍未完成。
 
-后续 Context Long-Run Eval 从 normal 开始连续运行六轮。模型在峰值 4,491/8,000 时仍未进入 warning/critical，三次在 notice 主动维护，退休全部 56 条原始历史，并在隐藏核验中保持六项事实和接口作废关系；容量与语义保真通过。但它提交 18 次事务、三个回合耗尽 Attempt，并把每个批次过程都创建为受保护 Frame，导致 Mind 结构线性增长。由此确认“避免物理溢出”和“形成可持续长期心智”是两个不同验收目标。Runtime 随后实现 protocol v2：sidecar 作为可选快速路径；独立事务保留标准 Function Calling 形态，但成功后只允许一次回执唤醒且下一响应冷却 `context_tx`。Prompt 同时禁止 normal/notice 容量压缩和低价值批次升格。frame consolidation 仍需继续验证。
+后续 Context Long-Run Eval 从 normal 开始连续运行六轮。模型在峰值 4,491/8,000 时仍未进入 warning/critical，三次在 notice 主动维护，退休全部 56 条原始历史，并在隐藏核验中保持六项事实和接口作废关系；容量与语义保真通过。但它提交 18 次事务、三个回合耗尽 Attempt，并把每个批次过程都创建为受保护 Frame，导致 Mind 结构线性增长。由此确认“避免物理溢出”和“形成可持续长期心智”是两个不同验收目标。当时 Runtime 实现的 protocol v2 将 sidecar 作为可选快速路径；后续多模型测试证明该路径会诱发进度文本被误标为最终回复，已被 protocol v6 取代。事务回执冷却、normal/notice 禁止容量压缩和低价值批次升格仍保留。frame consolidation 仍需继续验证。
 
-Context 自主也必须服从预算，但元认知维护不能挤占物理工作机会。Kernel 按用户回合公开 `turn-budget`，分别记录物理工作 Attempt 和 Context transaction 的已用量与上限，并公开 `work/context-closure/final-reply` 三阶段。普通 sidecar 不产生新的 LLM Attempt；独立 context-only 调用不计入物理工作 Attempt，但成功后若已脱离 critical，下一响应隐藏 `context_tx`，直到新的 user/tool observation 到达。失败事务保留修复机会。物理 Attempt 达到上限时，Runtime 仍提供一次只暴露 `context_tx` 的 `context-closure`，随后进入无工具 `final-reply`。
+Context 自主也必须服从预算，但元认知维护不能挤占物理工作机会。Kernel 按用户回合公开 `turn-budget`，分别记录物理工作 Attempt 和 Context transaction 的已用量与上限，并公开 `work/context-closure/final-reply` 三阶段。context-only 调用不计入物理工作 Attempt，但成功后若已脱离 critical，下一响应隐藏 `context_tx`，直到新的 user/tool observation 到达。失败事务保留修复机会。物理 Attempt 达到上限时，Runtime 仍提供一次只暴露 `context_tx` 的 `context-closure`，事务执行后进入无工具 `final-reply`。
 
 ## 7. Agent 的 Context 维护循环
 
-Context 维护是 Agent 的语义决策。sidecar 是可选快速路径；若模型偏好空正文工具调用，独立维护必须由 Runtime 继续驱动到 reply/act，不能成为用户回合终点。
+Context 维护是 Agent 的语义决策。事务调用无论是否携带可见正文，都必须由 Runtime 继续驱动到无工具 reply，不能成为用户回合终点。
 
 评估 Context 生命周期时可以启用 `MORPHZ_CONTEXT_EVAL_MODE=true`，此时 Runtime 只注册
 `context_tx`，以排除 recall、文件和命令工具对轨迹的干扰。该开关仅用于隔离评估，不改变生产工具集。真实六轮复测中，六个有新事实的回合均为“一次 standalone transaction + 一次冷却 reply”，无变化对照直接 reply；因此 standalone 偏好由 Runtime 收敛，而非依赖模型同时输出正文和工具调用。
@@ -332,16 +335,11 @@ stateDiagram-v2
     Reason --> Act: 需要外部结果
     Reason --> Recall: 缺少历史或证据
     Recall --> Reason: 候选内容进入 recall inbox
-    Act --> Observe: 工具/用户/子 Agent 产生新事件
-    Reply --> Sidecar: 可选 context_tx
-    Act --> Sidecar: 可选且不依赖新结果
-    Sidecar --> Validate: 提交 SExpr transaction
-    Validate --> Finish: reply sidecar 后直接交付
-    Validate --> Observe: act sidecar 与工具结果形成一次 barrier
+    Act --> Observe: 工具结果产生新事件并再次调用
     Reason --> Maintain: 需要先修改 Mind
     Maintain --> Validate
-    Validate --> Reason: 独立事务后重新调用并冷却 context_tx
-    Reply --> Finish: 无需维护
+    Validate --> Reason: 事务后重新调用并冷却 context_tx
+    Reply --> Finish: 无工具纯文本
     Finish --> [*]
 ```
 
@@ -567,7 +565,7 @@ Mind Inspector 至少应支持：
 | 可解释性 | 只能看到最终 Prompt | 能看到每次心智变化及原因 |
 | 核心能力 | Runtime 管理历史 | Agent 管理自己的注意力 |
 
-## 16. protocol v3 实现状态与剩余边界
+## 16. protocol v6 实现状态与剩余边界
 
 第一版已经完成以下纵向闭环：
 
@@ -577,17 +575,20 @@ Mind Inspector 至少应支持：
 4. `create/derive/revise/retire/restore/protect/unprotect/place` 已成为正式 v1 原语；
 5. 对话、工具、回复和子 Agent 结果作为 Observation 进入 Inbox，不再自动 Fold 成固定历史；
 6. 主链路已移除自动消息摘要、硬历史裁剪和 Graph facts 自动注入；
-7. `recall` 可以按 Event full-ref 分页读取原文、搜索 Ledger 或读取已退役 Frame；
+7. `recall` 可以按 `@eN` 稳定短引用分页读取 Event 原文、搜索 Ledger 或读取已退役 Frame，并向后兼容完整 Event ID；
 8. 同一 session 的 Attempt 与 Context transaction 均具有 single-writer 保护；
 9. Context transaction 作为 Event Ledger 事件保存完整 state-after、version 和 Diff；
 10. Dashboard 已能直接观察 Mind Frames、来源、revision、保护状态、Inbox 和 Pressure；
 11. Kernel 已分离物理 Attempt 与 Context transaction 预算，并强制执行一次性 Context closure 和最终回复，防止模型无界探索或元认知循环；
-12. 每轮 Context 已自描述 response contract、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数；protocol v3 新增中英文元认知属性说明。
+12. 每轮 Context 已自描述 response contract、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数；protocol v6 同时说明稳定短引用、多 BODY 规范化和统一的无工具终止规则。
 13. `read` 已支持带行号的文本查询与行范围读取，减少长文件证据在 Inbox 中的重复膨胀。
 14. Coding Tools v1 已提供 `list_files/search/read/edit/write/exec` 最小闭环；文件修改带 SHA-256 版本前提、原子提交、Diff 和 `file_change` Observation。
 15. Event Ledger 通过 SQLite `rowid` 暴露稳定写入 `sequence`，并为 Observation 提供 turn、attempt、caused-by、residency、resource、freshness 与 usage。
 16. DSL 已增加开放的 `relate/unrelate`；Runtime 只对 `supersedes` 建立新旧解释，旧证据不会被自动删除。
 17. 已建立 `context_metacognition_eval` 黑盒评测，分别评分 Runtime 契约与 Agent 元认知策略，并支持基线/候选对比。
+18. Observation、wake、frame sources、freshness 与 relation 在模型视口中统一使用 `@eN`；Runtime 只解析操作参数中的引用位，Ledger transaction 与 Mind state 始终保存完整 canonical ID，保证确定性重放与旧数据兼容。
+19. `create/derive/revise` 正式接受 `BODY...`；多项由 Runtime 确定性规范化为 `(context-body BODY...)`，单项保持原样。`create` 不接受 `from`，`derive/revise` 的来源必须紧跟 ID，避免容错掩盖证据血缘错误。
+20. `context_tx.final_reply` 已从 Function Calling schema 和 Runtime 终止逻辑中移除；任何工具响应都展示为进度并续跑，只有无工具纯文本才成为 `chat/reply`。
 
 v1 有意尚未覆盖的边界：
 

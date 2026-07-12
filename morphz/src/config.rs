@@ -157,6 +157,8 @@ pub struct LlmConfig {
     pub initial_backoff_secs: u64,
     /// 单次 HTTP 请求（包含响应体读取）的超时秒数
     pub request_timeout_secs: u64,
+    /// 单次 completion 最大输出 Token；None 表示由模型服务决定默认值
+    pub max_output_tokens: Option<u32>,
 }
 
 impl Default for LlmConfig {
@@ -167,6 +169,7 @@ impl Default for LlmConfig {
             max_retries: 5,
             initial_backoff_secs: 1,
             request_timeout_secs: 120,
+            max_output_tokens: None,
         }
     }
 }
@@ -320,7 +323,15 @@ impl AppConfig {
             "MORPHZ_MODEL_ATTEMPT_TIMEOUT_SECS",
             &mut self.orchestrator.model_attempt_timeout_secs,
         )?;
+        apply_u64_env(
+            "MORPHZ_REPLY_TIMEOUT_SECS",
+            &mut self.orchestrator.reply_timeout_secs,
+        )?;
         apply_u32_env("MORPHZ_LLM_MAX_RETRIES", &mut self.llm.max_retries)?;
+        apply_optional_u32_env(
+            "MORPHZ_LLM_MAX_OUTPUT_TOKENS",
+            &mut self.llm.max_output_tokens,
+        )?;
         Ok(())
     }
 }
@@ -367,6 +378,21 @@ fn apply_u32_env(name: &str, target: &mut u32) -> Result<(), String> {
         return Err(format!("{name} 必须大于 0"));
     }
     *target = parsed;
+    Ok(())
+}
+
+fn apply_optional_u32_env(name: &str, target: &mut Option<u32>) -> Result<(), String> {
+    let Ok(value) = std::env::var(name) else {
+        return Ok(());
+    };
+    let parsed = value
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| format!("{name} 不是合法正整数: {value}"))?;
+    if parsed == 0 {
+        return Err(format!("{name} 必须大于 0"));
+    }
+    *target = Some(parsed);
     Ok(())
 }
 
@@ -421,6 +447,7 @@ mod tests {
         assert_eq!(cfg.memory.sqlite_pool_size, 8);
         assert_eq!(cfg.llm.max_retries, 5);
         assert_eq!(cfg.llm.request_timeout_secs, 120);
+        assert_eq!(cfg.llm.max_output_tokens, None);
         assert!(cfg.tool_security.workspace_jail_enabled);
         assert_eq!(cfg.background_task.timeout_notify_secs, 300);
     }
@@ -464,10 +491,12 @@ mod tests {
         writeln!(tmp_file, "[llm]").unwrap();
         writeln!(tmp_file, "request_timeout_secs = 7").unwrap();
         writeln!(tmp_file, "max_retries = 1").unwrap();
+        writeln!(tmp_file, "max_output_tokens = 131072").unwrap();
 
         let cfg = AppConfig::load_or_default(tmp_file.path().to_str().unwrap());
         assert_eq!(cfg.llm.request_timeout_secs, 7);
         assert_eq!(cfg.llm.max_retries, 1);
+        assert_eq!(cfg.llm.max_output_tokens, Some(131_072));
         assert_eq!(cfg.llm.model, "gpt-4o-mini");
     }
 }

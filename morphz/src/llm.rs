@@ -71,6 +71,7 @@ pub struct OpenAIClient {
     embedding_model: String,
     max_retries: u32,
     initial_backoff_secs: u64,
+    max_output_tokens: Option<u32>,
     local_model: Option<Arc<executor::ModelStore>>,
 }
 
@@ -130,6 +131,7 @@ impl OpenAIClient {
             embedding_model,
             max_retries: config.max_retries.max(1),
             initial_backoff_secs: config.initial_backoff_secs,
+            max_output_tokens: config.max_output_tokens,
             local_model,
         })
     }
@@ -142,6 +144,8 @@ struct ChatRequest {
     messages: Vec<ChatReqMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ChatReqTool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -173,18 +177,32 @@ struct ChatReqFunction {
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<ChatChoice>,
+    #[serde(default)]
+    usage: Option<ChatUsage>,
 }
 
 #[derive(Deserialize)]
 struct ChatChoice {
     message: ChatRespMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ChatUsage {
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens: Option<u64>,
+    #[serde(default)]
+    total_tokens: Option<u64>,
 }
 
 #[derive(Deserialize)]
 struct ChatRespMessage {
     content: Option<String>,
     #[serde(default)]
-    tool_calls: Vec<ToolCall>,
+    tool_calls: Option<Vec<ToolCall>>,
 }
 
 #[derive(Serialize)]
@@ -243,6 +261,7 @@ impl Client for OpenAIClient {
             model: self.model_name.clone(),
             messages: req_messages,
             tools: req_tools,
+            max_tokens: self.max_output_tokens,
         };
 
         let url = format!("{}/chat/completions", self.base_url);
@@ -296,10 +315,32 @@ impl Client for OpenAIClient {
             .first()
             .ok_or("Empty choices in chat response")?;
 
+        let tool_argument_chars = choice
+            .message
+            .tool_calls
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|call| call.function.arguments.chars().count())
+            .collect::<Vec<_>>();
+        tracing::info!(
+            model = %self.model_name,
+            finish_reason = ?choice.finish_reason,
+            prompt_tokens = ?chat_resp.usage.as_ref().and_then(|usage| usage.prompt_tokens),
+            completion_tokens = ?chat_resp.usage.as_ref().and_then(|usage| usage.completion_tokens),
+            total_tokens = ?chat_resp.usage.as_ref().and_then(|usage| usage.total_tokens),
+            tool_argument_chars = ?tool_argument_chars,
+            "LLM completion 元数据"
+        );
+        validate_chat_choice(choice)
+            .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
+
         let content = choice.message.content.clone().unwrap_or_default();
         let tool_calls = choice
             .message
             .tool_calls
+            .as_deref()
+            .unwrap_or_default()
             .iter()
             .map(|tc| ToolCallRepr {
                 id: tc.id.clone(),
@@ -393,6 +434,28 @@ impl Client for OpenAIClient {
     }
 }
 
+fn validate_chat_choice(choice: &ChatChoice) -> Result<(), String> {
+    if choice.finish_reason.as_deref() == Some("length") {
+        return Err(
+            "LLM 响应因输出长度限制而被截断，拒绝将不完整正文或工具参数作为有效结果".to_string(),
+        );
+    }
+    let has_content = choice
+        .message
+        .content
+        .as_deref()
+        .is_some_and(|content| !content.trim().is_empty());
+    let has_tool_calls = choice
+        .message
+        .tool_calls
+        .as_deref()
+        .is_some_and(|calls| !calls.is_empty());
+    if !has_content && !has_tool_calls {
+        return Err("LLM 响应既没有非空正文，也没有工具调用，不能作为最终回复".to_string());
+    }
+    Ok(())
+}
+
 pub fn local_hashing_embedding(text: &str) -> Vec<f32> {
     let text = text.to_lowercase();
     let mut clean_chars = Vec::new();
@@ -455,6 +518,60 @@ mod tests {
         assert_eq!(vec1.len(), 256);
         assert_eq!(vec1, vec2);
         assert_ne!(vec1, vec3);
+    }
+
+    #[test]
+    fn chat_response_accepts_null_tool_calls_from_openai_compatible_proxies() {
+        let response: ChatResponse = serde_json::from_value(serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": "done",
+                    "tool_calls": null
+                }
+            }]
+        }))
+        .unwrap();
+        assert_eq!(response.choices[0].message.content.as_deref(), Some("done"));
+        assert!(response.choices[0].message.tool_calls.is_none());
+        assert!(validate_chat_choice(&response.choices[0]).is_ok());
+    }
+
+    #[test]
+    fn truncated_or_empty_chat_response_is_not_a_valid_final_reply() {
+        let truncated: ChatResponse = serde_json::from_value(serde_json::json!({
+            "choices": [{
+                "finish_reason": "length",
+                "message": {"content": "partial", "tool_calls": null}
+            }]
+        }))
+        .unwrap();
+        let empty: ChatResponse = serde_json::from_value(serde_json::json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {"content": "  ", "tool_calls": []}
+            }]
+        }))
+        .unwrap();
+
+        assert!(validate_chat_choice(&truncated.choices[0])
+            .unwrap_err()
+            .contains("输出长度限制"));
+        assert!(validate_chat_choice(&empty.choices[0])
+            .unwrap_err()
+            .contains("没有非空正文"));
+    }
+
+    #[test]
+    fn chat_request_serializes_explicit_max_output_tokens() {
+        let request = ChatRequest {
+            model: "test-model".to_string(),
+            messages: Vec::new(),
+            tools: None,
+            max_tokens: Some(131_072),
+        };
+        let value = serde_json::to_value(request).unwrap();
+
+        assert_eq!(value["max_tokens"], 131_072);
     }
 
     #[tokio::test]
