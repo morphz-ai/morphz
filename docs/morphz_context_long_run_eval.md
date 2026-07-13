@@ -42,26 +42,26 @@ Context，并用 `MORPHZ_CONTEXT_ID` 挂载测试 Session；文中的“同一�
 创建独立环境：
 
 ```bash
-cargo run -p morphz --bin context_long_run_eval -- create /private/tmp/morphz-eval-runs
+cargo run -p morphz-evals --bin context_long_run_eval -- create /private/tmp/morphz-eval-runs
 ```
 
 每轮先注入下一批：
 
 ```bash
-cargo run -p morphz --bin context_long_run_eval -- advance RUN_ROOT
+cargo run -p morphz-evals --bin context_long_run_eval -- advance RUN_ROOT
 ```
 
 将输出的 `user_prompt` 发送给使用 manifest 环境变量启动的 Morphz。回复前后记录快照：
 
 ```bash
-cargo run -p morphz --bin context_long_run_eval -- snapshot RUN_ROOT round-1-injected
-cargo run -p morphz --bin context_long_run_eval -- snapshot RUN_ROOT round-1-after
+cargo run -p morphz-evals --bin context_long_run_eval -- snapshot RUN_ROOT round-1-injected
+cargo run -p morphz-evals --bin context_long_run_eval -- snapshot RUN_ROOT round-1-after
 ```
 
 六轮结束后发送 manifest 中的 `probe_prompt`，记录 `probe-after`，再独立评分：
 
 ```bash
-cargo run -p morphz --bin context_long_run_eval -- inspect RUN_ROOT
+cargo run -p morphz-evals --bin context_long_run_eval -- inspect RUN_ROOT
 ```
 
 ## 2026-07-11 真实模型结果

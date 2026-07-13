@@ -53,28 +53,28 @@
 创建隔离环境：
 
 ```bash
-cargo run -p morphz --bin context_metacognition_eval -- create /private/tmp/morphz-evals
+cargo run -p morphz-evals --bin context_metacognition_eval -- create /private/tmp/morphz-evals
 ```
 
 命令输出 `environment`、`run_root` 和 `manifest.user_prompt`。使用输出中的环境变量启动 Morphz，把 `user_prompt` 原样作为一次用户输入。该场景会保留 `recall`，但关闭子 Agent/技能工具；评分器会拒绝无关物理工具调用。运行结束后检查：
 
 ```bash
-cargo run -p morphz --bin context_metacognition_eval -- inspect RUN_ROOT
+cargo run -p morphz-evals --bin context_metacognition_eval -- inspect RUN_ROOT
 ```
 
 对两个实现生成的独立 run 做维度对比：
 
 ```bash
-cargo run -p morphz --bin context_metacognition_eval -- compare BASELINE_RUN CANDIDATE_RUN
+cargo run -p morphz-evals --bin context_metacognition_eval -- compare BASELINE_RUN CANDIDATE_RUN
 ```
 
 自动启动 Morphz、提交任务、等待回复、退出并评分：
 
 ```bash
 cargo build -p morphz --bin morphz
-cargo run -p morphz --bin context_metacognition_eval -- run /private/tmp/morphz-evals
-cargo run -p morphz --bin context_metacognition_eval -- suite /private/tmp/morphz-evals 5
-cargo run -p morphz --bin context_metacognition_eval -- compare-suites BASELINE_SUITE CANDIDATE_SUITE
+cargo run -p morphz-evals --bin context_metacognition_eval -- run /private/tmp/morphz-evals
+cargo run -p morphz-evals --bin context_metacognition_eval -- suite /private/tmp/morphz-evals 5
+cargo run -p morphz-evals --bin context_metacognition_eval -- compare-suites BASELINE_SUITE CANDIDATE_SUITE
 ```
 
 每次 run 保存独立数据库、workspace、`agent.stdout.log`、`agent.stderr.log` 和 `run_report.json`；suite 保存各维度通过率、平均分、标准差、调用均值及所有子报告。默认从同目录寻找 `morphz` 二进制，也可通过 `MORPHZ_EVAL_AGENT_BIN` 指定。
@@ -102,7 +102,7 @@ api_key_env = "MORPHZ_LOCAL_MODEL_B_API_KEY"
 ```bash
 export MORPHZ_LOCAL_MODEL_A_API_KEY="..."
 export MORPHZ_LOCAL_MODEL_B_API_KEY="..."
-cargo run -p morphz --bin context_metacognition_eval -- \
+cargo run -p morphz-evals --bin context_metacognition_eval -- \
   model-matrix model-profiles.toml /private/tmp/morphz-model-evals 5
 ```
 

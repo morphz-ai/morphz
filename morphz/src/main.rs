@@ -1,21 +1,9 @@
 use chrono::Utc;
-use morphz::approval::{
-    AiAutoReviewProvider, ApprovalDecision, ApprovalProvider, DenyAllApprovalProvider,
-    EscalatingApprovalProvider, HumanApprovalHub, HumanApprovalProvider,
-};
+use morphz::approval::ApprovalDecision;
 use morphz::config;
-use morphz::context_tools::{ContextTxTool, RecallTool};
-use morphz::event::{Event, InMemoryEventBus};
 use morphz::llm::OpenAIClient;
-use morphz::memory::sqlite::SqliteStore;
-use morphz::memory::{NewAgent, NewCognitiveContext, NewSession, SessionMountKind, SessionStore};
-use morphz::orchestrator::context::ContextEngine;
-use morphz::orchestrator::orchestrator::Orchestrator;
-use morphz::permission::{PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode};
-use morphz::tool::{
-    DelegateTool, EditFileTool, ExecuteCommandTool, KillTaskTool, ListFilesTool, ListSkillsTool,
-    ReadFileTool, Registry, SearchTool, WriteFileTool,
-};
+use morphz::memory::{NewSession, SessionMountKind};
+use morphz::runtime::{MorphzRuntime, RuntimeIdentity};
 use morphz::web::{Server, ServerDefaults};
 use std::io::{BufRead, Write};
 use std::sync::Arc;
@@ -44,19 +32,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     app_config.apply_runtime_env_overrides()?;
     tracing::info!(?app_config, "已加载应用配置");
 
-    // 1.0. 冷启动直接在当前内存中加载 BERT 语义模型
-    let model_store = match executor::load_model() {
-        Ok(store) => {
-            tracing::info!(target: "bge_model", "本地内存加载成功，就绪状态");
-            Some(Arc::new(store))
-        }
-        Err(e) => {
-            tracing::error!(target: "bge_model", error = %e, "本地内存加载失败");
-            tracing::warn!(target: "bge_model", "请确保本地模型文件齐全：路径 models/bge-small-zh-1.5/。将使用降级 Hashing Embedding 兜底。");
-            None
-        }
-    };
-
     // 1. 加载根目录下的 .env 环境变量
     if let Err(e) = config::load_env(".env") {
         tracing::warn!(error = %e, "加载 .env 文件失败或不存在，使用系统环境变量");
@@ -81,147 +56,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         api_key,
         base_url,
         model_name,
-        model_store,
         &app_config.llm,
     )?);
 
-    // 3. 初始化事件总线与事件存储（数据库路径来自配置）
-    let bus = Arc::new(InMemoryEventBus::new());
+    // 3. 通过统一 Application API 组装并启动 Runtime。
     let database_path =
         std::env::var("MORPHZ_DB_PATH").unwrap_or_else(|_| app_config.server.database_path.clone());
-    let store = Arc::new(SqliteStore::new_with_config(&database_path, &app_config.memory).await?);
-    let auto_review = Arc::new(AiAutoReviewProvider::new(
-        Arc::clone(&client) as Arc<dyn morphz::llm::Client>,
-        Arc::clone(&store) as Arc<dyn morphz::memory::EventStore>,
-    ));
-    let human_approval_hub = HumanApprovalHub::default();
-    let human_review: Arc<dyn ApprovalProvider> = Arc::new(HumanApprovalProvider::new(
-        human_approval_hub.clone(),
-        Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn morphz::memory::EventStore>,
-    ));
-
-    // 4. 初始化工具注册表并注册本地文件工具
-    let registry = Arc::new(Registry::new());
-    let context_engine = Arc::new(
-        ContextEngine::new(
-            Arc::clone(&store) as Arc<dyn morphz::memory::EventStore>,
-            app_config.orchestrator.clone(),
-        )
-        .with_session_store(Arc::clone(&store) as Arc<dyn morphz::memory::SessionStore>),
-    );
-    let permission_profile = Arc::new(PermissionProfile::from_config(&app_config.permissions)?);
-    if permission_profile.sandbox_mode == SandboxMode::DangerFullAccess {
-        tracing::warn!("完全访问权限已启用：文件工具与 Shell 均不受工作区或操作系统沙箱限制");
-    }
-    let approval_provider: Arc<dyn ApprovalProvider> = match permission_profile.reviewer {
-        ReviewerKind::AutoReview => Arc::new(EscalatingApprovalProvider::new(
-            auto_review,
-            Arc::clone(&human_review),
-        )),
-        ReviewerKind::User => Arc::clone(&human_review),
-        ReviewerKind::Deny => Arc::new(DenyAllApprovalProvider::new(
-            "当前权限 Profile 禁止边界外能力申请",
-        )),
-    };
-    let permissions = Arc::new(PermissionBroker::new(permission_profile, approval_provider));
-    let background_config = Arc::new(app_config.background_task.clone());
-    registry.register(Arc::new(ContextTxTool::new(Arc::clone(&context_engine))));
-    let context_eval_mode = env_flag_enabled("MORPHZ_CONTEXT_EVAL_MODE");
-    if !context_eval_mode {
-        registry.register(Arc::new(WriteFileTool::new_with_runtime(
-            Arc::clone(&permissions),
-            Arc::clone(&bus),
-        )));
-        registry.register(Arc::new(ReadFileTool::new_with_permissions(Arc::clone(
-            &permissions,
-        ))));
-        registry.register(Arc::new(EditFileTool::new_with_runtime(
-            Arc::clone(&permissions),
-            Arc::clone(&bus),
-        )));
-        registry.register(Arc::new(ListFilesTool::new_with_permissions(Arc::clone(
-            &permissions,
-        ))));
-        registry.register(Arc::new(SearchTool::new_with_permissions(Arc::clone(
-            &permissions,
-        ))));
-        registry.register(Arc::new(RecallTool::new(Arc::clone(&context_engine))));
-        registry.register(Arc::new(ExecuteCommandTool::new_with_permissions(
-            Arc::clone(&bus),
-            Arc::clone(&background_config),
-            Arc::clone(&permissions),
-            app_config.orchestrator.tool_timeout_secs,
-        )));
-        registry.register(Arc::new(KillTaskTool));
-        if !env_flag_enabled("MORPHZ_CODING_EVAL_MODE") {
-            registry.register(Arc::new(DelegateTool::new(Arc::clone(&bus))));
-            registry.register(Arc::new(ListSkillsTool));
-        }
-    }
-
-    // 5. 初始化并启动 Orchestrator
-    let orc = Arc::new(Orchestrator::new_with_context_engine(
-        Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn morphz::memory::EventStore>,
-        Arc::clone(&client) as Arc<dyn morphz::llm::Client>,
-        Arc::clone(&registry),
-        app_config.orchestrator.clone(),
-        Arc::clone(&context_engine),
-    ));
-
-    orc.clone().start().await?;
-
     let default_agent_id =
         std::env::var("MORPHZ_AGENT_ID").unwrap_or_else(|_| "default-agent".to_string());
     let default_context_id =
         std::env::var("MORPHZ_CONTEXT_ID").unwrap_or_else(|_| "context-default".to_string());
-    // 旧数据库迁移时可能已经为 default-agent 选择了一个历史 Context
-    // 作为 Root。Root 是身份血缘，启动参数不应静默改写它；仅在 Agent
-    // 尚不存在时把当前默认 Context 设为 Root。
-    if store.get_agent(&default_agent_id).await?.is_none() {
-        store
-            .ensure_agent(NewAgent {
-                id: default_agent_id.clone(),
-                title: "默认 Agent".to_string(),
-                root_context_id: default_context_id.clone(),
-            })
-            .await?;
-    }
-    store
-        .ensure_context(NewCognitiveContext {
-            id: default_context_id.clone(),
-            agent_id: default_agent_id.clone(),
-            title: "默认认知 Context".to_string(),
-        })
-        .await?;
+    let runtime = MorphzRuntime::builder(
+        app_config.clone(),
+        Arc::clone(&client) as Arc<dyn morphz::llm::Client>,
+    )
+    .database_path(database_path)
+    .identity(RuntimeIdentity {
+        agent_id: default_agent_id.clone(),
+        context_id: default_context_id.clone(),
+    })
+    .build()
+    .await?;
+    runtime.start().await?;
 
-    // 5.5 启动大盘 API & WebSocket 服务器
-    let web_srv = Arc::new(
-        Server::new_with_capacity(
-            Arc::clone(&store) as Arc<dyn morphz::memory::EventStore>,
-            Some(Arc::clone(&store) as Arc<dyn morphz::memory::GraphStore>),
-            Arc::clone(&store) as Arc<dyn morphz::memory::SessionStore>,
-            Arc::clone(&bus),
-            Arc::clone(&orc),
-            ServerDefaults {
-                agent_id: default_agent_id.clone(),
-                context_id: default_context_id.clone(),
-            },
-            app_config.server.broadcast_capacity,
-        )
-        .with_approval_hub(human_approval_hub.clone()),
-    );
+    // 4. HTTP/WS Server 作为同一 Runtime 的应用适配器启动。
+    let web_srv = Arc::new(Server::new_with_capacity(
+        runtime.clone(),
+        ServerDefaults {
+            agent_id: default_agent_id.clone(),
+            context_id: default_context_id.clone(),
+        },
+        app_config.server.broadcast_capacity,
+    ));
 
     let server_bind =
         std::env::var("MORPHZ_BIND").unwrap_or_else(|_| app_config.server.bind.clone());
     web_srv.start(&server_bind).await?;
 
-    let tool_names: Vec<String> = registry
-        .definitions()
-        .iter()
-        .map(|def| def.name.clone())
-        .collect();
+    let tool_names = runtime.tool_names();
     tracing::info!("Morphz Attempt Loop 运行成功");
     tracing::info!(tools = %tool_names.join(", "), "已注册工具");
     tracing::info!("您可以通过指令命令它做事情，例如：");
@@ -233,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("session_{}", Utc::now().timestamp()));
-    store
+    let session = runtime
         .ensure_session(NewSession {
             id: session_id.clone(),
             agent_id: default_agent_id,
@@ -244,106 +116,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         })
         .await?;
 
-    let bus_clone = Arc::clone(&bus);
     let session_id_clone = session_id.clone();
-    let orc_clone = Arc::clone(&orc);
     let reply_wait_notice_secs = app_config.orchestrator.reply_wait_notice_secs;
 
     let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel::<ConsoleMessage>(100);
-    let reply_tx_clone = reply_tx.clone();
-
-    bus.subscribe(
-        "chat/reply".to_string(),
-        Arc::new(move |ev| {
-            let tx = reply_tx_clone.clone();
-            Box::pin(async move {
-                if let Some(sess_id) = ev.payload.get("session_id").and_then(|s| s.as_str()) {
-                    let text = ev
-                        .payload
-                        .get("text")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let _ = tx
-                        .send((sess_id.to_string(), text, ConsoleMessageKind::Final))
-                        .await;
+    let mut console_events = runtime.subscribe("*", 256);
+    tokio::spawn(async move {
+        while let Some(event) = console_events.recv().await {
+            if let Some(message) = console_message_from_event(&event) {
+                if reply_tx.send(message).await.is_err() {
+                    break;
                 }
-                Ok(())
-            })
-        }),
-    );
-    let progress_tx = reply_tx.clone();
-    bus.subscribe(
-        "chat/progress".to_string(),
-        Arc::new(move |ev| {
-            let tx = progress_tx.clone();
-            Box::pin(async move {
-                if let Some(sess_id) = ev.payload.get("session_id").and_then(|s| s.as_str()) {
-                    let text = ev
-                        .payload
-                        .get("text")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let _ = tx
-                        .send((sess_id.to_string(), text, ConsoleMessageKind::Progress))
-                        .await;
-                }
-                Ok(())
-            })
-        }),
-    );
-    let tool_call_tx = reply_tx.clone();
-    bus.subscribe(
-        "runtime/tool_calls_selected".to_string(),
-        Arc::new(move |ev| {
-            let tx = tool_call_tx.clone();
-            Box::pin(async move {
-                let Some(sess_id) = ev.payload.get("session_id").and_then(|s| s.as_str()) else {
-                    return Ok(());
-                };
-                if let Some(text) = format_tool_call_activity(&ev.payload) {
-                    let _ = tx
-                        .send((sess_id.to_string(), text, ConsoleMessageKind::ToolCall))
-                        .await;
-                }
-                Ok(())
-            })
-        }),
-    );
-    let approval_tx = reply_tx.clone();
-    bus.subscribe(
-        "runtime/approval_requested".to_string(),
-        Arc::new(move |ev| {
-            let tx = approval_tx.clone();
-            Box::pin(async move {
-                let Some(sess_id) = ev.payload.get("session_id").and_then(|s| s.as_str()) else {
-                    return Ok(());
-                };
-                let Some(approval_id) = ev.payload.get("approval_id").and_then(|s| s.as_str())
-                else {
-                    return Ok(());
-                };
-                let text = ev
-                    .payload
-                    .get("text")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("权限请求需要用户决定");
-                let payload = serde_json::json!({
-                    "approval_id": approval_id,
-                    "text": text,
-                })
-                .to_string();
-                let _ = tx
-                    .send((sess_id.to_string(), payload, ConsoleMessageKind::Approval))
-                    .await;
-                Ok(())
-            })
-        }),
-    );
+            }
+        }
+    });
 
     // 在阻塞线程中同步监听 stdin
-    let console_approval_hub = human_approval_hub.clone();
+    let console_runtime = runtime.clone();
+    let console_session = session.clone();
     tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Handle::current();
         let mut msg_counter = 0;
@@ -388,10 +178,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     session_id_clone.clone()
                 };
 
-                let orc_inner = Arc::clone(&orc_clone);
+                let runtime = console_runtime.clone();
                 let sess_id_label = sess_id.clone();
                 let context_result =
-                    rt.block_on(async move { orc_inner.get_current_context(&sess_id).await });
+                    rt.block_on(async move { runtime.inspect_session_context(&sess_id).await });
                 match context_result {
                     Ok(ctx_state) => {
                         let _ = writeln!(
@@ -415,33 +205,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             // 清理已经结束的上一轮残留通知；正常等待不会因时间流逝而提前结束。
             while reply_rx.try_recv().is_ok() {}
 
-            let mut payload = serde_json::Map::new();
-            payload.insert(
-                "context_id".to_string(),
-                serde_json::json!(&default_context_id),
+            let client_message_id = format!(
+                "cli_{}_{}",
+                Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                msg_counter
             );
-            payload.insert(
-                "session_id".to_string(),
-                serde_json::json!(session_id_clone),
-            );
-            payload.insert("text".to_string(), serde_json::json!(&text));
-
-            let ev = Event::new(
-                format!(
-                    "msg_{}_{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0),
-                    msg_counter
-                ),
-                "User-Shafreeck".to_string(),
-                morphz::event::TYPE_USER_MESSAGE.to_string(),
-                "chat/user_message".to_string(),
-                payload,
-            );
-
-            let bus_inner = Arc::clone(&bus_clone);
-            tokio::spawn(async move {
-                let _ = bus_inner.publish(ev).await;
-            });
+            if let Err(error) =
+                rt.block_on(console_session.send(text, "User-Shafreeck", Some(client_message_id)))
+            {
+                let _ = writeln!(stdout, "发送消息失败: {error}");
+                continue;
+            }
 
             // 等待回复完成再继续下一次循环。进度提示只是提示，不是任务超时；
             // 用户可随时用 Ctrl+C 主动中断整个进程。
@@ -461,7 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     Some(ConsoleWaitOutcome::Approval(payload)) => {
                         if let Err(error) = prompt_for_human_approval(
                             &payload,
-                            &console_approval_hub,
+                            &console_runtime,
                             &mut stdin,
                             &mut stdout,
                         ) {
@@ -516,6 +290,59 @@ type ConsoleMessage = (String, String, ConsoleMessageKind);
 enum ConsoleWaitOutcome {
     Final(String),
     Approval(String),
+}
+
+fn console_message_from_event(event: &morphz::event::Event) -> Option<ConsoleMessage> {
+    let session_id = event
+        .payload
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)?
+        .to_string();
+    match event.topic.as_str() {
+        "chat/reply" => Some((
+            session_id,
+            event
+                .payload
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            ConsoleMessageKind::Final,
+        )),
+        "chat/progress" => Some((
+            session_id,
+            event
+                .payload
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            ConsoleMessageKind::Progress,
+        )),
+        "runtime/tool_calls_selected" => format_tool_call_activity(&event.payload)
+            .map(|text| (session_id, text, ConsoleMessageKind::ToolCall)),
+        "runtime/approval_requested" => {
+            let approval_id = event
+                .payload
+                .get("approval_id")
+                .and_then(serde_json::Value::as_str)?;
+            let text = event
+                .payload
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("权限请求需要用户决定");
+            Some((
+                session_id,
+                serde_json::json!({
+                    "approval_id": approval_id,
+                    "text": text,
+                })
+                .to_string(),
+                ConsoleMessageKind::Approval,
+            ))
+        }
+        _ => None,
+    }
 }
 
 async fn wait_for_session_activity(
@@ -585,7 +412,7 @@ async fn wait_for_session_reply(
 
 fn prompt_for_human_approval<R: BufRead, W: Write>(
     payload: &str,
-    hub: &HumanApprovalHub,
+    runtime: &MorphzRuntime,
     reader: &mut R,
     output: &mut W,
 ) -> Result<(), String> {
@@ -630,7 +457,7 @@ fn prompt_for_human_approval<R: BufRead, W: Write>(
                 continue;
             }
         };
-        return hub.decide(approval_id, decision);
+        return runtime.decide_approval(approval_id, decision);
     }
 }
 
@@ -795,15 +622,6 @@ async fn shutdown_signal() {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
-}
-
-fn env_flag_enabled(name: &str) -> bool {
-    std::env::var(name).ok().is_some_and(|value| {
-        matches!(
-            value.to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
 }
 
 #[cfg(test)]

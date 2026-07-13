@@ -1,7 +1,7 @@
-use crate::config::{self, AppConfig};
-use crate::llm::{Client, FunctionCall, Message, OpenAIClient, ToolCall, ToolDefinition};
-use crate::sexpr_vm_contract::ANNOTATED_REPLY_KERNEL;
 use chrono::Utc;
+use morphz::config::{self, AppConfig};
+use morphz::llm::{Client, FunctionCall, Message, OpenAIClient, ToolCall, ToolDefinition};
+use morphz::sexpr_vm_contract::ANNOTATED_REPLY_KERNEL;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -127,8 +127,7 @@ pub async fn run_reply_eval(
     let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_default();
     let app_config = AppConfig::load_or_default("morphz.toml");
     let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| app_config.llm.model.clone());
-    let client =
-        OpenAIClient::new_with_config(api_key, base_url, model.clone(), None, &app_config.llm)?;
+    let client = OpenAIClient::new_with_config(api_key, base_url, model.clone(), &app_config.llm)?;
     let id = format!(
         "sexpr-explicit-reply-ab-v1-{}-{}",
         Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),

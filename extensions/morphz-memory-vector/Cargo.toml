@@ -1,0 +1,23 @@
+[package]
+name = "morphz-memory-vector"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+
+[features]
+default = []
+local-bge = ["dep:executor"]
+
+[dependencies]
+morphz = { path = "../../morphz" }
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
+executor = { path = "../../executor", optional = true }
+
+[dev-dependencies]
+tempfile = "3.8"
+tokio = { version = "1.35", features = ["macros", "rt-multi-thread"] }

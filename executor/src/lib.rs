@@ -10,7 +10,9 @@ pub struct ModelStore {
     pub device: Device,
 }
 
-pub fn load_model() -> Result<ModelStore, Box<dyn std::error::Error>> {
+pub type ExecutorError = Box<dyn std::error::Error + Send + Sync>;
+
+pub fn load_model() -> Result<ModelStore, ExecutorError> {
     let model_dir = Path::new("models/bge-small-zh-1.5");
     let config_path = model_dir.join("config.json");
     let tokenizer_path = model_dir.join("tokenizer.json");
@@ -59,10 +61,7 @@ pub fn load_model() -> Result<ModelStore, Box<dyn std::error::Error>> {
     })
 }
 
-pub fn compute_embedding(
-    store: &ModelStore,
-    text: &str,
-) -> Result<Vec<f32>, Box<dyn std::error::Error>> {
+pub fn compute_embedding(store: &ModelStore, text: &str) -> Result<Vec<f32>, ExecutorError> {
     // 1. 词例化
     let tokens = store
         .tokenizer

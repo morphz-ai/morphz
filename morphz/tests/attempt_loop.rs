@@ -154,13 +154,6 @@ impl Client for FailingClient {
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
         Err("simulated LLM transport timeout".into())
     }
-
-    async fn create_embedding(
-        &self,
-        _text: &str,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Vec::new())
-    }
 }
 
 #[async_trait::async_trait]
@@ -173,13 +166,6 @@ impl Client for HangingClient {
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         unreachable!("orchestrator deadline must cancel the hanging client")
     }
-
-    async fn create_embedding(
-        &self,
-        _text: &str,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Vec::new())
-    }
 }
 
 #[async_trait::async_trait]
@@ -191,13 +177,6 @@ impl Client for BlockingClient {
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
         std::thread::sleep(std::time::Duration::from_secs(10));
         unreachable!("isolated blocking client must not hold the caller task")
-    }
-
-    async fn create_embedding(
-        &self,
-        _text: &str,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Vec::new())
     }
 }
 
@@ -213,13 +192,6 @@ impl Client for CancellableClient {
             unreachable!("first attempt must be cancelled")
         }
         Ok(explicit_reply_response("resumed-after-cancel"))
-    }
-
-    async fn create_embedding(
-        &self,
-        _text: &str,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Vec::new())
     }
 }
 
@@ -248,13 +220,6 @@ impl Client for SlowBatchClient {
             }],
         })
     }
-
-    async fn create_embedding(
-        &self,
-        _text: &str,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Vec::new())
-    }
 }
 
 #[async_trait::async_trait]
@@ -282,13 +247,6 @@ impl Client for BudgetProbeClient {
             }],
         })
     }
-
-    async fn create_embedding(
-        &self,
-        _text: &str,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Vec::new())
-    }
 }
 
 #[async_trait::async_trait]
@@ -306,13 +264,6 @@ impl Client for ConcurrencyProbeClient {
         self.active.fetch_sub(1, Ordering::SeqCst);
         let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         Ok(explicit_reply_response(format!("reply-{call}")))
-    }
-
-    async fn create_embedding(
-        &self,
-        _text: &str,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Vec::new())
     }
 }
 
@@ -399,13 +350,6 @@ impl Client for MockClient {
             response = explicit_reply_response(response.content);
         }
         Ok(response)
-    }
-
-    async fn create_embedding(
-        &self,
-        _text: &str,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Vec::new())
     }
 }
 

@@ -128,7 +128,7 @@ cargo run -q -p morphz --bin sexpr_reply_eval -- \
 ```
 
 - Reply 版 Kernel：`morphz/src/sexpr_vm_contract.rs`
-- 双组评测、协议纠错和评分：`morphz/src/sexpr_reply_eval.rs`
-- 评测入口：`morphz/src/bin/sexpr_reply_eval.rs`
+- 双组评测、协议纠错和评分：`morphz-evals/src/sexpr_reply_eval.rs`
+- 评测入口：`morphz-evals/src/bin/sexpr_reply_eval.rs`
 
 Pilot 的 10 个 episode 只用于检查夹具，不进入上述正式统计。

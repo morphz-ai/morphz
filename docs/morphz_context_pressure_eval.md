@@ -32,13 +32,13 @@ v1 使用缩小阈值模拟超长生命周期，避免为了验证行为真的�
 创建独立环境：
 
 ```bash
-cargo run -p morphz --bin context_pressure_eval -- create /private/tmp/morphz-eval-runs
+cargo run -p morphz-evals --bin context_pressure_eval -- create /private/tmp/morphz-eval-runs
 ```
 
 使用输出的环境变量启动 Morphz，并发送 manifest 中的 `user_prompt`。运行后独立检查：
 
 ```bash
-cargo run -p morphz --bin context_pressure_eval -- inspect RUN_ROOT
+cargo run -p morphz-evals --bin context_pressure_eval -- inspect RUN_ROOT
 ```
 
 成功条件：

@@ -1,10 +1,10 @@
-use crate::approval::{ApprovalDecision, HumanApprovalHub};
-use crate::event::{Event, InMemoryEventBus};
+use crate::approval::ApprovalDecision;
+use crate::event::Event;
 use crate::memory::{
-    DelegationStatus, GraphStore, MessageClaim, NewAgent, NewCognitiveContext, NewSession,
-    QueryFilter, SessionMountKind, SessionStatus, SessionStore, SessionUpdate,
+    DelegationStatus, NewAgent, NewCognitiveContext, NewSession, QueryFilter, SessionMountKind,
+    SessionStatus, SessionUpdate,
 };
-use crate::orchestrator::orchestrator::Orchestrator;
+use crate::runtime::MorphzRuntime;
 use axum::{
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
@@ -23,15 +23,10 @@ use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 
 pub struct Server {
-    store: Arc<dyn crate::memory::EventStore>,
-    graph_store: Option<Arc<dyn GraphStore>>,
-    session_store: Arc<dyn SessionStore>,
-    bus: Arc<InMemoryEventBus>,
-    orchestrator: Arc<Orchestrator>,
+    runtime: MorphzRuntime,
     broadcast_tx: broadcast::Sender<Event>,
     default_agent_id: String,
     default_context_id: String,
-    approval_hub: Option<HumanApprovalHub>,
 }
 
 pub struct ServerDefaults {
@@ -40,16 +35,11 @@ pub struct ServerDefaults {
 }
 
 struct AppState {
-    store: Arc<dyn crate::memory::EventStore>,
-    graph_store: Option<Arc<dyn GraphStore>>,
-    session_store: Arc<dyn SessionStore>,
-    bus: Arc<InMemoryEventBus>,
-    orchestrator: Arc<Orchestrator>,
+    runtime: MorphzRuntime,
     broadcast_tx: broadcast::Sender<Event>,
     auth_token: Option<String>,
     default_agent_id: String,
     default_context_id: String,
-    approval_hub: Option<HumanApprovalHub>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -148,52 +138,23 @@ struct EventQuery {
 static API_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 impl Server {
-    pub fn new(
-        store: Arc<dyn crate::memory::EventStore>,
-        graph_store: Option<Arc<dyn GraphStore>>,
-        session_store: Arc<dyn SessionStore>,
-        bus: Arc<InMemoryEventBus>,
-        orchestrator: Arc<Orchestrator>,
-        defaults: ServerDefaults,
-    ) -> Self {
-        Self::new_with_capacity(
-            store,
-            graph_store,
-            session_store,
-            bus,
-            orchestrator,
-            defaults,
-            1000,
-        )
+    pub fn new(runtime: MorphzRuntime, defaults: ServerDefaults) -> Self {
+        Self::new_with_capacity(runtime, defaults, 1000)
     }
 
     pub fn new_with_capacity(
-        store: Arc<dyn crate::memory::EventStore>,
-        graph_store: Option<Arc<dyn GraphStore>>,
-        session_store: Arc<dyn SessionStore>,
-        bus: Arc<InMemoryEventBus>,
-        orchestrator: Arc<Orchestrator>,
+        runtime: MorphzRuntime,
         defaults: ServerDefaults,
         broadcast_capacity: usize,
     ) -> Self {
         let (broadcast_tx, _) = broadcast::channel(broadcast_capacity.max(1));
 
         Self {
-            store,
-            graph_store,
-            session_store,
-            bus,
-            orchestrator,
+            runtime,
             broadcast_tx,
             default_agent_id: defaults.agent_id,
             default_context_id: defaults.context_id,
-            approval_hub: None,
         }
-    }
-
-    pub fn with_approval_hub(mut self, approval_hub: HumanApprovalHub) -> Self {
-        self.approval_hub = Some(approval_hub);
-        self
     }
 
     pub async fn start(
@@ -201,17 +162,14 @@ impl Server {
         addr_str: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let broadcast_tx_clone = self.broadcast_tx.clone();
-        let session_store = Arc::clone(&self.session_store);
+        let runtime = self.runtime.clone();
         let default_agent_id = self.default_agent_id.clone();
 
-        // 注册 EventBus 拦截订阅：将所有事件通过广播信道分发给各 WebSocket 客户端
-        self.bus.subscribe(
-            "*".to_string(),
-            Arc::new(move |ev| {
-                let tx = broadcast_tx_clone.clone();
-                let session_store = Arc::clone(&session_store);
-                let default_agent_id = default_agent_id.clone();
-                Box::pin(async move {
+        // 通过 Runtime 事件流将所有事件分发给各 WebSocket 客户端。
+        let mut events = self.runtime.subscribe("*", 1024);
+        tokio::spawn(async move {
+            while let Some(ev) = events.recv().await {
+                let result: Result<(), crate::runtime::RuntimeError> = async {
                     if let Some(session_id) = ev
                         .payload
                         .get("session_id")
@@ -228,7 +186,7 @@ impl Server {
                             .get("parent_session_id")
                             .and_then(|value| value.as_str())
                             .map(ToOwned::to_owned);
-                        if let Some(existing) = session_store.get_session(session_id).await? {
+                        if let Some(existing) = runtime.get_session(session_id).await? {
                             if existing.context_id != context_id {
                                 return Err(format!(
                                     "事件路由拒绝：Session '{}' 属于 Context '{}'，事件声明 '{}'",
@@ -237,20 +195,20 @@ impl Server {
                                 .into());
                             }
                         } else {
-                            let agent_id = match session_store.get_context(&context_id).await? {
+                            let agent_id = match runtime.get_context(&context_id).await? {
                                 Some(context) => context.agent_id,
                                 None => {
-                                    session_store
+                                    runtime
                                         .ensure_context(NewCognitiveContext {
                                             id: context_id.clone(),
                                             agent_id: default_agent_id.clone(),
                                             title: context_id.clone(),
                                         })
                                         .await?;
-                                    default_agent_id
+                                    default_agent_id.clone()
                                 }
                             };
-                            session_store
+                            runtime
                                 .ensure_session(NewSession {
                                     id: session_id.to_string(),
                                     agent_id,
@@ -261,29 +219,26 @@ impl Server {
                                 })
                                 .await?;
                         }
-                        session_store
-                            .touch_session(session_id, ev.timestamp)
-                            .await?;
+                        runtime.touch_session(session_id, ev.timestamp).await?;
                     }
-                    let _ = tx.send(ev);
+                    let _ = broadcast_tx_clone.send(ev);
                     Ok(())
-                })
-            }),
-        );
+                }
+                .await;
+                if let Err(error) = result {
+                    tracing::warn!(error = %error, "WebSocket 事件镜像失败");
+                }
+            }
+        });
 
         let state = Arc::new(AppState {
-            store: Arc::clone(&self.store),
-            graph_store: self.graph_store.clone(),
-            session_store: Arc::clone(&self.session_store),
-            bus: Arc::clone(&self.bus),
-            orchestrator: Arc::clone(&self.orchestrator),
+            runtime: self.runtime.clone(),
             broadcast_tx: self.broadcast_tx.clone(),
             auth_token: std::env::var("MORPHZ_DASHBOARD_TOKEN")
                 .ok()
                 .filter(|token| !token.trim().is_empty()),
             default_agent_id: self.default_agent_id.clone(),
             default_context_id: self.default_context_id.clone(),
-            approval_hub: self.approval_hub.clone(),
         });
 
         // 跨域支持 (CORS)
@@ -299,7 +254,6 @@ impl Server {
 
         let app = Router::new()
             .route("/health", get(|| async { StatusCode::OK }))
-            .route("/api/graph", get(handle_get_graph))
             .route(
                 "/api/agents",
                 get(handle_list_agents).post(handle_create_agent),
@@ -378,10 +332,7 @@ async fn handle_list_approvals(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let Some(hub) = state.approval_hub.as_ref() else {
-        return error_response(StatusCode::NOT_IMPLEMENTED, "人工审批通道未启用");
-    };
-    Json(json!({ "approvals": hub.pending() })).into_response()
+    Json(json!({ "approvals": state.runtime.pending_approvals() })).into_response()
 }
 
 async fn handle_decide_approval(
@@ -394,9 +345,6 @@ async fn handle_decide_approval(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let Some(hub) = state.approval_hub.as_ref() else {
-        return error_response(StatusCode::NOT_IMPLEMENTED, "人工审批通道未启用");
-    };
     let rationale = request
         .rationale
         .unwrap_or_else(|| "用户通过 Morphz 审批通道作出决定".to_string());
@@ -416,7 +364,7 @@ async fn handle_decide_approval(
             )
         }
     };
-    match hub.decide(&approval_id, decision) {
+    match state.runtime.decide_approval(&approval_id, decision) {
         Ok(()) => Json(json!({ "approval_id": approval_id, "accepted": true })).into_response(),
         Err(error) => error_response(StatusCode::NOT_FOUND, error),
     }
@@ -494,7 +442,7 @@ async fn resolve_context_mount(
                 return Err((StatusCode::BAD_REQUEST, error));
             }
             let context = state
-                .session_store
+                .runtime
                 .get_context(&context_id)
                 .await
                 .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
@@ -525,7 +473,7 @@ async fn resolve_context_mount(
             context_title,
         }) => {
             let agent = state
-                .session_store
+                .runtime
                 .get_agent(&requested_agent_id)
                 .await
                 .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
@@ -540,7 +488,7 @@ async fn resolve_context_mount(
                 return Err((StatusCode::BAD_REQUEST, error));
             }
             state
-                .session_store
+                .runtime
                 .create_context(NewCognitiveContext {
                     id: context_id.clone(),
                     agent_id: agent.id.clone(),
@@ -562,7 +510,7 @@ async fn resolve_context_mount(
             context_title,
         }) => {
             let source = state
-                .session_store
+                .runtime
                 .get_context(&source_context_id)
                 .await
                 .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
@@ -583,7 +531,7 @@ async fn resolve_context_mount(
             }
             if let Some(expected_version) = source_version {
                 let actual_version = state
-                    .orchestrator
+                    .runtime
                     .mind_version(&source_context_id)
                     .await
                     .map_err(|error| (StatusCode::CONFLICT, error.to_string()))?;
@@ -602,7 +550,7 @@ async fn resolve_context_mount(
                 return Err((StatusCode::BAD_REQUEST, error));
             }
             state
-                .session_store
+                .runtime
                 .create_context(NewCognitiveContext {
                     id: context_id.clone(),
                     agent_id: source.agent_id.clone(),
@@ -611,7 +559,7 @@ async fn resolve_context_mount(
                 .await
                 .map_err(|error| (StatusCode::CONFLICT, error.to_string()))?;
             let seed = state
-                .orchestrator
+                .runtime
                 .seed_context_from_mind(&source_context_id, source_version, &context_id)
                 .await
                 .map_err(|error| (StatusCode::CONFLICT, error.to_string()))?;
@@ -633,11 +581,7 @@ async fn handle_list_agents(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state
-        .session_store
-        .list_agents(query.include_archived)
-        .await
-    {
+    match state.runtime.list_agents(query.include_archived).await {
         Ok(agents) => Json(json!({ "agents": agents })).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -667,7 +611,7 @@ async fn handle_create_agent(
         }
     }
     match state
-        .session_store
+        .runtime
         .create_agent_bundle(
             NewAgent {
                 id: agent_id.clone(),
@@ -703,11 +647,7 @@ async fn handle_list_sessions(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state
-        .session_store
-        .list_sessions(query.include_archived)
-        .await
-    {
+    match state.runtime.list_sessions(query.include_archived).await {
         Ok(sessions) => Json(json!({ "sessions": sessions })).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -721,11 +661,7 @@ async fn handle_list_contexts(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state
-        .session_store
-        .list_contexts(query.include_archived)
-        .await
-    {
+    match state.runtime.list_contexts(query.include_archived).await {
         Ok(contexts) => Json(json!({ "contexts": contexts })).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -750,7 +686,7 @@ async fn handle_create_context(
     if let Err(error) = validate_identifier("agent_id", &agent_id) {
         return error_response(StatusCode::BAD_REQUEST, error);
     }
-    match state.session_store.get_agent(&agent_id).await {
+    match state.runtime.get_agent(&agent_id).await {
         Ok(Some(_)) => {}
         Ok(None) => {
             return error_response(
@@ -768,7 +704,7 @@ async fn handle_create_context(
         .take(200)
         .collect::<String>();
     match state
-        .session_store
+        .runtime
         .create_context(NewCognitiveContext {
             id,
             agent_id,
@@ -799,7 +735,7 @@ async fn handle_create_session(
             return error_response(StatusCode::BAD_REQUEST, error);
         }
     }
-    match state.session_store.get_session(&id).await {
+    match state.runtime.get_session(&id).await {
         Ok(Some(_)) => return error_response(StatusCode::CONFLICT, "Session ID 已存在"),
         Ok(None) => {}
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -812,7 +748,7 @@ async fn handle_create_session(
             Err((status, error)) => return error_response(status, error),
         };
     match state
-        .session_store
+        .runtime
         .create_session(NewSession {
             id,
             agent_id: mount.agent_id,
@@ -841,7 +777,7 @@ async fn handle_create_independent_session(
     if let Err(error) = validate_identifier("session_id", &session_id) {
         return error_response(StatusCode::BAD_REQUEST, error);
     }
-    match state.session_store.get_session(&session_id).await {
+    match state.runtime.get_session(&session_id).await {
         Ok(Some(_)) => return error_response(StatusCode::CONFLICT, "Session ID 已存在"),
         Ok(None) => {}
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -862,7 +798,7 @@ async fn handle_create_independent_session(
         Ok(mount) => mount,
         Err((status, error)) => return error_response(status, error),
     };
-    let context = match state.session_store.get_context(&mount.context_id).await {
+    let context = match state.runtime.get_context(&mount.context_id).await {
         Ok(Some(context)) => context,
         Ok(None) => {
             return error_response(
@@ -873,7 +809,7 @@ async fn handle_create_independent_session(
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     match state
-        .session_store
+        .runtime
         .create_session(NewSession {
             id: session_id,
             agent_id: mount.agent_id,
@@ -902,7 +838,7 @@ async fn handle_get_session(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state.session_store.get_session(&session_id).await {
+    match state.runtime.get_session(&session_id).await {
         Ok(Some(session)) => Json(session).into_response(),
         Ok(None) => error_response(StatusCode::NOT_FOUND, "Session 不存在"),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -926,7 +862,7 @@ async fn handle_update_session(
         return error_response(StatusCode::BAD_REQUEST, "title 不能为空");
     }
     match state
-        .session_store
+        .runtime
         .update_session(
             &session_id,
             SessionUpdate {
@@ -952,7 +888,7 @@ async fn handle_send_message(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let session = match state.session_store.get_session(&session_id).await {
+    let session = match state.runtime.get_session(&session_id).await {
         Ok(Some(session)) => session,
         Ok(None) => return error_response(StatusCode::NOT_FOUND, "Session 不存在"),
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -960,11 +896,10 @@ async fn handle_send_message(
     if session.status == SessionStatus::Archived {
         return error_response(StatusCode::CONFLICT, "归档 Session 不能接收新消息");
     }
-    let text = request.text.trim().to_string();
-    if text.is_empty() {
+    if request.text.trim().is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "消息正文不能为空");
     }
-    if text.chars().count() > 1_000_000 {
+    if request.text.chars().count() > 1_000_000 {
         return error_response(StatusCode::PAYLOAD_TOO_LARGE, "消息正文超过 1,000,000 字符");
     }
     let client_message_id = request
@@ -973,53 +908,31 @@ async fn handle_send_message(
     if let Err(error) = validate_identifier("client_message_id", &client_message_id) {
         return error_response(StatusCode::BAD_REQUEST, error);
     }
-    let event_id = api_id("msg_api");
-    let payload = vec![
-        ("context_id".to_string(), json!(session.context_id)),
-        ("session_id".to_string(), json!(session_id)),
-        ("client_message_id".to_string(), json!(client_message_id)),
-        ("text".to_string(), json!(text)),
-    ]
-    .into_iter()
-    .collect();
-    let event = Event::new(
-        event_id.clone(),
-        "User-API".to_string(),
-        crate::event::TYPE_USER_MESSAGE.to_string(),
-        "chat/user_message".to_string(),
-        payload,
-    );
     match state
-        .session_store
-        .claim_message(&session_id, &client_message_id, &event)
+        .runtime
+        .session(session_id)
+        .send(request.text, "User-API", Some(client_message_id))
         .await
     {
-        Ok(MessageClaim::Existing { event_id }) => {
-            return Json(json!({
-                "accepted": true,
-                "duplicate": true,
-                "event_id": event_id,
-                "client_message_id": client_message_id,
-            }))
-            .into_response();
+        Ok(receipt) => {
+            let status = if receipt.duplicate {
+                StatusCode::OK
+            } else {
+                StatusCode::ACCEPTED
+            };
+            (
+                status,
+                Json(json!({
+                    "accepted": true,
+                    "duplicate": receipt.duplicate,
+                    "event_id": receipt.event_id,
+                    "client_message_id": receipt.client_message_id,
+                })),
+            )
+                .into_response()
         }
-        Ok(MessageClaim::Accepted) => {}
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
     }
-
-    if let Err(error) = state.bus.publish(event).await {
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
-    }
-    (
-        StatusCode::ACCEPTED,
-        Json(json!({
-            "accepted": true,
-            "duplicate": false,
-            "event_id": event_id,
-            "client_message_id": client_message_id,
-        })),
-    )
-        .into_response()
 }
 
 async fn handle_get_session_events(
@@ -1031,15 +944,15 @@ async fn handle_get_session_events(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state.session_store.get_session(&session_id).await {
+    match state.runtime.get_session(&session_id).await {
         Ok(None) => return error_response(StatusCode::NOT_FOUND, "Session 不存在"),
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Ok(Some(_)) => {}
     }
     let limit = query.limit.unwrap_or(100).clamp(1, 1_000);
     match state
-        .store
-        .query(QueryFilter {
+        .runtime
+        .query_events(QueryFilter {
             session_id: Some(session_id),
             ..QueryFilter::default()
         })
@@ -1067,14 +980,14 @@ async fn handle_get_session_context(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let session = match state.session_store.get_session(&session_id).await {
+    let session = match state.runtime.get_session(&session_id).await {
         Ok(None) => return error_response(StatusCode::NOT_FOUND, "Session 不存在"),
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Ok(Some(session)) => session,
     };
     match state
-        .orchestrator
-        .get_context_encoding(&session.context_id, &session_id)
+        .runtime
+        .context_encoding(&session.context_id, &session_id)
         .await
     {
         Ok(context) => Json(context).into_response(),
@@ -1091,12 +1004,12 @@ async fn handle_cancel_session(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state.session_store.get_session(&session_id).await {
+    match state.runtime.get_session(&session_id).await {
         Ok(None) => return error_response(StatusCode::NOT_FOUND, "Session 不存在"),
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
         Ok(Some(_)) => {}
     }
-    let was_running = state.orchestrator.cancel_session(&session_id);
+    let was_running = state.runtime.cancel_session(&session_id);
     let payload = vec![
         ("session_id".to_string(), json!(session_id)),
         ("status".to_string(), json!("cancelled")),
@@ -1119,7 +1032,7 @@ async fn handle_cancel_session(
         "chat/cancelled".to_string(),
         payload,
     );
-    let _ = state.bus.publish(event).await;
+    let _ = state.runtime.publish(event).await;
     Json(json!({ "cancelled": true, "was_running": was_running })).into_response()
 }
 
@@ -1131,7 +1044,7 @@ async fn handle_list_delegations(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state.session_store.list_delegations().await {
+    match state.runtime.list_delegations().await {
         Ok(delegations) => Json(json!({ "delegations": delegations })).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
@@ -1146,7 +1059,7 @@ async fn handle_get_delegation(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state.session_store.get_delegation(&delegation_id).await {
+    match state.runtime.get_delegation(&delegation_id).await {
         Ok(Some(delegation)) => Json(delegation).into_response(),
         Ok(None) => error_response(StatusCode::NOT_FOUND, "Delegation 不存在"),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -1162,7 +1075,7 @@ async fn handle_cancel_delegation(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let delegation = match state.session_store.get_delegation(&delegation_id).await {
+    let delegation = match state.runtime.get_delegation(&delegation_id).await {
         Ok(Some(delegation)) => delegation,
         Ok(None) => return error_response(StatusCode::NOT_FOUND, "Delegation 不存在"),
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -1179,11 +1092,9 @@ async fn handle_cancel_delegation(
             ),
         );
     }
-    let was_running = state
-        .orchestrator
-        .cancel_session(&delegation.child_session_id);
+    let was_running = state.runtime.cancel_session(&delegation.child_session_id);
     match state
-        .session_store
+        .runtime
         .update_delegation_status(&delegation_id, DelegationStatus::Cancelled, None)
         .await
     {
@@ -1195,41 +1106,6 @@ async fn handle_cancel_delegation(
         .into_response(),
         Ok(None) => error_response(StatusCode::NOT_FOUND, "Delegation 不存在"),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-    }
-}
-
-async fn handle_get_graph(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
-) -> impl IntoResponse {
-    if !is_authorized(&state, &headers, query.token.as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    let graph_store = match state.graph_store {
-        Some(ref gs) => gs,
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "GraphStore not available",
-            )
-                .into_response()
-        }
-    };
-
-    match graph_store.get_all_nodes_and_edges().await {
-        Ok((nodes, edges)) => {
-            let resp = json!({
-                "nodes": nodes,
-                "edges": edges,
-            });
-            Json(resp).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Query error: {:?}", e),
-        )
-            .into_response(),
     }
 }
 
@@ -1266,25 +1142,9 @@ fn token_is_authorized(
 }
 
 async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: Option<String>) {
-    // 1. 刚连接上时，主动推送一次全量图谱给前端渲染
-    if let Some(ref graph_store) = state.graph_store {
-        if let Ok((nodes, edges)) = graph_store.get_all_nodes_and_edges().await {
-            let init_msg = json!({
-                "type": "init_graph",
-                "nodes": nodes,
-                "edges": edges,
-            });
-            if let Ok(json_str) = serde_json::to_string(&init_msg) {
-                if socket.send(WsMessage::Text(json_str)).await.is_err() {
-                    return;
-                }
-            }
-        }
-    }
-
     let mut rx = state.broadcast_tx.subscribe();
 
-    // 2. 双工循环：将 EventBus 的广播转发至 WebSocket；同时保持连接心跳
+    // 将 EventBus 的广播转发至 WebSocket；同时保持连接心跳。
     loop {
         tokio::select! {
             // 从广播信道接收新事件，实时推回浏览器
@@ -1329,12 +1189,9 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::OrchestratorConfig;
+    use crate::config::AppConfig;
     use crate::llm::{Client, Message, Response, ToolCallRepr, ToolDefinition};
-    use crate::memory::sqlite::SqliteStore;
-    use crate::memory::EventStore;
-    use crate::orchestrator::context::ContextEngine;
-    use crate::tool::Registry;
+    use crate::runtime::{RuntimeIdentity, RuntimeToolPolicy};
     use tempfile::NamedTempFile;
 
     struct ReplyClient;
@@ -1360,70 +1217,36 @@ mod tests {
                 }],
             })
         }
-
-        async fn create_embedding(
-            &self,
-            _text: &str,
-        ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
-            Ok(Vec::new())
-        }
     }
 
-    async fn test_state() -> (Arc<AppState>, Arc<SqliteStore>) {
+    async fn test_state() -> (Arc<AppState>, MorphzRuntime) {
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path().to_path_buf();
-        // SqliteStore owns its connections after the NamedTempFile handle drops.
         drop(tmp);
-        let store = Arc::new(SqliteStore::new(path.to_str().unwrap()).await.unwrap());
-        let bus = Arc::new(InMemoryEventBus::new());
-        let config = OrchestratorConfig::default();
-        let context_engine = Arc::new(
-            ContextEngine::new(
-                Arc::clone(&store) as Arc<dyn crate::memory::EventStore>,
-                config.clone(),
-            )
-            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
-        );
-        let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
-            Arc::clone(&bus),
-            Arc::clone(&store) as Arc<dyn crate::memory::EventStore>,
-            Arc::new(ReplyClient),
-            Arc::new(Registry::new()),
-            config,
-            context_engine,
-        ));
-        Arc::clone(&orchestrator).start().await.unwrap();
-        let (broadcast_tx, _) = broadcast::channel(32);
-        store
-            .ensure_agent(NewAgent {
-                id: "agent-test".to_string(),
-                title: "Test Agent".to_string(),
-                root_context_id: "context-test".to_string(),
-            })
-            .await
-            .unwrap();
-        store
-            .ensure_context(crate::memory::NewCognitiveContext {
-                id: "context-test".to_string(),
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(path.to_str().unwrap())
+            .identity(RuntimeIdentity {
                 agent_id: "agent-test".to_string(),
-                title: "Test Context".to_string(),
+                context_id: "context-test".to_string(),
             })
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: false,
+            })
+            .build()
             .await
             .unwrap();
+        runtime.start().await.unwrap();
+        let (broadcast_tx, _) = broadcast::channel(32);
         (
             Arc::new(AppState {
-                store: Arc::clone(&store) as Arc<dyn crate::memory::EventStore>,
-                graph_store: None,
-                session_store: Arc::clone(&store) as Arc<dyn SessionStore>,
-                bus,
-                orchestrator,
+                runtime: runtime.clone(),
                 broadcast_tx,
                 auth_token: None,
                 default_agent_id: "agent-test".to_string(),
                 default_context_id: "context-test".to_string(),
-                approval_hub: None,
             }),
-            store,
+            runtime,
         )
     }
 
@@ -1451,7 +1274,7 @@ mod tests {
 
     #[tokio::test]
     async fn session_message_endpoint_is_idempotent_and_routes_to_session() {
-        let (state, store) = test_state().await;
+        let (state, runtime) = test_state().await;
         let create = handle_create_session(
             State(Arc::clone(&state)),
             HeaderMap::new(),
@@ -1486,8 +1309,8 @@ mod tests {
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let events = store
-            .query(QueryFilter {
+        let events = runtime
+            .query_events(QueryFilter {
                 session_id: Some("api-session".to_string()),
                 ..QueryFilter::default()
             })
@@ -1505,7 +1328,7 @@ mod tests {
 
     #[tokio::test]
     async fn agent_and_independent_session_endpoints_preserve_lifecycle_semantics() {
-        let (state, store) = test_state().await;
+        let (state, runtime) = test_state().await;
         let create_agent = handle_create_agent(
             State(Arc::clone(&state)),
             HeaderMap::new(),
@@ -1522,9 +1345,9 @@ mod tests {
         .await
         .into_response();
         assert_eq!(create_agent.status(), StatusCode::CREATED);
-        let fresh_agent = store.get_agent("agent-fresh").await.unwrap().unwrap();
+        let fresh_agent = runtime.get_agent("agent-fresh").await.unwrap().unwrap();
         assert_eq!(fresh_agent.root_context_id, "context-fresh");
-        assert!(store
+        assert!(runtime
             .list_context_sessions("context-fresh", true)
             .await
             .unwrap()
@@ -1566,14 +1389,14 @@ mod tests {
         .await
         .into_response();
         assert_eq!(independent.status(), StatusCode::CREATED);
-        let target = store
+        let target = runtime
             .get_context("context-independent")
             .await
             .unwrap()
             .unwrap();
         assert_eq!(target.seed_context_id.as_deref(), Some("context-test"));
         assert_eq!(target.seed_context_version, Some(0));
-        let target_sessions = store
+        let target_sessions = runtime
             .list_context_sessions("context-independent", true)
             .await
             .unwrap();

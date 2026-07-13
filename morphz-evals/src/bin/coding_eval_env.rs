@@ -1,11 +1,11 @@
 use morphz::config::BackgroundTaskConfig;
-use morphz::eval_sandbox::{
-    audit_coding_eval, create_coding_eval_v1, create_coding_eval_v2,
-    prepare_verification_workspace, record_verification, score_coding_eval, CodingEvalManifest,
-};
 use morphz::event::InMemoryEventBus;
 use morphz::permission::{PermissionConfig, PermissionMode};
 use morphz::tool::{ExecuteCommandTool, Tool};
+use morphz_evals::eval_sandbox::{
+    audit_coding_eval, create_coding_eval_v1, create_coding_eval_v2,
+    prepare_verification_workspace, record_verification, score_coding_eval, CodingEvalManifest,
+};
 use std::path::Path;
 use std::sync::Arc;
 

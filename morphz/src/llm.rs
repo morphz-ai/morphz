@@ -162,11 +162,6 @@ pub trait Client: Send + Sync {
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
         self.create_completion(messages, tools).await
     }
-
-    async fn create_embedding(
-        &self,
-        text: &str,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 pub struct OpenAIClient {
@@ -174,12 +169,10 @@ pub struct OpenAIClient {
     api_key: String,
     base_url: String,
     model_name: String,
-    embedding_model: String,
     max_retries: u32,
     initial_backoff_secs: u64,
     max_output_tokens: Option<u32>,
     prompt_token_counter: Arc<dyn LocalPromptTokenCounter>,
-    local_model: Option<Arc<executor::ModelStore>>,
 }
 
 impl OpenAIClient {
@@ -187,22 +180,14 @@ impl OpenAIClient {
         api_key: String,
         base_url: String,
         model_name: String,
-        local_model: Option<Arc<executor::ModelStore>>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::new_with_config(
-            api_key,
-            base_url,
-            model_name,
-            local_model,
-            &LlmConfig::default(),
-        )
+        Self::new_with_config(api_key, base_url, model_name, &LlmConfig::default())
     }
 
     pub fn new_with_config(
         api_key: String,
         mut base_url: String,
         model_name: String,
-        local_model: Option<Arc<executor::ModelStore>>,
         config: &LlmConfig,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         if !base_url.is_empty() {
@@ -212,9 +197,6 @@ impl OpenAIClient {
         } else {
             base_url = "https://api.openai.com/v1".to_string();
         }
-
-        let embedding_model = std::env::var("OPENAI_EMBEDDING_MODEL")
-            .unwrap_or_else(|_| config.embedding_model.clone());
 
         // reqwest 的 macOS 系统代理自动探测在部分无 GUI/沙箱环境中可能触发
         // system-configuration panic。默认禁用隐式探测；需要代理时使用显式变量。
@@ -235,12 +217,10 @@ impl OpenAIClient {
             api_key,
             base_url,
             model_name,
-            embedding_model,
             max_retries: config.max_retries.max(1),
             initial_backoff_secs: config.initial_backoff_secs,
             max_output_tokens: config.max_output_tokens,
             prompt_token_counter: Arc::new(OpenAICompatibleEstimateCounter::default()),
-            local_model,
         })
     }
 
@@ -460,22 +440,6 @@ struct ChatRespMessage {
     tool_calls: Option<Vec<ToolCall>>,
 }
 
-#[derive(Serialize)]
-struct EmbedRequest {
-    input: Vec<String>,
-    model: String,
-}
-
-#[derive(Deserialize)]
-struct EmbedResponse {
-    data: Vec<EmbedData>,
-}
-
-#[derive(Deserialize)]
-struct EmbedData {
-    embedding: Vec<f32>,
-}
-
 fn build_chat_request(
     model: &str,
     max_tokens: Option<u32>,
@@ -685,83 +649,6 @@ impl Client for OpenAIClient {
         self.create_completion_with_measurement(messages, tools, None)
             .await
     }
-
-    async fn create_embedding(
-        &self,
-        text: &str,
-    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
-        // Level 1: 优先尝试官方远程 API
-        let request_payload = EmbedRequest {
-            input: vec![text.to_string()],
-            model: self.embedding_model.clone(),
-        };
-
-        let url = format!("{}/embeddings", self.base_url);
-        let mut attempts = 0;
-        let max_attempts = self.max_retries;
-        let mut backoff = std::time::Duration::from_secs(self.initial_backoff_secs);
-        let remote_res = loop {
-            attempts += 1;
-            let res = self
-                .http_client
-                .post(&url)
-                .bearer_auth(&self.api_key)
-                .json(&request_payload)
-                .send()
-                .await;
-
-            match res {
-                Ok(resp) => {
-                    let status = resp.status();
-                    if status.is_success() {
-                        break Ok(resp);
-                    } else if (status.as_u16() == 429 || status.is_server_error())
-                        && attempts < max_attempts
-                    {
-                        tracing::warn!(status = %status, backoff = ?backoff, attempt = attempts, max = max_attempts, "Embedding 遇到错误，准备重试");
-                        tokio::time::sleep(backoff).await;
-                        backoff *= 2;
-                    } else {
-                        break Ok(resp);
-                    }
-                }
-                Err(e) if attempts < max_attempts => {
-                    tracing::warn!(
-                        "Embedding 网络错误: {:?}，将在 {:?} 后重试 (第 {}/{} 次尝试)",
-                        e,
-                        backoff,
-                        attempts,
-                        max_attempts
-                    );
-                    tokio::time::sleep(backoff).await;
-                    backoff *= 2;
-                }
-                Err(e) => {
-                    break Err(e);
-                }
-            }
-        };
-
-        if let Ok(resp) = remote_res {
-            if resp.status().is_success() {
-                if let Ok(embed_resp) = resp.json::<EmbedResponse>().await {
-                    if let Some(data) = embed_resp.data.first() {
-                        return Ok(data.embedding.clone());
-                    }
-                }
-            }
-        }
-
-        // Level 2 [Fallback]: 内存直接调用本地高精度 BGE 向量生成（消除了本地网络调用开销）
-        if let Some(ref local_store) = self.local_model {
-            if let Ok(local_vec) = executor::compute_embedding(local_store, text) {
-                return Ok(local_vec);
-            }
-        }
-
-        // Level 3 [Fallback]: 极简本地 N-Gram Hashing 向量
-        Ok(local_hashing_embedding(text))
-    }
 }
 
 fn validate_chat_choice(choice: &ChatChoice) -> Result<(), String> {
@@ -786,69 +673,9 @@ fn validate_chat_choice(choice: &ChatChoice) -> Result<(), String> {
     Ok(())
 }
 
-pub fn local_hashing_embedding(text: &str) -> Vec<f32> {
-    let text = text.to_lowercase();
-    let mut clean_chars = Vec::new();
-    for c in text.chars() {
-        if c.is_ascii_alphanumeric()
-            || (c as u32 >= 0x4e00 && c as u32 <= 0x9fff)
-            || c == '('
-            || c == ')'
-        {
-            clean_chars.push(c);
-        } else {
-            clean_chars.push(' ');
-        }
-    }
-    let cleaned: String = clean_chars.into_iter().collect();
-    let words: Vec<&str> = cleaned.split_whitespace().collect();
-
-    const DIMENSION: usize = 256;
-    let mut vec = vec![0.0f32; DIMENSION];
-
-    let mut add_hash = |term: &[u8]| {
-        let mut h: u32 = 0;
-        for &b in term {
-            h = h.wrapping_mul(31).wrapping_add(b as u32);
-        }
-        let idx = (h as usize) % DIMENSION;
-        vec[idx] += 1.0;
-    };
-
-    for w in words {
-        let w_bytes = w.as_bytes();
-        add_hash(w_bytes);
-        if w_bytes.len() > 2 {
-            for i in 0..w_bytes.len() - 1 {
-                add_hash(&w_bytes[i..i + 2]);
-            }
-        }
-    }
-
-    let sum_sq: f32 = vec.iter().map(|&x| x * x).sum();
-    if sum_sq > 0.0 {
-        let norm = sum_sq.sqrt();
-        for x in vec.iter_mut() {
-            *x /= norm;
-        }
-    }
-    vec
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_local_hashing_embedding() {
-        let vec1 = local_hashing_embedding("中文测试语句");
-        let vec2 = local_hashing_embedding("中文测试语句");
-        let vec3 = local_hashing_embedding("完全不一样的英文");
-
-        assert_eq!(vec1.len(), 256);
-        assert_eq!(vec1, vec2);
-        assert_ne!(vec1, vec3);
-    }
 
     #[test]
     fn chat_response_accepts_null_tool_calls_from_openai_compatible_proxies() {
@@ -1033,7 +860,6 @@ mod tests {
             "test-key".to_string(),
             "http://127.0.0.1:9".to_string(),
             "gemini-test".to_string(),
-            None,
             &config,
         )
         .unwrap();
@@ -1069,7 +895,6 @@ mod tests {
             "test-key".to_string(),
             format!("http://{address}"),
             "gemini-test".to_string(),
-            None,
             &crate::config::LlmConfig {
                 request_timeout_secs: 2,
                 ..Default::default()
@@ -1200,7 +1025,6 @@ mod tests {
                 "test-key".to_string(),
                 format!("http://{address}"),
                 "test-model".to_string(),
-                None,
                 &crate::config::LlmConfig {
                     request_timeout_secs: 2,
                     ..Default::default()
@@ -1292,7 +1116,6 @@ mod tests {
             "test-key".to_string(),
             format!("http://{address}"),
             "test-model".to_string(),
-            None,
             &config,
         )
         .unwrap();

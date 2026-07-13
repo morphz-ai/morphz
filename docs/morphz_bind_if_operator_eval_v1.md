@@ -108,4 +108,4 @@ cargo run -q -p morphz --bin sexpr_bind_if_eval -- \
   /private/tmp/morphz-sexpr-bind-if-formal-networked 3
 ```
 
-评测实现位于 `morphz/src/sexpr_bind_if_eval.rs`，入口位于 `morphz/src/bin/sexpr_bind_if_eval.rs`。
+评测实现位于 `morphz-evals/src/sexpr_bind_if_eval.rs`，入口位于 `morphz-evals/src/bin/sexpr_bind_if_eval.rs`。

@@ -118,11 +118,11 @@ Suite 同时输出相关经验、无关经验相对全新组的正确率与成�
 
 ```bash
 # 单独创建某个 arm
-cargo run -p morphz --bin long_horizon_agent_eval -- \
+cargo run -p morphz-evals --bin long_horizon_agent_eval -- \
   create-experience related_experience [BASE_DIR]
 
 # 使用恰好包含一个模型的 profiles 文件并发运行三 arm suite
-cargo run -p morphz --bin long_horizon_agent_eval -- \
+cargo run -p morphz-evals --bin long_horizon_agent_eval -- \
   run-experience PROFILES.toml BASE_DIR
 ```
 

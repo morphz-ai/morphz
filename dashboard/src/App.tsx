@@ -1,9 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { DataSet } from 'vis-data';
-import { Network } from 'vis-network';
-import type { Edge as VisEdge, Node as VisNode } from 'vis-network';
+import { useCallback, useEffect, useState } from 'react';
 import { 
-  Network as NetIcon, 
   Activity, 
   Cpu, 
   RefreshCw, 
@@ -23,24 +19,6 @@ import {
 const CORE_HTTP_URL = import.meta.env.VITE_MORPHZ_HTTP_URL ?? 'http://127.0.0.1:8080';
 const CORE_WS_URL = import.meta.env.VITE_MORPHZ_WS_URL ?? 'ws://127.0.0.1:8080/ws';
 const CORE_TOKEN = import.meta.env.VITE_MORPHZ_TOKEN as string | undefined;
-
-interface GraphNode {
-  id: string;
-  label: string;
-  properties: Record<string, unknown>;
-}
-
-interface GraphEdge {
-  id: string;
-  from_node: string;
-  to_node: string;
-  edge_type: string;
-}
-
-interface TransitionPath {
-  from: string;
-  to: string;
-}
 
 interface Message {
   role: string;
@@ -118,10 +96,6 @@ interface EventPayload {
   text?: string;
   messages?: Message[];
   session_id?: string;
-  anchors?: GraphNode[];
-  neighbor_nodes?: GraphNode[];
-  walked_edges?: GraphEdge[];
-  transition_paths?: TransitionPath[];
   mind?: MindState;
   inbox?: ContextObservation[];
   pressure?: ContextPressure;
@@ -210,61 +184,6 @@ export default function App() {
   const [sending, setSending] = useState(false);
   const [sessionError, setSessionError] = useState('');
   
-  const graphRef = useRef<HTMLDivElement>(null);
-  const networkRef = useRef<Network | null>(null);
-  const nodesDataSetRef = useRef<DataSet<VisNode> | null>(null);
-  const edgesDataSetRef = useRef<DataSet<VisEdge> | null>(null);
-  const animationTimersRef = useRef<number[]>([]);
-
-  const updateGraphData = useCallback((nodes: GraphNode[], edges: GraphEdge[]) => {
-    if (!nodesDataSetRef.current || !edgesDataSetRef.current) return;
-
-    // 格式化为 vis.js 所需的数据格式
-    const formattedNodes = nodes.map(n => {
-      const displayName = typeof n.properties?.name === 'string' ? n.properties.name : n.id;
-      return {
-        id: n.id,
-        label: displayName,
-        title: `ID: ${n.id}\nLabel: ${n.label}\n属性: ${JSON.stringify(n.properties)}`,
-        // 样式微调
-        color: {
-          background: n.id === 'shafreeck' ? '#1e3a8a' : '#1e293b',
-          border: n.id === 'shafreeck' ? '#3b82f6' : '#475569',
-        }
-      };
-    });
-
-    const formattedEdges = edges.map(e => ({
-      id: e.id,
-      from: e.from_node,
-      to: e.to_node,
-      label: e.edge_type,
-      font: { color: '#94a3b8', size: 10, strokeWidth: 0 }
-    }));
-
-    nodesDataSetRef.current.clear();
-    edgesDataSetRef.current.clear();
-    nodesDataSetRef.current.add(formattedNodes);
-    edgesDataSetRef.current.add(formattedEdges);
-
-    if (networkRef.current) {
-      networkRef.current.fit({ animation: true });
-    }
-  }, []);
-
-  // 1. 初始化或重新获取 Graph 拓扑数据
-  const fetchGraph = useCallback(async () => {
-    try {
-      const headers = CORE_TOKEN ? { Authorization: `Bearer ${CORE_TOKEN}` } : undefined;
-      const resp = await fetch(`${CORE_HTTP_URL}/api/graph`, { headers });
-      if (!resp.ok) return;
-      const data = await resp.json() as { nodes?: GraphNode[]; edges?: GraphEdge[] };
-      updateGraphData(data.nodes ?? [], data.edges ?? []);
-    } catch (err) {
-      console.error('Failed to fetch graph data:', err);
-    }
-  }, [updateGraphData]);
-
   const apiHeaders = useCallback((jsonBody = false) => {
     const headers: Record<string, string> = {};
     if (CORE_TOKEN) headers.Authorization = `Bearer ${CORE_TOKEN}`;
@@ -516,229 +435,6 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [fetchSessionSnapshot, selectedSessionId]);
 
-  // 1.1 语义漫游实时亮灯动效实现
-  const handleMemoryWalk = useCallback((payload: EventPayload) => {
-    if (!nodesDataSetRef.current || !edgesDataSetRef.current || !networkRef.current) return;
-    console.log('💡 [Memory Walk Path] 漫游足迹详情:', payload);
-
-    // 1) 清理之前的未完动画定时器，防抖防并发
-    animationTimersRef.current.forEach(timer => clearTimeout(timer));
-    animationTimersRef.current = [];
-
-    const nodesDataSet = nodesDataSetRef.current;
-    const edgesDataSet = edgesDataSetRef.current;
-    const network = networkRef.current;
-
-    // 2) 备份原始节点和边，作为最终还原快照
-    const originalNodes = nodesDataSet.get();
-    const originalEdges = edgesDataSet.get();
-
-    const anchorIds = new Set((payload.anchors ?? []).map(node => node.id));
-    const neighborIds = new Set((payload.neighbor_nodes ?? []).map(node => node.id));
-    const walkedEdgeIds = new Set((payload.walked_edges ?? []).map(edge => edge.id));
-    
-    const transitionPaths = payload.transition_paths ?? [];
-    const transitionIds = new Set(transitionPaths.map(path => path.to));
-    const tempEdgeIds: string[] = [];
-
-    // --- 步骤 0: 暗淡全图 (t = 0ms) ---
-    const dimNodes = originalNodes.map(node => ({
-      id: node.id,
-      color: {
-        background: '#0f172a',
-        border: '#1e293b',
-      },
-      font: { color: '#475569' },
-      size: 14,
-    }));
-    const dimEdges = originalEdges.map(edge => ({
-      id: edge.id,
-      color: { color: 'rgba(30, 41, 59, 0.3)' },
-      width: 1,
-    }));
-
-    nodesDataSet.update(dimNodes);
-    edgesDataSet.update(dimEdges);
-
-    // --- 步骤 1: 聚焦并点亮金黄色锚点 (t = 300ms) ---
-    const t1 = window.setTimeout(() => {
-      const activeAnchors = originalNodes
-        .filter(node => node.id !== undefined && anchorIds.has(String(node.id)))
-        .map(node => ({
-          id: node.id,
-          color: {
-            background: '#fbbf24',
-            border: '#d97706',
-            highlight: { background: '#fbbf24', border: '#f59e0b' }
-          },
-          font: { color: '#fbbf24', size: 16 },
-          size: 32,
-        }));
-      if (activeAnchors.length > 0) {
-        nodesDataSet.update(activeAnchors);
-        // 平滑聚焦首个锚点
-        const firstAnchorId = activeAnchors[0].id;
-        if (firstAnchorId !== undefined) network.focus(firstAnchorId, {
-          scale: 1.2,
-          animation: {
-            duration: 1000,
-            easingFunction: 'easeInOutQuad',
-          },
-        });
-      }
-    }, 300);
-    animationTimersRef.current.push(t1);
-
-    // --- 步骤 2: 点亮类比激活跃迁点，并临时绘制紫色虚线连接 (t = 1500ms) ---
-    const t2 = window.setTimeout(() => {
-      const activeTransitions = originalNodes
-        .filter(node => node.id !== undefined && transitionIds.has(String(node.id)))
-        .map(node => ({
-          id: node.id,
-          color: {
-            background: '#c084fc',
-            border: '#7c3aed',
-            highlight: { background: '#c084fc', border: '#8b5cf6' }
-          },
-          font: { color: '#c084fc', size: 16 },
-          size: 30,
-        }));
-      if (activeTransitions.length > 0) {
-        nodesDataSet.update(activeTransitions);
-      }
-
-      transitionPaths.forEach((path, index) => {
-        if (nodesDataSet.get(path.from) && nodesDataSet.get(path.to)) {
-          const tempEdgeId = `temp-trans-${path.from}-${path.to}-${index}`;
-          tempEdgeIds.push(tempEdgeId);
-          edgesDataSet.add({
-            id: tempEdgeId,
-            from: path.from,
-            to: path.to,
-            label: '空间跃迁',
-            font: { color: '#c084fc', size: 9, strokeWidth: 0 },
-            color: { color: '#c084fc', opacity: 0.8 },
-            width: 2.5,
-            dashes: true,
-            arrows: { to: { enabled: true, scaleFactor: 0.5 } },
-          });
-        }
-      });
-    }, 1500);
-    animationTimersRef.current.push(t2);
-
-    // --- 步骤 3: 拓扑扩散，高亮亮绿色的边与翡翠绿的一跳邻节点 (t = 2700ms) ---
-    const t3 = window.setTimeout(() => {
-      const activeEdges = originalEdges
-        .filter(edge => edge.id !== undefined && walkedEdgeIds.has(String(edge.id)))
-        .map(edge => ({
-          id: edge.id,
-          color: { color: '#34d399', opacity: 1 },
-          width: 4.5,
-        }));
-      if (activeEdges.length > 0) {
-        edgesDataSet.update(activeEdges);
-      }
-
-      const activeNeighbors = originalNodes
-        .filter(node => node.id !== undefined && neighborIds.has(String(node.id)))
-        .map(node => ({
-          id: node.id,
-          color: {
-            background: '#34d399',
-            border: '#059669',
-            highlight: { background: '#34d399', border: '#10b981' }
-          },
-          font: { color: '#34d399', size: 14 },
-          size: 24,
-        }));
-      if (activeNeighbors.length > 0) {
-        nodesDataSet.update(activeNeighbors);
-      }
-    }, 2700);
-    animationTimersRef.current.push(t3);
-
-    // --- 步骤 4: 渐进式淡出复原并清理临时虚线边 (t = 5500ms) ---
-    const t4 = window.setTimeout(() => {
-      tempEdgeIds.forEach(id => edgesDataSet.remove(id));
-      nodesDataSet.update(originalNodes);
-      edgesDataSet.update(originalEdges);
-      network.fit({ animation: true });
-    }, 5500);
-    animationTimersRef.current.push(t4);
-  }, []);
-
-  // 2. 初始化 vis.js Network 力导向图
-  useEffect(() => {
-    if (!graphRef.current) return;
-
-    const nodesDataSet = new DataSet<VisNode>([]);
-    const edgesDataSet = new DataSet<VisEdge>([]);
-    nodesDataSetRef.current = nodesDataSet;
-    edgesDataSetRef.current = edgesDataSet;
-
-    const options = {
-      physics: {
-        stabilization: false,
-        barnesHut: {
-          gravitationalConstant: -10000,
-          centralGravity: 0.3,
-          springLength: 180,
-          springConstant: 0.04,
-          damping: 0.09,
-          avoidOverlap: 1
-        }
-      },
-      nodes: {
-        shape: 'dot',
-        size: 20,
-        font: { 
-          color: '#ffffff', 
-          size: 14, 
-          face: 'Inter, system-ui',
-          strokeWidth: 2,
-          strokeColor: '#0b0f19'
-        },
-        borderWidth: 2,
-        shadow: true,
-        color: {
-          background: '#1e293b',
-          border: '#3b82f6',
-          highlight: {
-            background: '#3b82f6',
-            border: '#60a5fa'
-          }
-        }
-      },
-      edges: {
-        color: 'rgba(71, 85, 105, 0.6)',
-        width: 2,
-        hoverWidth: 3,
-        selectionWidth: 3,
-        arrows: {
-          to: {
-            enabled: true,
-            scaleFactor: 0.5
-          }
-        },
-        shadow: true
-      },
-      interaction: {
-        hover: true,
-        tooltipDelay: 100
-      }
-    };
-
-    const network = new Network(graphRef.current, { nodes: nodesDataSet, edges: edgesDataSet }, options);
-    networkRef.current = network;
-
-    fetchGraph();
-
-    return () => {
-      network.destroy();
-    };
-  }, [fetchGraph]);
-
   // 3. 建立 WebSocket 通信连接
   useEffect(() => {
     let ws: WebSocket;
@@ -762,20 +458,7 @@ export default function App() {
 
       ws.onmessage = (eventMsg) => {
         try {
-          const data = JSON.parse(eventMsg.data) as MorphzEvent | {
-            type: 'init_graph';
-            nodes?: GraphNode[];
-            edges?: GraphEdge[];
-          };
-
-          // 处理初始化推送数据
-          if (data.type === 'init_graph' && 'nodes' in data) {
-            updateGraphData(data.nodes ?? [], data.edges ?? []);
-            return;
-          }
-
-          // 解析出事件实体
-          const ev = data as MorphzEvent;
+          const ev = JSON.parse(eventMsg.data) as MorphzEvent;
           
           // 如果是 L3 Context 监视数据事件
           if (ev.topic === 'chat/context_inspect') {
@@ -788,23 +471,12 @@ export default function App() {
             setWake(ev.payload.wake ?? null);
           }
 
-          // 如果是语义漫游事件
-          if (ev.topic === 'chat/memory_walk') {
-            handleMemoryWalk(ev.payload);
-          }
-
           // 将事件推入列表
           setEvents((prev) => [ev, ...prev].slice(0, 100));
 
           if (ev.topic === 'chat/reply' || ev.topic === 'chat/cancelled') {
             fetchSessions();
             fetchDelegations();
-          }
-
-          // 只要有任何 chat 行为，我们就去增量重新拉取一遍最新的拓扑关系网
-          // 排除 memory_walk，因为它不涉及图的任何持久写改动，纯是检索的轨迹高亮
-          if (ev.topic.startsWith('chat/') && ev.topic !== 'chat/memory_walk') {
-            fetchGraph();
           }
 
         } catch (err) {
@@ -831,7 +503,7 @@ export default function App() {
       if (ws) ws.close();
       if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
     };
-  }, [fetchDelegations, fetchGraph, fetchSessions, handleMemoryWalk, selectedSessionId, updateGraphData]);
+  }, [fetchDelegations, fetchSessions, selectedSessionId]);
 
   // 格式化时间戳
   const formatTime = (tsStr: string) => {
@@ -948,9 +620,12 @@ export default function App() {
           </div>
 
           <button 
-            onClick={fetchGraph}
+            onClick={() => {
+              void Promise.all([fetchAgents(), fetchContexts(), fetchSessions(), fetchDelegations()]);
+              if (selectedSessionId) void fetchSessionSnapshot(selectedSessionId);
+            }}
             className="p-2 rounded-lg bg-white/5 border border-white/5 hover:bg-white/10 hover:border-white/10 transition-all text-gray-300"
-            title="手动更新记忆图谱"
+            title="刷新 Inspector"
           >
             <RefreshCw className="h-4 w-4" />
           </button>
@@ -959,30 +634,56 @@ export default function App() {
 
       {/* 主工作区 */}
       <main className="flex-1 p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 overflow-hidden">
-        {/* 左栏：长期记忆网络拓扑 (vis-network) */}
-        <section className="lg:col-span-4 flex flex-col glass-panel rounded-2xl overflow-hidden shadow-2xl relative">
+        {/* 左栏：Core Context / Session 概览。Graph 由可选扩展自行提供。 */}
+        <section className="lg:col-span-4 flex flex-col glass-panel rounded-2xl overflow-hidden shadow-2xl">
           <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between bg-white/2">
             <div className="flex items-center gap-2">
-              <NetIcon className="h-5 w-5 text-blue-400" />
+              <Cpu className="h-5 w-5 text-blue-400" />
               <h2 className="text-sm font-semibold tracking-wide text-gray-200">
-                Recall 索引实验区 (不自动注入 Mind)
+                Context 运行概览
               </h2>
             </div>
-            <span className="text-xs text-gray-400">仅供观察，不参与 v1 Context 装配</span>
+            <span className="text-xs text-gray-400">Core Inspector</span>
           </div>
 
-          {/* vis.js network container */}
-          <div ref={graphRef} className="flex-1 w-full h-[600px] lg:h-auto bg-[#090d16]" />
-
-          {/* 浮动指引面板 */}
-          <div className="absolute bottom-4 left-4 p-3 bg-slate-900/90 border border-white/10 rounded-xl flex flex-col gap-1.5 text-xs text-gray-400 backdrop-blur-md">
-            <div className="flex items-center gap-2">
-              <span className="h-2 w-2 rounded-full bg-blue-500" />
-              <span>蓝色节点：主物理实体 (如 User, Morphz)</span>
+          <div className="flex-1 overflow-y-auto bg-[#090d16] p-5 space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="rounded-xl border border-white/5 bg-white/3 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500">Mind Frames</div>
+                <div className="mt-1 text-2xl font-semibold text-violet-300">{mind?.frames.length ?? 0}</div>
+              </div>
+              <div className="rounded-xl border border-white/5 bg-white/3 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500">Inbox</div>
+                <div className="mt-1 text-2xl font-semibold text-blue-300">{inbox.length}</div>
+              </div>
+              <div className="rounded-xl border border-white/5 bg-white/3 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500">Context Sessions</div>
+                <div className="mt-1 text-2xl font-semibold text-emerald-300">{contextSessions.length}</div>
+              </div>
+              <div className="rounded-xl border border-white/5 bg-white/3 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-slate-500">Pressure</div>
+                <div className="mt-2 text-sm font-semibold text-amber-300">{pressure?.level ?? 'unknown'}</div>
+              </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="h-2 w-2 rounded-full bg-slate-600" />
-              <span>灰色节点：被提取沉淀的概念与关联概念</span>
+
+            <div className="rounded-xl border border-white/5 bg-slate-950/60 p-4 space-y-2">
+              <div className="text-[10px] uppercase tracking-wider text-slate-500">Active Route</div>
+              <div className="text-xs text-slate-300 break-all">Agent · {selectedAgentId || '—'}</div>
+              <div className="text-xs text-violet-300 break-all">Context · {selectedContextId || '—'}</div>
+              <div className="text-xs text-blue-300 break-all">Session · {selectedSessionId || '—'}</div>
+            </div>
+
+            <div className="rounded-xl border border-white/5 bg-slate-950/60 p-4">
+              <div className="mb-3 text-[10px] uppercase tracking-wider text-slate-500">Recent Runtime Events</div>
+              <div className="space-y-2">
+                {events.slice(0, 12).map(event => (
+                  <div key={event.id} className="flex items-start justify-between gap-3 text-[11px]">
+                    <span className="min-w-0 truncate text-slate-300">{event.topic}</span>
+                    <span className="shrink-0 font-mono text-slate-600">{formatTime(event.timestamp)}</span>
+                  </div>
+                ))}
+                {events.length === 0 && <div className="text-xs text-slate-600">等待 Runtime 事件…</div>}
+              </div>
             </div>
           </div>
         </section>

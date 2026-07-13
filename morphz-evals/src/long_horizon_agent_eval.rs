@@ -1,17 +1,17 @@
-use crate::config::OrchestratorConfig;
 use crate::context_metacognition_eval::ModelProfileIdentity;
-use crate::event::Event;
-use crate::memory::sqlite::SqliteStore;
-use crate::memory::{EventStore, QueryFilter, SessionStore};
-use crate::orchestrator::context::CONTEXT_PROTOCOL_VERSION;
-use crate::orchestrator::context::{
+use chrono::Utc;
+use morphz::config::OrchestratorConfig;
+use morphz::event::Event;
+use morphz::memory::sqlite::SqliteStore;
+use morphz::memory::{EventStore, QueryFilter, SessionStore};
+use morphz::orchestrator::context::CONTEXT_PROTOCOL_VERSION;
+use morphz::orchestrator::context::{
     ContextEngine, ContextPressure, ContextRelation, ContextView, MindState,
 };
-use crate::orchestrator::orchestrator::{
+use morphz::orchestrator::orchestrator::{
     BASELINE_SYSTEM_PROMPT_MODE, COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE,
     SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE, SYSTEM_PROMPT_MODE_ENV,
 };
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -2827,8 +2827,8 @@ fn set_private_directory_permissions(_path: &Path) -> Result<(), DynError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{NewAgent, NewCognitiveContext, NewSession, SessionMountKind};
-    use crate::permission::{FilesystemAccess, PathDecision, PermissionConfig, PermissionProfile};
+    use morphz::memory::{NewAgent, NewCognitiveContext, NewSession, SessionMountKind};
+    use morphz::permission::{FilesystemAccess, PathDecision, PermissionConfig, PermissionProfile};
     use tempfile::TempDir;
 
     #[tokio::test]

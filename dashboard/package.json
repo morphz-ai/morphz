@@ -12,9 +12,7 @@
   "dependencies": {
     "lucide-react": "^1.18.0",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "vis-data": "^8.0.4",
-    "vis-network": "^10.1.0"
+    "react-dom": "^19.2.6"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

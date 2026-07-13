@@ -15,12 +15,8 @@ chrono = { version = "0.4", features = ["serde"] }
 dashmap = "5.5"
 futures-util = "0.3"
 sqlx = { version = "0.7", features = ["runtime-tokio", "sqlite"] }
-executor = { path = "../executor" }
 async-trait = "0.1"
 tower-http = { version = "0.5", features = ["cors"] }
-lancedb = "0.30.0"
-arrow-array = "58"
-arrow-schema = "58"
 nix = { version = "0.31.3", features = ["signal", "process"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "time"] }

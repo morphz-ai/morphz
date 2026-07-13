@@ -31,14 +31,14 @@ Coding Eval Sandbox 为每次真实模型代码修复测试创建独立、可审
 ## 创建环境
 
 ```bash
-cargo run -p morphz --bin coding_eval_env -- create v1
-cargo run -p morphz --bin coding_eval_env -- create v2
+cargo run -p morphz-evals --bin coding_eval_env -- create v1
+cargo run -p morphz-evals --bin coding_eval_env -- create v2
 ```
 
 也可指定 run 根目录：
 
 ```bash
-cargo run -p morphz --bin coding_eval_env -- create v2 /private/tmp/morphz-eval-runs
+cargo run -p morphz-evals --bin coding_eval_env -- create v2 /private/tmp/morphz-eval-runs
 ```
 
 输出 JSON 包含启动所需环境变量：
@@ -68,13 +68,13 @@ cargo run -p morphz --bin coding_eval_env -- create v2 /private/tmp/morphz-eval-
 验证读写逃逸被阻止：
 
 ```bash
-cargo run -p morphz --bin coding_eval_env -- probe RUN_ROOT
+cargo run -p morphz-evals --bin coding_eval_env -- probe RUN_ROOT
 ```
 
 运行 manifest 中不可由 Agent 改写的固定验证命令：
 
 ```bash
-cargo run -p morphz --bin coding_eval_env -- verify RUN_ROOT
+cargo run -p morphz-evals --bin coding_eval_env -- verify RUN_ROOT
 ```
 
 `verify` 不在 Agent workspace 中直接执行。它复制一份不含 `target/.morphz` 的 workspace 快照，在 run 的私有 verifier 目录中注入编译进 evaluator 的隐藏测试，再通过同样禁止网络和越界写入的 Seatbelt 执行。结果写入 workspace 外的 `verification.json`，后续评分优先使用该结果。Agent 无法读取隐藏测试，也无法通过修改公开测试伪造最终正确性。
@@ -82,13 +82,13 @@ cargo run -p morphz --bin coding_eval_env -- verify RUN_ROOT
 检查文件修改范围：
 
 ```bash
-cargo run -p morphz --bin coding_eval_env -- audit RUN_ROOT
+cargo run -p morphz-evals --bin coding_eval_env -- audit RUN_ROOT
 ```
 
 ## Ledger 评分
 
 ```bash
-cargo run -p morphz --bin coding_eval_env -- score RUN_ROOT
+cargo run -p morphz-evals --bin coding_eval_env -- score RUN_ROOT
 ```
 
 评分总计 100 分：

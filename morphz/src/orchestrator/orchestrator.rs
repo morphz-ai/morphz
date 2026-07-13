@@ -68,10 +68,10 @@ Context 的状态分为三个权限域：
 
 Context 的修改是你的元认知行为；read/write/exec/delegate 等工具是对外部世界的行为。保持二者边界清晰。"#;
 
-pub(crate) const SYSTEM_PROMPT_MODE_ENV: &str = "MORPHZ_SYSTEM_PROMPT_MODE";
-pub(crate) const BASELINE_SYSTEM_PROMPT_MODE: &str = "agent_owned_context";
-pub(crate) const COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE: &str = "cognitive_sexpr_vm";
-pub(crate) const SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE: &str = "semantic_sexpr_vm";
+pub const SYSTEM_PROMPT_MODE_ENV: &str = "MORPHZ_SYSTEM_PROMPT_MODE";
+pub const BASELINE_SYSTEM_PROMPT_MODE: &str = "agent_owned_context";
+pub const COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE: &str = "cognitive_sexpr_vm";
+pub const SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE: &str = "semantic_sexpr_vm";
 const COMMON_PROMPT_MARKER: &str = "每次响应必须明确选择";
 const COGNITIVE_SEXPR_VM_PREAMBLE: &str = r#"你是 Morphz Cognitive S-Expression Machine 的语义处理器。
 

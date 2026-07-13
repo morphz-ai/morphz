@@ -43,8 +43,7 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
 ## 本地启动
 
 1. 复制 `.env.example` 为 `.env`，配置 `OPENAI_API_KEY`，并按需设置 `OPENAI_BASE_URL`、`OPENAI_MODEL`。
-2. 确保 `models/bge-small-zh-1.5/` 下存在模型、配置和 tokenizer 文件。
-3. 启动核心：
+2. 启动核心：
 
    ```bash
    cargo run -p morphz
@@ -56,7 +55,7 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    Agent 执行期间，终端会显示 Runtime 实际选中执行的工具名、`call_id` 与结构化参数；
    超长参数只展示前 4096 字符，常见密钥字段会自动遮蔽。
 
-4. 另一个终端启动 Dashboard：
+3. 另一个终端启动 Inspector：
 
    ```bash
    cd dashboard
@@ -100,8 +99,10 @@ npm run build
 
 ## 目录说明
 
-- `morphz/`：Agent Runtime 核心。
-- `executor/`：本地 BGE 推理服务与库。
-- `dashboard/`：图谱和事件流 Dashboard。
+- `morphz/`：Agent Runtime 核心、统一 Application API、CLI 与 Server 适配器。
+- `extensions/morphz-memory-vector/`：可选 Graph/Vector/Embedding 召回扩展；默认核心不加载。
+- `morphz-evals/`：独立评测框架、评测二进制和测试夹具。
+- `executor/`：可选本地 BGE 推理库，仅由启用 `local-bge` 的扩展依赖。
+- `dashboard/`：可选 Mind/Context/Session Inspector，不属于 Runtime Core。
 - `docs/`：设计与研究文档。
 - `app/`：历史 Streamlit Schema 原型，目前不属于 Morphz 核心启动链路。

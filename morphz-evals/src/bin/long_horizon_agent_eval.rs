@@ -1,5 +1,5 @@
-use morphz::context_metacognition_eval::{default_morphz_agent_binary, load_model_profiles};
-use morphz::long_horizon_agent_eval::{
+use morphz_evals::context_metacognition_eval::{default_morphz_agent_binary, load_model_profiles};
+use morphz_evals::long_horizon_agent_eval::{
     create_autonomous_transfer_eval, create_epistemic_reality_eval,
     create_experience_transfer_arm_eval, create_operations_continuity_eval,
     inspect_long_horizon_eval, run_autonomous_transfer_eval, run_epistemic_reality_eval,

@@ -29,21 +29,12 @@ max_sessions_per_evaluation = 8
 
 [memory]
 sqlite_pool_size = 8
-fts_search_limit = 5
-vector_search_limit = 5
-transition_anchor_count = 3
-semantic_low_threshold = 0.55
-semantic_high_threshold = 0.85
-vector_filter_threshold_low = 0.45
-vector_filter_threshold_high = 0.70
-cte_path_width_limit = 50
 
 [llm]
 model = "gpt-4o-mini"
-embedding_model = "text-embedding-3-small"
 max_retries = 5
 initial_backoff_secs = 1
-# 单次 LLM/Embedding HTTP 请求超时；失败后仍按上述重试策略处理。
+# 单次 LLM HTTP 请求超时；失败后仍按上述重试策略处理。
 request_timeout_secs = 120
 # 可通过 MORPHZ_LLM_MAX_OUTPUT_TOKENS 覆盖；未设置时使用模型服务默认值。
 # max_output_tokens = 131072

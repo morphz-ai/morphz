@@ -97,42 +97,19 @@ impl Default for OrchestratorConfig {
     }
 }
 
-/// 记忆与检索配置
+/// Core SQLite persistence configuration. Recall extensions own retrieval and
+/// embedding settings outside the Runtime core.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct MemoryConfig {
     /// SQLite 连接池大小
     pub sqlite_pool_size: u32,
-    /// FTS5 搜索结果上限
-    pub fts_search_limit: usize,
-    /// 向量检索结果上限
-    pub vector_search_limit: usize,
-    /// 语义过渡锚点候选数
-    pub transition_anchor_count: usize,
-    /// Embedding 相似度低阈值（语义过渡）
-    pub semantic_low_threshold: f32,
-    /// Embedding 相似度高阈值（语义过渡）
-    pub semantic_high_threshold: f32,
-    /// 向量检索过滤阈值（低维 hashing）
-    pub vector_filter_threshold_low: f32,
-    /// 向量检索过滤阈值（BGE 高维）
-    pub vector_filter_threshold_high: f32,
-    /// 递归 CTE 路径宽度上限
-    pub cte_path_width_limit: usize,
 }
 
 impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             sqlite_pool_size: 8,
-            fts_search_limit: 5,
-            vector_search_limit: 5,
-            transition_anchor_count: 3,
-            semantic_low_threshold: 0.55,
-            semantic_high_threshold: 0.85,
-            vector_filter_threshold_low: 0.45,
-            vector_filter_threshold_high: 0.70,
-            cte_path_width_limit: 50,
         }
     }
 }
@@ -165,8 +142,6 @@ impl Default for ServerConfig {
 pub struct LlmConfig {
     /// 主要模型名称
     pub model: String,
-    /// Embedding 模型名称
-    pub embedding_model: String,
     /// 重试最大次数
     pub max_retries: u32,
     /// 初始重试退避秒数
@@ -181,7 +156,6 @@ impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             model: "gpt-4o-mini".to_string(),
-            embedding_model: "text-embedding-3-small".to_string(),
             max_retries: 5,
             initial_backoff_secs: 1,
             request_timeout_secs: 120,

@@ -124,20 +124,20 @@ v1 定义三个互补族，每个族至少有一个可离线重放场景：
 
 ```bash
 # Operations Continuity
-cargo run -p morphz --bin long_horizon_agent_eval -- create [BASE_DIR]
-cargo run -p morphz --bin long_horizon_agent_eval -- run PROFILES.toml BASE_DIR
+cargo run -p morphz-evals --bin long_horizon_agent_eval -- create [BASE_DIR]
+cargo run -p morphz-evals --bin long_horizon_agent_eval -- run PROFILES.toml BASE_DIR
 
 # Autonomous Transfer
-cargo run -p morphz --bin long_horizon_agent_eval -- create-transfer [BASE_DIR]
-cargo run -p morphz --bin long_horizon_agent_eval -- run-transfer PROFILES.toml BASE_DIR
+cargo run -p morphz-evals --bin long_horizon_agent_eval -- create-transfer [BASE_DIR]
+cargo run -p morphz-evals --bin long_horizon_agent_eval -- run-transfer PROFILES.toml BASE_DIR
 
 # Experience Transfer 三 arm 对照
-cargo run -p morphz --bin long_horizon_agent_eval -- create-experience ARM [BASE_DIR]
-cargo run -p morphz --bin long_horizon_agent_eval -- run-experience PROFILES.toml BASE_DIR
-cargo run -p morphz --bin long_horizon_agent_eval -- run-experience-prompt-ab PROFILES.toml BASE_DIR
+cargo run -p morphz-evals --bin long_horizon_agent_eval -- create-experience ARM [BASE_DIR]
+cargo run -p morphz-evals --bin long_horizon_agent_eval -- run-experience PROFILES.toml BASE_DIR
+cargo run -p morphz-evals --bin long_horizon_agent_eval -- run-experience-prompt-ab PROFILES.toml BASE_DIR
 
 # 两类场景共用检查器
-cargo run -p morphz --bin long_horizon_agent_eval -- inspect RUN_ROOT
+cargo run -p morphz-evals --bin long_horizon_agent_eval -- inspect RUN_ROOT
 ```
 
 新建运行会为每条轨迹生成不同的 `context_id` 与 `session_id`，并通过显式 Context Mount 启动

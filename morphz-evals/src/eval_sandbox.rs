@@ -244,8 +244,8 @@ fn default_tool_coverage_targets() -> Vec<String> {
 }
 
 pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynError> {
-    use crate::memory::sqlite::SqliteStore;
-    use crate::memory::{EventStore, QueryFilter};
+    use morphz::memory::sqlite::SqliteStore;
+    use morphz::memory::{EventStore, QueryFilter};
 
     let run_root = std::fs::canonicalize(run_root)?;
     let manifest: CodingEvalManifest =
@@ -661,11 +661,11 @@ fn set_private_directory_permissions(_path: &Path) -> Result<(), DynError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{
+    use morphz::event::{
         Event, TYPE_AGENT_CALL, TYPE_CONTEXT_TRANSACTION, TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT,
     };
-    use crate::memory::sqlite::SqliteStore;
-    use crate::memory::EventStore;
+    use morphz::memory::sqlite::SqliteStore;
+    use morphz::memory::EventStore;
     use serde_json::json;
     use tempfile::TempDir;
 

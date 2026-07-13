@@ -107,4 +107,4 @@ cargo run -q -p morphz --bin sexpr_process_eval -- \
   /private/tmp/morphz-semantic-vm-ablation-v4-formal 5
 ```
 
-共享 Kernel 位于 `morphz/src/sexpr_vm_contract.rs`，评测实现位于 `morphz/src/sexpr_process_eval.rs`。
+共享 Kernel 位于 `morphz/src/sexpr_vm_contract.rs`，评测实现位于 `morphz-evals/src/sexpr_process_eval.rs`。

@@ -81,7 +81,7 @@
 ## 6. 运行入口
 
 ```bash
-cargo run -p morphz --bin long_horizon_agent_eval -- \
+cargo run -p morphz-evals --bin long_horizon_agent_eval -- \
   run-experience-prompt-ab PROFILES.toml BASE_DIR
 ```
 

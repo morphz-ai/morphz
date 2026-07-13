@@ -1,4 +1,4 @@
-use morphz::context_metacognition_eval::{
+use morphz_evals::context_metacognition_eval::{
     compare_metacognition_evals, compare_metacognition_suites, create_metacognition_eval,
     default_morphz_agent_binary, inspect_metacognition_eval, run_metacognition_eval,
     run_metacognition_model_matrix, run_metacognition_suite,
