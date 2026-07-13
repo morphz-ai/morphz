@@ -21,6 +21,7 @@ use crate::tool::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
@@ -103,6 +104,20 @@ impl MorphzRuntimeBuilder {
         let database_path = self
             .database_path
             .unwrap_or_else(|| self.config.server.database_path.clone());
+        let mut permission_config = self.config.permissions.clone();
+        if database_path != ":memory:" {
+            let database_path = absolute_runtime_path(&database_path);
+            for protected in [
+                database_path.clone(),
+                PathBuf::from(format!("{}-wal", database_path.to_string_lossy())),
+                PathBuf::from(format!("{}-shm", database_path.to_string_lossy())),
+            ] {
+                let protected = protected.to_string_lossy().into_owned();
+                if !permission_config.protected_paths.contains(&protected) {
+                    permission_config.protected_paths.push(protected);
+                }
+            }
+        }
         let bus = Arc::new(InMemoryEventBus::new());
         let store =
             Arc::new(SqliteStore::new_with_config(&database_path, &self.config.memory).await?);
@@ -114,8 +129,7 @@ impl MorphzRuntimeBuilder {
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
         );
         let human_approval_hub = HumanApprovalHub::default();
-        let permission_profile =
-            Arc::new(PermissionProfile::from_config(&self.config.permissions)?);
+        let permission_profile = Arc::new(PermissionProfile::from_config(&permission_config)?);
         if permission_profile.sandbox_mode == SandboxMode::DangerFullAccess {
             tracing::warn!("完全访问权限已启用：文件工具与 Shell 均不受工作区或操作系统沙箱限制");
         }
@@ -272,6 +286,11 @@ impl MorphzRuntime {
                 title: "默认认知 Context".to_string(),
             })
             .await?;
+        for session in self.inner.store.list_sessions(true).await? {
+            self.inner
+                .orchestrator
+                .register_session_context(&session.id, &session.context_id);
+        }
         Arc::clone(&self.inner.orchestrator).start().await?;
         self.inner.started.store(true, Ordering::Release);
         Ok(())
@@ -321,7 +340,10 @@ impl MorphzRuntime {
 
     pub async fn ensure_session(&self, session: NewSession) -> Result<SessionHandle, RuntimeError> {
         let id = session.id.clone();
-        self.inner.store.ensure_session(session).await?;
+        let session = self.inner.store.ensure_session(session).await?;
+        self.inner
+            .orchestrator
+            .register_session_context(&session.id, &session.context_id);
         Ok(self.session(id))
     }
 
@@ -342,10 +364,16 @@ impl MorphzRuntime {
         context: NewCognitiveContext,
         session: NewSession,
     ) -> Result<AgentBootstrapRecord, RuntimeError> {
-        self.inner
+        let bundle = self
+            .inner
             .store
             .create_agent_bundle(agent, context, session)
-            .await
+            .await?;
+        self.inner.orchestrator.register_session_context(
+            &bundle.initial_session.id,
+            &bundle.initial_session.context_id,
+        );
+        Ok(bundle)
     }
 
     pub async fn list_agents(&self, archived: bool) -> Result<Vec<AgentRecord>, RuntimeError> {
@@ -378,7 +406,11 @@ impl MorphzRuntime {
     }
 
     pub async fn create_session(&self, session: NewSession) -> Result<SessionRecord, RuntimeError> {
-        self.inner.store.create_session(session).await
+        let session = self.inner.store.create_session(session).await?;
+        self.inner
+            .orchestrator
+            .register_session_context(&session.id, &session.context_id);
+        Ok(session)
     }
 
     pub async fn get_session(&self, id: &str) -> Result<Option<SessionRecord>, RuntimeError> {
@@ -443,6 +475,95 @@ impl MorphzRuntime {
             .await
     }
 
+    /// Cancel a Delegation and every active descendant it spawned. The requested root's parent
+    /// is woken with a terminal delegate Observation so an attached evaluation cannot remain
+    /// suspended forever.
+    pub async fn cancel_delegation_tree(
+        &self,
+        id: &str,
+    ) -> Result<Vec<DelegationRecord>, RuntimeError> {
+        let delegations = self.inner.store.list_delegations().await?;
+        let root = delegations
+            .iter()
+            .find(|delegation| delegation.id == id)
+            .cloned()
+            .ok_or_else(|| format!("Delegation '{}' 不存在", id))?;
+        let mut pending_sessions = vec![root.child_session_id.clone()];
+        let mut selected = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        while let Some(parent_session_id) = pending_sessions.pop() {
+            for delegation in delegations.iter().filter(|delegation| {
+                delegation.child_session_id == parent_session_id
+                    || delegation.parent_session_id == parent_session_id
+            }) {
+                if !visited.insert(delegation.id.clone()) {
+                    continue;
+                }
+                pending_sessions.push(delegation.child_session_id.clone());
+                selected.push(delegation.clone());
+            }
+        }
+
+        // Stop leaves before ancestors so a descendant cannot enqueue more work while its parent
+        // is being cancelled.
+        let mut cancelled = Vec::new();
+        for delegation in selected.into_iter().rev() {
+            if matches!(
+                delegation.status,
+                DelegationStatus::Completed
+                    | DelegationStatus::Failed
+                    | DelegationStatus::Cancelled
+            ) {
+                continue;
+            }
+            self.cancel_session(&delegation.child_session_id);
+            if let Some(updated) = self
+                .inner
+                .store
+                .update_delegation_status(&delegation.id, DelegationStatus::Cancelled, None)
+                .await?
+            {
+                cancelled.push(updated);
+            }
+        }
+
+        if cancelled.iter().any(|delegation| delegation.id == root.id) {
+            self.inner
+                .bus
+                .publish(Event::new(
+                    format!(
+                        "delegation_cancelled_{}_{}",
+                        root.id,
+                        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                    ),
+                    "System-Delegation".to_string(),
+                    crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                    "chat/tool_output".to_string(),
+                    vec![
+                        ("context_id".to_string(), json!(root.parent_context_id)),
+                        ("session_id".to_string(), json!(root.parent_session_id)),
+                        ("delegation_id".to_string(), json!(root.id)),
+                        ("tool_name".to_string(), json!("delegate")),
+                        ("tool_status".to_string(), json!("cancelled")),
+                        (
+                            "text".to_string(),
+                            json!(json!({
+                                "delegation_id": id,
+                                "status": "cancelled",
+                                "cancelled_descendants": cancelled.len().saturating_sub(1),
+                                "guidance": "Delegation 已取消；请根据当前证据继续或向用户说明。"
+                            })
+                            .to_string()),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+                .await?;
+        }
+        Ok(cancelled)
+    }
+
     pub async fn query_events(&self, filter: QueryFilter) -> Result<Vec<Event>, RuntimeError> {
         self.inner.store.query(filter).await
     }
@@ -490,19 +611,23 @@ impl MorphzRuntime {
         &self,
         session_id: &str,
     ) -> Result<crate::sexpr::SExpr, RuntimeError> {
-        self.inner
-            .orchestrator
-            .get_current_context(session_id)
-            .await
+        let view = self.inspect_session_context_view(session_id).await?;
+        Ok(crate::sexpr::parse(&view.sexpr)?)
     }
 
     pub async fn inspect_session_context_view(
         &self,
         session_id: &str,
     ) -> Result<ContextView, RuntimeError> {
+        let session = self
+            .inner
+            .store
+            .get_session(session_id)
+            .await?
+            .ok_or_else(|| format!("Session '{}' 不存在", session_id))?;
         self.inner
             .orchestrator
-            .get_current_context_view(session_id)
+            .get_context_encoding(&session.context_id, session_id)
             .await
     }
 
@@ -719,6 +844,17 @@ fn runtime_id(prefix: &str) -> String {
     )
 }
 
+fn absolute_runtime_path(path: impl AsRef<std::path::Path>) -> PathBuf {
+    let path = path.as_ref();
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    }
+}
+
 fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)
         .ok()
@@ -810,5 +946,142 @@ mod tests {
             "session-runtime"
         );
         assert!(session.inspect_context().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn inspect_session_context_uses_persisted_mount_before_first_message() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .ensure_context(NewCognitiveContext {
+                id: "persisted-context".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                title: "Persisted".to_string(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "persisted-session".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: "persisted-context".to_string(),
+                parent_session_id: None,
+                title: "Persisted".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+
+        let view = runtime
+            .inspect_session_context_view("persisted-session")
+            .await
+            .unwrap();
+        assert_eq!(view.context_id, "persisted-context");
+        assert!(runtime
+            .inspect_session_context_view("unknown-session")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("不存在"));
+    }
+
+    #[tokio::test]
+    async fn cancelling_delegation_recursively_cancels_descendants() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        for context_id in ["cancel-child-context", "cancel-grand-context"] {
+            runtime
+                .create_context(NewCognitiveContext {
+                    id: context_id.to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    title: context_id.to_string(),
+                })
+                .await
+                .unwrap();
+        }
+        for (session_id, context_id) in [
+            ("cancel-root", runtime.identity().context_id.as_str()),
+            ("cancel-child", "cancel-child-context"),
+            ("cancel-grand", "cancel-grand-context"),
+        ] {
+            runtime
+                .ensure_session(NewSession {
+                    id: session_id.to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: context_id.to_string(),
+                    parent_session_id: None,
+                    title: session_id.to_string(),
+                    mount_kind: crate::memory::SessionMountKind::ExistingContext,
+                })
+                .await
+                .unwrap();
+        }
+        for delegation in [
+            NewDelegation {
+                id: "cancel-delegation-root".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                parent_context_id: runtime.identity().context_id.clone(),
+                parent_session_id: "cancel-root".to_string(),
+                child_context_id: "cancel-child-context".to_string(),
+                child_session_id: "cancel-child".to_string(),
+                task: "child".to_string(),
+                success_when: None,
+                context_scope: "mind_only".to_string(),
+            },
+            NewDelegation {
+                id: "cancel-delegation-child".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                parent_context_id: "cancel-child-context".to_string(),
+                parent_session_id: "cancel-child".to_string(),
+                child_context_id: "cancel-grand-context".to_string(),
+                child_session_id: "cancel-grand".to_string(),
+                task: "grand".to_string(),
+                success_when: None,
+                context_scope: "mind_only".to_string(),
+            },
+        ] {
+            let id = delegation.id.clone();
+            runtime.create_delegation(delegation).await.unwrap();
+            runtime
+                .update_delegation_status(&id, DelegationStatus::Running, None)
+                .await
+                .unwrap();
+        }
+
+        let cancelled = runtime
+            .cancel_delegation_tree("cancel-delegation-root")
+            .await
+            .unwrap();
+        assert_eq!(cancelled.len(), 2);
+        for id in ["cancel-delegation-root", "cancel-delegation-child"] {
+            assert_eq!(
+                runtime.get_delegation(id).await.unwrap().unwrap().status,
+                DelegationStatus::Cancelled
+            );
+        }
     }
 }

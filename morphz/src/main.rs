@@ -30,6 +30,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         std::env::var("MORPHZ_CONFIG_PATH").unwrap_or_else(|_| "morphz.toml".to_string());
     let mut app_config = config::AppConfig::load_or_default(&config_path);
     app_config.apply_runtime_env_overrides()?;
+    let protected_config_path = std::fs::canonicalize(&config_path).unwrap_or_else(|_| {
+        let path = std::path::PathBuf::from(&config_path);
+        if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join(path)
+        }
+    });
+    let protected_config_pattern = protected_config_path.to_string_lossy().into_owned();
+    if !app_config
+        .permissions
+        .protected_paths
+        .contains(&protected_config_pattern)
+    {
+        app_config
+            .permissions
+            .protected_paths
+            .push(protected_config_pattern);
+    }
+    if let Ok(executable_path) = std::env::current_exe() {
+        let protected_executable_pattern = executable_path.to_string_lossy().into_owned();
+        if !app_config
+            .permissions
+            .protected_paths
+            .contains(&protected_executable_pattern)
+        {
+            app_config
+                .permissions
+                .protected_paths
+                .push(protected_executable_pattern);
+        }
+    }
     tracing::info!(?app_config, "已加载应用配置");
 
     // 1. 加载根目录下的 .env 环境变量
@@ -100,6 +134,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing::info!(">> 帮我写一个 notes.txt 文件，内容为 Morphz Loop OK");
     tracing::info!("您也可以输入 ctx 随时查看大脑心智状态。");
     tracing::info!("多行输入：先输入 /multi，正文结束后单独输入 /send；使用 /cancel 取消。");
+    tracing::info!("后台 Sub Agent：输入 jobs 查看；输入 cancel-job <delegation_id> 递归取消。");
 
     let session_id = std::env::var("MORPHZ_SESSION_ID")
         .ok()
@@ -195,6 +230,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                     Err(e) => {
                         let _ = writeln!(stdout, "无法获取 Context: {:?}", e);
+                    }
+                }
+                continue;
+            }
+            if commands_allowed && parts.first() == Some(&"jobs") {
+                match rt.block_on(console_runtime.list_delegations()) {
+                    Ok(delegations) if delegations.is_empty() => {
+                        let _ = writeln!(stdout, "当前没有 Sub Agent 任务。");
+                    }
+                    Ok(delegations) => {
+                        let _ = writeln!(stdout, "--- Sub Agent 任务 ---");
+                        for delegation in delegations {
+                            let task = delegation.task.replace('\n', " ");
+                            let task_preview = task.chars().take(100).collect::<String>();
+                            let _ = writeln!(
+                                stdout,
+                                "{}  [{}]  {} -> {}  {}",
+                                delegation.id,
+                                delegation.status.as_str(),
+                                delegation.parent_session_id,
+                                delegation.child_session_id,
+                                task_preview
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let _ = writeln!(stdout, "无法读取 Sub Agent 任务: {error}");
+                    }
+                }
+                continue;
+            }
+            if commands_allowed && parts.first() == Some(&"cancel-job") {
+                let Some(delegation_id) = parts.get(1) else {
+                    let _ = writeln!(stdout, "用法: cancel-job <delegation_id>");
+                    continue;
+                };
+                match rt.block_on(console_runtime.cancel_delegation_tree(delegation_id)) {
+                    Ok(cancelled) => {
+                        let _ = writeln!(
+                            stdout,
+                            "已取消 {} 个 Sub Agent 任务（包括递归子任务）。",
+                            cancelled.len()
+                        );
+                    }
+                    Err(error) => {
+                        let _ = writeln!(stdout, "取消 Sub Agent 失败: {error}");
                     }
                 }
                 continue;

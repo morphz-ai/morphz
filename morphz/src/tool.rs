@@ -2196,10 +2196,16 @@ struct DelegateArgs {
     success_when: Option<String>,
     #[serde(default = "default_delegation_scope")]
     context_scope: String,
+    #[serde(default = "default_delegation_mode")]
+    mode: String,
 }
 
 fn default_delegation_scope() -> String {
     "current_session".to_string()
+}
+
+fn default_delegation_mode() -> String {
+    "attached".to_string()
 }
 
 #[async_trait::async_trait]
@@ -2211,7 +2217,7 @@ impl Tool for DelegateTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "delegate".to_string(),
-            description: "把一项较重任务委派给隔离的 Sub Agent。默认继承共享 Mind 与当前 Session 的证据，隔离兄弟 Session；Sub Agent 不能直接修改父 Mind，完成结果会作为 delegate Tool Observation 返回当前 Session，由你验证、回复或整合进共享 Mind。调用立即返回 delegation_id，Sub Agent 在后台继续执行。".to_string(),
+            description: "把一项较重任务委派给认知隔离的 Sub Agent。注意：它不是新容器、新进程或新的物理沙箱；父子共享同一个 Runtime workspace、文件系统和权限边界，不能通过修改 Runtime 配置来制造隔离。默认 attached：Runtime 挂起当前求值，不把 queued 回执当作新 Observation 唤醒你；Sub Agent 完成后才用 delegate 结果恢复当前 Session，因此不要轮询 recall。只有任务明确应脱离当前回合继续后台运行时才用 detached。Sub Agent 继承共享 Mind 与可选的当前 Session 证据，但不能直接修改父 Mind；结果由你验证、回复或整合。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -2228,6 +2234,12 @@ impl Tool for DelegateTool {
                         "enum": ["current_session", "mind_only"],
                         "description": "current_session 继承 Mind 与当前 Session；mind_only 只继承 Mind",
                         "default": "current_session"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["attached", "detached"],
+                        "description": "attached 等待 Sub Agent 结果后再恢复当前求值；detached 立即返回 queued 回执并允许当前回合继续",
+                        "default": "attached"
                     }
                 },
                 "required": ["task"]
@@ -2245,6 +2257,9 @@ impl Tool for DelegateTool {
         }
         if !matches!(args.context_scope.as_str(), "current_session" | "mind_only") {
             return Err(format!("不支持的 delegate.context_scope: {}", args.context_scope).into());
+        }
+        if !matches!(args.mode.as_str(), "attached" | "detached") {
+            return Err(format!("不支持的 delegate.mode: {}", args.mode).into());
         }
         let parent_session_id = CURRENT_SESSION_ID
             .try_with(Clone::clone)
@@ -2294,6 +2309,7 @@ impl Tool for DelegateTool {
                 "context_scope".to_string(),
                 serde_json::json!(args.context_scope),
             ),
+            ("mode".to_string(), serde_json::json!(args.mode)),
             (
                 "text".to_string(),
                 serde_json::json!("Delegation requested"),
@@ -2313,9 +2329,14 @@ impl Tool for DelegateTool {
         Ok(serde_json::json!({
             "delegation_id": delegation_id,
             "status": "queued",
+            "mode": args.mode,
             "child_context_id": child_context_id,
             "child_session_id": child_session_id,
-            "guidance": "Sub Agent 已排队；完成结果会作为新的 delegate Tool Observation 返回当前 Session。"
+            "guidance": if args.mode == "attached" {
+                "Sub Agent 已排队；Runtime 将等待完成结果后恢复当前 Session，请勿轮询。"
+            } else {
+                "Sub Agent 已在后台排队；当前回合可以继续或回复，完成结果稍后返回当前 Session。"
+            }
         })
         .to_string())
     }

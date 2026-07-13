@@ -13,7 +13,9 @@ use morphz::memory::{
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
 use morphz::permission::PermissionConfig;
-use morphz::tool::{EditFileTool, ReadFileTool, Registry, SpawnAgentTool, Tool, WriteFileTool};
+use morphz::tool::{
+    DelegateTool, EditFileTool, ReadFileTool, Registry, SpawnAgentTool, Tool, WriteFileTool,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
@@ -2525,6 +2527,238 @@ async fn test_delegate_isolates_siblings_returns_to_parent_and_parent_integrates
         .iter()
         .any(|frame| frame.id == "delegated-insight"));
     assert_eq!(client.messages_seen().len(), 3);
+}
+
+#[tokio::test]
+async fn attached_delegate_waits_for_result_without_model_polling() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("attached-delegate.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    store
+        .create_context(NewCognitiveContext {
+            id: "attached-context".to_string(),
+            agent_id: "attached-agent".to_string(),
+            title: "Attached".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .create_session(NewSession {
+            id: "attached-parent".to_string(),
+            agent_id: "attached-agent".to_string(),
+            context_id: "attached-context".to_string(),
+            parent_session_id: None,
+            title: "Parent".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let client = Arc::new(MockClient::new(vec![
+        Response {
+            content: "delegating now".to_string(),
+            tool_calls: ["delegate-attached", "delegate-duplicate"]
+                .into_iter()
+                .map(|id| ToolCallRepr {
+                    id: id.to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "delegate".to_string(),
+                    arguments: json!({
+                        "task": "return CHILD-DONE",
+                        "success_when": "the result contains CHILD-DONE",
+                        "mode": "attached"
+                    })
+                    .to_string(),
+                })
+                .collect(),
+        },
+        Response {
+            content: "CHILD-DONE".to_string(),
+            tool_calls: Vec::new(),
+        },
+        Response {
+            content: "PARENT-VERIFIED-CHILD-DONE".to_string(),
+            tool_calls: Vec::new(),
+        },
+    ]));
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(DelegateTool::new(Arc::clone(&bus))));
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&client) as Arc<dyn Client>,
+        registry,
+        config,
+        engine,
+    ));
+    Arc::clone(&orchestrator).start().await.unwrap();
+
+    publish_user_in_context(
+        &bus,
+        "attached-context",
+        "attached-parent",
+        "delegate the task",
+    )
+    .await;
+
+    let replies = wait_for_topic(&store, "chat/reply", "attached-parent").await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0]
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str()),
+        Some("PARENT-VERIFIED-CHILD-DONE")
+    );
+    assert_eq!(client.messages_seen().len(), 3);
+    assert_eq!(store.list_delegations().await.unwrap().len(), 1);
+    let assistant_calls = wait_for_topic(&store, "chat/assistant_call", "attached-parent").await;
+    assert!(assistant_calls.iter().any(|event| {
+        event
+            .payload
+            .get("deduplicated_delegate_ids")
+            .and_then(|value| value.as_array())
+            .is_some_and(|ids| ids.iter().any(|id| id == "delegate-duplicate"))
+    }));
+    let delegate_outputs =
+        wait_for_topic_count(&store, "chat/tool_output", "attached-parent", 2).await;
+    assert_eq!(delegate_outputs.len(), 2);
+    assert!(delegate_outputs.iter().any(|event| {
+        event
+            .payload
+            .get("wake_policy")
+            .and_then(|value| value.as_str())
+            == Some("delegation_result")
+    }));
+    assert!(delegate_outputs.iter().any(|event| {
+        event
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str())
+            .is_some_and(|text| text.contains("CHILD-DONE"))
+    }));
+}
+
+#[tokio::test]
+async fn delegation_depth_limit_rejects_recursive_spawn_before_creating_child() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("delegate-depth.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    store
+        .create_context(NewCognitiveContext {
+            id: "depth-root-context".to_string(),
+            agent_id: "depth-agent".to_string(),
+            title: "Depth root".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .create_session(NewSession {
+            id: "depth-root-session".to_string(),
+            agent_id: "depth-agent".to_string(),
+            context_id: "depth-root-context".to_string(),
+            parent_session_id: None,
+            title: "Depth root".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    let config = morphz::config::OrchestratorConfig {
+        max_delegation_depth: 1,
+        model_attempt_timeout_secs: 5,
+        ..Default::default()
+    };
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::new(HangingClient) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    ));
+    Arc::clone(&orchestrator).start().await.unwrap();
+
+    let request = |id: &str,
+                   parent_context: &str,
+                   parent_session: &str,
+                   child_context: &str,
+                   child_session: &str| {
+        Event::new(
+            format!("request-{id}"),
+            "Test".to_string(),
+            morphz::event::TYPE_AGENT_CALL.to_string(),
+            "chat/delegate".to_string(),
+            vec![
+                ("context_id".to_string(), json!(parent_context)),
+                ("session_id".to_string(), json!(parent_session)),
+                ("parent_context_id".to_string(), json!(parent_context)),
+                ("parent_session_id".to_string(), json!(parent_session)),
+                ("delegation_id".to_string(), json!(id)),
+                ("child_context_id".to_string(), json!(child_context)),
+                ("child_session_id".to_string(), json!(child_session)),
+                ("task".to_string(), json!("hold")),
+                ("success_when".to_string(), json!("never")),
+                ("context_scope".to_string(), json!("mind_only")),
+                ("text".to_string(), json!("Delegation requested")),
+            ]
+            .into_iter()
+            .collect(),
+        )
+    };
+    bus.publish(request(
+        "depth-first",
+        "depth-root-context",
+        "depth-root-session",
+        "depth-child-context",
+        "depth-child-session",
+    ))
+    .await
+    .unwrap();
+    for _ in 0..40 {
+        if store.get_delegation("depth-first").await.unwrap().is_some() {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
+    }
+    assert!(store.get_delegation("depth-first").await.unwrap().is_some());
+
+    bus.publish(request(
+        "depth-rejected",
+        "depth-child-context",
+        "depth-child-session",
+        "depth-grandchild-context",
+        "depth-grandchild-session",
+    ))
+    .await
+    .unwrap();
+    let failures = wait_for_topic(&store, "chat/tool_output", "depth-child-session").await;
+    assert!(failures.iter().any(|event| {
+        event
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str())
+            .is_some_and(|text| text.contains("DELEGATION_DEPTH_EXCEEDED"))
+    }));
+    assert!(store
+        .get_delegation("depth-rejected")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .get_session("depth-grandchild-session")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]

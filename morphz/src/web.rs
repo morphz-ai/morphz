@@ -1092,19 +1092,14 @@ async fn handle_cancel_delegation(
             ),
         );
     }
-    let was_running = state.runtime.cancel_session(&delegation.child_session_id);
-    match state
-        .runtime
-        .update_delegation_status(&delegation_id, DelegationStatus::Cancelled, None)
-        .await
-    {
-        Ok(Some(updated)) => Json(json!({
+    match state.runtime.cancel_delegation_tree(&delegation_id).await {
+        Ok(cancelled) => Json(json!({
             "cancelled": true,
-            "was_running": was_running,
-            "delegation": updated
+            "cancelled_count": cancelled.len(),
+            "delegation": cancelled.iter().find(|item| item.id == delegation_id),
+            "cancelled_delegations": cancelled
         }))
         .into_response(),
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "Delegation 不存在"),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }

@@ -43,17 +43,31 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
 ## 本地启动
 
 1. 复制 `.env.example` 为 `.env`，配置 `OPENAI_API_KEY`，并按需设置 `OPENAI_BASE_URL`、`OPENAI_MODEL`。
-2. 启动核心：
+2. 编译核心，并从独立运行目录启动。不要把 Morphz 源码仓库同时作为 Agent 的工作区：
 
    ```bash
-   cargo run -p morphz
+   cargo build --release -p morphz
+   mkdir -p ../morphz-runtime
+   cp morphz.toml ../morphz-runtime/morphz.toml
+   cp .env ../morphz-runtime/.env
+   cd ../morphz-runtime
+   ../Morphz/target/release/morphz
    ```
+
+   上例假设运行目录与 `Morphz` 源码目录同级；路径不同时请替换最后一行。默认
+   `workspace_root = "."`、数据库和 Agent 产物都会落在独立运行目录。Runtime 会把
+   实际加载的 `MORPHZ_CONFIG_PATH`、当前可执行文件、SQLite 主库及 `-wal/-shm` 强制
+   加入不可覆盖保护，Agent 不能通过文件工具、Shell 或自动审批修改 Runtime 自身；
+   `.env`、`.git`、`.ssh` 同样默认受保护。
 
    终端默认按回车发送单行消息。长任务规格可使用显式多行模式：先输入
    `/multi`，粘贴任意多行正文，再单独输入 `/send` 原子发送；使用
    `/cancel` 放弃当前多行输入。多行正文中的 `ctx`、`exit` 等文本不会被解释为终端命令。
    Agent 执行期间，终端会显示 Runtime 实际选中执行的工具名、`call_id` 与结构化参数；
    超长参数只展示前 4096 字符，常见密钥字段会自动遮蔽。
+   输入 `jobs` 可查看 Sub Agent 状态；`cancel-job <delegation_id>` 会递归取消该任务及其
+   后代。`delegate` 默认为 attached，父 Session 等待结果且不会轮询；只有显式选择
+   detached 时才立即转为后台任务。
 
 3. 另一个终端启动 Inspector：
 

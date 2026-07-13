@@ -47,6 +47,10 @@ pub fn load_env(filepath: &str) -> io::Result<()> {
 pub struct OrchestratorConfig {
     /// 并发信号量限制
     pub concurrency_limit: usize,
+    /// 单条 Delegation 链允许的最大嵌套深度。根 Agent 派生第一个 Sub Agent 计为 1。
+    pub max_delegation_depth: usize,
+    /// 同一 Agent 同时处于 queued/running 的 Delegation 总数上限。
+    pub max_active_delegations_per_agent: usize,
     /// 等待最终回复期间的进度提示间隔（秒）；0 表示不提示。
     ///
     /// 这不是任务超时：交互端会持续等待，直到 Agent 回复或用户主动中断。
@@ -81,6 +85,8 @@ impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
             concurrency_limit: 4,
+            max_delegation_depth: 3,
+            max_active_delegations_per_agent: 8,
             reply_wait_notice_secs: 120,
             tool_timeout_secs: 30,
             model_attempt_timeout_secs: 180,
@@ -432,6 +438,14 @@ impl AppConfig {
             "MORPHZ_ATTEMPT_SOFT_CHECKPOINT_INTERVAL",
             &mut self.orchestrator.attempt_soft_checkpoint_interval,
         )?;
+        apply_usize_env(
+            "MORPHZ_MAX_DELEGATION_DEPTH",
+            &mut self.orchestrator.max_delegation_depth,
+        )?;
+        apply_usize_env(
+            "MORPHZ_MAX_ACTIVE_DELEGATIONS_PER_AGENT",
+            &mut self.orchestrator.max_active_delegations_per_agent,
+        )?;
         apply_u32_env("MORPHZ_LLM_MAX_RETRIES", &mut self.llm.max_retries)?;
         apply_optional_u32_env(
             "MORPHZ_LLM_MAX_OUTPUT_TOKENS",
@@ -563,6 +577,8 @@ mod tests {
         let cfg = AppConfig::default();
         assert_eq!(cfg.server.bind, "127.0.0.1:8080");
         assert_eq!(cfg.orchestrator.concurrency_limit, 4);
+        assert_eq!(cfg.orchestrator.max_delegation_depth, 3);
+        assert_eq!(cfg.orchestrator.max_active_delegations_per_agent, 8);
         assert_eq!(cfg.memory.sqlite_pool_size, 8);
         assert_eq!(cfg.llm.max_retries, 5);
         assert_eq!(cfg.llm.request_timeout_secs, 120);

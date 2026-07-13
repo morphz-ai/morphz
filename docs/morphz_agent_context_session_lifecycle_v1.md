@@ -157,7 +157,8 @@ Seed 之后首个 Agent `context_tx` 必须基于 `base-version 0`。
 ```json
 {
   "task": "完成复杂编码任务",
-  "success_when": "测试通过并返回报告"
+  "success_when": "测试通过并返回报告",
+  "mode": "attached"
 }
 ```
 
@@ -170,6 +171,7 @@ Seed 之后首个 Agent `context_tx` 必须基于 `base-version 0`。
   "return_to": "current_session",
   "parent_write_access": false,
   "execution_mode": "isolated",
+  "scheduling_mode": "attached",
   "lifetime": "task"
 }
 ```
@@ -199,6 +201,12 @@ Context Main@43 → visible to A / B / C
 ```
 
 Sub Agent 默认没有父 Context 写权限。它在独立 Context 中执行完整模型/工具循环；完成结果作为 `delegation_result` Tool Observation 返回 C。C 对结果负责，可以验证、拒绝、回复用户或提交 Main `context_tx`。
+
+`mode=attached` 是默认调度语义：queued 回执只写入 Ledger，不唤醒父模型；父 Session
+挂起到 `delegation_result` 到达，因此不需要也不应通过 `recall` 轮询。`mode=detached`
+仅用于明确的后台工作：queued 回执立即恢复父 Session，父级可继续或回复，结果稍后仍
+返回原 Session。Runtime 对递归委派设置可配置的深度和每 Agent 活跃数量上限；取消
+Delegation 会递归取消后代，并用终态 Observation 唤醒可能挂起的父 Session。
 
 ### 5.1 持久化实体
 
@@ -360,7 +368,7 @@ Agent 创建响应返回：
 - Dashboard 可创建和选择 Agent；
 - “+”在当前 Context 创建共享 Session；
 - “独立会话”从当前 Context 的 Mind 生成隔离 Context；
-- 模型使用标准 Function Calling 工具 `delegate(task, success_when?, context_scope?)`；
+- 模型使用标准 Function Calling 工具 `delegate(task, success_when?, context_scope?, mode?)`；
 - Dashboard 显示当前 Session 的 Delegation 总数和运行数；REST API 可列出、读取和取消 Delegation。
 
 旧 `spawn` 实现只保留为历史测试兼容面，默认工具注册表和 System Prompt 均不再暴露；新功能只使用 `delegate`。

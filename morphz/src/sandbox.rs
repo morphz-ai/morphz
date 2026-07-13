@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::io::ErrorKind;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,6 +224,59 @@ fn canonical_roots(paths: &[PathBuf], kind: &str) -> Result<Vec<PathBuf>, Sandbo
     Ok(roots)
 }
 
+/// Resolve a deny path without weakening the policy when the target disappears between
+/// policy construction and sandbox compilation.
+///
+/// Allow roots must exist and be canonicalized: otherwise we cannot know what is being
+/// granted. Deny roots are different. A protected file may legitimately be removed by a
+/// concurrent process after discovery, and silently dropping that deny would allow a later
+/// recreation at the same path. In that case we retain the normalized absolute pathname.
+fn denied_roots(paths: &[PathBuf], kind: &str) -> Result<Vec<PathBuf>, SandboxError> {
+    let mut roots = Vec::with_capacity(paths.len());
+    for path in paths {
+        let resolved = match std::fs::canonicalize(path) {
+            Ok(canonical) => canonical,
+            Err(error) if error.kind() == ErrorKind::NotFound => absolute_lexical_path(path)?,
+            Err(error) => {
+                return Err(SandboxError::new(format!(
+                    "无法解析沙箱 {kind} root '{}': {error}",
+                    path.display()
+                )));
+            }
+        };
+        push_unique(&mut roots, resolved);
+    }
+    Ok(roots)
+}
+
+fn absolute_lexical_path(path: &Path) -> Result<PathBuf, SandboxError> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| SandboxError::new(format!("无法读取当前目录：{error}")))?
+            .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(SandboxError::new(format!(
+                        "沙箱 deny path 无法规范化：'{}'",
+                        path.display()
+                    )));
+                }
+            }
+            Component::Normal(part) => normalized.push(part),
+        }
+    }
+    Ok(normalized)
+}
+
 #[cfg(target_os = "macos")]
 fn platform_backend() -> Arc<dyn SandboxBackend> {
     Arc::new(macos::MacOsSeatbeltBackend)
@@ -365,8 +419,8 @@ mod macos {
     pub fn build_profile(policy: &SandboxPolicy) -> Result<String, SandboxError> {
         let read_roots = canonical_roots(&policy.read_roots, "read")?;
         let write_roots = canonical_roots(&policy.write_roots, "write")?;
-        let protected_reads = canonical_roots(&policy.denied_read_paths, "denied read")?;
-        let protected_writes = canonical_roots(&policy.denied_write_paths, "denied write")?;
+        let protected_reads = denied_roots(&policy.denied_read_paths, "denied read")?;
+        let protected_writes = denied_roots(&policy.denied_write_paths, "denied write")?;
         if write_roots.is_empty() {
             return Err(SandboxError::new(
                 "macOS Seatbelt policy 至少需要一个 write root",
@@ -377,11 +431,12 @@ mod macos {
             NetworkPolicy::Deny => "(deny network*)",
             NetworkPolicy::Allow => "(allow network*)",
         };
-        let mut denied_read_roots = vec![std::env::temp_dir()];
+        let temp_dir = std::env::temp_dir();
+        let mut denied_read_roots = vec![std::fs::canonicalize(&temp_dir).unwrap_or(temp_dir)];
         denied_read_roots.extend(protected_reads);
         let mut allowed_read_roots = Vec::new();
         if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-            denied_read_roots.push(home.clone());
+            denied_read_roots.push(std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone()));
             allowed_read_roots.push(home.join(".cargo"));
             allowed_read_roots.push(home.join(".rustup"));
         }
@@ -389,8 +444,7 @@ mod macos {
         allowed_read_roots.extend(write_roots.iter().cloned());
         let denied_read_rules = denied_read_roots
             .iter()
-            .filter_map(|path| std::fs::canonicalize(path).ok())
-            .map(|path| format!("(deny file-read* (subpath {}))", sbpl_quote(&path)))
+            .map(|path| format!("(deny file-read* (subpath {}))", sbpl_quote(path)))
             .collect::<Vec<_>>()
             .join("\n");
         let allowed_read_rules = allowed_read_roots
@@ -491,6 +545,22 @@ mod tests {
         assert!(policy.write_roots.contains(&PathBuf::from("generated")));
     }
 
+    #[test]
+    fn missing_allow_root_still_fails_closed() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let missing = temp.path().join("missing-workspace");
+        let error = canonical_roots(&[missing], "read").unwrap_err();
+        assert!(error.to_string().contains("无法解析沙箱 read root"));
+    }
+
+    #[test]
+    fn missing_deny_root_keeps_stable_absolute_path() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let protected = temp.path().join("ephemeral").join("checkpoint");
+        let resolved = denied_roots(std::slice::from_ref(&protected), "denied read").unwrap();
+        assert_eq!(resolved, vec![protected]);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_profile_denies_network_and_limits_writes() {
@@ -503,6 +573,26 @@ mod tests {
         assert!(profile.contains("(deny network*)"));
         assert!(profile.contains("(deny file-write*)"));
         assert!(profile.contains(&workspace.to_string_lossy().to_string()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_profile_preserves_deny_rule_after_protected_path_disappears() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        let protected = workspace.join(".git").join("refs").join("checkpoint");
+        std::fs::create_dir_all(&protected).unwrap();
+        let canonical_protected = std::fs::canonicalize(&protected).unwrap();
+        let mut policy = SandboxPolicy::workspace(&workspace);
+        policy.deny_path(&canonical_protected);
+        std::fs::remove_dir_all(&protected).unwrap();
+
+        let profile = macos::build_profile(&policy).unwrap();
+        let protected_text = canonical_protected.to_string_lossy();
+        assert!(profile.contains(&format!("(deny file-read* (subpath \"{protected_text}\"))")));
+        assert!(profile.contains(&format!(
+            "(deny file-write* (subpath \"{protected_text}\"))"
+        )));
     }
 
     #[cfg(target_os = "macos")]

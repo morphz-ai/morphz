@@ -8,6 +8,10 @@ broadcast_capacity = 1000
 
 [orchestrator]
 concurrency_limit = 4
+# Sub Agent 可以继续委派，但 Runtime 会限制递归深度和同一 Agent 的活跃任务总量，
+# 防止模型误判“物理隔离”时形成无界派生树。
+max_delegation_depth = 3
+max_active_delegations_per_agent = 8
 # 等待期间每 120 秒提示仍在运行；不会终止任务。设为 0 可关闭提示。
 reply_wait_notice_secs = 120
 tool_timeout_secs = 30
@@ -53,6 +57,7 @@ protected_paths = [
   "**/.git/**",
   "**/.ssh",
   "**/.ssh/**",
+  "morphz.toml",
 ]
 network = false
 # 仅在 mode="custom" 时决定执行边界和审批者。

@@ -77,6 +77,7 @@ impl Default for PermissionConfig {
                 "**/.git/**".to_string(),
                 "**/.ssh".to_string(),
                 "**/.ssh/**".to_string(),
+                "morphz.toml".to_string(),
             ],
             network: false,
             sandbox_mode: SandboxMode::WorkspaceWrite,
@@ -478,6 +479,19 @@ fn expand_protected_paths(roots: &[PathBuf], patterns: &[String]) -> Vec<PathBuf
     for root in roots {
         let escaped_root = Pattern::escape(&root.to_string_lossy().replace('\\', "/"));
         for pattern in patterns {
+            if !pattern
+                .chars()
+                .any(|character| matches!(character, '*' | '?' | '['))
+            {
+                let candidate = if Path::new(pattern).is_absolute() {
+                    PathBuf::from(pattern)
+                } else {
+                    root.join(pattern)
+                };
+                let stable = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+                push_unique(&mut matches, stable);
+                continue;
+            }
             let expression = if Path::new(pattern).is_absolute() {
                 pattern.clone()
             } else {
@@ -540,6 +554,24 @@ mod tests {
                 .unwrap(),
             PathDecision::Allowed(_)
         ));
+    }
+
+    #[test]
+    fn exact_missing_protected_path_is_retained_for_native_sandbox() {
+        let root = TempDir::new().unwrap();
+        let mut config = PermissionConfig {
+            workspace_root: root.path().to_string_lossy().into_owned(),
+            read_roots: Vec::new(),
+            write_roots: Vec::new(),
+            ..PermissionConfig::default()
+        };
+        config
+            .protected_paths
+            .push("future-config.toml".to_string());
+        let profile = PermissionProfile::from_config(&config).unwrap();
+        assert!(profile
+            .existing_protected_paths(&profile.read_roots)
+            .contains(&profile.workspace_root.join("future-config.toml")));
     }
 
     #[test]

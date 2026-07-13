@@ -3,7 +3,7 @@ use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_TOOL_OUTPUT, T
 use crate::llm::{Client, Message, PromptTokenCount};
 use crate::memory::{
     DelegationStatus, EventStore, NewCognitiveContext, NewDelegation, NewSession, QueryFilter,
-    SessionMountKind, SessionStatus, SessionUpdate,
+    SessionMountKind, SessionStatus, SessionStore, SessionUpdate,
 };
 use crate::orchestrator::context::{ContextEngine, ContextView};
 use crate::orchestrator::context_contract::{render_system_contract, render_system_contract_sexpr};
@@ -493,6 +493,7 @@ pub struct Orchestrator {
     session_contexts: DashMap<String, String>,
     context_message_queues: DashMap<String, Arc<Mutex<Vec<Event>>>>,
     context_batch_workers: DashMap<String, Arc<AtomicBool>>,
+    delegation_start_lock: Mutex<()>,
 }
 
 impl Orchestrator {
@@ -546,12 +547,13 @@ impl Orchestrator {
             session_contexts: DashMap::new(),
             context_message_queues: DashMap::new(),
             context_batch_workers: DashMap::new(),
+            delegation_start_lock: Mutex::new(()),
         }
     }
 
     pub async fn start(self: Arc<Self>) -> Result<(), DynError> {
         let store = Arc::clone(&self.store);
-        self.bus.subscribe(
+        self.bus.subscribe_durable(
             "*".to_string(),
             Arc::new(move |event| {
                 let store = Arc::clone(&store);
@@ -674,6 +676,9 @@ impl Orchestrator {
     }
 
     async fn start_delegation(&self, event: &Event) -> Result<(), DynError> {
+        // Limit checks and record creation form one Runtime-local critical section so concurrent
+        // delegate requests cannot all observe the same stale capacity.
+        let _delegation_guard = self.delegation_start_lock.lock().await;
         let delegation_id = required_payload_str(event, "delegation_id")?.to_string();
         let parent_context_id = required_payload_str(event, "parent_context_id")?.to_string();
         let parent_session_id = required_payload_str(event, "parent_session_id")?.to_string();
@@ -698,6 +703,41 @@ impl Orchestrator {
             return Err(format!(
                 "delegate 父路由不一致：Session '{}' 属于 '{}'，请求为 '{}'",
                 parent_session_id, parent.context_id, parent_context_id
+            )
+            .into());
+        }
+        let active_delegations = session_store
+            .list_delegations()
+            .await?
+            .into_iter()
+            .filter(|delegation| {
+                delegation.agent_id == parent.agent_id
+                    && matches!(
+                        delegation.status,
+                        DelegationStatus::Queued | DelegationStatus::Running
+                    )
+            })
+            .count();
+        let active_limit = self
+            .orchestrator_config
+            .max_active_delegations_per_agent
+            .max(1);
+        if active_delegations >= active_limit {
+            return Err(format!(
+                "DELEGATION_CAPACITY_EXCEEDED：Agent '{}' 已有 {} 个活跃 Sub Agent，配置上限为 {}。请等待现有任务完成或显式取消后再委派。",
+                parent.agent_id, active_delegations, active_limit
+            )
+            .into());
+        }
+        let new_depth = self
+            .delegation_depth_for_parent(session_store.as_ref(), &parent_session_id)
+            .await?
+            + 1;
+        let depth_limit = self.orchestrator_config.max_delegation_depth.max(1);
+        if new_depth > depth_limit {
+            return Err(format!(
+                "DELEGATION_DEPTH_EXCEEDED：新 Sub Agent 深度为 {}，配置上限为 {}。请由当前 Agent 完成任务或把结果返回上层，不要继续递归委派。",
+                new_depth, depth_limit
             )
             .into());
         }
@@ -752,10 +792,10 @@ impl Orchestrator {
         self.register_session_context(&child_session_id, &child_context_id);
         let instruction = match success_when {
             Some(success_when) => format!(
-                "You are an isolated Sub Agent delegated by Session '{parent_session_id}'. Complete the task autonomously.\n\nTask:\n{task}\n\nSuccess condition:\n{success_when}\n\nWhen complete, return a self-contained final result. Your result will be delivered to the parent Session; do not address sibling Sessions."
+                "You are a cognitively isolated Sub Agent delegated by Session '{parent_session_id}'. This is not a new process, container, or physical sandbox: you share the same Runtime workspace and permission boundary with the parent. Never modify Runtime configuration to manufacture isolation. Complete the task autonomously.\n\nTask:\n{task}\n\nSuccess condition:\n{success_when}\n\nWhen complete, return a self-contained final result. Your result will be delivered to the parent Session; do not address sibling Sessions."
             ),
             None => format!(
-                "You are an isolated Sub Agent delegated by Session '{parent_session_id}'. Complete the task autonomously.\n\nTask:\n{task}\n\nWhen complete, return a self-contained final result. Your result will be delivered to the parent Session; do not address sibling Sessions."
+                "You are a cognitively isolated Sub Agent delegated by Session '{parent_session_id}'. This is not a new process, container, or physical sandbox: you share the same Runtime workspace and permission boundary with the parent. Never modify Runtime configuration to manufacture isolation. Complete the task autonomously.\n\nTask:\n{task}\n\nWhen complete, return a self-contained final result. Your result will be delivered to the parent Session; do not address sibling Sessions."
             ),
         };
         self.bus
@@ -781,6 +821,27 @@ impl Orchestrator {
             ))
             .await?;
         Ok(())
+    }
+
+    async fn delegation_depth_for_parent(
+        &self,
+        session_store: &dyn SessionStore,
+        parent_session_id: &str,
+    ) -> Result<usize, DynError> {
+        let mut depth = 0usize;
+        let mut cursor = parent_session_id.to_string();
+        let mut seen = HashSet::new();
+        while let Some(delegation) = session_store
+            .get_delegation_by_child_session(&cursor)
+            .await?
+        {
+            if !seen.insert(delegation.id.clone()) {
+                return Err("Delegation 父链出现循环，拒绝继续派生".into());
+            }
+            depth = depth.saturating_add(1);
+            cursor = delegation.parent_session_id;
+        }
+        Ok(depth)
     }
 
     async fn handle_spawn_event(&self, event: Event) -> Result<(), DynError> {
@@ -2617,6 +2678,7 @@ impl Orchestrator {
             }
         }
         let mut deduplicated_context_tx_ids = Vec::new();
+        let mut deduplicated_delegate_ids = Vec::new();
         let mut rejected_context_tx_ids = Vec::new();
         let mut context_tx_batch_error = None;
         let mut context_tx_batch_status = None;
@@ -2670,6 +2732,28 @@ impl Orchestrator {
                 attempt_id,
                 deduplicated = deduplicated_context_tx_ids.len(),
                 "同一 assistant response 包含重复 context_tx；已规范化去重"
+            );
+        }
+        let mut seen_delegations = HashSet::new();
+        selected_tool_calls.retain(|call| {
+            if call.func_name != "delegate" {
+                return true;
+            }
+            let key = normalized_delegate_key(&call.arguments)
+                .unwrap_or_else(|| call.arguments.trim().to_string());
+            if seen_delegations.insert(key) {
+                true
+            } else {
+                deduplicated_delegate_ids.push(call.id.clone());
+                false
+            }
+        });
+        if !deduplicated_delegate_ids.is_empty() {
+            tracing::warn!(
+                session_id,
+                attempt_id,
+                deduplicated = deduplicated_delegate_ids.len(),
+                "同一 assistant response 包含语义相同的 delegate；已去重以避免重复派生"
             );
         }
         if !rejected_context_tx_ids.is_empty() {
@@ -2737,7 +2821,8 @@ impl Orchestrator {
             .iter()
             .map(tool_call_activity_preview)
             .collect::<Vec<_>>();
-        let deduplicated_count = deduplicated_context_tx_ids.len();
+        let deduplicated_count =
+            deduplicated_context_tx_ids.len() + deduplicated_delegate_ids.len();
         let unavailable_call_ids = unavailable_tool_calls
             .iter()
             .map(|call| call.id.clone())
@@ -2771,6 +2856,10 @@ impl Orchestrator {
                     (
                         "deduplicated_context_tx_ids".to_string(),
                         json!(deduplicated_context_tx_ids),
+                    ),
+                    (
+                        "deduplicated_delegate_ids".to_string(),
+                        json!(deduplicated_delegate_ids),
                     ),
                     (
                         "rejected_context_tx_ids".to_string(),
@@ -2953,6 +3042,15 @@ impl Orchestrator {
                                                 "timeout",
                                             ),
                                         };
+                                        let wake_policy = if call.func_name == "delegate"
+                                            && tool_status == "success"
+                                            && delegation_mode_from_arguments(&call.arguments)
+                                                != "detached"
+                                        {
+                                            "delegation_result"
+                                        } else {
+                                            "immediate"
+                                        };
                                         let output_empty = output.trim().is_empty();
                                         Event::new(
                                             format!("output_{}_{}", attempt_id, call.id),
@@ -2966,6 +3064,7 @@ impl Orchestrator {
                                                 ("tool_call_id".to_string(), json!(call.id)),
                                                 ("tool_name".to_string(), json!(call.func_name)),
                                                 ("tool_status".to_string(), json!(tool_status)),
+                                                ("wake_policy".to_string(), json!(wake_policy)),
                                                 ("output_empty".to_string(), json!(output_empty)),
                                                 ("text".to_string(), json!(output)),
                                             ]
@@ -3028,9 +3127,20 @@ impl Orchestrator {
                 outcome.context_tx_succeeded = context_tx_output_succeeded(output);
             }
         }
-        let output_count = outputs.len();
+        let wake_index = options
+            .wake_on_output
+            .then(|| {
+                outputs.iter().rposition(|output| {
+                    output
+                        .payload
+                        .get("wake_policy")
+                        .and_then(|value| value.as_str())
+                        != Some("delegation_result")
+                })
+            })
+            .flatten();
         for (index, output) in outputs.into_iter().enumerate() {
-            if options.wake_on_output && index + 1 == output_count {
+            if wake_index == Some(index) {
                 self.bus.publish(output).await?;
             } else {
                 self.store.append(output).await?;
@@ -3291,6 +3401,46 @@ fn infer_tool_status(text: &str) -> &'static str {
     } else {
         "success"
     }
+}
+
+fn delegation_mode_from_arguments(arguments: &str) -> &str {
+    serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("mode")
+                .and_then(|mode| mode.as_str())
+                .map(ToOwned::to_owned)
+        })
+        .map(|mode| {
+            if mode == "detached" {
+                "detached"
+            } else {
+                "attached"
+            }
+        })
+        .unwrap_or("attached")
+}
+
+fn normalized_delegate_key(arguments: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
+    let task = value.get("task")?.as_str()?.trim();
+    let success_when = value
+        .get("success_when")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .trim();
+    let context_scope = value
+        .get("context_scope")
+        .and_then(|value| value.as_str())
+        .unwrap_or("current_session");
+    let mode = value
+        .get("mode")
+        .and_then(|value| value.as_str())
+        .unwrap_or("attached");
+    Some(format!(
+        "{task}\u{1f}{success_when}\u{1f}{context_scope}\u{1f}{mode}"
+    ))
 }
 
 fn context_tx_receipt_for_event(event: &Event) -> ContextTxReceipt {

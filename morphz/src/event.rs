@@ -63,6 +63,7 @@ pub struct Subscription {
     id: String,
     topic_pattern: String,
     handler: EventHandler,
+    durable: bool,
 }
 
 impl Subscription {
@@ -79,6 +80,7 @@ pub struct InMemoryEventBus {
     sub_counter: AtomicU64,
     error_handler: Arc<dyn Fn(Box<dyn std::error::Error + Send + Sync>, Event) + Send + Sync>,
     semaphore: Arc<tokio::sync::Semaphore>,
+    durable_lock: Arc<tokio::sync::Mutex<()>>,
     sync_handler_timeout: std::time::Duration,
 }
 
@@ -105,6 +107,7 @@ impl InMemoryEventBus {
                 tracing::error!(event_id = %ev.id, error = ?err, "事件总线错误");
             }),
             semaphore: Arc::new(tokio::sync::Semaphore::new(limit)),
+            durable_lock: Arc::new(tokio::sync::Mutex::new(())),
             sync_handler_timeout,
         }
     }
@@ -117,6 +120,22 @@ impl InMemoryEventBus {
     }
 
     pub fn subscribe(&self, topic_pattern: String, handler: EventHandler) -> String {
+        self.add_subscription(topic_pattern, handler, false)
+    }
+
+    /// Register a persistence boundary that must complete successfully before an event is
+    /// dispatched to business subscribers. Durable handlers are serialized across concurrent
+    /// publishers and are deliberately not subject to the best-effort audit timeout.
+    pub fn subscribe_durable(&self, topic_pattern: String, handler: EventHandler) -> String {
+        self.add_subscription(topic_pattern, handler, true)
+    }
+
+    fn add_subscription(
+        &self,
+        topic_pattern: String,
+        handler: EventHandler,
+        durable: bool,
+    ) -> String {
         let id_val = self.sub_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let sub_id = format!("sub_{}", id_val);
 
@@ -124,6 +143,7 @@ impl InMemoryEventBus {
             id: sub_id.clone(),
             topic_pattern,
             handler,
+            durable,
         });
 
         self.subscriptions.insert(sub_id.clone(), sub);
@@ -135,13 +155,16 @@ impl InMemoryEventBus {
     }
 
     pub async fn publish(&self, ev: Event) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut durable_subs = Vec::new();
         let mut sync_subs = Vec::new();
         let mut async_subs = Vec::new();
 
         for entry in self.subscriptions.iter() {
             let sub = entry.value();
             if match_topic(&sub.topic_pattern, &ev.topic) {
-                if sub.topic_pattern == "*" {
+                if sub.durable {
+                    durable_subs.push(Arc::clone(sub));
+                } else if sub.topic_pattern == "*" {
                     sync_subs.push(Arc::clone(sub));
                 } else {
                     async_subs.push(Arc::clone(sub));
@@ -149,7 +172,15 @@ impl InMemoryEventBus {
             }
         }
 
-        // 1. 同步执行全局审计监听器
+        // 1. 先通过可靠、串行的持久化边界。失败时不得继续派发业务事件。
+        if !durable_subs.is_empty() {
+            let _durable_guard = self.durable_lock.lock().await;
+            for sub in durable_subs {
+                (sub.handler)(ev.clone()).await?;
+            }
+        }
+
+        // 2. 同步执行 best-effort 全局审计监听器。它们不能承担持久化职责。
         for sub in sync_subs {
             let handler = Arc::clone(&sub.handler);
             let ev_clone = ev.clone();
@@ -172,7 +203,7 @@ impl InMemoryEventBus {
             }
         }
 
-        // 2. 异步派发其他业务监听器
+        // 3. 异步派发其他业务监听器
         for sub in async_subs {
             let handler = Arc::clone(&sub.handler);
             let ev_clone = ev.clone();
@@ -430,5 +461,86 @@ mod tests {
         })
         .await
         .expect("business subscriber should run after audit timeout");
+    }
+
+    #[tokio::test]
+    async fn durable_subscriber_serializes_concurrent_publishers() {
+        let bus = Arc::new(InMemoryEventBus::new());
+        let active = Arc::new(AtomicU64::new(0));
+        let max_active = Arc::new(AtomicU64::new(0));
+
+        let active_handler = Arc::clone(&active);
+        let max_handler = Arc::clone(&max_active);
+        bus.subscribe_durable(
+            "*".to_string(),
+            Arc::new(move |_event| {
+                let active = Arc::clone(&active_handler);
+                let max_active = Arc::clone(&max_handler);
+                Box::pin(async move {
+                    let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_active.fetch_max(current, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }),
+        );
+
+        let mut publishers = Vec::new();
+        for index in 0..3 {
+            let bus = Arc::clone(&bus);
+            publishers.push(tokio::spawn(async move {
+                bus.publish(Event::new(
+                    format!("durable-{index}"),
+                    "test".to_string(),
+                    "test".to_string(),
+                    "chat/test".to_string(),
+                    serde_json::Map::new(),
+                ))
+                .await
+                .unwrap();
+            }));
+        }
+        for publisher in publishers {
+            publisher.await.unwrap();
+        }
+
+        assert_eq!(max_active.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn durable_failure_prevents_business_dispatch() {
+        let bus = Arc::new(InMemoryEventBus::new());
+        let business_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        bus.subscribe_durable(
+            "*".to_string(),
+            Arc::new(move |_event| {
+                Box::pin(async move { Err(std::io::Error::other("ledger unavailable").into()) })
+            }),
+        );
+        let business_seen_handler = Arc::clone(&business_seen);
+        bus.subscribe(
+            "chat/test".to_string(),
+            Arc::new(move |_event| {
+                let business_seen = Arc::clone(&business_seen_handler);
+                Box::pin(async move {
+                    business_seen.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
+            }),
+        );
+
+        let result = bus
+            .publish(Event::new(
+                "durable-failure".to_string(),
+                "test".to_string(),
+                "test".to_string(),
+                "chat/test".to_string(),
+                serde_json::Map::new(),
+            ))
+            .await;
+        assert!(result.is_err());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(!business_seen.load(Ordering::SeqCst));
     }
 }
