@@ -77,8 +77,9 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    morphz exec --session=session_123 -- 只执行这一轮并输出最终答复
    ```
 
-   裸启动和裸提示词会在所选共享 Context 中新建一个 Session。恢复同一个通信通道使用
-   `--session=ID` 或 `morphz session resume ID`；它不是“恢复记忆”，因为新 Session
+   裸启动和裸提示词会在所选共享 Context 中新建一个 Session。`morphz resume` 默认恢复
+   最近活跃的 Session；指定通信通道可使用 `morphz resume ID`、`--session=ID` 或
+   `morphz session resume ID`。它不是“恢复记忆”，因为新 Session
    本来就能读取共享 Context 的认知结构。`morphz session create --independent` 会从
    当前 Mind snapshot 创建一个隔离 Context，再把新 Session 挂载上去。可用
    `morphz context/session/agent/job --help` 查看总览，或直接运行 `morphz --help`。

@@ -481,6 +481,7 @@ pub fn morphz_command_line_parser() -> CommandLineParser {
     let mut parser = CommandLineParser::new();
     for path in [
         &["exec"][..],
+        &["resume"],
         &["serve"],
         &["context"],
         &["context", "show"],
@@ -770,8 +771,21 @@ mod tests {
     }
 
     #[test]
-    fn morphz_resume_is_session_scoped_instead_of_a_top_level_continue() {
+    fn morphz_resume_defaults_to_last_while_continue_remains_prompt_text() {
         let parser = morphz_command_line_parser();
+        let default_resume = parser.parse(["resume"]).unwrap();
+        assert_eq!(default_resume.command_path(), ["resume"]);
+        assert!(default_resume.prompt_args().is_empty());
+
+        let explicit_resume = parser
+            .parse(["resume", "session_123", "继续刚才的发布任务"])
+            .unwrap();
+        assert_eq!(explicit_resume.command_path(), ["resume"]);
+        assert_eq!(
+            explicit_resume.prompt_args(),
+            ["session_123", "继续刚才的发布任务"]
+        );
+
         let resume = parser
             .parse(["session", "resume", "--last", "继续刚才的发布任务"])
             .unwrap();

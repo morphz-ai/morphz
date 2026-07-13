@@ -26,15 +26,15 @@ USAGE:
 
 SESSION SEMANTICS:
   A bare invocation creates a new Session mounted in the selected shared Context.
-  --session=ID and `session resume` reattach the same Session identity.
+  `resume`, --session=ID and `session resume` reattach the same Session identity.
 
 CORE COMMANDS:
   exec PROMPT...                 Run one prompt and print the final reply
+  resume [ID] [PROMPT...]        Reattach ID, or the most recently active Session when omitted
   serve                          Start the HTTP/WebSocket server
   context list|show|status       Inspect Cognitive Contexts
   session list|show|create       Manage Sessions
-  session resume ID [PROMPT...]  Reattach an existing Session
-  session resume --last          Reattach the most recently active Session
+  session resume [ID] [PROMPT...] Reattach ID, or the most recently active Session when omitted
   agent list|show|create         Manage Agents
   job list|cancel                Inspect or cancel Sub Agent jobs
   config show|check|path         Inspect configuration
@@ -331,7 +331,7 @@ fn protect_runtime_files(app_config: &mut config::AppConfig, config_path: &Path)
 fn command_needs_llm(invocation: &Invocation) -> bool {
     matches!(
         invocation.command_path().join(" ").as_str(),
-        "" | "exec" | "serve" | "session resume"
+        "" | "exec" | "resume" | "serve" | "session resume"
     )
 }
 
@@ -425,7 +425,7 @@ async fn dispatch_runtime_command(
             shutdown_signal().await;
             Ok(())
         }
-        "session resume" => {
+        "resume" | "session resume" => {
             let (session, prompt) = resolve_resumed_session(&runtime, &invocation).await?;
             run_interactive(
                 runtime,
@@ -597,26 +597,31 @@ async fn resolve_resumed_session(
     invocation: &Invocation,
 ) -> Result<(SessionHandle, String), AppError> {
     let mut prompt_args = invocation.prompt_args().to_vec();
-    let session_id = if switch_enabled(invocation, "last")? {
-        runtime
-            .list_sessions(false)
-            .await?
-            .into_iter()
-            .find(|session| {
-                option_value(invocation, "context")
-                    .is_none_or(|context| session.context_id == context)
-                    && option_value(invocation, "agent")
-                        .is_none_or(|agent| session.agent_id == agent)
-            })
-            .map(|session| session.id)
-            .ok_or("没有可恢复的活跃 Session")?
-    } else if let Some(session_id) = option_value(invocation, "session") {
-        session_id.to_string()
-    } else if !prompt_args.is_empty() {
-        prompt_args.remove(0)
-    } else {
-        return Err("用法: morphz session resume <ID> [PROMPT...] 或 --last".into());
-    };
+    let use_last = switch_enabled(invocation, "last")?;
+    if use_last && option_value(invocation, "session").is_some() {
+        return Err("resume 不能同时使用 --last 和 --session".into());
+    }
+    let session_id =
+        if use_last || (option_value(invocation, "session").is_none() && prompt_args.is_empty()) {
+            runtime
+                .list_sessions(false)
+                .await?
+                .into_iter()
+                .find(|session| {
+                    option_value(invocation, "context")
+                        .is_none_or(|context| session.context_id == context)
+                        && option_value(invocation, "agent")
+                            .is_none_or(|agent| session.agent_id == agent)
+                })
+                .map(|session| session.id)
+                .ok_or("没有可恢复的活跃 Session")?
+        } else if let Some(session_id) = option_value(invocation, "session") {
+            session_id.to_string()
+        } else if !prompt_args.is_empty() {
+            prompt_args.remove(0)
+        } else {
+            unreachable!("无位置参数时已按最近 Session 处理")
+        };
     let record = runtime
         .get_session(&session_id)
         .await?
@@ -1558,8 +1563,8 @@ mod tests {
     use super::{
         apply_cli_config, command_needs_llm, console_message_from_event, create_session_command,
         format_tool_call_activity, parse_terminal_approval_input, read_console_input,
-        select_or_create_console_session, wait_for_session_reply, ConsoleInput, ConsoleMessageKind,
-        OfflineClient,
+        resolve_resumed_session, select_or_create_console_session, wait_for_session_reply,
+        ConsoleInput, ConsoleMessageKind, OfflineClient,
     };
     use morphz::approval::ApprovalDecision;
     use morphz::cli::morphz_command_line_parser;
@@ -1752,6 +1757,7 @@ mod tests {
         assert!(command_needs_llm(
             &parser.parse(["session", "resume", "s1"]).unwrap()
         ));
+        assert!(command_needs_llm(&parser.parse(["resume"]).unwrap()));
         assert!(!command_needs_llm(
             &parser.parse(["session", "list"]).unwrap()
         ));
@@ -1785,6 +1791,24 @@ mod tests {
         .unwrap();
         let first_record = first.record().await.unwrap().unwrap();
         assert_eq!(first_record.context_id, "context-default");
+
+        let (latest, prompt) =
+            resolve_resumed_session(&runtime, &parser.parse(["resume"]).unwrap())
+                .await
+                .unwrap();
+        assert_eq!(latest.id(), first.id());
+        assert!(prompt.is_empty());
+
+        let (explicit_resume, prompt) = resolve_resumed_session(
+            &runtime,
+            &parser
+                .parse(["resume", first.id(), "继续当前任务"])
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(explicit_resume.id(), first.id());
+        assert_eq!(prompt, "继续当前任务");
 
         let explicit = parser.parse([format!("--session={}", first.id())]).unwrap();
         let resumed = select_or_create_console_session(
