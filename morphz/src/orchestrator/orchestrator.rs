@@ -14,6 +14,7 @@ use chrono::Utc;
 use dashmap::DashMap;
 use serde::Deserialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -65,6 +66,7 @@ Context 的状态分为三个权限域：
 11. kernel.turn-control 描述当前用户回合的模型求值进度。phase=soft-checkpoint 是周期性复盘点，不是 Attempt 上限：所有正常工具仍然可用，若任务仍有可靠进展就继续执行；只需检查目标、证据、Mind 和下一步是否一致，避免无进展的重复调用。一次模型响应里并行调用多个工具只计为一次 Attempt。
 12. kernel.wake 说明本次为何被唤醒。独立 context_tx 成功后的 context-transaction-result 会触发一次冷却：除非仍处于 critical，否则本次不再提供 context_tx，必须 reply 或执行必要的物理动作。
 13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。相互独立的文件读取必须在同一响应中并行调用；已经进入 Inbox 且 sha256 未被 file_change 改变的内容不得重复 read。完成必要定位后立即修改并验证，不要在反复扫描与阅读中消耗无进展的模型求值。
+14. exec 回执中的 execution、process_status、exit_code、task_status 和 effective_boundary 是 Runtime 观测到的物理事实；不得用命令意图或自己的预期取代它们。exec 转入后台后，用 task_status/list_tasks 做必要的一次查询，或调用 wait_task 后 reply(suppress) 进入事件驱动等待；不得用 sleep、ps 或重复读取空日志轮询。不得把 token/key 字面量写入命令、进程参数、Mind 或 Ledger；只能由使用者预先配置 Runtime 环境变量，再通过 requested_permissions.secret_env 按变量名申请对单个子进程注入。
 
 Context 的修改是你的元认知行为；read/write/exec/delegate 等工具是对外部世界的行为。保持二者边界清晰。"#;
 
@@ -553,11 +555,16 @@ impl Orchestrator {
 
     pub async fn start(self: Arc<Self>) -> Result<(), DynError> {
         let store = Arc::clone(&self.store);
+        let persist_full_context_inspect = self.orchestrator_config.persist_full_context_inspect;
         self.bus.subscribe_durable(
             "*".to_string(),
-            Arc::new(move |event| {
+            Arc::new(move |mut event| {
                 let store = Arc::clone(&store);
                 Box::pin(async move {
+                    if !persist_full_context_inspect {
+                        compact_context_inspect_for_persistence(&mut event);
+                    }
+                    redact_control_plane_event_for_persistence(&mut event);
                     store.append(event).await?;
                     Ok(())
                 })
@@ -3052,24 +3059,28 @@ impl Orchestrator {
                                             "immediate"
                                         };
                                         let output_empty = output.trim().is_empty();
+                                        let mut payload = vec![
+                                            ("context_id".to_string(), json!(context_id)),
+                                            ("session_id".to_string(), json!(session_id)),
+                                            ("attempt_id".to_string(), json!(attempt_id)),
+                                            ("tool_call_id".to_string(), json!(call.id)),
+                                            ("tool_name".to_string(), json!(call.func_name)),
+                                            ("tool_status".to_string(), json!(tool_status)),
+                                            ("wake_policy".to_string(), json!(wake_policy)),
+                                            ("output_empty".to_string(), json!(output_empty)),
+                                            ("text".to_string(), json!(output)),
+                                        ]
+                                        .into_iter()
+                                        .collect::<serde_json::Map<_, _>>();
+                                        if call.func_name == "exec" {
+                                            extend_exec_output_facts(&mut payload, &output);
+                                        }
                                         Event::new(
                                             format!("output_{}_{}", attempt_id, call.id),
                                             "System-Executor".to_string(),
                                             TYPE_TOOL_OUTPUT.to_string(),
                                             "chat/tool_output".to_string(),
-                                            vec![
-                                                ("context_id".to_string(), json!(context_id)),
-                                                ("session_id".to_string(), json!(session_id)),
-                                                ("attempt_id".to_string(), json!(attempt_id)),
-                                                ("tool_call_id".to_string(), json!(call.id)),
-                                                ("tool_name".to_string(), json!(call.func_name)),
-                                                ("tool_status".to_string(), json!(tool_status)),
-                                                ("wake_policy".to_string(), json!(wake_policy)),
-                                                ("output_empty".to_string(), json!(output_empty)),
-                                                ("text".to_string(), json!(output)),
-                                            ]
-                                            .into_iter()
-                                            .collect(),
+                                            payload,
                                         )
                                     })
                                     .await
@@ -3369,6 +3380,80 @@ impl Orchestrator {
     }
 }
 
+fn compact_context_inspect_for_persistence(event: &mut Event) {
+    if event.topic != "chat/context_inspect" {
+        return;
+    }
+    let mut components = serde_json::Map::new();
+    for key in ["text", "messages", "mind", "inbox"] {
+        let Some(value) = event.payload.remove(key) else {
+            continue;
+        };
+        let encoded = serde_json::to_vec(&value).unwrap_or_default();
+        let chars = value.as_str().map_or_else(
+            || String::from_utf8_lossy(&encoded).chars().count(),
+            |text| text.chars().count(),
+        );
+        components.insert(
+            key.to_string(),
+            json!({
+                "sha256": format!("{:x}", Sha256::digest(&encoded)),
+                "bytes": encoded.len(),
+                "chars": chars,
+                "items": value.as_array().map(Vec::len),
+            }),
+        );
+    }
+    event
+        .payload
+        .insert("storage".to_string(), json!("compact-v1"));
+    event.payload.insert(
+        "components".to_string(),
+        serde_json::Value::Object(components),
+    );
+}
+
+fn redact_control_plane_event_for_persistence(event: &mut Event) {
+    let control_plane = matches!(
+        event.topic.as_str(),
+        "chat/assistant_call"
+            | "chat/context_inspect"
+            | "runtime/batch_assistant_call"
+            | "runtime/tool_calls_selected"
+            | "runtime/approval_requested"
+            | "runtime/approval_decision"
+    ) || event.topic.starts_with("task/output/");
+    if !control_plane {
+        return;
+    }
+    for value in event.payload.values_mut() {
+        redact_control_plane_value(value);
+    }
+}
+
+fn redact_control_plane_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => {
+            *text = crate::tool::redact_sensitive_text(text);
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_control_plane_value(value);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                if is_sensitive_argument_key(key) {
+                    *value = json!("[REDACTED_SECRET]");
+                } else {
+                    redact_control_plane_value(value);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn context_tx_output_succeeded(event: &Event) -> bool {
     if event
         .payload
@@ -3400,6 +3485,28 @@ fn infer_tool_status(text: &str) -> &'static str {
         "rejected"
     } else {
         "success"
+    }
+}
+
+fn extend_exec_output_facts(
+    payload: &mut serde_json::Map<String, serde_json::Value>,
+    output: &str,
+) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(output) else {
+        return;
+    };
+    for key in [
+        "execution",
+        "process_status",
+        "exit_code",
+        "task_status",
+        "task_id",
+        "effective_boundary",
+        "artifact_path",
+    ] {
+        if let Some(value) = value.get(key) {
+            payload.insert(key.to_string(), value.clone());
+        }
     }
 }
 
@@ -3573,10 +3680,13 @@ mod tests {
 
     use super::{
         baseline_system_prompt, classify_reply_response, cognitive_sexpr_vm_system_prompt,
-        compose_system_prompt, render_system_contract, semantic_sexpr_vm_system_prompt,
-        should_force_final_for_maintenance, tool_call_activity_preview, ReadTurnGuard,
-        ReplyDecision, SystemPromptMode, AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        compact_context_inspect_for_persistence, compose_system_prompt, extend_exec_output_facts,
+        redact_control_plane_event_for_persistence, render_system_contract,
+        semantic_sexpr_vm_system_prompt, should_force_final_for_maintenance,
+        tool_call_activity_preview, ReadTurnGuard, ReplyDecision, SystemPromptMode,
+        AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
+    use crate::event::Event;
 
     #[test]
     fn system_prompt_has_a_deterministic_generated_contract_prefix() {
@@ -3824,5 +3934,87 @@ mod tests {
         assert!(guard
             .reserve(r#"{"path":"src/main.rs"}"#, "read-other-file")
             .is_none());
+    }
+
+    #[test]
+    fn compact_context_inspect_persists_hashes_instead_of_duplicate_prompt_bodies() {
+        let mut event = Event::new(
+            "inspect-1".to_string(),
+            "kernel".to_string(),
+            "proposal".to_string(),
+            "chat/context_inspect".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!("context-1")),
+                ("text".to_string(), json!("(context large-body)")),
+                (
+                    "messages".to_string(),
+                    json!([{"role":"user","content":"hello"}]),
+                ),
+                ("mind".to_string(), json!({"frames": ["a", "b"]})),
+                ("inbox".to_string(), json!([{"ref":"@e1"}])),
+                ("pressure".to_string(), json!({"level":"warning"})),
+            ]),
+        );
+
+        compact_context_inspect_for_persistence(&mut event);
+
+        assert_eq!(event.payload["storage"], "compact-v1");
+        assert_eq!(event.payload["context_id"], "context-1");
+        assert_eq!(event.payload["pressure"]["level"], "warning");
+        for key in ["text", "messages", "mind", "inbox"] {
+            assert!(!event.payload.contains_key(key));
+            assert_eq!(
+                event.payload["components"][key]["sha256"]
+                    .as_str()
+                    .unwrap()
+                    .len(),
+                64
+            );
+            assert!(event.payload["components"][key]["bytes"].as_u64().unwrap() > 0);
+        }
+    }
+
+    #[test]
+    fn control_plane_audit_redacts_secret_values_and_exec_facts_are_first_class() {
+        let mut event = Event::new(
+            "selected-1".to_string(),
+            "orchestrator".to_string(),
+            "tool_calls".to_string(),
+            "runtime/tool_calls_selected".to_string(),
+            serde_json::Map::from_iter([(
+                "calls".to_string(),
+                json!([{
+                    "name":"exec",
+                    "arguments": {
+                        "authorization":"Bearer abc.def-123",
+                        "command":"curl -H 'Authorization: Bearer abc.def-123'"
+                    }
+                }]),
+            )]),
+        );
+        redact_control_plane_event_for_persistence(&mut event);
+        let stored = serde_json::to_string(&event.payload).unwrap();
+        assert!(!stored.contains("abc.def-123"));
+        assert!(stored.contains("REDACTED"));
+
+        let mut payload = serde_json::Map::new();
+        extend_exec_output_facts(
+            &mut payload,
+            &json!({
+                "kind":"exec_result",
+                "execution":"completed",
+                "process_status":"failed",
+                "exit_code":7,
+                "effective_boundary":{"network_enabled":false},
+                "artifact_path":"/tmp/task.log",
+                "output":"boom"
+            })
+            .to_string(),
+        );
+        assert_eq!(payload["process_status"], "failed");
+        assert_eq!(payload["exit_code"], 7);
+        assert_eq!(payload["effective_boundary"]["network_enabled"], false);
+        assert_eq!(payload["artifact_path"], "/tmp/task.log");
+        assert!(!payload.contains_key("output"));
     }
 }

@@ -79,6 +79,9 @@ pub struct OrchestratorConfig {
     pub session_batch_coalesce_ms: u64,
     /// 一次合并求值最多包含的 ready Session 数。
     pub max_sessions_per_evaluation: usize,
+    /// 是否在 Ledger 中保留完整 Context Encoding 与模型消息。
+    /// 默认仅保存内容哈希和尺寸；实时事件订阅仍能看到完整内容。
+    pub persist_full_context_inspect: bool,
 }
 
 impl Default for OrchestratorConfig {
@@ -99,6 +102,7 @@ impl Default for OrchestratorConfig {
             merged_evaluation_enabled: false,
             session_batch_coalesce_ms: 25,
             max_sessions_per_evaluation: 8,
+            persist_full_context_inspect: false,
         }
     }
 }
@@ -264,6 +268,10 @@ pub struct BackgroundTaskConfig {
     pub timeout_notify_enabled: bool,
     pub timeout_notify_secs: u64,
     pub max_output_buffer_bytes: usize,
+    /// 后台 stdout/stderr 合并后再发布事件的窗口，避免逐行放大 Ledger。
+    pub output_event_coalesce_ms: u64,
+    /// 单条后台输出事件的最大字符数；完整内容始终保留在 artifact。
+    pub max_output_event_chars: usize,
     /// exec 完整原始输出归档目录；Context 中只放受控 preview 和此稳定文件引用
     pub artifact_dir: String,
 }
@@ -274,6 +282,8 @@ impl Default for BackgroundTaskConfig {
             timeout_notify_enabled: true,
             timeout_notify_secs: 300,
             max_output_buffer_bytes: 65_536,
+            output_event_coalesce_ms: 500,
+            max_output_event_chars: 8_192,
             artifact_dir: ".morphz/artifacts".to_string(),
         }
     }

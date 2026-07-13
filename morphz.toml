@@ -30,6 +30,8 @@ max_context_transactions_per_turn = 6
 merged_evaluation_enabled = false
 session_batch_coalesce_ms = 25
 max_sessions_per_evaluation = 8
+# Context inspect 实时事件仍包含完整 Encoding；Ledger 默认只持久化哈希和尺寸，避免重复占用数据库。
+persist_full_context_inspect = false
 
 [memory]
 sqlite_pool_size = 8
@@ -72,4 +74,7 @@ shell_environment_policy = "remove_sensitive"
 timeout_notify_enabled = true
 timeout_notify_secs = 300
 max_output_buffer_bytes = 65536
+# 完整 stdout/stderr 始终写入 artifact；Ledger 只保留合并后的有界事件。
+output_event_coalesce_ms = 500
+max_output_event_chars = 8192
 artifact_dir = ".morphz/artifacts"

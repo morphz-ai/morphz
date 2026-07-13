@@ -384,7 +384,7 @@ async fn build_orchestrator_with_config(
 
 async fn build_orchestrator_with_config_and_reply_mode(
     responses: Vec<Response>,
-    orchestrator_config: morphz::config::OrchestratorConfig,
+    mut orchestrator_config: morphz::config::OrchestratorConfig,
     auto_reply: bool,
 ) -> (
     Arc<InMemoryEventBus>,
@@ -393,6 +393,9 @@ async fn build_orchestrator_with_config_and_reply_mode(
     Arc<MockClient>,
     TempDir,
 ) {
+    // Most integration assertions intentionally inspect the exact model request. Production
+    // defaults to compact, content-addressed audit records; tests opt into the diagnostic form.
+    orchestrator_config.persist_full_context_inspect = true;
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("attempt_loop.db");
     let bus = Arc::new(InMemoryEventBus::new());
@@ -2237,7 +2240,12 @@ async fn test_edit_file_change_becomes_next_attempt_observation() {
             tool_calls: Vec::new(),
         },
     ]));
-    let config = morphz::config::OrchestratorConfig::default();
+    // This test intentionally inspects the full diagnostic snapshot. Production defaults persist
+    // only compact context_inspect metadata to avoid duplicating every encoded prompt in Ledger.
+    let config = morphz::config::OrchestratorConfig {
+        persist_full_context_inspect: true,
+        ..Default::default()
+    };
     let engine = Arc::new(ContextEngine::new(
         Arc::clone(&store) as Arc<dyn EventStore>,
         config.clone(),

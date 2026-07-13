@@ -17,7 +17,7 @@ use crate::orchestrator::orchestrator::Orchestrator;
 use crate::permission::{PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode};
 use crate::tool::{
     DelegateTool, EditFileTool, ExecuteCommandTool, KillTaskTool, ListFilesTool, ListSkillsTool,
-    ReadFileTool, Registry, SearchTool, WriteFileTool,
+    ListTasksTool, ReadFileTool, Registry, SearchTool, TaskStatusTool, WaitTaskTool, WriteFileTool,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -227,6 +227,9 @@ fn register_default_tools(
         Arc::clone(permissions),
         config.orchestrator.tool_timeout_secs,
     )));
+    registry.register(Arc::new(ListTasksTool));
+    registry.register(Arc::new(TaskStatusTool));
+    registry.register(Arc::new(WaitTaskTool));
     registry.register(Arc::new(KillTaskTool));
     if !policy.coding_eval {
         registry.register(Arc::new(DelegateTool::new(Arc::clone(bus))));

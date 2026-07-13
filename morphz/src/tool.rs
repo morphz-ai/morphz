@@ -6,10 +6,12 @@ use crate::permission::{
     ApprovalContext, FilesystemAccess, PermissionBroker, PermissionConfig, PermissionProfile,
     SandboxMode, ShellEnvironmentPolicy,
 };
-use crate::sandbox::{NativeSandbox, NetworkPolicy, SandboxPolicy, ShellRequest};
+use crate::sandbox::{
+    EnforcementStatus, NativeSandbox, NetworkPolicy, SandboxPolicy, ShellRequest,
+};
 use dashmap::DashMap;
 use glob::Pattern;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
 use std::fs::{OpenOptions, Permissions};
@@ -113,6 +115,23 @@ impl Registry {
 // ==========================================
 // 工业级后台长任务托管机制
 // ==========================================
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackgroundTaskStatus {
+    Starting,
+    Running,
+    KillRequested,
+    Succeeded,
+    Failed,
+    Killed,
+}
+
+impl BackgroundTaskStatus {
+    fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed | Self::Killed)
+    }
+}
+
 pub struct BackgroundTask {
     pub id: String,
     pub cmd_str: String,
@@ -123,6 +142,14 @@ pub struct BackgroundTask {
     pub last_output_at: chrono::DateTime<chrono::Utc>,
     pub output_bytes: usize,
     pub timeout_notified: bool,
+    pub status: BackgroundTaskStatus,
+    pub effective_network: bool,
+    pub secret_env: Vec<String>,
+    pub sandbox_backend: String,
+    pub sandbox_status: String,
+    pub artifact_path: String,
+    pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub exit_code: Option<i32>,
 }
 
 static BACKGROUND_TASKS: OnceLock<Arc<DashMap<String, BackgroundTask>>> = OnceLock::new();
@@ -131,13 +158,62 @@ pub fn get_tasks_map() -> &'static Arc<DashMap<String, BackgroundTask>> {
     BACKGROUND_TASKS.get_or_init(|| Arc::new(DashMap::new()))
 }
 
+const MAX_RETAINED_BACKGROUND_TASKS: usize = 256;
+
+fn prune_background_task_history() {
+    let tasks = get_tasks_map();
+    if tasks.len() <= MAX_RETAINED_BACKGROUND_TASKS {
+        return;
+    }
+    let mut completed = tasks
+        .iter()
+        .filter(|entry| entry.status.is_terminal())
+        .map(|entry| (entry.id.clone(), entry.ended_at.unwrap_or(entry.started_at)))
+        .collect::<Vec<_>>();
+    completed.sort_by_key(|(_, ended_at)| *ended_at);
+    let remove_count = tasks.len().saturating_sub(MAX_RETAINED_BACKGROUND_TASKS);
+    for (task_id, _) in completed.into_iter().take(remove_count) {
+        tasks.remove(&task_id);
+    }
+}
+
+fn background_task_snapshot(task: &BackgroundTask) -> serde_json::Value {
+    let now = chrono::Utc::now();
+    serde_json::json!({
+        "task_id": task.id,
+        "status": task.status,
+        "command": redact_sensitive_text(&task.cmd_str),
+        "process_group_id": task.pgid,
+        "session_id": task.session_id,
+        "context_id": task.context_id,
+        "started_at": task.started_at,
+        "ended_at": task.ended_at,
+        "elapsed_secs": (task.ended_at.unwrap_or(now) - task.started_at).num_seconds().max(0),
+        "last_output_at": task.last_output_at,
+        "last_output_age_secs": (now - task.last_output_at).num_seconds().max(0),
+        "output_bytes": task.output_bytes,
+        "exit_code": task.exit_code,
+        "effective_boundary": {
+            "network_enabled": task.effective_network,
+            "secret_env": task.secret_env,
+            "sandbox_backend": task.sandbox_backend,
+            "sandbox_status": task.sandbox_status,
+        },
+        "artifact_path": task.artifact_path,
+    })
+}
+
 // 共享的实时输出管道缓冲
 struct ExecutionBuffer {
     output: std::sync::Mutex<String>,
     archive: std::sync::Mutex<std::fs::File>,
+    event_pending: std::sync::Mutex<String>,
     archive_path: String,
     truncated: AtomicBool,
+    event_flush_scheduled: AtomicBool,
     max_bytes: usize,
+    event_coalesce_ms: u64,
+    max_event_chars: usize,
     task_id: String,
     bus: Arc<crate::event::InMemoryEventBus>,
     session_id: String,
@@ -145,10 +221,13 @@ struct ExecutionBuffer {
 }
 
 impl ExecutionBuffer {
-    fn append(&self, text: &str, publish: bool) {
+    fn append(self: &Arc<Self>, text: &str, publish: bool) {
+        // A subprocess may accidentally echo an injected credential. Keep both the bounded
+        // Context preview and the durable artifact safe; secret values are never useful output.
+        let safe_text = redact_sensitive_text(text);
         let archive_result = match self.archive.lock() {
-            Ok(mut archive) => archive.write_all(text.as_bytes()),
-            Err(poisoned) => poisoned.into_inner().write_all(text.as_bytes()),
+            Ok(mut archive) => archive.write_all(safe_text.as_bytes()),
+            Err(poisoned) => poisoned.into_inner().write_all(safe_text.as_bytes()),
         };
         if let Err(error) = archive_result {
             tracing::error!(archive = %self.archive_path, %error, "写入 exec 原始输出归档失败");
@@ -161,7 +240,7 @@ impl ExecutionBuffer {
                     poisoned.into_inner()
                 }
             };
-            guard.push_str(text);
+            guard.push_str(&safe_text);
             if self.max_bytes == 0 {
                 guard.clear();
                 self.truncated.store(true, Ordering::Relaxed);
@@ -175,32 +254,106 @@ impl ExecutionBuffer {
             }
             if let Some(mut task) = get_tasks_map().get_mut(&self.task_id) {
                 task.last_output_at = chrono::Utc::now();
-                task.output_bytes = task.output_bytes.saturating_add(text.len());
+                task.output_bytes = task.output_bytes.saturating_add(safe_text.len());
             }
         }
         if publish {
-            let mut payload = serde_json::Map::new();
-            payload.insert("context_id".to_string(), serde_json::json!(self.context_id));
-            payload.insert("session_id".to_string(), serde_json::json!(self.session_id));
-            payload.insert("task_id".to_string(), serde_json::json!(self.task_id));
-            payload.insert("text".to_string(), serde_json::json!(text));
+            match self.event_pending.lock() {
+                Ok(mut pending) => pending.push_str(&safe_text),
+                Err(poisoned) => poisoned.into_inner().push_str(&safe_text),
+            }
+            if !self.event_flush_scheduled.swap(true, Ordering::SeqCst) {
+                let buffer = Arc::clone(self);
+                tokio::spawn(async move { buffer.flush_output_events().await });
+            }
+        }
+    }
 
-            let ev = Event::new(
-                format!(
-                    "task_out_{}_{}",
-                    self.task_id,
-                    chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
-                "System-TaskMonitor".to_string(),
-                "task_output".to_string(),
-                format!("task/output/{}", self.task_id),
-                payload,
-            );
+    async fn flush_output_events(self: Arc<Self>) {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(
+                self.event_coalesce_ms.max(1),
+            ))
+            .await;
+            let pending = match self.event_pending.lock() {
+                Ok(mut pending) => std::mem::take(&mut *pending),
+                Err(poisoned) => {
+                    let mut pending = poisoned.into_inner();
+                    std::mem::take(&mut *pending)
+                }
+            };
+            if !pending.is_empty() {
+                self.publish_output_event(pending).await;
+            }
+            self.event_flush_scheduled.store(false, Ordering::SeqCst);
+            let has_pending = match self.event_pending.lock() {
+                Ok(pending) => !pending.is_empty(),
+                Err(poisoned) => !poisoned.into_inner().is_empty(),
+            };
+            if !has_pending
+                || self
+                    .event_flush_scheduled
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+            {
+                break;
+            }
+        }
+    }
 
-            let bus_clone = Arc::clone(&self.bus);
-            tokio::spawn(async move {
-                let _ = bus_clone.publish(ev).await;
-            });
+    async fn publish_output_event(&self, text: String) {
+        let total_chars = text.chars().count();
+        let truncated = total_chars > self.max_event_chars;
+        let rendered = if truncated {
+            let tail = text
+                .chars()
+                .rev()
+                .take(self.max_event_chars)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>();
+            format!(
+                "[本事件合并了 {total_chars} 字符，仅展示末尾 {} 字符；完整输出见 {}]\n{tail}",
+                self.max_event_chars, self.archive_path
+            )
+        } else {
+            text
+        };
+        let mut payload = serde_json::Map::new();
+        payload.insert("context_id".to_string(), serde_json::json!(self.context_id));
+        payload.insert("session_id".to_string(), serde_json::json!(self.session_id));
+        payload.insert("task_id".to_string(), serde_json::json!(self.task_id));
+        payload.insert(
+            "coalesced_chars".to_string(),
+            serde_json::json!(total_chars),
+        );
+        payload.insert("truncated".to_string(), serde_json::json!(truncated));
+        payload.insert("text".to_string(), serde_json::json!(rendered));
+        let event = Event::new(
+            format!(
+                "task_out_{}_{}",
+                self.task_id,
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            ),
+            "System-TaskMonitor".to_string(),
+            "task_output".to_string(),
+            format!("task/output/{}", self.task_id),
+            payload,
+        );
+        let _ = self.bus.publish(event).await;
+    }
+
+    async fn flush_pending_now(&self) {
+        let pending = match self.event_pending.lock() {
+            Ok(mut pending) => std::mem::take(&mut *pending),
+            Err(poisoned) => {
+                let mut pending = poisoned.into_inner();
+                std::mem::take(&mut *pending)
+            }
+        };
+        if !pending.is_empty() {
+            self.publish_output_event(pending).await;
         }
     }
 
@@ -249,6 +402,102 @@ struct FileSnapshot {
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Best-effort rendering guard for command previews and control-plane audit records.
+/// High-confidence secret literals are also rejected at the exec boundary.
+pub(crate) fn redact_sensitive_text(input: &str) -> String {
+    let mut output = input.to_string();
+    for prefix in [
+        "agtk_",
+        "sk-",
+        "ghp_",
+        "github_pat_",
+        "xoxb-",
+        "xoxp-",
+        "local-api-",
+    ] {
+        output = redact_prefixed_tokens(&output, prefix);
+    }
+    output = redact_bearer_tokens(&output);
+    for (name, value) in std::env::vars() {
+        if is_secret_environment_name(&name) && value.len() >= 8 && output.contains(&value) {
+            output = output.replace(&value, "[REDACTED_SECRET]");
+        }
+    }
+    output
+}
+
+fn redact_prefixed_tokens(input: &str, prefix: &str) -> String {
+    let mut output = String::with_capacity(input.len());
+    let mut remaining = input;
+    while let Some(offset) = remaining.find(prefix) {
+        output.push_str(&remaining[..offset]);
+        let candidate = &remaining[offset..];
+        let token_len = candidate
+            .char_indices()
+            .take_while(|(_, character)| {
+                character.is_ascii_alphanumeric()
+                    || matches!(character, '_' | '-' | '.' | '~' | '+' | '/' | '=')
+            })
+            .last()
+            .map_or(0, |(index, character)| index + character.len_utf8());
+        if token_len >= 12 {
+            output.push_str("[REDACTED_SECRET]");
+            remaining = &candidate[token_len..];
+        } else {
+            output.push_str(prefix);
+            remaining = &candidate[prefix.len()..];
+        }
+    }
+    output.push_str(remaining);
+    output
+}
+
+fn is_secret_environment_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    upper.contains("TOKEN")
+        || upper.contains("SECRET")
+        || upper.contains("PASSWORD")
+        || upper.contains("CREDENTIAL")
+        || upper.contains("API_KEY")
+        || upper.ends_with("_KEY")
+}
+
+fn is_sensitive_environment_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    is_secret_environment_name(name)
+        || upper.starts_with("OPENAI_")
+        || upper.starts_with("AWS_")
+        || upper.starts_with("GITHUB_")
+        || upper == "SSH_AUTH_SOCK"
+}
+
+fn redact_bearer_tokens(input: &str) -> String {
+    let lowercase = input.to_ascii_lowercase();
+    let mut output = String::with_capacity(input.len());
+    let mut cursor = 0;
+    while let Some(relative) = lowercase[cursor..].find("bearer ") {
+        let marker = cursor + relative;
+        let token_start = marker + "bearer ".len();
+        output.push_str(&input[cursor..token_start]);
+        let token_len = input[token_start..]
+            .char_indices()
+            .take_while(|(_, character)| {
+                character.is_ascii_alphanumeric()
+                    || matches!(character, '_' | '-' | '.' | '~' | '+' | '/' | '=')
+            })
+            .last()
+            .map_or(0, |(index, character)| index + character.len_utf8());
+        if token_len == 0 {
+            cursor = token_start;
+            continue;
+        }
+        output.push_str("[REDACTED_SECRET]");
+        cursor = token_start + token_len;
+    }
+    output.push_str(&input[cursor..]);
+    output
 }
 
 fn read_text_snapshot(path: &Path) -> Result<FileSnapshot, String> {
@@ -1539,6 +1788,8 @@ struct RequestedExecPermissions {
     read_paths: Vec<String>,
     #[serde(default)]
     write_paths: Vec<String>,
+    #[serde(default)]
+    secret_env: Vec<String>,
 }
 
 fn requested_capability_delta(
@@ -1550,6 +1801,7 @@ fn requested_capability_delta(
     let canonical_base_writes = canonicalize_permission_roots(&base_policy.write_roots)?;
     let mut delta = CapabilityDelta {
         network: requested.network && base_policy.network == NetworkPolicy::Deny,
+        secret_env: validate_secret_env_names(&requested.secret_env)?,
         ..CapabilityDelta::default()
     };
 
@@ -1571,6 +1823,36 @@ fn requested_capability_delta(
     }
 
     Ok(delta)
+}
+
+fn validate_secret_env_names(
+    names: &[String],
+) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut validated = Vec::new();
+    for name in names {
+        let normalized = name.trim();
+        if normalized.is_empty()
+            || !normalized
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        {
+            return Err(format!("secret_env 包含非法环境变量名 '{name}'").into());
+        }
+        if !is_secret_environment_name(normalized) {
+            return Err(format!(
+                "secret_env '{}' 看起来不是敏感变量；普通环境配置不应通过秘密注入通道传递",
+                normalized
+            )
+            .into());
+        }
+        if std::env::var_os(normalized).is_none() {
+            return Err(format!("secret_env '{}' 在 Runtime 环境中不存在", normalized).into());
+        }
+        if !validated.iter().any(|existing| existing == normalized) {
+            validated.push(normalized.to_string());
+        }
+    }
+    Ok(validated)
 }
 
 fn canonicalize_permission_roots(
@@ -1728,7 +2010,7 @@ impl Tool for ExecuteCommandTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "要在本地终端执行的前台 Shell 命令，例如 'cargo test' 或 'ls'。禁止用 '&' 自行后台化；超过 wait_ms 后 Runtime 会自动托管并返回 task_id。"
+                    "description": "要在本地终端执行的前台 Shell 命令，例如 'cargo test' 或 'ls'。禁止嵌入 token/key 等秘密字面量，改用 requested_permissions.secret_env 注入环境变量；禁止用 '&' 自行后台化。"
                 },
                 "cwd": {
                     "type": "string",
@@ -1764,6 +2046,11 @@ impl Tool for ExecuteCommandTool {
                             "type": "array",
                             "items": { "type": "string" },
                             "description": "额外可写目录；相对路径按 workspace_root 解析。"
+                        },
+                        "secret_env": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "需要注入本次子进程的敏感环境变量名。只传名称，不得把值写入 command；必须经过一次性审批。"
                         }
                     },
                     "additionalProperties": false
@@ -1790,6 +2077,9 @@ impl Tool for ExecuteCommandTool {
         let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
         let cmd_trimmed = args.command.trim();
         validate_managed_shell_command(cmd_trimmed)?;
+        if redact_sensitive_text(cmd_trimmed) != cmd_trimmed {
+            return Err("exec.command 检测到秘密字面量。不要把 token/key 写进命令、进程参数或 Ledger；请将秘密预先放入 Runtime 环境，并通过 requested_permissions.secret_env 只申请变量名。".into());
+        }
 
         let mut request_context = approval_context();
         let mut session_id = args
@@ -1833,7 +2123,9 @@ impl Tool for ExecuteCommandTool {
 
         let sandbox_tmp = workspace_root.join(".morphz/tmp");
         std::fs::create_dir_all(&sandbox_tmp)?;
-        let (prepared, effective_network) = if profile.sandbox_mode == SandboxMode::WorkspaceWrite {
+        let (prepared, effective_network, approved_secret_env) = if profile.sandbox_mode
+            == SandboxMode::WorkspaceWrite
+        {
             let mut policy = SandboxPolicy {
                 read_roots: profile.read_roots.clone(),
                 write_roots: profile.write_roots.clone(),
@@ -1899,9 +2191,13 @@ impl Tool for ExecuteCommandTool {
                 cwd: exec_cwd.clone(),
                 policy,
             })?;
-            (prepared, effective_network)
+            (prepared, effective_network, requested.secret_env)
         } else {
-            (self.sandbox.prepare_unconfined_shell(cmd_trimmed), true)
+            (
+                self.sandbox.prepare_unconfined_shell(cmd_trimmed),
+                true,
+                validate_secret_env_names(&args.requested_permissions.secret_env)?,
+            )
         };
         tracing::info!(
             backend = prepared.report.backend.as_str(),
@@ -1909,6 +2205,12 @@ impl Tool for ExecuteCommandTool {
             network_enabled = effective_network,
             "已为 exec 准备操作系统执行边界"
         );
+        let sandbox_backend = prepared.report.backend.as_str().to_string();
+        let sandbox_status = match prepared.report.status {
+            EnforcementStatus::Enforced => "enforced",
+            EnforcementStatus::Unavailable => "unavailable",
+        }
+        .to_string();
         let mut cmd = prepared.into_tokio_command();
         cmd.current_dir(&exec_cwd)
             .env("TMPDIR", &sandbox_tmp)
@@ -1916,19 +2218,15 @@ impl Tool for ExecuteCommandTool {
             .stderr(Stdio::piped());
         if profile.shell_environment_policy == ShellEnvironmentPolicy::RemoveSensitive {
             for (key, _) in std::env::vars() {
-                let upper = key.to_ascii_uppercase();
-                if upper.contains("TOKEN")
-                    || upper.contains("SECRET")
-                    || upper.contains("PASSWORD")
-                    || upper.contains("CREDENTIAL")
-                    || upper.ends_with("_KEY")
-                    || upper.starts_with("OPENAI_")
-                    || upper.starts_with("AWS_")
-                    || upper.starts_with("GITHUB_")
-                    || upper == "SSH_AUTH_SOCK"
-                {
+                if is_sensitive_environment_name(&key) {
                     cmd.env_remove(key);
                 }
+            }
+        }
+        let effective_secret_env = approved_secret_env.clone();
+        for name in approved_secret_env {
+            if let Some(value) = std::env::var_os(&name) {
+                cmd.env(name, value);
             }
         }
 
@@ -1984,9 +2282,13 @@ impl Tool for ExecuteCommandTool {
         let buffer = Arc::new(ExecutionBuffer {
             output: std::sync::Mutex::new(String::new()),
             archive: std::sync::Mutex::new(archive),
+            event_pending: std::sync::Mutex::new(String::new()),
             archive_path: archive_path.to_string_lossy().to_string(),
             truncated: AtomicBool::new(false),
+            event_flush_scheduled: AtomicBool::new(false),
             max_bytes: self.background_config.max_output_buffer_bytes,
+            event_coalesce_ms: self.background_config.output_event_coalesce_ms,
+            max_event_chars: self.background_config.max_output_event_chars,
             task_id: task_id_clone.clone(),
             bus: bus_clone,
             session_id: session_id_clone,
@@ -2023,6 +2325,14 @@ impl Tool for ExecuteCommandTool {
                 last_output_at: now,
                 output_bytes: 0,
                 timeout_notified: false,
+                status: BackgroundTaskStatus::Starting,
+                effective_network,
+                secret_env: effective_secret_env.clone(),
+                sandbox_backend: sandbox_backend.clone(),
+                sandbox_status: sandbox_status.clone(),
+                artifact_path: buffer.archive_path.clone(),
+                ended_at: None,
+                exit_code: None,
             },
         );
 
@@ -2059,14 +2369,29 @@ impl Tool for ExecuteCommandTool {
                     )
                     .into());
                 }
-                Ok(format!(
-                    "执行结束 [退出码: {}]\n--- 输出 ---\n{}",
-                    code, output_str
-                ))
+                Ok(serde_json::json!({
+                    "kind": "exec_result",
+                    "execution": "completed",
+                    "process_status": if code == 0 { "succeeded" } else { "failed" },
+                    "exit_code": code,
+                    "effective_boundary": {
+                        "network_enabled": effective_network,
+                        "secret_env": effective_secret_env,
+                        "sandbox_backend": sandbox_backend,
+                        "sandbox_status": sandbox_status,
+                    },
+                    "artifact_path": buffer.archive_path,
+                    "output_empty": output_str.is_empty(),
+                    "output": output_str,
+                })
+                .to_string())
             }
             Err(_) => {
                 // 运行超时，正式脱离 (Detach) 为后台长任务
                 publish_flag.store(true, Ordering::SeqCst);
+                if let Some(mut task) = tasks.get_mut(&task_id) {
+                    task.status = BackgroundTaskStatus::Running;
+                }
 
                 // Phase E: 后台任务达到配置阈值时只唤醒 LLM，不自动 kill。
                 // 是否继续等待或调用 kill_task 由 LLM 自己决策。
@@ -2110,7 +2435,21 @@ impl Tool for ExecuteCommandTool {
                                 "elapsed_secs".to_string(),
                                 serde_json::json!(elapsed_secs),
                             );
-                            payload.insert("cmd".to_string(), serde_json::json!(cmd_timeout));
+                            payload.insert(
+                                "cmd".to_string(),
+                                serde_json::json!(redact_sensitive_text(&cmd_timeout)),
+                            );
+                            payload
+                                .insert("task_status".to_string(), serde_json::json!(task.status));
+                            payload.insert(
+                                "effective_boundary".to_string(),
+                                serde_json::json!({
+                                    "network_enabled": task.effective_network,
+                                    "secret_env": task.secret_env,
+                                    "sandbox_backend": task.sandbox_backend,
+                                    "sandbox_status": task.sandbox_status,
+                                }),
+                            );
                             payload.insert(
                                 "artifact_path".to_string(),
                                 serde_json::json!(buffer_timeout.archive_path),
@@ -2148,8 +2487,8 @@ impl Tool for ExecuteCommandTool {
                     let residual_cleanup = terminate_residual_process_group(pid);
                     let _ = stdout_task.await;
                     let _ = stderr_task.await;
+                    buffer_cleanup.flush_pending_now().await;
                     let tasks_cleanup = get_tasks_map();
-                    tasks_cleanup.remove(&task_id_cleanup);
 
                     let code = wait_res.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
                     let output_str = buffer_cleanup.get_all();
@@ -2158,6 +2497,29 @@ impl Tool for ExecuteCommandTool {
                         Ok(false) => "",
                         Err(_) => "\n[Runtime 无法确认 Shell 退出后的进程组是否已完整清理。]",
                     };
+                    let final_status = if tasks_cleanup
+                        .get(&task_id_cleanup)
+                        .is_some_and(|task| task.status == BackgroundTaskStatus::KillRequested)
+                    {
+                        BackgroundTaskStatus::Killed
+                    } else if code == 0 {
+                        BackgroundTaskStatus::Succeeded
+                    } else {
+                        BackgroundTaskStatus::Failed
+                    };
+                    if let Some(mut task) = tasks_cleanup.get_mut(&task_id_cleanup) {
+                        task.status = final_status;
+                        task.exit_code = Some(code);
+                        task.ended_at = Some(chrono::Utc::now());
+                    }
+                    let effective_boundary = tasks_cleanup.get(&task_id_cleanup).map(|task| {
+                        serde_json::json!({
+                            "network_enabled": task.effective_network,
+                            "secret_env": task.secret_env,
+                            "sandbox_backend": task.sandbox_backend,
+                            "sandbox_status": task.sandbox_status,
+                        })
+                    });
 
                     let mut payload = serde_json::Map::new();
                     payload.insert(
@@ -2169,6 +2531,15 @@ impl Tool for ExecuteCommandTool {
                         serde_json::json!(session_id_cleanup),
                     );
                     payload.insert("task_id".to_string(), serde_json::json!(task_id_cleanup));
+                    payload.insert("task_status".to_string(), serde_json::json!(final_status));
+                    payload.insert(
+                        "process_status".to_string(),
+                        serde_json::json!(if code == 0 { "succeeded" } else { "failed" }),
+                    );
+                    payload.insert("exit_code".to_string(), serde_json::json!(code));
+                    if let Some(effective_boundary) = effective_boundary {
+                        payload.insert("effective_boundary".to_string(), effective_boundary);
+                    }
                     payload.insert(
                         "artifact_path".to_string(),
                         serde_json::json!(buffer_cleanup.archive_path),
@@ -2193,6 +2564,7 @@ impl Tool for ExecuteCommandTool {
                         payload,
                     );
                     let _ = bus_cleanup.publish(ev).await;
+                    prune_background_task_history();
                 });
 
                 let elapsed_str = if args.wait_ms.is_some() {
@@ -2203,19 +2575,208 @@ impl Tool for ExecuteCommandTool {
                     format!("{} 毫秒", wait_duration.as_millis())
                 };
 
-                Ok(format!(
-                    "[任务已转入后台异步运行，任务 ID: {}]\n完整原始输出持续归档到 {}。命令已运行了超过 {} 最大同步时间。您可以在后续 Inbox 中查收事件输出，或调用 kill_task 强杀它。",
-                    task_id, buffer.archive_path, elapsed_str
-                ))
+                let output_str = buffer.get_all();
+                Ok(serde_json::json!({
+                    "kind": "exec_result",
+                    "execution": "background",
+                    "task_status": "running",
+                    "task_id": task_id,
+                    "waited": elapsed_str,
+                    "effective_boundary": {
+                        "network_enabled": effective_network,
+                        "secret_env": effective_secret_env,
+                        "sandbox_backend": sandbox_backend,
+                        "sandbox_status": sandbox_status,
+                    },
+                    "artifact_path": buffer.archive_path,
+                    "output_empty": output_str.is_empty(),
+                    "output": output_str,
+                    "guidance": "任务完成或超时会通过 Inbox 主动唤醒；不要用 sleep、ps 或重复读取空日志轮询。可调用 task_status 查看一次、wait_task 进入事件驱动等待，或 kill_task 终止。",
+                })
+                .to_string())
             }
         }
     }
 }
 
 // ==========================================
-// 5. KillTaskTool 进程组广播灭杀 ( kill_task )
+// 5. Background task control plane
 // ==========================================
+pub struct ListTasksTool;
+pub struct TaskStatusTool;
+pub struct WaitTaskTool;
 pub struct KillTaskTool;
+
+fn task_visible_in_current_context(task: &BackgroundTask) -> bool {
+    let current_context = CURRENT_CONTEXT_ID
+        .try_with(Clone::clone)
+        .unwrap_or_default();
+    current_context.is_empty() || task.context_id == current_context
+}
+
+fn require_visible_task(
+    task_id: &str,
+) -> Result<dashmap::mapref::one::Ref<'static, String, BackgroundTask>, String> {
+    let task = get_tasks_map()
+        .get(task_id)
+        .ok_or_else(|| format!("未找到后台任务 '{task_id}'，它可能已被历史保留策略清理"))?;
+    if !task_visible_in_current_context(&task) {
+        return Err(format!("后台任务 '{task_id}' 不属于当前 Context"));
+    }
+    Ok(task)
+}
+
+#[derive(Deserialize, Default)]
+struct ListTasksArgs {
+    #[serde(default)]
+    include_finished: bool,
+    session_id: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl Tool for ListTasksTool {
+    fn name(&self) -> &str {
+        "list_tasks"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "列出当前认知 Context 内由 Runtime 托管的后台 Shell 任务。返回真实运行状态、有效网络/沙箱边界、最后输出时间和归档路径；不要使用 ps 猜测任务状态。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "include_finished": {
+                        "type": "boolean",
+                        "description": "是否包含 Runtime 最近保留的已完成任务；默认 false。"
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "可选，仅查看某个 Session 发起的任务。"
+                    }
+                },
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(
+        &self,
+        arguments: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let args: ListTasksArgs = serde_json::from_str(arguments)?;
+        let mut tasks = get_tasks_map()
+            .iter()
+            .filter(|task| task_visible_in_current_context(task))
+            .filter(|task| args.include_finished || !task.status.is_terminal())
+            .filter(|task| {
+                args.session_id
+                    .as_deref()
+                    .is_none_or(|session_id| task.session_id == session_id)
+            })
+            .map(|task| background_task_snapshot(&task))
+            .collect::<Vec<_>>();
+        tasks.sort_by(|left, right| {
+            left["started_at"]
+                .as_str()
+                .cmp(&right["started_at"].as_str())
+        });
+        Ok(serde_json::json!({
+            "kind": "background_task_list",
+            "count": tasks.len(),
+            "tasks": tasks,
+        })
+        .to_string())
+    }
+}
+
+#[derive(Deserialize)]
+struct TaskStatusArgs {
+    task_id: String,
+}
+
+#[async_trait::async_trait]
+impl Tool for TaskStatusTool {
+    fn name(&self) -> &str {
+        "task_status"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "读取一个 Runtime 托管后台任务的权威状态。用它确认任务是否真正运行、是否具有所需网络边界、是否无输出停滞以及最终退出码。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "exec 返回的后台任务 ID。"
+                    }
+                },
+                "required": ["task_id"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(
+        &self,
+        arguments: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let args: TaskStatusArgs = serde_json::from_str(arguments)?;
+        let task = require_visible_task(&args.task_id)?;
+        Ok(serde_json::json!({
+            "kind": "background_task_status",
+            "task": background_task_snapshot(&task),
+        })
+        .to_string())
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for WaitTaskTool {
+    fn name(&self) -> &str {
+        "wait_task"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "进入后台任务的事件驱动等待流程。该调用不会轮询或占用 LLM；若任务仍在运行，应随后 reply(suppress)，Runtime 会在任务结束或超时通知时主动唤醒。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "要等待的后台任务 ID。"
+                    }
+                },
+                "required": ["task_id"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(
+        &self,
+        arguments: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let args: TaskStatusArgs = serde_json::from_str(arguments)?;
+        let task = require_visible_task(&args.task_id)?;
+        let terminal = task.status.is_terminal();
+        Ok(serde_json::json!({
+            "kind": "background_task_wait",
+            "waiting": !terminal,
+            "task": background_task_snapshot(&task),
+            "next_action": if terminal {
+                "任务已经结束，直接根据退出码和输出继续处理。"
+            } else {
+                "调用 reply(disposition=suppress) 结束当前求值，不要 sleep、ps、轮询日志或重复调用任务；Runtime 会在任务结束或超时通知时主动唤醒。"
+            },
+        })
+        .to_string())
+    }
+}
 
 #[derive(Deserialize)]
 struct KillTaskArgs {
@@ -2256,29 +2817,63 @@ impl Tool for KillTaskTool {
         let args: KillTaskArgs = serde_json::from_str(arguments)?;
         let tasks = get_tasks_map();
 
-        if let Some((_, task)) = tasks.remove(&args.task_id) {
-            let pgid = nix::unistd::Pid::from_raw(-task.pgid); // 负数代表杀死整个进程组
+        if let Some(mut task) = tasks.get_mut(&args.task_id) {
+            if !task_visible_in_current_context(&task) {
+                return Err(format!("后台任务 '{}' 不属于当前 Context", args.task_id).into());
+            }
+            if task.status.is_terminal() {
+                return Ok(serde_json::json!({
+                    "kind": "background_task_kill",
+                    "task": background_task_snapshot(&task),
+                    "killed": false,
+                    "reason": "task_already_finished",
+                })
+                .to_string());
+            }
+            let task_pgid = task.pgid;
+            task.status = BackgroundTaskStatus::KillRequested;
+            drop(task);
+            let pgid = nix::unistd::Pid::from_raw(-task_pgid); // 负数代表杀死整个进程组
             match nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGKILL) {
-                Ok(_) => Ok(format!(
-                    "成功强杀后台任务 {}，其下属的子孙进程组 {} 已彻底清理。",
-                    args.task_id, task.pgid
-                )),
+                Ok(_) => Ok(serde_json::json!({
+                    "kind": "background_task_kill",
+                    "task_id": args.task_id,
+                    "status": "kill_requested",
+                    "process_group_id": task_pgid,
+                    "killed": true,
+                    "guidance": "进程退出事件会携带最终 killed 状态和退出码。"
+                })
+                .to_string()),
                 Err(e) => {
                     if e == nix::errno::Errno::ESRCH {
-                        Ok(format!(
-                            "后台任务 {} 此前已自动退出，进程组 {} 已不在运行。",
-                            args.task_id, task.pgid
-                        ))
+                        if let Some(mut task) = tasks.get_mut(&args.task_id) {
+                            task.status = BackgroundTaskStatus::Failed;
+                            task.ended_at = Some(chrono::Utc::now());
+                            task.exit_code = Some(-1);
+                        }
+                        Ok(serde_json::json!({
+                            "kind": "background_task_kill",
+                            "task_id": args.task_id,
+                            "status": "failed",
+                            "process_group_id": task_pgid,
+                            "killed": false,
+                            "reason": "process_group_not_found"
+                        })
+                        .to_string())
                     } else {
-                        Err(format!("强杀进程组 {} 遭遇系统级错误: {:?}", task.pgid, e).into())
+                        if let Some(mut task) = tasks.get_mut(&args.task_id) {
+                            task.status = BackgroundTaskStatus::Running;
+                        }
+                        Err(format!("强杀进程组 {} 遭遇系统级错误: {:?}", task_pgid, e).into())
                     }
                 }
             }
         } else {
-            Ok(format!(
-                "系统报错：未找到活跃的后台任务 ID '{}'，该任务可能已提前结束。",
+            Err(format!(
+                "未找到后台任务 '{}'，它可能已被历史保留策略清理",
                 args.task_id
-            ))
+            )
+            .into())
         }
     }
 }
@@ -2678,6 +3273,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::Weak;
     use tempfile::{NamedTempFile, TempDir};
+
+    #[cfg(target_os = "macos")]
+    static MACOS_SANDBOX_EXEC_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    static SECRET_ENV_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     struct ReplacementDefinitionTool;
 
@@ -3110,6 +3709,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_coding_tools_end_to_end_bugfix() {
+        #[cfg(target_os = "macos")]
+        let _sandbox_guard = MACOS_SANDBOX_EXEC_TEST_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("src")).unwrap();
         std::fs::write(
@@ -3180,7 +3781,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(result.contains("退出码: 0"));
+        let result_json: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result_json["exit_code"], 0);
+        assert_eq!(result_json["process_status"], "succeeded");
         assert!(result.contains("1 passed"));
     }
 
@@ -3217,6 +3820,53 @@ mod tests {
 
         let res = tool.execute(&args.to_string()).await.unwrap();
         assert!(res.contains("hello exec"));
+    }
+
+    #[test]
+    fn sensitive_text_redaction_is_high_confidence_and_preserves_normal_flags() {
+        let redacted = redact_sensitive_text(
+            "curl -H 'Authorization: Bearer abc.def-123' -H 'X-Key: agtk_1234567890'",
+        );
+        assert_eq!(redacted.matches("[REDACTED_SECRET]").count(), 2);
+        assert!(!redacted.contains("abc.def-123"));
+        assert!(!redacted.contains("agtk_1234567890"));
+        assert_eq!(
+            redact_sensitive_text("cargo test sk-unit"),
+            "cargo test sk-unit"
+        );
+    }
+
+    #[tokio::test]
+    async fn exec_rejects_secret_literals_and_injects_only_named_environment_secrets() {
+        let literal_error = exec_tool_for_tests(Arc::new(crate::event::InMemoryEventBus::new()))
+            .execute(
+                &serde_json::json!({
+                    "command": "printf agtk_1234567890"
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap_err();
+        assert!(literal_error.to_string().contains("秘密字面量"));
+
+        let _environment_guard = SECRET_ENV_TEST_LOCK.lock().await;
+        const NAME: &str = "MORPHZ_TEST_SECRET_TOKEN";
+        unsafe { std::env::set_var(NAME, "test-secret-value-123") };
+        let result = exec_tool_for_tests(Arc::new(crate::event::InMemoryEventBus::new()))
+            .execute(
+                &serde_json::json!({
+                    "command": "printf \"$MORPHZ_TEST_SECRET_TOKEN\"",
+                    "requested_permissions": { "secret_env": [NAME] }
+                })
+                .to_string(),
+            )
+            .await;
+        unsafe { std::env::remove_var(NAME) };
+        let value: serde_json::Value = serde_json::from_str(&result.unwrap()).unwrap();
+        assert_eq!(value["exit_code"], 0);
+        assert_eq!(value["effective_boundary"]["secret_env"][0], NAME);
+        assert!(!value.to_string().contains("test-secret-value-123"));
+        assert_eq!(value["output"], "[REDACTED_SECRET]");
     }
 
     #[test]
@@ -3292,6 +3942,7 @@ mod tests {
 
     #[tokio::test]
     async fn exec_cwd_outside_profile_requires_explicit_escalation() {
+        let _sandbox_guard = MACOS_SANDBOX_EXEC_TEST_LOCK.lock().await;
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("crate-a")).unwrap();
         let security = jailed_security(tmp.path());
@@ -3370,6 +4021,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn exec_escalation_is_reviewed_and_granted_for_one_command_only() {
+        let _sandbox_guard = MACOS_SANDBOX_EXEC_TEST_LOCK.lock().await;
         let workspace = TempDir::new().unwrap();
         let outside = TempDir::new().unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
@@ -3412,10 +4064,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(
-            approved.contains("退出码: 0"),
-            "unexpected approved exec result: {approved}"
-        );
+        let approved_json: serde_json::Value = serde_json::from_str(&approved).unwrap();
+        assert_eq!(approved_json["exit_code"], 0, "{approved}");
         assert_eq!(std::fs::read_to_string(&approved_path).unwrap(), "approved");
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
 
@@ -3515,8 +4165,15 @@ mod tests {
         });
 
         let res = tool.execute(&args.to_string()).await.unwrap();
-        assert!(res.contains("转入后台"));
-        assert!(res.contains("task_"));
+        let result: serde_json::Value = serde_json::from_str(&res).unwrap();
+        assert_eq!(result["execution"], "background");
+        assert_eq!(result["task_status"], "running");
+        let task_id = result["task_id"].as_str().unwrap();
+        assert!(task_id.starts_with("task_"));
+        KillTaskTool
+            .execute(&serde_json::json!({ "task_id": task_id }).to_string())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -3531,45 +4188,138 @@ mod tests {
         });
 
         let res = exec_tool.execute(&exec_args.to_string()).await.unwrap();
-        assert!(res.contains("转入后台"));
-
-        let prefix = "任务 ID: ";
-        let start = res.find(prefix).unwrap() + prefix.len();
-        let end = res[start..].find(']').unwrap() + start;
-        let task_id = &res[start..end];
+        let result: serde_json::Value = serde_json::from_str(&res).unwrap();
+        let task_id = result["task_id"].as_str().unwrap();
 
         let tasks = get_tasks_map();
         assert!(tasks.contains_key(task_id));
+
+        let status: serde_json::Value = serde_json::from_str(
+            &TaskStatusTool
+                .execute(&serde_json::json!({ "task_id": task_id }).to_string())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(status["task"]["status"], "running");
+        assert_eq!(
+            status["task"]["effective_boundary"]["network_enabled"],
+            true
+        );
+
+        let listed: serde_json::Value = serde_json::from_str(
+            &ListTasksTool
+                .execute(&serde_json::json!({}).to_string())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(listed["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| task["task_id"] == task_id));
+
+        let waiting: serde_json::Value = serde_json::from_str(
+            &WaitTaskTool
+                .execute(&serde_json::json!({ "task_id": task_id }).to_string())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(waiting["waiting"], true);
+        assert!(waiting["next_action"].as_str().unwrap().contains("reply"));
 
         let kill_args = serde_json::json!({
             "task_id": task_id
         });
         let kill_res = kill_tool.execute(&kill_args.to_string()).await.unwrap();
-        assert!(kill_res.contains("成功强杀") || kill_res.contains("已不在运行"));
-
-        assert!(!tasks.contains_key(task_id));
+        let kill_result: serde_json::Value = serde_json::from_str(&kill_res).unwrap();
+        assert_eq!(kill_result["killed"], true);
+        for _ in 0..50 {
+            if tasks
+                .get(task_id)
+                .is_some_and(|task| task.status == BackgroundTaskStatus::Killed)
+            {
+                break;
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        }
+        assert!(tasks
+            .get(task_id)
+            .is_some_and(|task| task.status == BackgroundTaskStatus::Killed));
+        tasks.remove(task_id);
     }
 
     #[test]
     fn test_execution_buffer_keeps_bounded_utf8_tail() {
         let archive_file = NamedTempFile::new().unwrap();
         let archive_path = archive_file.path().to_string_lossy().to_string();
-        let buffer = ExecutionBuffer {
+        let buffer = Arc::new(ExecutionBuffer {
             output: std::sync::Mutex::new(String::new()),
             archive: std::sync::Mutex::new(std::fs::File::create(&archive_path).unwrap()),
+            event_pending: std::sync::Mutex::new(String::new()),
             archive_path: archive_path.clone(),
             truncated: AtomicBool::new(false),
+            event_flush_scheduled: AtomicBool::new(false),
             max_bytes: 5,
+            event_coalesce_ms: 10,
+            max_event_chars: 128,
             task_id: "buffer_test".to_string(),
             bus: Arc::new(crate::event::InMemoryEventBus::new()),
             session_id: "session_test".to_string(),
             context_id: "context_test".to_string(),
-        };
+        });
 
         buffer.append("你好world", false);
         let output = buffer.get_all();
         assert!(output.contains("完整原始输出"));
         assert!(output.ends_with("world"));
         assert_eq!(std::fs::read_to_string(archive_path).unwrap(), "你好world");
+    }
+
+    #[tokio::test]
+    async fn execution_buffer_coalesces_bursty_output_events_without_losing_archive() {
+        let archive_file = NamedTempFile::new().unwrap();
+        let archive_path = archive_file.path().to_string_lossy().to_string();
+        let bus = Arc::new(crate::event::InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        bus.subscribe(
+            "task/output/buffer_coalesce".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let buffer = Arc::new(ExecutionBuffer {
+            output: std::sync::Mutex::new(String::new()),
+            archive: std::sync::Mutex::new(std::fs::File::create(&archive_path).unwrap()),
+            event_pending: std::sync::Mutex::new(String::new()),
+            archive_path: archive_path.clone(),
+            truncated: AtomicBool::new(false),
+            event_flush_scheduled: AtomicBool::new(false),
+            max_bytes: 1024,
+            event_coalesce_ms: 20,
+            max_event_chars: 128,
+            task_id: "buffer_coalesce".to_string(),
+            bus,
+            session_id: "session_test".to_string(),
+            context_id: "context_test".to_string(),
+        });
+
+        buffer.append("first\n", true);
+        buffer.append("second\n", true);
+        let event = tokio::time::timeout(tokio::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.payload["coalesced_chars"], 13);
+        assert_eq!(event.payload["text"], "first\nsecond\n");
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(
+            std::fs::read_to_string(archive_path).unwrap(),
+            "first\nsecond\n"
+        );
     }
 }
