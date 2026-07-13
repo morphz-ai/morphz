@@ -1,5 +1,7 @@
 # Morphz 工业化重构计划文档 (Industrial-Grade Refactoring Plan)
 
+> 历史文档说明（2026-07-13）：本文中的 `DANGEROUS_PATTERNS` 属于早期原型，已由统一 Permission Broker、protected paths 与操作系统沙箱取代，不再是当前安全边界。
+
 本文档基于对 Morphz MVP 代码库的全面诊断，制定从原型到工业化可用的系统性重构路线图。目标是在不改变核心架构的前提下，消除安全隐患、提升可靠性、增强可观测性，并建立工程化基础设施。
 
 ---

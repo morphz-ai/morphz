@@ -55,13 +55,13 @@ Protocol v10 在 kernel 中区分：
     (work-item @e101)
     (input-preview "...")
     (wake ...)
-    (turn-budget ...))
+    (turn-control ...))
   (session
     (id B)
     (work-item @e102)
     (input-preview "...")
     (wake ...)
-    (turn-budget ...)))
+    (turn-control ...)))
 ```
 
 `work-item` 是本次待处理 Event 的稳定短引用。`input-preview` 是受 Context preview 上限约束的当前输入副本，用来避免模型只注意到 Inbox 中最后一条消息；完整 observation 仍只在共享 Inbox/Ledger 中维护。

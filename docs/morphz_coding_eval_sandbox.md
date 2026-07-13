@@ -46,7 +46,7 @@ cargo run -p morphz --bin coding_eval_env -- create v2 /private/tmp/morphz-eval-
 - `MORPHZ_WORKSPACE_ROOT`
 - `MORPHZ_DB_PATH`
 - `MORPHZ_ARTIFACT_DIR`
-- `MORPHZ_EXEC_SEATBELT=true`
+- `MORPHZ_PERMISSION_MODE=auto_review`
 - `MORPHZ_EXEC_NETWORK=false`
 - `MORPHZ_CODING_EVAL_MODE=true`
 
@@ -59,9 +59,9 @@ cargo run -p morphz --bin coding_eval_env -- create v2 /private/tmp/morphz-eval-
 - 只允许 workspace 和 `/dev/null` 写入；
 - 禁止读取用户 HOME，重新只读开放 `.cargo/.rustup` 工具链；
 - 禁止读取 `/private/tmp` 其他目录，重新开放当前 workspace；
-- cwd 必须通过 Morphz workspace jail。
+- cwd、文件工具与 Shell 使用相同 Permission Profile；边界外 cwd 必须显式申请并审批。
 
-这使 Agent 不能通过 `exec` 读取主仓库的用户文件、读取 run 外 manifest，或在 workspace 外创建文件。Linux/生产环境仍应使用容器、namespace 或独立用户；Seatbelt 只覆盖 macOS 评测路径。
+这使 Agent 不能通过 `exec` 读取主仓库的用户文件、读取 run 外 manifest，或在 workspace 外创建文件。Seatbelt 只覆盖 macOS 路径；Linux 和 Windows 必须由各自原生 Backend 通过相同攻击契约后才能启用，当前会 fail-closed，不以容器作为默认依赖。
 
 ## 固定探针与验证
 

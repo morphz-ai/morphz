@@ -1,5 +1,7 @@
 # Morphz Core Hardening 整体方案
 
+> 历史文档说明（2026-07-13）：本文记录早期 `workspace jail` 方案。该实现已被统一的 `PermissionProfile + PermissionBroker + SandboxBackend` 取代；`allow_absolute_paths`、`allow_parent_traversal`、独立 jail 开关和手写命令黑名单不再是当前架构。请以 [`morphz_sandbox_execution_and_approval_architecture.md`](morphz_sandbox_execution_and_approval_architecture.md) 为准。
+
 本文档定义 Morphz 下一阶段的核心夯实路线：**暂不引入 yao-lang / run_skill，不扩展大型新运行时，而是先把现有 Agent Runtime 做稳、做准、做安全**。
 
 核心原则：

@@ -8,7 +8,7 @@ Coding Tools v1 的目标不是把 Shell 包装成万能工具，而是让 Agent
 
 | 工具 | 责任 |
 | --- | --- |
-| `list_files` | 在 workspace jail 内按 glob 递归发现文件 |
+| `list_files` | 在 Permission Profile 允许的根中按 glob 递归发现文件 |
 | `search` | 在已授权 UTF-8 文件中执行带行号的字面文本搜索 |
 | `read` | 读取全文、查询结果或行范围，并返回 SHA-256 文件版本 |
 | `edit` | 基于 expected SHA-256 执行一个或多个精确局部替换 |
@@ -87,27 +87,28 @@ Runtime 保证：
 
 `list_files/search`：
 
-- 复用 workspace jail、extra roots 和 deny patterns；
+- 与 `read/edit/write/exec` 复用同一个 Permission Broker；
+- 绝对路径和 `..` 不再作为独立禁令，按 canonical 路径的最终授权边界判断；
 - 默认不跟随符号链接、不进入隐藏目录；
-- 默认排除 `.git`、`.env`、`target`、`models` 等敏感路径；
+- 默认保护 `.git`、`.env` 和 `.ssh`；不再默认排除 `target`、模型权重等任务特化路径；
 - 使用结果上限，避免把整个仓库注入 Context；
 - `search` 只读取不超过 2 MiB 的 UTF-8 文件，并返回结构化路径、行号和上下文。
 
 ## 7. Exec 边界
 
-`exec.cwd` 必须是 workspace_root 内已存在目录，并经过相同路径策略校验。`exec` 适合运行测试、编译和格式化；代码发现与修改应优先使用结构化工具。
+`exec.cwd` 必须是已存在目录，并经过统一权限策略校验。工作区外 cwd 会成为能力差量，必须使用 `require_escalated` 接受审批。`exec` 适合运行测试、编译和格式化；代码发现与修改应优先使用结构化工具。
 
-cwd 限制不是完整 Shell 沙箱。Shell 仍继承 Morphz 进程的操作系统权限，当前只额外执行危险模式拦截与敏感环境变量剥离。生产部署和不可信任务必须使用外层容器、namespace 或等价系统隔离。
+Shell 子进程树由 `SandboxBackend` 施加操作系统原生边界；旧的命令字符串黑名单已经删除，不再把可绕过的文本匹配冒充安全边界。敏感环境变量继承是独立策略，默认从 Shell 环境中移除 Token、Secret、Password、Credential 和常见云凭证变量。
 
-在 macOS Coding Eval 模式下，Runtime 额外强制启用 Seatbelt：禁网、workspace-only 写入，并阻止读取用户 HOME 与其他 `/private/tmp` run。具体生命周期与探针见 [Coding Eval Sandbox](morphz_coding_eval_sandbox.md)。
+在 macOS 的 `workspace-write` 模式下，Runtime 强制启用 Seatbelt：默认禁网、按 Profile 限制写入，并阻止读取未授权的用户 HOME 与临时目录。Coding Eval 使用同一条生产执行链路；具体生命周期与探针见 [Coding Eval Sandbox](morphz_coding_eval_sandbox.md)。
 
 ## 8. v1 暂不覆盖
 
 - 通用 unified-diff patch 解析与多文件单事务；
 - 文件删除、移动和重命名的结构化工具；
 - 二进制和非 UTF-8 文件编辑；
-- 真实文件系统/网络 namespace 沙箱；
-- 用户审批策略和命令 allowlist；
+- Linux/Windows 原生沙箱 Backend；
+- 可复用审批规则和前缀规则；
 - 跨多个文件的整体回滚。
 
 这些能力应由长程 Coding Agent 基准中的实际失败驱动，而不是提前扩张工具接口。

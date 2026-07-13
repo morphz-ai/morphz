@@ -322,11 +322,11 @@ Runtime 只能要求“必须释放多少预算”，不能决定“删除哪一
 
 系统必须预留一段不参与普通工作分配的 maintenance reserve，确保进入 `critical` 后仍有足够 Token 让模型读取压力报告、检查 Mind 并提交维护事务。`critical` 阈值必须早于模型真实硬上限；不能等到下一次请求已经无法容纳完整 Mind 时，才要求 Agent 自救。
 
-首次 Context Pressure Eval 已验证一次真实闭环：在 9,000 模拟硬上限和 2,500 reserve 下，38 条合成长历史产生 9,177 estimated tokens；模型自主创建并保护 `core_facts`、保留五条关键原始证据、退休 33 条陈旧 observation，最终降至 2,140 tokens 和 `normal`。该结果证明机制可行，但模型窗口自动发现、精确 tokenizer、渐进压力成功率和 emergency checkpoint 仍未完成。
+首次 Context Pressure Eval 已验证一次真实闭环：在 9,000 模拟硬上限和 2,500 reserve 下，38 条合成长历史产生 9,177 estimated tokens；模型自主创建并保护 `core_facts`、保留五条关键原始证据、退休 33 条陈旧 observation，最终降至 2,140 tokens 和 `normal`。该历史夹具使用确定性的局部压力模拟。生产主链路现已在 completion 前计量完整候选工作请求，并显式标记来源与可信度。核心路径禁止为 Token 计数增加远程请求；当前 OpenAI-compatible Client 使用完整请求估算与 completion `usage.prompt_tokens` 校准，并按 Context/Session 求值链路隔离校准。本地 tokenizer/chat-template、模型窗口 metadata 自动发现、渐进压力成功率和 emergency checkpoint 仍未完成。详见 [Prompt Token Accounting v1](morphz_prompt_token_accounting_v1.md)。
 
 后续 Context Long-Run Eval 从 normal 开始连续运行六轮。模型在峰值 4,491/8,000 时仍未进入 warning/critical，三次在 notice 主动维护，退休全部 56 条原始历史，并在隐藏核验中保持六项事实和接口作废关系；容量与语义保真通过。但它提交 18 次事务、三个回合耗尽 Attempt，并把每个批次过程都创建为受保护 Frame，导致 Mind 结构线性增长。由此确认“避免物理溢出”和“形成可持续长期心智”是两个不同验收目标。当时 Runtime 实现的 protocol v2 将 sidecar 作为可选快速路径；后续多模型测试证明该路径会诱发进度文本被误标为最终回复，已被 protocol v6 取代。事务回执冷却、normal/notice 禁止容量压缩和低价值批次升格仍保留。frame consolidation 仍需继续验证。
 
-Context 自主也必须服从预算，但元认知维护不能挤占物理工作机会。Kernel 按用户回合公开 `turn-budget`，分别记录物理工作 Attempt 和 Context transaction 的已用量与上限，并公开 `work/context-closure/final-reply` 三阶段。context-only 调用不计入物理工作 Attempt，但成功后若已脱离 critical，下一响应隐藏 `context_tx`，直到新的 user/tool observation 到达。失败事务保留修复机会。物理 Attempt 达到上限时，Runtime 仍提供一次只暴露 `context_tx` 的 `context-closure`，事务执行后进入无工具 `final-reply`。
+Context 自主必须有物理控制，但正常的长期工作不能被一个很小的工具轮次上限截断。Kernel 按用户回合公开 `turn-control`：`attempt` 统计模型求值次数，一次响应并行发起多个工具仍只计一次；默认每 90 次进入一次 `soft-checkpoint`。软检查点只要求模型复盘目标、证据、Mind 与下一步是否一致，完整工具集保持可用，下一次求值自动恢复 `work`，不会强制收口或回复。Context transaction 仍有独立的回合预算，防止连续 housekeeping 挤占执行；成功事务在脱离 critical 后触发一次 `context_tx` 冷却，失败事务保留修复机会。模型请求、单次工具和网络操作可以各自拥有物理超时；交互任务本身持续等待，直到明确 `reply`、错误熔断或用户主动中断。
 
 ## 7. Agent 的 Context 维护循环
 
@@ -604,7 +604,7 @@ v1 有意尚未覆盖的边界：
 
 - exec 已将完整原始输出持续归档到独立文件，Context 只展示受控 preview 与路径；后续仍需把本地文件归档升级为内容寻址、可迁移的 Artifact Store；
 - branch、一般化跨版本 undo 和摘要血缘可视化尚未实现；checkpoint/rollback 已实现为 Agent 显式原语；
-- Token 数量目前是保守估算，尚未接入具体模型 tokenizer；
+- Prompt Token 计量已拆为无网络的本地可插拔能力；当前 OpenAI-compatible 主链使用完整请求估算与 completion usage 校准。本地 tokenizer/chat-template 尚未接入 profile，远程 Token 计数不会进入 Agent loop；
 - v1 为简化重启恢复，在每条 Context transaction 事件中保存完整 `state_after`；长期运行后应改为增量 transaction + 周期物化快照，避免账本体积呈二次增长；
 - GraphMemory 尚未重构为纯候选 Recall Provider；v1 主链路暂时完全不自动使用它；
 - Context 自治效果尚需通过长程任务基准验证。

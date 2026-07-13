@@ -32,9 +32,11 @@ Coding Tools v1 提供 `list_files/search/read/edit/write/exec` 最小开发闭�
 
 真实 Coding Agent 测试使用独立 fixture、数据库、Artifact 目录和 macOS Seatbelt exec 边界；v2 提供多文件重试状态机任务，并在 Agent 不可见的 verifier 副本中注入隐藏测试。创建、探针、固定验证、范围审计与 Ledger 评分见 [Coding Eval Sandbox](docs/morphz_coding_eval_sandbox.md)。
 
-Attempt Runtime 将物理工作与 Context transaction 分开计费，并提供一次 `context_tx`-only 最终收口。Protocol v10 在 v9 Reality/Epistemic Contract 之上增加实验性的同一 Context 多 Session 合并求值；Protocol v11 进一步把 single 模式终态统一为标准 `reply(deliver/suppress)` Function Calling。普通文本或空响应不再被静默当作终态，Runtime 会有限纠错后安全熔断；batch 模式仍通过 `session_output` 把 `progress/final` 分别路由到多个 ready Session。物理工具结果会立即持久化并按所属 Session 回传；`context_tx` 只修改共享 Mind，不能替代用户消息输出。10 Session 轻对话实测通过，但双编码任务的完整批次覆盖只有 3/7，因此合并求值默认关闭，可用 `MORPHZ_MERGED_EVALUATION_ENABLED=true` 显式开启。
+Attempt Runtime 将物理工作与 Context transaction 分开控制。Protocol v10 在 v9 Reality/Epistemic Contract 之上增加实验性的同一 Context 多 Session 合并求值；Protocol v11 把 single 模式终态统一为标准 `reply(deliver/suppress)` Function Calling；Protocol v12 将小规模硬 Attempt 上限替换为默认每 90 次模型求值出现一次、不会裁剪工具或强制结束任务的 `soft-checkpoint`。普通文本或空响应不再被静默当作终态，Runtime 会有限纠错后安全熔断；batch 模式仍通过 `session_output` 把 `progress/final` 分别路由到多个 ready Session。物理工具结果会立即持久化并按所属 Session 回传；`context_tx` 只修改共享 Mind，不能替代用户消息输出。10 Session 轻对话实测通过，但双编码任务的完整批次覆盖只有 3/7，因此合并求值默认关闭，可用 `MORPHZ_MERGED_EVALUATION_ENABLED=true` 显式开启。
 
 Context Pressure Eval 使用合成长历史和缩小阈值验证 Agent 自主 `derive/protect/retire`：首次真实运行将 estimated tokens 从 9,177 降至 2,140，并完整保留四项长期事实。设计、命令和结论边界见 [Context Pressure Eval](docs/morphz_context_pressure_eval.md)。
+
+生产 Prompt pressure 已不再只统计 Frame 与 Inbox 字符：Orchestrator 在 completion 前计量完整工作请求，并在 Context Encoding 中显示来源、范围与可信度。核心路径禁止为 Token 计数产生额外远程请求；当前 OpenAI-compatible Client 使用完整请求估算和 completion `usage.prompt_tokens` 校准，后续可按 profile 显式接入本地 tokenizer/chat-template。设计与边界见 [Prompt Token Accounting v1](docs/morphz_prompt_token_accounting_v1.md)。
 
 Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估容量、语义保真和维护效率。首次完整运行的 Capacity/Fidelity 通过、Efficiency 未通过：56 条原始历史全部退休且峰值仅 4,491/8,000，但模型发生多事务循环并线性保护批次 Frame。协议、轨迹与下一步见 [Context Long-Run Eval](docs/morphz_context_long_run_eval.md)。
 
@@ -51,6 +53,8 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    终端默认按回车发送单行消息。长任务规格可使用显式多行模式：先输入
    `/multi`，粘贴任意多行正文，再单独输入 `/send` 原子发送；使用
    `/cancel` 放弃当前多行输入。多行正文中的 `ctx`、`exit` 等文本不会被解释为终端命令。
+   Agent 执行期间，终端会显示 Runtime 实际选中执行的工具名、`call_id` 与结构化参数；
+   超长参数只展示前 4096 字符，常见密钥字段会自动遮蔽。
 
 4. 另一个终端启动 Dashboard：
 
@@ -90,7 +94,9 @@ npm run build
 
 ## 安全边界
 
-`list_files/search/read/edit/write` 默认受 workspace jail、敏感路径与符号链接规则约束。`edit/write` 使用 SHA-256 乐观并发校验及同目录原子替换。`exec.cwd` 也必须位于 workspace_root，但 Shell 命令本身仍运行在 Morphz 进程权限下，并非容器或 namespace 安全沙箱；部署到不可信环境时，必须在 Morphz 外层使用容器或其他系统级隔离。
+`list_files/search/read/edit/write/exec` 共享同一个 `PermissionProfile` 和 `PermissionBroker`。默认 `auto_review` 模式允许工作区读写、禁止网络，越界能力由独立 AI Reviewer 审查；Reviewer 无法判断时会进入可等待的人工审批通道。CLI 可直接批准或拒绝，Web 使用 `GET /api/approvals` 与 `POST /api/approvals/:id`。`edit/write` 另外使用 SHA-256 乐观并发校验及同目录原子替换。
+
+`exec` 会把相同的路径、protected paths 和网络权限编译到操作系统原生沙箱：macOS Seatbelt 已经过真实越权测试；Linux 与 Windows 后端尚未实机实现，启用沙箱时会 fail-closed。高层模式为 `request_approval`、`auto_review`、`full_access` 和 `custom`；完全访问会关闭文件边界与 OS 沙箱并显示启动警告，但敏感环境变量是否传给 Shell 仍由独立环境策略控制。完整设计和当前边界见 [统一沙箱执行与可插拔审批架构](docs/morphz_sandbox_execution_and_approval_architecture.md)。
 
 ## 目录说明
 

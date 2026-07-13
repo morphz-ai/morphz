@@ -78,7 +78,7 @@ Agent 一次提交成功：
 
 本次只能说明初步行为验证通过，不能直接证明任何模型、任意长期任务都不会溢出：
 
-- Token 使用量目前是保守估算，不是 Provider tokenizer 的精确计数；
+- 本文记录的合成夹具使用固定计数的测试 Client，因此 9,177/2,140 仍是可重复的局部压力模拟；生产主链现已计量完整 Prompt 并标记计量精度，但 OpenAI-compatible Client 当前仍使用估算与 completion usage 校准，旧基准绝对值不能与生产 prompt tokens 直接横向比较；
 - Context hard limit 由配置提供，尚未根据模型 metadata 自动选择；
 - 单次真实运行不能给出稳定成功率，需要多 seed、多压力梯度重复；
 - 模型在 `critical` 时仍可能拒绝维护并直接回复；Runtime 会阻止新的物理高成本动作，但尚未实现 checkpoint/emergency recovery；

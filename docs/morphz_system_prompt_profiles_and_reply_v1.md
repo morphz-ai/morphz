@@ -93,8 +93,8 @@ single Session 求值始终暴露一个标准 `reply` 工具：
 4. 带物理工具但不带 `reply` 的响应是合法中间状态，工具执行后继续循环；
 5. 普通文本或空响应都不是终态；Runtime 返回紧凑协议错误，要求继续未完成过程并调用 `reply`；
 6. Runtime 允许两次纠错；第三次仍不合法时发布 `runtime/reply_protocol_fused` 并安全熔断，防止无响应循环；
-7. Reply 纠错是模型请求，会记录 `runtime/model_attempt_started` 和 `runtime/reply_protocol_error`，但终态 `reply` 本身不消耗物理工作 Attempt；
-8. `phase=context-closure` 只暴露 `context_tx + reply`；`phase=final-reply` 只暴露 `reply`。
+7. Reply 纠错是模型请求，会记录 `runtime/model_attempt_started` 和 `runtime/reply_protocol_error`；
+8. `kernel.turn-control.phase=soft-checkpoint` 是默认每 90 次模型求值出现一次的复盘提示，不限制工具、不强制 `reply`，下一次求值自动恢复 `work`；只有 Context 已处于 `critical` 且维护事务预算耗尽等明确的物理不可执行状态，Runtime 才进入安全熔断。
 
 `suppress` 是一个可观测决定，不等于模型什么都没有返回。对于被委派的子 Session，`suppress` 仍会确定性结束子任务并向父级产生空结果状态，避免委派永久悬挂；它不会向外部 Session 伪造一条可见文本。
 
