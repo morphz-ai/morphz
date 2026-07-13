@@ -1463,6 +1463,93 @@ async fn model_native_prompt_count_drives_pressure_before_completion() {
 }
 
 #[tokio::test]
+async fn critical_maintenance_rejects_unoffered_physical_tool_with_same_call_id_receipt() {
+    let session_id = "attempt_critical_rejects_physical_tool";
+    let side_effect_dir = TempDir::new().unwrap();
+    let side_effect_path = side_effect_dir.path().join("must-not-be-created.txt");
+    let config = morphz::config::OrchestratorConfig {
+        context_soft_token_limit: 2_000,
+        context_hard_token_limit: 3_000,
+        context_maintenance_reserve_tokens: 200,
+        ..Default::default()
+    };
+    let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            Response {
+                content: "继续执行刚才的写入".to_string(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "write-while-critical".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "write".to_string(),
+                    arguments: json!({
+                        "path": side_effect_path.to_string_lossy(),
+                        "content": "this must never be written",
+                        "mode": "create"
+                    })
+                    .to_string(),
+                }],
+            },
+            Response {
+                content: "已识别临界维护边界，未执行写入。".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ],
+        config,
+    )
+    .await;
+    client.set_prompt_token_count(2_900);
+
+    publish_user(&bus, session_id, "trigger critical maintenance").await;
+    assert_eq!(
+        wait_for_topic(&store, "chat/reply", session_id).await.len(),
+        1
+    );
+    assert!(!side_effect_path.exists());
+
+    let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
+    let rejection = outputs
+        .iter()
+        .find(|event| event.payload.get("tool_call_id") == Some(&json!("write-while-critical")))
+        .expect("rejected tool call must produce a role=tool-compatible receipt");
+    assert_eq!(
+        rejection.payload.get("tool_status"),
+        Some(&json!("rejected"))
+    );
+    assert_eq!(rejection.payload.get("executed"), Some(&json!(false)));
+    assert_eq!(
+        rejection.payload.get("rejection_code"),
+        Some(&json!("TOOL_NOT_AVAILABLE_IN_CURRENT_PHASE"))
+    );
+    assert_eq!(
+        rejection.payload.get("phase"),
+        Some(&json!("critical-maintenance"))
+    );
+
+    let tools_seen = client.tools_seen();
+    assert_eq!(tools_seen.len(), 2);
+    assert_eq!(tools_seen[0], vec!["context_tx", "reply"]);
+    assert_eq!(tools_seen[1], vec!["context_tx", "reply"]);
+    let messages = client.messages_seen();
+    assert_eq!(messages.len(), 2);
+    assert!(messages[0][0].content.contains("critical-maintenance"));
+    assert!(messages[0][0].content.contains("外部物理工具已被暂时撤下"));
+    assert!(messages[1].iter().any(|message| {
+        message.role == "assistant"
+            && message
+                .tool_calls
+                .as_ref()
+                .is_some_and(|calls| calls.iter().any(|call| call.id == "write-while-critical"))
+    }));
+    assert!(messages[1].iter().any(|message| {
+        message.role == "tool"
+            && message.tool_call_id.as_deref() == Some("write-while-critical")
+            && message
+                .content
+                .contains("TOOL_NOT_AVAILABLE_IN_CURRENT_PHASE")
+    }));
+}
+
+#[tokio::test]
 async fn test_critical_transaction_that_relieves_pressure_cools_down_next_attempt() {
     let session_id = "attempt_context_critical_then_cooldown";
     let config = morphz::config::OrchestratorConfig {

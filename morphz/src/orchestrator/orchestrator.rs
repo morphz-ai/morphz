@@ -240,6 +240,12 @@ const SOFT_CHECKPOINT_PROMPT: &str = r#"Runtime 当前处于 soft-checkpoint。�
 - 若近期动作没有产生新证据，停止重复调用，改用已有证据推进、如实说明阻塞或 reply。
 - 只有存在值得跨轮保留的状态变化时才提交 context_tx；检查点本身不要求维护事务。"#;
 
+const CRITICAL_MAINTENANCE_PROMPT: &str = r#"Runtime 当前进入 critical-maintenance：本轮 Context 已达到临界压力，必须先释放 Context 预算，再继续外部工作。
+- 本次只能调用当前实际提供的工具。外部物理工具已被暂时撤下；不要重复刚才的物理工具调用，也不要假定它已执行。
+- 优先用一次 context_tx 准确压缩 Mind/Inbox：保留当前目标、用户约束、最新可靠事实、未完成工作和继续执行所需证据；摘要或 retire 陈旧、重复、已被新事实取代的内容。
+- recall 仅用于维护前确实缺失的原始证据；不要借此展开新的外部工作。完成维护后 Runtime 会重新计算压力并恢复适用的物理工具。
+- 若调用本轮未提供的工具，Runtime 会拒绝执行，并以对应 tool_call_id 返回明确的 rejected 工具结果。"#;
+
 const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context 已处于 critical，且本回合普通 context_tx 额度已经耗尽。为避免在不可执行的维护请求中循环，本次强制进入 reply-only 阶段。只允许调用标准 reply 工具；请如实交付已完成状态、最近一次可靠验证和剩余工作。"#;
 
 const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请调用 reply 工具结束当前任务，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
@@ -269,6 +275,7 @@ struct ToolExecutionOptions {
     context_tx_allowed: bool,
     wake_on_output: bool,
     transcript_tool_calls: Option<Vec<crate::llm::ToolCall>>,
+    allowed_tool_names: HashSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -1423,6 +1430,10 @@ impl Orchestrator {
         ];
         messages.extend(transcript_messages);
         let tools = self.batch_tool_definitions()?;
+        let allowed_tool_names = tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<HashSet<_>>();
         let prompt_measurement = self
             .refresh_context_pressure(&mut context, &mut messages, &tools, context_message_prefix)
             .await?;
@@ -1483,6 +1494,7 @@ impl Orchestrator {
                 context_id,
                 session_ids,
                 &context_tx_allowed,
+                &allowed_tool_names,
                 &attempt_id,
                 response,
             )
@@ -1563,6 +1575,7 @@ impl Orchestrator {
         context_id: &str,
         session_ids: &[String],
         context_tx_allowed: &HashSet<String>,
+        allowed_tool_names: &HashSet<String>,
         attempt_id: &str,
         response: crate::llm::Response,
     ) -> Result<HashSet<String>, DynError> {
@@ -1641,7 +1654,14 @@ impl Orchestrator {
             };
             async move {
                 let result = self
-                    .apply_merged_lane(context_id, context_tx_allowed, attempt_id, session_id, lane)
+                    .apply_merged_lane(
+                        context_id,
+                        context_tx_allowed,
+                        allowed_tool_names,
+                        attempt_id,
+                        session_id,
+                        lane,
+                    )
                     .await;
                 (session_id.clone(), result)
             }
@@ -1665,6 +1685,7 @@ impl Orchestrator {
         &self,
         context_id: &str,
         context_tx_allowed: &HashSet<String>,
+        allowed_tool_names: &HashSet<String>,
         attempt_id: &str,
         session_id: &str,
         lane: MergedLaneWork,
@@ -1717,6 +1738,7 @@ impl Orchestrator {
                     context_tx_allowed: context_tx_allowed.contains(session_id),
                     wake_on_output: true,
                     transcript_tool_calls: Some(lane.transcript_calls),
+                    allowed_tool_names: allowed_tool_names.clone(),
                 },
             )
             .await
@@ -2001,6 +2023,8 @@ impl Orchestrator {
         );
         let effective_phase = if maintenance_budget_exhausted {
             "final-reply"
+        } else if context.pressure.level == "critical" {
+            "critical-maintenance"
         } else {
             context.turn_budget.phase.as_str()
         };
@@ -2011,6 +2035,7 @@ impl Orchestrator {
             "final-reply" if maintenance_budget_exhausted => {
                 Some(MAINTENANCE_BUDGET_EXHAUSTED_PROMPT)
             }
+            "critical-maintenance" => Some(CRITICAL_MAINTENANCE_PROMPT),
             "soft-checkpoint" => Some(SOFT_CHECKPOINT_PROMPT),
             _ if context_tx_cooldown => Some(CONTEXT_TX_COOLDOWN_PROMPT),
             _ => None,
@@ -2090,6 +2115,10 @@ impl Orchestrator {
             }
         }
         tools.push(reply_tool_definition());
+        let allowed_tool_names = tools
+            .iter()
+            .map(|tool| tool.name.clone())
+            .collect::<HashSet<_>>();
         self.record_context_inspect(session_id, &attempt_id, &context, &messages);
         let mut protocol_messages = messages;
         let mut protocol_errors = 0usize;
@@ -2251,6 +2280,7 @@ impl Orchestrator {
                         && !context_tx_cooldown,
                     wake_on_output: true,
                     transcript_tool_calls: None,
+                    allowed_tool_names,
                 },
             )
             .await?;
@@ -2576,9 +2606,12 @@ impl Orchestrator {
             .collect::<Vec<_>>();
         let mut selected_tool_calls = Vec::with_capacity(requested_tool_calls.len());
         let mut context_tx_calls = Vec::new();
+        let mut unavailable_tool_calls = Vec::new();
         for call in requested_tool_calls {
             if call.func_name == "context_tx" {
                 context_tx_calls.push(call);
+            } else if !options.allowed_tool_names.contains(&call.func_name) {
+                unavailable_tool_calls.push(call);
             } else {
                 selected_tool_calls.push(call);
             }
@@ -2655,13 +2688,24 @@ impl Orchestrator {
                 ),
             }
         }
-        let selected_ids = selected_tool_calls
+        if !unavailable_tool_calls.is_empty() {
+            tracing::warn!(
+                session_id,
+                attempt_id,
+                phase,
+                rejected = unavailable_tool_calls.len(),
+                "模型调用了本轮未提供的工具；Runtime 已拒绝执行"
+            );
+        }
+        let transcript_ids = selected_tool_calls
             .iter()
+            .chain(unavailable_tool_calls.iter())
             .map(|call| call.id.as_str())
             .collect::<HashSet<_>>();
         let mut transcript_tool_calls = options.transcript_tool_calls.unwrap_or_else(|| {
             selected_tool_calls
                 .iter()
+                .chain(unavailable_tool_calls.iter())
                 .map(|call| crate::llm::ToolCall {
                     id: call.id.clone(),
                     r#type: call.r#type.clone(),
@@ -2672,8 +2716,8 @@ impl Orchestrator {
                 })
                 .collect::<Vec<_>>()
         });
-        transcript_tool_calls.retain(|call| selected_ids.contains(call.id.as_str()));
-        drop(selected_ids);
+        transcript_tool_calls.retain(|call| transcript_ids.contains(call.id.as_str()));
+        drop(transcript_ids);
         if context_tx_batch_error.is_some() {
             transcript_tool_calls.push(crate::llm::ToolCall {
                 id: "context_tx_batch_rejected".to_string(),
@@ -2694,8 +2738,19 @@ impl Orchestrator {
             .map(tool_call_activity_preview)
             .collect::<Vec<_>>();
         let deduplicated_count = deduplicated_context_tx_ids.len();
-        let rejected_count = rejected_context_tx_ids.len();
-        let rejection_status = context_tx_batch_status.clone();
+        let unavailable_call_ids = unavailable_tool_calls
+            .iter()
+            .map(|call| call.id.clone())
+            .collect::<Vec<_>>();
+        let unavailable_call_names = unavailable_tool_calls
+            .iter()
+            .map(|call| call.func_name.clone())
+            .collect::<Vec<_>>();
+        let rejected_count = rejected_context_tx_ids.len() + unavailable_tool_calls.len();
+        let rejection_status = context_tx_batch_status.clone().or_else(|| {
+            (!unavailable_tool_calls.is_empty())
+                .then(|| "tool-not-available-in-current-phase".to_string())
+        });
         self.bus
             .publish(Event::new(
                 format!("call_{}", attempt_id),
@@ -2725,6 +2780,14 @@ impl Orchestrator {
                         "context_tx_rejection_status".to_string(),
                         json!(context_tx_batch_status),
                     ),
+                    (
+                        "unavailable_tool_call_ids".to_string(),
+                        json!(unavailable_call_ids),
+                    ),
+                    (
+                        "unavailable_tool_names".to_string(),
+                        json!(unavailable_call_names),
+                    ),
                 ]
                 .into_iter()
                 .collect(),
@@ -2753,6 +2816,52 @@ impl Orchestrator {
 
         let mut tasks = Vec::new();
         let mut guarded_outputs = Vec::new();
+        let mut allowed_tool_names = options
+            .allowed_tool_names
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        allowed_tool_names.sort();
+        for call in unavailable_tool_calls {
+            let guidance = if phase == "critical-maintenance" {
+                "当前 Context 处于 critical-maintenance。请不要重复该物理工具调用；先使用 context_tx 压缩并保留继续任务所需的最新状态，等待 Runtime 重新提供物理工具。"
+            } else {
+                "该工具未在本轮 Function Calling 定义中提供，因此没有执行。请根据当前阶段和 allowed_tools 重新决策。"
+            };
+            let output = json!({
+                "status": "rejected",
+                "executed": false,
+                "reason": "TOOL_NOT_AVAILABLE_IN_CURRENT_PHASE",
+                "phase": phase,
+                "tool": call.func_name,
+                "allowed_tools": allowed_tool_names,
+                "guidance": guidance,
+            })
+            .to_string();
+            guarded_outputs.push(Event::new(
+                format!("output_{}_{}", attempt_id, call.id),
+                "System-ToolPolicy".to_string(),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                vec![
+                    ("context_id".to_string(), json!(context_id)),
+                    ("session_id".to_string(), json!(session_id)),
+                    ("attempt_id".to_string(), json!(attempt_id)),
+                    ("tool_call_id".to_string(), json!(call.id)),
+                    ("tool_name".to_string(), json!(call.func_name)),
+                    ("tool_status".to_string(), json!("rejected")),
+                    ("executed".to_string(), json!(false)),
+                    (
+                        "rejection_code".to_string(),
+                        json!("TOOL_NOT_AVAILABLE_IN_CURRENT_PHASE"),
+                    ),
+                    ("phase".to_string(), json!(phase)),
+                    ("text".to_string(), json!(output)),
+                ]
+                .into_iter()
+                .collect(),
+            ));
+        }
         for call in selected_tool_calls {
             if matches!(call.func_name.as_str(), "write" | "edit") {
                 self.read_guard(session_id)
