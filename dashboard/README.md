@@ -1,73 +1,31 @@
-# React + TypeScript + Vite
+# Morphz Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Dashboard 是 Context-Owned Session Service v1 的浏览器客户端，同时保留 Agent-Owned Context 和实验性 Recall 图谱观察能力。
 
-Currently, two official plugins are available:
+当前支持：
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- 创建和选择 Cognitive Context，并在其中创建、选择、改名、归档和恢复 Session；
+- 创建全新 Agent（空白 Root Context + 初始 Session）；
+- 在当前 Context 创建共享 Session，或继承当前 Mind 创建不含原 Session/Inbox 的独立 Session；
+- 查看当前 Session 的 Delegation 总数与运行状态；
+- 向指定 Session 发送消息并显示进度与最终回复；
+- 观察同一 Context 多 Session 合并求值状态（`BATCH:N`）及各自路由结果；
+- 取消当前执行；
+- 查看 Mind Frames、Inbox、Pressure、Attempt 预算和模型消息；
+- 查看过滤后的 Session Event 流与全局 Recall 图谱。
 
-## React Compiler
+启动：
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm ci
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+默认连接 `http://127.0.0.1:8080` 与 `ws://127.0.0.1:8080/ws`。远程 Core 可设置：
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+VITE_MORPHZ_HTTP_URL=https://example.test \
+VITE_MORPHZ_WS_URL=wss://example.test/ws \
+VITE_MORPHZ_TOKEN=replace-me \
+npm run dev
 ```

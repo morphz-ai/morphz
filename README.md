@@ -4,7 +4,7 @@ Morphz 是一个由 Rust 实现、能够通过 SExpr DSL 自主管理自身 Cont
 
 当前 Agent-Owned Context v1 将状态分成：
 
-- `kernel`：Runtime 拥有的只读 session、version 和 Context pressure；
+- `kernel`：Runtime 拥有的只读 Context、当前求值的 active Session、version 和 Context pressure；
 - `mind`：LLM 拥有的自由格式 Context Frames；
 - `inbox`：Event Ledger 中尚未被 Agent 主动退役的原始 Observation。
 
@@ -22,13 +22,17 @@ Experience Transfer v1 以相关经验、无关经验和全新 Agent 三 arm 同
 
 Cognitive SExpr VM Prompt 将 LLM 定义为持续运行的 S 表达式认知机器的非确定性语义处理器。严格 Mind-only 评分下的五次 Gemini 配对实验中，VM related 为 15/15、原 Agent Prompt 为 14/15，三 arm 总语义为 31/45 对 26/45；模型尝试略降但物理工具增加，且尚未形成显式抽象原则。候选已证明当前任务族中非退化，完整判据、Mind 审计和结论见 [Cognitive S-Expression VM Prompt A/B](docs/morphz_cognitive_sexpr_vm_prompt_ab.md)。
 
-Runtime 默认使用 `cognitive_sexpr_vm`；如需回归旧身份，可设置 `MORPHZ_SYSTEM_PROMPT_MODE=agent_owned_context`。这只切换稳定 System Prompt，Context Protocol、DSL、工具和持久化状态保持一致。
+Runtime 现在提供三个可运行的 System Prompt Profile，并默认使用 `semantic_sexpr_vm`：整个稳定 Prompt 是一棵 SExpr，`seq/call/fallback/bind/if/reply` 的自然语言语义位于各自节点内部。旧的 `cognitive_sexpr_vm` 与 `agent_owned_context` 仍可通过 `MORPHZ_SYSTEM_PROMPT_MODE` 选择。三者共享 Context Protocol、DSL、工具、持久化状态和标准 `reply(deliver/suppress)` Function Calling，因此可以做不混淆终止机制的回归对照。完整定义见 [三版本 System Prompt 与显式 Reply 协议](docs/morphz_system_prompt_profiles_and_reply_v1.md)。
+
+Context-Owned Session Service v1 提供持久化 Context/Session Registry、消息幂等、按 Session 的消息与回复路由、共享 Context Encoding、过滤 WebSocket 和取消语义。一个 Context 当前拥有一个共享 Mind 和多个可并发活跃的 Session；同 Session 顺序执行，不同 Session 可并发求值，`context_tx` 按 Context 加锁串行提交。接口与边界见 [Session Service v1](docs/morphz_session_service_v1.md)。
+
+Agent / Context / Session Lifecycle v1 在统一 Mount/Seed/Projection 底层上提供四个高层语义：`create_session` 在当前 Context 创建共享会话，`create_independent_session` 继承 Mind 但隔离原 Session/Inbox，`create_agent` 创建全新 Agent/Root Context/初始 Session，`delegate` 把共享 Mind 与可选的当前 Session 证据交给隔离 Sub Agent，并将结果返回父 Session 验证和整合。设计、不变量、API 与验证结果见 [Lifecycle 与 Delegation v1](docs/morphz_agent_context_session_lifecycle_v1.md)。
 
 Coding Tools v1 提供 `list_files/search/read/edit/write/exec` 最小开发闭环：`read` 返回 SHA-256 文件版本，`edit` 使用版本前提执行唯一匹配的原子局部修改，`write` 只允许显式 create 或带版本前提的 overwrite，所有成功修改都会产生带 Diff 的 `file_change` Observation。接口与安全边界见 [Coding Tools v1](docs/morphz_coding_tools_v1.md)。
 
 真实 Coding Agent 测试使用独立 fixture、数据库、Artifact 目录和 macOS Seatbelt exec 边界；v2 提供多文件重试状态机任务，并在 Agent 不可见的 verifier 副本中注入隐藏测试。创建、探针、固定验证、范围审计与 Ledger 评分见 [Coding Eval Sandbox](docs/morphz_coding_eval_sandbox.md)。
 
-Attempt Runtime 将物理工作与 Context transaction 分开计费，并提供一次 `context_tx`-only 最终收口。Protocol v9 在 v8 工具结果回传语义之上增加 Reality/Epistemic Contract，同时保留 v6 的统一终止语义与 v7 的完整 `revise`、Checkpoint；当前用户回合内按标准 `assistant.tool_calls → role=tool/tool_call_id` 回传工具结果，结果立即持久化为 Observation，但不会在同一请求的 Inbox 中重复注入。任何工具调用都是中间状态，只有无工具纯文本才结束回合。
+Attempt Runtime 将物理工作与 Context transaction 分开计费，并提供一次 `context_tx`-only 最终收口。Protocol v10 在 v9 Reality/Epistemic Contract 之上增加实验性的同一 Context 多 Session 合并求值；Protocol v11 进一步把 single 模式终态统一为标准 `reply(deliver/suppress)` Function Calling。普通文本或空响应不再被静默当作终态，Runtime 会有限纠错后安全熔断；batch 模式仍通过 `session_output` 把 `progress/final` 分别路由到多个 ready Session。物理工具结果会立即持久化并按所属 Session 回传；`context_tx` 只修改共享 Mind，不能替代用户消息输出。10 Session 轻对话实测通过，但双编码任务的完整批次覆盖只有 3/7，因此合并求值默认关闭，可用 `MORPHZ_MERGED_EVALUATION_ENABLED=true` 显式开启。
 
 Context Pressure Eval 使用合成长历史和缩小阈值验证 Agent 自主 `derive/protect/retire`：首次真实运行将 estimated tokens 从 9,177 降至 2,140，并完整保留四项长期事实。设计、命令和结论边界见 [Context Pressure Eval](docs/morphz_context_pressure_eval.md)。
 

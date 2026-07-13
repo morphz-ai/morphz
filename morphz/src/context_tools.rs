@@ -3,7 +3,7 @@ use crate::llm::ToolDefinition;
 use crate::orchestrator::context::{
     context_tx_parameter_description, context_tx_tool_description, ContextEngine,
 };
-use crate::tool::{Tool, CURRENT_SESSION_ID};
+use crate::tool::{Tool, CURRENT_CONTEXT_ID, CURRENT_SESSION_ID};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -19,6 +19,10 @@ impl ContextTxTool {
 
 #[derive(Deserialize)]
 struct ContextTxArgs {
+    #[serde(default)]
+    context_id: String,
+    /// Legacy wire compatibility only. The public schema intentionally omits
+    /// routing identifiers; Runtime task-local routing is authoritative.
     #[serde(default)]
     session_id: String,
     transaction: String,
@@ -37,10 +41,6 @@ impl Tool for ContextTxTool {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "当前 session ID；通常可省略，Runtime 会注入当前 session"
-                    },
                     "transaction": {
                         "type": "string",
                         "description": context_tx_parameter_description()
@@ -56,14 +56,24 @@ impl Tool for ContextTxTool {
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let mut args: ContextTxArgs = serde_json::from_str(arguments)?;
-        if args.session_id.trim().is_empty() {
-            args.session_id = CURRENT_SESSION_ID
-                .try_with(Clone::clone)
-                .map_err(|_| "context_tx 缺少 session_id，且 Runtime 未注入当前 session")?;
+        let session_id = CURRENT_SESSION_ID
+            .try_with(Clone::clone)
+            .unwrap_or_else(|_| args.session_id.clone());
+        if session_id.trim().is_empty() {
+            return Err("context_tx 缺少 Runtime 注入的当前 active session".into());
         }
+        args.context_id = CURRENT_CONTEXT_ID
+            .try_with(Clone::clone)
+            .unwrap_or_else(|_| {
+                if args.context_id.trim().is_empty() {
+                    session_id.clone()
+                } else {
+                    args.context_id.clone()
+                }
+            });
         let commit = self
             .context_engine
-            .apply_transaction(&args.session_id, &args.transaction)
+            .apply_context_transaction(&args.context_id, &session_id, &args.transaction)
             .await?;
         Ok(serde_json::to_string_pretty(&serde_json::json!({
             "status": "committed",
@@ -89,6 +99,8 @@ impl RecallTool {
 #[derive(Default, Deserialize)]
 struct RecallArgs {
     #[serde(default)]
+    context_id: String,
+    #[serde(default)]
     session_id: String,
     event_id: Option<String>,
     frame_id: Option<String>,
@@ -111,10 +123,9 @@ impl Tool for RecallTool {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "session_id": { "type": "string", "description": "通常省略，由 Runtime 注入" },
                     "event_id": { "type": "string", "description": "Context observation 的稳定短 ref（如 @e27）；兼容完整 Ledger event ID" },
                     "frame_id": { "type": "string", "description": "已存在或已退役的 frame ID" },
-                    "query": { "type": "string", "description": "在当前 session Ledger 中搜索" },
+                    "query": { "type": "string", "description": "在当前 Cognitive Context 的 Ledger 中搜索（覆盖其中所有 Session）" },
                     "offset": { "type": "integer", "minimum": 0, "description": "读取 event 原文的字符偏移；连续分页时必须使用上次结果的 next_offset" },
                     "limit": { "type": "integer", "minimum": 1, "maximum": max_chunk_chars, "description": format!("单次返回字符数，上限 {max_chunk_chars}") }
                 }
@@ -130,10 +141,14 @@ impl Tool for RecallTool {
         args.event_id = non_empty(args.event_id);
         args.frame_id = non_empty(args.frame_id);
         args.query = non_empty(args.query);
-        if args.session_id.trim().is_empty() {
-            args.session_id = CURRENT_SESSION_ID
-                .try_with(Clone::clone)
-                .map_err(|_| "recall 缺少 session_id，且 Runtime 未注入当前 session")?;
+        args.context_id = CURRENT_CONTEXT_ID
+            .try_with(Clone::clone)
+            .unwrap_or_else(|_| args.context_id.clone());
+        if args.context_id.trim().is_empty() {
+            args.context_id = args.session_id.clone();
+        }
+        if args.context_id.trim().is_empty() {
+            return Err("recall 缺少 Runtime 注入的当前 cognitive context".into());
         }
         let selected = usize::from(args.event_id.is_some())
             + usize::from(args.frame_id.is_some())
@@ -145,7 +160,7 @@ impl Tool for RecallTool {
         if let Some(frame_id) = args.frame_id {
             let frame = self
                 .context_engine
-                .find_frame(&args.session_id, &frame_id)
+                .find_frame(&args.context_id, &frame_id)
                 .await?
                 .ok_or_else(|| format!("frame '{}' 不存在", frame_id))?;
             return Ok(serde_json::to_string_pretty(&frame)?);
@@ -154,9 +169,9 @@ impl Tool for RecallTool {
         if let Some(event_id) = args.event_id {
             let event = self
                 .context_engine
-                .find_event(&args.session_id, &event_id)
+                .find_event(&args.context_id, &event_id)
                 .await?
-                .ok_or_else(|| format!("event '{}' 不存在或不属于当前 session", event_id))?;
+                .ok_or_else(|| format!("event '{}' 不存在或不属于当前 Context", event_id))?;
             let event_reference = self.context_engine.event_reference(&event);
             return event_chunk(
                 event,
@@ -171,7 +186,7 @@ impl Tool for RecallTool {
         let limit = args.limit.unwrap_or(10).clamp(1, 50);
         let events = self
             .context_engine
-            .search_events(&args.session_id, &query, limit)
+            .search_events(&args.context_id, &query, limit)
             .await?;
         let max_chunk_chars = self.context_engine.recall_chunk_chars();
         let matches = events

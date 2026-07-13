@@ -20,6 +20,11 @@ observation_preview_chars = 16000
 max_attempts_per_turn = 12
 # Context-only 响应使用独立预算，不占用上述物理工作 Attempt；最终收口另保留一次。
 max_context_transactions_per_turn = 6
+# 实验能力：同一 Context 内近同时到达的 Session 消息可合并求值；
+# 重量编码实测覆盖率不足，因此生产默认仍分别求值，可通过环境变量显式开启。
+merged_evaluation_enabled = false
+session_batch_coalesce_ms = 25
+max_sessions_per_evaluation = 8
 
 [memory]
 sqlite_pool_size = 8

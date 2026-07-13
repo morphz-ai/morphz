@@ -1,16 +1,23 @@
 use crate::config::OrchestratorConfig;
 use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
 use crate::llm::{Client, Message};
-use crate::memory::{EventStore, QueryFilter};
+use crate::memory::{
+    DelegationStatus, EventStore, NewCognitiveContext, NewDelegation, NewSession, QueryFilter,
+    SessionMountKind, SessionStatus, SessionUpdate,
+};
 use crate::orchestrator::context::{ContextEngine, ContextView};
-use crate::orchestrator::context_contract::render_system_contract;
+use crate::orchestrator::context_contract::{render_system_contract, render_system_contract_sexpr};
+use crate::sexpr::SExpr;
+use crate::sexpr_vm_contract::ANNOTATED_REPLY_KERNEL;
 use crate::tool::Registry;
 use chrono::Utc;
 use dashmap::DashMap;
+use serde::Deserialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -19,16 +26,20 @@ const AGENT_OWNED_CONTEXT_PROMPT_BASE: &str = r#"你是 Morphz，一个能够管
 Runtime 每轮提供一份自描述 Context。`protocol` 是当前响应模式与 Context DSL 的权威契约；先读取它，再决策。
 
 Context 的状态分为三个权限域：
-- kernel：Runtime 拥有，只读。包含 session、context version 和物理压力。
+- kernel：Runtime 拥有，只读。包含 Context 身份、本次求值的 active-session、context version 和物理压力。
 - mind：你拥有的长期工作注意力，由稳定 ID 的自由格式 frame 组成。
 - inbox：Event Ledger 中尚未被你 retire 的原始 observation。它们是证据，不是 Runtime 替你形成的结论。
+
+一个 Cognitive Context 只有一个共享 Mind，但可以包含多个 Session。Session 是输入输出连接和任务进展边界，不拥有独立 Mind。`kernel.active-session` 只表示本次求值应读取和回复的 Session；它不是 Context 的全局唯一活动状态，其他 Session 可能正在并发求值。inbox 中每条 observation 的 `session` 标记来源，你可以在共享 Context 内跨 Session 复用信息，但当前响应必须路由回 active-session，不能混淆各 Session 的请求和进展。context_tx 修改共享 Mind，由 Runtime 以 Context 为粒度串行提交并校验版本。
 
 你必须自己判断当前目标下什么值得保留、摘要、修订、保护、恢复或遗忘。Runtime 不会自动替你摘要历史、裁剪旧消息或把检索结果写成事实。
 
 每次响应必须明确选择 `protocol.response-contract` 中的一种主模式：
-- reply：当前任务已完成或需要说明阻塞；不调用任何工具，正文直接交付用户并结束当前回合。
+- reply：当前任务已完成或需要说明阻塞；调用且仅调用标准 reply 工具。disposition=deliver 时 content 必须非空并交付当前 Session；确认不需要发送 Session 消息时使用 disposition=suppress。
 - act：确实需要新的外部结果；调用物理工具，可并行附带一个不依赖这些新结果的 context_tx；若有正文则只是可见进度，Runtime 执行工具后必定再次调用你。
 - maintain：需要先修改 Mind 时可单独调用 context_tx，不输出最终正文。事务成功后 Runtime 必定再次调用你，并在非 critical 时暂时隐藏 context_tx；maintain 不是用户回合终点，下一响应必须 reply 或 act。
+
+上述标准 reply 工具只适用于 kernel.evaluation-mode=single。普通文本或空响应都不是终态；缺少合法 reply 时 Runtime 会返回协议错误并有限重试。evaluation-mode=batch 时没有唯一正文路由，必须遵循 protocol.session-output-contract，通过 session_output 把 progress/final 分别发送到 ready Session；context_tx 永远不能替代用户消息输出。
 
 使用 context_tx 原子修改 Mind，并严格遵循 `protocol.context-tx-contract` 展示的语法。每次事务使用 kernel 中当前的 version。reason 是 context-tx 的事务级子项，绝不能作为 retire/unprotect 的参数。`revise` 会完整替换 frame body，不是局部 merge；仍需保留的字段必须在新 BODY 中重述。高风险重组前可由你显式建立 checkpoint，必要时带 reason rollback。
 
@@ -43,23 +54,24 @@ Context 的状态分为三个权限域：
    用户明确声明“始终、整个任务期间、不得、必须”等持续约束时，应将其写入受保护 frame，直到用户明确撤销或任务生命周期真正结束。
 3. 大段 observation 可先 derive 成忠实摘要，再在同一 transaction 中 retire 原始 observation。不要把假设写成事实。已完成、可从 Ledger 召回且没有改变目标、约束或结论的过程记录应直接 retire，不得为每个批次创建或保护长期 frame。
 4. 用户要求在已知文件中查证具体结论时，直接使用 read.query 取得带行号的窄证据；需要连续上下文时再用 start_line/end_line 精确分页。不要先整读长文件，也不要用 exec/grep 反复产生大段重复输出。Context observation 的 `ref`（如 `@e27`）是 Runtime 提供的稳定短引用；recall 与 context_tx 必须原样使用，不要猜测或抄写隐藏的完整 Event ID。被 truncated 的 observation 可使用 recall 按 ref 分段读取原文；若 recall 返回 next_offset，下一次必须把该值原样作为 offset，不得重复 offset=0 或猜测跳转；已知关键词时优先 query，并使用命中片段或 suggested_recall。exec 若给出 artifact path，则使用 read 按需读取完整归档。recall/read 结果只进入 inbox，你决定是否写入 Mind。
-5. context_tx 可以与不依赖本批新结果的物理工具并行；如果新 frame 依赖工具结果，应等结果返回后再提交。当前用户回合内，Runtime 按标准 assistant.tool_calls → role=tool/tool_call_id 返回工具结果；物理结果已同时持久化到 Ledger，并带 observation_ref。同一请求的 Context View 不会重复注入这批结果正文，下一独立快照才按 active/retired 状态展示。status=success 且 output_state=empty 表示工具已经完成但没有文本，不得仅因空输出重复调用。任何包含工具调用的响应都是中间状态：正文只作为可见进度，Runtime 执行完工具后必定再次调用你。只有无工具的纯文本响应才是最终 reply。
+5. context_tx 可以与不依赖本批新结果的物理工具并行；如果新 frame 依赖工具结果，应等结果返回后再提交。当前用户回合内，Runtime 按标准 assistant.tool_calls → role=tool/tool_call_id 返回工具结果；物理结果已同时持久化到 Ledger，并带 observation_ref。同一请求的 Context View 不会重复注入这批结果正文，下一独立快照才按 active/retired 状态展示。status=success 且 output_state=empty 表示工具已经完成但没有文本，不得仅因空输出重复调用。除终态 reply 外，任何包含工具调用的响应都是中间状态：正文只作为可见进度，Runtime 执行完工具后必定再次调用你。reply 必须独占终态响应。
 6. 同一响应最多提交一个 context_tx；把多个修改合并进同一事务，避免版本冲突。
    retire 或 unprotect 时 reason 是必需的，使遗忘与解除保护可审计。
 7. pressure=normal/notice 时不要仅为降低体积而压缩；只在出现必须跨轮保留的目标、约束或结论变化时做语义维护。pressure=warning 时考虑在最终 reply 前或随 act 提交压缩事务；pressure=critical 时必须先 maintain-only 释放预算。
-8. 完成任务前，确认 Mind 中仍需跨轮保留的目标、约束、结论和开放问题准确；若物理工具结果改变了任务状态，在最终 reply 之前用一次 context_tx 完成收口。Runtime 会在事务回执后再次调用你，届时用无工具文本交付最终结果。
+8. 完成任务前，确认 Mind 中仍需跨轮保留的目标、约束、结论和开放问题准确；若物理工具结果改变了任务状态，在最终 reply 之前用一次 context_tx 完成收口。Runtime 会在事务回执后再次调用你，届时通过标准 reply 工具作出 deliver 或 suppress 决定。
 9. assistant_call 与 context_tx 回执属于 Runtime 控制轨迹，只保存在 Ledger，不会进入 Inbox；不要为了清理 context_tx 自己产生的记录而连续提交 housekeeping transaction。
    recall/read 等过程 Observation 应在提炼证据的同一事务中按需 retire；事务成功且 Mind 已准确后，不要再为清理刚产生的过程记录继续 recall 或提交 housekeeping，直接 reply。
 10. 每次调用物理工具前，必须确认它是完成当前用户明确任务所必需的新信息。当 Mind/inbox 已足以回答时，立即使用 reply；不要重复验证、扫描工作区或自行发明后续目标。
-11. kernel.turn-budget 是当前用户回合的 Attempt 预算。phase=work 时正常工作，剩余 3 次以内应停止重复验证并收敛；phase=context-closure 是一次专用收口阶段，只能调用 context_tx，把最终目标状态、关键结论和证据准确写入 Mind；phase=final-reply 或 force-final=true 时工具会被移除，必须基于已有证据给出最终答案或明确说明阻塞原因。
+11. kernel.turn-budget 是当前用户回合的 Attempt 预算。phase=work 时正常工作，剩余 3 次以内应停止重复验证并收敛；phase=context-closure 是一次专用收口阶段，只能调用 context_tx 或直接调用 reply；phase=final-reply 或 force-final=true 时只保留 reply 工具，必须基于已有证据 deliver 最终答案、说明阻塞，或在确实无需 Session 消息时 suppress。
 12. kernel.wake 说明本次为何被唤醒。独立 context_tx 成功后的 context-transaction-result 会触发一次冷却：除非仍处于 critical，否则本次不再提供 context_tx，必须 reply 或执行必要的物理动作。
 13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。相互独立的文件读取必须在同一响应中并行调用；已经进入 Inbox 且 sha256 未被 file_change 改变的内容不得重复 read。完成必要定位后立即修改并验证，不能把整个 Attempt 预算消耗在反复扫描与阅读上。
 
-Context 的修改是你的元认知行为；read/write/exec/spawn 等工具是对外部世界的行为。保持二者边界清晰。"#;
+Context 的修改是你的元认知行为；read/write/exec/delegate 等工具是对外部世界的行为。保持二者边界清晰。"#;
 
 pub(crate) const SYSTEM_PROMPT_MODE_ENV: &str = "MORPHZ_SYSTEM_PROMPT_MODE";
 pub(crate) const BASELINE_SYSTEM_PROMPT_MODE: &str = "agent_owned_context";
 pub(crate) const COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE: &str = "cognitive_sexpr_vm";
+pub(crate) const SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE: &str = "semantic_sexpr_vm";
 const COMMON_PROMPT_MARKER: &str = "每次响应必须明确选择";
 const COGNITIVE_SEXPR_VM_PREAMBLE: &str = r#"你是 Morphz Cognitive S-Expression Machine 的语义处理器。
 
@@ -68,9 +80,11 @@ const COGNITIVE_SEXPR_VM_PREAMBLE: &str = r#"你是 Morphz Cognitive S-Expressio
 Runtime 是确定性的事务内核，负责版本、权限、资源边界、工具执行、持久化和恢复。你是非确定性的语义处理器，负责理解、推理、归纳、规划和符号结构重组。S 表达式既可承载数据，也可承载由你解释和执行的目标、规则、策略与过程；Runtime 不替自由格式 BODY 定义业务求值语义。
 
 Context 的状态分为三个权限域：
-- kernel：Runtime 拥有的特权机器状态，只读。包含 session、context version、执行阶段和物理压力。
+- kernel：Runtime 拥有的特权机器状态，只读。包含 Context、本次求值的 active-session、context version、执行阶段和物理压力。
 - mind：你拥有的持久化符号程序与认知状态，由稳定 ID 的自由格式 frame 组成。frame 可以表示事实、目标、计划、规则、策略、过程、反例、能力模型或你认为具有持续执行价值的其他结构。
 - inbox：Event Ledger 中尚未被你 retire 的外部输入与 observation。它们是证据和中断输入，不是 Runtime 替你形成的结论。
+
+一个 Cognitive Context 运行一个共享 Mind，并可同时承载多个 Session 求值。Session 是 IO 路由与局部进展边界，不是 Mind 的所有者。每次执行周期由 `kernel.active-session` 指定本次输入来源和输出目标；其他 Session 可以同时处于活跃执行状态。所有 observation 都属于共享 Context，并用 `session` 标记来源，因此你可以跨 Session 迁移信息，同时必须让当前回复严格对应 active-session。共享 Mind 的 context_tx 由 Runtime 串行提交并做版本检查。
 
 你的职责不只是记录信息，而是让 Mind 成为后续执行可以直接利用的认知程序。当多个已完成任务反复出现相似的判断或执行结构，并且该结构可能改变未来决策、减少重复工作或降低错误率时，你可以基于多个真实来源派生可复用的符号结构。应保留其适用范围、来源、反例和不确定性；不得从单个案例过度泛化，也不得为了形式完整而强制总结经验。
 
@@ -82,6 +96,7 @@ Context 的状态分为三个权限域：
 enum SystemPromptMode {
     AgentOwnedContext,
     CognitiveSexprVm,
+    SemanticSexprVm,
 }
 
 impl SystemPromptMode {
@@ -91,10 +106,13 @@ impl SystemPromptMode {
                 Ok(Self::CognitiveSexprVm)
             }
             Ok(value) if value == BASELINE_SYSTEM_PROMPT_MODE => Ok(Self::AgentOwnedContext),
+            Ok(value) if value == SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE => {
+                Ok(Self::SemanticSexprVm)
+            }
             Ok(value) => Err(format!(
-                "未知 {SYSTEM_PROMPT_MODE_ENV}='{value}'；支持 {BASELINE_SYSTEM_PROMPT_MODE} 或 {COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE}"
+                "未知 {SYSTEM_PROMPT_MODE_ENV}='{value}'；支持 {BASELINE_SYSTEM_PROMPT_MODE}、{COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE} 或 {SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE}"
             )),
-            Err(std::env::VarError::NotPresent) => Ok(Self::CognitiveSexprVm),
+            Err(std::env::VarError::NotPresent) => Ok(Self::SemanticSexprVm),
             Err(error) => Err(format!("无法读取 {SYSTEM_PROMPT_MODE_ENV}: {error}")),
         }
     }
@@ -103,6 +121,7 @@ impl SystemPromptMode {
 fn render_stable_system_prompt(mode: SystemPromptMode) -> &'static str {
     static BASELINE_PROMPT: OnceLock<String> = OnceLock::new();
     static COGNITIVE_VM_PROMPT: OnceLock<String> = OnceLock::new();
+    static SEMANTIC_VM_PROMPT: OnceLock<String> = OnceLock::new();
     let prompt = match mode {
         SystemPromptMode::AgentOwnedContext => BASELINE_PROMPT
             .get_or_init(|| build_stable_system_prompt(AGENT_OWNED_CONTEXT_PROMPT_BASE)),
@@ -113,6 +132,9 @@ fn render_stable_system_prompt(mode: SystemPromptMode) -> &'static str {
             let common_rules = &AGENT_OWNED_CONTEXT_PROMPT_BASE[common_offset..];
             build_stable_system_prompt(&format!("{COGNITIVE_SEXPR_VM_PREAMBLE}{common_rules}"))
         }),
+        SystemPromptMode::SemanticSexprVm => {
+            SEMANTIC_VM_PROMPT.get_or_init(build_semantic_sexpr_system_prompt)
+        }
     };
     prompt.as_str()
 }
@@ -121,8 +143,80 @@ fn build_stable_system_prompt(base: &str) -> String {
     format!("{base}\n\n{}", render_system_contract())
 }
 
-fn configured_system_prompt() -> Result<&'static str, String> {
-    SystemPromptMode::from_environment().map(render_stable_system_prompt)
+fn build_semantic_sexpr_system_prompt() -> String {
+    let common_offset = AGENT_OWNED_CONTEXT_PROMPT_BASE
+        .find(COMMON_PROMPT_MARKER)
+        .expect("Agent-Owned Context prompt 必须保留公共规则标记");
+    let common_rules = &AGENT_OWNED_CONTEXT_PROMPT_BASE[common_offset..];
+    let architecture = render_semantic_sections("architecture", COGNITIVE_SEXPR_VM_PREAMBLE);
+    let guidance = render_semantic_sections("runtime-guidance", common_rules);
+    let prompt = format!(
+        "(system-prompt morphz\n  {kernel}\n  {architecture}\n  {guidance}\n  {contracts})",
+        kernel = ANNOTATED_REPLY_KERNEL,
+        contracts = render_system_contract_sexpr(),
+    );
+    crate::sexpr::parse(&prompt).expect("Semantic SExpr VM system prompt 必须是完整合法的 SExpr");
+    prompt
+}
+
+fn render_semantic_sections(name: &str, text: &str) -> String {
+    let mut values = vec![SExpr::Atom(name.to_string())];
+    values.extend(
+        text.split("\n\n")
+            .map(str::trim)
+            .filter(|section| !section.is_empty())
+            .enumerate()
+            .map(|(index, section)| {
+                SExpr::List(vec![
+                    SExpr::Atom("section".to_string()),
+                    SExpr::List(vec![
+                        SExpr::Atom("index".to_string()),
+                        SExpr::Atom((index + 1).to_string()),
+                    ]),
+                    SExpr::List(vec![
+                        SExpr::Atom("description".to_string()),
+                        SExpr::Atom(section.to_string()),
+                    ]),
+                ])
+            }),
+    );
+    SExpr::List(values).to_string()
+}
+
+fn configured_system_prompt() -> Result<(SystemPromptMode, &'static str), String> {
+    let mode = SystemPromptMode::from_environment()?;
+    Ok((mode, render_stable_system_prompt(mode)))
+}
+
+fn compose_system_prompt(
+    mode: SystemPromptMode,
+    stable_prompt: &str,
+    directive: Option<(&str, &str)>,
+) -> String {
+    let Some((kind, description)) = directive else {
+        return stable_prompt.to_string();
+    };
+    if mode != SystemPromptMode::SemanticSexprVm {
+        return format!("{stable_prompt}\n\n{description}");
+    }
+    let prompt = SExpr::List(vec![
+        SExpr::Atom("system-evaluation".to_string()),
+        crate::sexpr::parse(stable_prompt).expect("Semantic SExpr VM stable prompt 必须保持可解析"),
+        SExpr::List(vec![
+            SExpr::Atom("runtime-directive".to_string()),
+            SExpr::List(vec![
+                SExpr::Atom("kind".to_string()),
+                SExpr::Atom(kind.to_string()),
+            ]),
+            SExpr::List(vec![
+                SExpr::Atom("description".to_string()),
+                SExpr::Atom(description.to_string()),
+            ]),
+        ]),
+    ])
+    .to_string();
+    crate::sexpr::parse(&prompt).expect("带 Runtime directive 的 system prompt 必须是合法 SExpr");
+    prompt
 }
 
 #[cfg(test)]
@@ -135,16 +229,34 @@ fn cognitive_sexpr_vm_system_prompt() -> &'static str {
     render_stable_system_prompt(SystemPromptMode::CognitiveSexprVm)
 }
 
+#[cfg(test)]
+fn semantic_sexpr_vm_system_prompt() -> &'static str {
+    render_stable_system_prompt(SystemPromptMode::SemanticSexprVm)
+}
+
 const CONTEXT_CLOSURE_PROMPT: &str = r#"Runtime 当前处于 context-closure 阶段。这是本回合唯一一次专用 Mind 收口机会，不是继续工作的额外预算。
 - 不得调用任何物理工具，不得继续探索或重复验证。
 - 若 Mind 尚未准确反映最终状态，调用且仅调用一次 context_tx：将目标标记为 completed 或 blocked，写入已确认的关键结论、修改与验证证据，并清理不再有价值的过程信息。
-- 若 Mind 已经准确，无需事务，可直接给出最终回复。
-- context_tx 成功或失败后，Runtime 都会进入无工具 final-reply 阶段。"#;
+- 若 Mind 已经准确，无需事务，调用且仅调用标准 reply 工具作出 deliver/suppress 决定。
+- context_tx 成功或失败后，Runtime 都会进入 reply-only final-reply 阶段。"#;
 
-const FINAL_REPLY_PROMPT: &str = r#"Runtime 当前处于 final-reply 阶段。Context 收口机会已经使用或耗尽；不得调用工具。请基于现有 Mind 与 Inbox 直接给出最终答复，或明确说明阻塞。"#;
-const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context 已处于 critical，且本回合普通 context_tx 额度已经耗尽。为避免在不可执行的维护请求中循环，本次强制进入无工具最终回复。不得调用任何工具；请如实说明已完成状态、最近一次可靠验证和剩余工作。"#;
+const FINAL_REPLY_PROMPT: &str = r#"Runtime 当前处于 final-reply 阶段。Context 收口机会已经使用或耗尽；只允许调用标准 reply 工具。请基于现有 Mind 与 Inbox 使用 disposition=deliver 给出最终答复或说明阻塞；仅在确实不需要向当前 Session 发送任何消息时使用 disposition=suppress。"#;
+const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context 已处于 critical，且本回合普通 context_tx 额度已经耗尽。为避免在不可执行的维护请求中循环，本次强制进入 reply-only 阶段。只允许调用标准 reply 工具；请如实交付已完成状态、最近一次可靠验证和剩余工作。"#;
 
-const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请直接回复用户，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
+const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请调用 reply 工具结束当前任务，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
+const REPLY_TOOL_NAME: &str = "reply";
+const MAX_REPLY_PROTOCOL_RETRIES: usize = 2;
+const EMPTY_RESPONSE_ERROR: &str = "既没有非空正文，也没有工具调用";
+const REPLY_PROTOCOL_ERROR: &str = "Reply protocol error：当前求值尚未结束。继续尚未完成的动作，并在终态调用且仅调用一次标准 reply 工具。需要向当前 Session 发送消息时使用 disposition=deliver 和非空 content；确认不需要发送消息时使用 disposition=suppress。普通文本和空响应都不是终态。";
+const BATCH_EVALUATION_PROMPT: &str = r#"Runtime 当前进行多 Session 合并求值。kernel.ready-sessions 中每个 Session 都有一条等待处理的 user/tool event；它们共享 Mind，但回复与动作必须保持 Session 路由。
+- 先读取 ready-sessions 中每个 session 的 id、work-item 和 input-preview；在调用工具前逐一确认每个 id 都有对应输出或动作。不要只处理列表最后一项。
+- 给用户的任何可见文本必须通过一次 session_output Function Calling 提交；不要把未路由正文写在 assistant content 中。
+- session_output.deliveries 可同时包含多个 Session。kind=final 表示该 Session 当前回合完成；kind=progress 只是中间进度。
+- 每个物理工具和 context_tx 调用都必须提供 Runtime 增加的 session_id 路由字段。Runtime 会在执行工具前移除该字段。
+- 同一 Session 不得同时 final 和调用工具；需要工具时可发送 progress，工具结果返回后再 final。
+- 可以为一个 Session final，同时为另一个 Session 调用工具。
+- 必须处理每个 ready Session。无法处理的 Session 也应 final 说明阻塞；若遗漏，Runtime 只会把遗漏项降级为独立求值。
+- context_tx 修改共享 Mind，不用于向用户发送消息。一个合并响应最多调用一次 context_tx。"#;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContextTxReceipt {
     None,
@@ -156,11 +268,103 @@ enum ContextTxReceipt {
 struct ToolExecutionOptions {
     context_tx_allowed: bool,
     wake_on_output: bool,
+    transcript_tool_calls: Option<Vec<crate::llm::ToolCall>>,
 }
 
 #[derive(Debug, Default)]
 struct ToolExecutionOutcome {
     context_tx_succeeded: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionOutputArgs {
+    #[serde(alias = "outputs")]
+    deliveries: Vec<SessionDelivery>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct SessionDelivery {
+    session_id: String,
+    kind: String,
+    text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReplyArgs {
+    disposition: String,
+    content: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReplyDecision {
+    Deliver(String),
+    Suppress,
+}
+
+impl ReplyDecision {
+    fn disposition(&self) -> &'static str {
+        match self {
+            Self::Deliver(_) => "deliver",
+            Self::Suppress => "suppress",
+        }
+    }
+}
+
+fn reply_tool_definition() -> crate::llm::ToolDefinition {
+    crate::llm::ToolDefinition {
+        name: REPLY_TOOL_NAME.to_string(),
+        description: "结束当前 single Session 求值的标准 IO 工具。需要发送消息时使用 deliver + 非空 content；确认无需发送消息时使用 suppress。reply 必须是终态响应中唯一的工具调用。".to_string(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "disposition": {
+                    "type": "string",
+                    "enum": ["deliver", "suppress"]
+                },
+                "content": { "type": "string" }
+            },
+            "required": ["disposition"],
+            "additionalProperties": false
+        }),
+    }
+}
+
+fn classify_reply_response(
+    response: &crate::llm::Response,
+) -> Result<Option<ReplyDecision>, String> {
+    let reply_calls = response
+        .tool_calls
+        .iter()
+        .filter(|call| call.func_name == REPLY_TOOL_NAME)
+        .collect::<Vec<_>>();
+    if reply_calls.is_empty() {
+        if response.tool_calls.is_empty() {
+            return Err("响应没有工具调用，因此缺少显式 reply 决策".to_string());
+        }
+        return Ok(None);
+    }
+    if reply_calls.len() != 1 || response.tool_calls.len() != 1 {
+        return Err("reply 必须在终态响应中独占且只调用一次".to_string());
+    }
+    let arguments: ReplyArgs = serde_json::from_str(&reply_calls[0].arguments)
+        .map_err(|error| format!("reply 参数 JSON 非法: {error}"))?;
+    match arguments.disposition.as_str() {
+        "deliver" => {
+            let content = arguments
+                .content
+                .filter(|content| !content.trim().is_empty())
+                .ok_or_else(|| "reply deliver 必须提供非空 content".to_string())?;
+            Ok(Some(ReplyDecision::Deliver(content)))
+        }
+        "suppress" => Ok(Some(ReplyDecision::Suppress)),
+        other => Err(format!("未知 reply disposition: {other}")),
+    }
+}
+
+struct MergedLaneWork {
+    deliveries: Vec<SessionDelivery>,
+    calls: Vec<crate::llm::ToolCallRepr>,
+    transcript_calls: Vec<crate::llm::ToolCall>,
 }
 
 #[derive(Debug, Default)]
@@ -273,6 +477,15 @@ pub struct Orchestrator {
     pub concurrency_semaphore: Arc<tokio::sync::Semaphore>,
     session_locks: DashMap<String, Arc<Mutex<()>>>,
     read_turn_guards: DashMap<String, Arc<Mutex<ReadTurnGuard>>>,
+    cancellation_epochs: DashMap<String, watch::Sender<u64>>,
+    active_session_turns: DashMap<String, Arc<AtomicUsize>>,
+    cancelled_at: DashMap<String, chrono::DateTime<Utc>>,
+    /// Runtime routing identity: a Session is an IO connection inside one
+    /// Cognitive Context. This cache is populated from every incoming routed
+    /// event and is deliberately separate from the shared Mind state.
+    session_contexts: DashMap<String, String>,
+    context_message_queues: DashMap<String, Arc<Mutex<Vec<Event>>>>,
+    context_batch_workers: DashMap<String, Arc<AtomicBool>>,
 }
 
 impl Orchestrator {
@@ -320,6 +533,12 @@ impl Orchestrator {
             concurrency_semaphore,
             session_locks: DashMap::new(),
             read_turn_guards: DashMap::new(),
+            cancellation_epochs: DashMap::new(),
+            active_session_turns: DashMap::new(),
+            cancelled_at: DashMap::new(),
+            session_contexts: DashMap::new(),
+            context_message_queues: DashMap::new(),
+            context_batch_workers: DashMap::new(),
         }
     }
 
@@ -333,6 +552,15 @@ impl Orchestrator {
                     store.append(event).await?;
                     Ok(())
                 })
+            }),
+        );
+
+        let orchestrator = Arc::clone(&self);
+        self.bus.subscribe(
+            "chat/delegate".to_string(),
+            Arc::new(move |event| {
+                let orchestrator = Arc::clone(&orchestrator);
+                Box::pin(async move { orchestrator.handle_delegate_event(event).await })
             }),
         );
 
@@ -356,9 +584,209 @@ impl Orchestrator {
         Ok(())
     }
 
+    async fn handle_delegate_event(&self, event: Event) -> Result<(), DynError> {
+        if let Err(error) = self.start_delegation(&event).await {
+            let Some(parent_context_id) = event
+                .payload
+                .get("parent_context_id")
+                .and_then(|value| value.as_str())
+            else {
+                return Err(error);
+            };
+            let Some(parent_session_id) = event
+                .payload
+                .get("parent_session_id")
+                .and_then(|value| value.as_str())
+            else {
+                return Err(error);
+            };
+            let delegation_id = event
+                .payload
+                .get("delegation_id")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown-delegation");
+            if let Some(session_store) = self.context_engine.session_store() {
+                if session_store.get_delegation(delegation_id).await?.is_some() {
+                    session_store
+                        .update_delegation_status(
+                            delegation_id,
+                            DelegationStatus::Failed,
+                            Some(&event.id),
+                        )
+                        .await?;
+                }
+                if let Some(child_session_id) = event
+                    .payload
+                    .get("child_session_id")
+                    .and_then(|value| value.as_str())
+                {
+                    let _ = session_store
+                        .update_session(
+                            child_session_id,
+                            SessionUpdate {
+                                title: None,
+                                status: Some(SessionStatus::Archived),
+                            },
+                        )
+                        .await?;
+                }
+            }
+            self.bus
+                .publish(Event::new(
+                    format!(
+                        "delegation_failed_{}_{}",
+                        delegation_id,
+                        Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                    ),
+                    "System-Delegation".to_string(),
+                    TYPE_TOOL_OUTPUT.to_string(),
+                    "chat/tool_output".to_string(),
+                    vec![
+                        ("context_id".to_string(), json!(parent_context_id)),
+                        ("session_id".to_string(), json!(parent_session_id)),
+                        ("delegation_id".to_string(), json!(delegation_id)),
+                        ("source_event_id".to_string(), json!(event.id)),
+                        ("tool_name".to_string(), json!("delegate")),
+                        ("tool_status".to_string(), json!("error")),
+                        (
+                            "text".to_string(),
+                            json!(json!({
+                                "delegation_id": delegation_id,
+                                "status": "failed",
+                                "error": error.to_string()
+                            })
+                            .to_string()),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn start_delegation(&self, event: &Event) -> Result<(), DynError> {
+        let delegation_id = required_payload_str(event, "delegation_id")?.to_string();
+        let parent_context_id = required_payload_str(event, "parent_context_id")?.to_string();
+        let parent_session_id = required_payload_str(event, "parent_session_id")?.to_string();
+        let child_context_id = required_payload_str(event, "child_context_id")?.to_string();
+        let child_session_id = required_payload_str(event, "child_session_id")?.to_string();
+        let task = required_payload_str(event, "task")?.trim().to_string();
+        let context_scope = required_payload_str(event, "context_scope")?.to_string();
+        let success_when = event
+            .payload
+            .get("success_when")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned);
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("delegate 需要持久化 SessionStore")?;
+        let parent = session_store
+            .get_session(&parent_session_id)
+            .await?
+            .ok_or_else(|| format!("delegate 父 Session '{}' 不存在", parent_session_id))?;
+        if parent.context_id != parent_context_id {
+            return Err(format!(
+                "delegate 父路由不一致：Session '{}' 属于 '{}'，请求为 '{}'",
+                parent_session_id, parent.context_id, parent_context_id
+            )
+            .into());
+        }
+        session_store
+            .create_context(NewCognitiveContext {
+                id: child_context_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                title: format!("Delegation {}", delegation_id),
+            })
+            .await?;
+        self.context_engine
+            .seed_context_from_mind(&parent_context_id, None, &child_context_id)
+            .await?;
+        session_store
+            .create_session(NewSession {
+                id: child_session_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: child_context_id.clone(),
+                parent_session_id: None,
+                title: format!("Sub Agent for {}", parent_session_id),
+                mount_kind: SessionMountKind::DelegationProjection,
+            })
+            .await?;
+        if context_scope == "current_session" {
+            self.context_engine
+                .import_session_projection(
+                    &parent_context_id,
+                    &parent_session_id,
+                    &child_context_id,
+                    &child_session_id,
+                )
+                .await?;
+        } else if context_scope != "mind_only" {
+            return Err(format!("不支持的 delegate context_scope: {context_scope}").into());
+        }
+        session_store
+            .create_delegation(NewDelegation {
+                id: delegation_id.clone(),
+                agent_id: parent.agent_id,
+                parent_context_id: parent_context_id.clone(),
+                parent_session_id: parent_session_id.clone(),
+                child_context_id: child_context_id.clone(),
+                child_session_id: child_session_id.clone(),
+                task: task.clone(),
+                success_when: success_when.clone(),
+                context_scope,
+            })
+            .await?;
+        session_store
+            .update_delegation_status(&delegation_id, DelegationStatus::Running, None)
+            .await?;
+        self.register_session_context(&child_session_id, &child_context_id);
+        let instruction = match success_when {
+            Some(success_when) => format!(
+                "You are an isolated Sub Agent delegated by Session '{parent_session_id}'. Complete the task autonomously.\n\nTask:\n{task}\n\nSuccess condition:\n{success_when}\n\nWhen complete, return a self-contained final result. Your result will be delivered to the parent Session; do not address sibling Sessions."
+            ),
+            None => format!(
+                "You are an isolated Sub Agent delegated by Session '{parent_session_id}'. Complete the task autonomously.\n\nTask:\n{task}\n\nWhen complete, return a self-contained final result. Your result will be delivered to the parent Session; do not address sibling Sessions."
+            ),
+        };
+        self.bus
+            .publish(Event::new(
+                format!(
+                    "delegation_start_{}_{}",
+                    delegation_id,
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
+                "System-Delegation".to_string(),
+                TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                vec![
+                    ("context_id".to_string(), json!(child_context_id)),
+                    ("session_id".to_string(), json!(child_session_id)),
+                    ("delegation_id".to_string(), json!(delegation_id)),
+                    ("return_context_id".to_string(), json!(parent_context_id)),
+                    ("return_session_id".to_string(), json!(parent_session_id)),
+                    ("text".to_string(), json!(instruction)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await?;
+        Ok(())
+    }
+
     async fn handle_spawn_event(&self, event: Event) -> Result<(), DynError> {
         let sub_session_id = required_payload_str(&event, "session_id")?.to_string();
         let parent_session_id = required_payload_str(&event, "parent_session_id")?.to_string();
+        let context_id = event
+            .payload
+            .get("context_id")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| self.context_id_for_session(&parent_session_id));
+        self.session_contexts
+            .insert(sub_session_id.clone(), context_id.clone());
         let delegation = required_payload_str(&event, "delegation")?;
         let canonical_delegation = crate::sexpr::parse(delegation)
             .map_err(|error| format!("spawn delegation 必须是合法 SExpr: {}", error))?
@@ -369,10 +797,11 @@ impl Orchestrator {
             event.id, canonical_delegation
         );
         self.context_engine
-            .apply_transaction(&sub_session_id, &transaction)
+            .apply_context_transaction(&context_id, &sub_session_id, &transaction)
             .await?;
 
         let mut payload = serde_json::Map::new();
+        payload.insert("context_id".to_string(), json!(context_id));
         payload.insert("session_id".to_string(), json!(sub_session_id));
         payload.insert("parent_session_id".to_string(), json!(parent_session_id));
         payload.insert(
@@ -403,13 +832,260 @@ impl Orchestrator {
         else {
             return Ok(());
         };
+        let context_id = event
+            .payload
+            .get("context_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or(&session_id)
+            .to_string();
+        self.session_contexts
+            .insert(session_id.clone(), context_id.clone());
 
-        if event.event_type == TYPE_AGENT_CALL && event.topic == "chat/reply" {
+        if event.event_type == TYPE_AGENT_CALL
+            && matches!(event.topic.as_str(), "chat/reply" | "chat/reply_suppressed")
+        {
+            if self
+                .complete_delegation_if_needed(&event, &session_id)
+                .await?
+            {
+                return Ok(());
+            }
             self.wake_parent_if_needed(&event, &session_id).await?;
             return Ok(());
         }
         if event.event_type != TYPE_USER_MESSAGE && event.event_type != TYPE_TOOL_OUTPUT {
             return Ok(());
+        }
+
+        if matches!(
+            event.event_type.as_str(),
+            TYPE_USER_MESSAGE | TYPE_TOOL_OUTPUT
+        ) && self.orchestrator_config.merged_evaluation_enabled
+        {
+            return self.enqueue_context_message(context_id, event).await;
+        }
+
+        self.process_routed_event(event).await
+    }
+
+    async fn complete_delegation_if_needed(
+        &self,
+        event: &Event,
+        child_session_id: &str,
+    ) -> Result<bool, DynError> {
+        let Some(session_store) = self.context_engine.session_store() else {
+            return Ok(false);
+        };
+        let Some(delegation) = session_store
+            .get_delegation_by_child_session(child_session_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if matches!(
+            delegation.status,
+            DelegationStatus::Completed | DelegationStatus::Failed | DelegationStatus::Cancelled
+        ) {
+            return Ok(true);
+        }
+        let result = event
+            .payload
+            .get("text")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        session_store
+            .update_delegation_status(&delegation.id, DelegationStatus::Completed, Some(&event.id))
+            .await?;
+        self.bus
+            .publish(Event::new(
+                format!(
+                    "delegation_result_{}_{}",
+                    delegation.id,
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
+                format!("Sub-Agent-{}", delegation.child_session_id),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                vec![
+                    (
+                        "context_id".to_string(),
+                        json!(delegation.parent_context_id),
+                    ),
+                    (
+                        "session_id".to_string(),
+                        json!(delegation.parent_session_id),
+                    ),
+                    ("delegation_id".to_string(), json!(delegation.id)),
+                    (
+                        "subagent_context_id".to_string(),
+                        json!(delegation.child_context_id),
+                    ),
+                    (
+                        "subagent_session_id".to_string(),
+                        json!(delegation.child_session_id),
+                    ),
+                    ("source_event_id".to_string(), json!(event.id)),
+                    ("tool_name".to_string(), json!("delegate")),
+                    ("tool_status".to_string(), json!("success")),
+                    ("output_empty".to_string(), json!(result.trim().is_empty())),
+                    (
+                        "text".to_string(),
+                        json!(json!({
+                            "delegation_id": delegation.id,
+                            "status": "completed",
+                            "subagent_session_id": delegation.child_session_id,
+                            "result_event_id": event.id,
+                            "result": result,
+                            "guidance": "验证 Sub Agent 结果后再回复用户或用 context_tx 整合共享 Mind。"
+                        })
+                        .to_string()),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await?;
+        Ok(true)
+    }
+
+    async fn enqueue_context_message(
+        &self,
+        context_id: String,
+        event: Event,
+    ) -> Result<(), DynError> {
+        let queue = self
+            .context_message_queues
+            .entry(context_id.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(Vec::new())))
+            .clone();
+        queue.lock().await.push(event);
+        let worker = self
+            .context_batch_workers
+            .entry(context_id.clone())
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
+            .clone();
+        if worker.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(
+                self.orchestrator_config.session_batch_coalesce_ms,
+            ))
+            .await;
+            let drained = {
+                let mut guard = queue.lock().await;
+                let mut events = std::mem::take(&mut *guard);
+                events.sort_by_key(|event| event.timestamp);
+                events
+            };
+            if !drained.is_empty() {
+                let max_batch = self.orchestrator_config.max_sessions_per_evaluation.max(1);
+                let mut selected = Vec::new();
+                let mut selected_sessions = HashSet::new();
+                let mut deferred = Vec::new();
+                for event in drained {
+                    let session_id = event
+                        .payload
+                        .get("session_id")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    if session_id.is_empty()
+                        || selected_sessions.contains(&session_id)
+                        || selected.len() >= max_batch
+                    {
+                        deferred.push(event);
+                    } else {
+                        selected_sessions.insert(session_id);
+                        selected.push(event);
+                    }
+                }
+                if !deferred.is_empty() {
+                    queue.lock().await.extend(deferred);
+                }
+
+                if selected.len() > 1 {
+                    let handled = match self.run_merged_attempt(&context_id, &selected).await {
+                        Ok(handled) => handled,
+                        Err(error) => {
+                            tracing::warn!(
+                                context_id,
+                                ?error,
+                                "合并求值失败；全部 ready Session 降级为独立求值"
+                            );
+                            HashSet::new()
+                        }
+                    };
+                    let fallbacks = selected
+                        .into_iter()
+                        .filter(|event| {
+                            event
+                                .payload
+                                .get("session_id")
+                                .and_then(|value| value.as_str())
+                                .is_none_or(|session_id| !handled.contains(session_id))
+                        })
+                        .map(|mut event| {
+                            // The event was present in the merged request, but the
+                            // model produced no output or action for this Session.
+                            // A tool-output trigger must therefore bypass the usual
+                            // "already covered by a context inspection" dedupe check:
+                            // submitted is not the same as semantically handled.
+                            event
+                                .payload
+                                .insert("runtime_force_evaluation".to_string(), json!(true));
+                            self.process_routed_event(event)
+                        });
+                    for result in futures_util::future::join_all(fallbacks).await {
+                        if let Err(error) = result {
+                            tracing::error!(context_id, ?error, "独立降级求值失败");
+                        }
+                    }
+                } else if let Some(event) = selected.pop() {
+                    if let Err(error) = self.process_routed_event(event).await {
+                        tracing::error!(context_id, ?error, "单 Session 求值失败");
+                    }
+                }
+            }
+
+            // Change the worker flag while holding the queue lock. A producer
+            // therefore cannot observe `running=true`, enqueue, return, and
+            // leave an item stranded after this worker exits.
+            let guard = queue.lock().await;
+            if guard.is_empty() {
+                worker.store(false, Ordering::SeqCst);
+                break;
+            }
+            drop(guard);
+        }
+        Ok(())
+    }
+
+    async fn process_routed_event(&self, event: Event) -> Result<(), DynError> {
+        let Some(session_id) = event
+            .payload
+            .get("session_id")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+        else {
+            return Ok(());
+        };
+
+        if let Some(cancelled_at) = self.cancelled_at.get(&session_id).map(|value| *value) {
+            if event.event_type == TYPE_USER_MESSAGE && event.timestamp > cancelled_at {
+                // A later explicit user message resumes a cancelled Session. Tool
+                // completions never resume it on their own.
+                self.cancelled_at.remove(&session_id);
+            } else {
+                tracing::info!(
+                    session_id,
+                    event_id = %event.id,
+                    "忽略 Session 取消前已排队的事件或取消后的后台工具唤醒"
+                );
+                return Ok(());
+            }
         }
         if event.event_type == TYPE_USER_MESSAGE {
             self.read_turn_guards.remove(&session_id);
@@ -419,6 +1095,7 @@ impl Orchestrator {
             self.orchestrator_config
                 .model_attempt_timeout_secs
                 .max(1)
+                .saturating_mul((MAX_REPLY_PROTOCOL_RETRIES + 1) as u64)
                 .saturating_add(1),
         );
         let watchdog_attempt_id = format!(
@@ -426,10 +1103,21 @@ impl Orchestrator {
             session_id,
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
-        let attempt = tokio::time::timeout(deadline, async {
+        let mut cancellation = self.cancellation_sender(&session_id).subscribe();
+        let start_epoch = *cancellation.borrow();
+        let active_counter = self.active_counter(&session_id);
+        active_counter.fetch_add(1, Ordering::SeqCst);
+        let attempt = tokio::select! {
+            result = tokio::time::timeout(deadline, async {
             let lock = self.session_lock(&session_id);
             let _session_guard = lock.lock().await;
+            let force_evaluation = event
+                .payload
+                .get("runtime_force_evaluation")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
             if event.event_type == TYPE_TOOL_OUTPUT
+                && !force_evaluation
                 && self
                     .tool_output_already_covered(&session_id, &event)
                     .await?
@@ -442,11 +1130,16 @@ impl Orchestrator {
                 return Ok(());
             }
             self.run_attempt(&session_id).await
-        })
-        .await;
+            }) => Some(result),
+            _ = cancellation.changed() => {
+                debug_assert_ne!(*cancellation.borrow(), start_epoch);
+                None
+            }
+        };
+        active_counter.fetch_sub(1, Ordering::SeqCst);
         match attempt {
-            Ok(result) => result,
-            Err(error) => {
+            Some(Ok(result)) => result,
+            Some(Err(error)) => {
                 self.publish_runtime_failure(
                     &session_id,
                     &watchdog_attempt_id,
@@ -455,6 +1148,10 @@ impl Orchestrator {
                     None,
                 )
                 .await
+            }
+            None => {
+                tracing::info!(session_id, "当前 Session 执行已由用户取消");
+                Ok(())
             }
         }
     }
@@ -596,6 +1293,7 @@ impl Orchestrator {
             "工具已成功完成但没有返回文本；不要仅因输出为空而重复调用。若工具具有副作用，请依据后续 file_change 或状态证据判断。",
         );
         let content = serde_json::to_string(&json!({
+            "session_id": output.payload.get("session_id").and_then(|value| value.as_str()),
             "status": status,
             "output_state": output_state,
             "observation_ref": observation_ref,
@@ -613,6 +1311,553 @@ impl Orchestrator {
         }
     }
 
+    async fn run_merged_attempt(
+        &self,
+        context_id: &str,
+        triggers: &[Event],
+    ) -> Result<HashSet<String>, DynError> {
+        let mut session_ids = Vec::with_capacity(triggers.len());
+        let mut transcript_messages = Vec::new();
+        let mut delivered_output_ids = HashSet::new();
+        for trigger in triggers {
+            let session_id = required_payload_str(trigger, "session_id")?.to_string();
+            if let Some(cancelled_at) = self.cancelled_at.get(&session_id).map(|value| *value) {
+                if trigger.event_type == TYPE_USER_MESSAGE && trigger.timestamp > cancelled_at {
+                    self.cancelled_at.remove(&session_id);
+                } else {
+                    continue;
+                }
+            }
+            if trigger.event_type == TYPE_USER_MESSAGE {
+                self.read_turn_guards.remove(&session_id);
+            }
+            if trigger.event_type == TYPE_TOOL_OUTPUT
+                && self
+                    .tool_output_already_covered(&session_id, trigger)
+                    .await?
+            {
+                continue;
+            }
+            let transcript = self.turn_tool_transcript(&session_id).await?;
+            transcript_messages.extend(transcript.messages);
+            delivered_output_ids.extend(transcript.delivered_output_ids);
+            session_ids.push(session_id);
+        }
+        if session_ids.len() < 2 {
+            return Ok(HashSet::new());
+        }
+
+        let locks = session_ids
+            .iter()
+            .map(|session_id| self.session_lock(session_id))
+            .collect::<Vec<_>>();
+        let _session_guards =
+            futures_util::future::join_all(locks.into_iter().map(tokio::sync::Mutex::lock_owned))
+                .await;
+        let counters = session_ids
+            .iter()
+            .map(|session_id| self.active_counter(session_id))
+            .collect::<Vec<_>>();
+        for counter in &counters {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }
+        let result = self
+            .run_merged_attempt_inner(
+                context_id,
+                &session_ids,
+                transcript_messages,
+                &delivered_output_ids,
+            )
+            .await;
+        for counter in &counters {
+            counter.fetch_sub(1, Ordering::SeqCst);
+        }
+        result
+    }
+
+    async fn run_merged_attempt_inner(
+        &self,
+        context_id: &str,
+        session_ids: &[String],
+        transcript_messages: Vec<Message>,
+        delivered_output_ids: &HashSet<String>,
+    ) -> Result<HashSet<String>, DynError> {
+        let context = self
+            .context_engine
+            .build_batch_context_encoding_excluding(context_id, session_ids, delivered_output_ids)
+            .await?;
+        if context.pressure.level == "critical"
+            || context
+                .ready_sessions
+                .iter()
+                .any(|ready| ready.turn_budget.phase != "work")
+        {
+            return Ok(HashSet::new());
+        }
+
+        let attempt_id = format!(
+            "batch_{}_{}",
+            context_id,
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let (prompt_mode, stable_system_prompt) = configured_system_prompt()?;
+        let mut messages = vec![
+            Message {
+                role: "system".to_string(),
+                content: compose_system_prompt(
+                    prompt_mode,
+                    stable_system_prompt,
+                    Some(("batch-evaluation", BATCH_EVALUATION_PROMPT)),
+                ),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+            Message {
+                role: "user".to_string(),
+                content: format!(
+                    "以下是 Runtime 提供的合并 Context Encoding。它不是普通用户消息；请处理 kernel.ready-sessions 中的每个 Session。\n{}",
+                    context.sexpr
+                ),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+        ];
+        messages.extend(transcript_messages);
+        for session_id in session_ids {
+            self.record_context_inspect(session_id, &attempt_id, &context, &messages);
+            self.record_model_attempt_started(
+                session_id,
+                &attempt_id,
+                "batch-work",
+                self.tool_definitions.len() + 1,
+            );
+        }
+
+        let tools = self.batch_tool_definitions()?;
+        let deadline = std::time::Duration::from_secs(
+            self.orchestrator_config.model_attempt_timeout_secs.max(1),
+        );
+        let _permit = self.concurrency_semaphore.acquire().await?;
+        let client = Arc::clone(&self.client);
+        let worker_attempt_id = attempt_id.clone();
+        let (model_tx, model_rx) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name(format!("morphz-llm-{worker_attempt_id}"))
+            .spawn(move || {
+                let result = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| Box::new(error) as DynError)
+                    .and_then(|runtime| {
+                        runtime.block_on(client.create_completion(messages, tools))
+                    });
+                let _ = model_tx.send(result);
+            })?;
+        let response = match tokio::time::timeout(deadline, model_rx).await {
+            Ok(Ok(Ok(response))) => response,
+            Ok(Ok(Err(error))) => return Err(error),
+            Ok(Err(error)) => return Err(error.into()),
+            Err(error) => return Err(error.into()),
+        };
+        self.record_batch_assistant_call(context_id, session_ids, &attempt_id, &response)
+            .await?;
+        let response_tool_calls = response.tool_calls.len();
+        let response_content_nonempty = !response.content.trim().is_empty();
+        let context_tx_allowed = context
+            .ready_sessions
+            .iter()
+            .filter(|ready| ready.turn_budget.context_tx_available)
+            .map(|ready| ready.session_id.clone())
+            .collect::<HashSet<_>>();
+        let handled = self
+            .apply_merged_response(
+                context_id,
+                session_ids,
+                &context_tx_allowed,
+                &attempt_id,
+                response,
+            )
+            .await?;
+        self.record_batch_evaluation(
+            context_id,
+            session_ids,
+            &handled,
+            &attempt_id,
+            response_tool_calls,
+            response_content_nonempty,
+        )
+        .await?;
+        Ok(handled)
+    }
+
+    fn batch_tool_definitions(&self) -> Result<Vec<crate::llm::ToolDefinition>, DynError> {
+        let mut definitions = self.tool_definitions.clone();
+        for definition in &mut definitions {
+            let object = definition
+                .parameters
+                .as_object_mut()
+                .ok_or_else(|| format!("工具 '{}' parameters 不是 object", definition.name))?;
+            let properties = object
+                .entry("properties")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .ok_or_else(|| format!("工具 '{}' properties 不是 object", definition.name))?;
+            properties.insert(
+                "session_id".to_string(),
+                json!({
+                    "type": "string",
+                    "description": "该工具动作所属的 ready Session ID；Runtime 用于路由工具结果"
+                }),
+            );
+            let required = object
+                .entry("required")
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| format!("工具 '{}' required 不是 array", definition.name))?;
+            if !required
+                .iter()
+                .any(|value| value.as_str() == Some("session_id"))
+            {
+                required.push(json!("session_id"));
+            }
+        }
+        definitions.push(crate::llm::ToolDefinition {
+            name: "session_output".to_string(),
+            description:
+                "向一个或多个 ready Session 发送进度或最终回复。这是外部 IO，不修改 Mind。"
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "deliveries": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "session_id": { "type": "string" },
+                                "kind": { "type": "string", "enum": ["progress", "final"] },
+                                "text": { "type": "string" }
+                            },
+                            "required": ["session_id", "kind", "text"]
+                        }
+                    }
+                },
+                "required": ["deliveries"]
+            }),
+        });
+        Ok(definitions)
+    }
+
+    async fn apply_merged_response(
+        &self,
+        context_id: &str,
+        session_ids: &[String],
+        context_tx_allowed: &HashSet<String>,
+        attempt_id: &str,
+        response: crate::llm::Response,
+    ) -> Result<HashSet<String>, DynError> {
+        let ready = session_ids.iter().cloned().collect::<HashSet<_>>();
+        let mut deliveries = HashMap::<String, Vec<SessionDelivery>>::new();
+        let mut calls = HashMap::<String, Vec<crate::llm::ToolCallRepr>>::new();
+        let mut transcript_calls = HashMap::<String, Vec<crate::llm::ToolCall>>::new();
+        let mut context_tx_count = 0usize;
+
+        for call in response.tool_calls {
+            if call.func_name == "session_output" {
+                let args: SessionOutputArgs = serde_json::from_str(&call.arguments)?;
+                for delivery in args.deliveries {
+                    if !ready.contains(&delivery.session_id)
+                        || !matches!(delivery.kind.as_str(), "progress" | "final")
+                        || delivery.text.trim().is_empty()
+                    {
+                        return Ok(HashSet::new());
+                    }
+                    deliveries
+                        .entry(delivery.session_id.clone())
+                        .or_default()
+                        .push(delivery);
+                }
+                continue;
+            }
+
+            let original_arguments = call.arguments.clone();
+            let mut arguments: serde_json::Value = serde_json::from_str(&call.arguments)?;
+            let object = arguments
+                .as_object_mut()
+                .ok_or("合并求值的工具参数必须是 JSON object")?;
+            let session_id = object
+                .remove("session_id")
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                .ok_or("合并求值的工具调用缺少 session_id")?;
+            if !ready.contains(&session_id) {
+                return Ok(HashSet::new());
+            }
+            if call.func_name == "context_tx" {
+                context_tx_count += 1;
+            }
+            transcript_calls
+                .entry(session_id.clone())
+                .or_default()
+                .push(crate::llm::ToolCall {
+                    id: call.id.clone(),
+                    r#type: call.r#type.clone(),
+                    function: crate::llm::FunctionCall {
+                        name: call.func_name.clone(),
+                        arguments: original_arguments,
+                    },
+                });
+            calls
+                .entry(session_id)
+                .or_default()
+                .push(crate::llm::ToolCallRepr {
+                    id: call.id,
+                    r#type: call.r#type,
+                    func_name: call.func_name,
+                    arguments: serde_json::to_string(&arguments)?,
+                });
+        }
+        if context_tx_count > 1 {
+            return Ok(HashSet::new());
+        }
+
+        let lane_futures = session_ids.iter().map(|session_id| {
+            let lane_deliveries = deliveries.remove(session_id).unwrap_or_default();
+            let lane_calls = calls.remove(session_id).unwrap_or_default();
+            let lane_transcript_calls = transcript_calls.remove(session_id).unwrap_or_default();
+            let lane = MergedLaneWork {
+                deliveries: lane_deliveries,
+                calls: lane_calls,
+                transcript_calls: lane_transcript_calls,
+            };
+            async move {
+                let result = self
+                    .apply_merged_lane(context_id, context_tx_allowed, attempt_id, session_id, lane)
+                    .await;
+                (session_id.clone(), result)
+            }
+        });
+        let mut handled = HashSet::new();
+        for (session_id, result) in futures_util::future::join_all(lane_futures).await {
+            match result {
+                Ok(true) => {
+                    handled.insert(session_id);
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::error!(session_id, ?error, "batch Session lane 执行失败");
+                }
+            }
+        }
+        Ok(handled)
+    }
+
+    async fn apply_merged_lane(
+        &self,
+        context_id: &str,
+        context_tx_allowed: &HashSet<String>,
+        attempt_id: &str,
+        session_id: &str,
+        lane: MergedLaneWork,
+    ) -> Result<bool, DynError> {
+        if self.cancelled_at.contains_key(session_id) {
+            return Ok(true);
+        }
+        let finals = lane
+            .deliveries
+            .iter()
+            .filter(|delivery| delivery.kind == "final")
+            .collect::<Vec<_>>();
+        if finals.len() > 1 || (!finals.is_empty() && !lane.calls.is_empty()) {
+            return Ok(false);
+        }
+        if let Some(final_delivery) = finals.first() {
+            let parent = self.parent_session_for(context_id, session_id).await?;
+            self.publish_reply(
+                session_id,
+                attempt_id,
+                final_delivery.text.clone(),
+                parent.as_deref(),
+            )
+            .await?;
+            return Ok(true);
+        }
+
+        for delivery in lane
+            .deliveries
+            .iter()
+            .filter(|delivery| delivery.kind == "progress")
+        {
+            self.publish_progress(session_id, attempt_id, delivery.text.clone())
+                .await?;
+        }
+        if lane.calls.is_empty() {
+            return Ok(false);
+        }
+        let lane_response = crate::llm::Response {
+            content: String::new(),
+            tool_calls: lane.calls,
+        };
+        if let Err(error) = self
+            .execute_tool_calls(
+                session_id,
+                &format!("{}_{}", attempt_id, session_id),
+                lane_response,
+                "batch-work",
+                ToolExecutionOptions {
+                    context_tx_allowed: context_tx_allowed.contains(session_id),
+                    wake_on_output: true,
+                    transcript_tool_calls: Some(lane.transcript_calls),
+                },
+            )
+            .await
+        {
+            let parent = self.parent_session_for(context_id, session_id).await?;
+            self.publish_runtime_failure(
+                session_id,
+                attempt_id,
+                "batch_tool_execution",
+                error.as_ref(),
+                parent.as_deref(),
+            )
+            .await?;
+        }
+        Ok(true)
+    }
+
+    async fn parent_session_for(
+        &self,
+        context_id: &str,
+        session_id: &str,
+    ) -> Result<Option<String>, DynError> {
+        Ok(self
+            .context_engine
+            .build_context_encoding(context_id, session_id, &HashSet::new())
+            .await?
+            .parent_session_id)
+    }
+
+    async fn record_batch_evaluation(
+        &self,
+        context_id: &str,
+        session_ids: &[String],
+        handled: &HashSet<String>,
+        attempt_id: &str,
+        response_tool_calls: usize,
+        response_content_nonempty: bool,
+    ) -> Result<(), DynError> {
+        let Some(route_session_id) = session_ids.first() else {
+            return Ok(());
+        };
+        let fallback_sessions = session_ids
+            .iter()
+            .filter(|session_id| !handled.contains(*session_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let handled_sessions = session_ids
+            .iter()
+            .filter(|session_id| handled.contains(*session_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.bus
+            .publish(Event::new(
+                format!(
+                    "batch_evaluation_{}",
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
+                "Runtime-Orchestrator".to_string(),
+                "runtime_control".to_string(),
+                "runtime/batch_evaluation".to_string(),
+                vec![
+                    ("context_id".to_string(), json!(context_id)),
+                    ("session_id".to_string(), json!(route_session_id)),
+                    ("attempt_id".to_string(), json!(attempt_id)),
+                    ("ready_sessions".to_string(), json!(session_ids)),
+                    ("handled_sessions".to_string(), json!(handled_sessions)),
+                    ("fallback_sessions".to_string(), json!(fallback_sessions)),
+                    (
+                        "response_tool_calls".to_string(),
+                        json!(response_tool_calls),
+                    ),
+                    (
+                        "response_content_nonempty".to_string(),
+                        json!(response_content_nonempty),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await?;
+        Ok(())
+    }
+
+    async fn record_batch_assistant_call(
+        &self,
+        context_id: &str,
+        session_ids: &[String],
+        attempt_id: &str,
+        response: &crate::llm::Response,
+    ) -> Result<(), DynError> {
+        let Some(route_session_id) = session_ids.first() else {
+            return Ok(());
+        };
+        self.bus
+            .publish(Event::new(
+                format!(
+                    "batch_assistant_call_{}",
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
+                "Agent-Morphz".to_string(),
+                TYPE_AGENT_CALL.to_string(),
+                "runtime/batch_assistant_call".to_string(),
+                vec![
+                    ("context_id".to_string(), json!(context_id)),
+                    ("session_id".to_string(), json!(route_session_id)),
+                    ("attempt_id".to_string(), json!(attempt_id)),
+                    ("ready_sessions".to_string(), json!(session_ids)),
+                    ("text".to_string(), json!(response.content)),
+                    ("tool_calls".to_string(), json!(response.tool_calls)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await?;
+        Ok(())
+    }
+
+    async fn request_model_completion(
+        &self,
+        attempt_id: &str,
+        messages: Vec<Message>,
+        tools: Vec<crate::llm::ToolDefinition>,
+    ) -> Result<crate::llm::Response, DynError> {
+        let deadline = std::time::Duration::from_secs(
+            self.orchestrator_config.model_attempt_timeout_secs.max(1),
+        );
+        let _permit = self.concurrency_semaphore.acquire().await?;
+        let client = Arc::clone(&self.client);
+        let (model_tx, model_rx) = tokio::sync::oneshot::channel();
+        std::thread::Builder::new()
+            .name(format!("morphz-llm-{attempt_id}"))
+            .spawn(move || {
+                let result = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| Box::new(error) as DynError)
+                    .and_then(|runtime| {
+                        runtime.block_on(client.create_completion(messages, tools))
+                    });
+                let _ = model_tx.send(result);
+            })?;
+        match tokio::time::timeout(deadline, model_rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => Err(error.into()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     async fn run_attempt(&self, session_id: &str) -> Result<(), DynError> {
         let attempt_id = format!(
             "attempt_{}_{}",
@@ -620,9 +1865,10 @@ impl Orchestrator {
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
         let transcript = self.turn_tool_transcript(session_id).await?;
+        let context_id = self.context_id_for_session(session_id);
         let context = self
             .context_engine
-            .build_view_excluding(session_id, &transcript.delivered_output_ids)
+            .build_context_encoding(&context_id, session_id, &transcript.delivered_output_ids)
             .await?;
         let maintenance_budget_exhausted = should_force_final_for_maintenance(
             &context.turn_budget.phase,
@@ -647,10 +1893,12 @@ impl Orchestrator {
             _ if context_tx_cooldown => Some(CONTEXT_TX_COOLDOWN_PROMPT),
             _ => None,
         };
-        let stable_system_prompt = configured_system_prompt()?;
-        let system_prompt = phase_prompt
-            .map(|prompt| format!("{stable_system_prompt}\n\n{prompt}"))
-            .unwrap_or_else(|| stable_system_prompt.to_string());
+        let (prompt_mode, stable_system_prompt) = configured_system_prompt()?;
+        let system_prompt = compose_system_prompt(
+            prompt_mode,
+            stable_system_prompt,
+            phase_prompt.map(|prompt| (effective_phase, prompt)),
+        );
         let mut messages = vec![
             Message {
                 role: "system".to_string(),
@@ -681,7 +1929,7 @@ impl Orchestrator {
                 attempt = context.turn_budget.attempt,
                 limit = context.turn_budget.limit,
                 maintenance_budget_exhausted,
-                "Context 收口机会已使用：进入无工具最终答复"
+                "Context 收口机会已使用：进入 reply-only 最终答复"
             );
             tools.clear();
         } else if effective_phase == "context-closure" {
@@ -717,73 +1965,154 @@ impl Orchestrator {
                 tools.retain(|tool| tool.name != "context_tx");
             }
         }
-        let deadline = std::time::Duration::from_secs(
-            self.orchestrator_config.model_attempt_timeout_secs.max(1),
-        );
-        let _permit = self.concurrency_semaphore.acquire().await?;
-        self.record_model_attempt_started(session_id, &attempt_id, effective_phase, tools.len());
-        let client = Arc::clone(&self.client);
-        let (model_tx, model_rx) = tokio::sync::oneshot::channel();
-        if let Err(error) = std::thread::Builder::new()
-            .name(format!("morphz-llm-{attempt_id}"))
-            .spawn(move || {
-                let result = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|error| Box::new(error) as DynError)
-                    .and_then(|runtime| {
-                        runtime.block_on(client.create_completion(messages, tools))
-                    });
-                let _ = model_tx.send(result);
-            })
-        {
-            return self
-                .publish_runtime_failure(
-                    session_id,
-                    &attempt_id,
-                    "llm_thread_spawn",
-                    &error,
-                    context.parent_session_id.as_deref(),
+        tools.push(reply_tool_definition());
+        let mut protocol_messages = messages;
+        let mut protocol_errors = 0usize;
+        let (response, reply_decision) = loop {
+            let model_attempt_id = if protocol_errors == 0 {
+                attempt_id.clone()
+            } else {
+                format!("{attempt_id}_reply_retry_{protocol_errors}")
+            };
+            self.record_model_attempt_started(
+                session_id,
+                &model_attempt_id,
+                effective_phase,
+                tools.len(),
+            );
+            let completion = self
+                .request_model_completion(
+                    &model_attempt_id,
+                    protocol_messages.clone(),
+                    tools.clone(),
                 )
                 .await;
-        }
-        let completion = tokio::time::timeout(deadline, model_rx).await;
-        let response = match completion {
-            Ok(Ok(Ok(response))) => response,
-            Ok(Ok(Err(error))) => {
-                return self
-                    .publish_runtime_failure(
+            let response = match completion {
+                Ok(response) => response,
+                Err(error) if error.to_string().contains(EMPTY_RESPONSE_ERROR) => {
+                    protocol_errors += 1;
+                    self.record_reply_protocol_error(
                         session_id,
-                        &attempt_id,
-                        "llm_completion",
-                        error.as_ref(),
-                        context.parent_session_id.as_deref(),
+                        &model_attempt_id,
+                        protocol_errors,
+                        "模型返回空响应",
                     )
-                    .await;
-            }
-            Ok(Err(error)) => {
-                return self
-                    .publish_runtime_failure(
+                    .await?;
+                    if protocol_errors > MAX_REPLY_PROTOCOL_RETRIES {
+                        return self
+                            .publish_reply_protocol_failure(
+                                session_id,
+                                &model_attempt_id,
+                                context.parent_session_id.as_deref(),
+                            )
+                            .await;
+                    }
+                    protocol_messages.push(Message {
+                        role: "user".to_string(),
+                        content: REPLY_PROTOCOL_ERROR.to_string(),
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: None,
+                    });
+                    continue;
+                }
+                Err(error) => {
+                    return self
+                        .publish_runtime_failure(
+                            session_id,
+                            &model_attempt_id,
+                            "llm_completion",
+                            error.as_ref(),
+                            context.parent_session_id.as_deref(),
+                        )
+                        .await;
+                }
+            };
+
+            let classification = classify_reply_response(&response).and_then(|decision| {
+                if decision.is_none() && effective_phase == "final-reply" {
+                    Err("final-reply 阶段只允许标准 reply 工具".to_string())
+                } else if decision.is_none()
+                    && effective_phase == "context-closure"
+                    && !response
+                        .tool_calls
+                        .iter()
+                        .all(|call| call.func_name == "context_tx")
+                {
+                    Err("context-closure 阶段只允许 context_tx 或 reply".to_string())
+                } else {
+                    Ok(decision)
+                }
+            });
+            match classification {
+                Ok(decision) => break (response, decision),
+                Err(reason) => {
+                    protocol_errors += 1;
+                    self.record_reply_protocol_error(
                         session_id,
-                        &attempt_id,
-                        "llm_worker_channel",
-                        &error,
-                        context.parent_session_id.as_deref(),
+                        &model_attempt_id,
+                        protocol_errors,
+                        &reason,
                     )
-                    .await;
-            }
-            Err(error) => {
-                return self
-                    .publish_runtime_failure(
-                        session_id,
-                        &attempt_id,
-                        "llm_completion",
-                        &error,
-                        context.parent_session_id.as_deref(),
-                    )
-                    .await;
+                    .await?;
+                    if protocol_errors > MAX_REPLY_PROTOCOL_RETRIES {
+                        return self
+                            .publish_reply_protocol_failure(
+                                session_id,
+                                &model_attempt_id,
+                                context.parent_session_id.as_deref(),
+                            )
+                            .await;
+                    }
+                    if response.tool_calls.is_empty() && !response.content.trim().is_empty() {
+                        protocol_messages.push(Message {
+                            role: "assistant".to_string(),
+                            content: response.content,
+                            name: None,
+                            tool_call_id: None,
+                            tool_calls: None,
+                        });
+                    }
+                    protocol_messages.push(Message {
+                        role: "user".to_string(),
+                        content: format!("{reason}。{REPLY_PROTOCOL_ERROR}"),
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: None,
+                    });
+                }
             }
         };
+
+        if let Some(decision) = reply_decision {
+            self.record_terminal_reply_call(
+                session_id,
+                &attempt_id,
+                effective_phase,
+                &response,
+                &decision,
+            )
+            .await?;
+            return match decision {
+                ReplyDecision::Deliver(content) => {
+                    self.publish_reply(
+                        session_id,
+                        &attempt_id,
+                        content,
+                        context.parent_session_id.as_deref(),
+                    )
+                    .await
+                }
+                ReplyDecision::Suppress => {
+                    self.publish_reply_suppressed(
+                        session_id,
+                        &attempt_id,
+                        context.parent_session_id.as_deref(),
+                    )
+                    .await
+                }
+            };
+        }
 
         if effective_phase == "context-closure" && !response.tool_calls.is_empty() {
             let valid_closure = response
@@ -799,49 +2128,16 @@ impl Orchestrator {
                     ToolExecutionOptions {
                         context_tx_allowed: true,
                         wake_on_output: true,
+                        transcript_tool_calls: None,
                     },
                 )
                 .await?;
                 return Ok(());
             }
-            let content = if response.content.trim().is_empty() {
-                "Context 收口阶段只允许一次 context_tx；Runtime 已拒绝其他工具调用并停止本轮执行。"
-                    .to_string()
-            } else {
-                response.content
-            };
-            return self
-                .publish_reply(
-                    session_id,
-                    &attempt_id,
-                    content,
-                    context.parent_session_id.as_deref(),
-                )
-                .await;
+            unreachable!("非法 context-closure 工具调用应由 Reply 协议纠错拦截");
         }
 
-        if effective_phase == "final-reply" && !response.tool_calls.is_empty() {
-            let content = if response.content.trim().is_empty() {
-                if maintenance_budget_exhausted {
-                    "Context 已达到 critical 且本回合维护事务额度耗尽，Runtime 已停止继续执行工具以避免循环。请在新回合继续未完成工作；现有文件修改与 Ledger 均已保留。".to_string()
-                } else {
-                    format!(
-                        "本轮已达到 {} 次 Attempt 上限并完成 Context 收口阶段，Runtime 已停止继续执行工具。现有信息不足以形成最终答复，请缩小任务或提供新的指令。",
-                        context.turn_budget.limit
-                    )
-                }
-            } else {
-                response.content
-            };
-            return self
-                .publish_reply(
-                    session_id,
-                    &attempt_id,
-                    content,
-                    context.parent_session_id.as_deref(),
-                )
-                .await;
-        }
+        debug_assert_ne!(effective_phase, "final-reply");
 
         if !response.tool_calls.is_empty() {
             if !response.content.trim().is_empty() {
@@ -857,19 +2153,163 @@ impl Orchestrator {
                     context_tx_allowed: context.turn_budget.context_tx_available
                         && !context_tx_cooldown,
                     wake_on_output: true,
+                    transcript_tool_calls: None,
                 },
             )
             .await?;
             return Ok(());
         }
 
+        unreachable!("无工具响应应由 Reply 协议纠错或熔断处理")
+    }
+
+    async fn record_reply_protocol_error(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        error_count: usize,
+        reason: &str,
+    ) -> Result<(), DynError> {
+        let context_id = self.context_id_for_session(session_id);
+        self.bus
+            .publish(Event::new(
+                format!(
+                    "reply_protocol_error_{}",
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
+                "Runtime-Orchestrator".to_string(),
+                "runtime_control".to_string(),
+                "runtime/reply_protocol_error".to_string(),
+                vec![
+                    ("context_id".to_string(), json!(context_id)),
+                    ("session_id".to_string(), json!(session_id)),
+                    ("attempt_id".to_string(), json!(attempt_id)),
+                    ("error_count".to_string(), json!(error_count)),
+                    ("max_retries".to_string(), json!(MAX_REPLY_PROTOCOL_RETRIES)),
+                    ("reason".to_string(), json!(reason)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await?;
+        Ok(())
+    }
+
+    async fn publish_reply_protocol_failure(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        parent_session_id: Option<&str>,
+    ) -> Result<(), DynError> {
+        let context_id = self.context_id_for_session(session_id);
+        self.bus
+            .publish(Event::new(
+                format!(
+                    "reply_protocol_fused_{}",
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
+                "Runtime-Orchestrator".to_string(),
+                "runtime_error".to_string(),
+                "runtime/reply_protocol_fused".to_string(),
+                vec![
+                    ("context_id".to_string(), json!(context_id)),
+                    ("session_id".to_string(), json!(session_id)),
+                    ("attempt_id".to_string(), json!(attempt_id)),
+                    (
+                        "invalid_responses".to_string(),
+                        json!(MAX_REPLY_PROTOCOL_RETRIES + 1),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await?;
         self.publish_reply(
             session_id,
-            &attempt_id,
-            response.content,
-            context.parent_session_id.as_deref(),
+            attempt_id,
+            "模型连续三次没有作出合法的 reply(deliver/suppress) 决策，Runtime 已安全熔断本回合；已提交的 Mind、文件修改和 Ledger 均已保留。".to_string(),
+            parent_session_id,
         )
         .await
+    }
+
+    async fn record_terminal_reply_call(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        phase: &str,
+        response: &crate::llm::Response,
+        decision: &ReplyDecision,
+    ) -> Result<(), DynError> {
+        let context_id = self.context_id_for_session(session_id);
+        let tool_calls = response
+            .tool_calls
+            .iter()
+            .map(|call| crate::llm::ToolCall {
+                id: call.id.clone(),
+                r#type: call.r#type.clone(),
+                function: crate::llm::FunctionCall {
+                    name: call.func_name.clone(),
+                    arguments: call.arguments.clone(),
+                },
+            })
+            .collect::<Vec<_>>();
+        self.bus
+            .publish(Event::new(
+                format!("call_{attempt_id}"),
+                "Agent-Morphz".to_string(),
+                TYPE_AGENT_CALL.to_string(),
+                "chat/assistant_call".to_string(),
+                vec![
+                    ("context_id".to_string(), json!(context_id)),
+                    ("session_id".to_string(), json!(session_id)),
+                    ("attempt_id".to_string(), json!(attempt_id)),
+                    ("phase".to_string(), json!(phase)),
+                    ("text".to_string(), json!(response.content)),
+                    ("tool_calls".to_string(), json!(tool_calls)),
+                    ("terminal_reply".to_string(), json!(true)),
+                    (
+                        "reply_disposition".to_string(),
+                        json!(decision.disposition()),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await?;
+        Ok(())
+    }
+
+    async fn publish_reply_suppressed(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        parent_session_id: Option<&str>,
+    ) -> Result<(), DynError> {
+        let context_id = self.context_id_for_session(session_id);
+        let mut payload = vec![
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("disposition".to_string(), json!("suppress")),
+            ("text".to_string(), json!("")),
+        ];
+        if let Some(parent_session_id) = parent_session_id {
+            payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
+        }
+        self.bus
+            .publish(Event::new(
+                format!(
+                    "reply_suppressed_{}",
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
+                "Agent-Morphz".to_string(),
+                TYPE_AGENT_CALL.to_string(),
+                "chat/reply_suppressed".to_string(),
+                payload.into_iter().collect(),
+            ))
+            .await?;
+        Ok(())
     }
 
     async fn publish_reply(
@@ -879,7 +2319,9 @@ impl Orchestrator {
         content: String,
         parent_session_id: Option<&str>,
     ) -> Result<(), DynError> {
+        let context_id = self.context_id_for_session(session_id);
         let mut payload = vec![
+            ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
             ("text".to_string(), json!(content)),
@@ -905,6 +2347,7 @@ impl Orchestrator {
         attempt_id: &str,
         content: String,
     ) -> Result<(), DynError> {
+        let context_id = self.context_id_for_session(session_id);
         self.bus
             .publish(Event::new(
                 format!("progress_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
@@ -912,6 +2355,7 @@ impl Orchestrator {
                 TYPE_AGENT_CALL.to_string(),
                 "chat/progress".to_string(),
                 vec![
+                    ("context_id".to_string(), json!(context_id)),
                     ("session_id".to_string(), json!(session_id)),
                     ("attempt_id".to_string(), json!(attempt_id)),
                     ("text".to_string(), json!(content)),
@@ -931,6 +2375,7 @@ impl Orchestrator {
         error: &(dyn std::error::Error + Send + Sync),
         parent_session_id: Option<&str>,
     ) -> Result<(), DynError> {
+        let context_id = self.context_id_for_session(session_id);
         let error_text: String = error.to_string().chars().take(2_000).collect();
         tracing::error!(
             session_id,
@@ -948,6 +2393,7 @@ impl Orchestrator {
                 "runtime_error".to_string(),
                 "chat/runtime_error".to_string(),
                 vec![
+                    ("context_id".to_string(), json!(context_id)),
                     ("session_id".to_string(), json!(session_id)),
                     ("attempt_id".to_string(), json!(attempt_id)),
                     ("stage".to_string(), json!(stage)),
@@ -980,6 +2426,7 @@ impl Orchestrator {
         tool_count: usize,
     ) {
         let bus = Arc::clone(&self.bus);
+        let context_id = self.context_id_for_session(session_id);
         let event = Event::new(
             format!(
                 "model_attempt_started_{}",
@@ -989,6 +2436,7 @@ impl Orchestrator {
             "runtime_control".to_string(),
             "runtime/model_attempt_started".to_string(),
             vec![
+                ("context_id".to_string(), json!(context_id)),
                 ("session_id".to_string(), json!(session_id)),
                 ("attempt_id".to_string(), json!(attempt_id)),
                 ("phase".to_string(), json!(phase)),
@@ -1016,6 +2464,7 @@ impl Orchestrator {
         phase: &str,
         options: ToolExecutionOptions,
     ) -> Result<ToolExecutionOutcome, DynError> {
+        let context_id = self.context_id_for_session(session_id);
         let requested_tool_calls = response.tool_calls;
         let mapped_tool_calls = requested_tool_calls
             .iter()
@@ -1055,7 +2504,7 @@ impl Orchestrator {
                 _ => {
                     let normalized = context_tx_calls
                         .iter()
-                        .map(|call| normalize_context_tx_key(session_id, &call.arguments))
+                        .map(|call| normalize_context_tx_key(&context_id, &call.arguments))
                         .collect::<Vec<_>>();
                     let all_normalized_equal = normalized
                         .first()
@@ -1109,17 +2558,25 @@ impl Orchestrator {
                 ),
             }
         }
-        let mut transcript_tool_calls = selected_tool_calls
+        let selected_ids = selected_tool_calls
             .iter()
-            .map(|call| crate::llm::ToolCall {
-                id: call.id.clone(),
-                r#type: call.r#type.clone(),
-                function: crate::llm::FunctionCall {
-                    name: call.func_name.clone(),
-                    arguments: call.arguments.clone(),
-                },
-            })
-            .collect::<Vec<_>>();
+            .map(|call| call.id.as_str())
+            .collect::<HashSet<_>>();
+        let mut transcript_tool_calls = options.transcript_tool_calls.unwrap_or_else(|| {
+            selected_tool_calls
+                .iter()
+                .map(|call| crate::llm::ToolCall {
+                    id: call.id.clone(),
+                    r#type: call.r#type.clone(),
+                    function: crate::llm::FunctionCall {
+                        name: call.func_name.clone(),
+                        arguments: call.arguments.clone(),
+                    },
+                })
+                .collect::<Vec<_>>()
+        });
+        transcript_tool_calls.retain(|call| selected_ids.contains(call.id.as_str()));
+        drop(selected_ids);
         if context_tx_batch_error.is_some() {
             transcript_tool_calls.push(crate::llm::ToolCall {
                 id: "context_tx_batch_rejected".to_string(),
@@ -1141,6 +2598,7 @@ impl Orchestrator {
                 TYPE_AGENT_CALL.to_string(),
                 "chat/assistant_call".to_string(),
                 vec![
+                    ("context_id".to_string(), json!(context_id)),
                     ("session_id".to_string(), json!(session_id)),
                     ("attempt_id".to_string(), json!(attempt_id)),
                     ("phase".to_string(), json!(phase)),
@@ -1187,7 +2645,7 @@ impl Orchestrator {
                 if let Some(duplicate) = duplicate {
                     let reference = self
                         .context_engine
-                        .find_event(session_id, &duplicate.evidence_event_id)
+                        .find_event(&context_id, &duplicate.evidence_event_id)
                         .await?
                         .as_ref()
                         .map(|event| self.context_engine.event_reference(event));
@@ -1205,6 +2663,7 @@ impl Orchestrator {
                         TYPE_TOOL_OUTPUT.to_string(),
                         "chat/tool_output".to_string(),
                         vec![
+                            ("context_id".to_string(), json!(context_id)),
                             ("session_id".to_string(), json!(session_id)),
                             ("attempt_id".to_string(), json!(attempt_id)),
                             ("tool_call_id".to_string(), json!(call.id)),
@@ -1221,49 +2680,59 @@ impl Orchestrator {
             }
             let registry = Arc::clone(&self.registry);
             let session_id = session_id.to_string();
+            let context_id = context_id.clone();
             let attempt_id = attempt_id.to_string();
             let timeout_secs = self.orchestrator_config.tool_timeout_secs;
             tasks.push(tokio::spawn(async move {
-                crate::tool::CURRENT_SESSION_ID
-                    .scope(session_id.clone(), async move {
-                        let result = tokio::time::timeout(
-                            tokio::time::Duration::from_secs(timeout_secs),
-                            async {
-                                match registry.get(&call.func_name) {
-                                    Some(tool) => tool.execute(&call.arguments).await,
-                                    None => Err(format!("未注册的工具: {}", call.func_name).into()),
-                                }
-                            },
-                        )
-                        .await;
-                        let (output, tool_status) = match result {
-                            Ok(Ok(output)) => {
-                                let status = infer_tool_status(&output);
-                                (output, status)
-                            }
-                            Ok(Err(error)) => (format!("执行失败: {}", error), "error"),
-                            Err(_) => {
-                                (format!("执行超时: 超过 {} 秒限额", timeout_secs), "timeout")
-                            }
-                        };
-                        let output_empty = output.trim().is_empty();
-                        Event::new(
-                            format!("output_{}_{}", attempt_id, call.id),
-                            "System-Executor".to_string(),
-                            TYPE_TOOL_OUTPUT.to_string(),
-                            "chat/tool_output".to_string(),
-                            vec![
-                                ("session_id".to_string(), json!(session_id)),
-                                ("attempt_id".to_string(), json!(attempt_id)),
-                                ("tool_call_id".to_string(), json!(call.id)),
-                                ("tool_name".to_string(), json!(call.func_name)),
-                                ("tool_status".to_string(), json!(tool_status)),
-                                ("output_empty".to_string(), json!(output_empty)),
-                                ("text".to_string(), json!(output)),
-                            ]
-                            .into_iter()
-                            .collect(),
-                        )
+                crate::tool::CURRENT_CONTEXT_ID
+                    .scope(context_id.clone(), async move {
+                        crate::tool::CURRENT_SESSION_ID
+                            .scope(session_id.clone(), async move {
+                                let result = tokio::time::timeout(
+                                    tokio::time::Duration::from_secs(timeout_secs),
+                                    async {
+                                        match registry.get(&call.func_name) {
+                                            Some(tool) => tool.execute(&call.arguments).await,
+                                            None => {
+                                                Err(format!("未注册的工具: {}", call.func_name)
+                                                    .into())
+                                            }
+                                        }
+                                    },
+                                )
+                                .await;
+                                let (output, tool_status) = match result {
+                                    Ok(Ok(output)) => {
+                                        let status = infer_tool_status(&output);
+                                        (output, status)
+                                    }
+                                    Ok(Err(error)) => (format!("执行失败: {}", error), "error"),
+                                    Err(_) => (
+                                        format!("执行超时: 超过 {} 秒限额", timeout_secs),
+                                        "timeout",
+                                    ),
+                                };
+                                let output_empty = output.trim().is_empty();
+                                Event::new(
+                                    format!("output_{}_{}", attempt_id, call.id),
+                                    "System-Executor".to_string(),
+                                    TYPE_TOOL_OUTPUT.to_string(),
+                                    "chat/tool_output".to_string(),
+                                    vec![
+                                        ("context_id".to_string(), json!(context_id)),
+                                        ("session_id".to_string(), json!(session_id)),
+                                        ("attempt_id".to_string(), json!(attempt_id)),
+                                        ("tool_call_id".to_string(), json!(call.id)),
+                                        ("tool_name".to_string(), json!(call.func_name)),
+                                        ("tool_status".to_string(), json!(tool_status)),
+                                        ("output_empty".to_string(), json!(output_empty)),
+                                        ("text".to_string(), json!(output)),
+                                    ]
+                                    .into_iter()
+                                    .collect(),
+                                )
+                            })
+                            .await
                     })
                     .await
             }));
@@ -1277,6 +2746,7 @@ impl Orchestrator {
                 TYPE_TOOL_OUTPUT.to_string(),
                 "chat/tool_output".to_string(),
                 vec![
+                    ("context_id".to_string(), json!(context_id)),
                     ("session_id".to_string(), json!(session_id)),
                     ("attempt_id".to_string(), json!(attempt_id)),
                     (
@@ -1338,7 +2808,7 @@ impl Orchestrator {
         };
         Ok(self
             .context_engine
-            .find_event(&context.session_id, event_id)
+            .find_event(&context.context_id, event_id)
             .await?
             .as_ref()
             .map(context_tx_receipt_for_event)
@@ -1359,6 +2829,7 @@ impl Orchestrator {
             crate::event::TYPE_PROPOSAL.to_string(),
             "chat/context_inspect".to_string(),
             vec![
+                ("context_id".to_string(), json!(context.context_id)),
                 ("session_id".to_string(), json!(session_id)),
                 ("attempt_id".to_string(), json!(attempt_id)),
                 ("text".to_string(), json!(context.sexpr)),
@@ -1396,6 +2867,7 @@ impl Orchestrator {
             .get("text")
             .and_then(|value| value.as_str())
             .unwrap_or("");
+        let context_id = self.context_id_for_session(parent_session_id);
         self.bus
             .publish(Event::new(
                 format!(
@@ -1407,6 +2879,7 @@ impl Orchestrator {
                 TYPE_TOOL_OUTPUT.to_string(),
                 "chat/tool_output".to_string(),
                 vec![
+                    ("context_id".to_string(), json!(context_id)),
                     ("session_id".to_string(), json!(parent_session_id)),
                     ("source_event_id".to_string(), json!(event.id)),
                     ("sub_session_id".to_string(), json!(session_id)),
@@ -1427,6 +2900,43 @@ impl Orchestrator {
             .clone()
     }
 
+    fn context_id_for_session(&self, session_id: &str) -> String {
+        self.session_contexts
+            .get(session_id)
+            .map(|value| value.clone())
+            // Compatibility for legacy callers and old test fixtures where
+            // Context and Session intentionally used the same identifier.
+            .unwrap_or_else(|| session_id.to_string())
+    }
+
+    fn cancellation_sender(&self, session_id: &str) -> watch::Sender<u64> {
+        self.cancellation_epochs
+            .entry(session_id.to_string())
+            .or_insert_with(|| watch::channel(0).0)
+            .clone()
+    }
+
+    fn active_counter(&self, session_id: &str) -> Arc<AtomicUsize> {
+        self.active_session_turns
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
+            .clone()
+    }
+
+    /// Cancels attempts already running or queued for this Session. Later tool
+    /// completions stay suppressed until a new explicit user message resumes it.
+    pub fn cancel_session(&self, session_id: &str) -> bool {
+        let active = self
+            .active_session_turns
+            .get(session_id)
+            .is_some_and(|value| value.load(Ordering::SeqCst) > 0);
+        self.cancelled_at.insert(session_id.to_string(), Utc::now());
+        let sender = self.cancellation_sender(session_id);
+        let next = (*sender.borrow()).wrapping_add(1);
+        sender.send_replace(next);
+        active
+    }
+
     fn read_guard(&self, session_id: &str) -> Arc<Mutex<ReadTurnGuard>> {
         self.read_turn_guards
             .entry(session_id.to_string())
@@ -1438,7 +2948,11 @@ impl Orchestrator {
         &self,
         session_id: &str,
     ) -> Result<crate::sexpr::SExpr, DynError> {
-        let view = self.context_engine.build_view(session_id).await?;
+        let context_id = self.context_id_for_session(session_id);
+        let view = self
+            .context_engine
+            .build_context_encoding(&context_id, session_id, &HashSet::new())
+            .await?;
         Ok(crate::sexpr::parse(&view.sexpr)?)
     }
 
@@ -1446,7 +2960,59 @@ impl Orchestrator {
         &self,
         session_id: &str,
     ) -> Result<ContextView, DynError> {
-        self.context_engine.build_view(session_id).await
+        let context_id = self.context_id_for_session(session_id);
+        self.context_engine
+            .build_context_encoding(&context_id, session_id, &HashSet::new())
+            .await
+    }
+
+    pub async fn get_context_encoding(
+        &self,
+        context_id: &str,
+        active_session_id: &str,
+    ) -> Result<ContextView, DynError> {
+        self.session_contexts
+            .insert(active_session_id.to_string(), context_id.to_string());
+        self.context_engine
+            .build_context_encoding(context_id, active_session_id, &HashSet::new())
+            .await
+    }
+
+    pub async fn seed_context_from_mind(
+        &self,
+        source_context_id: &str,
+        source_version: Option<u64>,
+        target_context_id: &str,
+    ) -> Result<crate::orchestrator::context::MindSeedReceipt, DynError> {
+        self.context_engine
+            .seed_context_from_mind(source_context_id, source_version, target_context_id)
+            .await
+    }
+
+    pub async fn mind_version(&self, context_id: &str) -> Result<u64, DynError> {
+        self.context_engine.mind_version(context_id).await
+    }
+
+    pub async fn import_session_projection(
+        &self,
+        source_context_id: &str,
+        source_session_id: &str,
+        target_context_id: &str,
+        target_session_id: &str,
+    ) -> Result<usize, DynError> {
+        self.context_engine
+            .import_session_projection(
+                source_context_id,
+                source_session_id,
+                target_context_id,
+                target_session_id,
+            )
+            .await
+    }
+
+    pub fn register_session_context(&self, session_id: &str, context_id: &str) {
+        self.session_contexts
+            .insert(session_id.to_string(), context_id.to_string());
     }
 }
 
@@ -1515,29 +3081,28 @@ fn should_force_final_for_maintenance(
     phase == "work" && pressure == "critical" && !context_tx_available
 }
 
-fn normalize_context_tx_key(session_id: &str, arguments: &str) -> Result<String, String> {
+fn normalize_context_tx_key(context_id: &str, arguments: &str) -> Result<String, String> {
     let value: serde_json::Value =
         serde_json::from_str(arguments).map_err(|error| format!("参数 JSON 非法: {error}"))?;
     let transaction = value
         .get("transaction")
         .and_then(|value| value.as_str())
         .ok_or("缺少 transaction 字符串")?;
-    let target_session = value
-        .get("session_id")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(session_id);
     let canonical = crate::sexpr::parse(transaction)
         .map_err(|error| format!("transaction SExpr 非法: {error}"))?
         .to_string();
-    Ok(format!("{target_session}\u{0}{canonical}"))
+    Ok(format!("{context_id}\u{0}{canonical}"))
 }
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::{
-        baseline_system_prompt, cognitive_sexpr_vm_system_prompt, render_system_contract,
-        should_force_final_for_maintenance, ReadTurnGuard, AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        baseline_system_prompt, classify_reply_response, cognitive_sexpr_vm_system_prompt,
+        compose_system_prompt, render_system_contract, semantic_sexpr_vm_system_prompt,
+        should_force_final_for_maintenance, ReadTurnGuard, ReplyDecision, SystemPromptMode,
+        AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
 
     #[test]
@@ -1574,6 +3139,93 @@ mod tests {
         for leaked_task_hint in ["ALPHA", "BETA", "CHARLIE", "approved-current"] {
             assert!(!candidate.contains(leaked_task_hint));
         }
+    }
+
+    #[test]
+    fn semantic_vm_prompt_is_a_parseable_third_profile_with_shared_rules() {
+        let baseline = baseline_system_prompt();
+        let cognitive = cognitive_sexpr_vm_system_prompt();
+        let semantic = semantic_sexpr_vm_system_prompt();
+        assert_ne!(semantic, baseline);
+        assert_ne!(semantic, cognitive);
+        assert!(semantic.starts_with("(system-prompt morphz"));
+        crate::sexpr::parse(semantic).expect("semantic profile must be one S-expression");
+        for marker in [
+            "(operator seq",
+            "(operator call",
+            "(operator fallback",
+            "(operator bind",
+            "(operator if",
+            "(operator reply",
+            "reply no-reply",
+            "runtime-contracts",
+            "reality-contract-v1",
+            "claims-no-stronger-than-sources",
+            "每次响应必须明确选择",
+        ] {
+            assert!(semantic.contains(marker), "missing marker: {marker}");
+        }
+        for leaked_task_hint in ["ALPHA", "BETA", "CHARLIE", "approved-current"] {
+            assert!(!semantic.contains(leaked_task_hint));
+        }
+    }
+
+    #[test]
+    fn semantic_vm_dynamic_directives_remain_inside_one_sexpr() {
+        let stable = semantic_sexpr_vm_system_prompt();
+        let composed = compose_system_prompt(
+            SystemPromptMode::SemanticSexprVm,
+            stable,
+            Some(("final-reply", "只调用 reply")),
+        );
+        assert!(composed.starts_with("(system-evaluation"));
+        assert!(composed.contains("(runtime-directive"));
+        assert!(composed.contains("(kind final-reply)"));
+        crate::sexpr::parse(&composed).expect("dynamic semantic prompt must remain one SExpr");
+
+        let legacy = compose_system_prompt(
+            SystemPromptMode::CognitiveSexprVm,
+            cognitive_sexpr_vm_system_prompt(),
+            Some(("final-reply", "只调用 reply")),
+        );
+        assert!(legacy.ends_with("只调用 reply"));
+    }
+
+    #[test]
+    fn reply_classifier_requires_an_explicit_exclusive_terminal_decision() {
+        let plain = crate::llm::Response {
+            content: "done".to_string(),
+            tool_calls: Vec::new(),
+        };
+        assert!(classify_reply_response(&plain).is_err());
+
+        let deliver = crate::llm::Response {
+            content: String::new(),
+            tool_calls: vec![crate::llm::ToolCallRepr {
+                id: "reply-1".to_string(),
+                r#type: "function".to_string(),
+                func_name: "reply".to_string(),
+                arguments: json!({"disposition":"deliver","content":"done"}).to_string(),
+            }],
+        };
+        assert_eq!(
+            classify_reply_response(&deliver),
+            Ok(Some(ReplyDecision::Deliver("done".to_string())))
+        );
+
+        let suppress = crate::llm::Response {
+            content: String::new(),
+            tool_calls: vec![crate::llm::ToolCallRepr {
+                id: "reply-2".to_string(),
+                r#type: "function".to_string(),
+                func_name: "reply".to_string(),
+                arguments: json!({"disposition":"suppress"}).to_string(),
+            }],
+        };
+        assert_eq!(
+            classify_reply_response(&suppress),
+            Ok(Some(ReplyDecision::Suppress))
+        );
     }
 
     #[test]

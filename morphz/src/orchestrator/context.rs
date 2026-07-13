@@ -1,9 +1,9 @@
 use crate::config::OrchestratorConfig;
 use crate::event::{
-    Event, TYPE_AGENT_CALL, TYPE_CONTEXT_TRANSACTION, TYPE_EXCEPTION, TYPE_FILE_CHANGE,
-    TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
+    Event, TYPE_AGENT_CALL, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_EXCEPTION,
+    TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
-use crate::memory::{EventStore, QueryFilter};
+use crate::memory::{EventStore, QueryFilter, SessionRecord, SessionStore};
 use crate::orchestrator::context_contract::{
     render_context_tx_epistemic_guidance, ContractClause, EPISTEMIC_CONTRACT,
     EPISTEMIC_CONTRACT_NAME, REALITY_CONTRACT, REALITY_CONTRACT_NAME,
@@ -13,13 +13,14 @@ use chrono::Utc;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 9;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 11;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 
 struct ContextOperationSpec {
@@ -226,10 +227,21 @@ pub struct ContextCommit {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MindSeedReceipt {
+    pub source_context_id: String,
+    pub source_version: u64,
+    pub target_context_id: String,
+    pub snapshot_hash: String,
+    pub projected_hash: String,
+    pub inherited_frames: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextObservation {
     pub id: String,
-    /// 当前 session 内由 Ledger sequence 派生的确定性短引用，例如 @e27。
+    /// 当前 Context 内由 Ledger sequence 派生的确定性短引用，例如 @e27。
     pub reference: String,
+    pub session_id: Option<String>,
     pub sequence: u64,
     pub turn: usize,
     pub attempt: Option<usize>,
@@ -313,9 +325,26 @@ pub struct WakeSignal {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ContextView {
+pub struct ReadySessionEvaluation {
     pub session_id: String,
     pub parent_session_id: Option<String>,
+    pub work_item_id: Option<String>,
+    pub input_preview: Option<String>,
+    pub turn_budget: TurnBudget,
+    pub wake: WakeSignal,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextView {
+    pub context_id: String,
+    pub active_session_id: String,
+    /// Compatibility alias for clients written before Context-owned Sessions.
+    pub session_id: String,
+    pub parent_session_id: Option<String>,
+    /// One entry in normal evaluation; multiple entries in a merged
+    /// Context-level evaluation batch.
+    pub ready_sessions: Vec<ReadySessionEvaluation>,
+    pub sessions: Vec<SessionRecord>,
     pub state: MindState,
     pub observations: Vec<ContextObservation>,
     pub pressure: ContextPressure,
@@ -326,21 +355,45 @@ pub struct ContextView {
 
 /// Agent-Owned Context v1 的唯一状态入口。
 ///
-/// Context transaction 在每个 session 的互斥锁内校验、提交并写入 Event Ledger。
+/// Context transaction 在每个 Cognitive Context 的互斥锁内校验、提交并写入 Event Ledger。
 /// Orchestrator 与 context_tx 工具共享同一个实例。
 pub struct ContextEngine {
     store: Arc<dyn EventStore>,
+    session_store: Option<Arc<dyn SessionStore>>,
     config: OrchestratorConfig,
-    session_locks: DashMap<String, Arc<Mutex<()>>>,
+    context_locks: DashMap<String, Arc<Mutex<()>>>,
 }
 
 impl ContextEngine {
     pub fn new(store: Arc<dyn EventStore>, config: OrchestratorConfig) -> Self {
         Self {
             store,
+            session_store: None,
             config,
-            session_locks: DashMap::new(),
+            context_locks: DashMap::new(),
         }
+    }
+
+    pub fn with_session_store(mut self, session_store: Arc<dyn SessionStore>) -> Self {
+        self.session_store = Some(session_store);
+        self
+    }
+
+    pub fn session_store(&self) -> Option<Arc<dyn SessionStore>> {
+        self.session_store.clone()
+    }
+
+    async fn context_id_for_session(&self, session_id: &str) -> Result<String, DynError> {
+        let Some(store) = self.session_store.as_ref() else {
+            return Ok(session_id.to_string());
+        };
+        Ok(store
+            .get_session(session_id)
+            .await?
+            .map(|session| session.context_id)
+            // Compatibility for legacy fixtures whose Context and Session
+            // intentionally shared one identifier and had no Session registry.
+            .unwrap_or_else(|| session_id.to_string()))
     }
 
     /// Maximum event-text slice that a recall result can deliver without its
@@ -354,14 +407,24 @@ impl ContextEngine {
 
     pub async fn apply_transaction(
         &self,
-        session_id: &str,
+        legacy_scope_id: &str,
+        transaction: &str,
+    ) -> Result<ContextCommit, DynError> {
+        self.apply_context_transaction(legacy_scope_id, legacy_scope_id, transaction)
+            .await
+    }
+
+    pub async fn apply_context_transaction(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
         transaction: &str,
     ) -> Result<ContextCommit, DynError> {
         let mut parsed = parse_transaction(transaction)?;
-        let lock = self.session_lock(session_id);
+        let lock = self.context_lock(context_id);
         let _guard = lock.lock().await;
 
-        let events = self.session_events(session_id).await?;
+        let events = self.context_events(context_id).await?;
         let references = ContextReferences::from_events(&events);
         resolve_transaction_references(&mut parsed, &references)?;
         let canonical_transaction = render_parsed_transaction(&parsed);
@@ -371,11 +434,12 @@ impl ContextEngine {
 
         let tx_id = format!(
             "ctx_tx_{}_{}",
-            session_id,
+            context_id,
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
         let payload = vec![
-            ("session_id".to_string(), json!(session_id)),
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(acting_session_id)),
             ("transaction_id".to_string(), json!(tx_id)),
             ("transaction".to_string(), json!(&canonical_transaction)),
             ("before_version".to_string(), json!(current.version)),
@@ -407,8 +471,141 @@ impl ContextEngine {
         })
     }
 
+    pub async fn seed_context_from_mind(
+        &self,
+        source_context_id: &str,
+        expected_source_version: Option<u64>,
+        target_context_id: &str,
+    ) -> Result<MindSeedReceipt, DynError> {
+        if source_context_id == target_context_id {
+            return Err("Mind Seed 的来源与目标 Context 不能相同".into());
+        }
+        let target_lock = self.context_lock(target_context_id);
+        let _target_guard = target_lock.lock().await;
+        let target_events = self.context_events(target_context_id).await?;
+        if !target_events.is_empty() {
+            return Err(format!(
+                "目标 Context '{}' 已有 Ledger Event，不能再次 Seed",
+                target_context_id
+            )
+            .into());
+        }
+
+        let source_events = self.context_events(source_context_id).await?;
+        let source_state = load_mind_from_events(&source_events)?;
+        if let Some(expected) = expected_source_version {
+            if source_state.version != expected {
+                return Err(format!(
+                    "Mind Seed 版本冲突：请求来源版本 {}，当前来源版本 {}",
+                    expected, source_state.version
+                )
+                .into());
+            }
+        }
+        let projected = project_mind_seed(&source_state);
+        let snapshot_hash = mind_state_hash(&source_state)?;
+        let projected_hash = mind_state_hash(&projected)?;
+        let seed_id = format!(
+            "context_seed_{}_{}",
+            target_context_id,
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        self.store
+            .append(Event::new(
+                seed_id,
+                "System-ContextSeed".to_string(),
+                TYPE_CONTEXT_SEED.to_string(),
+                "runtime/context_seeded".to_string(),
+                vec![
+                    ("context_id".to_string(), json!(target_context_id)),
+                    ("source_context_id".to_string(), json!(source_context_id)),
+                    ("source_version".to_string(), json!(source_state.version)),
+                    ("projection".to_string(), json!("mind_snapshot")),
+                    ("source_state".to_string(), json!(&source_state)),
+                    ("state_after".to_string(), json!(&projected)),
+                    ("snapshot_hash".to_string(), json!(&snapshot_hash)),
+                    ("projected_hash".to_string(), json!(&projected_hash)),
+                    (
+                        "text".to_string(),
+                        json!(format!(
+                            "Context '{}' seeded from Mind snapshot '{}@{}'",
+                            target_context_id, source_context_id, source_state.version
+                        )),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await?;
+        if let Some(session_store) = &self.session_store {
+            session_store
+                .set_context_seed(
+                    target_context_id,
+                    source_context_id,
+                    source_state.version,
+                    &snapshot_hash,
+                    "mind_snapshot",
+                )
+                .await?;
+        }
+        Ok(MindSeedReceipt {
+            source_context_id: source_context_id.to_string(),
+            source_version: source_state.version,
+            target_context_id: target_context_id.to_string(),
+            snapshot_hash,
+            projected_hash,
+            inherited_frames: projected.frames.len(),
+        })
+    }
+
+    pub async fn import_session_projection(
+        &self,
+        source_context_id: &str,
+        source_session_id: &str,
+        target_context_id: &str,
+        target_session_id: &str,
+    ) -> Result<usize, DynError> {
+        let source_events = self.context_events(source_context_id).await?;
+        let mut imported = 0usize;
+        for (index, event) in source_events
+            .iter()
+            .filter(|event| event_session(event) == Some(source_session_id))
+            .filter(|event| is_observation(event))
+            .enumerate()
+        {
+            let mut payload = event.payload.clone();
+            payload.insert("context_id".to_string(), json!(target_context_id));
+            // The physical route belongs to the child Session. Keeping the
+            // source Session here would make ordinary parent-session queries
+            // return projected copies from another Context.
+            payload.insert("session_id".to_string(), json!(target_session_id));
+            payload.insert("source_context_id".to_string(), json!(source_context_id));
+            payload.insert("source_session_id".to_string(), json!(source_session_id));
+            payload.insert("source_event_id".to_string(), json!(&event.id));
+            payload.insert("source_topic".to_string(), json!(&event.topic));
+            payload.insert("projection".to_string(), json!("selected_session"));
+            let source_sequence = event.sequence.unwrap_or(index as u64);
+            self.store
+                .append(Event::new(
+                    format!(
+                        "context_projection_{}_{}_{}",
+                        target_context_id, source_sequence, index
+                    ),
+                    "System-ContextProjection".to_string(),
+                    event.event_type.clone(),
+                    "context/projected_observation".to_string(),
+                    payload,
+                ))
+                .await?;
+            imported += 1;
+        }
+        Ok(imported)
+    }
+
     pub async fn build_view(&self, session_id: &str) -> Result<ContextView, DynError> {
-        self.build_view_excluding(session_id, &HashSet::new()).await
+        let context_id = self.context_id_for_session(session_id).await?;
+        self.build_context_encoding(&context_id, session_id, &HashSet::new())
+            .await
     }
 
     /// Compile the current Context while omitting observations that are being
@@ -422,17 +619,83 @@ impl ContextEngine {
         session_id: &str,
         excluded_observation_ids: &HashSet<String>,
     ) -> Result<ContextView, DynError> {
-        let events = self.session_events(session_id).await?;
+        let context_id = self.context_id_for_session(session_id).await?;
+        self.build_context_encoding(&context_id, session_id, excluded_observation_ids)
+            .await
+    }
+
+    pub async fn build_context_encoding(
+        &self,
+        context_id: &str,
+        active_session_id: &str,
+        excluded_observation_ids: &HashSet<String>,
+    ) -> Result<ContextView, DynError> {
+        self.build_context_encoding_for_sessions(
+            context_id,
+            &[active_session_id.to_string()],
+            excluded_observation_ids,
+        )
+        .await
+    }
+
+    pub async fn build_batch_context_encoding(
+        &self,
+        context_id: &str,
+        ready_session_ids: &[String],
+    ) -> Result<ContextView, DynError> {
+        self.build_batch_context_encoding_excluding(context_id, ready_session_ids, &HashSet::new())
+            .await
+    }
+
+    pub async fn build_batch_context_encoding_excluding(
+        &self,
+        context_id: &str,
+        ready_session_ids: &[String],
+        excluded_observation_ids: &HashSet<String>,
+    ) -> Result<ContextView, DynError> {
+        if ready_session_ids.is_empty() {
+            return Err("batch Context Encoding 至少需要一个 ready Session".into());
+        }
+        self.build_context_encoding_for_sessions(
+            context_id,
+            ready_session_ids,
+            excluded_observation_ids,
+        )
+        .await
+    }
+
+    async fn build_context_encoding_for_sessions(
+        &self,
+        context_id: &str,
+        ready_session_ids: &[String],
+        excluded_observation_ids: &HashSet<String>,
+    ) -> Result<ContextView, DynError> {
+        let active_session_id = ready_session_ids
+            .first()
+            .ok_or("Context Encoding 缺少 active Session")?;
+        let events = self.context_events(context_id).await?;
         let references = ContextReferences::from_events(&events);
         let state = load_mind_from_events(&events)?;
         let metadata = observation_metadata(&events, &state);
-        let parent_session_id = events.iter().find_map(|event| {
-            event
-                .payload
-                .get("parent_session_id")
-                .and_then(|value| value.as_str())
-                .map(ToOwned::to_owned)
-        });
+        let sessions = self.context_sessions(context_id, &events).await?;
+        let parent_session_id = sessions
+            .iter()
+            .find(|session| session.id == *active_session_id)
+            .and_then(|session| session.parent_session_id.clone())
+            .or_else(|| {
+                events.iter().find_map(|event| {
+                    (event_session(event) == Some(active_session_id.as_str()))
+                        .then(|| {
+                            event
+                                .payload
+                                .get("parent_session_id")
+                                .and_then(|value| value.as_str())
+                                .filter(|parent| *parent != active_session_id)
+                                .map(ToOwned::to_owned)
+                        })
+                        .flatten()
+                })
+            });
 
         let observations = events
             .iter()
@@ -468,11 +731,53 @@ impl ContextEngine {
             observations.len(),
             &self.config,
         );
-        let turn_budget = turn_budget_for(&events, &self.config);
-        let wake = wake_for(&events);
+        let ready_sessions = ready_session_ids
+            .iter()
+            .map(|session_id| {
+                let session_events = events
+                    .iter()
+                    .filter(|event| event_session(event) == Some(session_id.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let parent_session_id = sessions
+                    .iter()
+                    .find(|session| session.id == *session_id)
+                    .and_then(|session| session.parent_session_id.clone())
+                    .or_else(|| {
+                        session_events.iter().find_map(|event| {
+                            event
+                                .payload
+                                .get("parent_session_id")
+                                .and_then(|value| value.as_str())
+                                .map(ToOwned::to_owned)
+                        })
+                    });
+                let wake = wake_for(&session_events);
+                let ready_observation = wake.event_id.as_deref().and_then(|event_id| {
+                    observations
+                        .iter()
+                        .find(|observation| observation.id == event_id)
+                });
+                ReadySessionEvaluation {
+                    session_id: session_id.clone(),
+                    parent_session_id,
+                    work_item_id: ready_observation
+                        .map(|observation| observation.reference.clone()),
+                    input_preview: ready_observation
+                        .map(|observation| preview_text(&observation.preview, 4_000).0),
+                    turn_budget: turn_budget_for(&session_events, &self.config),
+                    wake,
+                }
+            })
+            .collect::<Vec<_>>();
+        let turn_budget = ready_sessions[0].turn_budget.clone();
+        let wake = ready_sessions[0].wake.clone();
         let sexpr = render_context(ContextRenderInput {
-            session_id,
+            context_id,
+            active_session_id: active_session_id.as_str(),
             parent_session_id: parent_session_id.as_deref(),
+            ready_sessions: &ready_sessions,
+            sessions: &sessions,
             state: &state,
             observations: &observations,
             pressure: &pressure,
@@ -482,8 +787,12 @@ impl ContextEngine {
         });
 
         Ok(ContextView {
-            session_id: session_id.to_string(),
+            context_id: context_id.to_string(),
+            active_session_id: active_session_id.clone(),
+            session_id: active_session_id.clone(),
             parent_session_id,
+            ready_sessions,
+            sessions,
             state,
             observations,
             pressure,
@@ -495,10 +804,10 @@ impl ContextEngine {
 
     pub async fn find_event(
         &self,
-        session_id: &str,
+        context_id: &str,
         event_id: &str,
     ) -> Result<Option<Event>, DynError> {
-        let events = self.session_events(session_id).await?;
+        let events = self.context_events(context_id).await?;
         let references = ContextReferences::from_events(&events);
         let canonical_id = references.resolve(event_id)?;
         Ok(events.into_iter().find(|event| event.id == canonical_id))
@@ -513,54 +822,103 @@ impl ContextEngine {
 
     pub async fn find_frame(
         &self,
-        session_id: &str,
+        context_id: &str,
         frame_id: &str,
     ) -> Result<Option<ContextFrame>, DynError> {
-        let events = self.session_events(session_id).await?;
+        let events = self.context_events(context_id).await?;
         Ok(load_mind_from_events(&events)?
             .frames
             .into_iter()
             .find(|frame| frame.id == frame_id))
     }
 
+    pub async fn mind_version(&self, context_id: &str) -> Result<u64, DynError> {
+        Ok(load_mind_from_events(&self.context_events(context_id).await?)?.version)
+    }
+
     pub async fn search_events(
         &self,
-        session_id: &str,
+        context_id: &str,
         query: &str,
         limit: usize,
     ) -> Result<Vec<Event>, DynError> {
         let events = self
             .store
             .query(QueryFilter {
-                session_id: Some(session_id.to_string()),
+                context_id: Some(context_id.to_string()),
                 search_query: Some(query.to_string()),
                 ..Default::default()
             })
             .await?;
-        Ok(events
-            .into_iter()
-            .filter(|event| event_session(event) == Some(session_id))
-            .take(limit)
-            .collect())
+        Ok(events.into_iter().take(limit).collect())
     }
 
-    fn session_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
-        self.session_locks
-            .entry(session_id.to_string())
+    fn context_lock(&self, context_id: &str) -> Arc<Mutex<()>> {
+        self.context_locks
+            .entry(context_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
     }
 
-    async fn session_events(&self, session_id: &str) -> Result<Vec<Event>, DynError> {
-        let events = self
+    async fn context_events(&self, context_id: &str) -> Result<Vec<Event>, DynError> {
+        let mut events = self
             .store
             .query(QueryFilter {
-                session_id: Some(session_id.to_string()),
+                context_id: Some(context_id.to_string()),
                 topic: Some("chat/*".to_string()),
                 ..Default::default()
             })
             .await?;
+        events.extend(
+            self.store
+                .query(QueryFilter {
+                    context_id: Some(context_id.to_string()),
+                    topic: Some("runtime/context_seeded".to_string()),
+                    ..Default::default()
+                })
+                .await?,
+        );
+        events.extend(
+            self.store
+                .query(QueryFilter {
+                    context_id: Some(context_id.to_string()),
+                    topic: Some("context/projected_observation".to_string()),
+                    ..Default::default()
+                })
+                .await?,
+        );
+        events.sort_by_key(|event| event.sequence);
         Ok(events)
+    }
+
+    async fn context_sessions(
+        &self,
+        context_id: &str,
+        events: &[Event],
+    ) -> Result<Vec<SessionRecord>, DynError> {
+        if let Some(store) = &self.session_store {
+            return store.list_context_sessions(context_id, true).await;
+        }
+        let mut ids = BTreeSet::new();
+        for event in events {
+            if let Some(id) = event_session(event) {
+                ids.insert(id.to_string());
+            }
+        }
+        Ok(ids
+            .into_iter()
+            .map(|id| SessionRecord {
+                context_id: context_id.to_string(),
+                agent_id: "unknown".to_string(),
+                parent_session_id: None,
+                title: id.clone(),
+                status: crate::memory::SessionStatus::Active,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                last_activity_at: Utc::now(),
+                id,
+            })
+            .collect())
     }
 
     fn to_observation(
@@ -602,6 +960,12 @@ impl ContextEngine {
         ContextObservation {
             id: event.id.clone(),
             reference: self.event_reference(event),
+            session_id: event
+                .payload
+                .get("source_session_id")
+                .and_then(|value| value.as_str())
+                .or_else(|| event_session(event))
+                .map(ToOwned::to_owned),
             sequence: metadata.sequence,
             turn: metadata.turn,
             attempt: metadata.attempt,
@@ -1380,8 +1744,11 @@ fn place_frame(state: &mut MindState, id: &str, position: &SExpr) -> Result<(), 
 }
 
 struct ContextRenderInput<'a> {
-    session_id: &'a str,
+    context_id: &'a str,
+    active_session_id: &'a str,
     parent_session_id: Option<&'a str>,
+    ready_sessions: &'a [ReadySessionEvaluation],
+    sessions: &'a [SessionRecord],
     state: &'a MindState,
     observations: &'a [ContextObservation],
     pressure: &'a ContextPressure,
@@ -1390,23 +1757,8 @@ struct ContextRenderInput<'a> {
     references: &'a ContextReferences,
 }
 
-fn render_context(input: ContextRenderInput<'_>) -> String {
-    let ContextRenderInput {
-        session_id,
-        parent_session_id,
-        state,
-        observations,
-        pressure,
-        turn_budget,
-        wake,
-        references,
-    } = input;
-    let mut kernel = vec![atom("kernel"), pair("session", atom(session_id))];
-    if let Some(parent) = parent_session_id {
-        kernel.push(pair("parent-session", atom(parent)));
-    }
-    kernel.push(pair("version", atom(state.version.to_string())));
-    let mut wake_fields = vec![
+fn render_wake(wake: &WakeSignal, references: &ContextReferences) -> SExpr {
+    let mut fields = vec![
         pair("cause", atom(&wake.cause)),
         pair(
             "visible-in-inbox",
@@ -1418,34 +1770,16 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         ),
     ];
     if let Some(event_id) = &wake.event_id {
-        wake_fields.push(pair("event", atom(references.display(event_id))));
+        fields.push(pair("event", atom(references.display(event_id))));
     }
     if let Some(tool_name) = &wake.tool_name {
-        wake_fields.push(pair("tool", atom(tool_name)));
+        fields.push(pair("tool", atom(tool_name)));
     }
-    kernel.push(list("wake", wake_fields));
-    kernel.push(list(
-        "context-pressure",
-        vec![
-            pair("level", atom(&pressure.level)),
-            pair(
-                "estimated-tokens",
-                atom(pressure.estimated_tokens.to_string()),
-            ),
-            pair("soft-limit", atom(pressure.soft_limit.to_string())),
-            pair("hard-limit", atom(pressure.hard_limit.to_string())),
-            pair(
-                "maintenance-reserve",
-                atom(pressure.maintenance_reserve.to_string()),
-            ),
-            pair("active-frames", atom(pressure.active_frames.to_string())),
-            pair(
-                "active-observations",
-                atom(pressure.active_observations.to_string()),
-            ),
-        ],
-    ));
-    kernel.push(list(
+    list("wake", fields)
+}
+
+fn render_turn_budget(turn_budget: &TurnBudget) -> SExpr {
+    list(
         "turn-budget",
         vec![
             pair("attempt", atom(turn_budget.attempt.to_string())),
@@ -1480,7 +1814,97 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                 }),
             ),
         ],
+    )
+}
+
+fn render_context(input: ContextRenderInput<'_>) -> String {
+    let ContextRenderInput {
+        context_id,
+        active_session_id,
+        parent_session_id,
+        ready_sessions,
+        sessions,
+        state,
+        observations,
+        pressure,
+        turn_budget,
+        wake,
+        references,
+    } = input;
+    let mut kernel = vec![atom("kernel"), pair("context", atom(context_id))];
+    if ready_sessions.len() > 1 {
+        kernel.push(pair("evaluation-mode", atom("batch")));
+        kernel.push(list(
+            "ready-sessions",
+            ready_sessions
+                .iter()
+                .map(|ready| {
+                    let mut fields = vec![pair("id", atom(&ready.session_id))];
+                    if let Some(parent) = &ready.parent_session_id {
+                        fields.push(pair("parent-session", atom(parent)));
+                    }
+                    if let Some(work_item_id) = &ready.work_item_id {
+                        fields.push(pair("work-item", atom(work_item_id)));
+                    }
+                    if let Some(input_preview) = &ready.input_preview {
+                        fields.push(pair("input-preview", atom(input_preview)));
+                    }
+                    fields.push(render_wake(&ready.wake, references));
+                    fields.push(render_turn_budget(&ready.turn_budget));
+                    list("session", fields)
+                })
+                .collect(),
+        ));
+    } else {
+        kernel.push(pair("evaluation-mode", atom("single")));
+        kernel.push(pair("active-session", atom(active_session_id)));
+        if let Some(parent) = parent_session_id {
+            kernel.push(pair("parent-session", atom(parent)));
+        }
+    }
+    kernel.push(pair("version", atom(state.version.to_string())));
+    kernel.push(render_wake(wake, references));
+    kernel.push(list(
+        "context-pressure",
+        vec![
+            pair("level", atom(&pressure.level)),
+            pair(
+                "estimated-tokens",
+                atom(pressure.estimated_tokens.to_string()),
+            ),
+            pair("soft-limit", atom(pressure.soft_limit.to_string())),
+            pair("hard-limit", atom(pressure.hard_limit.to_string())),
+            pair(
+                "maintenance-reserve",
+                atom(pressure.maintenance_reserve.to_string()),
+            ),
+            pair("active-frames", atom(pressure.active_frames.to_string())),
+            pair(
+                "active-observations",
+                atom(pressure.active_observations.to_string()),
+            ),
+        ],
     ));
+    kernel.push(render_turn_budget(turn_budget));
+
+    let session_directory = list(
+        "session-directory",
+        sessions
+            .iter()
+            .map(|session| {
+                let mut fields = vec![
+                    pair("id", atom(&session.id)),
+                    pair("status", atom(session.status.as_str())),
+                    pair("title", atom(&session.title)),
+                    pair("last-activity", atom(session.last_activity_at.to_rfc3339())),
+                ];
+                if let Some(parent) = &session.parent_session_id {
+                    fields.push(pair("parent-session", atom(parent)));
+                }
+                list("session", fields)
+            })
+            .collect(),
+    );
 
     let mut mind = vec![atom("mind")];
     for frame in state
@@ -1624,6 +2048,9 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
             ),
             pair("preview", atom(&observation.preview)),
         ];
+        if let Some(session_id) = &observation.session_id {
+            fields.insert(2, pair("session", atom(session_id)));
+        }
         if let Some(attempt) = observation.attempt {
             fields.insert(3, pair("attempt", atom(attempt.to_string())));
         }
@@ -1664,15 +2091,17 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         inbox.push(list("observation", fields));
     }
 
-    // Keep the large, deterministic protocol before every high-churn field so
-    // provider-side prefix caches can reuse it across attempts and turns.
-    // Phase-specific instructions are likewise appended after the stable
-    // system prompt by the orchestrator.
+    // Prefix-cache order is intentional: protocol is immutable, the shared
+    // Mind usually changes less often than routing/turn state, the Session
+    // directory changes less often than wake/budget, and Inbox is highest
+    // churn. Concurrent Session evaluations of the same Context therefore
+    // reuse the protocol + Mind prefix whenever they observe the same version.
     format!(
-        "{} {} {} {})",
+        "{} {} {} {} {})",
         stable_context_prefix(),
-        SExpr::List(kernel),
         SExpr::List(mind),
+        session_directory,
+        SExpr::List(kernel),
         SExpr::List(inbox)
     )
 }
@@ -1774,6 +2203,19 @@ fn render_protocol() -> SExpr {
         "protocol",
         vec![
             pair("version", atom(CONTEXT_PROTOCOL_VERSION.to_string())),
+            list(
+                "routing-contract",
+                vec![
+                    pair("ownership", atom("一个 Cognitive Context 持有一个共享 Mind 与多个 Session")),
+                    pair("session-role", atom("Session 是输入输出连接与进展边界，不拥有独立 Mind")),
+                    pair("active-session", atom("single 求值时表示输入来源与回复目标；不是 Context 的全局唯一活动 Session")),
+                    pair("ready-sessions", atom("batch 求值时列出每个必须分别处理的 Session、稳定 work-item 和当前 input-preview；不存在可承载所有回复的单一正文目标")),
+                    pair("concurrency", atom("同一 Context 可有多个 Session 同时进行各自求值与回复")),
+                    pair("shared-evidence", atom("inbox observation 按 session 标记来源，但均属于当前 Context，可跨 Session 推理与复用")),
+                    pair("reply-routing", atom("single 求值的标准 reply 与可见 progress 必须对应 kernel.active-session")),
+                    pair("write-serialization", atom("context_tx 修改共享 Mind；Runtime 按 Context 串行提交并执行 version 检查")),
+                ],
+            ),
             render_contract(
                 "reality-contract",
                 REALITY_CONTRACT_NAME,
@@ -1819,10 +2261,14 @@ fn render_protocol() -> SExpr {
                     list(
                         "reply",
                         vec![
+                            pair("evaluation-mode", atom("single")),
                             pair("when", atom("当前用户任务已经完成，或必须向用户说明阻塞")),
-                            pair("tool-calls", atom("none")),
-                            pair("content", atom("直接交付给用户的最终答复")),
-                            pair("terminal", atom("只有无工具纯文本响应才结束用户回合")),
+                            pair("tool", atom("reply")),
+                            pair("exclusive", atom("reply 必须是终态响应中唯一的工具调用")),
+                            pair("deliver", atom("disposition=deliver；content 必须非空并交付当前 Session")),
+                            pair("suppress", atom("disposition=suppress；明确结束但不向当前 Session 投递消息")),
+                            pair("plain-text", atom("普通文本或空响应都不是终态；Runtime 返回协议错误并有限重试")),
+                            pair("circuit-breaker", atom("允许两次纠错；第三次仍无合法 reply 时安全熔断")),
                             list(
                                 "preflight",
                                 vec![
@@ -1839,6 +2285,16 @@ fn render_protocol() -> SExpr {
                                     ),
                                 ],
                             ),
+                        ],
+                    ),
+                    list(
+                        "batch-reply",
+                        vec![
+                            pair("evaluation-mode", atom("batch")),
+                            pair("tool", atom("session_output")),
+                            pair("content", atom("empty; 可见文本必须显式路由")),
+                            pair("coverage", atom("每个 ready Session 必须 final、progress+action 或明确阻塞")),
+                            pair("fallback", atom("遗漏或歧义项由 Runtime 单独重新求值；已交付项不重放")),
                         ],
                     ),
                     list(
@@ -1868,10 +2324,22 @@ fn render_protocol() -> SExpr {
                             pair("content", atom("empty | visible progress; 不是最终答复")),
                             pair(
                                 "after-commit",
-                                atom("Runtime 必定再次调用；非 critical 时冷却 context_tx，必须 reply 或 act"),
+                                atom("Runtime 必定再次调用；非 critical 时冷却 context_tx，必须调用 reply 或执行 act"),
                             ),
                         ],
                     ),
+                ],
+            ),
+            list(
+                "session-output-contract",
+                vec![
+                    pair("role", atom("外部 Session IO；不是 Mind transaction")),
+                    pair("tool", atom("session_output")),
+                    pair("syntax", atom("{deliveries:[{session_id,kind:progress|final,text},...]}")),
+                    pair("final", atom("结束该 Session 当前回合；同一 Session 不得同时 final 和调用工具")),
+                    pair("progress", atom("只发送可见进度，不结束回合；必须同时有后续动作或由 Runtime 重新调度")),
+                    pair("routing", atom("session_id 必须来自 kernel.ready-sessions，Runtime 拒绝伪造目标")),
+                    pair("context-boundary", atom("context_tx 只修改共享 Mind，不能向用户发送消息")),
                 ],
             ),
             list(
@@ -2034,10 +2502,12 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
                 .and_then(|value| value.as_array())
                 .map(|calls| {
                     calls.iter().any(|call| {
-                        call.get("function")
-                            .and_then(|function| function.get("name"))
-                            .and_then(|value| value.as_str())
-                            != Some("context_tx")
+                        !matches!(
+                            call.get("function")
+                                .and_then(|function| function.get("name"))
+                                .and_then(|value| value.as_str()),
+                            Some("context_tx" | "reply")
+                        )
                     })
                 })
                 .unwrap_or(true)
@@ -2112,12 +2582,126 @@ fn wake_for(events: &[Event]) -> WakeSignal {
     }
 }
 
+fn project_mind_seed(source: &MindState) -> MindState {
+    let frame_ids = source
+        .frames
+        .iter()
+        .map(|frame| frame.id.clone())
+        .collect::<HashSet<_>>();
+    let frames = source
+        .frames
+        .iter()
+        .cloned()
+        .map(|mut frame| {
+            frame
+                .sources
+                .retain(|source_id| frame_ids.contains(source_id));
+            frame.created_version = 0;
+            frame.updated_version = 0;
+            frame
+        })
+        .collect::<Vec<_>>();
+    let relations = source
+        .relations
+        .iter()
+        .filter(|relation| {
+            frame_ids.contains(&relation.subject) && frame_ids.contains(&relation.object)
+        })
+        .cloned()
+        .map(|mut relation| {
+            relation.created_version = 0;
+            relation
+        })
+        .collect::<Vec<_>>();
+    MindState {
+        version: 0,
+        frames,
+        relations,
+        retired: source
+            .retired
+            .iter()
+            .filter(|id| frame_ids.contains(*id))
+            .cloned()
+            .collect(),
+        protected: source
+            .protected
+            .iter()
+            .filter(|id| frame_ids.contains(*id))
+            .cloned()
+            .collect(),
+        checkpoints: Vec::new(),
+    }
+}
+
+fn mind_state_hash(state: &MindState) -> Result<String, String> {
+    let bytes =
+        serde_json::to_vec(state).map_err(|error| format!("Mind Snapshot 无法序列化: {error}"))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
 fn load_mind_from_events(events: &[Event]) -> Result<MindState, String> {
     let mut state = MindState::default();
     let mut seen_observations = HashSet::new();
+    let mut seed_seen = false;
     for event in events {
         if is_observation(event) {
             seen_observations.insert(event.id.clone());
+            continue;
+        }
+        if event.event_type == TYPE_CONTEXT_SEED
+            && event.topic == "runtime/context_seeded"
+            && event.actor == "System-ContextSeed"
+        {
+            if seed_seen || state != MindState::default() || !seen_observations.is_empty() {
+                return Err(format!(
+                    "Context Seed '{}' 不是目标 Ledger 的唯一 Genesis",
+                    event.id
+                ));
+            }
+            let source_state: MindState = serde_json::from_value(
+                event
+                    .payload
+                    .get("source_state")
+                    .ok_or_else(|| format!("Context Seed '{}' 缺少 source_state", event.id))?
+                    .clone(),
+            )
+            .map_err(|error| format!("Context Seed '{}' 来源状态损坏: {error}", event.id))?;
+            let recorded_state: MindState = serde_json::from_value(
+                event
+                    .payload
+                    .get("state_after")
+                    .ok_or_else(|| format!("Context Seed '{}' 缺少 state_after", event.id))?
+                    .clone(),
+            )
+            .map_err(|error| format!("Context Seed '{}' 投影状态损坏: {error}", event.id))?;
+            let projected = project_mind_seed(&source_state);
+            if recorded_state != projected {
+                return Err(format!(
+                    "Context Seed '{}' 的 state_after 与 mind_snapshot 投影不一致: {}",
+                    event.id,
+                    mind_state_mismatch(&recorded_state, &projected)
+                ));
+            }
+            let snapshot_hash = mind_state_hash(&source_state)?;
+            let projected_hash = mind_state_hash(&projected)?;
+            if event
+                .payload
+                .get("snapshot_hash")
+                .and_then(|value| value.as_str())
+                != Some(snapshot_hash.as_str())
+                || event
+                    .payload
+                    .get("projected_hash")
+                    .and_then(|value| value.as_str())
+                    != Some(projected_hash.as_str())
+            {
+                return Err(format!(
+                    "Context Seed '{}' 的 Snapshot Hash 不一致",
+                    event.id
+                ));
+            }
+            state = projected;
+            seed_seen = true;
             continue;
         }
         if event.event_type != TYPE_CONTEXT_TRANSACTION
@@ -2499,6 +3083,7 @@ fn list(key: &str, values: Vec<SExpr>) -> SExpr {
 mod tests {
     use super::*;
     use crate::memory::sqlite::SqliteStore;
+    use crate::memory::{NewCognitiveContext, NewSession, SessionStore};
     use tempfile::TempDir;
 
     fn observations(ids: &[&str]) -> HashSet<String> {
@@ -2640,8 +3225,11 @@ mod tests {
         };
         let references = ContextReferences::default();
         let rendered = render_context(ContextRenderInput {
-            session_id: "s1",
+            context_id: "context-1",
+            active_session_id: "s1",
             parent_session_id: None,
+            ready_sessions: &[],
+            sessions: &[],
             state: &state,
             observations: &[],
             pressure: &pressure,
@@ -2682,12 +3270,17 @@ mod tests {
         assert!(rendered.contains("(inbox)"));
         assert!(!rendered.contains("todo_stack"));
 
-        let first_dynamic_field = rendered.find(" (kernel").unwrap();
-        assert_eq!(&rendered[..first_dynamic_field], stable_context_prefix());
+        assert!(rendered.starts_with(stable_context_prefix()));
+        let shared_mind_offset = stable_context_prefix().len();
+        assert!(rendered[shared_mind_offset..].starts_with(" (mind"));
+        assert!(shared_mind_offset < rendered.rfind(" (kernel").unwrap());
         budget.attempt = 2;
         let changed = render_context(ContextRenderInput {
-            session_id: "s2",
+            context_id: "context-1",
+            active_session_id: "s2",
             parent_session_id: None,
+            ready_sessions: &[],
+            sessions: &[],
             state: &state,
             observations: &[],
             pressure: &pressure,
@@ -2696,11 +3289,8 @@ mod tests {
             references: &references,
         });
         assert_ne!(rendered, changed);
-        let changed_first_dynamic_field = changed.find(" (kernel").unwrap();
-        assert_eq!(
-            &changed[..changed_first_dynamic_field],
-            stable_context_prefix()
-        );
+        assert!(changed.starts_with(stable_context_prefix()));
+        assert!(changed[shared_mind_offset..].starts_with(" (mind"));
     }
 
     #[test]
@@ -3509,8 +4099,9 @@ mod tests {
             let engine = Arc::clone(&engine);
             tokio::spawn(async move {
                 engine
-                    .apply_transaction(
-                        "same-session",
+                    .apply_context_transaction(
+                        "shared-context",
+                        "session-left",
                         "(context-tx (base-version 0) (create left (note left)))",
                     )
                     .await
@@ -3520,8 +4111,9 @@ mod tests {
             let engine = Arc::clone(&engine);
             tokio::spawn(async move {
                 engine
-                    .apply_transaction(
-                        "same-session",
+                    .apply_context_transaction(
+                        "shared-context",
+                        "session-right",
                         "(context-tx (base-version 0) (create right (note right)))",
                     )
                     .await
@@ -3531,9 +4123,161 @@ mod tests {
         let outcomes = [left.await.unwrap(), right.await.unwrap()];
         assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
         assert_eq!(outcomes.iter().filter(|result| result.is_err()).count(), 1);
-        let view = engine.build_view("same-session").await.unwrap();
+        let view = engine
+            .build_context_encoding("shared-context", "session-left", &HashSet::new())
+            .await
+            .unwrap();
         assert_eq!(view.state.version, 1);
         assert_eq!(view.state.frames.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn mind_seed_inherits_cognition_without_parent_sessions_or_observations() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("context-mind-seed.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        for context_id in ["seed-source", "seed-target"] {
+            store
+                .create_context(NewCognitiveContext {
+                    id: context_id.to_string(),
+                    agent_id: "seed-agent".to_string(),
+                    title: context_id.to_string(),
+                })
+                .await
+                .unwrap();
+        }
+        for (session_id, context_id) in [
+            ("seed-session-a", "seed-source"),
+            ("seed-session-b", "seed-source"),
+            ("seed-session-c", "seed-target"),
+        ] {
+            store
+                .create_session(NewSession {
+                    id: session_id.to_string(),
+                    agent_id: "seed-agent".to_string(),
+                    context_id: context_id.to_string(),
+                    parent_session_id: None,
+                    title: session_id.to_string(),
+                    mount_kind: crate::memory::SessionMountKind::ExistingContext,
+                })
+                .await
+                .unwrap();
+        }
+        for (event_id, session_id, text) in [
+            ("seed-event-a", "seed-session-a", "private A message"),
+            ("seed-event-b", "seed-session-b", "private B message"),
+        ] {
+            store
+                .append(Event::new(
+                    event_id.to_string(),
+                    "User".to_string(),
+                    TYPE_USER_MESSAGE.to_string(),
+                    "chat/user_message".to_string(),
+                    vec![
+                        ("context_id".to_string(), json!("seed-source")),
+                        ("session_id".to_string(), json!(session_id)),
+                        ("text".to_string(), json!(text)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+                .await
+                .unwrap();
+        }
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>);
+        engine
+            .apply_context_transaction(
+                "seed-source",
+                "seed-session-a",
+                r#"(context-tx
+                    (base-version 0)
+                    (reason "建立可继承认知")
+                    (create stable-principle (rule verify-first))
+                    (derive evidence-frame (from seed-event-a) (finding alpha))
+                    (relate stable-principle supports evidence-frame)
+                    (protect stable-principle)
+                    (retire evidence-frame))"#,
+            )
+            .await
+            .unwrap();
+        let source_before_seed = engine
+            .build_context_encoding("seed-source", "seed-session-a", &HashSet::new())
+            .await
+            .unwrap();
+        assert!(source_before_seed
+            .state
+            .protected
+            .contains("stable-principle"));
+        assert!(project_mind_seed(&source_before_seed.state)
+            .protected
+            .contains("stable-principle"));
+
+        let receipt = engine
+            .seed_context_from_mind("seed-source", Some(1), "seed-target")
+            .await
+            .unwrap();
+        assert_eq!(receipt.source_version, 1);
+        assert_eq!(receipt.inherited_frames, 2);
+        let target_events = engine.context_events("seed-target").await.unwrap();
+        assert_eq!(target_events.len(), 1);
+        let replayed_seed = load_mind_from_events(&target_events).unwrap();
+        assert!(replayed_seed.protected.contains("stable-principle"));
+        let child = engine
+            .build_context_encoding("seed-target", "seed-session-c", &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(child.state.version, 0);
+        assert_eq!(child.sessions.len(), 1);
+        assert_eq!(child.sessions[0].id, "seed-session-c");
+        assert!(child.observations.is_empty());
+        assert!(child.state.protected.contains("stable-principle"));
+        assert!(child.state.retired.contains("evidence-frame"));
+        let inherited = child
+            .state
+            .frames
+            .iter()
+            .find(|frame| frame.id == "evidence-frame")
+            .unwrap();
+        assert!(inherited.sources.is_empty());
+
+        engine
+            .apply_context_transaction(
+                "seed-target",
+                "seed-session-c",
+                "(context-tx (base-version 0) (create child-only (note isolated)))",
+            )
+            .await
+            .unwrap();
+        let parent = engine
+            .build_context_encoding("seed-source", "seed-session-a", &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(parent.state.version, 1);
+        assert!(!parent
+            .state
+            .frames
+            .iter()
+            .any(|frame| frame.id == "child-only"));
+
+        let restarted = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>);
+        let restored = restarted
+            .build_context_encoding("seed-target", "seed-session-c", &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(restored.state.version, 1);
+        assert!(restored
+            .state
+            .frames
+            .iter()
+            .any(|frame| frame.id == "child-only"));
     }
 
     #[tokio::test]

@@ -14,6 +14,7 @@ pub const TYPE_FILE_CHANGE: &str = "file_change";
 pub const TYPE_EXCEPTION: &str = "exception";
 pub const TYPE_PROPOSAL: &str = "proposal";
 pub const TYPE_CONTEXT_TRANSACTION: &str = "context_transaction";
+pub const TYPE_CONTEXT_SEED: &str = "context_seed";
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 

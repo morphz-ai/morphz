@@ -3,6 +3,10 @@
 > 状态：5 次正式配对实验已完成  
 > 日期：2026-07-12  
 > 目的：验证“把 LLM 定义为 SExpr 认知虚拟机的语义处理器”是否比传统 AI Agent 身份获得更好的正确性、效率和自主抽象。
+>
+> 后续状态：本文的两个 Profile 继续作为历史可运行基线；Runtime 当前新增并默认使用第三版 `semantic_sexpr_vm`，三版共享显式 Reply 协议。见 [三版本 System Prompt 与显式 Reply 协议 v1](./morphz_system_prompt_profiles_and_reply_v1.md)。
+
+> 后续设计：本实验验证的是 VM 身份迁移。关于“System Prompt 本身采用纯 SExpr、算子内部使用自然语言语义体，以及 VM 之上加载高层身份”的新设计，见 [分层认知 VM 与可加载身份架构](./morphz_layered_cognitive_vm_identity_architecture.md) 和 [语义算子 VM 对照实验](./morphz_semantic_sexpr_vm_ablation_v1.md)。
 
 ## 1. 实验假设
 
@@ -152,4 +156,4 @@ VM Prompt 原始稳定前缀为 6,124 字符，基线为 5,657 字符，增加 4
 
 > 把 Morphz 定义为 Cognitive S-Expression Machine 的语义处理器，在当前任务族中没有造成退化，并改善了 Mind 保持与聚合倾向；如何从长期经历形成真正可复用的规律，仍需要更长训练、反思触发条件和抽象质量评测。
 
-按预注册等级属于“部分支持”：机器身份迁移可接受，抽象能力尚未得到证据。基于本轮主要目标是确认非退化，`cognitive_sexpr_vm` 已提升为 Runtime 和普通 Experience Transfer 的默认模式；`agent_owned_context` 保留为显式回归基线。后续仍需用不同任务族验证默认值的泛化性，若出现系统性退化可直接切回基线。
+按预注册等级属于“部分支持”：机器身份迁移可接受，抽象能力尚未得到证据。基于本轮主要目标是确认非退化，`cognitive_sexpr_vm` 在当时提升为 Runtime 和普通 Experience Transfer 的默认模式；`agent_owned_context` 保留为显式回归基线。后续第三版 `semantic_sexpr_vm` 已接替默认位置，但本文结论继续作为第二版与第一版的历史对照。

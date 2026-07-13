@@ -4,13 +4,14 @@ use morphz::context_tools::{ContextTxTool, RecallTool};
 use morphz::event::{Event, InMemoryEventBus};
 use morphz::llm::OpenAIClient;
 use morphz::memory::sqlite::SqliteStore;
+use morphz::memory::{NewAgent, NewCognitiveContext, NewSession, SessionMountKind, SessionStore};
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
 use morphz::tool::{
-    EditFileTool, ExecuteCommandTool, KillTaskTool, ListFilesTool, ListSkillsTool, ReadFileTool,
-    Registry, SearchTool, SpawnAgentTool, WriteFileTool,
+    DelegateTool, EditFileTool, ExecuteCommandTool, KillTaskTool, ListFilesTool, ListSkillsTool,
+    ReadFileTool, Registry, SearchTool, WriteFileTool,
 };
-use morphz::web::Server;
+use morphz::web::{Server, ServerDefaults};
 use std::io::{BufRead, Write};
 use std::sync::Arc;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -87,10 +88,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // 4. 初始化工具注册表并注册本地文件工具
     let registry = Arc::new(Registry::new());
-    let context_engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn morphz::memory::EventStore>,
-        app_config.orchestrator.clone(),
-    ));
+    let context_engine = Arc::new(
+        ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn morphz::memory::EventStore>,
+            app_config.orchestrator.clone(),
+        )
+        .with_session_store(Arc::clone(&store) as Arc<dyn morphz::memory::SessionStore>),
+    );
     let tool_security = Arc::new(app_config.tool_security.clone());
     let background_config = Arc::new(app_config.background_task.clone());
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&context_engine))));
@@ -116,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )));
         registry.register(Arc::new(KillTaskTool));
         if !env_flag_enabled("MORPHZ_CODING_EVAL_MODE") {
-            registry.register(Arc::new(SpawnAgentTool::new(Arc::clone(&bus))));
+            registry.register(Arc::new(DelegateTool::new(Arc::clone(&bus))));
             registry.register(Arc::new(ListSkillsTool));
         }
     }
@@ -133,11 +137,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     orc.clone().start().await?;
 
+    let default_agent_id =
+        std::env::var("MORPHZ_AGENT_ID").unwrap_or_else(|_| "default-agent".to_string());
+    let default_context_id =
+        std::env::var("MORPHZ_CONTEXT_ID").unwrap_or_else(|_| "context-default".to_string());
+    // 旧数据库迁移时可能已经为 default-agent 选择了一个历史 Context
+    // 作为 Root。Root 是身份血缘，启动参数不应静默改写它；仅在 Agent
+    // 尚不存在时把当前默认 Context 设为 Root。
+    if store.get_agent(&default_agent_id).await?.is_none() {
+        store
+            .ensure_agent(NewAgent {
+                id: default_agent_id.clone(),
+                title: "默认 Agent".to_string(),
+                root_context_id: default_context_id.clone(),
+            })
+            .await?;
+    }
+    store
+        .ensure_context(NewCognitiveContext {
+            id: default_context_id.clone(),
+            agent_id: default_agent_id.clone(),
+            title: "默认认知 Context".to_string(),
+        })
+        .await?;
+
     // 5.5 启动大盘 API & WebSocket 服务器
     let web_srv = Arc::new(Server::new_with_capacity(
         Arc::clone(&store) as Arc<dyn morphz::memory::EventStore>,
         Some(Arc::clone(&store) as Arc<dyn morphz::memory::GraphStore>),
+        Arc::clone(&store) as Arc<dyn morphz::memory::SessionStore>,
         Arc::clone(&bus),
+        Arc::clone(&orc),
+        ServerDefaults {
+            agent_id: default_agent_id.clone(),
+            context_id: default_context_id.clone(),
+        },
         app_config.server.broadcast_capacity,
     ));
 
@@ -161,6 +195,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| format!("session_{}", Utc::now().timestamp()));
+    store
+        .ensure_session(NewSession {
+            id: session_id.clone(),
+            agent_id: default_agent_id,
+            context_id: default_context_id.clone(),
+            parent_session_id: None,
+            title: "本地终端".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await?;
 
     let bus_clone = Arc::clone(&bus);
     let session_id_clone = session_id.clone();
@@ -281,6 +325,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             while reply_rx.try_recv().is_ok() {}
 
             let mut payload = serde_json::Map::new();
+            payload.insert(
+                "context_id".to_string(),
+                serde_json::json!(&default_context_id),
+            );
             payload.insert(
                 "session_id".to_string(),
                 serde_json::json!(session_id_clone),

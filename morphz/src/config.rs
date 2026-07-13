@@ -62,6 +62,12 @@ pub struct OrchestratorConfig {
     pub max_attempts_per_turn: usize,
     /// 普通 work 阶段允许提交的 Context transaction 次数；最终收口另有一次保留机会
     pub max_context_transactions_per_turn: usize,
+    /// 是否允许同一 Context 中同时就绪的多个 Session 合并为一次模型求值。
+    pub merged_evaluation_enabled: bool,
+    /// 收集近同时到达消息的短窗口；只增加首个消息最多该数值的调度延迟。
+    pub session_batch_coalesce_ms: u64,
+    /// 一次合并求值最多包含的 ready Session 数。
+    pub max_sessions_per_evaluation: usize,
 }
 
 impl Default for OrchestratorConfig {
@@ -77,6 +83,9 @@ impl Default for OrchestratorConfig {
             observation_preview_chars: 16_000,
             max_attempts_per_turn: 12,
             max_context_transactions_per_turn: 6,
+            merged_evaluation_enabled: false,
+            session_batch_coalesce_ms: 25,
+            max_sessions_per_evaluation: 8,
         }
     }
 }
@@ -332,6 +341,20 @@ impl AppConfig {
             "MORPHZ_LLM_MAX_OUTPUT_TOKENS",
             &mut self.llm.max_output_tokens,
         )?;
+        if let Ok(value) = std::env::var("MORPHZ_MERGED_EVALUATION_ENABLED") {
+            self.orchestrator.merged_evaluation_enabled =
+                parse_env_bool(&value).ok_or_else(|| {
+                    format!("MORPHZ_MERGED_EVALUATION_ENABLED 不是合法布尔值: {value}")
+                })?;
+        }
+        apply_u64_env(
+            "MORPHZ_SESSION_BATCH_COALESCE_MS",
+            &mut self.orchestrator.session_batch_coalesce_ms,
+        )?;
+        apply_usize_env(
+            "MORPHZ_MAX_SESSIONS_PER_EVALUATION",
+            &mut self.orchestrator.max_sessions_per_evaluation,
+        )?;
         Ok(())
     }
 }
@@ -448,6 +471,7 @@ mod tests {
         assert_eq!(cfg.llm.max_retries, 5);
         assert_eq!(cfg.llm.request_timeout_secs, 120);
         assert_eq!(cfg.llm.max_output_tokens, None);
+        assert!(!cfg.orchestrator.merged_evaluation_enabled);
         assert!(cfg.tool_security.workspace_jail_enabled);
         assert_eq!(cfg.background_task.timeout_notify_secs, 300);
     }

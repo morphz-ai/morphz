@@ -10,7 +10,14 @@ import {
   User, 
   Bot, 
   Wrench, 
-  Settings 
+  Settings,
+  Plus,
+  Send,
+  Square,
+  Archive,
+  MessageSquare,
+  Pencil,
+  RotateCcw,
 } from 'lucide-react';
 
 const CORE_HTTP_URL = import.meta.env.VITE_MORPHZ_HTTP_URL ?? 'http://127.0.0.1:8080';
@@ -99,6 +106,13 @@ interface WakeSignal {
   visible_in_inbox: boolean;
 }
 
+interface ReadySessionEvaluation {
+  session_id: string;
+  parent_session_id?: string;
+  turn_budget: TurnBudget;
+  wake: WakeSignal;
+}
+
 interface EventPayload {
   text?: string;
   messages?: Message[];
@@ -124,6 +138,56 @@ interface MorphzEvent {
   payload: EventPayload;
 }
 
+interface SessionRecord {
+  id: string;
+  agent_id: string;
+  context_id: string;
+  parent_session_id?: string;
+  title: string;
+  status: 'active' | 'archived';
+  created_at: string;
+  updated_at: string;
+  last_activity_at: string;
+}
+
+interface AgentRecord {
+  id: string;
+  title: string;
+  status: 'active' | 'archived';
+  root_context_id: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface CognitiveContextRecord {
+  id: string;
+  agent_id: string;
+  title: string;
+  status: 'active' | 'archived';
+  created_at: string;
+  updated_at: string;
+}
+
+interface DelegationRecord {
+  id: string;
+  parent_session_id: string;
+  child_session_id: string;
+  task: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
+}
+
+interface ContextViewResponse {
+  context_id: string;
+  active_session_id: string;
+  session_id: string;
+  ready_sessions: ReadySessionEvaluation[];
+  state: MindState;
+  observations: ContextObservation[];
+  pressure: ContextPressure;
+  turn_budget: TurnBudget;
+  wake: WakeSignal;
+}
+
 export default function App() {
   const [wsStatus, setWsStatus] = useState<'connected' | 'disconnected' | 'connecting'>('connecting');
   const [events, setEvents] = useState<MorphzEvent[]>([]);
@@ -133,7 +197,17 @@ export default function App() {
   const [pressure, setPressure] = useState<ContextPressure | null>(null);
   const [turnBudget, setTurnBudget] = useState<TurnBudget | null>(null);
   const [wake, setWake] = useState<WakeSignal | null>(null);
-  const [sessionId, setSessionId] = useState<string>('');
+  const [readySessions, setReadySessions] = useState<ReadySessionEvaluation[]>([]);
+  const [agents, setAgents] = useState<AgentRecord[]>([]);
+  const [sessions, setSessions] = useState<SessionRecord[]>([]);
+  const [contexts, setContexts] = useState<CognitiveContextRecord[]>([]);
+  const [delegations, setDelegations] = useState<DelegationRecord[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState<string>('');
+  const [selectedContextId, setSelectedContextId] = useState<string>('');
+  const [selectedSessionId, setSelectedSessionId] = useState<string>('');
+  const [messageText, setMessageText] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sessionError, setSessionError] = useState('');
   
   const graphRef = useRef<HTMLDivElement>(null);
   const networkRef = useRef<Network | null>(null);
@@ -189,6 +263,257 @@ export default function App() {
       console.error('Failed to fetch graph data:', err);
     }
   }, [updateGraphData]);
+
+  const apiHeaders = useCallback((jsonBody = false) => {
+    const headers: Record<string, string> = {};
+    if (CORE_TOKEN) headers.Authorization = `Bearer ${CORE_TOKEN}`;
+    if (jsonBody) headers['Content-Type'] = 'application/json';
+    return headers;
+  }, []);
+
+  const fetchSessions = useCallback(async () => {
+    try {
+      const resp = await fetch(`${CORE_HTTP_URL}/api/sessions?include_archived=true`, { headers: apiHeaders() });
+      if (!resp.ok) throw new Error(`Session list HTTP ${resp.status}`);
+      const data = await resp.json() as { sessions?: SessionRecord[] };
+      const next = data.sessions ?? [];
+      setSessions(next);
+      setSelectedContextId(current => {
+        if (current && next.some(session => session.context_id === current)) return current;
+        return next[0]?.context_id ?? current;
+      });
+      setSelectedSessionId(current => {
+        if (current && next.some(session => session.id === current)) return current;
+        const firstContextId = next[0]?.context_id;
+        return next.find(session => session.context_id === firstContextId)?.id ?? '';
+      });
+      setSessionError('');
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [apiHeaders]);
+
+  const fetchAgents = useCallback(async () => {
+    try {
+      const resp = await fetch(`${CORE_HTTP_URL}/api/agents?include_archived=true`, { headers: apiHeaders() });
+      if (!resp.ok) throw new Error(`Agent list HTTP ${resp.status}`);
+      const data = await resp.json() as { agents?: AgentRecord[] };
+      const next = data.agents ?? [];
+      setAgents(next);
+      setSelectedAgentId(current => current && next.some(agent => agent.id === current) ? current : next[0]?.id ?? '');
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [apiHeaders]);
+
+  const fetchDelegations = useCallback(async () => {
+    try {
+      const resp = await fetch(`${CORE_HTTP_URL}/api/delegations`, { headers: apiHeaders() });
+      if (!resp.ok) throw new Error(`Delegation list HTTP ${resp.status}`);
+      const data = await resp.json() as { delegations?: DelegationRecord[] };
+      setDelegations(data.delegations ?? []);
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [apiHeaders]);
+
+  const fetchContexts = useCallback(async () => {
+    try {
+      const resp = await fetch(`${CORE_HTTP_URL}/api/contexts?include_archived=true`, { headers: apiHeaders() });
+      if (!resp.ok) throw new Error(`Context list HTTP ${resp.status}`);
+      const data = await resp.json() as { contexts?: CognitiveContextRecord[] };
+      const next = data.contexts ?? [];
+      setContexts(next);
+      setSelectedContextId(current => {
+        if (current && next.some(context => context.id === current)) return current;
+        return next[0]?.id ?? '';
+      });
+      setSessionError('');
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [apiHeaders]);
+
+  const createContext = useCallback(async () => {
+    try {
+      const resp = await fetch(`${CORE_HTTP_URL}/api/contexts`, {
+        method: 'POST',
+        headers: apiHeaders(true),
+        body: JSON.stringify({ title: '新认知 Context', agent_id: selectedAgentId || undefined }),
+      });
+      if (!resp.ok) throw new Error(`Create Context HTTP ${resp.status}`);
+      const context = await resp.json() as CognitiveContextRecord;
+      await fetchContexts();
+      setSelectedContextId(context.id);
+      setSelectedSessionId('');
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [apiHeaders, fetchContexts, selectedAgentId]);
+
+  const createAgent = useCallback(async () => {
+    try {
+      const resp = await fetch(`${CORE_HTTP_URL}/api/agents`, {
+        method: 'POST',
+        headers: apiHeaders(true),
+        body: JSON.stringify({ title: '新 Agent', root_context_title: 'Root Context', initial_session_title: '初始会话' }),
+      });
+      if (!resp.ok) throw new Error(`Create Agent HTTP ${resp.status}`);
+      const bundle = await resp.json() as { agent: AgentRecord; root_context: CognitiveContextRecord; initial_session: SessionRecord };
+      await Promise.all([fetchAgents(), fetchContexts(), fetchSessions()]);
+      setSelectedAgentId(bundle.agent.id);
+      setSelectedContextId(bundle.root_context.id);
+      setSelectedSessionId(bundle.initial_session.id);
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [apiHeaders, fetchAgents, fetchContexts, fetchSessions]);
+
+  const fetchSessionSnapshot = useCallback(async (sessionId: string) => {
+    if (!sessionId) return;
+    try {
+      const [eventsResp, contextResp] = await Promise.all([
+        fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(sessionId)}/events?limit=100`, { headers: apiHeaders() }),
+        fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(sessionId)}/context`, { headers: apiHeaders() }),
+      ]);
+      if (eventsResp.ok) {
+        const data = await eventsResp.json() as { events?: MorphzEvent[] };
+        setEvents([...(data.events ?? [])].reverse());
+      }
+      if (contextResp.ok) {
+        const context = await contextResp.json() as ContextViewResponse;
+        setMind(context.state);
+        setInbox(context.observations);
+        setPressure(context.pressure);
+        setTurnBudget(context.turn_budget);
+        setWake(context.wake);
+        setReadySessions(context.ready_sessions ?? []);
+      }
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [apiHeaders]);
+
+  const createSession = useCallback(async () => {
+    if (!selectedContextId) return;
+    try {
+      const resp = await fetch(`${CORE_HTTP_URL}/api/sessions`, {
+        method: 'POST',
+        headers: apiHeaders(true),
+        body: JSON.stringify({ title: '新会话', context_id: selectedContextId }),
+      });
+      if (!resp.ok) throw new Error(`Create Session HTTP ${resp.status}`);
+      const session = await resp.json() as SessionRecord;
+      await fetchSessions();
+      setSelectedSessionId(session.id);
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [apiHeaders, fetchSessions, selectedContextId]);
+
+  const createIndependentSession = useCallback(async () => {
+    if (!selectedContextId) return;
+    try {
+      const resp = await fetch(`${CORE_HTTP_URL}/api/sessions/independent`, {
+        method: 'POST',
+        headers: apiHeaders(true),
+        body: JSON.stringify({
+          source_context_id: selectedContextId,
+          context_title: '继承 Mind 的独立 Context',
+          session_title: '独立会话',
+        }),
+      });
+      if (!resp.ok) throw new Error(`Create independent Session HTTP ${resp.status}`);
+      const result = await resp.json() as { context: CognitiveContextRecord; session: SessionRecord };
+      await Promise.all([fetchContexts(), fetchSessions()]);
+      setSelectedAgentId(result.context.agent_id);
+      setSelectedContextId(result.context.id);
+      setSelectedSessionId(result.session.id);
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [apiHeaders, fetchContexts, fetchSessions, selectedContextId]);
+
+  const sendMessage = useCallback(async () => {
+    const text = messageText.trim();
+    if (!selectedSessionId || !text || sending) return;
+    setSending(true);
+    try {
+      const resp = await fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`, {
+        method: 'POST',
+        headers: apiHeaders(true),
+        body: JSON.stringify({
+          text,
+          client_message_id: `dashboard-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        }),
+      });
+      if (!resp.ok) throw new Error(`Send Message HTTP ${resp.status}`);
+      setMessageText('');
+      setSessionError('');
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSending(false);
+    }
+  }, [apiHeaders, messageText, selectedSessionId, sending]);
+
+  const cancelSession = useCallback(async () => {
+    if (!selectedSessionId) return;
+    try {
+      const resp = await fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(selectedSessionId)}/cancel`, {
+        method: 'POST',
+        headers: apiHeaders(),
+      });
+      if (!resp.ok) throw new Error(`Cancel Session HTTP ${resp.status}`);
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [apiHeaders, selectedSessionId]);
+
+  const updateSession = useCallback(async (update: { title?: string; status?: 'active' | 'archived' }) => {
+    if (!selectedSessionId) return;
+    try {
+      const resp = await fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(selectedSessionId)}`, {
+        method: 'PATCH',
+        headers: apiHeaders(true),
+        body: JSON.stringify(update),
+      });
+      if (!resp.ok) throw new Error(`Update Session HTTP ${resp.status}`);
+      await fetchSessions();
+    } catch (error) {
+      setSessionError(error instanceof Error ? error.message : String(error));
+    }
+  }, [apiHeaders, fetchSessions, selectedSessionId]);
+
+  const renameSession = useCallback(() => {
+    const session = sessions.find(item => item.id === selectedSessionId);
+    if (!session) return;
+    const title = window.prompt('新的 Session 名称', session.title)?.trim();
+    if (title) void updateSession({ title });
+  }, [selectedSessionId, sessions, updateSession]);
+
+  const selectedSession = sessions.find(session => session.id === selectedSessionId);
+  const agentContexts = contexts.filter(context => !selectedAgentId || context.agent_id === selectedAgentId);
+  const contextSessions = sessions.filter(session => session.context_id === selectedContextId);
+  const sessionDelegations = delegations.filter(delegation => delegation.parent_session_id === selectedSessionId);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void fetchSessions();
+      void fetchContexts();
+      void fetchAgents();
+      void fetchDelegations();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [fetchAgents, fetchContexts, fetchDelegations, fetchSessions]);
+
+  useEffect(() => {
+    if (!selectedSessionId) return;
+    const timer = window.setTimeout(() => {
+      void fetchSessionSnapshot(selectedSessionId);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [fetchSessionSnapshot, selectedSessionId]);
 
   // 1.1 语义漫游实时亮灯动效实现
   const handleMemoryWalk = useCallback((payload: EventPayload) => {
@@ -417,12 +742,16 @@ export default function App() {
   useEffect(() => {
     let ws: WebSocket;
     let reconnectTimer: number | undefined;
+    let disposed = false;
 
     const connect = () => {
+      if (disposed) return;
       setWsStatus('connecting');
-      const wsUrl = CORE_TOKEN
-        ? `${CORE_WS_URL}?token=${encodeURIComponent(CORE_TOKEN)}`
-        : CORE_WS_URL;
+      const params = new URLSearchParams();
+      if (CORE_TOKEN) params.set('token', CORE_TOKEN);
+      if (selectedSessionId) params.set('session_id', selectedSessionId);
+      const query = params.toString();
+      const wsUrl = query ? `${CORE_WS_URL}?${query}` : CORE_WS_URL;
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
@@ -456,8 +785,6 @@ export default function App() {
             setPressure(ev.payload.pressure ?? null);
             setTurnBudget(ev.payload.turn_budget ?? null);
             setWake(ev.payload.wake ?? null);
-            const sess = ev.payload.session_id ?? '';
-            setSessionId(sess);
           }
 
           // 如果是语义漫游事件
@@ -467,6 +794,11 @@ export default function App() {
 
           // 将事件推入列表
           setEvents((prev) => [ev, ...prev].slice(0, 100));
+
+          if (ev.topic === 'chat/reply' || ev.topic === 'chat/cancelled') {
+            fetchSessions();
+            fetchDelegations();
+          }
 
           // 只要有任何 chat 行为，我们就去增量重新拉取一遍最新的拓扑关系网
           // 排除 memory_walk，因为它不涉及图的任何持久写改动，纯是检索的轨迹高亮
@@ -480,6 +812,7 @@ export default function App() {
       };
 
       ws.onclose = () => {
+        if (disposed) return;
         setWsStatus('disconnected');
         console.log('WebSocket disconnected, retrying in 3s...');
         reconnectTimer = setTimeout(connect, 3000);
@@ -493,10 +826,11 @@ export default function App() {
     connect();
 
     return () => {
+      disposed = true;
       if (ws) ws.close();
       if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
     };
-  }, [fetchGraph, handleMemoryWalk, updateGraphData]);
+  }, [fetchDelegations, fetchGraph, fetchSessions, handleMemoryWalk, selectedSessionId, updateGraphData]);
 
   // 格式化时间戳
   const formatTime = (tsStr: string) => {
@@ -520,6 +854,87 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-6">
+          <div className="flex items-center gap-2">
+            <select
+              value={selectedAgentId}
+              onChange={event => {
+                const agentId = event.target.value;
+                const nextContext = contexts.find(context => context.agent_id === agentId);
+                setSelectedAgentId(agentId);
+                setSelectedContextId(nextContext?.id ?? '');
+                setSelectedSessionId(nextContext ? sessions.find(session => session.context_id === nextContext.id)?.id ?? '' : '');
+              }}
+              className="max-w-56 rounded-lg border border-emerald-500/20 bg-slate-950 px-3 py-2 text-xs text-emerald-200 outline-none focus:border-emerald-500/50"
+              aria-label="选择 Agent"
+            >
+              {agents.length === 0 && <option value="">暂无 Agent</option>}
+              {agents.map(agent => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.status === 'archived' ? '[已归档] ' : ''}{agent.title} · {agent.id}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={createAgent}
+              className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 hover:bg-emerald-500/20 text-emerald-300"
+              title="创建全新 Agent、空白 Root Context 与初始 Session"
+            >
+              <Bot className="h-4 w-4" />
+            </button>
+            <select
+              value={selectedContextId}
+              onChange={event => {
+                const contextId = event.target.value;
+                setSelectedContextId(contextId);
+                setSelectedSessionId(sessions.find(session => session.context_id === contextId)?.id ?? '');
+              }}
+              className="max-w-64 rounded-lg border border-violet-500/20 bg-slate-950 px-3 py-2 text-xs text-violet-200 outline-none focus:border-violet-500/50"
+              aria-label="选择 Cognitive Context"
+            >
+              {agentContexts.length === 0 && <option value="">该 Agent 暂无 Context</option>}
+              {agentContexts.map(context => (
+                <option key={context.id} value={context.id}>
+                  {context.status === 'archived' ? '[已归档] ' : ''}{context.title} · {context.id}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={createContext}
+              className="p-2 rounded-lg bg-violet-500/10 border border-violet-500/20 hover:bg-violet-500/20 text-violet-300"
+              title="创建共享认知 Context"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+            <select
+              value={selectedSessionId}
+              onChange={event => setSelectedSessionId(event.target.value)}
+              className="max-w-64 rounded-lg border border-white/10 bg-slate-950 px-3 py-2 text-xs text-slate-200 outline-none focus:border-blue-500/50"
+              aria-label="选择 Session"
+            >
+              {contextSessions.length === 0 && <option value="">当前 Context 暂无会话</option>}
+              {contextSessions.map(session => (
+                <option key={session.id} value={session.id}>
+                  {session.status === 'archived' ? '[已归档] ' : ''}{session.title} · {session.id}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={createSession}
+              disabled={!selectedContextId}
+              className="p-2 rounded-lg bg-blue-500/10 border border-blue-500/20 hover:bg-blue-500/20 text-blue-300"
+              title="在当前 Context 中创建新 Session"
+            >
+              <Plus className="h-4 w-4" />
+            </button>
+            <button
+              onClick={createIndependentSession}
+              disabled={!selectedContextId}
+              className="px-2.5 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 hover:bg-amber-500/20 text-[11px] font-medium text-amber-300 disabled:opacity-40"
+              title="继承当前 Mind，但不继承当前 Context 的 Session 与 Inbox"
+            >
+              独立会话
+            </button>
+          </div>
           {/* WebSocket 连接状态 */}
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/5">
             <span className={`h-2 w-2 rounded-full ${
@@ -573,6 +988,102 @@ export default function App() {
 
         {/* 右栏：Context 监视与事件瀑布 */}
         <section className="lg:col-span-8 flex flex-col gap-6 overflow-y-auto">
+          <div className="glass-panel rounded-2xl overflow-hidden">
+            <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between bg-white/2">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="h-5 w-5 text-blue-400" />
+                <div>
+                  <h2 className="text-sm font-semibold tracking-wide text-gray-200">Session Console</h2>
+                  <div className="text-[10px] font-mono text-gray-500">
+                    CTX {selectedContextId || '—'} / SESS {selectedSessionId || '请先创建 Session'}
+                  </div>
+                  <div className="text-[10px] text-gray-500">
+                    Delegation：{sessionDelegations.length} · Running：{sessionDelegations.filter(item => item.status === 'running' || item.status === 'queued').length}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={cancelSession}
+                  disabled={!selectedSessionId}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-amber-500/20 bg-amber-500/10 text-[10px] text-amber-300 disabled:opacity-40"
+                >
+                  <Square className="h-3 w-3" />取消执行
+                </button>
+                <button
+                  onClick={renameSession}
+                  disabled={!selectedSessionId}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-500/20 bg-slate-500/10 text-[10px] text-slate-300 disabled:opacity-40"
+                >
+                  <Pencil className="h-3 w-3" />改名
+                </button>
+                <button
+                  onClick={() => updateSession({ status: selectedSession?.status === 'archived' ? 'active' : 'archived' })}
+                  disabled={!selectedSessionId}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-500/20 bg-slate-500/10 text-[10px] text-slate-300 disabled:opacity-40"
+                >
+                  {selectedSession?.status === 'archived' ? <RotateCcw className="h-3 w-3" /> : <Archive className="h-3 w-3" />}
+                  {selectedSession?.status === 'archived' ? '恢复' : '归档'}
+                </button>
+              </div>
+            </div>
+
+            <div className="max-h-72 overflow-y-auto p-4 space-y-2 bg-slate-950/25">
+              {events.filter(event => ['chat/user_message', 'chat/progress', 'chat/reply', 'chat/cancelled'].includes(event.topic)).length === 0 ? (
+                <div className="py-10 text-center text-xs text-gray-500">这个 Session 还没有对话</div>
+              ) : (
+                events
+                  .filter(event => ['chat/user_message', 'chat/progress', 'chat/reply', 'chat/cancelled'].includes(event.topic))
+                  .slice(0, 30)
+                  .reverse()
+                  .map(event => {
+                    const isUser = event.topic === 'chat/user_message';
+                    const isProgress = event.topic === 'chat/progress';
+                    return (
+                      <div key={event.id} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`max-w-[85%] rounded-xl border px-3 py-2 text-xs whitespace-pre-wrap ${
+                          isUser
+                            ? 'border-blue-500/20 bg-blue-500/10 text-blue-100'
+                            : isProgress
+                              ? 'border-amber-500/15 bg-amber-500/5 text-amber-100'
+                              : 'border-violet-500/20 bg-violet-500/10 text-violet-100'
+                        }`}>
+                          {isProgress && <div className="mb-1 text-[9px] uppercase tracking-wider text-amber-400">执行进度</div>}
+                          {event.payload.text ?? ''}
+                        </div>
+                      </div>
+                    );
+                  })
+              )}
+            </div>
+
+            <div className="border-t border-white/5 p-4">
+              <div className="flex gap-3">
+                <textarea
+                  value={messageText}
+                  onChange={event => setMessageText(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                      event.preventDefault();
+                      sendMessage();
+                    }
+                  }}
+                  disabled={!selectedSessionId || selectedSession?.status === 'archived' || sending}
+                  placeholder={selectedSession?.status === 'archived' ? '请先恢复已归档 Session' : '输入消息；Command/Ctrl + Enter 发送'}
+                  className="min-h-20 flex-1 resize-y rounded-xl border border-white/10 bg-slate-950/70 px-3 py-2 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-blue-500/40 disabled:opacity-50"
+                />
+                <button
+                  onClick={sendMessage}
+                  disabled={!selectedSessionId || selectedSession?.status === 'archived' || !messageText.trim() || sending}
+                  className="self-end flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-40"
+                >
+                  <Send className="h-4 w-4" />{sending ? '发送中' : '发送'}
+                </button>
+              </div>
+              {sessionError && <div className="mt-2 text-[10px] text-rose-400">{sessionError}</div>}
+            </div>
+          </div>
+
           {/* L3 Context 推理上下文监视 */}
           <div className="glass-panel rounded-2xl flex flex-col max-h-[520px] overflow-hidden">
             <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between bg-white/2">
@@ -587,6 +1098,7 @@ export default function App() {
                 {turnBudget && <span className={turnBudget.force_final ? 'text-rose-300' : turnBudget.phase === 'context-closure' ? 'text-amber-300' : 'text-cyan-300'}>A{turnBudget.attempt}/{turnBudget.limit}:{turnBudget.phase}</span>}
                 {turnBudget && <span className={turnBudget.context_tx_available ? 'text-emerald-300' : 'text-slate-400'}>CTX{turnBudget.context_transactions_used}/{turnBudget.context_transactions_limit}</span>}
                 {wake && <span className="text-violet-300">WAKE:{wake.cause}{wake.tool_name ? `/${wake.tool_name}` : ''}</span>}
+                {readySessions.length > 1 && <span className="text-fuchsia-300">BATCH:{readySessions.length}</span>}
                 {pressure && (
                   <span className={`px-2 py-0.5 rounded-full border ${
                     pressure.level === 'critical' ? 'text-rose-300 border-rose-500/30 bg-rose-500/10' :
@@ -595,7 +1107,8 @@ export default function App() {
                     'text-emerald-300 border-emerald-500/30 bg-emerald-500/10'
                   }`}>{pressure.level}</span>
                 )}
-                {sessionId && <span className="text-gray-400">SESS: {sessionId}</span>}
+                {selectedSessionId && <span className="text-gray-400">SESS: {selectedSessionId}</span>}
+                {selectedContextId && <span className="text-violet-300">CTX: {selectedContextId}</span>}
               </div>
             </div>
 

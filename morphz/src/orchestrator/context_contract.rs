@@ -5,6 +5,8 @@
 //! System instructions, the Context protocol, and `context_tx` guidance must
 //! all be rendered from this module so their semantics cannot drift apart.
 
+use crate::sexpr::SExpr;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ContractClause {
     pub key: &'static str,
@@ -98,6 +100,28 @@ pub(crate) fn render_system_contract() -> String {
     rendered
 }
 
+/// Render the same canonical contracts as an S-expression subtree for the
+/// semantic VM system-prompt profile. Natural-language meanings remain inside
+/// data nodes; no prose is placed outside the root expression.
+pub(crate) fn render_system_contract_sexpr() -> String {
+    let reality = contract_sexpr("reality-contract", REALITY_CONTRACT_NAME, REALITY_CONTRACT);
+    let epistemic = contract_sexpr(
+        "epistemic-contract",
+        EPISTEMIC_CONTRACT_NAME,
+        EPISTEMIC_CONTRACT,
+    );
+    SExpr::List(vec![
+        atom("runtime-contracts"),
+        field(
+            "description",
+            "以下契约由 Runtime 的单一协议定义生成，并与 Context protocol、context_tx 工具说明保持一致。它约束证据使用，但不规定 Mind BODY 的结构。",
+        ),
+        reality,
+        epistemic,
+    ])
+    .to_string()
+}
+
 pub(crate) fn render_context_tx_epistemic_guidance() -> String {
     EPISTEMIC_CONTRACT
         .iter()
@@ -117,6 +141,26 @@ fn append_numbered_clauses(rendered: &mut String, clauses: &[ContractClause]) {
     }
 }
 
+fn contract_sexpr(section: &str, name: &str, clauses: &[ContractClause]) -> SExpr {
+    let mut values = vec![atom(section), field("name", name)];
+    values.extend(clauses.iter().map(|clause| {
+        SExpr::List(vec![
+            atom("clause"),
+            field("key", clause.key),
+            field("meaning", clause.meaning),
+        ])
+    }));
+    SExpr::List(values)
+}
+
+fn atom(value: impl ToString) -> SExpr {
+    SExpr::Atom(value.to_string())
+}
+
+fn field(key: &str, value: impl ToString) -> SExpr {
+    SExpr::List(vec![atom(key), atom(value)])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,16 +168,22 @@ mod tests {
     #[test]
     fn system_and_context_tx_renderers_share_the_canonical_epistemic_clauses() {
         let system = render_system_contract();
+        let system_sexpr = render_system_contract_sexpr();
         let context_tx = render_context_tx_epistemic_guidance();
         for clause in EPISTEMIC_CONTRACT {
             assert!(system.contains(clause.key));
             assert!(system.contains(clause.meaning));
+            assert!(system_sexpr.contains(clause.key));
+            assert!(system_sexpr.contains(clause.meaning));
             assert!(context_tx.contains(clause.key));
             assert!(context_tx.contains(clause.meaning));
         }
         for clause in REALITY_CONTRACT {
             assert!(system.contains(clause.key));
             assert!(system.contains(clause.meaning));
+            assert!(system_sexpr.contains(clause.key));
+            assert!(system_sexpr.contains(clause.meaning));
         }
+        crate::sexpr::parse(&system_sexpr).expect("SExpr contract must remain parseable");
     }
 }

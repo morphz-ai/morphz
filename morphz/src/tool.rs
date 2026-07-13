@@ -1,5 +1,5 @@
 use crate::config::{BackgroundTaskConfig, ToolSecurityConfig};
-use crate::event::{Event, TYPE_FILE_CHANGE};
+use crate::event::{Event, InMemoryEventBus, TYPE_FILE_CHANGE};
 use crate::llm::ToolDefinition;
 use crate::tool_security::{resolve_tool_path, ToolAccess};
 use dashmap::DashMap;
@@ -17,6 +17,7 @@ use walkdir::WalkDir;
 
 tokio::task_local! {
     pub static CURRENT_SESSION_ID: String;
+    pub static CURRENT_CONTEXT_ID: String;
 }
 
 #[async_trait::async_trait]
@@ -86,6 +87,7 @@ pub struct BackgroundTask {
     pub cmd_str: String,
     pub pgid: i32,
     pub session_id: String,
+    pub context_id: String,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub last_output_at: chrono::DateTime<chrono::Utc>,
     pub output_bytes: usize,
@@ -108,6 +110,7 @@ struct ExecutionBuffer {
     task_id: String,
     bus: Arc<crate::event::InMemoryEventBus>,
     session_id: String,
+    context_id: String,
 }
 
 impl ExecutionBuffer {
@@ -146,6 +149,7 @@ impl ExecutionBuffer {
         }
         if publish {
             let mut payload = serde_json::Map::new();
+            payload.insert("context_id".to_string(), serde_json::json!(self.context_id));
             payload.insert("session_id".to_string(), serde_json::json!(self.session_id));
             payload.insert("task_id".to_string(), serde_json::json!(self.task_id));
             payload.insert("text".to_string(), serde_json::json!(text));
@@ -368,7 +372,11 @@ async fn publish_file_change(
     let session_id = CURRENT_SESSION_ID
         .try_with(Clone::clone)
         .unwrap_or_else(|_| "default_session".to_string());
+    let context_id = CURRENT_CONTEXT_ID
+        .try_with(Clone::clone)
+        .unwrap_or_else(|_| session_id.clone());
     let payload = vec![
+        ("context_id".to_string(), serde_json::json!(context_id)),
         ("session_id".to_string(), serde_json::json!(session_id)),
         ("path".to_string(), serde_json::json!(change.path)),
         ("operation".to_string(), serde_json::json!(change.operation)),
@@ -1504,6 +1512,9 @@ impl Tool for ExecuteCommandTool {
         if session_id.is_empty() {
             session_id = "default_session".to_string();
         }
+        let context_id = CURRENT_CONTEXT_ID
+            .try_with(Clone::clone)
+            .unwrap_or_else(|_| session_id.clone());
 
         use std::process::Stdio;
         use tokio::process::Command;
@@ -1610,6 +1621,7 @@ impl Tool for ExecuteCommandTool {
 
         let bus_clone = Arc::clone(&self.bus);
         let session_id_clone = session_id.clone();
+        let context_id_clone = context_id.clone();
         let task_id_clone = task_id.clone();
 
         // 共享缓冲区
@@ -1622,6 +1634,7 @@ impl Tool for ExecuteCommandTool {
             task_id: task_id_clone.clone(),
             bus: bus_clone,
             session_id: session_id_clone,
+            context_id: context_id_clone,
         });
 
         // 共享的“是否开启事件发布”标志 (前 N 秒同步时不发布，转入后台时才发布)
@@ -1649,6 +1662,7 @@ impl Tool for ExecuteCommandTool {
                 cmd_str: cmd_trimmed.to_string(),
                 pgid: pid,
                 session_id: session_id.clone(),
+                context_id: context_id.clone(),
                 started_at: now,
                 last_output_at: now,
                 output_bytes: 0,
@@ -1695,6 +1709,7 @@ impl Tool for ExecuteCommandTool {
                     let bus_timeout = Arc::clone(&self.bus);
                     let task_id_timeout = task_id.clone();
                     let session_id_timeout = session_id.clone();
+                    let context_id_timeout = context_id.clone();
                     let cmd_timeout = cmd_trimmed.to_string();
                     let buffer_timeout = Arc::clone(&buffer);
                     tokio::spawn(async move {
@@ -1710,6 +1725,10 @@ impl Tool for ExecuteCommandTool {
                             let output_tail = tail_chars(&buffer_timeout.get_all(), 2000);
 
                             let mut payload = serde_json::Map::new();
+                            payload.insert(
+                                "context_id".to_string(),
+                                serde_json::json!(context_id_timeout),
+                            );
                             payload.insert(
                                 "session_id".to_string(),
                                 serde_json::json!(session_id_timeout),
@@ -1756,6 +1775,7 @@ impl Tool for ExecuteCommandTool {
                 let bus_cleanup = Arc::clone(&self.bus);
                 let task_id_cleanup = task_id.clone();
                 let session_id_cleanup = session_id.clone();
+                let context_id_cleanup = context_id.clone();
                 let buffer_cleanup = Arc::clone(&buffer);
                 tokio::spawn(async move {
                     let wait_res = child.wait().await;
@@ -1768,6 +1788,10 @@ impl Tool for ExecuteCommandTool {
                     let output_str = buffer_cleanup.get_all();
 
                     let mut payload = serde_json::Map::new();
+                    payload.insert(
+                        "context_id".to_string(),
+                        serde_json::json!(context_id_cleanup),
+                    );
                     payload.insert(
                         "session_id".to_string(),
                         serde_json::json!(session_id_cleanup),
@@ -1894,6 +1918,148 @@ pub struct SpawnAgentTool {
     bus: Arc<crate::event::InMemoryEventBus>,
 }
 
+pub struct DelegateTool {
+    bus: Arc<InMemoryEventBus>,
+}
+
+impl DelegateTool {
+    pub fn new(bus: Arc<InMemoryEventBus>) -> Self {
+        Self { bus }
+    }
+}
+
+#[derive(Deserialize)]
+struct DelegateArgs {
+    task: String,
+    #[serde(default)]
+    success_when: Option<String>,
+    #[serde(default = "default_delegation_scope")]
+    context_scope: String,
+}
+
+fn default_delegation_scope() -> String {
+    "current_session".to_string()
+}
+
+#[async_trait::async_trait]
+impl Tool for DelegateTool {
+    fn name(&self) -> &str {
+        "delegate"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "delegate".to_string(),
+            description: "把一项较重任务委派给隔离的 Sub Agent。默认继承共享 Mind 与当前 Session 的证据，隔离兄弟 Session；Sub Agent 不能直接修改父 Mind，完成结果会作为 delegate Tool Observation 返回当前 Session，由你验证、回复或整合进共享 Mind。调用立即返回 delegation_id，Sub Agent 在后台继续执行。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "task": {
+                        "type": "string",
+                        "description": "交给 Sub Agent 的完整任务"
+                    },
+                    "success_when": {
+                        "type": "string",
+                        "description": "可验证的完成条件"
+                    },
+                    "context_scope": {
+                        "type": "string",
+                        "enum": ["current_session", "mind_only"],
+                        "description": "current_session 继承 Mind 与当前 Session；mind_only 只继承 Mind",
+                        "default": "current_session"
+                    }
+                },
+                "required": ["task"]
+            }),
+        }
+    }
+
+    async fn execute(
+        &self,
+        arguments: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let args: DelegateArgs = serde_json::from_str(arguments)?;
+        if args.task.trim().is_empty() {
+            return Err("delegate.task 不能为空".into());
+        }
+        if !matches!(args.context_scope.as_str(), "current_session" | "mind_only") {
+            return Err(format!("不支持的 delegate.context_scope: {}", args.context_scope).into());
+        }
+        let parent_session_id = CURRENT_SESSION_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "delegate 必须在 Session 求值中调用")?;
+        let parent_context_id = CURRENT_CONTEXT_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "delegate 缺少当前 Context 路由")?;
+        let suffix = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        let delegation_id = format!("delegation_{suffix}");
+        let child_context_id = format!("delegate-context-{suffix}");
+        let child_session_id = format!("delegate-session-{suffix}");
+        let payload = vec![
+            (
+                "context_id".to_string(),
+                serde_json::json!(parent_context_id),
+            ),
+            (
+                "session_id".to_string(),
+                serde_json::json!(parent_session_id),
+            ),
+            (
+                "parent_context_id".to_string(),
+                serde_json::json!(parent_context_id),
+            ),
+            (
+                "parent_session_id".to_string(),
+                serde_json::json!(parent_session_id),
+            ),
+            (
+                "delegation_id".to_string(),
+                serde_json::json!(delegation_id),
+            ),
+            (
+                "child_context_id".to_string(),
+                serde_json::json!(child_context_id),
+            ),
+            (
+                "child_session_id".to_string(),
+                serde_json::json!(child_session_id),
+            ),
+            ("task".to_string(), serde_json::json!(args.task)),
+            (
+                "success_when".to_string(),
+                serde_json::json!(args.success_when),
+            ),
+            (
+                "context_scope".to_string(),
+                serde_json::json!(args.context_scope),
+            ),
+            (
+                "text".to_string(),
+                serde_json::json!("Delegation requested"),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        self.bus
+            .publish(Event::new(
+                format!("delegate_request_{suffix}"),
+                format!("Parent-Agent-{parent_session_id}"),
+                crate::event::TYPE_AGENT_CALL.to_string(),
+                "chat/delegate".to_string(),
+                payload,
+            ))
+            .await?;
+        Ok(serde_json::json!({
+            "delegation_id": delegation_id,
+            "status": "queued",
+            "child_context_id": child_context_id,
+            "child_session_id": child_session_id,
+            "guidance": "Sub Agent 已排队；完成结果会作为新的 delegate Tool Observation 返回当前 Session。"
+        })
+        .to_string())
+    }
+}
+
 impl SpawnAgentTool {
     pub fn new(bus: Arc<crate::event::InMemoryEventBus>) -> Self {
         Self { bus }
@@ -1965,8 +2131,12 @@ impl Tool for SpawnAgentTool {
         }
 
         let args: SpawnAgentArgs = serde_json::from_value(val)?;
+        let context_id = CURRENT_CONTEXT_ID
+            .try_with(Clone::clone)
+            .unwrap_or_else(|_| args.parent_session_id.clone());
 
         let mut payload = serde_json::Map::new();
+        payload.insert("context_id".to_string(), serde_json::json!(context_id));
         payload.insert(
             "session_id".to_string(),
             serde_json::json!(args.sub_session_id),
@@ -2725,6 +2895,7 @@ mod tests {
             task_id: "buffer_test".to_string(),
             bus: Arc::new(crate::event::InMemoryEventBus::new()),
             session_id: "session_test".to_string(),
+            context_id: "context_test".to_string(),
         };
 
         buffer.append("你好world", false);
