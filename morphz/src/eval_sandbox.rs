@@ -20,6 +20,10 @@ pub struct CodingEvalManifest {
     #[serde(default = "default_benchmark")]
     pub benchmark: String,
     pub created_at: String,
+    #[serde(default)]
+    pub context_id: String,
+    #[serde(default)]
+    pub session_id: String,
     pub workspace_root: PathBuf,
     pub database_path: PathBuf,
     pub artifact_dir: PathBuf,
@@ -106,11 +110,15 @@ pub fn create_coding_eval_v1(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
     copy_fixture(Path::new(FIXTURE_V1), &workspace_root)?;
 
     let database_path = run_root.join("morphz.db");
+    let context_id = format!("context-{id}");
+    let session_id = format!("session-{id}");
     let manifest_path = run_root.join("manifest.json");
     let manifest = CodingEvalManifest {
         id,
         benchmark: "coding_eval_v1".to_string(),
         created_at: Utc::now().to_rfc3339(),
+        context_id: context_id.clone(),
+        session_id: session_id.clone(),
         workspace_root: workspace_root.clone(),
         database_path: database_path.clone(),
         artifact_dir: artifact_dir.clone(),
@@ -125,6 +133,8 @@ pub fn create_coding_eval_v1(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
     std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
 
     let environment = BTreeMap::from([
+        ("MORPHZ_CONTEXT_ID".to_string(), context_id),
+        ("MORPHZ_SESSION_ID".to_string(), session_id),
         (
             "MORPHZ_WORKSPACE_ROOT".to_string(),
             workspace_root.to_string_lossy().to_string(),
@@ -169,11 +179,15 @@ pub fn create_coding_eval_v2(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
     copy_fixture(Path::new(FIXTURE_V2), &workspace_root)?;
 
     let database_path = run_root.join("morphz.db");
+    let context_id = format!("context-{id}");
+    let session_id = format!("session-{id}");
     let manifest_path = run_root.join("manifest.json");
     let manifest = CodingEvalManifest {
         id,
         benchmark: "coding_eval_v2".to_string(),
         created_at: Utc::now().to_rfc3339(),
+        context_id: context_id.clone(),
+        session_id: session_id.clone(),
         workspace_root: workspace_root.clone(),
         database_path: database_path.clone(),
         artifact_dir: artifact_dir.clone(),
@@ -192,6 +206,8 @@ pub fn create_coding_eval_v2(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
     std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
 
     let environment = BTreeMap::from([
+        ("MORPHZ_CONTEXT_ID".to_string(), context_id),
+        ("MORPHZ_SESSION_ID".to_string(), session_id),
         (
             "MORPHZ_WORKSPACE_ROOT".to_string(),
             workspace_root.to_string_lossy().to_string(),
@@ -260,7 +276,7 @@ pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynEr
                 {
                     tools_used.insert(name.to_string());
                     has_context_tx |= name == "context_tx";
-                    has_physical_tool |= name != "context_tx";
+                    has_physical_tool |= is_physical_tool_name(name);
                 }
             }
             work_attempts += usize::from(has_physical_tool);
@@ -394,6 +410,10 @@ pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynEr
         verifier_passed,
         scope_audit,
     })
+}
+
+fn is_physical_tool_name(name: &str) -> bool {
+    !matches!(name, "context_tx" | "reply" | "session_output")
 }
 
 fn load_verification(run_root: &Path) -> Result<Option<CodingEvalVerification>, DynError> {
@@ -662,6 +682,14 @@ mod tests {
             environment.environment.get("MORPHZ_EXEC_SEATBELT"),
             Some(&"true".to_string())
         );
+        assert_ne!(
+            environment.manifest.context_id,
+            environment.manifest.session_id
+        );
+        assert_eq!(
+            environment.environment.get("MORPHZ_CONTEXT_ID"),
+            Some(&environment.manifest.context_id)
+        );
         assert!(environment
             .manifest
             .workspace_root
@@ -730,6 +758,19 @@ mod tests {
             ))
             .await
             .unwrap();
+        store
+            .append(Event::new(
+                "terminal-reply-call".to_string(),
+                "Agent".to_string(),
+                TYPE_AGENT_CALL.to_string(),
+                "chat/assistant_call".to_string(),
+                payload(vec![(
+                    "tool_calls",
+                    json!([{"function": {"name": "reply"}}]),
+                )]),
+            ))
+            .await
+            .unwrap();
         for (id, text) in [
             ("exec-fail", "执行结束 [退出码: 101] test result: FAILED"),
             (
@@ -786,6 +827,8 @@ mod tests {
 
         let score = score_coding_eval(&environment.run_root).await.unwrap();
         assert_eq!(score.score, 100);
+        assert_eq!(score.work_attempts, 1);
+        assert_eq!(score.context_attempts, 1);
         assert_eq!(score.uncovered_tool_targets, vec!["search"]);
         assert!(score.scope_audit.clean_scope);
     }

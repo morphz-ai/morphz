@@ -2,6 +2,9 @@
 
 Context Pressure Eval 验证 Agent 是否会在接近物理 Context 上限时，自主选择重要信息形成 Mind frame，并退休不再有价值的原始 observation。Runtime 只提供压力、DSL 和可执行边界，不替模型决定摘要内容。
 
+当前夹具会创建不同的 `context_id` 与 `session_id`，把合成 Observation 写入前者，并通过
+`MORPHZ_CONTEXT_ID` 将测试 Session 挂载到同一 Context，避免退回旧的“一 Session 一 Context”假设。
+
 ## 测试设计
 
 v1 使用缩小阈值模拟超长生命周期，避免为了验证行为真的发送百万 Token：

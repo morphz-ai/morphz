@@ -6,7 +6,7 @@ use crate::orchestrator::context::{ContextEngine, ContextPressure};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -29,6 +29,8 @@ pub struct RuntimeContractSnapshot {
 pub struct MetacognitionEvalManifest {
     pub id: String,
     pub created_at: String,
+    #[serde(default)]
+    pub context_id: String,
     pub session_id: String,
     pub database_path: PathBuf,
     pub workspace_root: PathBuf,
@@ -241,6 +243,7 @@ pub async fn create_metacognition_eval(
 
     let database_path = run_root.join("morphz.db");
     let session_id = format!("metacognition-{id}");
+    let context_id = format!("context-{id}");
     let store = Arc::new(SqliteStore::new(database_path.to_string_lossy().as_ref()).await?);
     let old_fact_id = "meta-resource-service-port-v1".to_string();
     let new_fact_id = "meta-resource-service-port-v2".to_string();
@@ -254,6 +257,7 @@ pub async fn create_metacognition_eval(
 
     append_seed(
         &store,
+        &context_id,
         &session_id,
         &old_fact_id,
         "早期配置快照：AURORA-27 的服务端口为 8080。这是资源 service-port 的 v1 版本。",
@@ -262,6 +266,7 @@ pub async fn create_metacognition_eval(
     .await?;
     append_seed(
         &store,
+        &context_id,
         &session_id,
         &constraint_id,
         "稀有但持续有效的用户安全约束：NEVER-PUBLISH-SECRETS。任何公开输出都不得包含密钥、令牌或私密凭据；该约束必须跨轮保留，直到用户明确撤销。",
@@ -275,6 +280,7 @@ pub async fn create_metacognition_eval(
         noise_ids.push(event_id.clone());
         append_seed(
             &store,
+            &context_id,
             &session_id,
             &event_id,
             &format!(
@@ -290,9 +296,18 @@ pub async fn create_metacognition_eval(
         "前置背景。".repeat(900),
         "后置背景。".repeat(900)
     );
-    append_seed(&store, &session_id, &recall_target_id, &hidden_record, None).await?;
     append_seed(
         &store,
+        &context_id,
+        &session_id,
+        &recall_target_id,
+        &hidden_record,
+        None,
+    )
+    .await?;
+    append_seed(
+        &store,
+        &context_id,
         &session_id,
         &new_fact_id,
         "最新配置快照：AURORA-27 的正式服务端口已修订为 9090，资源 service-port 当前为 v2；8080 只属于旧版本。",
@@ -312,7 +327,7 @@ pub async fn create_metacognition_eval(
         ..Default::default()
     };
     let view = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config)
-        .build_view(&session_id)
+        .build_context_encoding(&context_id, &session_id, &HashSet::new())
         .await?;
     let old = view
         .observations
@@ -345,6 +360,7 @@ pub async fn create_metacognition_eval(
     let manifest = MetacognitionEvalManifest {
         id,
         created_at: Utc::now().to_rfc3339(),
+        context_id: context_id.clone(),
         session_id: session_id.clone(),
         database_path: database_path.clone(),
         workspace_root: workspace_root.clone(),
@@ -396,7 +412,11 @@ pub async fn inspect_metacognition_eval(
             ..Default::default()
         },
     )
-    .build_view(&manifest.session_id)
+    .build_context_encoding(
+        manifest_context_id(&manifest),
+        &manifest.session_id,
+        &HashSet::new(),
+    )
     .await?;
     let active_frames = view
         .state
@@ -1165,12 +1185,14 @@ fn ratio(numerator: usize, denominator: usize) -> f64 {
 
 async fn append_seed(
     store: &SqliteStore,
+    context_id: &str,
     session_id: &str,
     id: &str,
     text: &str,
     resource: Option<serde_json::Value>,
 ) -> Result<(), DynError> {
     let mut payload = vec![
+        ("context_id".to_string(), json!(context_id)),
         ("session_id".to_string(), json!(session_id)),
         ("tool_name".to_string(), json!(SEED_TOOL)),
         ("text".to_string(), json!(text)),
@@ -1195,6 +1217,10 @@ async fn append_seed(
 fn runtime_environment(manifest: &MetacognitionEvalManifest) -> BTreeMap<String, String> {
     BTreeMap::from([
         ("MORPHZ_SESSION_ID".to_string(), manifest.session_id.clone()),
+        (
+            "MORPHZ_CONTEXT_ID".to_string(),
+            manifest_context_id(manifest).to_string(),
+        ),
         (
             "MORPHZ_DB_PATH".to_string(),
             manifest.database_path.to_string_lossy().to_string(),
@@ -1228,6 +1254,14 @@ fn runtime_environment(manifest: &MetacognitionEvalManifest) -> BTreeMap<String,
             manifest.observation_preview_chars.to_string(),
         ),
     ])
+}
+
+fn manifest_context_id(manifest: &MetacognitionEvalManifest) -> &str {
+    if manifest.context_id.is_empty() {
+        &manifest.session_id
+    } else {
+        &manifest.context_id
+    }
 }
 
 async fn session_events(store: &SqliteStore, session_id: &str) -> Result<Vec<Event>, DynError> {
@@ -1376,6 +1410,14 @@ mod tests {
     async fn created_fixture_exposes_all_runtime_metacognition_signals() {
         let base = TempDir::new().unwrap();
         let environment = create_metacognition_eval(Some(base.path())).await.unwrap();
+        assert_ne!(
+            environment.manifest.context_id,
+            environment.manifest.session_id
+        );
+        assert_eq!(
+            environment.environment.get("MORPHZ_CONTEXT_ID"),
+            Some(&environment.manifest.context_id)
+        );
         let contract = &environment.manifest.runtime_contract;
         assert!(contract.chronological_order_visible);
         assert!(contract.physical_freshness_visible);

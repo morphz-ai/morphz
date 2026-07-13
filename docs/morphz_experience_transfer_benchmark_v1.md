@@ -99,7 +99,7 @@ Suite 同时输出相关经验、无关经验相对全新组的正确率与成�
 - 更长历史对模型产生了通用的任务预热；
 - 模型采样方差。
 
-相关经验组唯一失败运行在案例 E 阶段把标准工具调用写成了纯文本 JSON。按照通用 Agent 循环语义，无工具纯文本会结束回合，因此外部状态和 Mind 都没有更新；重启后 Agent如实报告 E 未知。这是模型的工具协议遵循失败，不是 Runtime 丢失已提交的 Mind。
+相关经验组唯一失败运行在案例 E 阶段把标准工具调用写成了纯文本 JSON。按照该历史运行当时的 Agent 循环语义，无工具纯文本会结束回合，因此外部状态和 Mind 都没有更新；重启后 Agent 如实报告 E 未知。这是模型的工具协议遵循失败，不是 Runtime 丢失已提交的 Mind。Protocol v11 已改为要求显式 `reply`，同类普通文本现在会进入有限纠错而不是直接结束。
 
 ### 6.3 Agent 自发形成了什么 Mind
 
@@ -125,6 +125,10 @@ cargo run -p morphz --bin long_horizon_agent_eval -- \
 cargo run -p morphz --bin long_horizon_agent_eval -- \
   run-experience PROFILES.toml BASE_DIR
 ```
+
+`run-experience` 当前默认使用 `semantic_sexpr_vm`。历史的
+`run-experience-prompt-ab` 仍固定比较 `agent_owned_context` 与
+`cognitive_sexpr_vm`，用于复现原两组报告，不代表当前默认 Profile。
 
 每个 suite 在根目录写入 `suite_report.json`；每个 arm 仍保留 manifest、trace、run report、日志、SQLite 和 Workspace，便于逐事件审计。
 

@@ -140,6 +140,11 @@ cargo run -p morphz --bin long_horizon_agent_eval -- run-experience-prompt-ab PR
 cargo run -p morphz --bin long_horizon_agent_eval -- inspect RUN_ROOT
 ```
 
+新建运行会为每条轨迹生成不同的 `context_id` 与 `session_id`，并通过显式 Context Mount 启动
+Runtime；评分器根据 Session Registry 解析真实 Context，不再假设两者 ID 相同。
+`run-experience` 使用当前默认 `semantic_sexpr_vm`；`run-experience-prompt-ab` 保留为历史
+`agent_owned_context` / `cognitive_sexpr_vm` 两组复现实验。
+
 ## 9. 首次不改 Runtime 基线
 
 2026-07-12 在 Runtime commit `5b25904` 上使用 GLM-5.2、128K 最大输出和 `agent_owned_v6` 跑完 Operations Continuity v1。六个阶段全部执行，5/6 严格通过；最终文件、最终回复、安全约束和过期信息拒绝均正确。

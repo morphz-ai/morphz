@@ -2,11 +2,14 @@ use crate::config::OrchestratorConfig;
 use crate::context_metacognition_eval::ModelProfileIdentity;
 use crate::event::Event;
 use crate::memory::sqlite::SqliteStore;
-use crate::memory::{EventStore, QueryFilter};
+use crate::memory::{EventStore, QueryFilter, SessionStore};
 use crate::orchestrator::context::CONTEXT_PROTOCOL_VERSION;
-use crate::orchestrator::context::{ContextEngine, ContextPressure, ContextRelation, MindState};
+use crate::orchestrator::context::{
+    ContextEngine, ContextPressure, ContextRelation, ContextView, MindState,
+};
 use crate::orchestrator::orchestrator::{
-    BASELINE_SYSTEM_PROMPT_MODE, COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE, SYSTEM_PROMPT_MODE_ENV,
+    BASELINE_SYSTEM_PROMPT_MODE, COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE,
+    SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE, SYSTEM_PROMPT_MODE_ENV,
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -81,6 +84,8 @@ pub struct LongHorizonEvalManifest {
     pub runtime_dirty: bool,
     #[serde(default)]
     pub context_protocol_version: u64,
+    #[serde(default)]
+    pub context_id: String,
     pub session_id: String,
     pub database_path: PathBuf,
     pub workspace_root: PathBuf,
@@ -229,6 +234,7 @@ pub enum ExperienceTransferArm {
 pub enum ExperienceTransferPromptMode {
     AgentOwnedContext,
     CognitiveSexprVm,
+    SemanticSexprVm,
 }
 
 impl ExperienceTransferPromptMode {
@@ -236,6 +242,7 @@ impl ExperienceTransferPromptMode {
         match self {
             Self::AgentOwnedContext => BASELINE_SYSTEM_PROMPT_MODE,
             Self::CognitiveSexprVm => COGNITIVE_SEXPR_VM_SYSTEM_PROMPT_MODE,
+            Self::SemanticSexprVm => SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE,
         }
     }
 }
@@ -389,6 +396,7 @@ pub async fn create_operations_continuity_eval(
     let database_path = run_root.join("morphz.db");
     SqliteStore::new(database_path.to_string_lossy().as_ref()).await?;
     let session_id = format!("long-horizon-{id}");
+    let context_id = format!("context-{id}");
     let manifest = LongHorizonEvalManifest {
         id,
         created_at: Utc::now().to_rfc3339(),
@@ -398,6 +406,7 @@ pub async fn create_operations_continuity_eval(
         runtime_commit: runtime_commit(),
         runtime_dirty: runtime_dirty(),
         context_protocol_version: CONTEXT_PROTOCOL_VERSION,
+        context_id,
         session_id,
         database_path: database_path.clone(),
         workspace_root: workspace_root.clone(),
@@ -472,6 +481,7 @@ pub async fn create_autonomous_transfer_eval(
     let database_path = run_root.join("morphz.db");
     SqliteStore::new(database_path.to_string_lossy().as_ref()).await?;
     let session_id = format!("long-horizon-{id}");
+    let context_id = format!("context-{id}");
     let manifest = LongHorizonEvalManifest {
         id,
         created_at: Utc::now().to_rfc3339(),
@@ -481,6 +491,7 @@ pub async fn create_autonomous_transfer_eval(
         runtime_commit: runtime_commit(),
         runtime_dirty: runtime_dirty(),
         context_protocol_version: CONTEXT_PROTOCOL_VERSION,
+        context_id,
         session_id,
         database_path: database_path.clone(),
         workspace_root: workspace_root.clone(),
@@ -556,6 +567,7 @@ pub async fn create_epistemic_reality_eval(
     let database_path = run_root.join("morphz.db");
     SqliteStore::new(database_path.to_string_lossy().as_ref()).await?;
     let session_id = format!("long-horizon-{id}");
+    let context_id = format!("context-{id}");
     let manifest = LongHorizonEvalManifest {
         id,
         created_at: Utc::now().to_rfc3339(),
@@ -565,6 +577,7 @@ pub async fn create_epistemic_reality_eval(
         runtime_commit: runtime_commit(),
         runtime_dirty: runtime_dirty(),
         context_protocol_version: CONTEXT_PROTOCOL_VERSION,
+        context_id,
         session_id,
         database_path: database_path.clone(),
         workspace_root: workspace_root.clone(),
@@ -638,6 +651,7 @@ pub async fn create_experience_transfer_arm_eval(
     let database_path = run_root.join("morphz.db");
     SqliteStore::new(database_path.to_string_lossy().as_ref()).await?;
     let session_id = format!("experience-transfer-{id}");
+    let context_id = format!("context-{id}");
     let stages = experience_transfer_stages(arm);
     let manifest = LongHorizonEvalManifest {
         id,
@@ -648,6 +662,7 @@ pub async fn create_experience_transfer_arm_eval(
         runtime_commit: runtime_commit(),
         runtime_dirty: runtime_dirty(),
         context_protocol_version: CONTEXT_PROTOCOL_VERSION,
+        context_id,
         session_id,
         database_path: database_path.clone(),
         workspace_root: workspace_root.clone(),
@@ -689,7 +704,7 @@ pub async fn run_experience_transfer_arm_eval(
         arm,
         agent_binary,
         profile,
-        ExperienceTransferPromptMode::CognitiveSexprVm,
+        ExperienceTransferPromptMode::SemanticSexprVm,
     )
     .await
 }
@@ -718,7 +733,7 @@ pub async fn run_experience_transfer_suite(
         base_dir,
         agent_binary,
         profile,
-        ExperienceTransferPromptMode::CognitiveSexprVm,
+        ExperienceTransferPromptMode::SemanticSexprVm,
     )
     .await
 }
@@ -950,9 +965,7 @@ async fn final_mind_structure(run_root: &Path) -> Result<MindStructureSnapshot, 
         serde_json::from_slice(&std::fs::read(run_root.join("manifest.json"))?)?;
     let store =
         Arc::new(SqliteStore::new(manifest.database_path.to_string_lossy().as_ref()).await?);
-    let view = context_engine(store, &manifest)
-        .build_view(&manifest.session_id)
-        .await?;
+    let view = build_eval_context_view(store, &manifest).await?;
     let active_frames = view
         .state
         .frames
@@ -1157,9 +1170,7 @@ async fn run_created_eval(
         )
         .await?;
         let after = event_counts(&store, &environment.manifest.session_id).await?;
-        let view = context_engine(Arc::clone(&store), &environment.manifest)
-            .build_view(&environment.manifest.session_id)
-            .await?;
+        let view = build_eval_context_view(Arc::clone(&store), &environment.manifest).await?;
         let missing_reply_markers = missing_markers(&reply, &stage.expected_reply_markers);
         let mind_text = active_mind_evaluation_text(&view.state);
         let missing_mind_markers = missing_markers(&mind_text, &stage.expected_mind_markers);
@@ -1282,9 +1293,7 @@ pub async fn inspect_long_horizon_eval(
             stage_result.missing_reply_markers.is_empty() && !stage_result.reply.trim().is_empty();
         stage_result.passed = stage_result.semantic_passed && stage_result.reply_passed;
     }
-    let final_view = context_engine(Arc::clone(&store), &manifest)
-        .build_view(&manifest.session_id)
-        .await?;
+    let final_view = build_eval_context_view(Arc::clone(&store), &manifest).await?;
     let final_stage = stages.last();
     let final_state_matches = manifest.stages.last().is_some_and(|stage| {
         state_mismatches(
@@ -2171,6 +2180,14 @@ fn runtime_environment(manifest: &LongHorizonEvalManifest) -> BTreeMap<String, S
     BTreeMap::from([
         ("MORPHZ_SESSION_ID".to_string(), manifest.session_id.clone()),
         (
+            "MORPHZ_CONTEXT_ID".to_string(),
+            if manifest.context_id.is_empty() {
+                "context-default".to_string()
+            } else {
+                manifest.context_id.clone()
+            },
+        ),
+        (
             "MORPHZ_DB_PATH".to_string(),
             manifest.database_path.to_string_lossy().to_string(),
         ),
@@ -2399,6 +2416,10 @@ fn analyze_stage_events(
                 continue;
             }
 
+            if !is_physical_tool_name(name) {
+                continue;
+            }
+
             physical_calls += 1;
             let signature = format!("{name}\u{0}{arguments}");
             if !seen_tool_calls[stage_index].insert(signature) {
@@ -2624,7 +2645,7 @@ async fn event_counts(store: &Arc<SqliteStore>, session_id: &str) -> Result<Even
                             call.get("function")
                                 .and_then(|value| value.get("name"))
                                 .and_then(|value| value.as_str())
-                                .is_some_and(|name| name != "context_tx")
+                                .is_some_and(is_physical_tool_name)
                         })
                         .count();
                 }
@@ -2643,7 +2664,26 @@ fn context_engine(store: Arc<SqliteStore>, manifest: &LongHorizonEvalManifest) -
         observation_preview_chars: manifest.observation_preview_chars,
         ..Default::default()
     };
-    ContextEngine::new(store as Arc<dyn EventStore>, config)
+    let event_store = Arc::clone(&store) as Arc<dyn EventStore>;
+    let session_store = store as Arc<dyn SessionStore>;
+    ContextEngine::new(event_store, config).with_session_store(session_store)
+}
+
+async fn build_eval_context_view(
+    store: Arc<SqliteStore>,
+    manifest: &LongHorizonEvalManifest,
+) -> Result<ContextView, DynError> {
+    let session = store
+        .get_session(&manifest.session_id)
+        .await?
+        .ok_or_else(|| format!("评测 Session '{}' 不存在", manifest.session_id))?;
+    context_engine(store, manifest)
+        .build_context_encoding(&session.context_id, &session.id, &HashSet::new())
+        .await
+}
+
+fn is_physical_tool_name(name: &str) -> bool {
+    !matches!(name, "context_tx" | "reply" | "session_output")
 }
 
 fn apply_injections(workspace: &Path, injections: &[FileInjection]) -> Result<(), DynError> {
@@ -2788,6 +2828,7 @@ fn set_private_directory_permissions(_path: &Path) -> Result<(), DynError> {
 mod tests {
     use super::*;
     use crate::config::ToolSecurityConfig;
+    use crate::memory::{NewAgent, NewCognitiveContext, NewSession, SessionMountKind};
     use crate::tool_security::{resolve_tool_path, ToolAccess};
     use tempfile::TempDir;
 
@@ -2814,6 +2855,10 @@ mod tests {
             .join("sources/late-archived-v1.md")
             .exists());
         assert_eq!(environment.manifest.context_policy, "agent_owned");
+        assert_ne!(
+            environment.manifest.context_id,
+            environment.manifest.session_id
+        );
         assert_eq!(environment.manifest.evidence_gates.len(), 1);
         assert!(environment.manifest.evidence_gates[0].require_context_reference);
         assert!(!environment.manifest.evidence_gates[0]
@@ -3064,6 +3109,10 @@ mod tests {
             ExperienceTransferPromptMode::CognitiveSexprVm.as_str(),
             "cognitive_sexpr_vm"
         );
+        assert_eq!(
+            ExperienceTransferPromptMode::SemanticSexprVm.as_str(),
+            "semantic_sexpr_vm"
+        );
     }
 
     #[test]
@@ -3104,6 +3153,88 @@ mod tests {
         assert!(text.contains("MIND-RELATION"));
         assert!(!text.contains("RETIRED-ONLY"));
         assert!(!text.contains("INBOX-ONLY"));
+    }
+
+    #[test]
+    fn runtime_control_tools_are_not_counted_as_physical_work() {
+        assert!(!is_physical_tool_name("context_tx"));
+        assert!(!is_physical_tool_name("reply"));
+        assert!(!is_physical_tool_name("session_output"));
+        assert!(is_physical_tool_name("read"));
+        assert!(is_physical_tool_name("write"));
+        assert!(is_physical_tool_name("exec"));
+    }
+
+    #[tokio::test]
+    async fn eval_view_resolves_the_context_mounted_by_the_session() {
+        let temp = TempDir::new().unwrap();
+        let mut environment = create_autonomous_transfer_eval(Some(temp.path()))
+            .await
+            .unwrap();
+        let store = Arc::new(
+            SqliteStore::new(
+                environment
+                    .manifest
+                    .database_path
+                    .to_string_lossy()
+                    .as_ref(),
+            )
+            .await
+            .unwrap(),
+        );
+        let agent_id = "eval-agent";
+        let context_id = "eval-context";
+        let session_id = "eval-session";
+        store
+            .ensure_agent(NewAgent {
+                id: agent_id.to_string(),
+                title: "Eval Agent".to_string(),
+                root_context_id: context_id.to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: context_id.to_string(),
+                agent_id: agent_id.to_string(),
+                title: "Eval Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_session(NewSession {
+                id: session_id.to_string(),
+                agent_id: agent_id.to_string(),
+                context_id: context_id.to_string(),
+                parent_session_id: None,
+                title: "Eval Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        context_engine(Arc::clone(&store), &environment.manifest)
+            .apply_context_transaction(
+                context_id,
+                session_id,
+                "(context-tx (base-version 0) (reason \"test\") (create fact (value MOUNTED-MIND)))",
+            )
+            .await
+            .unwrap();
+
+        environment.manifest.session_id = session_id.to_string();
+        let routed = context_engine(Arc::clone(&store), &environment.manifest)
+            .build_view(session_id)
+            .await
+            .unwrap();
+        assert_eq!(routed.context_id, context_id);
+        assert!(active_mind_evaluation_text(&routed.state).contains("MOUNTED-MIND"));
+
+        let view = build_eval_context_view(store, &environment.manifest)
+            .await
+            .unwrap();
+        assert_eq!(view.context_id, context_id);
+        assert_eq!(view.active_session_id, session_id);
+        assert!(active_mind_evaluation_text(&view.state).contains("MOUNTED-MIND"));
     }
 
     fn target_stages(manifest: &LongHorizonEvalManifest) -> Vec<&LongHorizonStage> {

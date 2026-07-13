@@ -1,7 +1,7 @@
 # Morphz 当前评测状态总览
 
-> 更新时间：2026-07-12  
-> 主测模型：`gemini-3-flash-agent`；`glm-5.2`、`deepseek-v4-pro`、`gpt-5.6-sol` 作为对照模型。
+> 更新时间：2026-07-13
+> 主测模型：`gemini-3-flash-agent`；`glm-5.2`、`deepseek-v4-pro`、`gpt-5.6-sol` 作为对照模型。当前 Runtime 协议已升级为 v11；下文标注 v8/v9/v10 的结果仍作为历史可比基线。
 
 ## 1. 一页结论
 
@@ -9,6 +9,8 @@
 
 - Runtime 的确定性单元、CLI 和 Attempt Loop 集成测试已全部通过；
 - Reality Contract v1 / Protocol v9 已从单一事实源生成到 System Prompt、Context Protocol 和 `context_tx` 工具说明；
+- Protocol v10 已增加同一 Context 的多 Session 自适应合并求值、`session_output` IO 原语和精确 fallback；Gemini 的 10 Session 轻对话为 30/30，但双编码任务只有 3/7 批次完整覆盖，故能力保留为显式实验选项、默认仍分别求值；详见 [多 Session 自适应合并求值 v1](morphz_merged_session_evaluation_v1.md)；
+- Protocol v11 已增加三个可切换 System Prompt Profile 和所有 Profile 共享的显式 `reply(deliver/suppress)` 终止协议；默认 Profile 为 `semantic_sexpr_vm`；
 - 新增两个跨领域隐藏证据 Gate：人员角色与事件关闭在证据出现前均为 5/5 正确，State/Mind 均为 30/30；两个来源 Gate 均为 4/5；
 - Operations v9 五次修正 Gate 回归把真实证据前 v3 从 v8 的 4/5 降到 1/5，Mind 仍为 30/30，Attempt 持平、物理工具下降 3.9%、Context commit 增加 6.3%；
 - Coding Agent 的最小工具链和多文件修复能力已有真实通过记录；
@@ -27,14 +29,22 @@
 
 | 测试 | 主测模型 | 样本量 | 当前结果 | 判断 |
 | --- | --- | ---: | --- | --- |
-| Rust/Runtime 自动测试 | 不使用模型 | 120 库 + 4 CLI + 27 集成 | 全部通过；严格 Clippy 通过 | 已通过 |
+| Rust/Runtime 自动测试 | 不使用模型 | 144 库 + 4 CLI + 40 集成 | 全部通过；严格 Clippy 通过 | 已通过 |
 | Epistemic Reality v1 | Gemini 3 Flash Agent | 5 | State/Mind 30/30；时序两个领域 5/5；来源两个领域 4/5；严格 22/30 | 认识时序通过，来源/回复待优化 |
 | Operations Continuity v1，v9 | Gemini 3 Flash Agent | 5 | 提前 v3 1/5；Mind 30/30；State 24/30；严格 23/30 | 时序达标，机器字段失败需独立处理 |
 | Experience Transfer Prompt A/B | Gemini 3 Flash Agent | 5 个六轨迹配对 | Agent→VM：三 arm 总语义 26/45→31/45；related 14/15→15/15；请求 124→122；工具 102→110；抽象 Frame 0→0 | VM 身份非退化通过，抽象能力待研究 |
 
 Prefix Cache 的稳定前缀顺序与确定性已由测试锁定，客户端也能解析兼容后端的 `cached_tokens`；本轮产物没有保留真实命中值，因此命中率仍未验证。
 
-`cognitive_sexpr_vm` 现为默认 System Prompt；`MORPHZ_SYSTEM_PROMPT_MODE=agent_owned_context` 可切回旧身份用于回归。
+`semantic_sexpr_vm` 现为默认 System Prompt；`MORPHZ_SYSTEM_PROMPT_MODE=cognitive_sexpr_vm` 或
+`MORPHZ_SYSTEM_PROMPT_MODE=agent_owned_context` 可切回旧身份用于回归。三版共享 Runtime 的显式
+`reply(deliver/suppress)` 终止协议。
+
+2026-07-13 对旧评测框架做了 Session/Context 与 Reply 语义审计。Context Pressure、Context
+Long-Run、Metacognition、Coding Eval 和 Long-Horizon 现在都显式创建不同的 `context_id` 与
+`session_id`，并通过 `MORPHZ_CONTEXT_ID` 挂载；SQLite 从预置 Event 回填 Session Registry 时保留
+Event 的真实 Context 路由。成本统计统一排除 `context_tx/reply/session_output` 三种 Runtime 控制工具。
+旧清单缺少 `context_id` 时仍按各自历史布局兼容读取。
 
 ## 3. protocol v8 单次诊断与升级前基线（历史比较）
 

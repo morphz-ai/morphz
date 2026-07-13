@@ -2,6 +2,9 @@
 
 Context Long-Run Eval 从低压力开始，逐批向同一个 session 注入合成长任务历史，并在每批后唤醒真实模型。它验证的不是一次 `critical` 紧急压缩，而是 Agent 能否在长期运行中持续做到：
 
+这里的 Session 是 IO 路由，不拥有 Mind。当前夹具显式创建独立 `context_id`，所有合成历史写入该
+Context，并用 `MORPHZ_CONTEXT_ID` 挂载测试 Session；文中的“同一个 session”只表示连续输入来自同一连接。
+
 1. 在 hard limit 之前主动释放 Context；
 2. 在多轮摘要后保持稳定事实和修订关系；
 3. 用尽量少的事务和工具调用完成维护；
@@ -105,7 +108,7 @@ cargo run -p morphz --bin context_long_run_eval -- inspect RUN_ROOT
 
 但当前还不能称为理想的长期 Context：模型把“压缩原始 observation”误当成“所有完成过程都应升格为长期 Frame”，并在 Context transaction 回执后继续 housekeeping。结果是 Inbox 很干净，Mind frame 数却随批次线性增长；若运行足够久，压力会从 observation 转移到受保护 frame。
 
-以下 protocol v2 记录是当时的历史实验。其中“`reply + context_tx` 同响应终止”的 sidecar 快速路径已被 protocol v6 取代：当前 Runtime 会在任何工具调用后续跑，只有无工具纯文本才结束回合。
+以下 protocol v2 记录是当时的历史实验。其中“`reply + context_tx` 同响应终止”的 sidecar 快速路径先被 protocol v6 取代，随后 protocol v11 又把 single 模式终态统一为显式 `reply(deliver/suppress)` Function Calling。当前 Runtime 不再把无工具纯文本或空响应静默视为合法终态。
 
 本次结果之后，protocol v2 当时实现了前三项收敛措施：
 

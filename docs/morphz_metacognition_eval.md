@@ -1,6 +1,9 @@
 # Morphz 元认知 Context 评测框架
 
 > 状态：v1 已实现；目标是判断 Context 机制和 Agent 维护策略是否真实进步，而不是只验证 DSL 能否调用。
+
+当前评测清单显式区分 `context_id` 与 `session_id`：种子事实属于 Context，Session 只负责触发求值和
+接收回复。Runtime 启动时通过 `MORPHZ_CONTEXT_ID` 挂载，评分器也从真实挂载的 Context 读取 Mind。
 >
 > 当前最终状态和主测模型口径见 [Morphz 当前评测状态总览](morphz_eval_status.md)。本文件保留评分定义、协议演进与历史模型校准。
 
@@ -105,7 +108,7 @@ cargo run -p morphz --bin context_metacognition_eval -- \
 
 矩阵逐模型使用相同 Runtime、fixture、Prompt、评分和运行次数，并输出成功率、平均分、标准差、Context transaction、recall 和模型调用均值。报告只包含 `api_key_env` 名称，不包含其值。
 
-OpenAI-compatible 响应的 `finish_reason`、token usage 和各工具参数字符数会写入诊断日志。`finish_reason=length` 表示整次 completion 不完整；Runtime 不会把其中的正文或工具参数当成有效结果。Protocol v6 不再让模型声明 `final_reply`：任何工具调用都必定续跑，同响应正文只记为可见进度；只有无工具调用且正文非空的响应才是最终回复。
+OpenAI-compatible 响应的 `finish_reason`、token usage 和各工具参数字符数会写入诊断日志。`finish_reason=length` 表示整次 completion 不完整；Runtime 不会把其中的正文或工具参数当成有效结果。Protocol v6 删除了 `context_tx.final_reply`；Protocol v11 进一步要求 single 模式通过标准 `reply(deliver/suppress)` Function Calling 明确终止。其他工具调用仍会续跑，同响应正文只记为可见进度。
 
 ## 5. 正确的实验纪律
 

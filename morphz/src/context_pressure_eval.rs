@@ -6,7 +6,7 @@ use crate::orchestrator::context::{ContextEngine, ContextPressure};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -16,6 +16,8 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 pub struct ContextPressureEvalManifest {
     pub id: String,
     pub created_at: String,
+    #[serde(default)]
+    pub context_id: String,
     pub session_id: String,
     pub database_path: PathBuf,
     pub workspace_root: PathBuf,
@@ -80,6 +82,7 @@ pub async fn create_context_pressure_eval(
 
     let database_path = run_root.join("morphz.db");
     let session_id = format!("pressure-{id}");
+    let context_id = format!("context-{id}");
     let store = Arc::new(SqliteStore::new(database_path.to_string_lossy().as_ref()).await?);
     let seed = synthetic_long_running_history();
     let mut seed_observation_ids = Vec::with_capacity(seed.len());
@@ -93,6 +96,7 @@ pub async fn create_context_pressure_eval(
                 TYPE_TOOL_OUTPUT.to_string(),
                 "chat/tool_output".to_string(),
                 vec![
+                    ("context_id".to_string(), json!(context_id)),
                     ("session_id".to_string(), json!(session_id)),
                     ("tool_name".to_string(), json!("synthetic_history")),
                     ("text".to_string(), json!(text)),
@@ -115,7 +119,10 @@ pub async fn create_context_pressure_eval(
         ..Default::default()
     };
     let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config);
-    let initial_pressure = engine.build_view(&session_id).await?.pressure;
+    let initial_pressure = engine
+        .build_context_encoding(&context_id, &session_id, &HashSet::new())
+        .await?
+        .pressure;
     if initial_pressure.level != "critical" {
         return Err(format!(
             "合成 Context 未达到 critical：tokens={} level={}",
@@ -134,6 +141,7 @@ pub async fn create_context_pressure_eval(
     let manifest = ContextPressureEvalManifest {
         id,
         created_at: Utc::now().to_rfc3339(),
+        context_id: context_id.clone(),
         session_id: session_id.clone(),
         database_path: database_path.clone(),
         workspace_root: workspace_root.clone(),
@@ -152,6 +160,7 @@ pub async fn create_context_pressure_eval(
 
     let environment = BTreeMap::from([
         ("MORPHZ_SESSION_ID".to_string(), session_id),
+        ("MORPHZ_CONTEXT_ID".to_string(), context_id),
         (
             "MORPHZ_DB_PATH".to_string(),
             database_path.to_string_lossy().to_string(),
@@ -207,7 +216,10 @@ pub async fn inspect_context_pressure_eval(
         ..Default::default()
     };
     let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config);
-    let view = engine.build_view(&manifest.session_id).await?;
+    let context_id = manifest_context_id(&manifest);
+    let view = engine
+        .build_context_encoding(context_id, &manifest.session_id, &HashSet::new())
+        .await?;
     let active_observation_ids = view
         .observations
         .iter()
@@ -331,6 +343,14 @@ fn set_private_directory_permissions(path: &Path) -> Result<(), DynError> {
     Ok(())
 }
 
+fn manifest_context_id(manifest: &ContextPressureEvalManifest) -> &str {
+    if manifest.context_id.is_empty() {
+        &manifest.session_id
+    } else {
+        &manifest.context_id
+    }
+}
+
 #[cfg(not(unix))]
 fn set_private_directory_permissions(_path: &Path) -> Result<(), DynError> {
     Ok(())
@@ -348,6 +368,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(environment.manifest.initial_pressure.level, "critical");
+        assert_ne!(
+            environment.manifest.context_id,
+            environment.manifest.session_id
+        );
+        assert_eq!(
+            environment.environment.get("MORPHZ_CONTEXT_ID"),
+            Some(&environment.manifest.context_id)
+        );
         assert_eq!(environment.manifest.seed_observation_ids.len(), 38);
         assert!(environment.manifest.initial_pressure.estimated_tokens > 6_500);
         let report = inspect_context_pressure_eval(&environment.run_root)
@@ -388,11 +416,19 @@ mod tests {
             "(context-tx (base-version 0) (reason \"压缩已完成的长期历史\") (derive long-term-state (from {sources}) (state (project ORBIT-7) (port 9090) (audit-retention 30天) (storage \"SQLite WAL\"))) (protect long-term-state) (retire {sources}))"
         );
         engine
-            .apply_transaction(&environment.manifest.session_id, &transaction)
+            .apply_context_transaction(
+                &environment.manifest.context_id,
+                &environment.manifest.session_id,
+                &transaction,
+            )
             .await
             .unwrap();
         let view = engine
-            .build_view(&environment.manifest.session_id)
+            .build_context_encoding(
+                &environment.manifest.context_id,
+                &environment.manifest.session_id,
+                &HashSet::new(),
+            )
             .await
             .unwrap();
         assert_eq!(view.pressure.level, "normal");

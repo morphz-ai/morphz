@@ -2,11 +2,11 @@ use crate::config::OrchestratorConfig;
 use crate::event::{Event, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{EventStore, QueryFilter};
-use crate::orchestrator::context::{ContextEngine, ContextPressure};
+use crate::orchestrator::context::{ContextEngine, ContextPressure, ContextView};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -18,6 +18,8 @@ const ROUND_COUNT: usize = 6;
 pub struct ContextLongRunEvalManifest {
     pub id: String,
     pub created_at: String,
+    #[serde(default)]
+    pub context_id: String,
     pub session_id: String,
     pub database_path: PathBuf,
     pub workspace_root: PathBuf,
@@ -132,6 +134,7 @@ pub async fn create_context_long_run_eval(
     let database_path = run_root.join("morphz.db");
     SqliteStore::new(database_path.to_string_lossy().as_ref()).await?;
     let session_id = format!("long-run-{id}");
+    let context_id = format!("context-{id}");
     // Metadata v3 adds objective chronology/residency/freshness fields to every
     // observation. Keep the fixture's intended round progression as
     // normal -> notice -> warning instead of accidentally jumping to critical.
@@ -150,6 +153,7 @@ pub async fn create_context_long_run_eval(
     let manifest = ContextLongRunEvalManifest {
         id,
         created_at: Utc::now().to_rfc3339(),
+        context_id,
         session_id: session_id.clone(),
         database_path: database_path.clone(),
         workspace_root: workspace_root.clone(),
@@ -187,10 +191,7 @@ pub async fn advance_context_long_run_eval(
     let events = session_events(&store, &manifest.session_id).await?;
     let injected_rounds = injected_round_count(&events);
     if injected_rounds >= manifest.rounds {
-        let pressure = engine(&store, &manifest)
-            .build_view(&manifest.session_id)
-            .await?
-            .pressure;
+        let pressure = eval_view(&store, &manifest).await?.pressure;
         return Ok(ContextLongRunAdvance {
             run_root,
             round: injected_rounds,
@@ -211,6 +212,10 @@ pub async fn advance_context_long_run_eval(
                 TYPE_TOOL_OUTPUT.to_string(),
                 "chat/tool_output".to_string(),
                 vec![
+                    (
+                        "context_id".to_string(),
+                        json!(manifest_context_id(&manifest)),
+                    ),
                     ("session_id".to_string(), json!(manifest.session_id)),
                     ("tool_name".to_string(), json!("synthetic_long_run")),
                     ("round".to_string(), json!(round)),
@@ -221,10 +226,7 @@ pub async fn advance_context_long_run_eval(
             ))
             .await?;
     }
-    let pressure = engine(&store, &manifest)
-        .build_view(&manifest.session_id)
-        .await?
-        .pressure;
+    let pressure = eval_view(&store, &manifest).await?.pressure;
     if pressure.estimated_tokens >= manifest.hard_token_limit {
         return Err(format!(
             "第 {round} 轮注入后已达到 hard limit：{} >= {}",
@@ -248,9 +250,7 @@ pub async fn snapshot_context_long_run_eval(
 ) -> Result<ContextLongRunSnapshot, DynError> {
     let (run_root, manifest, store) = open_eval(run_root).await?;
     let events = session_events(&store, &manifest.session_id).await?;
-    let view = engine(&store, &manifest)
-        .build_view(&manifest.session_id)
-        .await?;
+    let view = eval_view(&store, &manifest).await?;
     let seed_ids = all_injected_seed_ids(&events);
     let active_ids = view
         .observations
@@ -294,9 +294,7 @@ pub async fn inspect_context_long_run_eval(
 ) -> Result<ContextLongRunEvalReport, DynError> {
     let (run_root, manifest, store) = open_eval(run_root).await?;
     let events = session_events(&store, &manifest.session_id).await?;
-    let view = engine(&store, &manifest)
-        .build_view(&manifest.session_id)
-        .await?;
+    let view = eval_view(&store, &manifest).await?;
     let trace: ContextLongRunTrace =
         serde_json::from_slice(&std::fs::read(run_root.join("trace.json"))?)?;
     let seed_ids = all_injected_seed_ids(&events);
@@ -420,6 +418,10 @@ fn runtime_environment(manifest: &ContextLongRunEvalManifest) -> BTreeMap<String
     BTreeMap::from([
         ("MORPHZ_SESSION_ID".to_string(), manifest.session_id.clone()),
         (
+            "MORPHZ_CONTEXT_ID".to_string(),
+            manifest_context_id(manifest).to_string(),
+        ),
+        (
             "MORPHZ_DB_PATH".to_string(),
             manifest.database_path.to_string_lossy().to_string(),
         ),
@@ -474,6 +476,27 @@ fn engine(store: &Arc<SqliteStore>, manifest: &ContextLongRunEvalManifest) -> Co
             ..Default::default()
         },
     )
+}
+
+async fn eval_view(
+    store: &Arc<SqliteStore>,
+    manifest: &ContextLongRunEvalManifest,
+) -> Result<ContextView, DynError> {
+    engine(store, manifest)
+        .build_context_encoding(
+            manifest_context_id(manifest),
+            &manifest.session_id,
+            &HashSet::new(),
+        )
+        .await
+}
+
+fn manifest_context_id(manifest: &ContextLongRunEvalManifest) -> &str {
+    if manifest.context_id.is_empty() {
+        &manifest.session_id
+    } else {
+        &manifest.context_id
+    }
 }
 
 async fn session_events(store: &SqliteStore, session_id: &str) -> Result<Vec<Event>, DynError> {
@@ -732,6 +755,14 @@ mod tests {
         let environment = create_context_long_run_eval(Some(base.path()))
             .await
             .unwrap();
+        assert_ne!(
+            environment.manifest.context_id,
+            environment.manifest.session_id
+        );
+        assert_eq!(
+            environment.environment.get("MORPHZ_CONTEXT_ID"),
+            Some(&environment.manifest.context_id)
+        );
         let mut levels = BTreeSet::new();
         for _ in 0..3 {
             let advance = advance_context_long_run_eval(&environment.run_root)
