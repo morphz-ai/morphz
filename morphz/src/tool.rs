@@ -127,7 +127,7 @@ pub enum BackgroundTaskStatus {
 }
 
 impl BackgroundTaskStatus {
-    fn is_terminal(self) -> bool {
+    pub(crate) fn is_terminal(self) -> bool {
         matches!(self, Self::Succeeded | Self::Failed | Self::Killed)
     }
 }
@@ -141,7 +141,9 @@ pub struct BackgroundTask {
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub last_output_at: chrono::DateTime<chrono::Utc>,
     pub output_bytes: usize,
-    pub timeout_notified: bool,
+    pub output_tail: String,
+    pub wake_generation: u64,
+    pub next_wakeup_at: Option<chrono::DateTime<chrono::Utc>>,
     pub status: BackgroundTaskStatus,
     pub effective_network: bool,
     pub secret_env: Vec<String>,
@@ -192,6 +194,8 @@ fn background_task_snapshot(task: &BackgroundTask) -> serde_json::Value {
         "last_output_at": task.last_output_at,
         "last_output_age_secs": (now - task.last_output_at).num_seconds().max(0),
         "output_bytes": task.output_bytes,
+        "output_tail": task.output_tail,
+        "next_wakeup_at": task.next_wakeup_at,
         "exit_code": task.exit_code,
         "effective_boundary": {
             "network_enabled": task.effective_network,
@@ -201,6 +205,120 @@ fn background_task_snapshot(task: &BackgroundTask) -> serde_json::Value {
         },
         "artifact_path": task.artifact_path,
     })
+}
+
+pub(crate) fn active_background_task_count(session_id: &str, context_id: &str) -> usize {
+    get_tasks_map()
+        .iter()
+        .filter(|task| task.session_id == session_id && task.context_id == context_id)
+        .filter(|task| !task.status.is_terminal())
+        .count()
+}
+
+const MAX_TASK_WAIT_SECS: u64 = 365 * 24 * 60 * 60;
+
+fn schedule_background_task_wakeup(
+    bus: Arc<crate::event::InMemoryEventBus>,
+    task_id: &str,
+    wait_secs: u64,
+    wake_source: &'static str,
+) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    if !(1..=MAX_TASK_WAIT_SECS).contains(&wait_secs) {
+        return Err(format!("wait_secs 必须在 1 到 {MAX_TASK_WAIT_SECS} 秒之间"));
+    }
+
+    let task_id = task_id.to_string();
+    let (generation, wakeup_at) = {
+        let tasks = get_tasks_map();
+        let mut task = tasks
+            .get_mut(&task_id)
+            .ok_or_else(|| format!("未找到后台任务 '{task_id}'，它可能已被历史保留策略清理"))?;
+        if task.status.is_terminal() {
+            return Err(format!("后台任务 '{task_id}' 已经结束，无需继续等待"));
+        }
+        task.wake_generation = task.wake_generation.wrapping_add(1);
+        let generation = task.wake_generation;
+        let wakeup_at = chrono::Utc::now()
+            + chrono::Duration::seconds(i64::try_from(wait_secs).unwrap_or(i64::MAX));
+        task.next_wakeup_at = Some(wakeup_at);
+        (generation, wakeup_at)
+    };
+
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(wait_secs)).await;
+        let payload = {
+            let tasks = get_tasks_map();
+            let Some(mut task) = tasks.get_mut(&task_id) else {
+                return;
+            };
+            if task.status.is_terminal() || task.wake_generation != generation {
+                return;
+            }
+            task.next_wakeup_at = None;
+            let elapsed_secs = (chrono::Utc::now() - task.started_at).num_seconds().max(0);
+            let output_tail = if task.output_tail.is_empty() {
+                "（任务尚未产生输出）".to_string()
+            } else {
+                task.output_tail.clone()
+            };
+            let mut payload = serde_json::Map::new();
+            payload.insert("context_id".to_string(), serde_json::json!(task.context_id));
+            payload.insert("session_id".to_string(), serde_json::json!(task.session_id));
+            payload.insert("tool_name".to_string(), serde_json::json!("wait_task"));
+            payload.insert("task_id".to_string(), serde_json::json!(task.id));
+            payload.insert(
+                "event".to_string(),
+                serde_json::json!("background_task_wait_elapsed"),
+            );
+            payload.insert("wake_source".to_string(), serde_json::json!(wake_source));
+            payload.insert("wait_secs".to_string(), serde_json::json!(wait_secs));
+            payload.insert("elapsed_secs".to_string(), serde_json::json!(elapsed_secs));
+            payload.insert("task_status".to_string(), serde_json::json!(task.status));
+            payload.insert(
+                "last_output_age_secs".to_string(),
+                serde_json::json!((chrono::Utc::now() - task.last_output_at)
+                    .num_seconds()
+                    .max(0)),
+            );
+            payload.insert(
+                "output_bytes".to_string(),
+                serde_json::json!(task.output_bytes),
+            );
+            payload.insert(
+                "artifact_path".to_string(),
+                serde_json::json!(task.artifact_path),
+            );
+            payload.insert(
+                "effective_boundary".to_string(),
+                serde_json::json!({
+                    "network_enabled": task.effective_network,
+                    "secret_env": task.secret_env,
+                    "sandbox_backend": task.sandbox_backend,
+                    "sandbox_status": task.sandbox_status,
+                }),
+            );
+            payload.insert("text".to_string(), serde_json::json!(format!(
+                "为后台任务 {} 安排的 {} 秒等待已经结束；任务仍在运行，Runtime 没有终止它。\n--- 最近输出 ---\n{}\n\n请自行决定：继续等待时调用 wait_task 并设置新的 wait_secs；不应继续时调用 kill_task。",
+                task.id, wait_secs, output_tail
+            )));
+            payload
+        };
+
+        let event = Event::new(
+            format!(
+                "task_wait_elapsed_{}_{}",
+                task_id,
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            ),
+            "System-TaskMonitor".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            payload,
+        );
+        let _ = bus.publish(event).await;
+    });
+
+    Ok(wakeup_at)
 }
 
 // 共享的实时输出管道缓冲
@@ -256,6 +374,8 @@ impl ExecutionBuffer {
             if let Some(mut task) = get_tasks_map().get_mut(&self.task_id) {
                 task.last_output_at = chrono::Utc::now();
                 task.output_bytes = task.output_bytes.saturating_add(safe_text.len());
+                task.output_tail.push_str(&safe_text);
+                task.output_tail = tail_chars(&task.output_tail, 2_000);
             }
         }
         if publish {
@@ -2250,7 +2370,9 @@ impl Tool for ExecuteCommandTool {
                 started_at: now,
                 last_output_at: now,
                 output_bytes: 0,
-                timeout_notified: false,
+                output_tail: String::new(),
+                wake_generation: 0,
+                next_wakeup_at: None,
                 status: BackgroundTaskStatus::Starting,
                 effective_network,
                 secret_env: effective_secret_env.clone(),
@@ -2319,84 +2441,15 @@ impl Tool for ExecuteCommandTool {
                     task.status = BackgroundTaskStatus::Running;
                 }
 
-                // Phase E: 后台任务达到配置阈值时只唤醒 LLM，不自动 kill。
-                // 是否继续等待或调用 kill_task 由 LLM 自己决策。
+                // 后台任务达到默认检查点时只唤醒 LLM，不自动 kill。Agent 后续可以通过
+                // wait_task(wait_secs=...) 覆盖下一次唤醒时间，或调用 kill_task。
                 if self.background_config.timeout_notify_enabled {
-                    let timeout_secs = self.background_config.timeout_notify_secs;
-                    let bus_timeout = Arc::clone(&self.bus);
-                    let task_id_timeout = task_id.clone();
-                    let session_id_timeout = session_id.clone();
-                    let context_id_timeout = context_id.clone();
-                    let cmd_timeout = cmd_trimmed.to_string();
-                    let buffer_timeout = Arc::clone(&buffer);
-                    tokio::spawn(async move {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(timeout_secs)).await;
-                        let tasks = get_tasks_map();
-                        if let Some(mut task) = tasks.get_mut(&task_id_timeout) {
-                            if task.timeout_notified {
-                                return;
-                            }
-                            task.timeout_notified = true;
-                            let elapsed_secs =
-                                (chrono::Utc::now() - task.started_at).num_seconds().max(0);
-                            let output_tail = tail_chars(&buffer_timeout.get_all(), 2000);
-
-                            let mut payload = serde_json::Map::new();
-                            payload.insert(
-                                "context_id".to_string(),
-                                serde_json::json!(context_id_timeout),
-                            );
-                            payload.insert(
-                                "session_id".to_string(),
-                                serde_json::json!(session_id_timeout),
-                            );
-                            payload.insert("tool_name".to_string(), serde_json::json!("exec"));
-                            payload
-                                .insert("task_id".to_string(), serde_json::json!(task_id_timeout));
-                            payload.insert(
-                                "event".to_string(),
-                                serde_json::json!("background_task_timeout"),
-                            );
-                            payload.insert(
-                                "elapsed_secs".to_string(),
-                                serde_json::json!(elapsed_secs),
-                            );
-                            payload.insert("cmd".to_string(), serde_json::json!(cmd_timeout));
-                            payload
-                                .insert("task_status".to_string(), serde_json::json!(task.status));
-                            payload.insert(
-                                "effective_boundary".to_string(),
-                                serde_json::json!({
-                                    "network_enabled": task.effective_network,
-                                    "secret_env": task.secret_env,
-                                    "sandbox_backend": task.sandbox_backend,
-                                    "sandbox_status": task.sandbox_status,
-                                }),
-                            );
-                            payload.insert(
-                                "artifact_path".to_string(),
-                                serde_json::json!(buffer_timeout.archive_path),
-                            );
-                            payload.insert("text".to_string(), serde_json::json!(format!(
-                                "后台任务 {} 已运行 {} 秒仍未结束。\n--- 最近输出 ---\n{}\n\n你可以继续等待，或调用 kill_task 终止它。",
-                                task_id_timeout, elapsed_secs, output_tail
-                            )));
-
-                            let ev = Event::new(
-                                format!(
-                                    "task_timeout_{}_{}",
-                                    task_id_timeout,
-                                    chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                                ),
-                                "System-TaskMonitor".to_string(),
-                                crate::event::TYPE_TOOL_OUTPUT.to_string(),
-                                "chat/tool_output".to_string(),
-                                payload,
-                            );
-                            drop(task);
-                            let _ = bus_timeout.publish(ev).await;
-                        }
-                    });
+                    let _ = schedule_background_task_wakeup(
+                        Arc::clone(&self.bus),
+                        &task_id,
+                        self.background_config.timeout_notify_secs.max(1),
+                        "runtime_default",
+                    );
                 }
 
                 // 启动一个后台协程，在进程最终退出时清理 map 并发送完成事件通知大模型
@@ -2434,6 +2487,8 @@ impl Tool for ExecuteCommandTool {
                         task.status = final_status;
                         task.exit_code = Some(code);
                         task.ended_at = Some(chrono::Utc::now());
+                        task.wake_generation = task.wake_generation.wrapping_add(1);
+                        task.next_wakeup_at = None;
                     }
                     let effective_boundary = tasks_cleanup.get(&task_id_cleanup).map(|task| {
                         serde_json::json!({
@@ -2514,7 +2569,7 @@ impl Tool for ExecuteCommandTool {
                     "artifact_path": buffer.archive_path,
                     "output_empty": output_str.is_empty(),
                     "output": output_str,
-                    "guidance": "任务完成或超时会通过 Inbox 主动唤醒；不要用 sleep、ps 或重复读取空日志轮询。可调用 task_status 查看一次、wait_task 进入事件驱动等待，或 kill_task 终止。",
+                    "guidance": "任务完成或默认检查时间到达会通过 Inbox 主动唤醒；不要用 sleep、ps 或重复读取空日志轮询。可调用 task_status 查看一次，或用 wait_task.wait_secs 安排下一次唤醒；不应继续时调用 kill_task。",
                 })
                 .to_string())
             }
@@ -2527,8 +2582,20 @@ impl Tool for ExecuteCommandTool {
 // ==========================================
 pub struct ListTasksTool;
 pub struct TaskStatusTool;
-pub struct WaitTaskTool;
+pub struct WaitTaskTool {
+    bus: Arc<crate::event::InMemoryEventBus>,
+    default_wait_secs: u64,
+}
 pub struct KillTaskTool;
+
+impl WaitTaskTool {
+    pub fn new(bus: Arc<crate::event::InMemoryEventBus>, default_wait_secs: u64) -> Self {
+        Self {
+            bus,
+            default_wait_secs: default_wait_secs.clamp(1, MAX_TASK_WAIT_SECS),
+        }
+    }
+}
 
 fn task_visible_in_current_context(task: &BackgroundTask) -> bool {
     let current_context = CURRENT_CONTEXT_ID
@@ -2618,6 +2685,12 @@ struct TaskStatusArgs {
     task_id: String,
 }
 
+#[derive(Deserialize)]
+struct WaitTaskArgs {
+    task_id: String,
+    wait_secs: Option<u64>,
+}
+
 #[async_trait::async_trait]
 impl Tool for TaskStatusTool {
     fn name(&self) -> &str {
@@ -2665,13 +2738,19 @@ impl Tool for WaitTaskTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "进入后台任务的事件驱动等待流程。该调用不会轮询或占用 LLM；若任务仍在运行，应随后 reply(suppress)，Runtime 会在任务结束或超时通知时主动唤醒。".to_string(),
+            description: "为后台任务安排下一次事件驱动唤醒。该调用不会轮询或占用 LLM，也不会终止任务；wait_secs 到期或任务结束时 Runtime 会主动唤醒。届时可继续设置新的等待时间，或调用 kill_task。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "task_id": {
                         "type": "string",
                         "description": "要等待的后台任务 ID。"
+                    },
+                    "wait_secs": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_TASK_WAIT_SECS,
+                        "description": "多久后重新唤醒 Agent 检查该任务。省略时使用 Runtime 的默认后台检查间隔。"
                     }
                 },
                 "required": ["task_id"],
@@ -2684,18 +2763,52 @@ impl Tool for WaitTaskTool {
         &self,
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let args: TaskStatusArgs = serde_json::from_str(arguments)?;
+        let args: WaitTaskArgs = serde_json::from_str(arguments)?;
         let task = require_visible_task(&args.task_id)?;
         let terminal = task.status.is_terminal();
+        drop(task);
+        if terminal {
+            let task = require_visible_task(&args.task_id)?;
+            return Ok(serde_json::json!({
+                "kind": "background_task_wait",
+                "waiting": false,
+                "task": background_task_snapshot(&task),
+                "next_action": "任务已经结束，直接根据退出码和输出继续处理。",
+            })
+            .to_string());
+        }
+
+        let wait_secs = args.wait_secs.unwrap_or(self.default_wait_secs);
+        let wakeup_at = match schedule_background_task_wakeup(
+            Arc::clone(&self.bus),
+            &args.task_id,
+            wait_secs,
+            "agent_requested",
+        ) {
+            Ok(wakeup_at) => wakeup_at,
+            Err(error) => {
+                if let Ok(task) = require_visible_task(&args.task_id) {
+                    if task.status.is_terminal() {
+                        return Ok(serde_json::json!({
+                            "kind": "background_task_wait",
+                            "waiting": false,
+                            "task": background_task_snapshot(&task),
+                            "next_action": "任务在安排等待时已经结束，直接根据退出码和输出继续处理。",
+                        })
+                        .to_string());
+                    }
+                }
+                return Err(error.into());
+            }
+        };
+        let task = require_visible_task(&args.task_id)?;
         Ok(serde_json::json!({
             "kind": "background_task_wait",
-            "waiting": !terminal,
+            "waiting": true,
+            "wait_secs": wait_secs,
+            "wakeup_at": wakeup_at,
             "task": background_task_snapshot(&task),
-            "next_action": if terminal {
-                "任务已经结束，直接根据退出码和输出继续处理。"
-            } else {
-                "调用 reply(disposition=suppress) 结束当前求值，不要 sleep、ps、轮询日志或重复调用任务；Runtime 会在任务结束或超时通知时主动唤醒。"
-            },
+            "next_action": "调用 reply(disposition=suppress) 结束当前求值；任务结束或 wait_secs 到期时 Runtime 会主动唤醒。不要 sleep、ps、轮询日志或立即重复调用 wait_task。",
         })
         .to_string())
     }
@@ -2755,6 +2868,8 @@ impl Tool for KillTaskTool {
             }
             let task_pgid = task.pgid;
             task.status = BackgroundTaskStatus::KillRequested;
+            task.wake_generation = task.wake_generation.wrapping_add(1);
+            task.next_wakeup_at = None;
             drop(task);
             let pgid = nix::unistd::Pid::from_raw(-task_pgid); // 负数代表杀死整个进程组
             match nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGKILL) {
@@ -2773,6 +2888,7 @@ impl Tool for KillTaskTool {
                             task.status = BackgroundTaskStatus::Failed;
                             task.ended_at = Some(chrono::Utc::now());
                             task.exit_code = Some(-1);
+                            task.next_wakeup_at = None;
                         }
                         Ok(serde_json::json!({
                             "kind": "background_task_kill",
@@ -4097,6 +4213,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wait_task_can_rearm_agent_chosen_wakeups_without_killing_the_task() {
+        let task_id = format!(
+            "wait_rearm_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let now = chrono::Utc::now();
+        get_tasks_map().insert(
+            task_id.clone(),
+            BackgroundTask {
+                id: task_id.clone(),
+                cmd_str: "long-running-test".to_string(),
+                pgid: i32::MAX,
+                session_id: "wait-rearm-session".to_string(),
+                context_id: "wait-rearm-context".to_string(),
+                started_at: now,
+                last_output_at: now,
+                output_bytes: 8,
+                output_tail: "working\n".to_string(),
+                wake_generation: 0,
+                next_wakeup_at: None,
+                status: BackgroundTaskStatus::Running,
+                effective_network: false,
+                secret_env: Vec::new(),
+                sandbox_backend: "test".to_string(),
+                sandbox_status: "enforced".to_string(),
+                artifact_path: "test-artifact.log".to_string(),
+                ended_at: None,
+                exit_code: None,
+            },
+        );
+
+        let bus = Arc::new(crate::event::InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        bus.subscribe(
+            "chat/tool_output".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let wait_tool = WaitTaskTool::new(Arc::clone(&bus), 10);
+
+        for _ in 0..2 {
+            let result: serde_json::Value = serde_json::from_str(
+                &wait_tool
+                    .execute(
+                        &serde_json::json!({
+                            "task_id": task_id,
+                            "wait_secs": 1
+                        })
+                        .to_string(),
+                    )
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(result["waiting"], true);
+            assert_eq!(result["wait_secs"], 1);
+
+            let event = tokio::time::timeout(tokio::time::Duration::from_secs(2), receiver.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(event.payload["event"], "background_task_wait_elapsed");
+            assert_eq!(event.payload["wait_secs"], 1);
+            assert!(event.payload["text"]
+                .as_str()
+                .unwrap()
+                .contains("kill_task"));
+            assert!(get_tasks_map()
+                .get(&task_id)
+                .is_some_and(|task| task.status == BackgroundTaskStatus::Running));
+        }
+
+        get_tasks_map().remove(&task_id);
+    }
+
+    #[tokio::test]
     async fn test_kill_task_pgid_cleanup() {
         let bus = Arc::new(crate::event::InMemoryEventBus::new());
         let exec_tool = exec_tool_for_tests(Arc::clone(&bus));
@@ -4140,14 +4334,17 @@ mod tests {
             .iter()
             .any(|task| task["task_id"] == task_id));
 
+        let wait_tool = WaitTaskTool::new(Arc::clone(&bus), 300);
         let waiting: serde_json::Value = serde_json::from_str(
-            &WaitTaskTool
-                .execute(&serde_json::json!({ "task_id": task_id }).to_string())
+            &wait_tool
+                .execute(&serde_json::json!({ "task_id": task_id, "wait_secs": 30 }).to_string())
                 .await
                 .unwrap(),
         )
         .unwrap();
         assert_eq!(waiting["waiting"], true);
+        assert_eq!(waiting["wait_secs"], 30);
+        assert!(waiting["wakeup_at"].is_string());
         assert!(waiting["next_action"].as_str().unwrap().contains("reply"));
 
         let kill_args = serde_json::json!({

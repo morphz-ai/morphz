@@ -477,7 +477,8 @@ pub struct BackgroundTask {
     pub started_at: DateTime<Utc>,
     pub last_output_at: DateTime<Utc>,
     pub output_bytes: usize,
-    pub timeout_notified: bool,
+    pub wake_generation: u64,
+    pub next_wakeup_at: Option<DateTime<Utc>>,
 }
 ```
 
@@ -500,16 +501,16 @@ timeout_notify_secs = 300
 max_output_buffer_bytes = 65536
 ```
 
-### 6.4 超时监控器
+### 6.4 等待检查器
 
-任务转后台后启动 watcher：
+任务转后台后启动默认检查点；Agent 也可以通过 `wait_task(task_id, wait_secs)` 重新安排下一次检查：
 
 ```rust
+let generation = task.replace_wakeup_after(wait_secs);
 tokio::spawn(async move {
-    tokio::time::sleep(Duration::from_secs(timeout_notify_secs)).await;
-
-    if task_still_running(task_id) && !timeout_notified {
-        publish_task_timeout_event(...).await;
+    tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+    if task_still_running(task_id) && task.wake_generation == generation {
+        publish_task_wait_elapsed_event(...).await;
     }
 });
 ```
@@ -518,7 +519,8 @@ tokio::spawn(async move {
 
 - **不 kill**；
 - **不 remove task**；
-- **只 publish event**。
+- **只 publish event**；
+- 新的 `wait_task` 调用以 generation 取代尚未触发的旧定时器。
 
 ### 6.5 事件设计
 
@@ -529,47 +531,36 @@ payload：
 ```json
 {
   "session_id": "session_x",
-  "tool_name": "exec",
+  "tool_name": "wait_task",
   "task_id": "task_...",
-  "event": "background_task_timeout",
+  "event": "background_task_wait_elapsed",
+  "wake_source": "agent_requested",
+  "wait_secs": 300,
   "elapsed_secs": 300,
-  "cmd": "cargo test",
-  "text": "后台任务 task_x 已运行 300 秒仍未结束。\n最近输出如下：...\n你可以继续等待，或调用 kill_task 终止它。"
+  "text": "为后台任务 task_x 安排的 300 秒等待已经结束，任务仍在运行。\n最近输出如下：...\n继续等待时请设置新的 wait_secs，或调用 kill_task。"
 }
 ```
 
 ### 6.6 LLM 可选行为
 
-收到超时事件后，LLM 可以：
+收到等待到期事件后，LLM 可以：
 
-1. 回复用户：任务仍在运行，继续等待；
+1. 调用 `wait_task` 并设置新的 `wait_secs`，随后静默进入事件驱动等待；
 2. 调用 `kill_task`；
-3. 调用 `exec` 查询状态；
-4. 总结已有输出；
-5. 询问用户是否终止。
+3. 根据已有输出继续其他动作；
+4. 回复用户当前状态或询问是否终止。
 
-### 6.7 防止重复唤醒
+### 6.7 可重置而不轮询
 
-同一个 task 第一版只通知一次：
-
-```rust
-timeout_notified = true
-```
-
-未来可扩展为：
-
-```toml
-timeout_notify_repeat_secs = 300
-max_timeout_notifications = 3
-```
+每次 `wait_task` 只安排一个未来唤醒点，并递增 `wake_generation`。旧定时器发现 generation 已变化后静默退出；任务完成或收到 kill 请求时也会取消尚未触发的唤醒。这样 Agent 可以多次决定新的等待长度，但不会靠连续工具调用轮询。
 
 ### 6.8 验收标准
 
 - 后台任务超过阈值不被 kill。
-- 发布 `background_task_timeout` 事件。
+- 发布 `background_task_wait_elapsed` 事件。
 - Orchestrator 被唤醒。
-- LLM 可以选择调用 `kill_task`。
-- 同一个任务默认只通知一次。
+- LLM 可以选择新的等待长度或调用 `kill_task`。
+- 新等待会取代旧等待，任务完成后不会产生过期唤醒。
 
 ---
 

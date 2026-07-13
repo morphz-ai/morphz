@@ -929,6 +929,7 @@ async fn run_once(
                 println!("{text}");
                 return Ok(());
             }
+            ConsoleMessageKind::Suppressed => return Ok(()),
             ConsoleMessageKind::Progress => {
                 if !text.trim().is_empty() {
                     eprintln!("[Agent 进度] {text}");
@@ -1124,6 +1125,7 @@ async fn run_interactive(
                         let _ = writeln!(stdout, "\n{}\n", reply);
                         break;
                     }
+                    Some(ConsoleWaitOutcome::Suppressed) => break,
                     Some(ConsoleWaitOutcome::Approval(payload)) => {
                         if let Err(error) = prompt_for_human_approval(
                             &payload,
@@ -1170,6 +1172,7 @@ enum ConsoleInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConsoleMessageKind {
     Final,
+    Suppressed,
     Progress,
     ToolCall,
     Approval,
@@ -1180,6 +1183,7 @@ type ConsoleMessage = (String, String, ConsoleMessageKind);
 #[derive(Debug, PartialEq, Eq)]
 enum ConsoleWaitOutcome {
     Final(String),
+    Suppressed,
     Approval(String),
 }
 
@@ -1200,6 +1204,24 @@ fn console_message_from_event(event: &morphz::event::Event) -> Option<ConsoleMes
                 .to_string(),
             ConsoleMessageKind::Final,
         )),
+        "chat/reply_suppressed" => {
+            let active_background_tasks = event
+                .payload
+                .get("active_background_tasks")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            if active_background_tasks > 0 {
+                Some((
+                    session_id,
+                    format!(
+                        "Agent 已进入事件驱动等待；当前还有 {active_background_tasks} 个后台任务运行。"
+                    ),
+                    ConsoleMessageKind::Progress,
+                ))
+            } else {
+                Some((session_id, String::new(), ConsoleMessageKind::Suppressed))
+            }
+        }
         "chat/progress" => Some((
             session_id,
             event
@@ -1248,6 +1270,7 @@ async fn wait_for_session_activity(
             }
             match kind {
                 ConsoleMessageKind::Final => return Some(ConsoleWaitOutcome::Final(text)),
+                ConsoleMessageKind::Suppressed => return Some(ConsoleWaitOutcome::Suppressed),
                 ConsoleMessageKind::Approval => return Some(ConsoleWaitOutcome::Approval(text)),
                 ConsoleMessageKind::Progress => print_agent_progress(&text),
                 ConsoleMessageKind::ToolCall => print_tool_call_activity(&text),
@@ -1269,6 +1292,7 @@ async fn wait_for_session_activity(
                 }
                 match kind {
                     ConsoleMessageKind::Final => return Some(ConsoleWaitOutcome::Final(text)),
+                    ConsoleMessageKind::Suppressed => return Some(ConsoleWaitOutcome::Suppressed),
                     ConsoleMessageKind::Approval => return Some(ConsoleWaitOutcome::Approval(text)),
                     ConsoleMessageKind::Progress => print_agent_progress(&text),
                     ConsoleMessageKind::ToolCall => print_tool_call_activity(&text),
@@ -1278,7 +1302,7 @@ async fn wait_for_session_activity(
                 let mut stdout = std::io::stdout();
                 let _ = writeln!(
                     stdout,
-                    "\n[Agent 仍在运行] 已等待约 {} 秒；将继续等待，可按 Ctrl+C 中断。",
+                    "\n[仍在等待 Agent 或后台任务] 本次已等待约 {} 秒；可按 Ctrl+C 中断。",
                     notice_interval.as_secs()
                 );
                 let _ = stdout.flush();
@@ -1296,6 +1320,7 @@ async fn wait_for_session_reply(
     loop {
         match wait_for_session_activity(reply_rx, session_id, notice_interval).await? {
             ConsoleWaitOutcome::Final(text) => return Some(text),
+            ConsoleWaitOutcome::Suppressed => return Some(String::new()),
             ConsoleWaitOutcome::Approval(_) => continue,
         }
     }
@@ -1531,13 +1556,15 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_cli_config, command_needs_llm, create_session_command, format_tool_call_activity,
-        parse_terminal_approval_input, read_console_input, select_or_create_console_session,
-        wait_for_session_reply, ConsoleInput, ConsoleMessageKind, OfflineClient,
+        apply_cli_config, command_needs_llm, console_message_from_event, create_session_command,
+        format_tool_call_activity, parse_terminal_approval_input, read_console_input,
+        select_or_create_console_session, wait_for_session_reply, ConsoleInput, ConsoleMessageKind,
+        OfflineClient,
     };
     use morphz::approval::ApprovalDecision;
     use morphz::cli::morphz_command_line_parser;
     use morphz::config::AppConfig;
+    use morphz::event::Event;
     use morphz::llm::Client;
     use morphz::permission::{ApprovalPolicy, PermissionMode, ReviewerKind, SandboxMode};
     use morphz::runtime::{MorphzRuntime, RuntimeIdentity};
@@ -1621,6 +1648,36 @@ mod tests {
         .expect("waiter should remain alive after multiple notice ticks");
 
         assert_eq!(reply.as_deref(), Some("late reply"));
+    }
+
+    #[tokio::test]
+    async fn suppressed_reply_ends_cli_wait_only_after_background_tasks_finish() {
+        let event = |active_background_tasks| {
+            Event::new(
+                format!("suppressed-{active_background_tasks}"),
+                "Agent-Morphz".to_string(),
+                "agent_call".to_string(),
+                "chat/reply_suppressed".to_string(),
+                serde_json::Map::from_iter([
+                    ("session_id".to_string(), serde_json::json!("session-a")),
+                    (
+                        "active_background_tasks".to_string(),
+                        serde_json::json!(active_background_tasks),
+                    ),
+                ]),
+            )
+        };
+
+        let (_, progress, kind) = console_message_from_event(&event(1)).unwrap();
+        assert_eq!(kind, ConsoleMessageKind::Progress);
+        assert!(progress.contains("1 个后台任务"));
+
+        let terminal = console_message_from_event(&event(0)).unwrap();
+        assert_eq!(terminal.2, ConsoleMessageKind::Suppressed);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.send(terminal).await.unwrap();
+        let reply = wait_for_session_reply(&mut rx, "session-a", None).await;
+        assert_eq!(reply.as_deref(), Some(""));
     }
 
     #[test]

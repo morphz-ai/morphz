@@ -14,7 +14,8 @@ use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
 use morphz::permission::PermissionConfig;
 use morphz::tool::{
-    DelegateTool, EditFileTool, ReadFileTool, Registry, SpawnAgentTool, Tool, WriteFileTool,
+    get_tasks_map, BackgroundTask, BackgroundTaskStatus, DelegateTool, EditFileTool, ReadFileTool,
+    Registry, SpawnAgentTool, Tool, WriteFileTool,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -561,6 +562,32 @@ async fn test_plain_text_terminal_is_corrected_to_explicit_reply() {
 #[tokio::test]
 async fn test_reply_suppress_is_terminal_without_session_delivery() {
     let session_id = "attempt_reply_suppress";
+    let task_id = "attempt_reply_suppress_background";
+    let now = chrono::Utc::now();
+    get_tasks_map().insert(
+        task_id.to_string(),
+        BackgroundTask {
+            id: task_id.to_string(),
+            cmd_str: "background-test".to_string(),
+            pgid: i32::MAX,
+            session_id: session_id.to_string(),
+            context_id: session_id.to_string(),
+            started_at: now,
+            last_output_at: now,
+            output_bytes: 0,
+            output_tail: String::new(),
+            wake_generation: 0,
+            next_wakeup_at: None,
+            status: BackgroundTaskStatus::Running,
+            effective_network: false,
+            secret_env: Vec::new(),
+            sandbox_backend: "test".to_string(),
+            sandbox_status: "enforced".to_string(),
+            artifact_path: "test.log".to_string(),
+            ended_at: None,
+            exit_code: None,
+        },
+    );
     let (bus, store, _orc, _client, _tmp) = build_orchestrator_with_config_and_reply_mode(
         vec![suppressed_reply_response()],
         morphz::config::OrchestratorConfig::default(),
@@ -585,6 +612,11 @@ async fn test_reply_suppress_is_terminal_without_session_delivery() {
         suppressed[0].payload.get("disposition"),
         Some(&json!("suppress"))
     );
+    assert_eq!(
+        suppressed[0].payload.get("active_background_tasks"),
+        Some(&json!(1))
+    );
+    get_tasks_map().remove(task_id);
 }
 
 #[tokio::test]

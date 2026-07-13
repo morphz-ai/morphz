@@ -229,7 +229,10 @@ fn register_default_tools(
     )));
     registry.register(Arc::new(ListTasksTool));
     registry.register(Arc::new(TaskStatusTool));
-    registry.register(Arc::new(WaitTaskTool));
+    registry.register(Arc::new(WaitTaskTool::new(
+        Arc::clone(bus),
+        config.background_task.timeout_notify_secs,
+    )));
     registry.register(Arc::new(KillTaskTool));
     if !policy.coding_eval {
         registry.register(Arc::new(DelegateTool::new(Arc::clone(bus))));
