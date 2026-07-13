@@ -69,7 +69,27 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    后代。`delegate` 默认为 attached，父 Session 等待结果且不会轮询；只有显式选择
    detached 时才立即转为后台任务。
 
-3. 另一个终端启动 Inspector：
+   CLI 也可以直接携带提示词；未被已注册命令和选项消费的文本都会交给 Agent：
+
+   ```bash
+   morphz 帮我检查当前项目
+   morphz --sandbox=workspace-write --approval=auto 继续优化坦克大战
+   morphz exec --session=session_123 -- 只执行这一轮并输出最终答复
+   ```
+
+   裸启动和裸提示词会在所选共享 Context 中新建一个 Session。恢复同一个通信通道使用
+   `--session=ID` 或 `morphz session resume ID`；它不是“恢复记忆”，因为新 Session
+   本来就能读取共享 Context 的认知结构。`morphz session create --independent` 会从
+   当前 Mind snapshot 创建一个隔离 Context，再把新 Session 挂载上去。可用
+   `morphz context/session/agent/job --help` 查看总览，或直接运行 `morphz --help`。
+
+3. 如需 HTTP/WebSocket 与 Inspector，先启动 Server：
+
+   ```bash
+   morphz serve
+   ```
+
+   再在另一个终端启动 Inspector：
 
    ```bash
    cd dashboard
@@ -77,7 +97,8 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    npm run dev
    ```
 
-核心默认监听 `127.0.0.1:8080`。可通过 `MORPHZ_BIND` 和 `MORPHZ_DB_PATH` 覆盖监听地址及数据库路径，其余参数见 `morphz.toml`。
+`morphz serve` 默认监听 `127.0.0.1:8080`。可通过 `--bind`、`MORPHZ_BIND` 和
+`MORPHZ_DB_PATH` 覆盖监听地址及数据库路径，其余参数见 `morphz.toml`。
 
 监听非本机地址时，必须设置 `MORPHZ_DASHBOARD_TOKEN`。Dashboard 可通过 `VITE_MORPHZ_TOKEN` 携带同一 token，也可分别用 `VITE_MORPHZ_HTTP_URL`、`VITE_MORPHZ_WS_URL` 指定 Core 地址。
 

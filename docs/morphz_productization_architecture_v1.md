@@ -69,7 +69,10 @@ Application API 是人类界面和机器界面共同依赖的产品契约。v1 �
 
 底层 Store、Orchestrator 和工具注册表不再暴露给 CLI/Server，也不成为外部 SDK 的长期承诺。
 
-CLI 与 Server 现在共享同一个 `MorphzRuntime` 实例：消息提交统一走 `SessionHandle::send`，事件统一走 Runtime subscription，Context inspect、取消和审批也都通过 Application API 完成。
+CLI 与 Server 使用同一套 `MorphzRuntime` Application API 和持久化语义：消息提交统一走
+`SessionHandle::send`，事件统一走 Runtime subscription，Context inspect、取消和审批也都
+通过 Application API 完成。交互 CLI 与 `serve` 是不同的进程入口，不要求为了使用终端而
+隐式启动 HTTP Server。
 
 ## 4. 数据兼容与删除纪律
 
@@ -100,7 +103,7 @@ Inspector ───────────────────────�
 - Morphz 默认启动不加载 Embedding 模型、不创建 LanceDB 目录、不暴露 Graph API；
 - `morphz-memory-vector` 能打开旧数据库并完成文本/向量召回；
 - 生产 crate 不再导出 `*_eval` 模块或构建评测二进制；
-- CLI 和 Server 由同一个 `MorphzRuntime` 实例提供能力；
+- CLI 和 Server 由同一套 `MorphzRuntime` Application API 提供能力；
 - Core、Extension、Eval 和 Dashboard 均通过各自验证。
 
 ## 7. 实现结果（2026-07-13）
@@ -108,6 +111,6 @@ Inspector ───────────────────────�
 - 默认 `morphz` 已移除 LanceDB、Arrow 与本地 Embedding 执行器依赖；
 - 历史 Graph/Vector 数据由 `extensions/morphz-memory-vector` 兼容读取；
 - 八个评测入口、评测实现和 coding fixtures 已迁入 `morphz-evals`；
-- CLI 与 HTTP/WebSocket Server 已改为 `MorphzRuntime` 的两个适配器；
+- CLI 与 HTTP/WebSocket Server 已改为 `MorphzRuntime` 的两个独立适配器；
 - Inspector 已停止请求 Core 中不存在的 `/api/graph`，默认展示 Context、Session、Mind、Inbox 与 Runtime event；
 - Core 122 个库测试、6 个 CLI 测试与 41 个 Attempt Loop 集成测试通过；独立 Eval 与 Extension 验证由 Workspace 测试覆盖。

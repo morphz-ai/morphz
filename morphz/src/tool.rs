@@ -1608,6 +1608,100 @@ fn apply_capability_delta(policy: &mut SandboxPolicy, delta: &CapabilityDelta) {
     }
 }
 
+fn contains_unquoted_background_operator(command: &str) -> bool {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Quote {
+        None,
+        Single,
+        Double,
+    }
+
+    let chars = command.chars().collect::<Vec<_>>();
+    let mut quote = Quote::None;
+    let mut index = 0;
+    while index < chars.len() {
+        let current = chars[index];
+        match quote {
+            Quote::Single => {
+                if current == '\'' {
+                    quote = Quote::None;
+                }
+                index += 1;
+            }
+            Quote::Double => {
+                if current == '\\' {
+                    index = (index + 2).min(chars.len());
+                } else {
+                    if current == '"' {
+                        quote = Quote::None;
+                    }
+                    index += 1;
+                }
+            }
+            Quote::None => match current {
+                '\\' => index = (index + 2).min(chars.len()),
+                '\'' => {
+                    quote = Quote::Single;
+                    index += 1;
+                }
+                '"' => {
+                    quote = Quote::Double;
+                    index += 1;
+                }
+                '#' if index == 0
+                    || chars[index - 1].is_whitespace()
+                    || matches!(chars[index - 1], ';' | '|' | '&' | '(' | ')') =>
+                {
+                    while index < chars.len() && chars[index] != '\n' {
+                        index += 1;
+                    }
+                }
+                '&' => {
+                    let previous = index.checked_sub(1).and_then(|i| chars.get(i)).copied();
+                    let next = chars.get(index + 1).copied();
+                    if next == Some('&') {
+                        index += 2;
+                    } else if matches!(previous, Some('>') | Some('<')) || next == Some('>') {
+                        // File-descriptor duplication (`2>&1`, `<&0`) and `&>` redirection
+                        // are not process detachment.
+                        index += 1;
+                    } else {
+                        return true;
+                    }
+                }
+                _ => index += 1,
+            },
+        }
+    }
+    false
+}
+
+fn validate_managed_shell_command(
+    command: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if contains_unquoted_background_operator(command) {
+        return Err(
+            "exec 禁止使用 Shell '&' 自行创建非托管后台进程。请直接执行前台命令；超过 wait_ms 后 Runtime 会自动转入后台并返回 task_id。"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn terminate_residual_process_group(
+    pgid: i32,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    let pgid = nix::unistd::Pid::from_raw(pgid);
+    match nix::sys::signal::killpg(pgid, None) {
+        Ok(()) => {
+            nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGKILL)?;
+            Ok(true)
+        }
+        Err(nix::errno::Errno::ESRCH) => Ok(false),
+        Err(error) => Err(format!("检查 exec 残留进程组失败: {error}").into()),
+    }
+}
+
 #[derive(Deserialize)]
 struct ExecuteCommandArgs {
     command: String,
@@ -1634,7 +1728,7 @@ impl Tool for ExecuteCommandTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "要在本地终端执行的 Shell 命令，例如 'cargo test' 或 'ls'"
+                    "description": "要在本地终端执行的前台 Shell 命令，例如 'cargo test' 或 'ls'。禁止用 '&' 自行后台化；超过 wait_ms 后 Runtime 会自动托管并返回 task_id。"
                 },
                 "cwd": {
                     "type": "string",
@@ -1684,7 +1778,7 @@ impl Tool for ExecuteCommandTool {
 
         ToolDefinition {
             name: "exec".to_string(),
-            description: "在当前操作系统的原生沙箱中执行 Shell 命令，默认仅允许配置的工作区路径且禁止网络。适合运行测试、编译和格式化；文件发现优先使用 list_files/search，修改优先使用 edit/write。确需额外网络或目录时使用 require_escalated 申请最小能力，由独立审批者决定。命令等待超时后转为后台托管。".to_string(),
+            description: "在当前操作系统的原生沙箱中执行 Shell 命令，默认仅允许配置的工作区路径且禁止网络。适合运行测试、编译和格式化；文件发现优先使用 list_files/search，修改优先使用 edit/write。确需额外网络或目录时使用 require_escalated 申请最小能力，由独立审批者决定。命令等待超时后由 Runtime 转为后台托管；禁止通过 '&' 自行创建非托管后台进程。".to_string(),
             parameters: params_json,
         }
     }
@@ -1695,6 +1789,7 @@ impl Tool for ExecuteCommandTool {
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
         let cmd_trimmed = args.command.trim();
+        validate_managed_shell_command(cmd_trimmed)?;
 
         let mut request_context = approval_context();
         let mut session_id = args
@@ -1946,6 +2041,10 @@ impl Tool for ExecuteCommandTool {
             Ok(exit_status_res) => {
                 // 命令在同步时间内直接执行完成
                 tasks.remove(&task_id);
+                // `/bin/sh -c 'command &'` can exit while descendants keep running. The lexical
+                // guard above catches normal cases; this process-group check is the fail-closed
+                // backstop for dynamically constructed shell commands.
+                let residual_processes_terminated = terminate_residual_process_group(pid)?;
                 // 进程退出不代表异步 pipe reader 已经消费完内核管道；必须等待两条 reader
                 // 完成后再读取 preview，才能保证归档文件和返回结果包含尾部输出。
                 let _ = stdout_task.await;
@@ -1954,6 +2053,12 @@ impl Tool for ExecuteCommandTool {
                     .map(|s| s.code().unwrap_or(-1))
                     .unwrap_or(-1);
                 let output_str = buffer.get_all();
+                if residual_processes_terminated {
+                    return Err(format!(
+                        "exec 检测到 Shell 主进程退出后仍有子进程存活，已终止整个残留进程组。禁止自行后台化；请让前台命令运行超过 wait_ms，由 Runtime 托管。\n--- 已捕获输出 ---\n{output_str}"
+                    )
+                    .into());
+                }
                 Ok(format!(
                     "执行结束 [退出码: {}]\n--- 输出 ---\n{}",
                     code, output_str
@@ -2040,6 +2145,7 @@ impl Tool for ExecuteCommandTool {
                 let buffer_cleanup = Arc::clone(&buffer);
                 tokio::spawn(async move {
                     let wait_res = child.wait().await;
+                    let residual_cleanup = terminate_residual_process_group(pid);
                     let _ = stdout_task.await;
                     let _ = stderr_task.await;
                     let tasks_cleanup = get_tasks_map();
@@ -2047,6 +2153,11 @@ impl Tool for ExecuteCommandTool {
 
                     let code = wait_res.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
                     let output_str = buffer_cleanup.get_all();
+                    let residual_note = match residual_cleanup {
+                        Ok(true) => "\n[Runtime 已终止 Shell 退出后残留的非托管子进程组。请勿在 exec 命令中自行后台化。]",
+                        Ok(false) => "",
+                        Err(_) => "\n[Runtime 无法确认 Shell 退出后的进程组是否已完整清理。]",
+                    };
 
                     let mut payload = serde_json::Map::new();
                     payload.insert(
@@ -2065,8 +2176,8 @@ impl Tool for ExecuteCommandTool {
                     payload.insert(
                         "text".to_string(),
                         serde_json::json!(format!(
-                            "\n[后台任务 {} 执行结束，退出码: {}]\n--- 输出 ---\n{}",
-                            task_id_cleanup, code, output_str
+                            "\n[后台任务 {} 执行结束，退出码: {}]{}\n--- 输出 ---\n{}",
+                            task_id_cleanup, code, residual_note, output_str
                         )),
                     );
 
@@ -3108,6 +3219,77 @@ mod tests {
         assert!(res.contains("hello exec"));
     }
 
+    #[test]
+    fn exec_background_operator_detection_respects_shell_quoting_and_redirection() {
+        assert!(contains_unquoted_background_operator("sleep 10 &"));
+        assert!(contains_unquoted_background_operator(
+            "python job.py > job.log 2>&1 &"
+        ));
+        assert!(!contains_unquoted_background_operator(
+            "cargo test && echo done"
+        ));
+        assert!(!contains_unquoted_background_operator("printf 'R&D' 2>&1"));
+        assert!(!contains_unquoted_background_operator(
+            "printf \"R&D\" # background & is only a comment"
+        ));
+    }
+
+    #[tokio::test]
+    async fn exec_rejects_explicit_unmanaged_background_processes() {
+        let workspace = TempDir::new().unwrap();
+        let tool = ExecuteCommandTool::new_with_configs(
+            Arc::new(crate::event::InMemoryEventBus::new()),
+            Arc::new(BackgroundTaskConfig {
+                artifact_dir: workspace
+                    .path()
+                    .join("artifacts")
+                    .to_string_lossy()
+                    .into_owned(),
+                ..BackgroundTaskConfig::default()
+            }),
+            permissive_security(),
+            30,
+        );
+
+        let error = tool
+            .execute(&serde_json::json!({ "command": "sleep 100 &" }).to_string())
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("禁止使用 Shell '&'"));
+    }
+
+    #[tokio::test]
+    async fn exec_kills_residual_process_group_when_detachment_is_constructed_dynamically() {
+        let workspace = TempDir::new().unwrap();
+        let tool = ExecuteCommandTool::new_with_configs(
+            Arc::new(crate::event::InMemoryEventBus::new()),
+            Arc::new(BackgroundTaskConfig {
+                artifact_dir: workspace
+                    .path()
+                    .join("artifacts")
+                    .to_string_lossy()
+                    .into_owned(),
+                ..BackgroundTaskConfig::default()
+            }),
+            permissive_security(),
+            30,
+        );
+
+        let error = tool
+            .execute(
+                &serde_json::json!({
+                    "command": "/bin/sh -c 'sleep 100 &'",
+                    "wait_ms": 1_000
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("仍有子进程存活"));
+    }
+
     #[tokio::test]
     async fn exec_cwd_outside_profile_requires_explicit_escalation() {
         let tmp = TempDir::new().unwrap();
@@ -3130,7 +3312,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(result.contains("crate-a"));
+        assert!(
+            result.contains("crate-a"),
+            "unexpected exec result: {result}"
+        );
 
         let rejected = tool
             .execute(
@@ -3227,7 +3412,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(approved.contains("退出码: 0"));
+        assert!(
+            approved.contains("退出码: 0"),
+            "unexpected approved exec result: {approved}"
+        );
         assert_eq!(std::fs::read_to_string(&approved_path).unwrap(), "approved");
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
 
