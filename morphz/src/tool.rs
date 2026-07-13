@@ -1,7 +1,12 @@
-use crate::config::{BackgroundTaskConfig, ToolSecurityConfig};
+use crate::approval::{ApprovalAction, ApprovalProvider, CapabilityDelta, DenyAllApprovalProvider};
+use crate::config::BackgroundTaskConfig;
 use crate::event::{Event, InMemoryEventBus, TYPE_FILE_CHANGE};
 use crate::llm::ToolDefinition;
-use crate::tool_security::{resolve_tool_path, ToolAccess};
+use crate::permission::{
+    ApprovalContext, FilesystemAccess, PermissionBroker, PermissionConfig, PermissionProfile,
+    SandboxMode, ShellEnvironmentPolicy,
+};
+use crate::sandbox::{NativeSandbox, NetworkPolicy, SandboxPolicy, ShellRequest};
 use dashmap::DashMap;
 use glob::Pattern;
 use serde::Deserialize;
@@ -18,6 +23,32 @@ use walkdir::WalkDir;
 tokio::task_local! {
     pub static CURRENT_SESSION_ID: String;
     pub static CURRENT_CONTEXT_ID: String;
+    pub static CURRENT_ATTEMPT_ID: String;
+}
+
+fn approval_context() -> ApprovalContext {
+    ApprovalContext {
+        session_id: CURRENT_SESSION_ID
+            .try_with(Clone::clone)
+            .unwrap_or_default(),
+        context_id: CURRENT_CONTEXT_ID
+            .try_with(Clone::clone)
+            .unwrap_or_default(),
+        attempt_id: CURRENT_ATTEMPT_ID
+            .try_with(Clone::clone)
+            .unwrap_or_default(),
+    }
+}
+
+fn broker_from_config(config: Arc<PermissionConfig>) -> Arc<PermissionBroker> {
+    let profile = PermissionProfile::from_config(&config)
+        .unwrap_or_else(|error| panic!("无效 PermissionConfig: {error}"));
+    Arc::new(PermissionBroker::new(
+        Arc::new(profile),
+        Arc::new(DenyAllApprovalProvider::new(
+            "当前工具未配置边界外权限审批提供者",
+        )),
+    ))
 }
 
 #[async_trait::async_trait]
@@ -428,24 +459,41 @@ async fn publish_file_change(
 // 1. WriteFileTool 工业级路径与权限容错
 // ==========================================
 pub struct WriteFileTool {
-    security: Arc<ToolSecurityConfig>,
+    permissions: Arc<PermissionBroker>,
     bus: Option<Arc<crate::event::InMemoryEventBus>>,
 }
 
 impl WriteFileTool {
-    pub fn new(security: Arc<ToolSecurityConfig>) -> Self {
+    pub fn new(config: Arc<PermissionConfig>) -> Self {
         Self {
-            security,
+            permissions: broker_from_config(config),
+            bus: None,
+        }
+    }
+
+    pub fn new_with_permissions(permissions: Arc<PermissionBroker>) -> Self {
+        Self {
+            permissions,
             bus: None,
         }
     }
 
     pub fn new_with_bus(
-        security: Arc<ToolSecurityConfig>,
+        config: Arc<PermissionConfig>,
         bus: Arc<crate::event::InMemoryEventBus>,
     ) -> Self {
         Self {
-            security,
+            permissions: broker_from_config(config),
+            bus: Some(bus),
+        }
+    }
+
+    pub fn new_with_runtime(
+        permissions: Arc<PermissionBroker>,
+        bus: Arc<crate::event::InMemoryEventBus>,
+    ) -> Self {
+        Self {
+            permissions,
             bus: Some(bus),
         }
     }
@@ -453,7 +501,7 @@ impl WriteFileTool {
 
 impl Default for WriteFileTool {
     fn default() -> Self {
-        Self::new(Arc::new(ToolSecurityConfig::default()))
+        Self::new(Arc::new(PermissionConfig::default()))
     }
 }
 
@@ -508,9 +556,19 @@ impl Tool for WriteFileTool {
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: WriteFileArgs = serde_json::from_str(arguments)?;
-        let absolute_path = match resolve_tool_path(&args.path, ToolAccess::Write, &self.security) {
+        let absolute_path = match self
+            .permissions
+            .authorize_path(
+                &args.path,
+                FilesystemAccess::Write,
+                self.name(),
+                &args.mode,
+                approval_context(),
+            )
+            .await
+        {
             Ok(path) => path,
-            Err(e) => return Ok(format!("系统报错：写入路径被安全策略拒绝：{}", e)),
+            Err(e) => return Ok(format!("系统报错：写入路径被权限策略拒绝：{}", e)),
         };
 
         let (operation, before_content, before_sha256, before_bytes, permissions) = match args
@@ -602,18 +660,24 @@ impl Tool for WriteFileTool {
 // 2. ReadFileTool 工业级路径与权限容错
 // ==========================================
 pub struct ReadFileTool {
-    security: Arc<ToolSecurityConfig>,
+    permissions: Arc<PermissionBroker>,
 }
 
 impl ReadFileTool {
-    pub fn new(security: Arc<ToolSecurityConfig>) -> Self {
-        Self { security }
+    pub fn new(config: Arc<PermissionConfig>) -> Self {
+        Self {
+            permissions: broker_from_config(config),
+        }
+    }
+
+    pub fn new_with_permissions(permissions: Arc<PermissionBroker>) -> Self {
+        Self { permissions }
     }
 }
 
 impl Default for ReadFileTool {
     fn default() -> Self {
-        Self::new(Arc::new(ToolSecurityConfig::default()))
+        Self::new(Arc::new(PermissionConfig::default()))
     }
 }
 
@@ -684,9 +748,19 @@ impl Tool for ReadFileTool {
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: ReadFileArgs = serde_json::from_str(arguments)?;
-        let absolute_path = match resolve_tool_path(&args.path, ToolAccess::Read, &self.security) {
+        let absolute_path = match self
+            .permissions
+            .authorize_path(
+                &args.path,
+                FilesystemAccess::Read,
+                self.name(),
+                "read",
+                approval_context(),
+            )
+            .await
+        {
             Ok(path) => path,
-            Err(e) => return Ok(format!("系统报错：读取路径被安全策略拒绝：{}", e)),
+            Err(e) => return Ok(format!("系统报错：读取路径被权限策略拒绝：{}", e)),
         };
 
         if !absolute_path.exists() {
@@ -787,24 +861,41 @@ fn select_file_lines(
 // 3. EditFileTool — 带版本前提的精确局部编辑
 // ==========================================
 pub struct EditFileTool {
-    security: Arc<ToolSecurityConfig>,
+    permissions: Arc<PermissionBroker>,
     bus: Option<Arc<crate::event::InMemoryEventBus>>,
 }
 
 impl EditFileTool {
-    pub fn new(security: Arc<ToolSecurityConfig>) -> Self {
+    pub fn new(config: Arc<PermissionConfig>) -> Self {
         Self {
-            security,
+            permissions: broker_from_config(config),
+            bus: None,
+        }
+    }
+
+    pub fn new_with_permissions(permissions: Arc<PermissionBroker>) -> Self {
+        Self {
+            permissions,
             bus: None,
         }
     }
 
     pub fn new_with_bus(
-        security: Arc<ToolSecurityConfig>,
+        config: Arc<PermissionConfig>,
         bus: Arc<crate::event::InMemoryEventBus>,
     ) -> Self {
         Self {
-            security,
+            permissions: broker_from_config(config),
+            bus: Some(bus),
+        }
+    }
+
+    pub fn new_with_runtime(
+        permissions: Arc<PermissionBroker>,
+        bus: Arc<crate::event::InMemoryEventBus>,
+    ) -> Self {
+        Self {
+            permissions,
             bus: Some(bus),
         }
     }
@@ -874,7 +965,16 @@ impl Tool for EditFileTool {
         if args.edits.is_empty() {
             return Err("edit.edits 至少需要一项".into());
         }
-        let absolute_path = resolve_tool_path(&args.path, ToolAccess::Write, &self.security)?;
+        let absolute_path = self
+            .permissions
+            .authorize_path(
+                &args.path,
+                FilesystemAccess::Write,
+                self.name(),
+                "edit",
+                approval_context(),
+            )
+            .await?;
         let snapshot = read_text_snapshot(&absolute_path)?;
         if snapshot.sha256 != args.expected_sha256 {
             return Err(format!(
@@ -988,12 +1088,18 @@ impl Tool for EditFileTool {
 // 4. ListFilesTool / SearchTool — 结构化代码发现
 // ==========================================
 pub struct ListFilesTool {
-    security: Arc<ToolSecurityConfig>,
+    permissions: Arc<PermissionBroker>,
 }
 
 impl ListFilesTool {
-    pub fn new(security: Arc<ToolSecurityConfig>) -> Self {
-        Self { security }
+    pub fn new(config: Arc<PermissionConfig>) -> Self {
+        Self {
+            permissions: broker_from_config(config),
+        }
+    }
+
+    pub fn new_with_permissions(permissions: Arc<PermissionBroker>) -> Self {
+        Self { permissions }
     }
 }
 
@@ -1040,20 +1146,18 @@ fn matches_glob(pattern: &Pattern, pattern_text: &str, relative: &str) -> bool {
             .is_some_and(|tail| tail.matches(relative))
 }
 
-fn candidate_allowed(candidate: &Path, security: &ToolSecurityConfig, access: ToolAccess) -> bool {
-    let workspace = std::fs::canonicalize(&security.workspace_root).ok();
-    let input = workspace
-        .as_deref()
-        .and_then(|root| candidate.strip_prefix(root).ok())
-        .map(|relative| relative.to_string_lossy().to_string())
-        .unwrap_or_else(|| candidate.to_string_lossy().to_string());
-    resolve_tool_path(&input, access, security).is_ok()
+fn candidate_allowed(
+    candidate: &Path,
+    profile: &PermissionProfile,
+    access: FilesystemAccess,
+) -> bool {
+    profile.path_allowed(candidate, access)
 }
 
 fn discovery_entries(
     root: &Path,
     include_hidden: bool,
-    security: &ToolSecurityConfig,
+    profile: &PermissionProfile,
 ) -> Vec<walkdir::DirEntry> {
     WalkDir::new(root)
         .follow_links(false)
@@ -1065,7 +1169,7 @@ fn discovery_entries(
         })
         .filter_map(Result::ok)
         .filter(|entry| entry.path() != root)
-        .filter(|entry| candidate_allowed(entry.path(), security, ToolAccess::Read))
+        .filter(|entry| candidate_allowed(entry.path(), profile, FilesystemAccess::Read))
         .collect()
 }
 
@@ -1078,7 +1182,7 @@ impl Tool for ListFilesTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "list_files".to_string(),
-            description: "在 workspace jail 内递归发现文件。支持 glob、结果上限和隐藏文件控制；用于代码导航，避免通过 exec/ls/find 产生不受控输出。".to_string(),
+            description: "在当前 Permission Profile 允许的目录内递归发现文件。支持 glob、结果上限和隐藏文件控制；用于代码导航，避免通过 exec/ls/find 产生不受控输出。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1097,7 +1201,16 @@ impl Tool for ListFilesTool {
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: ListFilesArgs = serde_json::from_str(arguments)?;
-        let root = resolve_tool_path(&args.path, ToolAccess::Read, &self.security)?;
+        let root = self
+            .permissions
+            .authorize_path(
+                &args.path,
+                FilesystemAccess::Read,
+                self.name(),
+                "list",
+                approval_context(),
+            )
+            .await?;
         if !root.is_dir() {
             return Err(format!("list_files.path '{}' 不是目录", args.path).into());
         }
@@ -1106,7 +1219,11 @@ impl Tool for ListFilesTool {
         let limit = args.max_results.clamp(1, 2_000);
         let mut matches = Vec::new();
         let mut truncated = false;
-        for entry in discovery_entries(&root, args.include_hidden, &self.security) {
+        for entry in discovery_entries(
+            &root,
+            args.include_hidden,
+            self.permissions.profile().as_ref(),
+        ) {
             if !args.include_directories && !entry.file_type().is_file() {
                 continue;
             }
@@ -1142,12 +1259,18 @@ impl Tool for ListFilesTool {
 }
 
 pub struct SearchTool {
-    security: Arc<ToolSecurityConfig>,
+    permissions: Arc<PermissionBroker>,
 }
 
 impl SearchTool {
-    pub fn new(security: Arc<ToolSecurityConfig>) -> Self {
-        Self { security }
+    pub fn new(config: Arc<PermissionConfig>) -> Self {
+        Self {
+            permissions: broker_from_config(config),
+        }
+    }
+
+    pub fn new_with_permissions(permissions: Arc<PermissionBroker>) -> Self {
+        Self { permissions }
     }
 }
 
@@ -1184,7 +1307,7 @@ impl Tool for SearchTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "search".to_string(),
-            description: "在 workspace jail 内对 UTF-8 源文件执行大小受限的字面文本搜索，返回路径、行号和上下文。用于定位代码，避免使用 exec/rg/grep。".to_string(),
+            description: "在当前 Permission Profile 允许的目录内对 UTF-8 源文件执行大小受限的字面文本搜索，返回路径、行号和上下文。用于定位代码，避免使用 exec/rg/grep。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1225,25 +1348,38 @@ impl Tool for SearchTool {
         let mut truncated = false;
 
         'paths: for input in &args.paths {
-            let resolved = resolve_tool_path(input, ToolAccess::Read, &self.security)?;
+            let resolved = self
+                .permissions
+                .authorize_path(
+                    input,
+                    FilesystemAccess::Read,
+                    self.name(),
+                    "search",
+                    approval_context(),
+                )
+                .await?;
             let candidates = if resolved.is_file() {
                 vec![(
                     resolved.clone(),
                     PathBuf::from(resolved.file_name().unwrap_or_default()),
                 )]
             } else if resolved.is_dir() {
-                discovery_entries(&resolved, args.include_hidden, &self.security)
-                    .into_iter()
-                    .filter(|entry| entry.file_type().is_file())
-                    .map(|entry| {
-                        let relative = entry
-                            .path()
-                            .strip_prefix(&resolved)
-                            .unwrap_or(entry.path())
-                            .to_path_buf();
-                        (entry.into_path(), relative)
-                    })
-                    .collect::<Vec<_>>()
+                discovery_entries(
+                    &resolved,
+                    args.include_hidden,
+                    self.permissions.profile().as_ref(),
+                )
+                .into_iter()
+                .filter(|entry| entry.file_type().is_file())
+                .map(|entry| {
+                    let relative = entry
+                        .path()
+                        .strip_prefix(&resolved)
+                        .unwrap_or(entry.path())
+                        .to_path_buf();
+                    (entry.into_path(), relative)
+                })
+                .collect::<Vec<_>>()
             } else {
                 return Err(format!("search 路径 '{}' 不存在", input).into());
             };
@@ -1308,106 +1444,11 @@ impl Tool for SearchTool {
 // 5. ExecuteCommandTool 异步 Detach + 进程组级销毁
 // ==========================================
 
-/// 危险命令模式黑名单 — 纵深防御层
-const DANGEROUS_PATTERNS: &[&str] = &[
-    ":(){:|:&};:", // fork bomb
-    "rm -rf /",
-    "rm -rf /*",
-    "rm -rf ~",
-    "rm -rf .",
-    "mkfs.",
-    "> /dev/sda",
-    "dd if=",
-    "dd of=",
-    "mv /* ",
-    "chmod -R 777 /",
-    "chown -R",
-    ".env",
-    ".ssh/",
-    ".git/config",
-];
-
-/// 命令安全检查：匹配危险模式则拦截，返回 Err
-fn check_command_safety(cmd: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let lowered = cmd.to_lowercase();
-    for pattern in DANGEROUS_PATTERNS {
-        if lowered.contains(&pattern.to_lowercase()) {
-            return Err(format!("⛔ 命令被安全策略拦截：匹配危险模式 '{}'", pattern).into());
-        }
-    }
-    // 额外拦截管道执行（curl/wget | sh/bash），防止远程代码注入
-    let pipe_segments: Vec<&str> = cmd.split('|').collect();
-    if pipe_segments.len() > 1 {
-        for seg in &pipe_segments[1..] {
-            let seg_trimmed = seg.trim().to_lowercase();
-            if seg_trimmed.starts_with("sh")
-                || seg_trimmed.starts_with("bash")
-                || seg_trimmed.starts_with("zsh")
-                || seg_trimmed.starts_with("python")
-                || seg_trimmed.starts_with("perl")
-            {
-                return Err(format!(
-                    "⛔ 命令被安全策略拦截：检测到管道执行模式 '...|{}'",
-                    seg_trimmed
-                )
-                .into());
-            }
-        }
-    }
-    Ok(())
-}
-
-fn seatbelt_string(value: &Path) -> String {
-    value
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-}
-
-fn build_seatbelt_profile(workspace_root: &Path, network_enabled: bool) -> String {
-    let network_rule = if network_enabled {
-        "(allow network*)"
-    } else {
-        "(deny network*)"
-    };
-    let home_rules = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| {
-            format!(
-                "(deny file-read* (subpath \"{}\"))\n\
-                 (allow file-read* (subpath \"{}\") (subpath \"{}\"))",
-                seatbelt_string(&home),
-                seatbelt_string(&home.join(".cargo")),
-                seatbelt_string(&home.join(".rustup"))
-            )
-        })
-        .unwrap_or_default();
-    let parent_metadata = workspace_root
-        .ancestors()
-        .skip(1)
-        .filter(|path| path.parent().is_some())
-        .map(|path| format!("(literal \"{}\")", seatbelt_string(path)))
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!(
-        "(version 1)\n\
-         (allow default)\n\
-         {network_rule}\n\
-         (deny file-write*)\n\
-         (allow file-write* (subpath \"{}\") (literal \"/dev/null\"))\n\
-         (deny file-read* (subpath \"/private/tmp\"))\n\
-         {home_rules}\n\
-         (allow file-read-metadata {parent_metadata})\n\
-         (allow file-read* (subpath \"{}\"))\n",
-        seatbelt_string(workspace_root),
-        seatbelt_string(workspace_root)
-    )
-}
-
 pub struct ExecuteCommandTool {
     bus: Arc<crate::event::InMemoryEventBus>,
     background_config: Arc<BackgroundTaskConfig>,
-    security: Arc<ToolSecurityConfig>,
+    permissions: Arc<PermissionBroker>,
+    sandbox: NativeSandbox,
     max_sync_wait: tokio::time::Duration,
 }
 
@@ -1423,7 +1464,7 @@ impl ExecuteCommandTool {
         Self::new_with_configs(
             bus,
             background_config,
-            Arc::new(ToolSecurityConfig::default()),
+            Arc::new(PermissionConfig::default()),
             30,
         )
     }
@@ -1431,7 +1472,41 @@ impl ExecuteCommandTool {
     pub fn new_with_configs(
         bus: Arc<crate::event::InMemoryEventBus>,
         background_config: Arc<BackgroundTaskConfig>,
-        security: Arc<ToolSecurityConfig>,
+        config: Arc<PermissionConfig>,
+        tool_timeout_secs: u64,
+    ) -> Self {
+        Self::new_with_runtime(
+            bus,
+            background_config,
+            config,
+            Arc::new(DenyAllApprovalProvider::new(
+                "当前 ExecuteCommandTool 未配置审批提供者",
+            )),
+            tool_timeout_secs,
+        )
+    }
+
+    pub fn new_with_runtime(
+        bus: Arc<crate::event::InMemoryEventBus>,
+        background_config: Arc<BackgroundTaskConfig>,
+        config: Arc<PermissionConfig>,
+        approval: Arc<dyn ApprovalProvider>,
+        tool_timeout_secs: u64,
+    ) -> Self {
+        let profile = PermissionProfile::from_config(&config)
+            .unwrap_or_else(|error| panic!("无效 PermissionConfig: {error}"));
+        Self::new_with_permissions(
+            bus,
+            background_config,
+            Arc::new(PermissionBroker::new(Arc::new(profile), approval)),
+            tool_timeout_secs,
+        )
+    }
+
+    pub fn new_with_permissions(
+        bus: Arc<crate::event::InMemoryEventBus>,
+        background_config: Arc<BackgroundTaskConfig>,
+        permissions: Arc<PermissionBroker>,
         tool_timeout_secs: u64,
     ) -> Self {
         let max_sync_wait_ms = tool_timeout_secs
@@ -1441,9 +1516,95 @@ impl ExecuteCommandTool {
         Self {
             bus,
             background_config,
-            security,
+            permissions,
+            sandbox: NativeSandbox::for_current_platform(),
             max_sync_wait: tokio::time::Duration::from_millis(max_sync_wait_ms),
         }
+    }
+}
+
+#[derive(Debug, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum SandboxPermissionMode {
+    #[default]
+    UseDefault,
+    RequireEscalated,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct RequestedExecPermissions {
+    #[serde(default)]
+    network: bool,
+    #[serde(default)]
+    read_paths: Vec<String>,
+    #[serde(default)]
+    write_paths: Vec<String>,
+}
+
+fn requested_capability_delta(
+    requested: &RequestedExecPermissions,
+    profile: &PermissionProfile,
+    base_policy: &SandboxPolicy,
+) -> Result<CapabilityDelta, Box<dyn std::error::Error + Send + Sync>> {
+    let canonical_base_reads = canonicalize_permission_roots(&base_policy.read_roots)?;
+    let canonical_base_writes = canonicalize_permission_roots(&base_policy.write_roots)?;
+    let mut delta = CapabilityDelta {
+        network: requested.network && base_policy.network == NetworkPolicy::Deny,
+        ..CapabilityDelta::default()
+    };
+
+    for input in &requested.write_paths {
+        let root = profile.canonical_permission_root(input)?;
+        if !path_is_covered_by(&root, &canonical_base_writes) {
+            push_unique_permission_root(&mut delta.write_roots, root);
+        }
+    }
+
+    for input in &requested.read_paths {
+        let root = profile.canonical_permission_root(input)?;
+        if path_is_covered_by(&root, &canonical_base_reads)
+            || path_is_covered_by(&root, &delta.write_roots)
+        {
+            continue;
+        }
+        push_unique_permission_root(&mut delta.read_roots, root);
+    }
+
+    Ok(delta)
+}
+
+fn canonicalize_permission_roots(
+    roots: &[PathBuf],
+) -> Result<Vec<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
+    roots
+        .iter()
+        .map(|root| {
+            std::fs::canonicalize(root).map_err(|error| {
+                format!("无法解析当前沙箱权限目录 '{}': {error}", root.display()).into()
+            })
+        })
+        .collect()
+}
+
+fn path_is_covered_by(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|root| path.starts_with(root))
+}
+
+fn push_unique_permission_root(roots: &mut Vec<PathBuf>, root: PathBuf) {
+    if !roots.iter().any(|existing| existing == &root) {
+        roots.push(root);
+    }
+}
+
+fn apply_capability_delta(policy: &mut SandboxPolicy, delta: &CapabilityDelta) {
+    if delta.network {
+        policy.network = NetworkPolicy::Allow;
+    }
+    for root in &delta.read_roots {
+        policy.add_read_root(root.clone());
+    }
+    for root in &delta.write_roots {
+        policy.add_write_root(root.clone());
     }
 }
 
@@ -1454,6 +1615,11 @@ struct ExecuteCommandArgs {
     wait_ms: Option<u64>,
     timeout_secs: Option<u64>,
     session_id: Option<String>,
+    #[serde(default)]
+    sandbox_permissions: SandboxPermissionMode,
+    #[serde(default)]
+    requested_permissions: RequestedExecPermissions,
+    justification: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -1472,7 +1638,7 @@ impl Tool for ExecuteCommandTool {
                 },
                 "cwd": {
                     "type": "string",
-                    "description": "可选，命令工作目录；必须是 workspace_root 内已存在的目录，默认 workspace_root"
+                    "description": "可选，命令工作目录；默认 workspace_root。边界外目录必须配合 require_escalated 申请最小权限。"
                 },
                 "wait_ms": {
                     "type": "integer",
@@ -1481,6 +1647,36 @@ impl Tool for ExecuteCommandTool {
                 "timeout_secs": {
                     "type": "integer",
                     "description": "同步等待输出的最长超时秒数(旧接口，建议改用 wait_ms)。"
+                },
+                "sandbox_permissions": {
+                    "type": "string",
+                    "enum": ["use_default", "require_escalated"],
+                    "description": "默认 use_default，在当前原生沙箱内运行；只有任务确实需要额外网络或路径能力时才使用 require_escalated。"
+                },
+                "requested_permissions": {
+                    "type": "object",
+                    "description": "require_escalated 时申请的最小额外能力。审批只对本次准确命令有效，不能申请关闭沙箱。",
+                    "properties": {
+                        "network": {
+                            "type": "boolean",
+                            "description": "是否申请本次命令访问网络。"
+                        },
+                        "read_paths": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "额外只读目录；相对路径按 workspace_root 解析。"
+                        },
+                        "write_paths": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "额外可写目录；相对路径按 workspace_root 解析。"
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "justification": {
+                    "type": "string",
+                    "description": "require_escalated 时必填：说明额外能力与当前用户任务的直接关系。"
                 }
             },
             "required": ["command"]
@@ -1488,7 +1684,7 @@ impl Tool for ExecuteCommandTool {
 
         ToolDefinition {
             name: "exec".to_string(),
-            description: "在经过 workspace jail 校验的 cwd 中执行 Shell 命令。适合运行测试、编译和格式化；文件发现优先使用 list_files/search，修改优先使用 edit/write。注意：cwd 限制不等于完整容器沙箱。命令等待超时后转为后台托管。".to_string(),
+            description: "在当前操作系统的原生沙箱中执行 Shell 命令，默认仅允许配置的工作区路径且禁止网络。适合运行测试、编译和格式化；文件发现优先使用 list_files/search，修改优先使用 edit/write。确需额外网络或目录时使用 require_escalated 申请最小能力，由独立审批者决定。命令等待超时后转为后台托管。".to_string(),
             parameters: params_json,
         }
     }
@@ -1500,10 +1696,10 @@ impl Tool for ExecuteCommandTool {
         let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
         let cmd_trimmed = args.command.trim();
 
-        // 命令安全沙箱检查
-        check_command_safety(cmd_trimmed)?;
-
-        let mut session_id = args.session_id.unwrap_or_default();
+        let mut request_context = approval_context();
+        let mut session_id = args
+            .session_id
+            .unwrap_or(request_context.session_id.clone());
         if session_id.is_empty() {
             if let Ok(fallback_id) = CURRENT_SESSION_ID.try_with(|id| id.clone()) {
                 session_id = fallback_id;
@@ -1515,64 +1711,129 @@ impl Tool for ExecuteCommandTool {
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
             .unwrap_or_else(|_| session_id.clone());
+        let attempt_id = CURRENT_ATTEMPT_ID
+            .try_with(Clone::clone)
+            .unwrap_or_else(|_| "unknown-attempt".to_string());
+        request_context.session_id = session_id.clone();
+        request_context.context_id = context_id.clone();
+        request_context.attempt_id = attempt_id.clone();
 
         use std::process::Stdio;
-        use tokio::process::Command;
-
         let cwd_input = args.cwd.as_deref().unwrap_or(".");
-        let exec_cwd = resolve_tool_path(cwd_input, ToolAccess::Write, &self.security)?;
-        if !exec_cwd.is_dir() {
-            return Err(format!("exec.cwd '{}' 不是已存在目录", cwd_input).into());
-        }
-        let exec_cwd = std::fs::canonicalize(&exec_cwd)?;
-        let workspace_root = std::fs::canonicalize(&self.security.workspace_root)
-            .map_err(|error| format!("无法解析 exec workspace_root: {}", error))?;
-        if self.security.workspace_jail_enabled && !exec_cwd.starts_with(&workspace_root) {
+        let profile = self.permissions.profile();
+        let resolved_cwd = profile.resolve_candidate(cwd_input)?;
+        if resolved_cwd.protected {
             return Err(format!(
-                "exec.cwd '{}' 位于 workspace_root 之外；Shell 命令只允许从工作区内启动",
+                "exec.cwd '{}' 命中不可覆盖的 protected_paths 规则",
                 cwd_input
             )
             .into());
         }
+        let exec_cwd = resolved_cwd.candidate;
+        if !exec_cwd.is_dir() {
+            return Err(format!("exec.cwd '{}' 不是已存在目录", cwd_input).into());
+        }
+        let exec_cwd = std::fs::canonicalize(&exec_cwd)?;
+        let workspace_root = profile.workspace_root.clone();
 
         let sandbox_tmp = workspace_root.join(".morphz/tmp");
         std::fs::create_dir_all(&sandbox_tmp)?;
-        let mut cmd = if self.security.exec_seatbelt_enabled {
-            if !cfg!(target_os = "macos") {
-                return Err("exec Seatbelt 目前只支持 macOS；请使用容器或关闭该模式".into());
+        let (prepared, effective_network) = if profile.sandbox_mode == SandboxMode::WorkspaceWrite {
+            let mut policy = SandboxPolicy {
+                read_roots: profile.read_roots.clone(),
+                write_roots: profile.write_roots.clone(),
+                denied_read_paths: Vec::new(),
+                denied_write_paths: Vec::new(),
+                network: if profile.network {
+                    NetworkPolicy::Allow
+                } else {
+                    NetworkPolicy::Deny
+                },
+                fail_closed: true,
+            };
+            policy.network = if profile.network {
+                NetworkPolicy::Allow
+            } else {
+                NetworkPolicy::Deny
+            };
+
+            let mut requested =
+                requested_capability_delta(&args.requested_permissions, profile.as_ref(), &policy)?;
+            let canonical_reads = canonicalize_permission_roots(&policy.read_roots)?;
+            let canonical_writes = canonicalize_permission_roots(&policy.write_roots)?;
+            if !path_is_covered_by(&exec_cwd, &canonical_reads)
+                && !path_is_covered_by(&exec_cwd, &canonical_writes)
+                && !path_is_covered_by(&exec_cwd, &requested.read_roots)
+                && !path_is_covered_by(&exec_cwd, &requested.write_roots)
+            {
+                push_unique_permission_root(&mut requested.read_roots, exec_cwd.clone());
             }
-            let profile =
-                build_seatbelt_profile(&workspace_root, self.security.exec_network_enabled);
-            let mut command = Command::new("/usr/bin/sandbox-exec");
-            command
-                .arg("-p")
-                .arg(profile)
-                .arg("/bin/sh")
-                .arg("-c")
-                .arg(cmd_trimmed);
-            command
+            match args.sandbox_permissions {
+                SandboxPermissionMode::UseDefault if !requested.is_empty() => {
+                    return Err("requested_permissions 只能与 sandbox_permissions=require_escalated 一起使用".into());
+                }
+                SandboxPermissionMode::RequireEscalated if !requested.is_empty() => {
+                    let justification = args
+                        .justification
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .ok_or("require_escalated 必须提供非空 justification")?;
+                    self.permissions
+                        .authorize_delta(
+                            ApprovalAction::Shell {
+                                command: cmd_trimmed.to_string(),
+                                cwd: exec_cwd.clone(),
+                            },
+                            requested.clone(),
+                            justification.to_string(),
+                            request_context,
+                        )
+                        .await?;
+                    apply_capability_delta(&mut policy, &requested);
+                }
+                SandboxPermissionMode::RequireEscalated | SandboxPermissionMode::UseDefault => {}
+            }
+            let protected = profile.existing_protected_paths(&policy.read_roots);
+            for path in protected {
+                policy.deny_path(path);
+            }
+            let effective_network = policy.network == NetworkPolicy::Allow;
+            let prepared = self.sandbox.prepare_shell(&ShellRequest {
+                command: cmd_trimmed.to_string(),
+                cwd: exec_cwd.clone(),
+                policy,
+            })?;
+            (prepared, effective_network)
         } else {
-            let mut command = Command::new("sh");
-            command.arg("-c").arg(cmd_trimmed);
-            command
+            (self.sandbox.prepare_unconfined_shell(cmd_trimmed), true)
         };
+        tracing::info!(
+            backend = prepared.report.backend.as_str(),
+            status = ?prepared.report.status,
+            network_enabled = effective_network,
+            "已为 exec 准备操作系统执行边界"
+        );
+        let mut cmd = prepared.into_tokio_command();
         cmd.current_dir(&exec_cwd)
             .env("TMPDIR", &sandbox_tmp)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        for (key, _) in std::env::vars() {
-            let upper = key.to_ascii_uppercase();
-            if upper.contains("TOKEN")
-                || upper.contains("SECRET")
-                || upper.contains("PASSWORD")
-                || upper.contains("CREDENTIAL")
-                || upper.ends_with("_KEY")
-                || upper.starts_with("OPENAI_")
-                || upper.starts_with("AWS_")
-                || upper.starts_with("GITHUB_")
-                || upper == "SSH_AUTH_SOCK"
-            {
-                cmd.env_remove(key);
+        if profile.shell_environment_policy == ShellEnvironmentPolicy::RemoveSensitive {
+            for (key, _) in std::env::vars() {
+                let upper = key.to_ascii_uppercase();
+                if upper.contains("TOKEN")
+                    || upper.contains("SECRET")
+                    || upper.contains("PASSWORD")
+                    || upper.contains("CREDENTIAL")
+                    || upper.ends_with("_KEY")
+                    || upper.starts_with("OPENAI_")
+                    || upper.starts_with("AWS_")
+                    || upper.starts_with("GITHUB_")
+                    || upper == "SSH_AUTH_SOCK"
+                {
+                    cmd.env_remove(key);
+                }
             }
         }
 
@@ -2279,6 +2540,10 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::approval::{ApprovalDecision, ApprovalRequest};
+    use crate::permission::PermissionMode;
+    #[cfg(target_os = "macos")]
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::Weak;
     use tempfile::{NamedTempFile, TempDir};
 
@@ -2336,26 +2601,47 @@ mod tests {
         }
     }
 
-    /// 测试用：关闭 workspace jail 与绝对路径限制，允许任意路径访问
-    fn permissive_security() -> Arc<ToolSecurityConfig> {
-        Arc::new(ToolSecurityConfig {
-            workspace_jail_enabled: false,
-            allow_absolute_paths: true,
-            allow_parent_traversal: true,
-            ..ToolSecurityConfig::default()
+    /// 测试用：显式选择完全访问预设。
+    fn permissive_security() -> Arc<PermissionConfig> {
+        Arc::new(PermissionConfig {
+            mode: PermissionMode::FullAccess,
+            ..PermissionConfig::default()
         })
     }
 
-    fn jailed_security(root: &Path) -> Arc<ToolSecurityConfig> {
-        Arc::new(ToolSecurityConfig {
-            workspace_jail_enabled: true,
+    fn jailed_security(root: &Path) -> Arc<PermissionConfig> {
+        Arc::new(PermissionConfig {
+            mode: PermissionMode::AutoReview,
             workspace_root: root.to_string_lossy().to_string(),
-            allow_absolute_paths: false,
-            allow_parent_traversal: false,
-            extra_read_roots: Vec::new(),
-            extra_write_roots: Vec::new(),
-            ..ToolSecurityConfig::default()
+            read_roots: Vec::new(),
+            write_roots: Vec::new(),
+            ..PermissionConfig::default()
         })
+    }
+
+    fn exec_tool_for_tests(bus: Arc<crate::event::InMemoryEventBus>) -> ExecuteCommandTool {
+        ExecuteCommandTool::new_with_configs(
+            bus,
+            Arc::new(BackgroundTaskConfig::default()),
+            permissive_security(),
+            30,
+        )
+    }
+
+    struct StaticApprovalProvider {
+        decision: ApprovalDecision,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl ApprovalProvider for StaticApprovalProvider {
+        async fn review(
+            &self,
+            _request: &ApprovalRequest,
+        ) -> Result<ApprovalDecision, Box<dyn std::error::Error + Send + Sync>> {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(self.decision.clone())
+        }
     }
 
     fn hash_from_read(output: &str) -> &str {
@@ -2421,6 +2707,31 @@ mod tests {
             .unwrap();
         assert!(overwrite_res.contains("operation=overwrite"));
         assert_eq!(std::fs::read_to_string(path).unwrap(), "updated");
+    }
+
+    #[tokio::test]
+    async fn direct_file_tool_uses_same_broker_for_outside_approval() {
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let outside_file = outside.path().join("shared.txt");
+        std::fs::write(&outside_file, "shared evidence").unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(StaticApprovalProvider {
+            decision: ApprovalDecision::AllowOnce {
+                rationale: "用户任务需要这个文件".to_string(),
+                risk_tags: Vec::new(),
+            },
+            calls: Arc::clone(&calls),
+        });
+        let profile = PermissionProfile::from_config(&jailed_security(workspace.path())).unwrap();
+        let broker = Arc::new(PermissionBroker::new(Arc::new(profile), provider));
+        let read = ReadFileTool::new_with_permissions(broker)
+            .execute(&serde_json::json!({ "path": outside_file.to_string_lossy() }).to_string())
+            .await
+            .unwrap();
+
+        assert!(read.contains("shared evidence"));
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -2637,8 +2948,11 @@ mod tests {
         )
         .unwrap();
         let entries = listed["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["path"], "src/lib.rs");
+        assert_eq!(entries.len(), 2);
+        assert!(entries.iter().any(|entry| entry["path"] == "src/lib.rs"));
+        assert!(entries
+            .iter()
+            .any(|entry| entry["path"] == "target/generated.rs"));
 
         let search_tool = SearchTool::new(security);
         let searched: serde_json::Value = serde_json::from_str(
@@ -2750,20 +3064,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_workspace_jail_blocks_absolute_path() {
-        // 默认安全配置：禁止绝对路径
-        let read_tool = ReadFileTool::new(Arc::new(ToolSecurityConfig::default()));
+    async fn default_profile_requires_approval_for_path_outside_allowed_roots() {
+        // 绝对路径语法本身合法；/etc/passwd 因最终路径不在允许根中而进入审批。
+        let read_tool = ReadFileTool::new(Arc::new(PermissionConfig::default()));
         let bad_args = serde_json::json!({
             "path": "/etc/passwd"
         });
         let res = read_tool.execute(&bad_args.to_string()).await.unwrap();
-        assert!(res.contains("安全策略") || res.contains("系统报错"));
+        assert!(res.contains("权限策略") || res.contains("系统报错"));
     }
 
     #[tokio::test]
     async fn test_exec_tool() {
         let bus = Arc::new(crate::event::InMemoryEventBus::new());
-        let tool = ExecuteCommandTool::new(Arc::clone(&bus));
+        let tool = exec_tool_for_tests(Arc::clone(&bus));
 
         let args = serde_json::json!({
             "command": "echo 'hello exec'"
@@ -2774,7 +3088,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_exec_cwd_is_restricted_to_workspace() {
+    async fn exec_cwd_outside_profile_requires_explicit_escalation() {
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("crate-a")).unwrap();
         let security = jailed_security(tmp.path());
@@ -2807,7 +3121,152 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(rejected.to_string().contains("绝对路径") || rejected.to_string().contains("之外"));
+        assert!(rejected
+            .to_string()
+            .contains("sandbox_permissions=require_escalated"));
+    }
+
+    #[test]
+    fn exec_permission_delta_omits_existing_scope_and_rejects_sensitive_roots() {
+        let workspace = TempDir::new().unwrap();
+        let inside = workspace.path().join("inside");
+        std::fs::create_dir(&inside).unwrap();
+        let security = jailed_security(workspace.path());
+        let profile = PermissionProfile::from_config(&security).unwrap();
+        let policy = SandboxPolicy::workspace(workspace.path());
+
+        let already_allowed = requested_capability_delta(
+            &RequestedExecPermissions {
+                read_paths: vec![inside.to_string_lossy().into_owned()],
+                ..RequestedExecPermissions::default()
+            },
+            &profile,
+            &policy,
+        )
+        .unwrap();
+        assert!(already_allowed.is_empty());
+
+        let external = TempDir::new().unwrap();
+        let sensitive = external.path().join(".ssh");
+        std::fs::create_dir_all(&sensitive).unwrap();
+        let error = requested_capability_delta(
+            &RequestedExecPermissions {
+                read_paths: vec![sensitive.to_string_lossy().into_owned()],
+                ..RequestedExecPermissions::default()
+            },
+            &profile,
+            &policy,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("protected_paths"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn exec_escalation_is_reviewed_and_granted_for_one_command_only() {
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(StaticApprovalProvider {
+            decision: ApprovalDecision::AllowOnce {
+                rationale: "测试允许一次".to_string(),
+                risk_tags: Vec::new(),
+            },
+            calls: Arc::clone(&calls),
+        });
+        let background = Arc::new(BackgroundTaskConfig {
+            artifact_dir: workspace
+                .path()
+                .join("artifacts")
+                .to_string_lossy()
+                .into_owned(),
+            ..BackgroundTaskConfig::default()
+        });
+        let tool = ExecuteCommandTool::new_with_runtime(
+            Arc::new(crate::event::InMemoryEventBus::new()),
+            background,
+            jailed_security(workspace.path()),
+            provider,
+            30,
+        );
+        let approved_path = outside.path().join("approved.txt");
+        let denied_path = outside.path().join("not-approved.txt");
+
+        let approved = tool
+            .execute(
+                &serde_json::json!({
+                    "command": format!("printf approved > '{}'", approved_path.display()),
+                    "sandbox_permissions": "require_escalated",
+                    "requested_permissions": {
+                        "write_paths": [outside.path()]
+                    },
+                    "justification": "验证一次性目录授权"
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(approved.contains("退出码: 0"));
+        assert_eq!(std::fs::read_to_string(&approved_path).unwrap(), "approved");
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+
+        let denied = tool
+            .execute(
+                &serde_json::json!({
+                    "command": format!("printf denied > '{}'", denied_path.display())
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap();
+        assert!(!denied.contains("退出码: 0"));
+        assert!(!denied_path.exists());
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn exec_escalation_denial_prevents_process_start() {
+        let workspace = TempDir::new().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(StaticApprovalProvider {
+            decision: ApprovalDecision::Deny {
+                rationale: "测试拒绝".to_string(),
+                risk_tags: vec!["test".to_string()],
+            },
+            calls: Arc::clone(&calls),
+        });
+        let tool = ExecuteCommandTool::new_with_runtime(
+            Arc::new(crate::event::InMemoryEventBus::new()),
+            Arc::new(BackgroundTaskConfig {
+                artifact_dir: workspace
+                    .path()
+                    .join("artifacts")
+                    .to_string_lossy()
+                    .into_owned(),
+                ..BackgroundTaskConfig::default()
+            }),
+            jailed_security(workspace.path()),
+            provider,
+            30,
+        );
+
+        let error = tool
+            .execute(
+                &serde_json::json!({
+                    "command": "printf should-not-run > denied.txt",
+                    "sandbox_permissions": "require_escalated",
+                    "requested_permissions": { "network": true },
+                    "justification": "验证拒绝路径"
+                })
+                .to_string(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("权限审批拒绝"));
+        assert!(!workspace.path().join("denied.txt").exists());
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
     }
 
     #[tokio::test]
@@ -2838,7 +3297,7 @@ mod tests {
     #[tokio::test]
     async fn test_command_detach_to_background() {
         let bus = Arc::new(crate::event::InMemoryEventBus::new());
-        let tool = ExecuteCommandTool::new(Arc::clone(&bus));
+        let tool = exec_tool_for_tests(Arc::clone(&bus));
 
         // 启动一个长耗时命令并缩短同步等待超时
         let args = serde_json::json!({
@@ -2854,7 +3313,7 @@ mod tests {
     #[tokio::test]
     async fn test_kill_task_pgid_cleanup() {
         let bus = Arc::new(crate::event::InMemoryEventBus::new());
-        let exec_tool = ExecuteCommandTool::new(Arc::clone(&bus));
+        let exec_tool = exec_tool_for_tests(Arc::clone(&bus));
         let kill_tool = KillTaskTool;
 
         let exec_args = serde_json::json!({

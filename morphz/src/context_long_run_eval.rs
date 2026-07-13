@@ -103,7 +103,7 @@ pub struct ContextLongRunEvalReport {
     pub context_failures: usize,
     pub physical_tool_outputs: usize,
     pub assistant_calls: usize,
-    pub turns_at_attempt_limit: usize,
+    pub turns_reaching_soft_checkpoint: usize,
     pub replies: usize,
     pub capacity_success: bool,
     pub fidelity_success: bool,
@@ -336,8 +336,10 @@ pub async fn inspect_context_long_run_eval(
         .iter()
         .filter(|event| event.topic == "chat/assistant_call")
         .count();
-    let turns_at_attempt_limit =
-        turns_at_attempt_limit(&events, OrchestratorConfig::default().max_attempts_per_turn);
+    let turns_reaching_soft_checkpoint = turns_reaching_soft_checkpoint(
+        &events,
+        OrchestratorConfig::default().attempt_soft_checkpoint_interval,
+    );
     let maximum_estimated_tokens = trace
         .snapshots
         .iter()
@@ -365,10 +367,8 @@ pub async fn inspect_context_long_run_eval(
         && obsolete_status_preserved_in_frame
         && obsolete_status_preserved_in_probe
         && !unsupported_stage_completion;
-    let efficiency_success = context_failures == 0
-        && physical_tool_outputs == 0
-        && turns_at_attempt_limit == 0
-        && maintenance.maximum_commits <= 2;
+    let efficiency_success =
+        context_failures == 0 && physical_tool_outputs == 0 && maintenance.maximum_commits <= 2;
     let success =
         capacity_success && fidelity_success && efficiency_success && replies > manifest.rounds;
     Ok(ContextLongRunEvalReport {
@@ -405,7 +405,7 @@ pub async fn inspect_context_long_run_eval(
         context_failures,
         physical_tool_outputs,
         assistant_calls,
-        turns_at_attempt_limit,
+        turns_reaching_soft_checkpoint,
         replies,
         capacity_success,
         fidelity_success,
@@ -633,13 +633,13 @@ fn physical_tool_output_count(events: &[Event]) -> usize {
         .count()
 }
 
-fn turns_at_attempt_limit(events: &[Event], limit: usize) -> usize {
+fn turns_reaching_soft_checkpoint(events: &[Event], interval: usize) -> usize {
     let mut turns = 0;
     let mut calls = 0;
     let mut in_turn = false;
     for event in events {
         if event.event_type == TYPE_USER_MESSAGE {
-            if in_turn && calls >= limit {
+            if in_turn && calls >= interval {
                 turns += 1;
             }
             in_turn = true;
@@ -648,7 +648,7 @@ fn turns_at_attempt_limit(events: &[Event], limit: usize) -> usize {
             calls += 1;
         }
     }
-    if in_turn && calls >= limit {
+    if in_turn && calls >= interval {
         turns += 1;
     }
     turns

@@ -1,4 +1,8 @@
 use chrono::Utc;
+use morphz::approval::{
+    AiAutoReviewProvider, ApprovalDecision, ApprovalProvider, DenyAllApprovalProvider,
+    EscalatingApprovalProvider, HumanApprovalHub, HumanApprovalProvider,
+};
 use morphz::config;
 use morphz::context_tools::{ContextTxTool, RecallTool};
 use morphz::event::{Event, InMemoryEventBus};
@@ -7,6 +11,7 @@ use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{NewAgent, NewCognitiveContext, NewSession, SessionMountKind, SessionStore};
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
+use morphz::permission::{PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode};
 use morphz::tool::{
     DelegateTool, EditFileTool, ExecuteCommandTool, KillTaskTool, ListFilesTool, ListSkillsTool,
     ReadFileTool, Registry, SearchTool, WriteFileTool,
@@ -85,6 +90,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let database_path =
         std::env::var("MORPHZ_DB_PATH").unwrap_or_else(|_| app_config.server.database_path.clone());
     let store = Arc::new(SqliteStore::new_with_config(&database_path, &app_config.memory).await?);
+    let auto_review = Arc::new(AiAutoReviewProvider::new(
+        Arc::clone(&client) as Arc<dyn morphz::llm::Client>,
+        Arc::clone(&store) as Arc<dyn morphz::memory::EventStore>,
+    ));
+    let human_approval_hub = HumanApprovalHub::default();
+    let human_review: Arc<dyn ApprovalProvider> = Arc::new(HumanApprovalProvider::new(
+        human_approval_hub.clone(),
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn morphz::memory::EventStore>,
+    ));
 
     // 4. 初始化工具注册表并注册本地文件工具
     let registry = Arc::new(Registry::new());
@@ -95,27 +110,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .with_session_store(Arc::clone(&store) as Arc<dyn morphz::memory::SessionStore>),
     );
-    let tool_security = Arc::new(app_config.tool_security.clone());
+    let permission_profile = Arc::new(PermissionProfile::from_config(&app_config.permissions)?);
+    if permission_profile.sandbox_mode == SandboxMode::DangerFullAccess {
+        tracing::warn!("完全访问权限已启用：文件工具与 Shell 均不受工作区或操作系统沙箱限制");
+    }
+    let approval_provider: Arc<dyn ApprovalProvider> = match permission_profile.reviewer {
+        ReviewerKind::AutoReview => Arc::new(EscalatingApprovalProvider::new(
+            auto_review,
+            Arc::clone(&human_review),
+        )),
+        ReviewerKind::User => Arc::clone(&human_review),
+        ReviewerKind::Deny => Arc::new(DenyAllApprovalProvider::new(
+            "当前权限 Profile 禁止边界外能力申请",
+        )),
+    };
+    let permissions = Arc::new(PermissionBroker::new(permission_profile, approval_provider));
     let background_config = Arc::new(app_config.background_task.clone());
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&context_engine))));
     let context_eval_mode = env_flag_enabled("MORPHZ_CONTEXT_EVAL_MODE");
     if !context_eval_mode {
-        registry.register(Arc::new(WriteFileTool::new_with_bus(
-            Arc::clone(&tool_security),
+        registry.register(Arc::new(WriteFileTool::new_with_runtime(
+            Arc::clone(&permissions),
             Arc::clone(&bus),
         )));
-        registry.register(Arc::new(ReadFileTool::new(Arc::clone(&tool_security))));
-        registry.register(Arc::new(EditFileTool::new_with_bus(
-            Arc::clone(&tool_security),
+        registry.register(Arc::new(ReadFileTool::new_with_permissions(Arc::clone(
+            &permissions,
+        ))));
+        registry.register(Arc::new(EditFileTool::new_with_runtime(
+            Arc::clone(&permissions),
             Arc::clone(&bus),
         )));
-        registry.register(Arc::new(ListFilesTool::new(Arc::clone(&tool_security))));
-        registry.register(Arc::new(SearchTool::new(Arc::clone(&tool_security))));
+        registry.register(Arc::new(ListFilesTool::new_with_permissions(Arc::clone(
+            &permissions,
+        ))));
+        registry.register(Arc::new(SearchTool::new_with_permissions(Arc::clone(
+            &permissions,
+        ))));
         registry.register(Arc::new(RecallTool::new(Arc::clone(&context_engine))));
-        registry.register(Arc::new(ExecuteCommandTool::new_with_configs(
+        registry.register(Arc::new(ExecuteCommandTool::new_with_permissions(
             Arc::clone(&bus),
             Arc::clone(&background_config),
-            Arc::clone(&tool_security),
+            Arc::clone(&permissions),
             app_config.orchestrator.tool_timeout_secs,
         )));
         registry.register(Arc::new(KillTaskTool));
@@ -162,18 +197,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .await?;
 
     // 5.5 启动大盘 API & WebSocket 服务器
-    let web_srv = Arc::new(Server::new_with_capacity(
-        Arc::clone(&store) as Arc<dyn morphz::memory::EventStore>,
-        Some(Arc::clone(&store) as Arc<dyn morphz::memory::GraphStore>),
-        Arc::clone(&store) as Arc<dyn morphz::memory::SessionStore>,
-        Arc::clone(&bus),
-        Arc::clone(&orc),
-        ServerDefaults {
-            agent_id: default_agent_id.clone(),
-            context_id: default_context_id.clone(),
-        },
-        app_config.server.broadcast_capacity,
-    ));
+    let web_srv = Arc::new(
+        Server::new_with_capacity(
+            Arc::clone(&store) as Arc<dyn morphz::memory::EventStore>,
+            Some(Arc::clone(&store) as Arc<dyn morphz::memory::GraphStore>),
+            Arc::clone(&store) as Arc<dyn morphz::memory::SessionStore>,
+            Arc::clone(&bus),
+            Arc::clone(&orc),
+            ServerDefaults {
+                agent_id: default_agent_id.clone(),
+                context_id: default_context_id.clone(),
+            },
+            app_config.server.broadcast_capacity,
+        )
+        .with_approval_hub(human_approval_hub.clone()),
+    );
 
     let server_bind =
         std::env::var("MORPHZ_BIND").unwrap_or_else(|_| app_config.server.bind.clone());
@@ -209,9 +247,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bus_clone = Arc::clone(&bus);
     let session_id_clone = session_id.clone();
     let orc_clone = Arc::clone(&orc);
-    let reply_timeout_secs = app_config.orchestrator.reply_timeout_secs;
+    let reply_wait_notice_secs = app_config.orchestrator.reply_wait_notice_secs;
 
-    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel::<(String, String, bool)>(100);
+    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel::<ConsoleMessage>(100);
     let reply_tx_clone = reply_tx.clone();
 
     bus.subscribe(
@@ -226,7 +264,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         .and_then(|value| value.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let _ = tx.send((sess_id.to_string(), text, true)).await;
+                    let _ = tx
+                        .send((sess_id.to_string(), text, ConsoleMessageKind::Final))
+                        .await;
                 }
                 Ok(())
             })
@@ -245,14 +285,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                         .and_then(|value| value.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let _ = tx.send((sess_id.to_string(), text, false)).await;
+                    let _ = tx
+                        .send((sess_id.to_string(), text, ConsoleMessageKind::Progress))
+                        .await;
                 }
+                Ok(())
+            })
+        }),
+    );
+    let tool_call_tx = reply_tx.clone();
+    bus.subscribe(
+        "runtime/tool_calls_selected".to_string(),
+        Arc::new(move |ev| {
+            let tx = tool_call_tx.clone();
+            Box::pin(async move {
+                let Some(sess_id) = ev.payload.get("session_id").and_then(|s| s.as_str()) else {
+                    return Ok(());
+                };
+                if let Some(text) = format_tool_call_activity(&ev.payload) {
+                    let _ = tx
+                        .send((sess_id.to_string(), text, ConsoleMessageKind::ToolCall))
+                        .await;
+                }
+                Ok(())
+            })
+        }),
+    );
+    let approval_tx = reply_tx.clone();
+    bus.subscribe(
+        "runtime/approval_requested".to_string(),
+        Arc::new(move |ev| {
+            let tx = approval_tx.clone();
+            Box::pin(async move {
+                let Some(sess_id) = ev.payload.get("session_id").and_then(|s| s.as_str()) else {
+                    return Ok(());
+                };
+                let Some(approval_id) = ev.payload.get("approval_id").and_then(|s| s.as_str())
+                else {
+                    return Ok(());
+                };
+                let text = ev
+                    .payload
+                    .get("text")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("权限请求需要用户决定");
+                let payload = serde_json::json!({
+                    "approval_id": approval_id,
+                    "text": text,
+                })
+                .to_string();
+                let _ = tx
+                    .send((sess_id.to_string(), payload, ConsoleMessageKind::Approval))
+                    .await;
                 Ok(())
             })
         }),
     );
 
     // 在阻塞线程中同步监听 stdin
+    let console_approval_hub = human_approval_hub.clone();
     tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Handle::current();
         let mut msg_counter = 0;
@@ -321,7 +412,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
             msg_counter += 1;
 
-            // 丢弃上一轮超时后才到达的迟到回复，避免它误解锁下一条输入。
+            // 清理已经结束的上一轮残留通知；正常等待不会因时间流逝而提前结束。
             while reply_rx.try_recv().is_ok() {}
 
             let mut payload = serde_json::Map::new();
@@ -352,37 +443,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let _ = bus_inner.publish(ev).await;
             });
 
-            // 等待回复完成再继续下一次循环，超时值由集中配置控制。
+            // 等待回复完成再继续下一次循环。进度提示只是提示，不是任务超时；
+            // 用户可随时用 Ctrl+C 主动中断整个进程。
             let sess_id_to_wait = session_id_clone.clone();
-            let wait_result = rt.block_on(async {
-                tokio::time::timeout(std::time::Duration::from_secs(reply_timeout_secs), async {
-                    while let Some((sess, text, is_final)) = reply_rx.recv().await {
-                        if sess != sess_id_to_wait {
-                            continue;
-                        }
-                        if is_final {
-                            return Some(text);
-                        }
-                        if !text.trim().is_empty() {
-                            let mut stdout = std::io::stdout();
-                            let _ = writeln!(stdout, "\n[Agent 进度] {}", text);
-                            let _ = stdout.flush();
+            let notice_interval = (reply_wait_notice_secs > 0)
+                .then(|| std::time::Duration::from_secs(reply_wait_notice_secs));
+            loop {
+                match rt.block_on(wait_for_session_activity(
+                    &mut reply_rx,
+                    &sess_id_to_wait,
+                    notice_interval,
+                )) {
+                    Some(ConsoleWaitOutcome::Final(reply)) => {
+                        let _ = writeln!(stdout, "\n{}\n", reply);
+                        break;
+                    }
+                    Some(ConsoleWaitOutcome::Approval(payload)) => {
+                        if let Err(error) = prompt_for_human_approval(
+                            &payload,
+                            &console_approval_hub,
+                            &mut stdin,
+                            &mut stdout,
+                        ) {
+                            let _ = writeln!(stdout, "[审批失败] {error}");
                         }
                     }
-                    None
-                })
-                .await
-            });
-            match wait_result {
-                Ok(Some(reply)) => {
-                    let _ = writeln!(stdout, "\n{}\n", reply);
-                }
-                Ok(None) | Err(_) => {
-                    let _ = writeln!(
-                        stdout,
-                        "等待 Agent 回复超过 {} 秒，可继续输入或使用 ctx 检查状态。",
-                        reply_timeout_secs
-                    );
+                    None => {
+                        let _ = writeln!(stdout, "Agent 回复通道已关闭。");
+                        break;
+                    }
                 }
             }
 
@@ -411,6 +500,217 @@ enum ConsoleInput {
     Cancelled,
     SingleLine(String),
     Multiline(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConsoleMessageKind {
+    Final,
+    Progress,
+    ToolCall,
+    Approval,
+}
+
+type ConsoleMessage = (String, String, ConsoleMessageKind);
+
+#[derive(Debug, PartialEq, Eq)]
+enum ConsoleWaitOutcome {
+    Final(String),
+    Approval(String),
+}
+
+async fn wait_for_session_activity(
+    reply_rx: &mut tokio::sync::mpsc::Receiver<ConsoleMessage>,
+    session_id: &str,
+    notice_interval: Option<std::time::Duration>,
+) -> Option<ConsoleWaitOutcome> {
+    if notice_interval.is_none() {
+        while let Some((sess, text, kind)) = reply_rx.recv().await {
+            if sess != session_id {
+                continue;
+            }
+            match kind {
+                ConsoleMessageKind::Final => return Some(ConsoleWaitOutcome::Final(text)),
+                ConsoleMessageKind::Approval => return Some(ConsoleWaitOutcome::Approval(text)),
+                ConsoleMessageKind::Progress => print_agent_progress(&text),
+                ConsoleMessageKind::ToolCall => print_tool_call_activity(&text),
+            }
+        }
+        return None;
+    }
+
+    let notice_interval = notice_interval.expect("checked above");
+    let mut notice = tokio::time::interval(notice_interval);
+    notice.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    notice.tick().await;
+    loop {
+        tokio::select! {
+            item = reply_rx.recv() => {
+                let (sess, text, kind) = item?;
+                if sess != session_id {
+                    continue;
+                }
+                match kind {
+                    ConsoleMessageKind::Final => return Some(ConsoleWaitOutcome::Final(text)),
+                    ConsoleMessageKind::Approval => return Some(ConsoleWaitOutcome::Approval(text)),
+                    ConsoleMessageKind::Progress => print_agent_progress(&text),
+                    ConsoleMessageKind::ToolCall => print_tool_call_activity(&text),
+                }
+            }
+            _ = notice.tick() => {
+                let mut stdout = std::io::stdout();
+                let _ = writeln!(
+                    stdout,
+                    "\n[Agent 仍在运行] 已等待约 {} 秒；将继续等待，可按 Ctrl+C 中断。",
+                    notice_interval.as_secs()
+                );
+                let _ = stdout.flush();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+async fn wait_for_session_reply(
+    reply_rx: &mut tokio::sync::mpsc::Receiver<ConsoleMessage>,
+    session_id: &str,
+    notice_interval: Option<std::time::Duration>,
+) -> Option<String> {
+    loop {
+        match wait_for_session_activity(reply_rx, session_id, notice_interval).await? {
+            ConsoleWaitOutcome::Final(text) => return Some(text),
+            ConsoleWaitOutcome::Approval(_) => continue,
+        }
+    }
+}
+
+fn prompt_for_human_approval<R: BufRead, W: Write>(
+    payload: &str,
+    hub: &HumanApprovalHub,
+    reader: &mut R,
+    output: &mut W,
+) -> Result<(), String> {
+    let payload: serde_json::Value =
+        serde_json::from_str(payload).map_err(|error| format!("无法解析审批请求: {error}"))?;
+    let approval_id = payload
+        .get("approval_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("审批请求缺少 approval_id")?;
+    let text = payload
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("权限请求需要用户决定");
+    writeln!(output, "\n[需要审批]\n{text}")
+        .map_err(|error| format!("无法显示审批请求: {error}"))?;
+    loop {
+        write!(output, "允许本次操作？[y/N] ")
+            .map_err(|error| format!("无法显示审批提示: {error}"))?;
+        output
+            .flush()
+            .map_err(|error| format!("无法刷新审批提示: {error}"))?;
+        let mut line = String::new();
+        if reader
+            .read_line(&mut line)
+            .map_err(|error| format!("无法读取审批决定: {error}"))?
+            == 0
+        {
+            return Err("审批输入通道已关闭".to_string());
+        }
+        let decision = match line.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" | "allow" | "approve" => ApprovalDecision::AllowOnce {
+                rationale: "用户通过本地终端允许本次操作".to_string(),
+                risk_tags: vec!["human-approved".to_string()],
+            },
+            "" | "n" | "no" | "deny" | "reject" => ApprovalDecision::Deny {
+                rationale: "用户通过本地终端拒绝本次操作".to_string(),
+                risk_tags: vec!["human-denied".to_string()],
+            },
+            _ => {
+                writeln!(output, "请输入 y/yes 或 n/no。")
+                    .map_err(|error| format!("无法显示审批提示: {error}"))?;
+                continue;
+            }
+        };
+        return hub.decide(approval_id, decision);
+    }
+}
+
+fn print_agent_progress(text: &str) {
+    if !text.trim().is_empty() {
+        let mut stdout = std::io::stdout();
+        let _ = writeln!(stdout, "\n[Agent 进度] {}", text);
+        let _ = stdout.flush();
+    }
+}
+
+fn print_tool_call_activity(text: &str) {
+    if !text.trim().is_empty() {
+        let mut stdout = std::io::stdout();
+        let _ = writeln!(stdout, "\n{}", text);
+        let _ = stdout.flush();
+    }
+}
+
+fn format_tool_call_activity(
+    payload: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    let calls = payload
+        .get("calls")
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let deduplicated = payload
+        .get("deduplicated_count")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let rejected = payload
+        .get("rejected_count")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if calls.is_empty() && deduplicated == 0 && rejected == 0 {
+        return None;
+    }
+
+    let mut sections = Vec::new();
+    for (index, call) in calls.iter().enumerate() {
+        let name = call
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("<unknown>");
+        let id = call
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("<missing>");
+        let arguments = call
+            .get("arguments")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("{}");
+        sections.push(format!(
+            "[工具调用 {}/{}] {}  (call_id={})\n参数:\n{}",
+            index + 1,
+            calls.len(),
+            name,
+            id,
+            arguments
+        ));
+    }
+
+    if deduplicated > 0 {
+        sections.push(format!(
+            "[Runtime] 已去重 {} 个重复的 context_tx 调用。",
+            deduplicated
+        ));
+    }
+    if rejected > 0 {
+        let status = payload
+            .get("rejection_status")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("rejected");
+        sections.push(format!(
+            "[Runtime] 已拒绝 {} 个未执行的 context_tx 调用（{}）。",
+            rejected, status
+        ));
+    }
+    Some(sections.join("\n\n"))
 }
 
 fn read_console_input<R: BufRead, W: Write>(
@@ -508,8 +808,12 @@ fn env_flag_enabled(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_console_input, ConsoleInput};
+    use super::{
+        format_tool_call_activity, read_console_input, wait_for_session_reply, ConsoleInput,
+        ConsoleMessageKind,
+    };
     use std::io::Cursor;
+    use std::time::Duration;
 
     #[test]
     fn single_line_input_remains_backward_compatible() {
@@ -563,5 +867,54 @@ mod tests {
             read_console_input(&mut eof, &mut Vec::new()).unwrap(),
             ConsoleInput::Eof
         );
+    }
+
+    #[tokio::test]
+    async fn wait_notice_never_becomes_a_reply_timeout() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(35)).await;
+            tx.send((
+                "session-a".to_string(),
+                "late reply".to_string(),
+                ConsoleMessageKind::Final,
+            ))
+            .await
+            .unwrap();
+        });
+
+        let reply = tokio::time::timeout(
+            Duration::from_millis(250),
+            wait_for_session_reply(&mut rx, "session-a", Some(Duration::from_millis(10))),
+        )
+        .await
+        .expect("waiter should remain alive after multiple notice ticks");
+
+        assert_eq!(reply.as_deref(), Some("late reply"));
+    }
+
+    #[test]
+    fn tool_call_activity_renders_names_arguments_and_runtime_decisions() {
+        let payload = serde_json::json!({
+            "calls": [
+                {
+                    "id": "read-1",
+                    "name": "read",
+                    "arguments": "{\n  \"path\": \"src/lib.rs\"\n}",
+                    "arguments_chars": 21,
+                    "truncated": false
+                }
+            ],
+            "deduplicated_count": 2,
+            "rejected_count": 1,
+            "rejection_status": "multiple-distinct"
+        });
+        let rendered = format_tool_call_activity(payload.as_object().unwrap()).unwrap();
+
+        assert!(rendered.contains("[工具调用 1/1] read"));
+        assert!(rendered.contains("src/lib.rs"));
+        assert!(rendered.contains("已去重 2 个"));
+        assert!(rendered.contains("已拒绝 1 个"));
+        assert!(rendered.contains("multiple-distinct"));
     }
 }

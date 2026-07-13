@@ -2234,7 +2234,7 @@ fn spawn_agent(
     command
         .envs(environment)
         .env("MORPHZ_BIND", "127.0.0.1:0")
-        .env("MORPHZ_REPLY_TIMEOUT_SECS", "600")
+        .env("MORPHZ_REPLY_WAIT_NOTICE_SECS", "600")
         .stdin(Stdio::piped())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
@@ -2827,9 +2827,8 @@ fn set_private_directory_permissions(_path: &Path) -> Result<(), DynError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ToolSecurityConfig;
     use crate::memory::{NewAgent, NewCognitiveContext, NewSession, SessionMountKind};
-    use crate::tool_security::{resolve_tool_path, ToolAccess};
+    use crate::permission::{FilesystemAccess, PathDecision, PermissionConfig, PermissionProfile};
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -3047,33 +3046,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn experience_transfer_challenge_paths_are_allowed_by_default_tool_security() {
+    async fn experience_transfer_paths_are_not_blocked_by_task_specific_defaults() {
         let temp = TempDir::new().unwrap();
         let environment =
             create_experience_transfer_arm_eval(Some(temp.path()), ExperienceTransferArm::Fresh)
                 .await
                 .unwrap();
-        let security = ToolSecurityConfig {
+        let config = PermissionConfig {
             workspace_root: environment
                 .manifest
                 .workspace_root
                 .to_string_lossy()
                 .to_string(),
-            ..ToolSecurityConfig::default()
+            read_roots: Vec::new(),
+            write_roots: Vec::new(),
+            ..PermissionConfig::default()
         };
+        let profile = PermissionProfile::from_config(&config).unwrap();
 
-        assert!(resolve_tool_path(
+        for path in [
             "challenge/assignment/approved-record.md",
-            ToolAccess::Read,
-            &security,
-        )
-        .is_ok());
-        assert!(resolve_tool_path(
             "target/assignment/approved-record.md",
-            ToolAccess::Read,
-            &security,
-        )
-        .is_err());
+        ] {
+            assert!(matches!(
+                profile.inspect_path(path, FilesystemAccess::Read).unwrap(),
+                PathDecision::Allowed(_)
+            ));
+        }
     }
 
     #[test]

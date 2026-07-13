@@ -1,6 +1,6 @@
 use crate::config::OrchestratorConfig;
 use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
-use crate::llm::{Client, Message};
+use crate::llm::{Client, Message, PromptTokenCount};
 use crate::memory::{
     DelegationStatus, EventStore, NewCognitiveContext, NewDelegation, NewSession, QueryFilter,
     SessionMountKind, SessionStatus, SessionUpdate,
@@ -62,9 +62,9 @@ Context 的状态分为三个权限域：
 9. assistant_call 与 context_tx 回执属于 Runtime 控制轨迹，只保存在 Ledger，不会进入 Inbox；不要为了清理 context_tx 自己产生的记录而连续提交 housekeeping transaction。
    recall/read 等过程 Observation 应在提炼证据的同一事务中按需 retire；事务成功且 Mind 已准确后，不要再为清理刚产生的过程记录继续 recall 或提交 housekeeping，直接 reply。
 10. 每次调用物理工具前，必须确认它是完成当前用户明确任务所必需的新信息。当 Mind/inbox 已足以回答时，立即使用 reply；不要重复验证、扫描工作区或自行发明后续目标。
-11. kernel.turn-budget 是当前用户回合的 Attempt 预算。phase=work 时正常工作，剩余 3 次以内应停止重复验证并收敛；phase=context-closure 是一次专用收口阶段，只能调用 context_tx 或直接调用 reply；phase=final-reply 或 force-final=true 时只保留 reply 工具，必须基于已有证据 deliver 最终答案、说明阻塞，或在确实无需 Session 消息时 suppress。
+11. kernel.turn-control 描述当前用户回合的模型求值进度。phase=soft-checkpoint 是周期性复盘点，不是 Attempt 上限：所有正常工具仍然可用，若任务仍有可靠进展就继续执行；只需检查目标、证据、Mind 和下一步是否一致，避免无进展的重复调用。一次模型响应里并行调用多个工具只计为一次 Attempt。
 12. kernel.wake 说明本次为何被唤醒。独立 context_tx 成功后的 context-transaction-result 会触发一次冷却：除非仍处于 critical，否则本次不再提供 context_tx，必须 reply 或执行必要的物理动作。
-13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。相互独立的文件读取必须在同一响应中并行调用；已经进入 Inbox 且 sha256 未被 file_change 改变的内容不得重复 read。完成必要定位后立即修改并验证，不能把整个 Attempt 预算消耗在反复扫描与阅读上。
+13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。相互独立的文件读取必须在同一响应中并行调用；已经进入 Inbox 且 sha256 未被 file_change 改变的内容不得重复 read。完成必要定位后立即修改并验证，不要在反复扫描与阅读中消耗无进展的模型求值。
 
 Context 的修改是你的元认知行为；read/write/exec/delegate 等工具是对外部世界的行为。保持二者边界清晰。"#;
 
@@ -234,18 +234,18 @@ fn semantic_sexpr_vm_system_prompt() -> &'static str {
     render_stable_system_prompt(SystemPromptMode::SemanticSexprVm)
 }
 
-const CONTEXT_CLOSURE_PROMPT: &str = r#"Runtime 当前处于 context-closure 阶段。这是本回合唯一一次专用 Mind 收口机会，不是继续工作的额外预算。
-- 不得调用任何物理工具，不得继续探索或重复验证。
-- 若 Mind 尚未准确反映最终状态，调用且仅调用一次 context_tx：将目标标记为 completed 或 blocked，写入已确认的关键结论、修改与验证证据，并清理不再有价值的过程信息。
-- 若 Mind 已经准确，无需事务，调用且仅调用标准 reply 工具作出 deliver/suppress 决定。
-- context_tx 成功或失败后，Runtime 都会进入 reply-only final-reply 阶段。"#;
+const SOFT_CHECKPOINT_PROMPT: &str = r#"Runtime 当前处于 soft-checkpoint。这是周期性进展复盘，不是停止条件，也不减少任何工具能力。
+- 检查当前目标、已取得的物理证据、Mind 状态与下一步是否一致。
+- 若仍有新的可靠进展路径，继续执行必要动作；不要仅因到达检查点而提前 reply。
+- 若近期动作没有产生新证据，停止重复调用，改用已有证据推进、如实说明阻塞或 reply。
+- 只有存在值得跨轮保留的状态变化时才提交 context_tx；检查点本身不要求维护事务。"#;
 
-const FINAL_REPLY_PROMPT: &str = r#"Runtime 当前处于 final-reply 阶段。Context 收口机会已经使用或耗尽；只允许调用标准 reply 工具。请基于现有 Mind 与 Inbox 使用 disposition=deliver 给出最终答复或说明阻塞；仅在确实不需要向当前 Session 发送任何消息时使用 disposition=suppress。"#;
 const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context 已处于 critical，且本回合普通 context_tx 额度已经耗尽。为避免在不可执行的维护请求中循环，本次强制进入 reply-only 阶段。只允许调用标准 reply 工具；请如实交付已完成状态、最近一次可靠验证和剩余工作。"#;
 
 const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请调用 reply 工具结束当前任务，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
 const REPLY_TOOL_NAME: &str = "reply";
 const MAX_REPLY_PROTOCOL_RETRIES: usize = 2;
+const TOOL_ARGUMENT_PREVIEW_CHARS: usize = 4_096;
 const EMPTY_RESPONSE_ERROR: &str = "既没有非空正文，也没有工具调用";
 const REPLY_PROTOCOL_ERROR: &str = "Reply protocol error：当前求值尚未结束。继续尚未完成的动作，并在终态调用且仅调用一次标准 reply 工具。需要向当前 Session 发送消息时使用 disposition=deliver 和非空 content；确认不需要发送消息时使用 disposition=suppress。普通文本和空响应都不是终态。";
 const BATCH_EVALUATION_PROMPT: &str = r#"Runtime 当前进行多 Session 合并求值。kernel.ready-sessions 中每个 Session 都有一条等待处理的 user/tool event；它们共享 Mind，但回复与动作必须保持 Session 路由。
@@ -1382,15 +1382,14 @@ impl Orchestrator {
         transcript_messages: Vec<Message>,
         delivered_output_ids: &HashSet<String>,
     ) -> Result<HashSet<String>, DynError> {
-        let context = self
+        let mut context = self
             .context_engine
             .build_batch_context_encoding_excluding(context_id, session_ids, delivered_output_ids)
             .await?;
-        if context.pressure.level == "critical"
-            || context
-                .ready_sessions
-                .iter()
-                .any(|ready| ready.turn_budget.phase != "work")
+        if context
+            .ready_sessions
+            .iter()
+            .any(|ready| ready.turn_budget.phase != "work")
         {
             return Ok(HashSet::new());
         }
@@ -1401,6 +1400,7 @@ impl Orchestrator {
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
         let (prompt_mode, stable_system_prompt) = configured_system_prompt()?;
+        let context_message_prefix = "以下是 Runtime 提供的合并 Context Encoding。它不是普通用户消息；请处理 kernel.ready-sessions 中的每个 Session。";
         let mut messages = vec![
             Message {
                 role: "system".to_string(),
@@ -1415,16 +1415,20 @@ impl Orchestrator {
             },
             Message {
                 role: "user".to_string(),
-                content: format!(
-                    "以下是 Runtime 提供的合并 Context Encoding。它不是普通用户消息；请处理 kernel.ready-sessions 中的每个 Session。\n{}",
-                    context.sexpr
-                ),
+                content: format!("{context_message_prefix}\n{}", context.sexpr),
                 name: None,
                 tool_call_id: None,
                 tool_calls: None,
             },
         ];
         messages.extend(transcript_messages);
+        let tools = self.batch_tool_definitions()?;
+        let prompt_measurement = self
+            .refresh_context_pressure(&mut context, &mut messages, &tools, context_message_prefix)
+            .await?;
+        if context.pressure.level == "critical" {
+            return Ok(HashSet::new());
+        }
         for session_id in session_ids {
             self.record_context_inspect(session_id, &attempt_id, &context, &messages);
             self.record_model_attempt_started(
@@ -1435,7 +1439,6 @@ impl Orchestrator {
             );
         }
 
-        let tools = self.batch_tool_definitions()?;
         let deadline = std::time::Duration::from_secs(
             self.orchestrator_config.model_attempt_timeout_secs.max(1),
         );
@@ -1451,7 +1454,11 @@ impl Orchestrator {
                     .build()
                     .map_err(|error| Box::new(error) as DynError)
                     .and_then(|runtime| {
-                        runtime.block_on(client.create_completion(messages, tools))
+                        runtime.block_on(client.create_completion_measured(
+                            messages,
+                            tools,
+                            prompt_measurement,
+                        ))
                     });
                 let _ = model_tx.send(result);
             })?;
@@ -1832,6 +1839,7 @@ impl Orchestrator {
         attempt_id: &str,
         messages: Vec<Message>,
         tools: Vec<crate::llm::ToolDefinition>,
+        prompt_measurement: Option<PromptTokenCount>,
     ) -> Result<crate::llm::Response, DynError> {
         let deadline = std::time::Duration::from_secs(
             self.orchestrator_config.model_attempt_timeout_secs.max(1),
@@ -1847,7 +1855,11 @@ impl Orchestrator {
                     .build()
                     .map_err(|error| Box::new(error) as DynError)
                     .and_then(|runtime| {
-                        runtime.block_on(client.create_completion(messages, tools))
+                        runtime.block_on(client.create_completion_measured(
+                            messages,
+                            tools,
+                            prompt_measurement,
+                        ))
                     });
                 let _ = model_tx.send(result);
             })?;
@@ -1858,6 +1870,77 @@ impl Orchestrator {
         }
     }
 
+    /// 用当前协议 Client 声明的 TokenCounter 计量完整候选工作请求，
+    /// 并把结果及精度回写到本轮 Context Encoding。计数失败不会阻断 Agent。
+    async fn refresh_context_pressure(
+        &self,
+        context: &mut ContextView,
+        messages: &mut [Message],
+        tools: &[crate::llm::ToolDefinition],
+        context_message_prefix: &str,
+    ) -> Result<Option<PromptTokenCount>, DynError> {
+        let deadline = std::time::Duration::from_secs(
+            self.orchestrator_config
+                .model_attempt_timeout_secs
+                .clamp(1, 15),
+        );
+        let _permit = self.concurrency_semaphore.acquire().await?;
+        let token_scope = format!("{}:{}", context.context_id, context.active_session_id);
+        let measurement = tokio::time::timeout(
+            deadline,
+            self.client
+                .count_prompt_tokens(&token_scope, messages, tools),
+        )
+        .await;
+
+        let measurement = match measurement {
+            Ok(Ok(Some(count))) => {
+                self.context_engine
+                    .apply_prompt_token_count(context, &count)
+                    .await?;
+                if let Some(context_message) = messages.get_mut(1) {
+                    context_message.content =
+                        format!("{context_message_prefix}\n{}", context.sexpr);
+                }
+                tracing::info!(
+                    context_id = %context.context_id,
+                    session_id = %context.active_session_id,
+                    model = %count.model,
+                    prompt_tokens = count.tokens,
+                    source = %count.source,
+                    accuracy = count.accuracy.as_str(),
+                    pressure = %context.pressure.level,
+                    "Context pressure 已按完整 Prompt 重新计量"
+                );
+                Some(count)
+            }
+            Ok(Ok(None)) => {
+                tracing::debug!(
+                    session_id = %context.active_session_id,
+                    "当前 LLM Client 未提供 Prompt Token 计量，保留 Context 局部估算"
+                );
+                None
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    session_id = %context.active_session_id,
+                    error = %error,
+                    "Prompt Token 计量失败，保留 Context 局部估算"
+                );
+                None
+            }
+            Err(_) => {
+                tracing::warn!(
+                    session_id = %context.active_session_id,
+                    timeout_secs = deadline.as_secs(),
+                    "Prompt Token 计量超时，保留 Context 局部估算"
+                );
+                None
+            }
+        };
+        Ok(measurement)
+    }
+
     async fn run_attempt(&self, session_id: &str) -> Result<(), DynError> {
         let attempt_id = format!(
             "attempt_{}_{}",
@@ -1866,10 +1949,51 @@ impl Orchestrator {
         );
         let transcript = self.turn_tool_transcript(session_id).await?;
         let context_id = self.context_id_for_session(session_id);
-        let context = self
+        let mut context = self
             .context_engine
             .build_context_encoding(&context_id, session_id, &transcript.delivered_output_ids)
             .await?;
+        let context_tx_receipt = self.context_tx_receipt(&context).await?;
+        let (prompt_mode, stable_system_prompt) = configured_system_prompt()?;
+        let context_message_prefix = "以下是 Runtime 提供的当前 Context 视图。它不是普通用户消息；请基于 kernel、mind 和 inbox 决策。";
+
+        // 先计量一个具备完整工作能力的候选请求。压力的物理含义是“当前 Context
+        // 是否还能继续正常工作”，因此即使计量后进入 maintenance/reply-only，仍以
+        // 完整工作工具集作为阈值依据，避免缩减工具后产生临界值振荡。
+        let measurement_directive = match context.turn_budget.phase.as_str() {
+            "soft-checkpoint" => Some(("soft-checkpoint", SOFT_CHECKPOINT_PROMPT)),
+            _ => None,
+        };
+        let measurement_system_prompt =
+            compose_system_prompt(prompt_mode, stable_system_prompt, measurement_directive);
+        let mut measurement_messages = vec![
+            Message {
+                role: "system".to_string(),
+                content: measurement_system_prompt,
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+            Message {
+                role: "user".to_string(),
+                content: format!("{context_message_prefix}\n{}", context.sexpr),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+        ];
+        measurement_messages.extend(transcript.messages.clone());
+        let mut measurement_tools = self.tool_definitions.clone();
+        measurement_tools.push(reply_tool_definition());
+        let prompt_measurement = self
+            .refresh_context_pressure(
+                &mut context,
+                &mut measurement_messages,
+                &measurement_tools,
+                context_message_prefix,
+            )
+            .await?;
+
         let maintenance_budget_exhausted = should_force_final_for_maintenance(
             &context.turn_budget.phase,
             &context.pressure.level,
@@ -1880,20 +2004,17 @@ impl Orchestrator {
         } else {
             context.turn_budget.phase.as_str()
         };
-        let context_tx_receipt = self.context_tx_receipt(&context).await?;
-        let context_tx_cooldown = effective_phase == "work"
+        let context_tx_cooldown = effective_phase != "final-reply"
             && context.pressure.level != "critical"
             && context_tx_receipt == ContextTxReceipt::Committed;
         let phase_prompt = match effective_phase {
             "final-reply" if maintenance_budget_exhausted => {
                 Some(MAINTENANCE_BUDGET_EXHAUSTED_PROMPT)
             }
-            "context-closure" => Some(CONTEXT_CLOSURE_PROMPT),
-            "final-reply" => Some(FINAL_REPLY_PROMPT),
+            "soft-checkpoint" => Some(SOFT_CHECKPOINT_PROMPT),
             _ if context_tx_cooldown => Some(CONTEXT_TX_COOLDOWN_PROMPT),
             _ => None,
         };
-        let (prompt_mode, stable_system_prompt) = configured_system_prompt()?;
         let system_prompt = compose_system_prompt(
             prompt_mode,
             stable_system_prompt,
@@ -1909,10 +2030,7 @@ impl Orchestrator {
             },
             Message {
                 role: "user".to_string(),
-                content: format!(
-                    "以下是 Runtime 提供的当前 Context 视图。它不是普通用户消息；请基于 kernel、mind 和 inbox 决策。\n{}",
-                    context.sexpr
-                ),
+                content: format!("{context_message_prefix}\n{}", context.sexpr),
                 name: None,
                 tool_call_id: None,
                 tool_calls: None,
@@ -1920,27 +2038,33 @@ impl Orchestrator {
         ];
         messages.extend(transcript.messages);
 
-        self.record_context_inspect(session_id, &attempt_id, &context, &messages);
-
         let mut tools = self.tool_definitions.clone();
         if effective_phase == "final-reply" {
             tracing::warn!(
                 session_id,
                 attempt = context.turn_budget.attempt,
-                limit = context.turn_budget.limit,
                 maintenance_budget_exhausted,
-                "Context 收口机会已使用：进入 reply-only 最终答复"
+                "Context critical 且维护预算耗尽：进入 reply-only 最终答复"
             );
             tools.clear();
-        } else if effective_phase == "context-closure" {
-            tracing::info!(
-                session_id,
-                attempt = context.turn_budget.attempt,
-                limit = context.turn_budget.limit,
-                "Turn Attempt Budget 已耗尽：进入一次性 Context 收口阶段"
-            );
-            tools.retain(|tool| tool.name == "context_tx");
         } else {
+            if effective_phase == "soft-checkpoint" {
+                tracing::info!(
+                    session_id,
+                    attempt = context.turn_budget.attempt,
+                    interval = context.turn_budget.checkpoint_interval,
+                    "到达 Turn 软检查点：保留完整工具能力并继续任务"
+                );
+                self.publish_progress(
+                    session_id,
+                    &attempt_id,
+                    format!(
+                        "已完成 {} 次模型求值软检查点；正在复盘进展，任务不会因此停止。",
+                        context.turn_budget.attempt
+                    ),
+                )
+                .await?;
+            }
             if context.pressure.level == "critical" {
                 tracing::warn!(
                     session_id,
@@ -1966,6 +2090,7 @@ impl Orchestrator {
             }
         }
         tools.push(reply_tool_definition());
+        self.record_context_inspect(session_id, &attempt_id, &context, &messages);
         let mut protocol_messages = messages;
         let mut protocol_errors = 0usize;
         let (response, reply_decision) = loop {
@@ -1985,6 +2110,9 @@ impl Orchestrator {
                     &model_attempt_id,
                     protocol_messages.clone(),
                     tools.clone(),
+                    (protocol_errors == 0)
+                        .then(|| prompt_measurement.clone())
+                        .flatten(),
                 )
                 .await;
             let response = match completion {
@@ -2032,14 +2160,6 @@ impl Orchestrator {
             let classification = classify_reply_response(&response).and_then(|decision| {
                 if decision.is_none() && effective_phase == "final-reply" {
                     Err("final-reply 阶段只允许标准 reply 工具".to_string())
-                } else if decision.is_none()
-                    && effective_phase == "context-closure"
-                    && !response
-                        .tool_calls
-                        .iter()
-                        .all(|call| call.func_name == "context_tx")
-                {
-                    Err("context-closure 阶段只允许 context_tx 或 reply".to_string())
                 } else {
                     Ok(decision)
                 }
@@ -2112,29 +2232,6 @@ impl Orchestrator {
                     .await
                 }
             };
-        }
-
-        if effective_phase == "context-closure" && !response.tool_calls.is_empty() {
-            let valid_closure = response
-                .tool_calls
-                .iter()
-                .all(|call| call.func_name == "context_tx");
-            if valid_closure {
-                self.execute_tool_calls(
-                    session_id,
-                    &attempt_id,
-                    response,
-                    effective_phase,
-                    ToolExecutionOptions {
-                        context_tx_allowed: true,
-                        wake_on_output: true,
-                        transcript_tool_calls: None,
-                    },
-                )
-                .await?;
-                return Ok(());
-            }
-            unreachable!("非法 context-closure 工具调用应由 Reply 协议纠错拦截");
         }
 
         debug_assert_ne!(effective_phase, "final-reply");
@@ -2494,7 +2591,7 @@ impl Orchestrator {
             rejected_context_tx_ids.extend(context_tx_calls.into_iter().map(|call| call.id));
             context_tx_batch_status = Some("budget-exhausted".to_string());
             context_tx_batch_error = Some(format!(
-                "执行拒绝: CONTEXT_TX_BUDGET_EXHAUSTED：普通 work 阶段 Context transaction 已达到 {} 次上限。本轮保留剩余物理工作预算；请继续完成必要工作，Runtime 在最终 context-closure 阶段仍会提供一次专用收口机会。",
+                "执行拒绝: CONTEXT_TX_BUDGET_EXHAUSTED：当前用户回合的 Context transaction 已达到 {} 次上限。物理工具与 reply 仍然可用；请使用现有 Mind 继续必要工作，避免连续 housekeeping transaction。",
                 self.orchestrator_config.max_context_transactions_per_turn.max(1)
             ));
         } else {
@@ -2591,6 +2688,14 @@ impl Orchestrator {
                 },
             });
         }
+        let requested_count = mapped_tool_calls.len();
+        let selected_call_previews = selected_tool_calls
+            .iter()
+            .map(tool_call_activity_preview)
+            .collect::<Vec<_>>();
+        let deduplicated_count = deduplicated_context_tx_ids.len();
+        let rejected_count = rejected_context_tx_ids.len();
+        let rejection_status = context_tx_batch_status.clone();
         self.bus
             .publish(Event::new(
                 format!("call_{}", attempt_id),
@@ -2620,6 +2725,26 @@ impl Orchestrator {
                         "context_tx_rejection_status".to_string(),
                         json!(context_tx_batch_status),
                     ),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await?;
+        self.bus
+            .publish(Event::new(
+                format!("tool_calls_selected_{attempt_id}"),
+                "Runtime-Orchestrator".to_string(),
+                "runtime_control".to_string(),
+                "runtime/tool_calls_selected".to_string(),
+                vec![
+                    ("context_id".to_string(), json!(context_id)),
+                    ("session_id".to_string(), json!(session_id)),
+                    ("attempt_id".to_string(), json!(attempt_id)),
+                    ("requested_count".to_string(), json!(requested_count)),
+                    ("calls".to_string(), json!(selected_call_previews)),
+                    ("deduplicated_count".to_string(), json!(deduplicated_count)),
+                    ("rejected_count".to_string(), json!(rejected_count)),
+                    ("rejection_status".to_string(), json!(rejection_status)),
                 ]
                 .into_iter()
                 .collect(),
@@ -2684,53 +2809,62 @@ impl Orchestrator {
             let attempt_id = attempt_id.to_string();
             let timeout_secs = self.orchestrator_config.tool_timeout_secs;
             tasks.push(tokio::spawn(async move {
-                crate::tool::CURRENT_CONTEXT_ID
-                    .scope(context_id.clone(), async move {
-                        crate::tool::CURRENT_SESSION_ID
-                            .scope(session_id.clone(), async move {
-                                let result = tokio::time::timeout(
-                                    tokio::time::Duration::from_secs(timeout_secs),
-                                    async {
-                                        match registry.get(&call.func_name) {
-                                            Some(tool) => tool.execute(&call.arguments).await,
-                                            None => {
-                                                Err(format!("未注册的工具: {}", call.func_name)
-                                                    .into())
+                crate::tool::CURRENT_ATTEMPT_ID
+                    .scope(attempt_id.clone(), async move {
+                        crate::tool::CURRENT_CONTEXT_ID
+                            .scope(context_id.clone(), async move {
+                                crate::tool::CURRENT_SESSION_ID
+                                    .scope(session_id.clone(), async move {
+                                        let result = tokio::time::timeout(
+                                            tokio::time::Duration::from_secs(timeout_secs),
+                                            async {
+                                                match registry.get(&call.func_name) {
+                                                    Some(tool) => {
+                                                        tool.execute(&call.arguments).await
+                                                    }
+                                                    None => Err(format!(
+                                                        "未注册的工具: {}",
+                                                        call.func_name
+                                                    )
+                                                    .into()),
+                                                }
+                                            },
+                                        )
+                                        .await;
+                                        let (output, tool_status) = match result {
+                                            Ok(Ok(output)) => {
+                                                let status = infer_tool_status(&output);
+                                                (output, status)
                                             }
-                                        }
-                                    },
-                                )
-                                .await;
-                                let (output, tool_status) = match result {
-                                    Ok(Ok(output)) => {
-                                        let status = infer_tool_status(&output);
-                                        (output, status)
-                                    }
-                                    Ok(Err(error)) => (format!("执行失败: {}", error), "error"),
-                                    Err(_) => (
-                                        format!("执行超时: 超过 {} 秒限额", timeout_secs),
-                                        "timeout",
-                                    ),
-                                };
-                                let output_empty = output.trim().is_empty();
-                                Event::new(
-                                    format!("output_{}_{}", attempt_id, call.id),
-                                    "System-Executor".to_string(),
-                                    TYPE_TOOL_OUTPUT.to_string(),
-                                    "chat/tool_output".to_string(),
-                                    vec![
-                                        ("context_id".to_string(), json!(context_id)),
-                                        ("session_id".to_string(), json!(session_id)),
-                                        ("attempt_id".to_string(), json!(attempt_id)),
-                                        ("tool_call_id".to_string(), json!(call.id)),
-                                        ("tool_name".to_string(), json!(call.func_name)),
-                                        ("tool_status".to_string(), json!(tool_status)),
-                                        ("output_empty".to_string(), json!(output_empty)),
-                                        ("text".to_string(), json!(output)),
-                                    ]
-                                    .into_iter()
-                                    .collect(),
-                                )
+                                            Ok(Err(error)) => {
+                                                (format!("执行失败: {}", error), "error")
+                                            }
+                                            Err(_) => (
+                                                format!("执行超时: 超过 {} 秒限额", timeout_secs),
+                                                "timeout",
+                                            ),
+                                        };
+                                        let output_empty = output.trim().is_empty();
+                                        Event::new(
+                                            format!("output_{}_{}", attempt_id, call.id),
+                                            "System-Executor".to_string(),
+                                            TYPE_TOOL_OUTPUT.to_string(),
+                                            "chat/tool_output".to_string(),
+                                            vec![
+                                                ("context_id".to_string(), json!(context_id)),
+                                                ("session_id".to_string(), json!(session_id)),
+                                                ("attempt_id".to_string(), json!(attempt_id)),
+                                                ("tool_call_id".to_string(), json!(call.id)),
+                                                ("tool_name".to_string(), json!(call.func_name)),
+                                                ("tool_status".to_string(), json!(tool_status)),
+                                                ("output_empty".to_string(), json!(output_empty)),
+                                                ("text".to_string(), json!(output)),
+                                            ]
+                                            .into_iter()
+                                            .collect(),
+                                        )
+                                    })
+                                    .await
                             })
                             .await
                     })
@@ -3078,7 +3212,87 @@ fn should_force_final_for_maintenance(
     pressure: &str,
     context_tx_available: bool,
 ) -> bool {
-    phase == "work" && pressure == "critical" && !context_tx_available
+    matches!(phase, "work" | "soft-checkpoint") && pressure == "critical" && !context_tx_available
+}
+
+fn tool_call_activity_preview(call: &crate::llm::ToolCallRepr) -> serde_json::Value {
+    let original_chars = call.arguments.chars().count();
+    let mut arguments = serde_json::from_str::<serde_json::Value>(&call.arguments)
+        .map(|mut value| {
+            redact_sensitive_tool_arguments(&mut value);
+            serde_json::to_string_pretty(&value).unwrap_or_else(|_| call.arguments.clone())
+        })
+        .unwrap_or_else(|_| call.arguments.clone());
+    let rendered_chars = arguments.chars().count();
+    let truncated = rendered_chars > TOOL_ARGUMENT_PREVIEW_CHARS;
+    if truncated {
+        arguments = arguments
+            .chars()
+            .take(TOOL_ARGUMENT_PREVIEW_CHARS)
+            .collect::<String>();
+        arguments.push_str(&format!("\n… <参数预览已截断，共 {rendered_chars} 字符>"));
+    }
+    json!({
+        "id": call.id,
+        "name": call.func_name,
+        "arguments": arguments,
+        "arguments_chars": original_chars,
+        "truncated": truncated,
+    })
+}
+
+fn redact_sensitive_tool_arguments(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                if is_sensitive_argument_key(key) {
+                    *value = serde_json::Value::String("[REDACTED]".to_string());
+                } else {
+                    redact_sensitive_tool_arguments(value);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                redact_sensitive_tool_arguments(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_sensitive_argument_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    matches!(
+        normalized.as_str(),
+        "password"
+            | "passwd"
+            | "secret"
+            | "apikey"
+            | "accesstoken"
+            | "refreshtoken"
+            | "authtoken"
+            | "authorization"
+            | "cookie"
+            | "setcookie"
+            | "privatekey"
+            | "clientsecret"
+    ) || [
+        "password",
+        "passwd",
+        "apikey",
+        "accesstoken",
+        "refreshtoken",
+        "authtoken",
+        "privatekey",
+        "clientsecret",
+    ]
+    .iter()
+    .any(|suffix| normalized.ends_with(suffix))
 }
 
 fn normalize_context_tx_key(context_id: &str, arguments: &str) -> Result<String, String> {
@@ -3101,8 +3315,8 @@ mod tests {
     use super::{
         baseline_system_prompt, classify_reply_response, cognitive_sexpr_vm_system_prompt,
         compose_system_prompt, render_system_contract, semantic_sexpr_vm_system_prompt,
-        should_force_final_for_maintenance, ReadTurnGuard, ReplyDecision, SystemPromptMode,
-        AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        should_force_final_for_maintenance, tool_call_activity_preview, ReadTurnGuard,
+        ReplyDecision, SystemPromptMode, AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
 
     #[test]
@@ -3239,11 +3453,48 @@ mod tests {
         assert!(!should_force_final_for_maintenance(
             "work", "critical", true
         ));
-        assert!(!should_force_final_for_maintenance(
-            "context-closure",
+        assert!(should_force_final_for_maintenance(
+            "soft-checkpoint",
             "critical",
             false
         ));
+    }
+
+    #[test]
+    fn tool_call_activity_preview_is_structured_redacted_and_bounded() {
+        let secret_call = crate::llm::ToolCallRepr {
+            id: "exec-1".to_string(),
+            r#type: "function".to_string(),
+            func_name: "exec".to_string(),
+            arguments: json!({
+                "cmd": "run",
+                "env": {
+                    "OPENAI_API_KEY": "local-secret",
+                    "max_tokens": 128000
+                }
+            })
+            .to_string(),
+        };
+        let secret_preview = tool_call_activity_preview(&secret_call);
+        let arguments = secret_preview["arguments"].as_str().unwrap();
+        assert_eq!(secret_preview["name"], "exec");
+        assert_eq!(secret_preview["truncated"], false);
+        assert!(arguments.contains("[REDACTED]"));
+        assert!(!arguments.contains("local-secret"));
+        assert!(arguments.contains("max_tokens"));
+
+        let long_call = crate::llm::ToolCallRepr {
+            id: "write-1".to_string(),
+            r#type: "function".to_string(),
+            func_name: "write".to_string(),
+            arguments: json!({"body": "x".repeat(5_000)}).to_string(),
+        };
+        let long_preview = tool_call_activity_preview(&long_call);
+        assert_eq!(long_preview["truncated"], true);
+        assert!(long_preview["arguments"]
+            .as_str()
+            .unwrap()
+            .contains("参数预览已截断"));
     }
 
     #[test]

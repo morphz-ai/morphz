@@ -90,13 +90,14 @@ interface ContextPressure {
 
 interface TurnBudget {
   attempt: number;
-  limit: number;
-  remaining_including_current: number;
+  checkpoint_interval: number;
+  next_checkpoint_at: number;
+  attempts_until_checkpoint: number;
+  checkpoint_due: boolean;
   context_transactions_used: number;
   context_transactions_limit: number;
   context_tx_available: boolean;
-  phase: 'work' | 'context-closure' | 'final-reply';
-  force_final: boolean;
+  phase: 'work' | 'soft-checkpoint';
 }
 
 interface WakeSignal {
@@ -1095,7 +1096,7 @@ export default function App() {
               </div>
               <div className="flex items-center gap-2 text-[10px] font-mono">
                 {mind && <span className="text-indigo-300">V{mind.version}</span>}
-                {turnBudget && <span className={turnBudget.force_final ? 'text-rose-300' : turnBudget.phase === 'context-closure' ? 'text-amber-300' : 'text-cyan-300'}>A{turnBudget.attempt}/{turnBudget.limit}:{turnBudget.phase}</span>}
+                {turnBudget && <span className={turnBudget.checkpoint_due ? 'text-amber-300' : 'text-cyan-300'}>A{turnBudget.attempt}→CP{turnBudget.next_checkpoint_at}:{turnBudget.phase}</span>}
                 {turnBudget && <span className={turnBudget.context_tx_available ? 'text-emerald-300' : 'text-slate-400'}>CTX{turnBudget.context_transactions_used}/{turnBudget.context_transactions_limit}</span>}
                 {wake && <span className="text-violet-300">WAKE:{wake.cause}{wake.tool_name ? `/${wake.tool_name}` : ''}</span>}
                 {readySessions.length > 1 && <span className="text-fuchsia-300">BATCH:{readySessions.length}</span>}

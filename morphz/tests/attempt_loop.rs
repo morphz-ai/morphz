@@ -1,9 +1,10 @@
-use morphz::config::ToolSecurityConfig;
 use morphz::context_tools::ContextTxTool;
 use morphz::event::{
     Event, InMemoryEventBus, TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
-use morphz::llm::{Client, Message, Response, ToolCallRepr, ToolDefinition};
+use morphz::llm::{
+    Client, Message, PromptTokenAccuracy, PromptTokenCount, Response, ToolCallRepr, ToolDefinition,
+};
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     DelegationStatus, EventStore, NewCognitiveContext, NewSession, QueryFilter, SessionMountKind,
@@ -11,6 +12,7 @@ use morphz::memory::{
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
+use morphz::permission::PermissionConfig;
 use morphz::tool::{EditFileTool, ReadFileTool, Registry, SpawnAgentTool, Tool, WriteFileTool};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -23,6 +25,7 @@ struct MockClient {
     responses: Mutex<VecDeque<Response>>,
     tools_seen: Mutex<Vec<Vec<String>>>,
     messages_seen: Mutex<Vec<Vec<Message>>>,
+    prompt_token_count: Mutex<Option<usize>>,
     auto_reply: bool,
 }
 
@@ -36,6 +39,7 @@ struct BudgetProbeClient {
     calls: AtomicUsize,
     tool_counts: Mutex<Vec<usize>>,
     read_path: String,
+    reply_after: usize,
 }
 
 struct FailingClient;
@@ -265,8 +269,8 @@ impl Client for BudgetProbeClient {
             .lock()
             .map_err(|_| "budget probe mutex poisoned")?
             .push(tools.len());
-        if tools.iter().all(|tool| tool.name == "reply") {
-            return Ok(explicit_reply_response("budget forced final"));
+        if call >= self.reply_after {
+            return Ok(explicit_reply_response("soft checkpoint continued"));
         }
         Ok(Response {
             content: String::new(),
@@ -326,6 +330,7 @@ impl MockClient {
             responses: Mutex::new(VecDeque::from(responses)),
             tools_seen: Mutex::new(Vec::new()),
             messages_seen: Mutex::new(Vec::new()),
+            prompt_token_count: Mutex::new(None),
             auto_reply,
         }
     }
@@ -337,10 +342,34 @@ impl MockClient {
     fn messages_seen(&self) -> Vec<Vec<Message>> {
         self.messages_seen.lock().unwrap().clone()
     }
+
+    fn set_prompt_token_count(&self, tokens: usize) {
+        *self.prompt_token_count.lock().unwrap() = Some(tokens);
+    }
 }
 
 #[async_trait::async_trait]
 impl Client for MockClient {
+    async fn count_prompt_tokens(
+        &self,
+        _scope: &str,
+        _messages: &[Message],
+        _tools: &[ToolDefinition],
+    ) -> Result<Option<PromptTokenCount>, Box<dyn std::error::Error + Send + Sync>> {
+        let tokens = *self
+            .prompt_token_count
+            .lock()
+            .map_err(|_| "mock prompt token mutex poisoned")?;
+        Ok(tokens.map(|tokens| PromptTokenCount {
+            tokens,
+            source: "test-native-tokenizer".to_string(),
+            model: "test-model".to_string(),
+            accuracy: PromptTokenAccuracy::Exact,
+            base_estimate_tokens: tokens,
+            calibration_key: Some(1),
+        }))
+    }
+
     async fn create_completion(
         &self,
         messages: Vec<Message>,
@@ -965,10 +994,26 @@ async fn test_attempt_loop_tool_call_then_reply() {
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
     let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
     let tool_outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
+    let tool_activity = wait_for_topic(&store, "runtime/tool_calls_selected", session_id).await;
 
     assert_eq!(replies.len(), 1);
     assert!(!assistant_calls.is_empty());
     assert!(!tool_outputs.is_empty());
+    assert_eq!(tool_activity.len(), 1);
+    let selected = tool_activity[0]
+        .payload
+        .get("calls")
+        .and_then(|value| value.as_array())
+        .unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(
+        selected[0].get("name").and_then(|value| value.as_str()),
+        Some("read")
+    );
+    assert!(selected[0]
+        .get("arguments")
+        .and_then(|value| value.as_str())
+        .is_some_and(|arguments| arguments.contains("path")));
     assert_eq!(
         replies[0].payload.get("text").and_then(|v| v.as_str()),
         Some("已读取 notes")
@@ -1435,6 +1480,45 @@ async fn test_failed_context_only_call_keeps_context_tool_for_repair() {
 }
 
 #[tokio::test]
+async fn model_native_prompt_count_drives_pressure_before_completion() {
+    let session_id = "attempt_native_prompt_pressure";
+    let config = morphz::config::OrchestratorConfig {
+        context_soft_token_limit: 2_000,
+        context_hard_token_limit: 3_000,
+        context_maintenance_reserve_tokens: 200,
+        ..Default::default()
+    };
+    let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![Response {
+            content: "measured pressure observed".to_string(),
+            tool_calls: Vec::new(),
+        }],
+        config,
+    )
+    .await;
+    client.set_prompt_token_count(2_900);
+
+    publish_user(&bus, session_id, "measure the real prompt").await;
+    assert_eq!(
+        wait_for_topic(&store, "chat/reply", session_id).await.len(),
+        1
+    );
+
+    let messages = client.messages_seen();
+    assert_eq!(messages.len(), 1);
+    assert!(messages[0][1].content.contains("(level critical)"));
+    assert!(messages[0][1].content.contains("(estimated-tokens 2900)"));
+    assert!(messages[0][1]
+        .content
+        .contains("(token-source test-native-tokenizer)"));
+    assert!(messages[0][1].content.contains("(token-accuracy exact)"));
+    assert!(messages[0][1]
+        .content
+        .contains("(token-scope full-work-prompt)"));
+    assert_eq!(client.tools_seen()[0], vec!["context_tx", "reply"]);
+}
+
+#[tokio::test]
 async fn test_critical_transaction_that_relieves_pressure_cools_down_next_attempt() {
     let session_id = "attempt_context_critical_then_cooldown";
     let config = morphz::config::OrchestratorConfig {
@@ -1727,7 +1811,7 @@ async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
         },
     ]));
     let config = morphz::config::OrchestratorConfig {
-        max_attempts_per_turn: 4,
+        attempt_soft_checkpoint_interval: 4,
         max_context_transactions_per_turn: 1,
         ..Default::default()
     };
@@ -1762,7 +1846,8 @@ async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
         .await
         .unwrap();
     assert_eq!(context.state.version, 1);
-    assert_eq!(context.turn_budget.attempt, 3);
+    assert_eq!(context.turn_budget.attempt, 4);
+    assert_eq!(context.turn_budget.phase, "soft-checkpoint");
     assert_eq!(context.turn_budget.context_transactions_used, 2);
     assert!(!context.turn_budget.context_tx_available);
     assert!(context
@@ -1844,7 +1929,7 @@ async fn test_attempt_loop_parallel_tool_barrier_single_reply() {
 }
 
 #[tokio::test]
-async fn test_turn_attempt_budget_forces_reply_only_final_phase() {
+async fn test_turn_soft_checkpoint_preserves_tools_and_continues() {
     let session_id = "attempt_budget";
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("attempt-budget.db");
@@ -1857,9 +1942,10 @@ async fn test_turn_attempt_budget_forces_reply_only_final_phase() {
         calls: AtomicUsize::new(0),
         tool_counts: Mutex::new(Vec::new()),
         read_path: note.path().to_string_lossy().into_owned(),
+        reply_after: 4,
     });
     let config = morphz::config::OrchestratorConfig {
-        max_attempts_per_turn: 3,
+        attempt_soft_checkpoint_interval: 3,
         ..Default::default()
     };
     let engine = Arc::new(ContextEngine::new(
@@ -1884,21 +1970,21 @@ async fn test_turn_attempt_budget_forces_reply_only_final_phase() {
     let tool_outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
 
     assert_eq!(replies.len(), 1);
-    assert_eq!(assistant_calls.len(), 3);
-    assert_eq!(tool_outputs.len(), 2);
-    assert_eq!(client.calls.load(Ordering::SeqCst), 3);
-    assert_eq!(client.tool_counts.lock().unwrap().as_slice(), &[2, 2, 1]);
+    assert_eq!(assistant_calls.len(), 4);
+    assert_eq!(tool_outputs.len(), 3);
+    assert_eq!(client.calls.load(Ordering::SeqCst), 4);
+    assert_eq!(client.tool_counts.lock().unwrap().as_slice(), &[2, 2, 2, 2]);
     assert_eq!(
         replies[0]
             .payload
             .get("text")
             .and_then(|value| value.as_str()),
-        Some("budget forced final")
+        Some("soft checkpoint continued")
     );
 }
 
 #[tokio::test]
-async fn test_attempt_budget_reserves_context_closure_before_final_reply() {
+async fn test_soft_checkpoint_allows_context_maintenance_without_forcing_final_reply() {
     let session_id = "attempt_context_closure";
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("context-closure.db");
@@ -1945,7 +2031,7 @@ async fn test_attempt_budget_reserves_context_closure_before_final_reply() {
         },
     ]));
     let config = morphz::config::OrchestratorConfig {
-        max_attempts_per_turn: 3,
+        attempt_soft_checkpoint_interval: 3,
         ..Default::default()
     };
     let engine = Arc::new(ContextEngine::new(
@@ -1980,8 +2066,12 @@ async fn test_attempt_budget_reserves_context_closure_before_final_reply() {
     assert_eq!(tools_seen.len(), 4);
     assert!(tools_seen[0].contains(&"read".to_string()));
     assert!(tools_seen[1].contains(&"read".to_string()));
-    assert_eq!(tools_seen[2], vec!["context_tx", "reply"]);
-    assert_eq!(tools_seen[3], vec!["reply"]);
+    assert!(tools_seen[2].contains(&"read".to_string()));
+    assert!(tools_seen[2].contains(&"context_tx".to_string()));
+    assert!(tools_seen[2].contains(&"reply".to_string()));
+    assert!(tools_seen[3].contains(&"read".to_string()));
+    assert!(!tools_seen[3].contains(&"context_tx".to_string()));
+    assert!(tools_seen[3].contains(&"reply".to_string()));
 
     let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
     assert_eq!(assistant_calls.len(), 4);
@@ -1990,20 +2080,20 @@ async fn test_attempt_budget_reserves_context_closure_before_final_reply() {
             .payload
             .get("phase")
             .and_then(|value| value.as_str()),
-        Some("context-closure")
+        Some("soft-checkpoint")
     );
     let context = orchestrator
         .get_current_context_view(session_id)
         .await
         .unwrap();
     assert_eq!(context.state.version, 1);
-    assert_eq!(context.turn_budget.phase, "final-reply");
+    assert_eq!(context.turn_budget.phase, "work");
     assert!(context.state.frames[0].body.contains("completed"));
     assert!(context.state.frames[0].body.contains("tests-passed"));
 }
 
 #[tokio::test]
-async fn test_failed_context_closure_still_terminates_with_final_reply() {
+async fn test_failed_context_tx_at_soft_checkpoint_does_not_force_final_reply() {
     let session_id = "attempt_failed_context_closure";
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("failed-context-closure.db");
@@ -2041,7 +2131,7 @@ async fn test_failed_context_closure_still_terminates_with_final_reply() {
         },
     ]));
     let config = morphz::config::OrchestratorConfig {
-        max_attempts_per_turn: 2,
+        attempt_soft_checkpoint_interval: 2,
         ..Default::default()
     };
     let engine = Arc::new(ContextEngine::new(
@@ -2065,14 +2155,18 @@ async fn test_failed_context_closure_still_terminates_with_final_reply() {
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
     assert_eq!(replies.len(), 1);
     assert_eq!(client.tools_seen().len(), 3);
-    assert_eq!(client.tools_seen()[1], vec!["context_tx", "reply"]);
-    assert_eq!(client.tools_seen()[2], vec!["reply"]);
+    assert!(client.tools_seen()[1].contains(&"read".to_string()));
+    assert!(client.tools_seen()[1].contains(&"context_tx".to_string()));
+    assert!(client.tools_seen()[1].contains(&"reply".to_string()));
+    assert!(client.tools_seen()[2].contains(&"read".to_string()));
+    assert!(client.tools_seen()[2].contains(&"context_tx".to_string()));
+    assert!(client.tools_seen()[2].contains(&"reply".to_string()));
     let context = orchestrator
         .get_current_context_view(session_id)
         .await
         .unwrap();
     assert_eq!(context.state.version, 0);
-    assert_eq!(context.turn_budget.phase, "final-reply");
+    assert_eq!(context.turn_budget.phase, "soft-checkpoint");
 }
 
 #[tokio::test]
@@ -2115,10 +2209,10 @@ async fn test_edit_file_change_becomes_next_attempt_observation() {
         Arc::clone(&store) as Arc<dyn EventStore>,
         config.clone(),
     ));
-    let security = Arc::new(ToolSecurityConfig {
+    let security = Arc::new(PermissionConfig {
         workspace_root: tmp.path().to_string_lossy().to_string(),
-        extra_read_roots: Vec::new(),
-        extra_write_roots: Vec::new(),
+        read_roots: Vec::new(),
+        write_roots: Vec::new(),
         ..Default::default()
     });
     let registry = Arc::new(Registry::new());

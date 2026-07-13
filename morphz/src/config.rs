@@ -1,4 +1,7 @@
-use serde::Deserialize;
+use crate::permission::{
+    ApprovalPolicy, PermissionConfig, PermissionMode, ReviewerKind, SandboxMode,
+};
+use serde::{Deserialize, Deserializer};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 
@@ -44,8 +47,11 @@ pub fn load_env(filepath: &str) -> io::Result<()> {
 pub struct OrchestratorConfig {
     /// 并发信号量限制
     pub concurrency_limit: usize,
-    /// 回复等待超时（秒）
-    pub reply_timeout_secs: u64,
+    /// 等待最终回复期间的进度提示间隔（秒）；0 表示不提示。
+    ///
+    /// 这不是任务超时：交互端会持续等待，直到 Agent 回复或用户主动中断。
+    #[serde(alias = "reply_timeout_secs")]
+    pub reply_wait_notice_secs: u64,
     /// 工具执行超时（秒）
     pub tool_timeout_secs: u64,
     /// 完整一次 LLM Attempt 的绝对超时（包含 Client 内部重试与响应解析）
@@ -58,9 +64,10 @@ pub struct OrchestratorConfig {
     pub context_maintenance_reserve_tokens: usize,
     /// 单条原始 Observation 在 Context 中展示的最大字符数；原文仍保留在 Ledger
     pub observation_preview_chars: usize,
-    /// 单条用户消息的 Attempt 上限；达到上限时进入一次 context_tx-only 收口，再无工具回复
-    pub max_attempts_per_turn: usize,
-    /// 普通 work 阶段允许提交的 Context transaction 次数；最终收口另有一次保留机会
+    /// 单条用户消息的模型求值软检查点间隔；只提示复盘，不限制任务继续执行。
+    #[serde(alias = "max_attempts_per_turn")]
+    pub attempt_soft_checkpoint_interval: usize,
+    /// 单个用户回合允许提交的 Context transaction 次数；不限制物理工具或回复
     pub max_context_transactions_per_turn: usize,
     /// 是否允许同一 Context 中同时就绪的多个 Session 合并为一次模型求值。
     pub merged_evaluation_enabled: bool,
@@ -74,14 +81,14 @@ impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
             concurrency_limit: 4,
-            reply_timeout_secs: 120,
+            reply_wait_notice_secs: 120,
             tool_timeout_secs: 30,
             model_attempt_timeout_secs: 180,
             context_soft_token_limit: 196_608,
             context_hard_token_limit: 262_144,
             context_maintenance_reserve_tokens: 32_768,
             observation_preview_chars: 16_000,
-            max_attempts_per_turn: 12,
+            attempt_soft_checkpoint_interval: 90,
             max_context_transactions_per_turn: 6,
             merged_evaluation_enabled: false,
             session_batch_coalesce_ms: 25,
@@ -183,10 +190,10 @@ impl Default for LlmConfig {
     }
 }
 
-/// 工具安全配置：默认启用 workspace jail，但允许高级用户显式关闭。
+/// 旧版 [tool_security] 仅用于无损迁移配置文件，不再进入 Runtime。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
-pub struct ToolSecurityConfig {
+struct LegacyToolSecurityConfig {
     pub workspace_jail_enabled: bool,
     pub workspace_root: String,
     pub allow_absolute_paths: bool,
@@ -194,13 +201,15 @@ pub struct ToolSecurityConfig {
     pub extra_read_roots: Vec<String>,
     pub extra_write_roots: Vec<String>,
     pub deny_patterns: Vec<String>,
-    /// macOS 上通过 sandbox-exec 为 exec 子进程施加文件系统/网络 Seatbelt。
-    pub exec_seatbelt_enabled: bool,
-    /// Seatbelt 开启时是否允许 exec 子进程访问网络；Coding Eval 默认关闭。
+    /// 通过当前操作系统的原生 Backend 为 exec 子进程树施加文件系统/网络隔离。
+    /// 兼容读取旧配置名 exec_seatbelt_enabled。
+    #[serde(alias = "exec_seatbelt_enabled")]
+    pub exec_sandbox_enabled: bool,
+    /// 原生沙箱开启时是否允许 exec 子进程访问网络。
     pub exec_network_enabled: bool,
 }
 
-impl Default for ToolSecurityConfig {
+impl Default for LegacyToolSecurityConfig {
     fn default() -> Self {
         Self {
             workspace_jail_enabled: true,
@@ -218,8 +227,52 @@ impl Default for ToolSecurityConfig {
                 "*.safetensors".to_string(),
                 "*.onnx".to_string(),
             ],
-            exec_seatbelt_enabled: false,
+            // 默认要求沙箱存在。未实现或未验证的平台必须 fail-closed，
+            // 只有操作者显式关闭该开关时才允许退回未隔离 Shell。
+            exec_sandbox_enabled: true,
             exec_network_enabled: false,
+        }
+    }
+}
+
+impl LegacyToolSecurityConfig {
+    fn migrate(self) -> PermissionConfig {
+        let fully_unconfined = !self.workspace_jail_enabled && !self.exec_sandbox_enabled;
+        let mut protected_paths = self
+            .deny_patterns
+            .into_iter()
+            .map(|pattern| match pattern.as_str() {
+                ".env" => "**/.env".to_string(),
+                ".env.*" => "**/.env.*".to_string(),
+                ".git/**" => "**/.git/**".to_string(),
+                other => other.to_string(),
+            })
+            .collect::<Vec<_>>();
+        protected_paths.sort();
+        protected_paths.dedup();
+        PermissionConfig {
+            mode: if fully_unconfined {
+                PermissionMode::FullAccess
+            } else {
+                PermissionMode::Custom
+            },
+            workspace_root: self.workspace_root,
+            read_roots: self.extra_read_roots,
+            write_roots: self.extra_write_roots,
+            protected_paths,
+            network: self.exec_network_enabled,
+            sandbox_mode: if self.exec_sandbox_enabled {
+                SandboxMode::WorkspaceWrite
+            } else {
+                SandboxMode::DangerFullAccess
+            },
+            approval_policy: if fully_unconfined {
+                ApprovalPolicy::Never
+            } else {
+                ApprovalPolicy::OnRequest
+            },
+            reviewer: ReviewerKind::AutoReview,
+            ..PermissionConfig::default()
         }
     }
 }
@@ -247,20 +300,51 @@ impl Default for BackgroundTaskConfig {
 }
 
 /// 工业化全局配置（聚合所有子配置）
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default)]
 pub struct AppConfig {
-    #[serde(default)]
     pub server: ServerConfig,
-    #[serde(default)]
     pub orchestrator: OrchestratorConfig,
-    #[serde(default)]
     pub memory: MemoryConfig,
-    #[serde(default)]
     pub llm: LlmConfig,
-    #[serde(default)]
-    pub tool_security: ToolSecurityConfig,
-    #[serde(default)]
+    pub permissions: PermissionConfig,
     pub background_task: BackgroundTaskConfig,
+}
+
+#[derive(Deserialize, Default)]
+struct AppConfigWire {
+    #[serde(default)]
+    server: ServerConfig,
+    #[serde(default)]
+    orchestrator: OrchestratorConfig,
+    #[serde(default)]
+    memory: MemoryConfig,
+    #[serde(default)]
+    llm: LlmConfig,
+    permissions: Option<PermissionConfig>,
+    tool_security: Option<LegacyToolSecurityConfig>,
+    #[serde(default)]
+    background_task: BackgroundTaskConfig,
+}
+
+impl<'de> Deserialize<'de> for AppConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = AppConfigWire::deserialize(deserializer)?;
+        let permissions = wire
+            .permissions
+            .or_else(|| wire.tool_security.map(LegacyToolSecurityConfig::migrate))
+            .unwrap_or_default();
+        Ok(Self {
+            server: wire.server,
+            orchestrator: wire.orchestrator,
+            memory: wire.memory,
+            llm: wire.llm,
+            permissions,
+            background_task: wire.background_task,
+        })
+    }
 }
 
 impl AppConfig {
@@ -282,10 +366,10 @@ impl AppConfig {
     pub fn apply_runtime_env_overrides(&mut self) -> Result<(), String> {
         if let Ok(root) = std::env::var("MORPHZ_WORKSPACE_ROOT") {
             if !root.trim().is_empty() {
-                self.tool_security.workspace_root = root;
+                self.permissions.workspace_root = root;
                 // 严格评测模式下不继承默认 /tmp extra roots，避免文件工具逃逸。
-                self.tool_security.extra_read_roots.clear();
-                self.tool_security.extra_write_roots.clear();
+                self.permissions.read_roots.clear();
+                self.permissions.write_roots.clear();
             }
         }
         if let Ok(path) = std::env::var("MORPHZ_ARTIFACT_DIR") {
@@ -296,17 +380,44 @@ impl AppConfig {
                     .and_then(|value| parse_env_bool(&value))
                     == Some(true)
                 {
-                    self.tool_security.extra_read_roots.push(path);
+                    self.permissions.read_roots.push(path);
                 }
             }
         }
-        if let Ok(value) = std::env::var("MORPHZ_EXEC_SEATBELT") {
-            self.tool_security.exec_seatbelt_enabled = parse_env_bool(&value)
-                .ok_or_else(|| format!("MORPHZ_EXEC_SEATBELT 不是合法布尔值: {value}"))?;
+        let sandbox_override = std::env::var("MORPHZ_EXEC_SANDBOX")
+            .ok()
+            .map(|value| ("MORPHZ_EXEC_SANDBOX", value))
+            .or_else(|| {
+                std::env::var("MORPHZ_EXEC_SEATBELT")
+                    .ok()
+                    .map(|value| ("MORPHZ_EXEC_SEATBELT", value))
+            });
+        if let Some((name, value)) = sandbox_override {
+            let enabled =
+                parse_env_bool(&value).ok_or_else(|| format!("{name} 不是合法布尔值: {value}"))?;
+            eprintln!("⚠️ [Config] {name} 已废弃；请改用 MORPHZ_PERMISSION_MODE 或 [permissions]");
+            self.permissions.mode = PermissionMode::Custom;
+            self.permissions.sandbox_mode = if enabled {
+                SandboxMode::WorkspaceWrite
+            } else {
+                SandboxMode::DangerFullAccess
+            };
+            if !enabled {
+                self.permissions.approval_policy = ApprovalPolicy::Never;
+            }
         }
         if let Ok(value) = std::env::var("MORPHZ_EXEC_NETWORK") {
-            self.tool_security.exec_network_enabled = parse_env_bool(&value)
+            self.permissions.network = parse_env_bool(&value)
                 .ok_or_else(|| format!("MORPHZ_EXEC_NETWORK 不是合法布尔值: {value}"))?;
+        }
+        if let Ok(value) = std::env::var("MORPHZ_PERMISSION_MODE") {
+            self.permissions.mode = match value.trim().to_ascii_lowercase().as_str() {
+                "request_approval" | "request-approval" | "ask" => PermissionMode::RequestApproval,
+                "auto_review" | "auto-review" | "auto" => PermissionMode::AutoReview,
+                "full_access" | "full-access" | "danger_full_access" => PermissionMode::FullAccess,
+                "custom" => PermissionMode::Custom,
+                _ => return Err(format!("MORPHZ_PERMISSION_MODE 不是合法模式: {value}")),
+            };
         }
         apply_usize_env(
             "MORPHZ_CONTEXT_SOFT_TOKEN_LIMIT",
@@ -333,8 +444,19 @@ impl AppConfig {
             &mut self.orchestrator.model_attempt_timeout_secs,
         )?;
         apply_u64_env(
-            "MORPHZ_REPLY_TIMEOUT_SECS",
-            &mut self.orchestrator.reply_timeout_secs,
+            "MORPHZ_REPLY_WAIT_NOTICE_SECS",
+            &mut self.orchestrator.reply_wait_notice_secs,
+        )?;
+        // 兼容旧配置名；它现在只控制等待提示间隔，不再终止等待。
+        if std::env::var_os("MORPHZ_REPLY_WAIT_NOTICE_SECS").is_none() {
+            apply_u64_env(
+                "MORPHZ_REPLY_TIMEOUT_SECS",
+                &mut self.orchestrator.reply_wait_notice_secs,
+            )?;
+        }
+        apply_usize_env(
+            "MORPHZ_ATTEMPT_SOFT_CHECKPOINT_INTERVAL",
+            &mut self.orchestrator.attempt_soft_checkpoint_interval,
         )?;
         apply_u32_env("MORPHZ_LLM_MAX_RETRIES", &mut self.llm.max_retries)?;
         apply_optional_u32_env(
@@ -471,8 +593,10 @@ mod tests {
         assert_eq!(cfg.llm.max_retries, 5);
         assert_eq!(cfg.llm.request_timeout_secs, 120);
         assert_eq!(cfg.llm.max_output_tokens, None);
+        assert_eq!(cfg.orchestrator.reply_wait_notice_secs, 120);
+        assert_eq!(cfg.orchestrator.attempt_soft_checkpoint_interval, 90);
         assert!(!cfg.orchestrator.merged_evaluation_enabled);
-        assert!(cfg.tool_security.workspace_jail_enabled);
+        assert_eq!(cfg.permissions.mode, PermissionMode::AutoReview);
         assert_eq!(cfg.background_task.timeout_notify_secs, 300);
     }
 
@@ -507,6 +631,50 @@ mod tests {
         assert_eq!(cfg.orchestrator.concurrency_limit, 2);
         assert_eq!(cfg.orchestrator.tool_timeout_secs, 30);
         assert_eq!(cfg.server.bind, "127.0.0.1:8080");
+    }
+
+    #[test]
+    fn legacy_tool_security_section_migrates_into_unified_permissions() {
+        let mut tmp_file = NamedTempFile::new().unwrap();
+        writeln!(tmp_file, "[tool_security]").unwrap();
+        writeln!(tmp_file, "workspace_root = \".\"").unwrap();
+        writeln!(tmp_file, "extra_read_roots = []").unwrap();
+        writeln!(tmp_file, "extra_write_roots = []").unwrap();
+        writeln!(tmp_file, "exec_network_enabled = true").unwrap();
+
+        let cfg = AppConfig::load_or_default(tmp_file.path().to_str().unwrap());
+        assert_eq!(cfg.permissions.mode, PermissionMode::Custom);
+        assert_eq!(cfg.permissions.sandbox_mode, SandboxMode::WorkspaceWrite);
+        assert!(cfg.permissions.network);
+        assert!(cfg
+            .permissions
+            .protected_paths
+            .iter()
+            .any(|pattern| pattern == "**/.git/**"));
+    }
+
+    #[test]
+    fn new_permissions_section_takes_precedence_over_legacy_section() {
+        let mut tmp_file = NamedTempFile::new().unwrap();
+        writeln!(tmp_file, "[permissions]").unwrap();
+        writeln!(tmp_file, "mode = \"full_access\"").unwrap();
+        writeln!(tmp_file, "\n[tool_security]").unwrap();
+        writeln!(tmp_file, "workspace_jail_enabled = true").unwrap();
+
+        let cfg = AppConfig::load_or_default(tmp_file.path().to_str().unwrap());
+        assert_eq!(cfg.permissions.mode, PermissionMode::FullAccess);
+    }
+
+    #[test]
+    fn test_legacy_timeout_and_attempt_names_map_to_non_terminal_controls() {
+        let mut tmp_file = NamedTempFile::new().unwrap();
+        writeln!(tmp_file, "[orchestrator]").unwrap();
+        writeln!(tmp_file, "reply_timeout_secs = 7").unwrap();
+        writeln!(tmp_file, "max_attempts_per_turn = 11").unwrap();
+
+        let cfg = AppConfig::load_or_default(tmp_file.path().to_str().unwrap());
+        assert_eq!(cfg.orchestrator.reply_wait_notice_secs, 7);
+        assert_eq!(cfg.orchestrator.attempt_soft_checkpoint_interval, 11);
     }
 
     #[test]

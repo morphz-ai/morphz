@@ -20,7 +20,7 @@ use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 11;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 12;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 
 struct ContextOperationSpec {
@@ -296,6 +296,18 @@ pub struct ContextUsage {
 pub struct ContextPressure {
     pub level: String,
     pub estimated_tokens: usize,
+    /// `context-components-heuristic`、`openai-compatible-request-estimate` 等计量来源。
+    #[serde(default = "default_context_token_source")]
+    pub token_source: String,
+    /// `exact`、`local-tokenizer-estimate`、`usage-calibrated-estimate`
+    /// 或 `heuristic-estimate`。
+    #[serde(default = "default_context_token_accuracy")]
+    pub token_accuracy: String,
+    /// `context-components` 表示早期回退；`full-work-prompt` 表示已覆盖完整工作消息与工具定义。
+    #[serde(default = "default_context_token_scope")]
+    pub token_scope: String,
+    #[serde(default)]
+    pub token_model: Option<String>,
     pub soft_limit: usize,
     pub hard_limit: usize,
     pub maintenance_reserve: usize,
@@ -303,17 +315,30 @@ pub struct ContextPressure {
     pub active_observations: usize,
 }
 
+fn default_context_token_source() -> String {
+    "context-components-heuristic".to_string()
+}
+
+fn default_context_token_accuracy() -> String {
+    "heuristic-estimate".to_string()
+}
+
+fn default_context_token_scope() -> String {
+    "context-components".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TurnBudget {
     pub attempt: usize,
-    pub limit: usize,
-    pub remaining_including_current: usize,
+    pub checkpoint_interval: usize,
+    pub next_checkpoint_at: usize,
+    pub attempts_until_checkpoint: usize,
+    pub checkpoint_due: bool,
     pub context_transactions_used: usize,
     pub context_transactions_limit: usize,
     pub context_tx_available: bool,
-    /// `work`、`context-closure` 或 `final-reply`。
+    /// `work` 或 `soft-checkpoint`。检查点不会限制工具，也不会强制结束任务。
     pub phase: String,
-    pub force_final: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -800,6 +825,48 @@ impl ContextEngine {
             wake,
             sexpr,
         })
+    }
+
+    /// 用模型客户端对“完整 Prompt”的计量结果替换 Context 局部字符估算，并重新
+    /// 编码 Context，使 Agent 在本轮就能看到真实压力等级。
+    pub async fn apply_prompt_token_count(
+        &self,
+        view: &mut ContextView,
+        count: &crate::llm::PromptTokenCount,
+    ) -> Result<(), DynError> {
+        let events = self.context_events(&view.context_id).await?;
+        let references = ContextReferences::from_events(&events);
+        let active_frames = view
+            .state
+            .frames
+            .iter()
+            .filter(|frame| !view.state.retired.contains(&frame.id))
+            .count();
+        let mut pressure = pressure_for(
+            count.tokens,
+            active_frames,
+            view.observations.len(),
+            &self.config,
+        );
+        pressure.token_source = count.source.clone();
+        pressure.token_accuracy = count.accuracy.as_str().to_string();
+        pressure.token_scope = "full-work-prompt".to_string();
+        pressure.token_model = Some(count.model.clone());
+        view.pressure = pressure;
+        view.sexpr = render_context(ContextRenderInput {
+            context_id: &view.context_id,
+            active_session_id: &view.active_session_id,
+            parent_session_id: view.parent_session_id.as_deref(),
+            ready_sessions: &view.ready_sessions,
+            sessions: &view.sessions,
+            state: &view.state,
+            observations: &view.observations,
+            pressure: &view.pressure,
+            turn_budget: &view.turn_budget,
+            wake: &view.wake,
+            references: &references,
+        });
+        Ok(())
     }
 
     pub async fn find_event(
@@ -1778,15 +1845,30 @@ fn render_wake(wake: &WakeSignal, references: &ContextReferences) -> SExpr {
     list("wake", fields)
 }
 
-fn render_turn_budget(turn_budget: &TurnBudget) -> SExpr {
+fn render_turn_control(turn_budget: &TurnBudget) -> SExpr {
     list(
-        "turn-budget",
+        "turn-control",
         vec![
             pair("attempt", atom(turn_budget.attempt.to_string())),
-            pair("limit", atom(turn_budget.limit.to_string())),
             pair(
-                "remaining-including-current",
-                atom(turn_budget.remaining_including_current.to_string()),
+                "checkpoint-interval",
+                atom(turn_budget.checkpoint_interval.to_string()),
+            ),
+            pair(
+                "next-checkpoint-at",
+                atom(turn_budget.next_checkpoint_at.to_string()),
+            ),
+            pair(
+                "attempts-until-checkpoint",
+                atom(turn_budget.attempts_until_checkpoint.to_string()),
+            ),
+            pair(
+                "checkpoint-due",
+                atom(if turn_budget.checkpoint_due {
+                    "true"
+                } else {
+                    "false"
+                }),
             ),
             pair(
                 "context-transactions-used",
@@ -1805,14 +1887,6 @@ fn render_turn_budget(turn_budget: &TurnBudget) -> SExpr {
                 }),
             ),
             pair("phase", atom(&turn_budget.phase)),
-            pair(
-                "force-final",
-                atom(if turn_budget.force_final {
-                    "true"
-                } else {
-                    "false"
-                }),
-            ),
         ],
     )
 }
@@ -1850,7 +1924,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                         fields.push(pair("input-preview", atom(input_preview)));
                     }
                     fields.push(render_wake(&ready.wake, references));
-                    fields.push(render_turn_budget(&ready.turn_budget));
+                    fields.push(render_turn_control(&ready.turn_budget));
                     list("session", fields)
                 })
                 .collect(),
@@ -1872,6 +1946,14 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                 "estimated-tokens",
                 atom(pressure.estimated_tokens.to_string()),
             ),
+            pair("token-source", atom(&pressure.token_source)),
+            pair("token-accuracy", atom(&pressure.token_accuracy)),
+            pair("token-scope", atom(&pressure.token_scope)),
+            pressure
+                .token_model
+                .as_deref()
+                .map(|model| pair("token-model", atom(model)))
+                .unwrap_or_else(|| pair("token-model", atom("unknown"))),
             pair("soft-limit", atom(pressure.soft_limit.to_string())),
             pair("hard-limit", atom(pressure.hard_limit.to_string())),
             pair(
@@ -1885,7 +1967,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
             ),
         ],
     ));
-    kernel.push(render_turn_budget(turn_budget));
+    kernel.push(render_turn_control(turn_budget));
 
     let session_directory = list(
         "session-directory",
@@ -2463,6 +2545,10 @@ fn pressure_for(
     ContextPressure {
         level: level.to_string(),
         estimated_tokens,
+        token_source: default_context_token_source(),
+        token_accuracy: default_context_token_accuracy(),
+        token_scope: default_context_token_scope(),
+        token_model: None,
         soft_limit: config.context_soft_token_limit,
         hard_limit: config.context_hard_token_limit,
         maintenance_reserve: config.context_maintenance_reserve_tokens,
@@ -2472,7 +2558,7 @@ fn pressure_for(
 }
 
 fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget {
-    let limit = config.max_attempts_per_turn.max(1);
+    let checkpoint_interval = config.attempt_soft_checkpoint_interval.max(1);
     let context_transactions_limit = config.max_context_transactions_per_turn.max(1);
     let after_last_user = events
         .iter()
@@ -2483,36 +2569,6 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
         .iter()
         .filter(|event| event.topic == "chat/assistant_call")
         .collect::<Vec<_>>();
-    let closure_attempted = assistant_calls.iter().any(|event| {
-        event.topic == "chat/assistant_call"
-            && event.payload.get("phase").and_then(|value| value.as_str())
-                == Some("context-closure")
-    });
-    let previous_work_attempts = assistant_calls
-        .iter()
-        .filter(|event| {
-            if event.payload.get("phase").and_then(|value| value.as_str())
-                == Some("context-closure")
-            {
-                return false;
-            }
-            event
-                .payload
-                .get("tool_calls")
-                .and_then(|value| value.as_array())
-                .map(|calls| {
-                    calls.iter().any(|call| {
-                        !matches!(
-                            call.get("function")
-                                .and_then(|function| function.get("name"))
-                                .and_then(|value| value.as_str()),
-                            Some("context_tx" | "reply")
-                        )
-                    })
-                })
-                .unwrap_or(true)
-        })
-        .count();
     let context_transactions_used = assistant_calls
         .iter()
         .filter(|event| {
@@ -2530,23 +2586,34 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
                 })
         })
         .count();
-    let attempt = previous_work_attempts.saturating_add(1);
-    let phase = if closure_attempted {
-        "final-reply"
-    } else if attempt < limit {
-        "work"
+    // Attempt 表示本用户回合内的模型求值次数，而不是工具调用数量；一次响应中
+    // 并行发起多个工具仍只算一次。检查点仅在整倍数的求值上出现一次，下一次
+    // 求值自动恢复 work，不会形成需要额外状态解除的硬门槛。
+    let attempt = assistant_calls.len().saturating_add(1);
+    let checkpoint_due = attempt % checkpoint_interval == 0;
+    let next_checkpoint_at = if checkpoint_due {
+        attempt
     } else {
-        "context-closure"
+        attempt
+            .saturating_div(checkpoint_interval)
+            .saturating_add(1)
+            .saturating_mul(checkpoint_interval)
+    };
+    let phase = if checkpoint_due {
+        "soft-checkpoint"
+    } else {
+        "work"
     };
     TurnBudget {
         attempt,
-        limit,
-        remaining_including_current: limit.saturating_sub(attempt).saturating_add(1),
+        checkpoint_interval,
+        next_checkpoint_at,
+        attempts_until_checkpoint: next_checkpoint_at.saturating_sub(attempt),
+        checkpoint_due,
         context_transactions_used,
         context_transactions_limit,
         context_tx_available: context_transactions_used < context_transactions_limit,
         phase: phase.to_string(),
-        force_final: phase == "final-reply",
     }
 }
 
@@ -3201,6 +3268,10 @@ mod tests {
         let pressure = ContextPressure {
             level: "normal".to_string(),
             estimated_tokens: 10,
+            token_source: default_context_token_source(),
+            token_accuracy: default_context_token_accuracy(),
+            token_scope: default_context_token_scope(),
+            token_model: None,
             soft_limit: 100,
             hard_limit: 200,
             maintenance_reserve: 20,
@@ -3209,13 +3280,14 @@ mod tests {
         };
         let mut budget = TurnBudget {
             attempt: 1,
-            limit: 12,
-            remaining_including_current: 12,
+            checkpoint_interval: 90,
+            next_checkpoint_at: 90,
+            attempts_until_checkpoint: 89,
+            checkpoint_due: false,
             context_transactions_used: 0,
             context_transactions_limit: 6,
             context_tx_available: true,
             phase: "work".to_string(),
-            force_final: false,
         };
         let wake = WakeSignal {
             cause: "user-message".to_string(),
@@ -3294,7 +3366,7 @@ mod tests {
     }
 
     #[test]
-    fn turn_budget_counts_attempts_after_latest_user_message() {
+    fn turn_control_emits_a_non_terminal_periodic_soft_checkpoint() {
         let user = Event::new(
             "user:1".to_string(),
             "User".to_string(),
@@ -3312,39 +3384,34 @@ mod tests {
             )
         };
         let config = OrchestratorConfig {
-            max_attempts_per_turn: 3,
+            attempt_soft_checkpoint_interval: 3,
             max_context_transactions_per_turn: 2,
             ..Default::default()
         };
         let events = vec![call("old"), user, call("new-1"), call("new-2")];
-        let closure = turn_budget_for(&events, &config);
-        assert_eq!(closure.attempt, 3);
-        assert_eq!(closure.remaining_including_current, 1);
-        assert_eq!(closure.phase, "context-closure");
-        assert!(!closure.force_final);
+        let checkpoint = turn_budget_for(&events, &config);
+        assert_eq!(checkpoint.attempt, 3);
+        assert_eq!(checkpoint.checkpoint_interval, 3);
+        assert_eq!(checkpoint.next_checkpoint_at, 3);
+        assert_eq!(checkpoint.attempts_until_checkpoint, 0);
+        assert!(checkpoint.checkpoint_due);
+        assert_eq!(checkpoint.phase, "soft-checkpoint");
 
-        let closure_call = Event::new(
-            "closure".to_string(),
-            "Agent".to_string(),
-            TYPE_AGENT_CALL.to_string(),
-            "chat/assistant_call".to_string(),
-            vec![("phase".to_string(), json!("context-closure"))]
-                .into_iter()
-                .collect(),
-        );
-        let final_reply = turn_budget_for(
+        let continued = turn_budget_for(
             &[
                 call("old"),
                 events[1].clone(),
                 call("new-1"),
                 call("new-2"),
-                closure_call,
+                call("new-3"),
             ],
             &config,
         );
-        assert_eq!(final_reply.attempt, 3);
-        assert_eq!(final_reply.phase, "final-reply");
-        assert!(final_reply.force_final);
+        assert_eq!(continued.attempt, 4);
+        assert_eq!(continued.phase, "work");
+        assert!(!continued.checkpoint_due);
+        assert_eq!(continued.next_checkpoint_at, 6);
+        assert_eq!(continued.attempts_until_checkpoint, 2);
     }
 
     #[test]
@@ -3383,7 +3450,7 @@ mod tests {
             .collect(),
         );
         let config = OrchestratorConfig {
-            max_attempts_per_turn: 4,
+            attempt_soft_checkpoint_interval: 4,
             max_context_transactions_per_turn: 2,
             ..Default::default()
         };
@@ -3396,11 +3463,12 @@ mod tests {
             ],
             &config,
         );
-        assert_eq!(budget.attempt, 2);
-        assert_eq!(budget.remaining_including_current, 3);
+        assert_eq!(budget.attempt, 4);
+        assert!(budget.checkpoint_due);
+        assert_eq!(budget.attempts_until_checkpoint, 0);
         assert_eq!(budget.context_transactions_used, 2);
         assert!(!budget.context_tx_available);
-        assert_eq!(budget.phase, "work");
+        assert_eq!(budget.phase, "soft-checkpoint");
     }
 
     #[test]
@@ -3945,6 +4013,13 @@ mod tests {
                 .into_iter()
                 .collect(),
         );
+        let tool_activity = Event::new(
+            "runtime:tool-calls".to_string(),
+            "Runtime-Orchestrator".to_string(),
+            "runtime_control".to_string(),
+            "runtime/tool_calls_selected".to_string(),
+            serde_json::Map::new(),
+        );
         let external_output = Event::new(
             "output:read".to_string(),
             "System-Executor".to_string(),
@@ -3972,6 +4047,7 @@ mod tests {
 
         assert!(!is_observation(&assistant_call));
         assert!(!is_observation(&context_receipt));
+        assert!(!is_observation(&tool_activity));
         assert!(is_observation(&rejected_context));
         assert!(is_observation(&external_output));
     }

@@ -1,0 +1,622 @@
+use serde::{Deserialize, Serialize};
+use std::ffi::OsString;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkPolicy {
+    Deny,
+    Allow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxPolicy {
+    pub read_roots: Vec<PathBuf>,
+    pub write_roots: Vec<PathBuf>,
+    pub denied_read_paths: Vec<PathBuf>,
+    pub denied_write_paths: Vec<PathBuf>,
+    pub network: NetworkPolicy,
+    pub fail_closed: bool,
+}
+
+impl SandboxPolicy {
+    pub fn workspace(workspace_root: impl Into<PathBuf>) -> Self {
+        let workspace_root = workspace_root.into();
+        Self {
+            read_roots: vec![workspace_root.clone()],
+            write_roots: vec![workspace_root],
+            denied_read_paths: Vec::new(),
+            denied_write_paths: Vec::new(),
+            network: NetworkPolicy::Deny,
+            fail_closed: true,
+        }
+    }
+
+    pub fn add_read_root(&mut self, root: impl Into<PathBuf>) {
+        push_unique(&mut self.read_roots, root.into());
+    }
+
+    pub fn add_write_root(&mut self, root: impl Into<PathBuf>) {
+        let root = root.into();
+        push_unique(&mut self.read_roots, root.clone());
+        push_unique(&mut self.write_roots, root);
+    }
+
+    pub fn deny_path(&mut self, path: impl Into<PathBuf>) {
+        let path = path.into();
+        push_unique(&mut self.denied_read_paths, path.clone());
+        push_unique(&mut self.denied_write_paths, path);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendKind {
+    MacOsSeatbelt,
+    LinuxNative,
+    WindowsNative,
+    Unsupported,
+}
+
+impl BackendKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MacOsSeatbelt => "macos-seatbelt",
+            Self::LinuxNative => "linux-native",
+            Self::WindowsNative => "windows-native",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcementStatus {
+    Enforced,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackendReport {
+    pub backend: BackendKind,
+    pub status: EnforcementStatus,
+    pub notes: Vec<String>,
+}
+
+impl BackendReport {
+    fn enforced(backend: BackendKind, note: impl Into<String>) -> Self {
+        Self {
+            backend,
+            status: EnforcementStatus::Enforced,
+            notes: vec![note.into()],
+        }
+    }
+
+    fn unavailable(backend: BackendKind, note: impl Into<String>) -> Self {
+        Self {
+            backend,
+            status: EnforcementStatus::Unavailable,
+            notes: vec![note.into()],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellRequest {
+    pub command: String,
+    pub cwd: PathBuf,
+    pub policy: SandboxPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedCommand {
+    pub program: OsString,
+    pub arguments: Vec<OsString>,
+    pub report: BackendReport,
+}
+
+impl PreparedCommand {
+    pub fn into_tokio_command(self) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new(self.program);
+        command.args(self.arguments);
+        command
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxError {
+    message: String,
+}
+
+impl SandboxError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for SandboxError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SandboxError {}
+
+pub trait SandboxBackend: Send + Sync {
+    fn report(&self) -> BackendReport;
+
+    fn prepare_shell(&self, request: &ShellRequest) -> Result<PreparedCommand, SandboxError>;
+}
+
+#[derive(Clone)]
+pub struct NativeSandbox {
+    backend: Arc<dyn SandboxBackend>,
+}
+
+impl fmt::Debug for NativeSandbox {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NativeSandbox")
+            .field("report", &self.backend.report())
+            .finish()
+    }
+}
+
+impl Default for NativeSandbox {
+    fn default() -> Self {
+        Self::for_current_platform()
+    }
+}
+
+impl NativeSandbox {
+    pub fn for_current_platform() -> Self {
+        Self {
+            backend: platform_backend(),
+        }
+    }
+
+    pub fn with_backend(backend: Arc<dyn SandboxBackend>) -> Self {
+        Self { backend }
+    }
+
+    pub fn report(&self) -> BackendReport {
+        self.backend.report()
+    }
+
+    pub fn prepare_shell(&self, request: &ShellRequest) -> Result<PreparedCommand, SandboxError> {
+        self.backend.prepare_shell(request)
+    }
+
+    pub fn prepare_unconfined_shell(&self, command: &str) -> PreparedCommand {
+        PreparedCommand {
+            program: platform_shell_program(),
+            arguments: platform_shell_arguments(command),
+            report: BackendReport::unavailable(
+                self.backend.report().backend,
+                "原生沙箱已被配置显式关闭；命令未获得操作系统隔离",
+            ),
+        }
+    }
+}
+
+fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.iter().any(|existing| existing == &path) {
+        paths.push(path);
+    }
+}
+
+fn canonical_roots(paths: &[PathBuf], kind: &str) -> Result<Vec<PathBuf>, SandboxError> {
+    let mut roots = Vec::with_capacity(paths.len());
+    for path in paths {
+        let canonical = std::fs::canonicalize(path).map_err(|error| {
+            SandboxError::new(format!(
+                "无法解析沙箱 {kind} root '{}': {error}",
+                path.display()
+            ))
+        })?;
+        push_unique(&mut roots, canonical);
+    }
+    Ok(roots)
+}
+
+#[cfg(target_os = "macos")]
+fn platform_backend() -> Arc<dyn SandboxBackend> {
+    Arc::new(macos::MacOsSeatbeltBackend)
+}
+
+#[cfg(target_os = "linux")]
+fn platform_backend() -> Arc<dyn SandboxBackend> {
+    Arc::new(UnsupportedNativeBackend::new(
+        BackendKind::LinuxNative,
+        "Linux 原生沙箱 Backend 尚未实现和实机验证",
+    ))
+}
+
+#[cfg(windows)]
+fn platform_backend() -> Arc<dyn SandboxBackend> {
+    Arc::new(UnsupportedNativeBackend::new(
+        BackendKind::WindowsNative,
+        "Windows 原生沙箱 Backend 尚未实现和实机验证",
+    ))
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+fn platform_backend() -> Arc<dyn SandboxBackend> {
+    Arc::new(UnsupportedNativeBackend::new(
+        BackendKind::Unsupported,
+        "当前操作系统没有 Morphz 原生沙箱 Backend",
+    ))
+}
+
+#[allow(dead_code)]
+struct UnsupportedNativeBackend {
+    kind: BackendKind,
+    reason: String,
+}
+
+#[allow(dead_code)]
+impl UnsupportedNativeBackend {
+    fn new(kind: BackendKind, reason: impl Into<String>) -> Self {
+        Self {
+            kind,
+            reason: reason.into(),
+        }
+    }
+}
+
+impl SandboxBackend for UnsupportedNativeBackend {
+    fn report(&self) -> BackendReport {
+        BackendReport::unavailable(self.kind, self.reason.clone())
+    }
+
+    fn prepare_shell(&self, request: &ShellRequest) -> Result<PreparedCommand, SandboxError> {
+        if request.policy.fail_closed {
+            return Err(SandboxError::new(format!(
+                "{}；fail_closed=true，拒绝降级为未隔离 Shell",
+                self.reason
+            )));
+        }
+
+        Ok(PreparedCommand {
+            program: platform_shell_program(),
+            arguments: platform_shell_arguments(&request.command),
+            report: self.report(),
+        })
+    }
+}
+
+#[cfg(windows)]
+fn platform_shell_program() -> OsString {
+    OsString::from("cmd.exe")
+}
+
+#[cfg(not(windows))]
+fn platform_shell_program() -> OsString {
+    OsString::from("/bin/sh")
+}
+
+#[cfg(windows)]
+fn platform_shell_arguments(command: &str) -> Vec<OsString> {
+    vec![OsString::from("/C"), OsString::from(command)]
+}
+
+#[cfg(not(windows))]
+fn platform_shell_arguments(command: &str) -> Vec<OsString> {
+    vec![OsString::from("-c"), OsString::from(command)]
+}
+
+#[cfg(target_os = "macos")]
+mod macos {
+    use super::*;
+
+    pub struct MacOsSeatbeltBackend;
+
+    impl SandboxBackend for MacOsSeatbeltBackend {
+        fn report(&self) -> BackendReport {
+            let executable = Path::new("/usr/bin/sandbox-exec");
+            if executable.is_file() {
+                BackendReport::enforced(
+                    BackendKind::MacOsSeatbelt,
+                    "macOS Seatbelt 可通过 /usr/bin/sandbox-exec 使用",
+                )
+            } else {
+                BackendReport::unavailable(
+                    BackendKind::MacOsSeatbelt,
+                    "/usr/bin/sandbox-exec 不存在",
+                )
+            }
+        }
+
+        fn prepare_shell(&self, request: &ShellRequest) -> Result<PreparedCommand, SandboxError> {
+            let report = self.report();
+            if report.status != EnforcementStatus::Enforced {
+                if request.policy.fail_closed {
+                    return Err(SandboxError::new(format!(
+                        "macOS Seatbelt 不可用；fail_closed=true：{}",
+                        report.notes.join("; ")
+                    )));
+                }
+                return Ok(PreparedCommand {
+                    program: platform_shell_program(),
+                    arguments: platform_shell_arguments(&request.command),
+                    report,
+                });
+            }
+
+            let profile = build_profile(&request.policy)?;
+            Ok(PreparedCommand {
+                program: OsString::from("/usr/bin/sandbox-exec"),
+                arguments: vec![
+                    OsString::from("-p"),
+                    OsString::from(profile),
+                    platform_shell_program(),
+                    OsString::from("-c"),
+                    OsString::from(&request.command),
+                ],
+                report,
+            })
+        }
+    }
+
+    pub fn build_profile(policy: &SandboxPolicy) -> Result<String, SandboxError> {
+        let read_roots = canonical_roots(&policy.read_roots, "read")?;
+        let write_roots = canonical_roots(&policy.write_roots, "write")?;
+        let protected_reads = canonical_roots(&policy.denied_read_paths, "denied read")?;
+        let protected_writes = canonical_roots(&policy.denied_write_paths, "denied write")?;
+        if write_roots.is_empty() {
+            return Err(SandboxError::new(
+                "macOS Seatbelt policy 至少需要一个 write root",
+            ));
+        }
+
+        let network_rule = match policy.network {
+            NetworkPolicy::Deny => "(deny network*)",
+            NetworkPolicy::Allow => "(allow network*)",
+        };
+        let mut denied_read_roots = vec![std::env::temp_dir()];
+        denied_read_roots.extend(protected_reads);
+        let mut allowed_read_roots = Vec::new();
+        if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+            denied_read_roots.push(home.clone());
+            allowed_read_roots.push(home.join(".cargo"));
+            allowed_read_roots.push(home.join(".rustup"));
+        }
+        allowed_read_roots.extend(read_roots.iter().cloned());
+        allowed_read_roots.extend(write_roots.iter().cloned());
+        let denied_read_rules = denied_read_roots
+            .iter()
+            .filter_map(|path| std::fs::canonicalize(path).ok())
+            .map(|path| format!("(deny file-read* (subpath {}))", sbpl_quote(&path)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let allowed_read_rules = allowed_read_roots
+            .iter()
+            .filter(|path| path.exists())
+            .map(|path| format!("(subpath {})", sbpl_quote(path)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let write_rules = write_roots
+            .iter()
+            .map(|path| format!("(subpath {})", sbpl_quote(path)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let denied_write_rules = protected_writes
+            .iter()
+            .map(|path| format!("(deny file-write* (subpath {}))", sbpl_quote(path)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let read_rules = read_roots
+            .iter()
+            .chain(write_roots.iter())
+            .map(|path| format!("(subpath {})", sbpl_quote(path)))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        Ok(format!(
+            "(version 1)\n\
+             (allow default)\n\
+             {network_rule}\n\
+             (deny file-write*)\n\
+             (allow file-write* {write_rules} (literal \"/dev/null\"))\n\
+             {denied_write_rules}\n\
+             {denied_read_rules}\n\
+             (allow file-read* {allowed_read_rules})\n\
+             (allow file-read* {read_rules})\n"
+        ))
+    }
+
+    fn sbpl_quote(path: &Path) -> String {
+        let value = path.to_string_lossy();
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct RecordingBackend;
+
+    impl SandboxBackend for RecordingBackend {
+        fn report(&self) -> BackendReport {
+            BackendReport::enforced(BackendKind::Unsupported, "recording test backend")
+        }
+
+        fn prepare_shell(&self, request: &ShellRequest) -> Result<PreparedCommand, SandboxError> {
+            Ok(PreparedCommand {
+                program: OsString::from("recording-shell"),
+                arguments: vec![OsString::from(&request.command)],
+                report: self.report(),
+            })
+        }
+    }
+
+    #[test]
+    fn unified_backend_can_be_replaced_without_changing_request() {
+        let sandbox = NativeSandbox::with_backend(Arc::new(RecordingBackend));
+        let request = ShellRequest {
+            command: "echo hello".to_string(),
+            cwd: PathBuf::from("."),
+            policy: SandboxPolicy::workspace("."),
+        };
+
+        let prepared = sandbox.prepare_shell(&request).unwrap();
+        assert_eq!(prepared.program, OsString::from("recording-shell"));
+        assert_eq!(prepared.arguments, vec![OsString::from("echo hello")]);
+    }
+
+    #[test]
+    fn unsupported_backend_fails_closed() {
+        let backend =
+            UnsupportedNativeBackend::new(BackendKind::Unsupported, "test backend unavailable");
+        let request = ShellRequest {
+            command: "echo hello".to_string(),
+            cwd: PathBuf::from("."),
+            policy: SandboxPolicy::workspace("."),
+        };
+
+        let error = backend.prepare_shell(&request).unwrap_err();
+        assert!(error.to_string().contains("拒绝降级"));
+    }
+
+    #[test]
+    fn write_roots_are_also_readable() {
+        let mut policy = SandboxPolicy::workspace("workspace");
+        policy.add_write_root("generated");
+        assert!(policy.read_roots.contains(&PathBuf::from("generated")));
+        assert!(policy.write_roots.contains(&PathBuf::from("generated")));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_profile_denies_network_and_limits_writes() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let policy = SandboxPolicy::workspace(&workspace);
+        let profile = macos::build_profile(&policy).unwrap();
+
+        assert!(profile.contains("(deny network*)"));
+        assert!(profile.contains("(deny file-write*)"));
+        assert!(profile.contains(&workspace.to_string_lossy().to_string()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_backend_allows_workspace_write_and_denies_escape() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside = temp.path().join("escape.txt");
+        let sandbox = NativeSandbox::for_current_platform();
+
+        let allowed = sandbox
+            .prepare_shell(&ShellRequest {
+                command: "printf allowed > inside.txt".to_string(),
+                cwd: workspace.clone(),
+                policy: SandboxPolicy::workspace(&workspace),
+            })
+            .unwrap();
+        let allowed_status = std::process::Command::new(&allowed.program)
+            .args(&allowed.arguments)
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        assert!(allowed_status.success());
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("inside.txt")).unwrap(),
+            "allowed"
+        );
+
+        let denied = sandbox
+            .prepare_shell(&ShellRequest {
+                command: format!(
+                    "printf escaped > {}",
+                    shell_quote(&outside.to_string_lossy())
+                ),
+                cwd: workspace.clone(),
+                policy: SandboxPolicy::workspace(&workspace),
+            })
+            .unwrap();
+        let denied_status = std::process::Command::new(&denied.program)
+            .args(&denied.arguments)
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        assert!(!denied_status.success());
+        assert!(!outside.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_backend_denies_protected_path_inside_writable_root() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        let protected = workspace.join(".git");
+        std::fs::create_dir_all(&protected).unwrap();
+        std::fs::write(protected.join("config"), "secret").unwrap();
+        let sandbox = NativeSandbox::for_current_platform();
+        let mut policy = SandboxPolicy::workspace(&workspace);
+        policy.deny_path(&protected);
+
+        let prepared = sandbox
+            .prepare_shell(&ShellRequest {
+                command: "cat .git/config >/dev/null 2>&1 || exit 41; printf changed > .git/config"
+                    .to_string(),
+                cwd: workspace.clone(),
+                policy,
+            })
+            .unwrap();
+        let status = std::process::Command::new(&prepared.program)
+            .args(&prepared.arguments)
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+        assert!(!status.success());
+        assert_eq!(
+            std::fs::read_to_string(protected.join("config")).unwrap(),
+            "secret"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_backend_confines_descendant_shells() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let outside = temp.path().join("descendant-escape.txt");
+        let sandbox = NativeSandbox::for_current_platform();
+        let nested = format!(
+            "/bin/sh -c {}",
+            shell_quote(&format!(
+                "printf escaped > {}",
+                shell_quote(&outside.to_string_lossy())
+            ))
+        );
+        let prepared = sandbox
+            .prepare_shell(&ShellRequest {
+                command: nested,
+                cwd: workspace.clone(),
+                policy: SandboxPolicy::workspace(&workspace),
+            })
+            .unwrap();
+        let status = std::process::Command::new(&prepared.program)
+            .args(&prepared.arguments)
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+
+        assert!(!status.success());
+        assert!(!outside.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn shell_quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\\''"))
+    }
+}

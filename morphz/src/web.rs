@@ -1,3 +1,4 @@
+use crate::approval::{ApprovalDecision, HumanApprovalHub};
 use crate::event::{Event, InMemoryEventBus};
 use crate::memory::{
     DelegationStatus, GraphStore, MessageClaim, NewAgent, NewCognitiveContext, NewSession,
@@ -30,6 +31,7 @@ pub struct Server {
     broadcast_tx: broadcast::Sender<Event>,
     default_agent_id: String,
     default_context_id: String,
+    approval_hub: Option<HumanApprovalHub>,
 }
 
 pub struct ServerDefaults {
@@ -47,6 +49,7 @@ struct AppState {
     auth_token: Option<String>,
     default_agent_id: String,
     default_context_id: String,
+    approval_hub: Option<HumanApprovalHub>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -129,6 +132,12 @@ struct SendMessageRequest {
     client_message_id: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct DecideApprovalRequest {
+    decision: String,
+    rationale: Option<String>,
+}
+
 #[derive(Default, serde::Deserialize)]
 struct EventQuery {
     token: Option<String>,
@@ -178,7 +187,13 @@ impl Server {
             broadcast_tx,
             default_agent_id: defaults.agent_id,
             default_context_id: defaults.context_id,
+            approval_hub: None,
         }
+    }
+
+    pub fn with_approval_hub(mut self, approval_hub: HumanApprovalHub) -> Self {
+        self.approval_hub = Some(approval_hub);
+        self
     }
 
     pub async fn start(
@@ -268,6 +283,7 @@ impl Server {
                 .filter(|token| !token.trim().is_empty()),
             default_agent_id: self.default_agent_id.clone(),
             default_context_id: self.default_context_id.clone(),
+            approval_hub: self.approval_hub.clone(),
         });
 
         // 跨域支持 (CORS)
@@ -329,6 +345,8 @@ impl Server {
                 "/api/delegations/:delegation_id/cancel",
                 post(handle_cancel_delegation),
             )
+            .route("/api/approvals", get(handle_list_approvals))
+            .route("/api/approvals/:approval_id", post(handle_decide_approval))
             .route("/ws", get(handle_ws_upgrade))
             .layer(cors)
             .with_state(Arc::clone(&state));
@@ -349,6 +367,58 @@ impl Server {
         });
 
         Ok(())
+    }
+}
+
+async fn handle_list_approvals(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(hub) = state.approval_hub.as_ref() else {
+        return error_response(StatusCode::NOT_IMPLEMENTED, "人工审批通道未启用");
+    };
+    Json(json!({ "approvals": hub.pending() })).into_response()
+}
+
+async fn handle_decide_approval(
+    State(state): State<Arc<AppState>>,
+    Path(approval_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<DecideApprovalRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(hub) = state.approval_hub.as_ref() else {
+        return error_response(StatusCode::NOT_IMPLEMENTED, "人工审批通道未启用");
+    };
+    let rationale = request
+        .rationale
+        .unwrap_or_else(|| "用户通过 Morphz 审批通道作出决定".to_string());
+    let decision = match request.decision.trim().to_ascii_lowercase().as_str() {
+        "allow" | "allow_once" | "approve" => ApprovalDecision::AllowOnce {
+            rationale,
+            risk_tags: vec!["human-approved".to_string()],
+        },
+        "deny" | "reject" => ApprovalDecision::Deny {
+            rationale,
+            risk_tags: vec!["human-denied".to_string()],
+        },
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "decision 只支持 allow_once 或 deny",
+            )
+        }
+    };
+    match hub.decide(&approval_id, decision) {
+        Ok(()) => Json(json!({ "approval_id": approval_id, "accepted": true })).into_response(),
+        Err(error) => error_response(StatusCode::NOT_FOUND, error),
     }
 }
 
@@ -1351,6 +1421,7 @@ mod tests {
                 auth_token: None,
                 default_agent_id: "agent-test".to_string(),
                 default_context_id: "context-test".to_string(),
+                approval_hub: None,
             }),
             store,
         )

@@ -731,7 +731,7 @@ pub async fn run_metacognition_eval_with_profile(
     command
         .envs(&environment.environment)
         .env("MORPHZ_BIND", "127.0.0.1:0")
-        .env("MORPHZ_REPLY_TIMEOUT_SECS", "600")
+        .env("MORPHZ_REPLY_WAIT_NOTICE_SECS", "600")
         .stdin(Stdio::piped())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));

@@ -8,7 +8,8 @@ broadcast_capacity = 1000
 
 [orchestrator]
 concurrency_limit = 4
-reply_timeout_secs = 120
+# 等待期间每 120 秒提示仍在运行；不会终止任务。设为 0 可关闭提示。
+reply_wait_notice_secs = 120
 tool_timeout_secs = 30
 # 完整一次模型 Attempt 的硬期限；超时后 Runtime 审计并向用户返回可见错误。
 model_attempt_timeout_secs = 180
@@ -16,9 +17,9 @@ context_soft_token_limit = 196608
 context_hard_token_limit = 262144
 context_maintenance_reserve_tokens = 32768
 observation_preview_chars = 16000
-# 达到上限时进入一次 context_tx-only 收口；收口回执后再执行无工具 final reply。
-max_attempts_per_turn = 12
-# Context-only 响应使用独立预算，不占用上述物理工作 Attempt；最终收口另保留一次。
+# 每 90 次模型求值进入一次软检查点；所有工具仍可用，任务会自动继续。
+attempt_soft_checkpoint_interval = 90
+# Context transaction 使用独立预算，避免无效的连续后台维护。
 max_context_transactions_per_turn = 6
 # 实验能力：同一 Context 内近同时到达的 Session 消息可合并求值；
 # 重量编码实测覆盖率不足，因此生产默认仍分别求值，可通过环境变量显式开启。
@@ -47,26 +48,28 @@ request_timeout_secs = 120
 # 可通过 MORPHZ_LLM_MAX_OUTPUT_TOKENS 覆盖；未设置时使用模型服务默认值。
 # max_output_tokens = 131072
 
-[tool_security]
-# 默认启用 workspace jail；高级用户可以显式关闭。
-workspace_jail_enabled = true
+[permissions]
+# request_approval: 越界时由用户审批；auto_review: 越界时由独立 AI 审批；
+# full_access: 关闭文件边界与 OS 沙箱；custom: 使用下方三项高级设置。
+mode = "auto_review"
 workspace_root = "."
-allow_absolute_paths = false
-allow_parent_traversal = false
-extra_read_roots = ["/tmp"]
-extra_write_roots = ["/tmp"]
-deny_patterns = [
-  ".env",
-  ".env.*",
-  ".git/**",
+read_roots = []
+write_roots = []
+protected_paths = [
+  "**/.env",
+  "**/.env.*",
+  "**/.git",
+  "**/.git/**",
+  "**/.ssh",
   "**/.ssh/**",
-  "target/**",
-  "*.safetensors",
-  "*.onnx",
 ]
-# Coding Eval 可通过 MORPHZ_EXEC_SEATBELT=true 临时开启；普通开发默认关闭。
-exec_seatbelt_enabled = false
-exec_network_enabled = false
+network = false
+# 仅在 mode="custom" 时决定执行边界和审批者。
+sandbox_mode = "workspace-write"
+approval_policy = "on_request"
+reviewer = "auto_review"
+# 即使是 full_access，也默认不把 Runtime 的 API Key/Token 传给 Shell；可显式设为 inherit_all。
+shell_environment_policy = "remove_sensitive"
 
 [background_task]
 # 后台任务超过该阈值时只唤醒 LLM，不自动 kill。由 LLM 决定继续等还是调用 kill_task。

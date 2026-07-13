@@ -1,3 +1,4 @@
+pub mod approval;
 pub mod config;
 pub mod context_long_run_eval;
 pub mod context_metacognition_eval;
@@ -9,11 +10,12 @@ pub mod llm;
 pub mod long_horizon_agent_eval;
 pub mod memory;
 pub mod orchestrator;
+pub mod permission;
+pub mod sandbox;
 pub mod sexpr;
 pub mod sexpr_bind_if_eval;
 pub mod sexpr_process_eval;
 pub mod sexpr_reply_eval;
 pub mod sexpr_vm_contract;
 pub mod tool;
-pub mod tool_security;
 pub mod web;

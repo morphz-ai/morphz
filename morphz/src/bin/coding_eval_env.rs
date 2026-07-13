@@ -1,9 +1,10 @@
-use morphz::config::{BackgroundTaskConfig, ToolSecurityConfig};
+use morphz::config::BackgroundTaskConfig;
 use morphz::eval_sandbox::{
     audit_coding_eval, create_coding_eval_v1, create_coding_eval_v2,
     prepare_verification_workspace, record_verification, score_coding_eval, CodingEvalManifest,
 };
 use morphz::event::InMemoryEventBus;
+use morphz::permission::{PermissionConfig, PermissionMode};
 use morphz::tool::{ExecuteCommandTool, Tool};
 use std::path::Path;
 use std::sync::Arc;
@@ -107,12 +108,12 @@ fn load_manifest(
 }
 
 fn seatbelt_tool(manifest: &CodingEvalManifest, workspace_root: &Path) -> ExecuteCommandTool {
-    let security = Arc::new(ToolSecurityConfig {
+    let permissions = Arc::new(PermissionConfig {
+        mode: PermissionMode::AutoReview,
         workspace_root: workspace_root.to_string_lossy().to_string(),
-        extra_read_roots: Vec::new(),
-        extra_write_roots: Vec::new(),
-        exec_seatbelt_enabled: true,
-        exec_network_enabled: false,
+        read_roots: Vec::new(),
+        write_roots: Vec::new(),
+        network: false,
         ..Default::default()
     });
     let background = Arc::new(BackgroundTaskConfig {
@@ -122,7 +123,7 @@ fn seatbelt_tool(manifest: &CodingEvalManifest, workspace_root: &Path) -> Execut
     ExecuteCommandTool::new_with_configs(
         Arc::new(InMemoryEventBus::new()),
         background,
-        security,
+        permissions,
         120,
     )
 }
