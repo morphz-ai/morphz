@@ -182,7 +182,7 @@ fn background_task_snapshot(task: &BackgroundTask) -> serde_json::Value {
     serde_json::json!({
         "task_id": task.id,
         "status": task.status,
-        "command": redact_sensitive_text(&task.cmd_str),
+        "command": task.cmd_str,
         "process_group_id": task.pgid,
         "session_id": task.session_id,
         "context_id": task.context_id,
@@ -214,6 +214,7 @@ struct ExecutionBuffer {
     max_bytes: usize,
     event_coalesce_ms: u64,
     max_event_chars: usize,
+    injected_secret_values: Vec<String>,
     task_id: String,
     bus: Arc<crate::event::InMemoryEventBus>,
     session_id: String,
@@ -222,9 +223,9 @@ struct ExecutionBuffer {
 
 impl ExecutionBuffer {
     fn append(self: &Arc<Self>, text: &str, publish: bool) {
-        // A subprocess may accidentally echo an injected credential. Keep both the bounded
-        // Context preview and the durable artifact safe; secret values are never useful output.
-        let safe_text = redact_sensitive_text(text);
+        // Only values explicitly injected into this child are isolated on the return path.
+        // Runtime never guesses whether arbitrary text "looks like" a secret.
+        let safe_text = isolate_injected_secret_output(text, &self.injected_secret_values);
         let archive_result = match self.archive.lock() {
             Ok(mut archive) => archive.write_all(safe_text.as_bytes()),
             Err(poisoned) => poisoned.into_inner().write_all(safe_text.as_bytes()),
@@ -404,57 +405,19 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-/// Best-effort rendering guard for command previews and control-plane audit records.
-/// High-confidence secret literals are also rejected at the exec boundary.
-pub(crate) fn redact_sensitive_text(input: &str) -> String {
-    let mut output = input.to_string();
-    for prefix in [
-        "agtk_",
-        "sk-",
-        "ghp_",
-        "github_pat_",
-        "xoxb-",
-        "xoxp-",
-        "local-api-",
-    ] {
-        output = redact_prefixed_tokens(&output, prefix);
-    }
-    output = redact_bearer_tokens(&output);
-    for (name, value) in std::env::vars() {
-        if is_secret_environment_name(&name) && value.len() >= 8 && output.contains(&value) {
-            output = output.replace(&value, "[REDACTED_SECRET]");
-        }
-    }
-    output
+fn isolate_injected_secret_output(input: &str, injected_values: &[String]) -> String {
+    injected_values
+        .iter()
+        .fold(input.to_string(), |output, value| {
+            if value.is_empty() {
+                output
+            } else {
+                output.replace(value, "[INJECTED_SECRET_BLOCKED]")
+            }
+        })
 }
 
-fn redact_prefixed_tokens(input: &str, prefix: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut remaining = input;
-    while let Some(offset) = remaining.find(prefix) {
-        output.push_str(&remaining[..offset]);
-        let candidate = &remaining[offset..];
-        let token_len = candidate
-            .char_indices()
-            .take_while(|(_, character)| {
-                character.is_ascii_alphanumeric()
-                    || matches!(character, '_' | '-' | '.' | '~' | '+' | '/' | '=')
-            })
-            .last()
-            .map_or(0, |(index, character)| index + character.len_utf8());
-        if token_len >= 12 {
-            output.push_str("[REDACTED_SECRET]");
-            remaining = &candidate[token_len..];
-        } else {
-            output.push_str(prefix);
-            remaining = &candidate[prefix.len()..];
-        }
-    }
-    output.push_str(remaining);
-    output
-}
-
-fn is_secret_environment_name(name: &str) -> bool {
+fn is_sensitive_environment_name(name: &str) -> bool {
     let upper = name.to_ascii_uppercase();
     upper.contains("TOKEN")
         || upper.contains("SECRET")
@@ -462,42 +425,10 @@ fn is_secret_environment_name(name: &str) -> bool {
         || upper.contains("CREDENTIAL")
         || upper.contains("API_KEY")
         || upper.ends_with("_KEY")
-}
-
-fn is_sensitive_environment_name(name: &str) -> bool {
-    let upper = name.to_ascii_uppercase();
-    is_secret_environment_name(name)
         || upper.starts_with("OPENAI_")
         || upper.starts_with("AWS_")
         || upper.starts_with("GITHUB_")
         || upper == "SSH_AUTH_SOCK"
-}
-
-fn redact_bearer_tokens(input: &str) -> String {
-    let lowercase = input.to_ascii_lowercase();
-    let mut output = String::with_capacity(input.len());
-    let mut cursor = 0;
-    while let Some(relative) = lowercase[cursor..].find("bearer ") {
-        let marker = cursor + relative;
-        let token_start = marker + "bearer ".len();
-        output.push_str(&input[cursor..token_start]);
-        let token_len = input[token_start..]
-            .char_indices()
-            .take_while(|(_, character)| {
-                character.is_ascii_alphanumeric()
-                    || matches!(character, '_' | '-' | '.' | '~' | '+' | '/' | '=')
-            })
-            .last()
-            .map_or(0, |(index, character)| index + character.len_utf8());
-        if token_len == 0 {
-            cursor = token_start;
-            continue;
-        }
-        output.push_str("[REDACTED_SECRET]");
-        cursor = token_start + token_len;
-    }
-    output.push_str(&input[cursor..]);
-    output
 }
 
 fn read_text_snapshot(path: &Path) -> Result<FileSnapshot, String> {
@@ -1838,13 +1769,6 @@ fn validate_secret_env_names(
         {
             return Err(format!("secret_env 包含非法环境变量名 '{name}'").into());
         }
-        if !is_secret_environment_name(normalized) {
-            return Err(format!(
-                "secret_env '{}' 看起来不是敏感变量；普通环境配置不应通过秘密注入通道传递",
-                normalized
-            )
-            .into());
-        }
         if std::env::var_os(normalized).is_none() {
             return Err(format!("secret_env '{}' 在 Runtime 环境中不存在", normalized).into());
         }
@@ -2010,7 +1934,7 @@ impl Tool for ExecuteCommandTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "要在本地终端执行的前台 Shell 命令，例如 'cargo test' 或 'ls'。禁止嵌入 token/key 等秘密字面量，改用 requested_permissions.secret_env 注入环境变量；禁止用 '&' 自行后台化。"
+                    "description": "要在本地终端执行的前台 Shell 命令，例如 'cargo test' 或 'ls'。秘密应通过 requested_permissions.secret_env 按环境变量名注入；禁止用 '&' 自行后台化。"
                 },
                 "cwd": {
                     "type": "string",
@@ -2077,9 +2001,6 @@ impl Tool for ExecuteCommandTool {
         let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
         let cmd_trimmed = args.command.trim();
         validate_managed_shell_command(cmd_trimmed)?;
-        if redact_sensitive_text(cmd_trimmed) != cmd_trimmed {
-            return Err("exec.command 检测到秘密字面量。不要把 token/key 写进命令、进程参数或 Ledger；请将秘密预先放入 Runtime 环境，并通过 requested_permissions.secret_env 只申请变量名。".into());
-        }
 
         let mut request_context = approval_context();
         let mut session_id = args
@@ -2224,8 +2145,12 @@ impl Tool for ExecuteCommandTool {
             }
         }
         let effective_secret_env = approved_secret_env.clone();
+        let mut injected_secret_values = Vec::new();
         for name in approved_secret_env {
             if let Some(value) = std::env::var_os(&name) {
+                if let Some(value) = value.to_str().filter(|value| !value.is_empty()) {
+                    injected_secret_values.push(value.to_string());
+                }
                 cmd.env(name, value);
             }
         }
@@ -2289,6 +2214,7 @@ impl Tool for ExecuteCommandTool {
             max_bytes: self.background_config.max_output_buffer_bytes,
             event_coalesce_ms: self.background_config.output_event_coalesce_ms,
             max_event_chars: self.background_config.max_output_event_chars,
+            injected_secret_values,
             task_id: task_id_clone.clone(),
             bus: bus_clone,
             session_id: session_id_clone,
@@ -2435,10 +2361,7 @@ impl Tool for ExecuteCommandTool {
                                 "elapsed_secs".to_string(),
                                 serde_json::json!(elapsed_secs),
                             );
-                            payload.insert(
-                                "cmd".to_string(),
-                                serde_json::json!(redact_sensitive_text(&cmd_timeout)),
-                            );
+                            payload.insert("cmd".to_string(), serde_json::json!(cmd_timeout));
                             payload
                                 .insert("task_status".to_string(), serde_json::json!(task.status));
                             payload.insert(
@@ -3823,22 +3746,18 @@ mod tests {
     }
 
     #[test]
-    fn sensitive_text_redaction_is_high_confidence_and_preserves_normal_flags() {
-        let redacted = redact_sensitive_text(
-            "curl -H 'Authorization: Bearer abc.def-123' -H 'X-Key: agtk_1234567890'",
-        );
-        assert_eq!(redacted.matches("[REDACTED_SECRET]").count(), 2);
-        assert!(!redacted.contains("abc.def-123"));
-        assert!(!redacted.contains("agtk_1234567890"));
+    fn injected_secret_isolation_never_guesses_from_arbitrary_text() {
+        let input = "wait_task-1783981186436392000-5698 Bearer abc.def-123 agtk_1234567890";
+        assert_eq!(isolate_injected_secret_output(input, &[]), input);
         assert_eq!(
-            redact_sensitive_text("cargo test sk-unit"),
-            "cargo test sk-unit"
+            isolate_injected_secret_output(input, &["abc.def-123".to_string()]),
+            "wait_task-1783981186436392000-5698 Bearer [INJECTED_SECRET_BLOCKED] agtk_1234567890"
         );
     }
 
     #[tokio::test]
-    async fn exec_rejects_secret_literals_and_injects_only_named_environment_secrets() {
-        let literal_error = exec_tool_for_tests(Arc::new(crate::event::InMemoryEventBus::new()))
+    async fn exec_preserves_arbitrary_text_and_isolates_only_named_environment_secrets() {
+        let literal_result = exec_tool_for_tests(Arc::new(crate::event::InMemoryEventBus::new()))
             .execute(
                 &serde_json::json!({
                     "command": "printf agtk_1234567890"
@@ -3846,16 +3765,17 @@ mod tests {
                 .to_string(),
             )
             .await
-            .unwrap_err();
-        assert!(literal_error.to_string().contains("秘密字面量"));
+            .unwrap();
+        let literal_value: serde_json::Value = serde_json::from_str(&literal_result).unwrap();
+        assert_eq!(literal_value["output"], "agtk_1234567890");
 
         let _environment_guard = SECRET_ENV_TEST_LOCK.lock().await;
-        const NAME: &str = "MORPHZ_TEST_SECRET_TOKEN";
+        const NAME: &str = "MORPHZ_TEST_OPAQUE";
         unsafe { std::env::set_var(NAME, "test-secret-value-123") };
         let result = exec_tool_for_tests(Arc::new(crate::event::InMemoryEventBus::new()))
             .execute(
                 &serde_json::json!({
-                    "command": "printf \"$MORPHZ_TEST_SECRET_TOKEN\"",
+                    "command": "printf \"$MORPHZ_TEST_OPAQUE\"",
                     "requested_permissions": { "secret_env": [NAME] }
                 })
                 .to_string(),
@@ -3866,7 +3786,7 @@ mod tests {
         assert_eq!(value["exit_code"], 0);
         assert_eq!(value["effective_boundary"]["secret_env"][0], NAME);
         assert!(!value.to_string().contains("test-secret-value-123"));
-        assert_eq!(value["output"], "[REDACTED_SECRET]");
+        assert_eq!(value["output"], "[INJECTED_SECRET_BLOCKED]");
     }
 
     #[test]
@@ -4265,6 +4185,7 @@ mod tests {
             max_bytes: 5,
             event_coalesce_ms: 10,
             max_event_chars: 128,
+            injected_secret_values: Vec::new(),
             task_id: "buffer_test".to_string(),
             bus: Arc::new(crate::event::InMemoryEventBus::new()),
             session_id: "session_test".to_string(),
@@ -4301,6 +4222,7 @@ mod tests {
             max_bytes: 1024,
             event_coalesce_ms: 20,
             max_event_chars: 128,
+            injected_secret_values: Vec::new(),
             task_id: "buffer_coalesce".to_string(),
             bus,
             session_id: "session_test".to_string(),

@@ -69,24 +69,6 @@ impl ApprovalAction {
     fn digest_material(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| format!("{self:?}"))
     }
-
-    fn redacted(&self) -> Self {
-        match self {
-            Self::Shell { command, cwd } => Self::Shell {
-                command: crate::tool::redact_sensitive_text(command),
-                cwd: cwd.clone(),
-            },
-            Self::ToolOperation {
-                tool,
-                operation,
-                target,
-            } => Self::ToolOperation {
-                tool: tool.clone(),
-                operation: operation.clone(),
-                target: target.clone(),
-            },
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,15 +86,6 @@ pub struct ApprovalRequest {
 pub struct ApprovalEvidence {
     pub latest_user_intent: Option<String>,
     pub recent_user_intents: Vec<String>,
-}
-
-impl ApprovalRequest {
-    fn redacted(&self) -> Self {
-        let mut request = self.clone();
-        request.action = self.action.redacted();
-        request.justification = crate::tool::redact_sensitive_text(&self.justification);
-        request
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,7 +261,7 @@ impl ApprovalProvider for HumanApprovalProvider {
         &self,
         request: &ApprovalRequest,
     ) -> Result<ApprovalDecision, Box<dyn std::error::Error + Send + Sync>> {
-        let request = request.redacted();
+        let request = request.clone();
         let (sender, receiver) = oneshot::channel();
         self.hub.insert(request.clone(), sender)?;
         let request_event = Event::new(
@@ -409,12 +382,9 @@ impl AiAutoReviewProvider {
             .filter_map(|event| event.payload.get("text").and_then(|value| value.as_str()))
             .take(4)
             .map(|text| {
-                crate::tool::redact_sensitive_text(
-                    &text
-                        .chars()
-                        .take(self.max_user_intent_chars)
-                        .collect::<String>(),
-                )
+                text.chars()
+                    .take(self.max_user_intent_chars)
+                    .collect::<String>()
             })
             .collect::<Vec<_>>();
         let latest_user_intent = recent_user_intents.first().cloned();
@@ -444,17 +414,15 @@ impl AiAutoReviewProvider {
                     ("attempt_id".to_string(), json!(request.attempt_id)),
                     ("approval_id".to_string(), json!(request.approval_id)),
                     ("action_sha256".to_string(), json!(digest)),
-                    ("action".to_string(), json!(request.action.redacted())),
+                    ("action".to_string(), json!(request.action)),
                     ("requested".to_string(), json!(request.requested)),
                     (
                         "justification".to_string(),
-                        json!(crate::tool::redact_sensitive_text(
-                            &request
-                                .justification
-                                .chars()
-                                .take(2_000)
-                                .collect::<String>()
-                        )),
+                        json!(request
+                            .justification
+                            .chars()
+                            .take(2_000)
+                            .collect::<String>()),
                     ),
                 ]
                 .into_iter()
@@ -506,9 +474,8 @@ impl ApprovalProvider for AiAutoReviewProvider {
     ) -> Result<ApprovalDecision, Box<dyn std::error::Error + Send + Sync>> {
         self.record_request(request).await?;
         let evidence = self.evidence(request).await?;
-        let redacted_request = request.redacted();
         let payload = serde_json::to_string_pretty(&json!({
-            "approval_request": redacted_request,
+            "approval_request": request,
             "evidence": evidence,
         }))?;
         let response = self
@@ -619,7 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn approval_request_redaction_removes_secret_literals_without_hiding_scope() {
+    fn approval_request_preserves_source_text_and_secret_capability_names() {
         let request = ApprovalRequest {
             approval_id: "a-redact".to_string(),
             context_id: "c1".to_string(),
@@ -638,10 +605,9 @@ mod tests {
             justification: "use agtk_1234567890 for current task".to_string(),
         };
 
-        let redacted = request.redacted();
-        let rendered = serde_json::to_string(&redacted).unwrap();
-        assert!(!rendered.contains("abc.def-123"));
-        assert!(!rendered.contains("agtk_1234567890"));
+        let rendered = serde_json::to_string(&request).unwrap();
+        assert!(rendered.contains("abc.def-123"));
+        assert!(rendered.contains("agtk_1234567890"));
         assert!(rendered.contains("SERVICE_API_TOKEN"));
         assert!(rendered.contains("example.test"));
     }

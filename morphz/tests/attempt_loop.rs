@@ -911,7 +911,7 @@ async fn test_compiled_context_uses_kernel_mind_inbox_without_legacy_schema() {
 }
 
 #[tokio::test]
-async fn test_attempt_loop_tool_call_then_reply() {
+async fn test_attempt_loop_preserves_wait_task_shaped_call_id_in_standard_tool_result() {
     let session_id = "attempt_tool_then_reply";
     let note = NamedTempFile::new_in(".").unwrap();
     std::fs::write(note.path(), "hello from note").unwrap();
@@ -921,7 +921,9 @@ async fn test_attempt_loop_tool_call_then_reply() {
             Response {
                 content: "".to_string(),
                 tool_calls: vec![ToolCallRepr {
-                    id: "call_read".to_string(),
+                    // Regression: generic string redaction once misread the `sk-` inside
+                    // `task-` as a provider key prefix and broke Function Calling correlation.
+                    id: "wait_task-1783981186436392000-5698".to_string(),
                     r#type: "function".to_string(),
                     func_name: "read".to_string(),
                     arguments: json!({
@@ -984,10 +986,13 @@ async fn test_attempt_loop_tool_call_then_reply() {
             .as_ref()
             .and_then(|calls| calls.first())
             .map(|call| call.id.as_str()),
-        Some("call_read")
+        Some("wait_task-1783981186436392000-5698")
     );
     let tool = &continuation[3];
-    assert_eq!(tool.tool_call_id.as_deref(), Some("call_read"));
+    assert_eq!(
+        tool.tool_call_id.as_deref(),
+        Some("wait_task-1783981186436392000-5698")
+    );
     let envelope: serde_json::Value = serde_json::from_str(&tool.content).unwrap();
     assert_eq!(
         envelope.get("status").and_then(|value| value.as_str()),

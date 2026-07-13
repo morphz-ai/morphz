@@ -564,7 +564,6 @@ impl Orchestrator {
                     if !persist_full_context_inspect {
                         compact_context_inspect_for_persistence(&mut event);
                     }
-                    redact_control_plane_event_for_persistence(&mut event);
                     store.append(event).await?;
                     Ok(())
                 })
@@ -3413,47 +3412,6 @@ fn compact_context_inspect_for_persistence(event: &mut Event) {
     );
 }
 
-fn redact_control_plane_event_for_persistence(event: &mut Event) {
-    let control_plane = matches!(
-        event.topic.as_str(),
-        "chat/assistant_call"
-            | "chat/context_inspect"
-            | "runtime/batch_assistant_call"
-            | "runtime/tool_calls_selected"
-            | "runtime/approval_requested"
-            | "runtime/approval_decision"
-    ) || event.topic.starts_with("task/output/");
-    if !control_plane {
-        return;
-    }
-    for value in event.payload.values_mut() {
-        redact_control_plane_value(value);
-    }
-}
-
-fn redact_control_plane_value(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::String(text) => {
-            *text = crate::tool::redact_sensitive_text(text);
-        }
-        serde_json::Value::Array(values) => {
-            for value in values {
-                redact_control_plane_value(value);
-            }
-        }
-        serde_json::Value::Object(fields) => {
-            for (key, value) in fields {
-                if is_sensitive_argument_key(key) {
-                    *value = json!("[REDACTED_SECRET]");
-                } else {
-                    redact_control_plane_value(value);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
 fn context_tx_output_succeeded(event: &Event) -> bool {
     if event
         .payload
@@ -3681,10 +3639,9 @@ mod tests {
     use super::{
         baseline_system_prompt, classify_reply_response, cognitive_sexpr_vm_system_prompt,
         compact_context_inspect_for_persistence, compose_system_prompt, extend_exec_output_facts,
-        redact_control_plane_event_for_persistence, render_system_contract,
-        semantic_sexpr_vm_system_prompt, should_force_final_for_maintenance,
-        tool_call_activity_preview, ReadTurnGuard, ReplyDecision, SystemPromptMode,
-        AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        render_system_contract, semantic_sexpr_vm_system_prompt,
+        should_force_final_for_maintenance, tool_call_activity_preview, ReadTurnGuard,
+        ReplyDecision, SystemPromptMode, AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::event::Event;
 
@@ -3975,28 +3932,7 @@ mod tests {
     }
 
     #[test]
-    fn control_plane_audit_redacts_secret_values_and_exec_facts_are_first_class() {
-        let mut event = Event::new(
-            "selected-1".to_string(),
-            "orchestrator".to_string(),
-            "tool_calls".to_string(),
-            "runtime/tool_calls_selected".to_string(),
-            serde_json::Map::from_iter([(
-                "calls".to_string(),
-                json!([{
-                    "name":"exec",
-                    "arguments": {
-                        "authorization":"Bearer abc.def-123",
-                        "command":"curl -H 'Authorization: Bearer abc.def-123'"
-                    }
-                }]),
-            )]),
-        );
-        redact_control_plane_event_for_persistence(&mut event);
-        let stored = serde_json::to_string(&event.payload).unwrap();
-        assert!(!stored.contains("abc.def-123"));
-        assert!(stored.contains("REDACTED"));
-
+    fn exec_results_expose_physical_facts_without_copying_output_fields() {
         let mut payload = serde_json::Map::new();
         extend_exec_output_facts(
             &mut payload,
