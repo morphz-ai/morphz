@@ -7,6 +7,10 @@
 
 > 认识论前置约束：共享会同时放大正确经验和错误认识。Runtime 应如何用顺序、直接因果、来源、版本和控制反馈约束 Agent 的自由认知，见 [`morphz_reality_constrained_epistemic_context.md`](morphz_reality_constrained_epistemic_context.md)。
 
+> 长期运行下如何通过时间窗口、最大数量、Token Budget 与 Agent retire 共同形成有界 Session Working Set，以及工具等待期间如何继续并发对话，见 [`morphz_concurrent_session_working_set_v1.md`](morphz_concurrent_session_working_set_v1.md)。早期 Residency 讨论保留在 [`morphz_session_residency_context_swap_design.md`](morphz_session_residency_context_swap_design.md)，实现时不再以其旧假设为准。
+
+> 更上位的产品本体、统一人格、非阻塞认知并发与大规模分布式演进定义，见 [`morphz_single_identity_distributed_cognition_architecture.md`](morphz_single_identity_distributed_cognition_architecture.md)。本文继续承担 Context 拓扑、共享/COW 与多 Worker 的机制细化。
+
 ## 1. 文档目的
 
 Morphz 已经初步验证：LLM 可以通过 SExpr DSL 自主创建、修订、保护、退役和恢复自由格式的 Context Frame，并在同一 Session 内形成策略、接受反例修正、建立来源关系和完成重启恢复。

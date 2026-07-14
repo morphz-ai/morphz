@@ -169,6 +169,16 @@ impl InMemoryEventBus {
         self.publish_with_durability(ev, false).await
     }
 
+    /// Dispatch a durable fact that was committed atomically by another store
+    /// transaction. This skips only the EventBus persistence boundary; normal
+    /// audit and business subscribers still observe the event.
+    pub async fn dispatch_persisted(
+        &self,
+        ev: Event,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.publish_with_durability(ev, false).await
+    }
+
     async fn publish_with_durability(
         &self,
         ev: Event,

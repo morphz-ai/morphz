@@ -5,6 +5,121 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
+/// A compact human-readable duration used by configuration files. The parser
+/// deliberately supports only the stable units needed by Runtime policy; it
+/// is not a calendar duration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct HumanDuration {
+    seconds: u64,
+}
+
+impl HumanDuration {
+    pub const fn from_secs(seconds: u64) -> Self {
+        Self { seconds }
+    }
+
+    pub const fn as_secs(self) -> u64 {
+        self.seconds
+    }
+}
+
+impl Serialize for HumanDuration {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let (value, suffix) = if self.seconds.is_multiple_of(86_400) {
+            (self.seconds / 86_400, "d")
+        } else if self.seconds.is_multiple_of(3_600) {
+            (self.seconds / 3_600, "h")
+        } else if self.seconds.is_multiple_of(60) {
+            (self.seconds / 60, "m")
+        } else {
+            (self.seconds, "s")
+        };
+        serializer.serialize_str(&format!("{value}{suffix}"))
+    }
+}
+
+impl<'de> Deserialize<'de> for HumanDuration {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = HumanDuration;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a positive duration such as 24h, 30m, 7d, or seconds")
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                positive_duration(value).map_err(E::custom)
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                let value = u64::try_from(value).map_err(|_| E::custom("duration 必须大于 0"))?;
+                self.visit_u64(value)
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                parse_human_duration(value).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
+}
+
+fn positive_duration(seconds: u64) -> Result<HumanDuration, String> {
+    if seconds == 0 {
+        Err("duration 必须大于 0".to_string())
+    } else {
+        Ok(HumanDuration::from_secs(seconds))
+    }
+}
+
+fn parse_human_duration(value: &str) -> Result<HumanDuration, String> {
+    let value = value.trim().to_ascii_lowercase();
+    let (number, multiplier) = if let Some(value) = value.strip_suffix("ms") {
+        let millis = value
+            .trim()
+            .parse::<u64>()
+            .map_err(|_| "duration 数值无效".to_string())?;
+        return positive_duration(millis.saturating_add(999) / 1_000);
+    } else if let Some(value) = value.strip_suffix('s') {
+        (value, 1)
+    } else if let Some(value) = value.strip_suffix('m') {
+        (value, 60)
+    } else if let Some(value) = value.strip_suffix('h') {
+        (value, 3_600)
+    } else if let Some(value) = value.strip_suffix('d') {
+        (value, 86_400)
+    } else {
+        (value.as_str(), 1)
+    };
+    let number = number
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| "duration 数值无效".to_string())?;
+    positive_duration(
+        number
+            .checked_mul(multiplier)
+            .ok_or_else(|| "duration 超出 u64 秒范围".to_string())?,
+    )
+}
+
 /// 零依赖的极简 .env 环境变量加载器，读取文件并注入到系统环境变量中
 pub fn load_env(filepath: &str) -> io::Result<()> {
     let file = File::open(filepath)?;
@@ -157,6 +272,8 @@ pub struct OrchestratorConfig {
     pub session_batch_coalesce_ms: u64,
     /// 一次合并求值最多包含的 ready Session 数。
     pub max_sessions_per_evaluation: usize,
+    /// 当前 Context Encoding 自动包含哪些 Session 历史。
+    pub session_working_set: SessionWorkingSetConfig,
     /// 是否在 Ledger 中保留完整 Context Encoding 与模型消息。
     /// 默认仅保存内容哈希和尺寸；实时事件订阅仍能看到完整内容。
     pub persist_full_context_inspect: bool,
@@ -180,7 +297,39 @@ impl Default for OrchestratorConfig {
             merged_evaluation_enabled: false,
             session_batch_coalesce_ms: 25,
             max_sessions_per_evaluation: 8,
+            session_working_set: SessionWorkingSetConfig::default(),
             persist_full_context_inspect: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionWorkingSetConfig {
+    /// 最近一次有认知意义的活动距本次求值不得超过该窗口。
+    pub active_window: HumanDuration,
+    /// Full Projection Session 总数上限，包含当前 Session。
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub max_sessions: usize,
+}
+
+fn deserialize_positive_usize<'de, D>(deserializer: D) -> Result<usize, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = usize::deserialize(deserializer)?;
+    if value == 0 {
+        Err(serde::de::Error::custom("max_sessions 必须大于等于 1"))
+    } else {
+        Ok(value)
+    }
+}
+
+impl Default for SessionWorkingSetConfig {
+    fn default() -> Self {
+        Self {
+            active_window: HumanDuration::from_secs(24 * 60 * 60),
+            max_sessions: 50,
         }
     }
 }
@@ -1084,6 +1233,16 @@ impl AppConfig {
             "MORPHZ_MAX_SESSIONS_PER_EVALUATION",
             &mut self.orchestrator.max_sessions_per_evaluation,
         )?;
+        if let Ok(value) = std::env::var("MORPHZ_SESSION_ACTIVE_WINDOW") {
+            self.orchestrator.session_working_set.active_window = parse_human_duration(&value)
+                .map_err(|error| {
+                    format!("MORPHZ_SESSION_ACTIVE_WINDOW 不是合法 duration: {error}")
+                })?;
+        }
+        apply_usize_env(
+            "MORPHZ_SESSION_WORKING_SET_MAX",
+            &mut self.orchestrator.session_working_set.max_sessions,
+        )?;
         Ok(())
     }
 }
@@ -1162,6 +1321,24 @@ mod tests {
     use std::ffi::OsString;
     use std::io::Write;
     use tempfile::{NamedTempFile, TempDir};
+
+    #[test]
+    fn session_working_set_config_accepts_human_duration_and_rejects_zero_limit() {
+        let parsed: SessionWorkingSetConfig =
+            toml::from_str("active_window = '24h'\nmax_sessions = 50\n").unwrap();
+        assert_eq!(parsed.active_window.as_secs(), 86_400);
+        assert_eq!(parsed.max_sessions, 50);
+        assert!(toml::from_str::<SessionWorkingSetConfig>(
+            "active_window = '24h'\nmax_sessions = 0\n"
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("max_sessions"));
+        assert!(toml::from_str::<SessionWorkingSetConfig>(
+            "active_window = '0s'\nmax_sessions = 1\n"
+        )
+        .is_err());
+    }
 
     #[test]
     fn test_load_env() {

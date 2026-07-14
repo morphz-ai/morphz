@@ -7,7 +7,8 @@ use morphz::llm::{
 };
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    DelegationStatus, EventStore, NewCognitiveContext, NewSession, QueryFilter, SessionMountKind,
+    DelegationStatus, EvaluationWorkItemMutation, EvaluationWorkItemStatus, EventStore, NewAgent,
+    NewCognitiveContext, NewEvaluationWorkItem, NewSession, QueryFilter, SessionMountKind,
     SessionStore,
 };
 use morphz::orchestrator::context::ContextEngine;
@@ -19,7 +20,7 @@ use morphz::tool::{
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tempfile::{NamedTempFile, TempDir};
@@ -401,15 +402,19 @@ async fn build_orchestrator_with_config_and_reply_mode(
     let db_path = tmp.path().join("attempt_loop.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(if auto_reply {
         MockClient::new(responses)
     } else {
         MockClient::new_raw(responses)
     });
-    let context_engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        orchestrator_config.clone(),
-    ));
+    let context_engine = Arc::new(
+        ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            orchestrator_config.clone(),
+        )
+        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
 
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(ReadFileTool::default()));
@@ -426,6 +431,62 @@ async fn build_orchestrator_with_config_and_reply_mode(
     ));
     orchestrator.clone().start().await.unwrap();
     (bus, store, orchestrator, client, tmp)
+}
+
+fn install_test_session_registry(bus: &Arc<InMemoryEventBus>, store: &Arc<SqliteStore>) {
+    let store = Arc::clone(store);
+    bus.subscribe(
+        "*".to_string(),
+        Arc::new(move |event| {
+            let store = Arc::clone(&store);
+            Box::pin(async move {
+                if !matches!(
+                    event.event_type.as_str(),
+                    TYPE_USER_MESSAGE | TYPE_TOOL_OUTPUT
+                ) {
+                    return Ok(());
+                }
+                let Some(session_id) = event
+                    .payload
+                    .get("session_id")
+                    .and_then(|value| value.as_str())
+                else {
+                    return Ok(());
+                };
+                let context_id = event
+                    .payload
+                    .get("context_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(session_id);
+                let agent_id = "test-agent";
+                store
+                    .ensure_agent(NewAgent {
+                        id: agent_id.to_string(),
+                        title: "Test Agent".to_string(),
+                        root_context_id: context_id.to_string(),
+                    })
+                    .await?;
+                store
+                    .ensure_context(NewCognitiveContext {
+                        id: context_id.to_string(),
+                        agent_id: agent_id.to_string(),
+                        title: context_id.to_string(),
+                    })
+                    .await?;
+                store
+                    .ensure_session(NewSession {
+                        id: session_id.to_string(),
+                        agent_id: agent_id.to_string(),
+                        context_id: context_id.to_string(),
+                        parent_session_id: None,
+                        title: session_id.to_string(),
+                        mount_kind: SessionMountKind::ExistingContext,
+                    })
+                    .await?;
+                Ok(())
+            })
+        }),
+    );
 }
 
 fn deterministic_batch_config() -> morphz::config::OrchestratorConfig {
@@ -526,6 +587,355 @@ async fn test_attempt_loop_explicit_reply_delivers() {
 }
 
 #[tokio::test]
+async fn duplicate_routed_event_creates_one_work_item_and_one_reply() {
+    let session_id = "duplicate-routed-event";
+    let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![explicit_reply_response("exactly once")],
+        morphz::config::OrchestratorConfig::default(),
+    )
+    .await;
+    let event = Event::new(
+        "duplicate-trigger".to_string(),
+        "Test-User".to_string(),
+        TYPE_USER_MESSAGE.to_string(),
+        "chat/user_message".to_string(),
+        vec![
+            ("context_id".to_string(), json!(session_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("text".to_string(), json!("run once")),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let (first, second) = tokio::join!(bus.publish(event.clone()), bus.publish(event));
+    first.unwrap();
+    second.unwrap();
+    assert_eq!(
+        wait_for_topic(&store, "chat/reply", session_id).await.len(),
+        1
+    );
+    assert_eq!(client.messages_seen().len(), 1);
+    assert_eq!(
+        store
+            .list_context_evaluation_work_items(session_id, true)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn runtime_start_recovers_queued_and_expired_running_work_items() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("work-item-recovery.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    store
+        .create_agent_bundle(
+            NewAgent {
+                id: "recovery-agent".to_string(),
+                title: "Recovery Agent".to_string(),
+                root_context_id: "recovery-context".to_string(),
+            },
+            NewCognitiveContext {
+                id: "recovery-context".to_string(),
+                agent_id: "recovery-agent".to_string(),
+                title: "Recovery Context".to_string(),
+            },
+            NewSession {
+                id: "recovery-queued".to_string(),
+                agent_id: "recovery-agent".to_string(),
+                context_id: "recovery-context".to_string(),
+                parent_session_id: None,
+                title: "Queued".to_string(),
+                mount_kind: SessionMountKind::NewBlankContext,
+            },
+        )
+        .await
+        .unwrap();
+    store
+        .create_session(NewSession {
+            id: "recovery-expired".to_string(),
+            agent_id: "recovery-agent".to_string(),
+            context_id: "recovery-context".to_string(),
+            parent_session_id: None,
+            title: "Expired".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    for (index, session_id) in ["recovery-queued", "recovery-expired"]
+        .into_iter()
+        .enumerate()
+    {
+        let event = Event::new(
+            format!("recovery-trigger-{index}"),
+            "Test-User".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            vec![
+                ("context_id".to_string(), json!("recovery-context")),
+                ("session_id".to_string(), json!(session_id)),
+                ("text".to_string(), json!(format!("recover {index}"))),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        store.append(event.clone()).await.unwrap();
+        let sequence = store
+            .query(QueryFilter {
+                session_id: Some(session_id.to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        let work_item = store
+            .ensure_evaluation_work_item(NewEvaluationWorkItem {
+                id: format!("recovery-work-{index}"),
+                agent_id: "recovery-agent".to_string(),
+                context_id: "recovery-context".to_string(),
+                session_id: session_id.to_string(),
+                trigger_event_id: event.id.clone(),
+                trigger_sequence: sequence,
+                trigger_kind: event.topic,
+                parent_work_item_id: None,
+                root_turn_id: event.id,
+            })
+            .await
+            .unwrap();
+        if index == 1 {
+            assert!(matches!(
+                store
+                    .update_evaluation_work_item(
+                        &work_item.id,
+                        work_item.revision,
+                        EvaluationWorkItemStatus::Running,
+                        Some("dead-runtime"),
+                        Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+                        None,
+                    )
+                    .await
+                    .unwrap(),
+                EvaluationWorkItemMutation::Updated(_)
+            ));
+        }
+    }
+
+    let client = Arc::new(MockClient::new(vec![
+        explicit_reply_response("recovered-one"),
+        explicit_reply_response("recovered-two"),
+    ]));
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    ));
+    orchestrator.start().await.unwrap();
+
+    assert_eq!(
+        wait_for_topic(&store, "chat/reply", "recovery-queued")
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(
+        wait_for_topic(&store, "chat/reply", "recovery-expired")
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(client.messages_seen().len(), 2);
+}
+
+#[tokio::test]
+async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("persisted-tool-plan-recovery.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    store
+        .create_agent_bundle(
+            NewAgent {
+                id: "plan-recovery-agent".to_string(),
+                title: "Plan Recovery Agent".to_string(),
+                root_context_id: "plan-recovery-context".to_string(),
+            },
+            NewCognitiveContext {
+                id: "plan-recovery-context".to_string(),
+                agent_id: "plan-recovery-agent".to_string(),
+                title: "Plan Recovery Context".to_string(),
+            },
+            NewSession {
+                id: "plan-recovery-session".to_string(),
+                agent_id: "plan-recovery-agent".to_string(),
+                context_id: "plan-recovery-context".to_string(),
+                parent_session_id: None,
+                title: "Plan Recovery Session".to_string(),
+                mount_kind: SessionMountKind::NewBlankContext,
+            },
+        )
+        .await
+        .unwrap();
+    let trigger = Event::new(
+        "plan-recovery-trigger".to_string(),
+        "Test-User".to_string(),
+        TYPE_USER_MESSAGE.to_string(),
+        "chat/user_message".to_string(),
+        vec![
+            ("context_id".to_string(), json!("plan-recovery-context")),
+            ("session_id".to_string(), json!("plan-recovery-session")),
+            ("text".to_string(), json!("execute once")),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    store.append(trigger.clone()).await.unwrap();
+    let trigger_sequence = store
+        .query(QueryFilter {
+            session_id: Some("plan-recovery-session".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()[0]
+        .sequence
+        .unwrap();
+    let work_item = store
+        .ensure_evaluation_work_item(NewEvaluationWorkItem {
+            id: "plan-recovery-work".to_string(),
+            agent_id: "plan-recovery-agent".to_string(),
+            context_id: "plan-recovery-context".to_string(),
+            session_id: "plan-recovery-session".to_string(),
+            trigger_event_id: trigger.id.clone(),
+            trigger_sequence,
+            trigger_kind: trigger.topic.clone(),
+            parent_work_item_id: None,
+            root_turn_id: trigger.id.clone(),
+        })
+        .await
+        .unwrap();
+    let running = match store
+        .update_evaluation_work_item(
+            &work_item.id,
+            work_item.revision,
+            EvaluationWorkItemStatus::Running,
+            Some("dead-runtime"),
+            Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+            Some(7),
+        )
+        .await
+        .unwrap()
+    {
+        EvaluationWorkItemMutation::Updated(work_item) => work_item,
+        other => panic!("unexpected Work Item mutation: {other:?}"),
+    };
+    let persisted_call = json!([{
+        "id": "persisted-route-probe",
+        "type": "function",
+        "function": {
+            "name": "route_probe",
+            "arguments": json!({"value": "execute-exactly-once"}).to_string()
+        }
+    }]);
+    store
+        .append(Event::new(
+            format!("call_{}", running.id),
+            "Agent-Morphz".to_string(),
+            "agent_call".to_string(),
+            "chat/assistant_call".to_string(),
+            vec![
+                ("context_id".to_string(), json!(running.context_id)),
+                ("session_id".to_string(), json!(running.session_id)),
+                ("attempt_id".to_string(), json!(running.id)),
+                ("phase".to_string(), json!("work")),
+                ("text".to_string(), json!("")),
+                ("tool_calls".to_string(), persisted_call.clone()),
+                ("transcript_tool_calls".to_string(), persisted_call),
+                ("unavailable_tool_names".to_string(), json!([])),
+                ("context_tx_rejection_status".to_string(), json!(null)),
+                ("work_item_id".to_string(), json!(running.id)),
+                ("root_turn_id".to_string(), json!(running.root_turn_id)),
+                (
+                    "trigger_event_id".to_string(),
+                    json!(running.trigger_event_id),
+                ),
+                (
+                    "trigger_sequence".to_string(),
+                    json!(running.trigger_sequence),
+                ),
+                ("context_snapshot_version".to_string(), json!(7)),
+            ]
+            .into_iter()
+            .collect(),
+        ))
+        .await
+        .unwrap();
+
+    let routed_arguments = Arc::new(Mutex::new(Vec::new()));
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(RoutingProbeTool {
+        arguments: Arc::clone(&routed_arguments),
+        delay_ms: 0,
+    }));
+    let client = Arc::new(MockClient::new(vec![explicit_reply_response(
+        "recovered plan completed",
+    )]));
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&client) as Arc<dyn Client>,
+        registry,
+        config,
+        engine,
+    ));
+    orchestrator.start().await.unwrap();
+
+    assert_eq!(
+        wait_for_topic(&store, "chat/reply", "plan-recovery-session")
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(routed_arguments.lock().unwrap().len(), 1);
+    assert_eq!(client.messages_seen().len(), 1);
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                session_id: Some("plan-recovery-session".to_string()),
+                topic: Some("chat/tool_output".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| {
+                event
+                    .payload
+                    .get("tool_call_id")
+                    .and_then(|value| value.as_str())
+                    == Some("persisted-route-probe")
+            })
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
 async fn test_plain_text_terminal_is_corrected_to_explicit_reply() {
     let session_id = "attempt_reply_protocol_correction";
     let responses = vec![
@@ -573,6 +983,7 @@ async fn test_reply_suppress_is_terminal_without_session_delivery() {
             pgid: i32::MAX,
             session_id: session_id.to_string(),
             context_id: session_id.to_string(),
+            causal_route: None,
             started_at: now,
             last_output_at: now,
             output_bytes: 0,
@@ -660,11 +1071,12 @@ async fn test_llm_failure_is_audited_and_always_replies_to_user() {
     let db_path = tmp.path().join("llm-failure.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let config = morphz::config::OrchestratorConfig::default();
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
         Arc::clone(&bus),
         Arc::clone(&store) as Arc<dyn EventStore>,
@@ -709,14 +1121,15 @@ async fn test_orchestrator_deadline_cancels_hanging_client_and_replies() {
     let db_path = tmp.path().join("llm-deadline.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let config = morphz::config::OrchestratorConfig {
         model_attempt_timeout_secs: 1,
         ..Default::default()
     };
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
         Arc::clone(&bus),
         Arc::clone(&store) as Arc<dyn EventStore>,
@@ -759,6 +1172,7 @@ async fn test_orchestrator_deadline_covers_waiting_for_concurrency_permit() {
     let db_path = tmp.path().join("permit-deadline.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(MockClient::new(vec![Response {
         content: "must not be called".to_string(),
         tool_calls: Vec::new(),
@@ -768,10 +1182,10 @@ async fn test_orchestrator_deadline_covers_waiting_for_concurrency_permit() {
         model_attempt_timeout_secs: 1,
         ..Default::default()
     };
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
         Arc::clone(&bus),
         Arc::clone(&store) as Arc<dyn EventStore>,
@@ -805,14 +1219,15 @@ async fn test_orchestrator_deadline_isolates_synchronously_blocking_client() {
     let db_path = tmp.path().join("blocking-client.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let config = morphz::config::OrchestratorConfig {
         model_attempt_timeout_secs: 1,
         ..Default::default()
     };
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
         Arc::clone(&bus),
         Arc::clone(&store) as Arc<dyn EventStore>,
@@ -847,14 +1262,15 @@ async fn test_session_cancel_stops_current_attempt_until_new_user_message() {
     let db_path = tmp.path().join("user-cancel.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let config = morphz::config::OrchestratorConfig {
         model_attempt_timeout_secs: 30,
         ..Default::default()
     };
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
         Arc::clone(&bus),
         Arc::clone(&store) as Arc<dyn EventStore>,
@@ -1117,6 +1533,7 @@ async fn test_empty_tool_output_is_explicit_success_and_does_not_require_retry()
     let db_path = tmp.path().join("empty-tool.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(MockClient::new(vec![
         Response {
             content: String::new(),
@@ -1137,10 +1554,10 @@ async fn test_empty_tool_output_is_explicit_success_and_does_not_require_retry()
         },
     ]));
     let config = morphz::config::OrchestratorConfig::default();
-    let context_engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let context_engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(EmptyOutputTool));
     let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
@@ -1824,6 +2241,7 @@ async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
     std::fs::write(note.path(), "evidence").unwrap();
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(MockClient::new(vec![
         Response {
             content: String::new(),
@@ -1875,10 +2293,10 @@ async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
         max_context_transactions_per_turn: 1,
         ..Default::default()
     };
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(ReadFileTool::default()));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
@@ -1998,6 +2416,7 @@ async fn test_turn_soft_checkpoint_preserves_tools_and_continues() {
 
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(BudgetProbeClient {
         calls: AtomicUsize::new(0),
         tool_counts: Mutex::new(Vec::new()),
@@ -2008,10 +2427,10 @@ async fn test_turn_soft_checkpoint_preserves_tools_and_continues() {
         attempt_soft_checkpoint_interval: 3,
         ..Default::default()
     };
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(ReadFileTool::default()));
     let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
@@ -2053,6 +2472,7 @@ async fn test_soft_checkpoint_allows_context_maintenance_without_forcing_final_r
 
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(MockClient::new(vec![
         Response {
             content: String::new(),
@@ -2093,10 +2513,10 @@ async fn test_soft_checkpoint_allows_context_maintenance_without_forcing_final_r
         attempt_soft_checkpoint_interval: 3,
         ..Default::default()
     };
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(ReadFileTool::default()));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
@@ -2161,6 +2581,7 @@ async fn test_failed_context_tx_at_soft_checkpoint_does_not_force_final_reply() 
 
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(MockClient::new(vec![
         Response {
             content: String::new(),
@@ -2192,10 +2613,10 @@ async fn test_failed_context_tx_at_soft_checkpoint_does_not_force_final_reply() 
         attempt_soft_checkpoint_interval: 2,
         ..Default::default()
     };
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(ReadFileTool::default()));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
@@ -2239,6 +2660,7 @@ async fn test_edit_file_change_becomes_next_attempt_observation() {
 
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(MockClient::new(vec![
         Response {
             content: String::new(),
@@ -2268,10 +2690,10 @@ async fn test_edit_file_change_becomes_next_attempt_observation() {
         persist_full_context_inspect: true,
         ..Default::default()
     };
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let security = Arc::new(PermissionConfig {
         workspace_root: tmp.path().to_string_lossy().to_string(),
         read_roots: Vec::new(),
@@ -2742,21 +3164,22 @@ async fn delegation_depth_limit_rejects_recursive_spawn_before_creating_child() 
 }
 
 #[tokio::test]
-async fn test_same_session_attempts_are_single_writer() {
+async fn test_same_session_work_items_can_evaluate_concurrently() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("single-writer.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(ConcurrencyProbeClient {
         active: AtomicUsize::new(0),
         max_active: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
     });
     let config = morphz::config::OrchestratorConfig::default();
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
         Arc::clone(&bus),
         Arc::clone(&store) as Arc<dyn EventStore>,
@@ -2787,7 +3210,254 @@ async fn test_same_session_attempts_are_single_writer() {
     }
 
     assert_eq!(client.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(client.max_active.load(Ordering::SeqCst), 1);
+    assert_eq!(client.max_active.load(Ordering::SeqCst), 2);
+    let work_items = store
+        .list_context_evaluation_work_items("serialized-session", true)
+        .await
+        .unwrap();
+    assert_eq!(work_items.len(), 2);
+    assert!(work_items
+        .iter()
+        .all(|item| item.root_turn_id == item.trigger_event_id));
+    assert_ne!(work_items[0].root_turn_id, work_items[1].root_turn_id);
+    let inspections = store
+        .query(QueryFilter {
+            session_id: Some("serialized-session".to_string()),
+            topic: Some("chat/context_inspect".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(inspections.len(), 2);
+    assert!(inspections.iter().all(|inspection| {
+        inspection
+            .payload
+            .get("trigger_event_id")
+            .and_then(|value| value.as_str())
+            == inspection
+                .payload
+                .get("wake")
+                .and_then(|wake| wake.get("event_id"))
+                .and_then(|value| value.as_str())
+    }));
+}
+
+#[tokio::test]
+async fn same_session_message_is_answered_while_older_tool_is_still_running() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("same-session-tool-concurrency.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(MockClient::new(vec![
+        Response {
+            content: "starting the long tool".to_string(),
+            tool_calls: vec![ToolCallRepr {
+                id: "slow-tool-a".to_string(),
+                r#type: "function".to_string(),
+                func_name: "route_probe".to_string(),
+                arguments: json!({"value": "tool-a"}).to_string(),
+            }],
+        },
+        explicit_reply_response("message-b-reply"),
+        explicit_reply_response("tool-a-finished"),
+    ]));
+    let routed_arguments = Arc::new(Mutex::new(Vec::new()));
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(RoutingProbeTool {
+        arguments: Arc::clone(&routed_arguments),
+        delay_ms: 600,
+    }));
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&client) as Arc<dyn Client>,
+        registry,
+        config,
+        engine,
+    ));
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, "same-session-tool", "message-a starts tool").await;
+    for _ in 0..80 {
+        if !routed_arguments.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(routed_arguments.lock().unwrap().len(), 1);
+    publish_user(&bus, "same-session-tool", "message-b while tool runs").await;
+
+    let replies = wait_for_topic_count(&store, "chat/reply", "same-session-tool", 2).await;
+    let message_b_reply = replies
+        .iter()
+        .find(|event| event.payload.get("text") == Some(&json!("message-b-reply")))
+        .expect("message B must receive its own reply");
+    let tool_output = store
+        .query(QueryFilter {
+            session_id: Some("same-session-tool".to_string()),
+            topic: Some("chat/tool_output".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|event| event.payload.get("tool_call_id") == Some(&json!("slow-tool-a")))
+        .expect("tool A must eventually complete");
+    assert!(message_b_reply.sequence.unwrap() < tool_output.sequence.unwrap());
+
+    let events = store
+        .query(QueryFilter {
+            session_id: Some("same-session-tool".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let user_messages = events
+        .iter()
+        .filter(|event| event.event_type == TYPE_USER_MESSAGE)
+        .collect::<Vec<_>>();
+    assert_eq!(user_messages.len(), 2);
+    let tool_call = events
+        .iter()
+        .find(|event| {
+            event.topic == "chat/assistant_call"
+                && event
+                    .payload
+                    .get("tool_calls")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|calls| {
+                        calls
+                            .iter()
+                            .any(|call| call.get("id") == Some(&json!("slow-tool-a")))
+                    })
+        })
+        .expect("assistant tool call must be durable");
+    assert!(tool_call.sequence.unwrap() < user_messages[1].sequence.unwrap());
+    assert!(user_messages[1].sequence.unwrap() < tool_output.sequence.unwrap());
+    assert_eq!(
+        tool_output
+            .payload
+            .get("root_turn_id")
+            .and_then(|value| value.as_str()),
+        Some(user_messages[0].id.as_str())
+    );
+    assert_ne!(
+        message_b_reply
+            .payload
+            .get("root_turn_id")
+            .and_then(|value| value.as_str()),
+        tool_output
+            .payload
+            .get("root_turn_id")
+            .and_then(|value| value.as_str())
+    );
+}
+
+#[tokio::test]
+async fn concurrent_session_inspect_cannot_suppress_another_root_turns_tool_wake() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("causal-tool-wake-dedup.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(MockClient::new(vec![
+        Response {
+            content: String::new(),
+            tool_calls: vec![
+                ToolCallRepr {
+                    id: "causal-slow-tool".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "route_probe".to_string(),
+                    arguments: json!({"value": "root-a"}).to_string(),
+                },
+                ToolCallRepr {
+                    id: "causal-fast-context".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: json!({
+                        "transaction": "(context-tx (base-version 0) (create causal-note (status waiting-tool)))"
+                    })
+                    .to_string(),
+                },
+            ],
+        },
+        explicit_reply_response("root-b-reply"),
+        explicit_reply_response("root-a-finished"),
+    ]));
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let routed_arguments = Arc::new(Mutex::new(Vec::new()));
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(RoutingProbeTool {
+        arguments: Arc::clone(&routed_arguments),
+        delay_ms: 600,
+    }));
+    registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&client) as Arc<dyn Client>,
+        registry,
+        config,
+        engine,
+    ));
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, "causal-wake-session", "root A").await;
+    for _ in 0..80 {
+        if !routed_arguments.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(routed_arguments.lock().unwrap().len(), 1);
+    publish_user(&bus, "causal-wake-session", "root B").await;
+
+    let replies = wait_for_topic_count(&store, "chat/reply", "causal-wake-session", 2).await;
+    assert!(replies
+        .iter()
+        .any(|event| event.payload.get("text") == Some(&json!("root-b-reply"))));
+    assert!(replies
+        .iter()
+        .any(|event| event.payload.get("text") == Some(&json!("root-a-finished"))));
+    let messages_seen = client.messages_seen();
+    assert_eq!(messages_seen.len(), 3);
+    let root_a_continuation = messages_seen
+        .iter()
+        .find(|messages| {
+            messages
+                .iter()
+                .any(|message| message.role == "tool" && message.content.contains("probe:root-a"))
+        })
+        .expect("root A must receive its own tool transcript");
+    let root_a_encoding = root_a_continuation
+        .iter()
+        .find(|message| message.role == "user")
+        .expect("root A continuation must include Context Encoding");
+    assert!(root_a_encoding.content.contains("root A"));
+    assert!(
+        !root_a_encoding.content.contains("root B"),
+        "a newer concurrent user turn must not leak into an older WorkItem's Inbox"
+    );
+    let roots = replies
+        .iter()
+        .filter_map(|event| {
+            event
+                .payload
+                .get("root_turn_id")
+                .and_then(|value| value.as_str())
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(roots.len(), 2);
 }
 
 #[tokio::test]
@@ -2796,6 +3466,7 @@ async fn test_distinct_sessions_fall_back_to_concurrent_evaluations_when_batchin
     let db_path = tmp.path().join("shared-context-concurrency.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(ConcurrencyProbeClient {
         active: AtomicUsize::new(0),
         max_active: AtomicUsize::new(0),
@@ -2805,10 +3476,10 @@ async fn test_distinct_sessions_fall_back_to_concurrent_evaluations_when_batchin
         merged_evaluation_enabled: false,
         ..Default::default()
     };
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
         Arc::clone(&bus),
         Arc::clone(&store) as Arc<dyn EventStore>,
@@ -3027,6 +3698,7 @@ async fn test_batch_physical_tool_route_is_removed_before_execution_and_wakes_on
     let db_path = tmp.path().join("batch-tool-routing.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(MockClient::new(vec![
         Response {
             content: String::new(),
@@ -3061,10 +3733,10 @@ async fn test_batch_physical_tool_route_is_removed_before_execution_and_wakes_on
         },
     ]));
     let config = deterministic_batch_config();
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let routed_arguments = Arc::new(Mutex::new(Vec::new()));
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(RoutingProbeTool {
@@ -3139,6 +3811,7 @@ async fn test_two_tool_result_lanes_merge_again_into_one_followup_model_request(
     let db_path = tmp.path().join("batch-tool-followup.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(MockClient::new(vec![
         Response {
             content: String::new(),
@@ -3188,10 +3861,10 @@ async fn test_two_tool_result_lanes_merge_again_into_one_followup_model_request(
         },
     ]));
     let config = deterministic_batch_config();
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let routed_arguments = Arc::new(Mutex::new(Vec::new()));
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(RoutingProbeTool {
@@ -3250,6 +3923,7 @@ async fn test_omitted_tool_result_lane_is_forced_through_single_fallback() {
     let db_path = tmp.path().join("batch-tool-fallback.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(MockClient::new(vec![
         Response {
             content: String::new(),
@@ -3300,10 +3974,10 @@ async fn test_omitted_tool_result_lane_is_forced_through_single_fallback() {
         },
     ]));
     let config = deterministic_batch_config();
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(RoutingProbeTool {
         arguments: Arc::new(Mutex::new(Vec::new())),
@@ -3356,14 +4030,15 @@ async fn test_cancelling_one_batch_lane_does_not_cancel_other_session_delivery()
     let db_path = tmp.path().join("batch-cancel.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(SlowBatchClient {
         started: AtomicUsize::new(0),
     });
     let config = deterministic_batch_config();
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
         Arc::clone(&bus),
         Arc::clone(&store) as Arc<dyn EventStore>,
@@ -3419,21 +4094,22 @@ async fn test_cancelling_one_batch_lane_does_not_cancel_other_session_delivery()
 }
 
 #[tokio::test]
-async fn test_concurrent_tool_wakeups_covered_by_one_context_are_coalesced() {
+async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("coalesced-wakeups.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
     let client = Arc::new(ConcurrencyProbeClient {
         active: AtomicUsize::new(0),
         max_active: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
     });
     let config = morphz::config::OrchestratorConfig::default();
-    let engine = Arc::new(ContextEngine::new(
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        config.clone(),
-    ));
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
     let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
         Arc::clone(&bus),
         Arc::clone(&store) as Arc<dyn EventStore>,
@@ -3445,7 +4121,12 @@ async fn test_concurrent_tool_wakeups_covered_by_one_context_are_coalesced() {
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, "coalesced-session", "start").await;
-    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    assert_eq!(
+        wait_for_topic(&store, "chat/context_inspect", "coalesced-session")
+            .await
+            .len(),
+        1
+    );
     publish_tool_output(&bus, "coalesced-session", "tool-output-1").await;
     publish_tool_output(&bus, "coalesced-session", "tool-output-2").await;
 
@@ -3457,8 +4138,9 @@ async fn test_concurrent_tool_wakeups_covered_by_one_context_are_coalesced() {
     }
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-    assert_eq!(client.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(client.max_active.load(Ordering::SeqCst), 1);
+    let calls = client.calls.load(Ordering::SeqCst);
+    assert!((2..=3).contains(&calls));
+    assert!(client.max_active.load(Ordering::SeqCst) >= 2);
     let inspections = store
         .query(QueryFilter {
             session_id: Some("coalesced-session".to_string()),
@@ -3467,5 +4149,13 @@ async fn test_concurrent_tool_wakeups_covered_by_one_context_are_coalesced() {
         })
         .await
         .unwrap();
-    assert_eq!(inspections.len(), 2);
+    assert_eq!(inspections.len(), calls);
+    assert_eq!(
+        store
+            .list_context_evaluation_work_items("coalesced-session", true)
+            .await
+            .unwrap()
+            .len(),
+        3
+    );
 }

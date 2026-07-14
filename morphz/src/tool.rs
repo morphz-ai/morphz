@@ -26,6 +26,40 @@ tokio::task_local! {
     pub static CURRENT_SESSION_ID: String;
     pub static CURRENT_CONTEXT_ID: String;
     pub static CURRENT_ATTEMPT_ID: String;
+    pub static CURRENT_CAUSAL_ROUTE: Option<ToolCausalRoute>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolCausalRoute {
+    pub work_item_id: String,
+    pub root_turn_id: String,
+    pub trigger_event_id: String,
+    pub trigger_sequence: u64,
+}
+
+fn extend_causal_route(
+    payload: &mut serde_json::Map<String, serde_json::Value>,
+    route: Option<&ToolCausalRoute>,
+) {
+    let Some(route) = route else {
+        return;
+    };
+    payload.insert(
+        "work_item_id".to_string(),
+        serde_json::json!(route.work_item_id),
+    );
+    payload.insert(
+        "root_turn_id".to_string(),
+        serde_json::json!(route.root_turn_id),
+    );
+    payload.insert(
+        "trigger_event_id".to_string(),
+        serde_json::json!(route.trigger_event_id),
+    );
+    payload.insert(
+        "trigger_sequence".to_string(),
+        serde_json::json!(route.trigger_sequence),
+    );
 }
 
 fn approval_context() -> ApprovalContext {
@@ -138,6 +172,7 @@ pub struct BackgroundTask {
     pub pgid: i32,
     pub session_id: String,
     pub context_id: String,
+    pub causal_route: Option<ToolCausalRoute>,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub last_output_at: chrono::DateTime<chrono::Utc>,
     pub output_bytes: usize,
@@ -188,6 +223,8 @@ fn background_task_snapshot(task: &BackgroundTask) -> serde_json::Value {
         "process_group_id": task.pgid,
         "session_id": task.session_id,
         "context_id": task.context_id,
+        "work_item_id": task.causal_route.as_ref().map(|route| &route.work_item_id),
+        "root_turn_id": task.causal_route.as_ref().map(|route| &route.root_turn_id),
         "started_at": task.started_at,
         "ended_at": task.ended_at,
         "elapsed_secs": (task.ended_at.unwrap_or(now) - task.started_at).num_seconds().max(0),
@@ -301,6 +338,7 @@ fn schedule_background_task_wakeup(
                 "为后台任务 {} 安排的 {} 秒等待已经结束；任务仍在运行，Runtime 没有终止它。\n--- 最近输出 ---\n{}\n\n请自行决定：继续等待时调用 wait_task 并设置新的 wait_secs；不应继续时调用 kill_task。",
                 task.id, wait_secs, output_tail
             )));
+            extend_causal_route(&mut payload, task.causal_route.as_ref());
             payload
         };
 
@@ -337,6 +375,7 @@ struct ExecutionBuffer {
     bus: Arc<crate::event::InMemoryEventBus>,
     session_id: String,
     context_id: String,
+    causal_route: Option<ToolCausalRoute>,
 }
 
 impl ExecutionBuffer {
@@ -451,6 +490,7 @@ impl ExecutionBuffer {
         );
         payload.insert("truncated".to_string(), serde_json::json!(truncated));
         payload.insert("text".to_string(), serde_json::json!(rendered));
+        extend_causal_route(&mut payload, self.causal_route.as_ref());
         let event = Event::new(
             format!(
                 "task_out_{}_{}",
@@ -706,7 +746,7 @@ async fn publish_file_change(
     let context_id = CURRENT_CONTEXT_ID
         .try_with(Clone::clone)
         .unwrap_or_else(|_| session_id.clone());
-    let payload = vec![
+    let mut payload = vec![
         ("context_id".to_string(), serde_json::json!(context_id)),
         ("session_id".to_string(), serde_json::json!(session_id)),
         ("path".to_string(), serde_json::json!(change.path)),
@@ -740,7 +780,9 @@ async fn publish_file_change(
         ),
     ]
     .into_iter()
-    .collect();
+    .collect::<serde_json::Map<_, _>>();
+    let causal_route = CURRENT_CAUSAL_ROUTE.try_with(Clone::clone).ok().flatten();
+    extend_causal_route(&mut payload, causal_route.as_ref());
     bus.publish(Event::new(
         format!(
             "file_change_{}",
@@ -2139,6 +2181,7 @@ impl Tool for ExecuteCommandTool {
         let attempt_id = CURRENT_ATTEMPT_ID
             .try_with(Clone::clone)
             .unwrap_or_else(|_| "unknown-attempt".to_string());
+        let causal_route = CURRENT_CAUSAL_ROUTE.try_with(Clone::clone).ok().flatten();
         request_context.session_id = session_id.clone();
         request_context.context_id = context_id.clone();
         request_context.attempt_id = attempt_id.clone();
@@ -2338,6 +2381,7 @@ impl Tool for ExecuteCommandTool {
             bus: bus_clone,
             session_id: session_id_clone,
             context_id: context_id_clone,
+            causal_route: causal_route.clone(),
         });
 
         // 共享的“是否开启事件发布”标志 (前 N 秒同步时不发布，转入后台时才发布)
@@ -2366,6 +2410,7 @@ impl Tool for ExecuteCommandTool {
                 pgid: pid,
                 session_id: session_id.clone(),
                 context_id: context_id.clone(),
+                causal_route: causal_route.clone(),
                 started_at: now,
                 last_output_at: now,
                 output_bytes: 0,
@@ -2525,6 +2570,10 @@ impl Tool for ExecuteCommandTool {
                             task_id_cleanup, code, residual_note, output_str
                         )),
                     );
+                    let causal_route = tasks_cleanup
+                        .get(&task_id_cleanup)
+                        .and_then(|task| task.causal_route.clone());
+                    extend_causal_route(&mut payload, causal_route.as_ref());
 
                     let ev = Event::new(
                         format!(
@@ -3002,7 +3051,7 @@ impl Tool for DelegateTool {
         let delegation_id = format!("delegation_{suffix}");
         let child_context_id = format!("delegate-context-{suffix}");
         let child_session_id = format!("delegate-session-{suffix}");
-        let payload = vec![
+        let mut payload = vec![
             (
                 "context_id".to_string(),
                 serde_json::json!(parent_context_id),
@@ -3047,7 +3096,9 @@ impl Tool for DelegateTool {
             ),
         ]
         .into_iter()
-        .collect();
+        .collect::<serde_json::Map<_, _>>();
+        let causal_route = CURRENT_CAUSAL_ROUTE.try_with(Clone::clone).ok().flatten();
+        extend_causal_route(&mut payload, causal_route.as_ref());
         self.bus
             .publish(Event::new(
                 format!("delegate_request_{suffix}"),
@@ -4162,6 +4213,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn background_completion_preserves_the_originating_causal_route() {
+        let bus = Arc::new(crate::event::InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        bus.subscribe(
+            "chat/tool_output".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let tool = exec_tool_for_tests(Arc::clone(&bus));
+        let route = ToolCausalRoute {
+            work_item_id: "work-causal-background".to_string(),
+            root_turn_id: "root-causal-background".to_string(),
+            trigger_event_id: "trigger-causal-background".to_string(),
+            trigger_sequence: 42,
+        };
+        let result = CURRENT_CAUSAL_ROUTE
+            .scope(Some(route.clone()), async {
+                tool.execute(
+                    &serde_json::json!({
+                        "command": "sleep 1 && printf done",
+                        "wait_ms": 10
+                    })
+                    .to_string(),
+                )
+                .await
+            })
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["execution"], "background");
+
+        let completion = tokio::time::timeout(tokio::time::Duration::from_secs(3), receiver.recv())
+            .await
+            .expect("background task must finish")
+            .expect("completion event must be published");
+        assert_eq!(completion.payload["work_item_id"], route.work_item_id);
+        assert_eq!(completion.payload["root_turn_id"], route.root_turn_id);
+        assert_eq!(
+            completion.payload["trigger_event_id"],
+            route.trigger_event_id
+        );
+        assert_eq!(completion.payload["trigger_sequence"], 42);
+    }
+
+    #[tokio::test]
     async fn wait_task_can_rearm_agent_chosen_wakeups_without_killing_the_task() {
         let task_id = format!(
             "wait_rearm_{}",
@@ -4176,6 +4274,7 @@ mod tests {
                 pgid: i32::MAX,
                 session_id: "wait-rearm-session".to_string(),
                 context_id: "wait-rearm-context".to_string(),
+                causal_route: None,
                 started_at: now,
                 last_output_at: now,
                 output_bytes: 8,
@@ -4336,6 +4435,7 @@ mod tests {
             bus: Arc::new(crate::event::InMemoryEventBus::new()),
             session_id: "session_test".to_string(),
             context_id: "context_test".to_string(),
+            causal_route: None,
         });
 
         buffer.append("你好world", false);
@@ -4373,6 +4473,7 @@ mod tests {
             bus,
             session_id: "session_test".to_string(),
             context_id: "context_test".to_string(),
+            causal_route: None,
         });
 
         buffer.append("first\n", true);

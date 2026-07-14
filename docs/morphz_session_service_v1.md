@@ -29,7 +29,7 @@ Runtime 的职责是确定性地把当前认知状态物化为一个完整 SExpr
 - 一个共享 `mind`；
 - `session-directory`；
 - 本次求值的 `kernel.active-session`、版本、压力、唤醒原因和预算；
-- 来自 Context 内所有 Session、且带 `session` 来源标记的 `inbox` observation。
+- 来自本轮有界 Session Working Set、且带 `session` 来源标记的 `inbox` observation。
 
 LLM 不是被动读取传统聊天历史，而是对该符号状态执行 **Context Evaluation（上下文求值）**：理解当前请求、利用或重组 Mind、调用物理工具，并把回复发往 active Session。
 
@@ -62,13 +62,13 @@ SQLite 包含：
 
 当前单进程并发边界如下：
 
-- 同一 Session：使用 Session 锁顺序处理，避免同一连接内回复乱序；
+- 同一 Session：不同用户回合拥有独立 Evaluation Work Item，可以在旧工具仍运行时并发求值；
 - 不同 Session：可以并发调用模型，即使它们属于同一 Context；
 - 读取 Context：多个求值可以并发读取同一个已提交版本；
 - 修改 Mind：`context_tx` 使用 Context 级互斥锁串行提交；
 - 并发事务：提交时检查 `base-version`。先提交者成功，基于旧版本的后提交者收到版本冲突，不会覆盖新状态。
 
-这不是“一个 Context 只能运行一个 Session”。锁只覆盖共享 Mind 的事务提交临界区，不覆盖模型思考和物理工具执行。
+模型思考、物理工具执行和等待不持有 Session/Context 排他锁。每个 Work Item 固定 `root_turn_id` 和根事件的 Ledger sequence：同根后续工具事件可见，更晚到达的其他用户回合不会倒灌进旧 Work Item；Reply 以 `(session_id, root_turn_id)` 唯一提交。锁只覆盖共享 Mind 的事务提交临界区。
 
 近同时到达的多个用户消息可以进入一次 Context-level 合并求值。模型通过 `session_output` Function Calling 分别回复 ready Session；`context_tx` 仍只负责共享 Mind。遗漏项会精确降级为独立求值。该能力在轻对话中通过、在重量编码中尚不稳定，因此当前默认关闭，完整设计、配置和 Gemini 结果见 [多 Session 自适应合并求值 v1](morphz_merged_session_evaluation_v1.md)。
 
@@ -78,6 +78,8 @@ SQLite 包含：
 | --- | --- | --- |
 | `GET` | `/api/contexts` | 列出 Cognitive Context |
 | `POST` | `/api/contexts` | 创建 Cognitive Context |
+| `GET` | `/api/contexts/:id/working-set` | 查看当前 Full/metadata-only Session 投影与排除原因 |
+| `GET` | `/api/contexts/:id/work-items` | 查看 Context 内 Evaluation Work Item |
 | `GET` | `/api/sessions` | 列出 Session |
 | `POST` | `/api/sessions` | 在指定 `context_id` 下创建 Session |
 | `GET/PATCH` | `/api/sessions/:id` | 查询、改名、归档或恢复 Session |
@@ -104,6 +106,9 @@ Dashboard 先选择 Cognitive Context，再选择其中的 Session。用户可�
 自动回归已经覆盖：
 
 - 两个 Session 在同一 Context 内并发模型求值，最大并发数达到 2；
+- 同一 Session 的新消息可在旧前台工具结束前完成独立求值和回复；
+- 旧 Work Item 的 Context Encoding 不包含后来并发到达的同 Session 用户消息；
+- Tool Result 与后台 Task completion 始终继承原始 `root_turn_id`；
 - 两条最终回复分别路由到各自 Session；
 - 两条回复 Event 保持同一个 `context_id`；
 - Session A 提交的 Mind Frame，Session B 的下一次 Context Encoding 可见；
@@ -120,6 +125,8 @@ Dashboard 先选择 Cognitive Context，再选择其中的 Session。用户可�
 5. B 的 Context Encoding 显示 `active_session_id=session-real-b`，Session Directory 同时包含 A、B，Inbox 的 observation 来源同时包含 A、B。
 
 该单样本证明 Gemini 能理解当前“共享认知、分路回复”的编码语义。它不替代更大规模的多模型、冲突事务和长期并发评测；真实并发重叠仍由上述确定性集成测试持续守护。
+
+2026-07-15 又完成同 Session 真实重叠测试：A 的 `exec` 前台运行 25 秒，期间 B 到达并先回复 `B_FINAL_OK`；随后 A 工具结果写入并回复 `A_FINAL_OK`。Ledger 顺序为 `call A < message B < reply B < result A < reply A`，两个 Reply 的 `root_turn_id` 各自正确。
 
 ## 8. 暂不实现
 

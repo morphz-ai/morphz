@@ -10,6 +10,23 @@ pub enum SessionStatus {
     Archived,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionAttentionState {
+    #[default]
+    Active,
+    Retired,
+}
+
+impl SessionAttentionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Retired => "retired",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentRecord {
     pub id: String,
@@ -80,6 +97,17 @@ pub struct SessionRecord {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_activity_at: DateTime<Utc>,
+    /// Attention belongs to the active Context mount, not to the IO lifecycle.
+    #[serde(default)]
+    pub attention_state: SessionAttentionState,
+    #[serde(default)]
+    pub attention_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_changed_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attention_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -116,6 +144,93 @@ pub struct NewSession {
 pub struct SessionUpdate {
     pub title: Option<String>,
     pub status: Option<SessionStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionAttentionUpdate {
+    pub session_id: String,
+    pub context_id: String,
+    pub expected_revision: u64,
+    pub state: SessionAttentionState,
+    pub reason: Option<String>,
+    pub changed_at: DateTime<Utc>,
+    pub event_id: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluationWorkItemStatus {
+    Queued,
+    Running,
+    WaitingTool,
+    WaitingExternal,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+impl EvaluationWorkItemStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::WaitingTool => "waiting_tool",
+            Self::WaitingExternal => "waiting_external",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Cancelled | Self::Failed)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvaluationWorkItemRecord {
+    pub id: String,
+    pub revision: u64,
+    pub agent_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub trigger_event_id: String,
+    pub trigger_sequence: u64,
+    pub trigger_kind: String,
+    pub parent_work_item_id: Option<String>,
+    pub root_turn_id: String,
+    pub context_snapshot_version: Option<u64>,
+    pub status: EvaluationWorkItemStatus,
+    pub claimed_by: Option<String>,
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewEvaluationWorkItem {
+    pub id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub trigger_event_id: String,
+    pub trigger_sequence: u64,
+    pub trigger_kind: String,
+    pub parent_work_item_id: Option<String>,
+    pub root_turn_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EvaluationWorkItemMutation {
+    Updated(EvaluationWorkItemRecord),
+    Conflict { current: EvaluationWorkItemRecord },
+    NotFound,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplyCommit {
+    Committed,
+    Existing { event_id: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -252,6 +367,9 @@ pub struct ObjectiveRecord {
     pub stated_objective: String,
     pub revision: u64,
     pub status: ObjectiveStatus,
+    /// Latest rationale for the current lifecycle state. The immutable audit
+    /// event remains authoritative; this projection makes UI/API reads direct.
+    pub status_reason: Option<String>,
     pub wait_condition: Option<ObjectiveWaitCondition>,
     pub active_evaluation_id: Option<String>,
     pub evaluation_lease_expires_at: Option<DateTime<Utc>>,
@@ -396,6 +514,46 @@ pub trait SessionStore: Send + Sync {
         id: &str,
         at: DateTime<Utc>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn update_session_attention(
+        &self,
+        update: SessionAttentionUpdate,
+    ) -> Result<Option<SessionRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically append a Context transaction event and update all affected
+    /// Session mount attention rows.
+    async fn commit_context_transaction(
+        &self,
+        event: &crate::event::Event,
+        attention_updates: &[SessionAttentionUpdate],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn ensure_evaluation_work_item(
+        &self,
+        work_item: NewEvaluationWorkItem,
+    ) -> Result<EvaluationWorkItemRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_evaluation_work_item(
+        &self,
+        id: &str,
+    ) -> Result<Option<EvaluationWorkItemRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_context_evaluation_work_items(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<EvaluationWorkItemRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn update_evaluation_work_item(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        status: EvaluationWorkItemStatus,
+        claimed_by: Option<&str>,
+        lease_expires_at: Option<DateTime<Utc>>,
+        context_snapshot_version: Option<u64>,
+    ) -> Result<EvaluationWorkItemMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Claim the one externally visible terminal reply for a root turn and
+    /// append it in the same SQLite transaction.
+    async fn commit_evaluation_reply(
+        &self,
+        root_turn_id: &str,
+        event: &crate::event::Event,
+    ) -> Result<ReplyCommit, Box<dyn std::error::Error + Send + Sync>>;
     async fn claim_message(
         &self,
         session_id: &str,
@@ -457,6 +615,7 @@ pub trait ObjectiveStore: Send + Sync {
         expected_revision: u64,
         status: ObjectiveStatus,
         wait_condition: Option<ObjectiveWaitCondition>,
+        reason: Option<&str>,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
     async fn claim_objective_evaluation(
         &self,

@@ -2,10 +2,12 @@ use crate::config::MemoryConfig;
 use crate::event::Event;
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, DelegationRecord, DelegationStatus,
-    EventStore, MessageClaim, NewAgent, NewCognitiveContext, NewDelegation, NewObjective,
-    NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, SessionMountKind, SessionRecord, SessionStatus,
-    SessionStore, SessionUpdate,
+    EvaluationWorkItemMutation, EvaluationWorkItemRecord, EvaluationWorkItemStatus, EventStore,
+    MessageClaim, NewAgent, NewCognitiveContext, NewDelegation, NewEvaluationWorkItem,
+    NewObjective, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, ReplyCommit, SessionAttentionState,
+    SessionAttentionUpdate, SessionMountKind, SessionRecord, SessionStatus, SessionStore,
+    SessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -105,6 +107,11 @@ impl SqliteStore {
             mount_kind TEXT NOT NULL,
             mounted_at TEXT NOT NULL,
             unmounted_at TEXT,
+            attention_state TEXT NOT NULL DEFAULT 'active' CHECK(attention_state IN ('active', 'retired')),
+            attention_revision INTEGER NOT NULL DEFAULT 0 CHECK(attention_revision >= 0),
+            attention_reason TEXT,
+            attention_changed_at TEXT,
+            attention_event_id TEXT,
             PRIMARY KEY(session_id, generation),
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
@@ -142,6 +149,7 @@ impl SqliteStore {
             stated_objective TEXT NOT NULL,
             revision INTEGER NOT NULL CHECK(revision >= 1),
             status TEXT NOT NULL CHECK(status IN ('active', 'paused', 'blocked', 'completed', 'cancelled', 'failed')),
+            status_reason TEXT,
             wait_condition_json TEXT,
             active_evaluation_id TEXT,
             evaluation_lease_expires_at TEXT,
@@ -169,18 +177,149 @@ impl SqliteStore {
             PRIMARY KEY(session_id, client_message_id),
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS evaluation_work_items (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            agent_id TEXT NOT NULL,
+            context_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            trigger_event_id TEXT NOT NULL UNIQUE,
+            trigger_sequence INTEGER NOT NULL CHECK(trigger_sequence >= 0),
+            trigger_kind TEXT NOT NULL,
+            parent_work_item_id TEXT,
+            root_turn_id TEXT NOT NULL,
+            context_snapshot_version INTEGER,
+            status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'waiting_tool', 'waiting_external', 'completed', 'cancelled', 'failed')),
+            claimed_by TEXT,
+            lease_expires_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY(parent_work_item_id) REFERENCES evaluation_work_items(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_evaluation_work_items_session_status
+            ON evaluation_work_items(session_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_evaluation_work_items_context_status
+            ON evaluation_work_items(context_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_evaluation_work_items_lease
+            ON evaluation_work_items(status, lease_expires_at);
+        CREATE INDEX IF NOT EXISTS idx_evaluation_work_items_root_turn
+            ON evaluation_work_items(root_turn_id, updated_at);
+
+        CREATE TABLE IF NOT EXISTS evaluation_replies (
+            session_id TEXT NOT NULL,
+            root_turn_id TEXT NOT NULL,
+            disposition TEXT NOT NULL,
+            event_id TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(session_id, root_turn_id),
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
 
+        let mount_columns = sqlx::query("PRAGMA table_info(session_mounts)")
+            .fetch_all(&pool)
+            .await?;
+        let mount_columns = mount_columns
+            .iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<std::collections::HashSet<_>>();
+        for (name, definition) in [
+            (
+                "attention_state",
+                "TEXT NOT NULL DEFAULT 'active' CHECK(attention_state IN ('active', 'retired'))",
+            ),
+            (
+                "attention_revision",
+                "INTEGER NOT NULL DEFAULT 0 CHECK(attention_revision >= 0)",
+            ),
+            ("attention_reason", "TEXT"),
+            ("attention_changed_at", "TEXT"),
+            ("attention_event_id", "TEXT"),
+        ] {
+            if !mount_columns.contains(name) {
+                sqlx::query(&format!(
+                    "ALTER TABLE session_mounts ADD COLUMN {name} {definition}"
+                ))
+                .execute(&pool)
+                .await?;
+            }
+        }
+
+        // Objective reasons were originally present only in the immutable
+        // event ledger. Keep the current-state projection self-contained for
+        // product surfaces while preserving those source events.
+        let objective_columns = sqlx::query("PRAGMA table_info(objectives)")
+            .fetch_all(&pool)
+            .await?;
+        if !objective_columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "status_reason")
+        {
+            sqlx::query("ALTER TABLE objectives ADD COLUMN status_reason TEXT")
+                .execute(&pool)
+                .await?;
+            backfill_objective_status_reasons(&pool).await?;
+        }
+
         Ok(Self { pool })
     }
+}
+
+async fn backfill_objective_status_reasons(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let events = sqlx::query(
+        "SELECT payload FROM events WHERE type = 'objective_control' AND topic = 'objective/updated' ORDER BY timestamp",
+    )
+    .fetch_all(pool)
+    .await?;
+    for row in events {
+        let payload = serde_json::from_str::<JsonValue>(&row.get::<String, _>("payload"))?;
+        let Some(objective_id) = payload.get("objective_id").and_then(JsonValue::as_str) else {
+            continue;
+        };
+        let Some(reason) = payload.get("reason").and_then(JsonValue::as_str) else {
+            continue;
+        };
+        sqlx::query("UPDATE objectives SET status_reason = ? WHERE id = ?")
+            .bind(reason)
+            .bind(objective_id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
 }
 
 fn parse_session_status(value: &str) -> SessionStatus {
     match value {
         "archived" => SessionStatus::Archived,
         _ => SessionStatus::Active,
+    }
+}
+
+fn parse_session_attention_state(value: &str) -> SessionAttentionState {
+    match value {
+        "retired" => SessionAttentionState::Retired,
+        _ => SessionAttentionState::Active,
+    }
+}
+
+fn parse_evaluation_work_item_status(
+    value: &str,
+) -> Result<EvaluationWorkItemStatus, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "queued" => Ok(EvaluationWorkItemStatus::Queued),
+        "running" => Ok(EvaluationWorkItemStatus::Running),
+        "waiting_tool" => Ok(EvaluationWorkItemStatus::WaitingTool),
+        "waiting_external" => Ok(EvaluationWorkItemStatus::WaitingExternal),
+        "completed" => Ok(EvaluationWorkItemStatus::Completed),
+        "cancelled" => Ok(EvaluationWorkItemStatus::Cancelled),
+        "failed" => Ok(EvaluationWorkItemStatus::Failed),
+        other => Err(format!("未知 Evaluation Work Item 状态：'{other}'").into()),
     }
 }
 
@@ -268,7 +407,40 @@ fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionRecord {
         created_at: parse_time(&row.get::<String, _>("created_at")),
         updated_at: parse_time(&row.get::<String, _>("updated_at")),
         last_activity_at: parse_time(&row.get::<String, _>("last_activity_at")),
+        attention_state: parse_session_attention_state(&row.get::<String, _>("attention_state")),
+        attention_revision: u64::try_from(row.get::<i64, _>("attention_revision"))
+            .expect("Session attention revision 不能为负数"),
+        attention_reason: row.get("attention_reason"),
+        attention_changed_at: row
+            .get::<Option<String>, _>("attention_changed_at")
+            .map(|value| parse_time(&value)),
+        attention_event_id: row.get("attention_event_id"),
     }
+}
+
+fn evaluation_work_item_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<EvaluationWorkItemRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(EvaluationWorkItemRecord {
+        id: row.get("id"),
+        revision: sqlite_u64(row, "revision")?,
+        agent_id: row.get("agent_id"),
+        context_id: row.get("context_id"),
+        session_id: row.get("session_id"),
+        trigger_event_id: row.get("trigger_event_id"),
+        trigger_sequence: sqlite_u64(row, "trigger_sequence")?,
+        trigger_kind: row.get("trigger_kind"),
+        parent_work_item_id: row.get("parent_work_item_id"),
+        root_turn_id: row.get("root_turn_id"),
+        context_snapshot_version: sqlite_optional_u64(row, "context_snapshot_version")?,
+        status: parse_evaluation_work_item_status(&row.get::<String, _>("status"))?,
+        claimed_by: row.get("claimed_by"),
+        lease_expires_at: row
+            .get::<Option<String>, _>("lease_expires_at")
+            .map(|value| parse_time(&value)),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
 }
 
 fn context_from_row(row: &sqlx::sqlite::SqliteRow) -> CognitiveContextRecord {
@@ -306,6 +478,7 @@ fn objective_from_row(
         stated_objective: row.get("stated_objective"),
         revision: sqlite_u64(row, "revision")?,
         status: parse_objective_status(&row.get::<String, _>("status"))?,
+        status_reason: row.get("status_reason"),
         wait_condition,
         active_evaluation_id: row.get("active_evaluation_id"),
         evaluation_lease_expires_at: row
@@ -319,6 +492,36 @@ fn objective_from_row(
         created_at: parse_time(&row.get::<String, _>("created_at")),
         updated_at: parse_time(&row.get::<String, _>("updated_at")),
     })
+}
+
+async fn append_event_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event: &Event,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let payload = serde_json::to_string(&event.payload)?;
+    let timestamp = event
+        .timestamp
+        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let session_id = event.payload.get("session_id").and_then(JsonValue::as_str);
+    let context_id = event
+        .payload
+        .get("context_id")
+        .and_then(JsonValue::as_str)
+        .or(session_id);
+    sqlx::query(
+        "INSERT INTO events (id, timestamp, actor, type, topic, context_id, session_id, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&event.id)
+    .bind(timestamp)
+    .bind(&event.actor)
+    .bind(&event.event_type)
+    .bind(&event.topic)
+    .bind(context_id)
+    .bind(session_id)
+    .bind(payload)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -663,7 +866,13 @@ impl SessionStore for SqliteStore {
         id: &str,
     ) -> Result<Option<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let row = sqlx::query(
-            "SELECT id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, last_activity_at FROM sessions WHERE id = ?",
+            r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+                      s.created_at, s.updated_at, s.last_activity_at,
+                      sm.attention_state, sm.attention_revision, sm.attention_reason,
+                      sm.attention_changed_at, sm.attention_event_id
+               FROM sessions s
+               JOIN session_mounts sm ON sm.session_id = s.id AND sm.unmounted_at IS NULL
+               WHERE s.id = ?"#,
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -676,11 +885,24 @@ impl SessionStore for SqliteStore {
         include_archived: bool,
     ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = if include_archived {
-            sqlx::query("SELECT id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, last_activity_at FROM sessions ORDER BY last_activity_at DESC")
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+                                      s.created_at, s.updated_at, s.last_activity_at,
+                                      sm.attention_state, sm.attention_revision, sm.attention_reason,
+                                      sm.attention_changed_at, sm.attention_event_id
+                               FROM sessions s
+                               JOIN session_mounts sm ON sm.session_id = s.id AND sm.unmounted_at IS NULL
+                               ORDER BY s.last_activity_at DESC, s.id ASC"#)
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query("SELECT id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, last_activity_at FROM sessions WHERE status = 'active' ORDER BY last_activity_at DESC")
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+                                      s.created_at, s.updated_at, s.last_activity_at,
+                                      sm.attention_state, sm.attention_revision, sm.attention_reason,
+                                      sm.attention_changed_at, sm.attention_event_id
+                               FROM sessions s
+                               JOIN session_mounts sm ON sm.session_id = s.id AND sm.unmounted_at IS NULL
+                               WHERE s.status = 'active'
+                               ORDER BY s.last_activity_at DESC, s.id ASC"#)
                 .fetch_all(&self.pool)
                 .await?
         };
@@ -693,12 +915,26 @@ impl SessionStore for SqliteStore {
         include_archived: bool,
     ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = if include_archived {
-            sqlx::query("SELECT id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, last_activity_at FROM sessions WHERE context_id = ? ORDER BY last_activity_at DESC")
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+                                      s.created_at, s.updated_at, s.last_activity_at,
+                                      sm.attention_state, sm.attention_revision, sm.attention_reason,
+                                      sm.attention_changed_at, sm.attention_event_id
+                               FROM sessions s
+                               JOIN session_mounts sm ON sm.session_id = s.id AND sm.unmounted_at IS NULL
+                               WHERE s.context_id = ?
+                               ORDER BY s.last_activity_at DESC, s.id ASC"#)
                 .bind(context_id)
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query("SELECT id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, last_activity_at FROM sessions WHERE context_id = ? AND status = 'active' ORDER BY last_activity_at DESC")
+            sqlx::query(r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title, s.status,
+                                      s.created_at, s.updated_at, s.last_activity_at,
+                                      sm.attention_state, sm.attention_revision, sm.attention_reason,
+                                      sm.attention_changed_at, sm.attention_event_id
+                               FROM sessions s
+                               JOIN session_mounts sm ON sm.session_id = s.id AND sm.unmounted_at IS NULL
+                               WHERE s.context_id = ? AND s.status = 'active'
+                               ORDER BY s.last_activity_at DESC, s.id ASC"#)
                 .bind(context_id)
                 .fetch_all(&self.pool)
                 .await?
@@ -746,6 +982,259 @@ impl SessionStore for SqliteStore {
         Ok(())
     }
 
+    async fn update_session_attention(
+        &self,
+        update: SessionAttentionUpdate,
+    ) -> Result<Option<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let expected_revision = i64::try_from(update.expected_revision)
+            .map_err(|_| "Session attention revision 超出 SQLite INTEGER 范围")?;
+        let changed_at = update
+            .changed_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE session_mounts
+               SET attention_state = ?, attention_revision = attention_revision + 1,
+                   attention_reason = ?, attention_changed_at = ?, attention_event_id = ?
+               WHERE session_id = ? AND context_id = ? AND unmounted_at IS NULL
+                 AND attention_revision = ?"#,
+        )
+        .bind(update.state.as_str())
+        .bind(update.reason)
+        .bind(changed_at)
+        .bind(update.event_id)
+        .bind(&update.session_id)
+        .bind(update.context_id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        self.get_session(&update.session_id).await
+    }
+
+    async fn commit_context_transaction(
+        &self,
+        event: &Event,
+        attention_updates: &[SessionAttentionUpdate],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut tx = self.pool.begin().await?;
+        for update in attention_updates {
+            let expected_revision = i64::try_from(update.expected_revision)
+                .map_err(|_| "Session attention revision 超出 SQLite INTEGER 范围")?;
+            let changed_at = update
+                .changed_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let result = sqlx::query(
+                r#"UPDATE session_mounts
+                   SET attention_state = ?, attention_revision = attention_revision + 1,
+                       attention_reason = ?, attention_changed_at = ?, attention_event_id = ?
+                   WHERE session_id = ? AND context_id = ? AND unmounted_at IS NULL
+                     AND attention_revision = ?"#,
+            )
+            .bind(update.state.as_str())
+            .bind(&update.reason)
+            .bind(changed_at)
+            .bind(&update.event_id)
+            .bind(&update.session_id)
+            .bind(&update.context_id)
+            .bind(expected_revision)
+            .execute(&mut *tx)
+            .await?;
+            if result.rows_affected() != 1 {
+                return Err(format!(
+                    "Session '{}' attention revision 冲突或 Context mount 不存在",
+                    update.session_id
+                )
+                .into());
+            }
+        }
+        append_event_in_transaction(&mut tx, event).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn ensure_evaluation_work_item(
+        &self,
+        work_item: NewEvaluationWorkItem,
+    ) -> Result<EvaluationWorkItemRecord, Box<dyn std::error::Error + Send + Sync>> {
+        let trigger_sequence = i64::try_from(work_item.trigger_sequence)
+            .map_err(|_| "Work Item trigger sequence 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT OR IGNORE INTO evaluation_work_items
+               (id, revision, agent_id, context_id, session_id, trigger_event_id,
+                trigger_sequence, trigger_kind, parent_work_item_id, root_turn_id,
+                status, created_at, updated_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
+        )
+        .bind(&work_item.id)
+        .bind(&work_item.agent_id)
+        .bind(&work_item.context_id)
+        .bind(&work_item.session_id)
+        .bind(&work_item.trigger_event_id)
+        .bind(trigger_sequence)
+        .bind(&work_item.trigger_kind)
+        .bind(&work_item.parent_work_item_id)
+        .bind(&work_item.root_turn_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        let row = sqlx::query("SELECT * FROM evaluation_work_items WHERE trigger_event_id = ?")
+            .bind(&work_item.trigger_event_id)
+            .fetch_one(&self.pool)
+            .await?;
+        let existing = evaluation_work_item_from_row(&row)?;
+        if existing.context_id != work_item.context_id
+            || existing.session_id != work_item.session_id
+            || existing.root_turn_id != work_item.root_turn_id
+        {
+            return Err(format!(
+                "Trigger Event '{}' 已被不同 Evaluation Work Item 占用",
+                work_item.trigger_event_id
+            )
+            .into());
+        }
+        Ok(existing)
+    }
+
+    async fn get_evaluation_work_item(
+        &self,
+        id: &str,
+    ) -> Result<Option<EvaluationWorkItemRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query("SELECT * FROM evaluation_work_items WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(evaluation_work_item_from_row).transpose()
+    }
+
+    async fn list_context_evaluation_work_items(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<EvaluationWorkItemRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = if include_terminal {
+            sqlx::query(
+                "SELECT * FROM evaluation_work_items WHERE context_id = ? ORDER BY created_at, id",
+            )
+            .bind(context_id)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT * FROM evaluation_work_items WHERE context_id = ? AND status NOT IN ('completed', 'cancelled', 'failed') ORDER BY created_at, id",
+            )
+            .bind(context_id)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.iter().map(evaluation_work_item_from_row).collect()
+    }
+
+    async fn update_evaluation_work_item(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        status: EvaluationWorkItemStatus,
+        claimed_by: Option<&str>,
+        lease_expires_at: Option<DateTime<Utc>>,
+        context_snapshot_version: Option<u64>,
+    ) -> Result<EvaluationWorkItemMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Work Item revision 超出 SQLite INTEGER 范围")?;
+        let context_snapshot_version = context_snapshot_version
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| "Context snapshot version 超出 SQLite INTEGER 范围")?;
+        let lease_expires_at =
+            lease_expires_at.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE evaluation_work_items
+               SET revision = revision + 1, status = ?, claimed_by = ?,
+                   lease_expires_at = ?,
+                   context_snapshot_version = COALESCE(?, context_snapshot_version),
+                   updated_at = ?
+               WHERE id = ? AND revision = ?"#,
+        )
+        .bind(status.as_str())
+        .bind(claimed_by)
+        .bind(lease_expires_at)
+        .bind(context_snapshot_version)
+        .bind(now)
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(EvaluationWorkItemMutation::Updated(
+                self.get_evaluation_work_item(id)
+                    .await?
+                    .ok_or("Work Item 更新后无法读取")?,
+            ));
+        }
+        Ok(match self.get_evaluation_work_item(id).await? {
+            Some(current) => EvaluationWorkItemMutation::Conflict { current },
+            None => EvaluationWorkItemMutation::NotFound,
+        })
+    }
+
+    async fn commit_evaluation_reply(
+        &self,
+        root_turn_id: &str,
+        event: &Event,
+    ) -> Result<ReplyCommit, Box<dyn std::error::Error + Send + Sync>> {
+        let session_id = event
+            .payload
+            .get("session_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Reply Event 缺少 session_id")?;
+        let disposition = event
+            .payload
+            .get("disposition")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("deliver");
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        let result = sqlx::query(
+            "INSERT OR IGNORE INTO evaluation_replies (session_id, root_turn_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(session_id)
+        .bind(root_turn_id)
+        .bind(disposition)
+        .bind(&event.id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() == 0 {
+            let existing = sqlx::query(
+                "SELECT event_id FROM evaluation_replies WHERE session_id = ? AND root_turn_id = ?",
+            )
+            .bind(session_id)
+            .bind(root_turn_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(ReplyCommit::Existing {
+                event_id: existing.get("event_id"),
+            });
+        }
+        append_event_in_transaction(&mut tx, event).await?;
+        let activity_at = event
+            .timestamp
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query("UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?")
+            .bind(&activity_at)
+            .bind(&activity_at)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(ReplyCommit::Committed)
+    }
+
     async fn claim_message(
         &self,
         session_id: &str,
@@ -791,7 +1280,7 @@ impl SessionStore for SqliteStore {
                 .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
             sqlx::query("INSERT INTO events (id, timestamp, actor, type, topic, context_id, session_id, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
                 .bind(&event.id)
-                .bind(timestamp)
+                .bind(&timestamp)
                 .bind(&event.actor)
                 .bind(&event.event_type)
                 .bind(&event.topic)
@@ -800,6 +1289,63 @@ impl SessionStore for SqliteStore {
                 .bind(payload)
                 .execute(&mut *tx)
                 .await?;
+            sqlx::query("UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?")
+                .bind(&timestamp)
+                .bind(&timestamp)
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await?;
+            let mount = sqlx::query(
+                "SELECT attention_state, attention_revision FROM session_mounts WHERE session_id = ? AND context_id = ? AND unmounted_at IS NULL",
+            )
+            .bind(session_id)
+            .bind(event_context_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if mount.get::<String, _>("attention_state") == "retired" {
+                let restore_event_id = format!("runtime_session_restored_{}", event.id);
+                sqlx::query(
+                    r#"UPDATE session_mounts
+                       SET attention_state = 'active', attention_revision = attention_revision + 1,
+                           attention_reason = 'new directed user message',
+                           attention_changed_at = ?, attention_event_id = ?
+                       WHERE session_id = ? AND context_id = ? AND unmounted_at IS NULL
+                         AND attention_state = 'retired'"#,
+                )
+                .bind(&timestamp)
+                .bind(&restore_event_id)
+                .bind(session_id)
+                .bind(event_context_id)
+                .execute(&mut *tx)
+                .await?;
+                let restore = Event {
+                    id: restore_event_id,
+                    sequence: None,
+                    timestamp: event.timestamp,
+                    actor: "Runtime-SessionAttention".to_string(),
+                    event_type: "runtime_control".to_string(),
+                    topic: "runtime/session_restored".to_string(),
+                    payload: [
+                        (
+                            "context_id".to_string(),
+                            serde_json::json!(event_context_id),
+                        ),
+                        ("session_id".to_string(), serde_json::json!(session_id)),
+                        ("trigger_event_id".to_string(), serde_json::json!(event.id)),
+                        (
+                            "trigger_kind".to_string(),
+                            serde_json::json!("user_message"),
+                        ),
+                        (
+                            "attention_revision".to_string(),
+                            serde_json::json!(mount.get::<i64, _>("attention_revision") + 1),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                };
+                append_event_in_transaction(&mut tx, &restore).await?;
+            }
             tx.commit().await?;
             return Ok(MessageClaim::Accepted);
         }
@@ -922,7 +1468,7 @@ impl SessionStore for SqliteStore {
 
 const OBJECTIVE_SELECT: &str = r#"SELECT id, agent_id, context_id,
     coordinator_session_id, delivery_session_id, parent_objective_id, source_event_id,
-    stated_objective, revision, status, wait_condition_json, active_evaluation_id,
+    stated_objective, revision, status, status_reason, wait_condition_json, active_evaluation_id,
     evaluation_lease_expires_at, continuation_sequence, token_budget, tokens_used,
     time_used_seconds, created_at, updated_at
     FROM objectives"#;
@@ -1111,6 +1657,7 @@ impl ObjectiveStore for SqliteStore {
         expected_revision: u64,
         status: ObjectiveStatus,
         wait_condition: Option<ObjectiveWaitCondition>,
+        reason: Option<&str>,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
         let Some(current) = self.get_objective(id).await? else {
             return Ok(ObjectiveMutation::NotFound);
@@ -1138,11 +1685,12 @@ impl ObjectiveStore for SqliteStore {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let result = sqlx::query(
             r#"UPDATE objectives
-               SET status = ?, wait_condition_json = ?,
+               SET status = ?, status_reason = ?, wait_condition_json = ?,
                    revision = revision + 1, updated_at = ?
                WHERE id = ? AND revision = ?"#,
         )
         .bind(status.as_str())
+        .bind(reason)
         .bind(wait_condition_json)
         .bind(now)
         .bind(id)
@@ -1894,6 +2442,7 @@ mod tests {
                 Some(ObjectiveWaitCondition::ToolTask {
                     task_id: "task-1".to_string(),
                 }),
+                Some("等待后台任务完成"),
             )
             .await
             .unwrap();
@@ -1901,6 +2450,7 @@ mod tests {
             panic!("expected an updated Objective");
         };
         assert_eq!(waiting.revision, 2);
+        assert_eq!(waiting.status_reason.as_deref(), Some("等待后台任务完成"));
         assert_eq!(
             waiting.wait_condition,
             Some(ObjectiveWaitCondition::ToolTask {
@@ -1920,21 +2470,40 @@ mod tests {
         ));
 
         let paused = store
-            .update_objective_state("objective-1", 2, ObjectiveStatus::Paused, None)
+            .update_objective_state(
+                "objective-1",
+                2,
+                ObjectiveStatus::Paused,
+                None,
+                Some("等待使用者决定"),
+            )
             .await
             .unwrap();
         let ObjectiveMutation::Updated(paused) = paused else {
             panic!("expected a paused Objective");
         };
         assert_eq!(paused.status, ObjectiveStatus::Paused);
+        assert_eq!(paused.status_reason.as_deref(), Some("等待使用者决定"));
         assert!(paused.wait_condition.is_none());
         assert!(store
-            .update_objective_state("objective-1", 3, ObjectiveStatus::Completed, None)
+            .update_objective_state(
+                "objective-1",
+                3,
+                ObjectiveStatus::Completed,
+                None,
+                Some("不允许从暂停直接完成"),
+            )
             .await
             .is_err());
 
         let resumed = store
-            .update_objective_state("objective-1", 3, ObjectiveStatus::Active, None)
+            .update_objective_state(
+                "objective-1",
+                3,
+                ObjectiveStatus::Active,
+                None,
+                Some("使用者要求继续"),
+            )
             .await
             .unwrap();
         let ObjectiveMutation::Updated(resumed) = resumed else {
@@ -1942,7 +2511,13 @@ mod tests {
         };
         assert_eq!(resumed.revision, 4);
         let completed = store
-            .update_objective_state("objective-1", 4, ObjectiveStatus::Completed, None)
+            .update_objective_state(
+                "objective-1",
+                4,
+                ObjectiveStatus::Completed,
+                None,
+                Some("验收完成"),
+            )
             .await
             .unwrap();
         assert!(matches!(
@@ -1954,7 +2529,13 @@ mod tests {
             })
         ));
         assert!(store
-            .update_objective_state("objective-1", 5, ObjectiveStatus::Active, None)
+            .update_objective_state(
+                "objective-1",
+                5,
+                ObjectiveStatus::Active,
+                None,
+                Some("终态不可恢复"),
+            )
             .await
             .is_err());
         assert!(store
@@ -2015,7 +2596,13 @@ mod tests {
             ObjectiveMutation::Conflict { .. }
         ));
         let completed_with_lease = store
-            .update_objective_state("objective-usage", 2, ObjectiveStatus::Completed, None)
+            .update_objective_state(
+                "objective-usage",
+                2,
+                ObjectiveStatus::Completed,
+                None,
+                Some("usage 验收完成"),
+            )
             .await
             .unwrap();
         assert!(matches!(
@@ -2053,6 +2640,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(recovered.status, ObjectiveStatus::Completed);
+        assert_eq!(recovered.status_reason.as_deref(), Some("验收完成"));
         assert_eq!(recovered.token_budget, Some(256_000));
         assert!(restarted
             .list_recoverable_objectives()

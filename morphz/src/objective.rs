@@ -437,6 +437,9 @@ impl Tool for ObjectiveUpdateTool {
         if reason.is_empty() {
             return Err("objective_update.reason 不能为空".into());
         }
+        if reason.chars().count() > 10_000 {
+            return Err("objective_update.reason 超过 10,000 字符上限".into());
+        }
         let objective = self
             .supervisor
             .get(&args.objective_id)
@@ -503,6 +506,8 @@ impl Tool for ObjectiveUpdateTool {
                 "evidence_refs": args.evidence_refs,
                 "next_action": if updated.status.is_terminal() {
                     "调用标准 reply 交付最终报告；reply 只结束当前 Evaluation。"
+                } else if updated.status == ObjectiveStatus::Blocked {
+                    "调用标准 reply 向使用者说明阻塞原因；Runtime 将停止自动续跑，直到收到显式恢复。"
                 } else if updated.wait_condition.is_some() {
                     "调用 reply(deliver) 说明等待状态，或 reply(suppress) 明确无需发送消息；Runtime 将在条件满足时唤醒。"
                 } else {
@@ -515,6 +520,7 @@ impl Tool for ObjectiveUpdateTool {
                 "expected_revision": args.base_revision,
                 "current_revision": current.revision,
                 "current_status": current.status,
+                "current_status_reason": current.status_reason,
                 "wait_condition": current.wait_condition,
                 "guidance": "以最新 Context Encoding 为准重新判断，禁止用过期 revision 覆盖。"
             }),
@@ -705,7 +711,7 @@ impl ObjectiveSupervisor {
     ) -> Result<ObjectiveMutation, DynError> {
         let mut mutation = self
             .store
-            .update_objective_state(id, expected_revision, status, wait_condition)
+            .update_objective_state(id, expected_revision, status, wait_condition, reason)
             .await?;
         if let ObjectiveMutation::Updated(updated) = &mutation {
             if matches!(
@@ -775,6 +781,7 @@ impl ObjectiveSupervisor {
                     objective.revision,
                     ObjectiveStatus::Active,
                     None,
+                    Some(&format!("等待条件已由事件 {} 满足", event.id)),
                 )
                 .await?;
             let ObjectiveMutation::Updated(woken) = mutation else {
@@ -818,6 +825,7 @@ impl ObjectiveSupervisor {
                     objective.revision,
                     ObjectiveStatus::Active,
                     None,
+                    Some(&format!("等待条件已由事件 {} 满足", event.id)),
                 )
                 .await?;
             if let ObjectiveMutation::Updated(woken) = mutation {
@@ -1242,7 +1250,13 @@ impl ObjectiveSupervisor {
             }
             match supervisor
                 .store
-                .update_objective_state(&objective_id, revision, ObjectiveStatus::Active, None)
+                .update_objective_state(
+                    &objective_id,
+                    revision,
+                    ObjectiveStatus::Active,
+                    None,
+                    Some("计时等待已到期"),
+                )
                 .await
             {
                 Ok(ObjectiveMutation::Updated(woken)) => {

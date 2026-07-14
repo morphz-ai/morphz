@@ -4,13 +4,15 @@ use crate::event::{
     TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use crate::memory::{
-    EventStore, ObjectiveRecord, ObjectiveStore, QueryFilter, SessionRecord, SessionStore,
+    EvaluationWorkItemRecord, EventStore, ObjectiveRecord, ObjectiveStore, QueryFilter,
+    SessionAttentionState, SessionAttentionUpdate, SessionRecord, SessionStatus, SessionStore,
 };
 use crate::orchestrator::context_contract::{
     render_context_tx_epistemic_guidance, ContractClause, EPISTEMIC_CONTRACT,
     EPISTEMIC_CONTRACT_NAME, REALITY_CONTRACT, REALITY_CONTRACT_NAME,
 };
 use crate::sexpr::{parse, SExpr};
+use crate::tool::active_background_task_count;
 use chrono::Utc;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -22,7 +24,7 @@ use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 14;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 15;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 
 struct ContextOperationSpec {
@@ -56,6 +58,16 @@ const CONTEXT_OPERATIONS: &[ContextOperationSpec] = &[
         name: "restore",
         syntax: "(restore ID...)",
         meaning: "恢复已 retire 的 frame/observation",
+    },
+    ContextOperationSpec {
+        name: "retire-session",
+        syntax: "(retire-session SESSION-ID...)",
+        meaning: "把 Session mount 移出自动认知工作集；不归档、不删除 Ledger 或 Shared Mind；必须提供事务级 reason，当前或有活跃工作的 Session 会被拒绝",
+    },
+    ContextOperationSpec {
+        name: "restore-session",
+        syntax: "(restore-session SESSION-ID...)",
+        meaning: "恢复 Session mount 的自动认知候选状态；新定向事件也会由 Runtime 确定性自动恢复",
     },
     ContextOperationSpec {
         name: "protect",
@@ -106,7 +118,7 @@ pub fn context_tx_tool_description() -> String {
         .collect::<Vec<_>>()
         .join("；");
     format!(
-        "原子修改你拥有的 Mind Context。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Context 修改不是给用户的最终回复。提交 BODY 时还必须遵守由协议单一事实源生成的认识契约：{}",
+        "原子修改你拥有的 Mind Context 与 Session attention。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。Session ID 不是 observation ref，必须使用 session-directory 中的原始 ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且 Mind 修改与 retire-session/restore-session 整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Context 修改不是给用户的最终回复。提交 BODY 时还必须遵守由协议单一事实源生成的认识契约：{}",
         render_context_tx_epistemic_guidance()
     )
 }
@@ -361,6 +373,43 @@ pub struct ReadySessionEvaluation {
     pub wake: WakeSignal,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SessionProjection {
+    Full,
+    MetadataOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectedSession {
+    pub session: SessionRecord,
+    pub projection: SessionProjection,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_work_item_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_objective_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionWorkingSetExclusions {
+    pub archived: usize,
+    pub retired: usize,
+    pub outside_window: usize,
+    pub over_count: usize,
+    pub token_budget: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionWorkingSetView {
+    pub active_window_secs: u64,
+    pub max_sessions: usize,
+    pub current_session_ids: Vec<String>,
+    pub full_session_ids: Vec<String>,
+    pub metadata_only_session_ids: Vec<String>,
+    pub excluded: SessionWorkingSetExclusions,
+    pub selection: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextView {
     pub context_id: String,
@@ -371,7 +420,12 @@ pub struct ContextView {
     /// One entry in normal evaluation; multiple entries in a merged
     /// Context-level evaluation batch.
     pub ready_sessions: Vec<ReadySessionEvaluation>,
-    pub sessions: Vec<SessionRecord>,
+    /// Only Full and metadata-only directory entries are materialized. The
+    /// excluded population is represented by `session_working_set` counts so
+    /// Prompt size does not scale with the total Session registry.
+    pub sessions: Vec<ProjectedSession>,
+    pub session_working_set: SessionWorkingSetView,
+    pub active_work_items: Vec<EvaluationWorkItemRecord>,
     pub objectives: Vec<ObjectiveRecord>,
     pub state: MindState,
     pub observations: Vec<ContextObservation>,
@@ -379,6 +433,126 @@ pub struct ContextView {
     pub turn_budget: TurnBudget,
     pub wake: WakeSignal,
     pub sexpr: String,
+}
+
+fn select_session_working_set(
+    registry_sessions: &[SessionRecord],
+    ready_session_ids: &[String],
+    evaluation_started_at: chrono::DateTime<Utc>,
+    config: &crate::config::SessionWorkingSetConfig,
+    objectives: &[ObjectiveRecord],
+    work_items: &[EvaluationWorkItemRecord],
+) -> (Vec<ProjectedSession>, SessionWorkingSetView) {
+    let ready = ready_session_ids.iter().cloned().collect::<HashSet<_>>();
+    let window_seconds = i64::try_from(config.active_window.as_secs()).unwrap_or(i64::MAX);
+    let cutoff = evaluation_started_at - chrono::Duration::seconds(window_seconds);
+    let mut excluded = SessionWorkingSetExclusions::default();
+    let mut candidates = Vec::new();
+
+    for session in registry_sessions {
+        let is_current = ready.contains(&session.id);
+        if session.status == SessionStatus::Archived && !is_current {
+            excluded.archived += 1;
+            continue;
+        }
+        if session.attention_state == SessionAttentionState::Retired && !is_current {
+            excluded.retired += 1;
+            continue;
+        }
+        if session.last_activity_at < cutoff && !is_current {
+            excluded.outside_window += 1;
+            continue;
+        }
+        candidates.push(session.clone());
+    }
+
+    candidates.sort_by(|left, right| {
+        let left_ready = ready.contains(&left.id);
+        let right_ready = ready.contains(&right.id);
+        right_ready
+            .cmp(&left_ready)
+            .then_with(|| right.last_activity_at.cmp(&left.last_activity_at))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let full_limit = config.max_sessions.max(1).max(ready.len());
+    if candidates.len() > full_limit {
+        excluded.over_count = candidates.len() - full_limit;
+        candidates.truncate(full_limit);
+    }
+    let full_ids = candidates
+        .iter()
+        .map(|session| session.id.clone())
+        .collect::<HashSet<_>>();
+
+    let mut work_by_session = HashMap::<String, Vec<String>>::new();
+    for item in work_items.iter().filter(|item| !item.status.is_terminal()) {
+        work_by_session
+            .entry(item.session_id.clone())
+            .or_default()
+            .push(item.id.clone());
+    }
+    let mut objectives_by_session = HashMap::<String, Vec<String>>::new();
+    for objective in objectives
+        .iter()
+        .filter(|objective| !objective.status.is_terminal())
+    {
+        objectives_by_session
+            .entry(objective.coordinator_session_id.clone())
+            .or_default()
+            .push(objective.id.clone());
+    }
+
+    let mut projected = candidates
+        .into_iter()
+        .map(|session| ProjectedSession {
+            active_work_item_ids: work_by_session.remove(&session.id).unwrap_or_default(),
+            active_objective_ids: objectives_by_session
+                .remove(&session.id)
+                .unwrap_or_default(),
+            session,
+            projection: SessionProjection::Full,
+        })
+        .collect::<Vec<_>>();
+    for session in registry_sessions {
+        if full_ids.contains(&session.id) {
+            continue;
+        }
+        let active_work_item_ids = work_by_session.remove(&session.id).unwrap_or_default();
+        let active_objective_ids = objectives_by_session
+            .remove(&session.id)
+            .unwrap_or_default();
+        if active_work_item_ids.is_empty() && active_objective_ids.is_empty() {
+            continue;
+        }
+        projected.push(ProjectedSession {
+            session: session.clone(),
+            projection: SessionProjection::MetadataOnly,
+            active_work_item_ids,
+            active_objective_ids,
+        });
+    }
+    let full_session_ids = projected
+        .iter()
+        .filter(|entry| entry.projection == SessionProjection::Full)
+        .map(|entry| entry.session.id.clone())
+        .collect::<Vec<_>>();
+    let metadata_only_session_ids = projected
+        .iter()
+        .filter(|entry| entry.projection == SessionProjection::MetadataOnly)
+        .map(|entry| entry.session.id.clone())
+        .collect::<Vec<_>>();
+    (
+        projected,
+        SessionWorkingSetView {
+            active_window_secs: config.active_window.as_secs(),
+            max_sessions: config.max_sessions.max(1),
+            current_session_ids: ready_session_ids.to_vec(),
+            full_session_ids,
+            metadata_only_session_ids,
+            excluded,
+            selection: "current first; then last_activity desc; session_id tie-break".to_string(),
+        },
+    )
 }
 
 /// Agent-Owned Context v1 的唯一状态入口。
@@ -462,6 +636,9 @@ impl ContextEngine {
             context_id,
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
+        let attention_updates = self
+            .prepare_session_attention_updates(context_id, acting_session_id, &parsed, &tx_id)
+            .await?;
         let payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(acting_session_id)),
@@ -477,15 +654,24 @@ impl ContextEngine {
         .into_iter()
         .collect();
 
-        self.store
-            .append(Event::new(
-                tx_id.clone(),
-                "Agent-Context".to_string(),
-                TYPE_CONTEXT_TRANSACTION.to_string(),
-                "chat/context_tx_committed".to_string(),
-                payload,
-            ))
-            .await?;
+        let event = Event::new(
+            tx_id.clone(),
+            "Agent-Context".to_string(),
+            TYPE_CONTEXT_TRANSACTION.to_string(),
+            "chat/context_tx_committed".to_string(),
+            payload,
+        );
+        if let Some(session_store) = &self.session_store {
+            session_store
+                .commit_context_transaction(&event, &attention_updates)
+                .await?;
+        } else if attention_updates.is_empty() {
+            self.store.append(event).await?;
+        } else {
+            return Err(
+                "ContextEngine 未配置 SessionStore，不能提交 Session attention 修改".into(),
+            );
+        }
 
         Ok(ContextCommit {
             transaction_id: tx_id,
@@ -494,6 +680,118 @@ impl ContextEngine {
             reason: parsed.reason,
             changes,
         })
+    }
+
+    async fn prepare_session_attention_updates(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
+        transaction: &ParsedTransaction,
+        transaction_id: &str,
+    ) -> Result<Vec<SessionAttentionUpdate>, DynError> {
+        let attention_operations = transaction
+            .operations
+            .iter()
+            .filter_map(|operation| as_list(operation, "context operation").ok())
+            .filter(|operation| {
+                operation
+                    .first()
+                    .and_then(|item| as_atom(item, "operation").ok())
+                    .is_some_and(|name| matches!(name, "retire-session" | "restore-session"))
+            })
+            .collect::<Vec<_>>();
+        if attention_operations.is_empty() {
+            return Ok(Vec::new());
+        }
+        let store = self
+            .session_store
+            .as_ref()
+            .ok_or("ContextEngine 未配置 SessionStore，不能修改 Session attention")?;
+        let sessions = store.list_context_sessions(context_id, true).await?;
+        let mut state = sessions
+            .into_iter()
+            .map(|session| (session.id.clone(), session))
+            .collect::<HashMap<_, _>>();
+        let active_work_items = store
+            .list_context_evaluation_work_items(context_id, false)
+            .await?;
+        let active_objectives = match &self.objective_store {
+            Some(store) => store.list_context_objectives(context_id, false).await?,
+            None => Vec::new(),
+        };
+        let changed_at = Utc::now();
+        let mut updates = Vec::new();
+        for operation in attention_operations {
+            let name = atom_at(operation, 0, "operation name")?;
+            for item in operation.iter().skip(1) {
+                let session_id = validated_id(as_atom(item, "session id")?)?;
+                let session = state.get_mut(session_id).ok_or_else(|| {
+                    format!(
+                        "Session '{}' 不属于当前 Context '{}'",
+                        session_id, context_id
+                    )
+                })?;
+                let target = if name == "retire-session" {
+                    if session_id == acting_session_id {
+                        return Err(format!(
+                            "当前 Session '{}' 尚未完成本轮 Reply，v1 拒绝 retire；请在后续 Session 中处理",
+                            session_id
+                        )
+                        .into());
+                    }
+                    if active_work_items
+                        .iter()
+                        .any(|item| item.session_id == session_id && !item.status.is_terminal())
+                    {
+                        return Err(format!(
+                            "Session '{}' 存在 queued/running/waiting Evaluation，不能 retire",
+                            session_id
+                        )
+                        .into());
+                    }
+                    if active_background_task_count(session_id, context_id) > 0 {
+                        return Err(format!(
+                            "Session '{}' 存在 running Background Task，不能 retire",
+                            session_id
+                        )
+                        .into());
+                    }
+                    if active_objectives.iter().any(|objective| {
+                        objective.coordinator_session_id == session_id
+                            && !objective.status.is_terminal()
+                    }) {
+                        return Err(format!(
+                            "Session '{}' 存在 active Objective，不能 retire",
+                            session_id
+                        )
+                        .into());
+                    }
+                    if session.attention_state == SessionAttentionState::Retired {
+                        return Err(format!("Session '{}' 已经 retired", session_id).into());
+                    }
+                    SessionAttentionState::Retired
+                } else {
+                    if session.attention_state == SessionAttentionState::Active {
+                        return Err(format!("Session '{}' 已经 active", session_id).into());
+                    }
+                    SessionAttentionState::Active
+                };
+                let expected_revision = session.attention_revision;
+                session.attention_revision = session.attention_revision.saturating_add(1);
+                session.attention_state = target;
+                session.attention_reason = transaction.reason.clone();
+                updates.push(SessionAttentionUpdate {
+                    session_id: session_id.to_string(),
+                    context_id: context_id.to_string(),
+                    expected_revision,
+                    state: target,
+                    reason: transaction.reason.clone(),
+                    changed_at,
+                    event_id: transaction_id.to_string(),
+                });
+            }
+        }
+        Ok(updates)
     }
 
     pub async fn seed_context_from_mind(
@@ -659,6 +957,22 @@ impl ContextEngine {
             context_id,
             &[active_session_id.to_string()],
             excluded_observation_ids,
+            &[],
+        )
+        .await
+    }
+
+    pub async fn build_context_encoding_for_work_item(
+        &self,
+        context_id: &str,
+        work_item: &EvaluationWorkItemRecord,
+        excluded_observation_ids: &HashSet<String>,
+    ) -> Result<ContextView, DynError> {
+        self.build_context_encoding_for_sessions(
+            context_id,
+            std::slice::from_ref(&work_item.session_id),
+            excluded_observation_ids,
+            std::slice::from_ref(work_item),
         )
         .await
     }
@@ -685,6 +999,7 @@ impl ContextEngine {
             context_id,
             ready_session_ids,
             excluded_observation_ids,
+            &[],
         )
         .await
     }
@@ -694,6 +1009,7 @@ impl ContextEngine {
         context_id: &str,
         ready_session_ids: &[String],
         excluded_observation_ids: &HashSet<String>,
+        evaluation_work_items: &[EvaluationWorkItemRecord],
     ) -> Result<ContextView, DynError> {
         let active_session_id = ready_session_ids
             .first()
@@ -702,12 +1018,28 @@ impl ContextEngine {
         let references = ContextReferences::from_events(&events);
         let state = load_mind_from_events(&events)?;
         let metadata = observation_metadata(&events, &state);
-        let sessions = self.context_sessions(context_id, &events).await?;
+        let registry_sessions = self.context_sessions(context_id, &events).await?;
         let objectives = match &self.objective_store {
             Some(store) => store.list_context_objectives(context_id, false).await?,
             None => Vec::new(),
         };
-        let parent_session_id = sessions
+        let active_work_items = match &self.session_store {
+            Some(store) => {
+                store
+                    .list_context_evaluation_work_items(context_id, false)
+                    .await?
+            }
+            None => Vec::new(),
+        };
+        let (mut sessions, mut session_working_set) = select_session_working_set(
+            &registry_sessions,
+            ready_session_ids,
+            Utc::now(),
+            &self.config.session_working_set,
+            &objectives,
+            &active_work_items,
+        );
+        let parent_session_id = registry_sessions
             .iter()
             .find(|session| session.id == *active_session_id)
             .and_then(|session| session.parent_session_id.clone())
@@ -726,34 +1058,98 @@ impl ContextEngine {
                 })
             });
 
-        let observations = events
-            .iter()
-            .filter(|event| is_observation(event))
-            .filter(|event| !state.retired.contains(&event.id))
-            .filter(|event| !excluded_observation_ids.contains(&event.id))
-            .map(|event| {
-                self.to_observation(
-                    event,
-                    &state,
-                    metadata.get(&event.id).cloned().unwrap_or_default(),
-                )
-            })
-            .collect::<Vec<_>>();
-
         let active_frames = state
             .frames
             .iter()
             .filter(|frame| !state.retired.contains(&frame.id))
             .collect::<Vec<_>>();
-        let estimated_tokens = active_frames
+        let causal_frontiers = evaluation_work_items
             .iter()
-            .map(|frame| estimate_text_tokens(&frame.body) + 32)
-            .sum::<usize>()
-            + observations
+            .map(|work_item| {
+                let root_sequence = events
+                    .iter()
+                    .find(|event| event.id == work_item.root_turn_id)
+                    .and_then(|event| event.sequence)
+                    .unwrap_or(work_item.trigger_sequence);
+                (work_item.session_id.as_str(), (work_item, root_sequence))
+            })
+            .collect::<HashMap<_, _>>();
+        let ready_set = ready_session_ids.iter().cloned().collect::<HashSet<_>>();
+        let (observations, estimated_tokens) = loop {
+            let full_set = sessions
                 .iter()
-                .map(|observation| estimate_text_tokens(&observation.preview) + 128)
+                .filter(|entry| entry.projection == SessionProjection::Full)
+                .map(|entry| entry.session.id.as_str())
+                .collect::<HashSet<_>>();
+            let candidate_observations = events
+                .iter()
+                .filter(|event| is_observation(event))
+                .filter(|event| !state.retired.contains(&event.id))
+                .filter(|event| !excluded_observation_ids.contains(&event.id))
+                .filter(|event| match event_session(event) {
+                    Some(session_id) => full_set.contains(session_id),
+                    None => context_wide_observation_allowed(event),
+                })
+                // A WorkItem evaluates a causal snapshot of its active Session. A newer
+                // user turn may run concurrently, but must not appear retroactively in an
+                // older turn's Inbox. Events from the same causal root remain visible even
+                // when they are appended after the root event; other Sessions continue to
+                // follow the configured shared Working Set policy.
+                .filter(|event| {
+                    let Some(session_id) = event_session(event) else {
+                        return true;
+                    };
+                    let Some((work_item, root_sequence)) = causal_frontiers.get(session_id) else {
+                        return true;
+                    };
+                    event_visible_at_causal_frontier(event, work_item, *root_sequence)
+                })
+                .map(|event| {
+                    self.to_observation(
+                        event,
+                        &state,
+                        metadata.get(&event.id).cloned().unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let candidate_tokens = active_frames
+                .iter()
+                .map(|frame| estimate_text_tokens(&frame.body) + 32)
                 .sum::<usize>()
-            + 1_000; // Kernel、DSL contract 与工具定义的保守固定开销
+                + candidate_observations
+                    .iter()
+                    .map(|observation| estimate_text_tokens(&observation.preview) + 128)
+                    .sum::<usize>()
+                + 1_000;
+            let work_budget = self
+                .config
+                .context_hard_token_limit
+                .saturating_sub(self.config.context_maintenance_reserve_tokens)
+                .max(1);
+            if candidate_tokens <= work_budget {
+                break (candidate_observations, candidate_tokens);
+            }
+            let Some(index) = sessions.iter().rposition(|entry| {
+                entry.projection == SessionProjection::Full
+                    && !ready_set.contains(&entry.session.id)
+            }) else {
+                break (candidate_observations, candidate_tokens);
+            };
+            let session_id = sessions[index].session.id.clone();
+            sessions[index].projection = SessionProjection::MetadataOnly;
+            session_working_set
+                .full_session_ids
+                .retain(|candidate| candidate != &session_id);
+            if !session_working_set
+                .metadata_only_session_ids
+                .contains(&session_id)
+            {
+                session_working_set
+                    .metadata_only_session_ids
+                    .push(session_id);
+            }
+            session_working_set.excluded.token_budget += 1;
+        };
         let pressure = pressure_for(
             estimated_tokens,
             active_frames.len(),
@@ -768,7 +1164,7 @@ impl ContextEngine {
                     .filter(|event| event_session(event) == Some(session_id.as_str()))
                     .cloned()
                     .collect::<Vec<_>>();
-                let parent_session_id = sessions
+                let parent_session_id = registry_sessions
                     .iter()
                     .find(|session| session.id == *session_id)
                     .and_then(|session| session.parent_session_id.clone())
@@ -781,7 +1177,32 @@ impl ContextEngine {
                                 .map(ToOwned::to_owned)
                         })
                     });
-                let wake = wake_for(&session_events);
+                let evaluation_work_item = evaluation_work_items
+                    .iter()
+                    .find(|item| item.session_id == *session_id);
+                let causal_events = evaluation_work_item.map(|work_item| {
+                    session_events
+                        .iter()
+                        .filter(|event| {
+                            event.id == work_item.root_turn_id
+                                || event.id == work_item.trigger_event_id
+                                || event
+                                    .payload
+                                    .get("root_turn_id")
+                                    .and_then(|value| value.as_str())
+                                    == Some(work_item.root_turn_id.as_str())
+                        })
+                        .cloned()
+                        .collect::<Vec<_>>()
+                });
+                let wake = evaluation_work_item
+                    .and_then(|work_item| {
+                        session_events
+                            .iter()
+                            .find(|event| event.id == work_item.trigger_event_id)
+                    })
+                    .map(wake_for_event)
+                    .unwrap_or_else(|| wake_for(&session_events));
                 let ready_observation = wake.event_id.as_deref().and_then(|event_id| {
                     observations
                         .iter()
@@ -790,11 +1211,25 @@ impl ContextEngine {
                 ReadySessionEvaluation {
                     session_id: session_id.clone(),
                     parent_session_id,
-                    work_item_id: ready_observation
-                        .map(|observation| observation.reference.clone()),
+                    work_item_id: evaluation_work_item
+                        .map(|item| item.id.clone())
+                        .or_else(|| {
+                            wake.event_id.as_deref().and_then(|event_id| {
+                                active_work_items
+                                    .iter()
+                                    .find(|item| item.trigger_event_id == event_id)
+                                    .map(|item| item.id.clone())
+                            })
+                        })
+                        .or_else(|| {
+                            ready_observation.map(|observation| observation.reference.clone())
+                        }),
                     input_preview: ready_observation
                         .map(|observation| preview_text(&observation.preview, 4_000).0),
-                    turn_budget: turn_budget_for(&session_events, &self.config),
+                    turn_budget: turn_budget_for(
+                        causal_events.as_deref().unwrap_or(&session_events),
+                        &self.config,
+                    ),
                     wake,
                 }
             })
@@ -807,6 +1242,8 @@ impl ContextEngine {
             parent_session_id: parent_session_id.as_deref(),
             ready_sessions: &ready_sessions,
             sessions: &sessions,
+            session_working_set: &session_working_set,
+            active_work_items: &active_work_items,
             objectives: &objectives,
             state: &state,
             observations: &observations,
@@ -823,6 +1260,8 @@ impl ContextEngine {
             parent_session_id,
             ready_sessions,
             sessions,
+            session_working_set,
+            active_work_items,
             objectives,
             state,
             observations,
@@ -865,6 +1304,8 @@ impl ContextEngine {
             parent_session_id: view.parent_session_id.as_deref(),
             ready_sessions: &view.ready_sessions,
             sessions: &view.sessions,
+            session_working_set: &view.session_working_set,
+            active_work_items: &view.active_work_items,
             objectives: &view.objectives,
             state: &view.state,
             observations: &view.observations,
@@ -990,6 +1431,11 @@ impl ContextEngine {
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
                 last_activity_at: Utc::now(),
+                attention_state: crate::memory::SessionAttentionState::Active,
+                attention_revision: 0,
+                attention_reason: None,
+                attention_changed_at: None,
+                attention_event_id: None,
                 id,
             })
             .collect())
@@ -1617,6 +2063,23 @@ fn apply_parsed_transaction(
                     changes.push(change("restore", id, None));
                 }
             }
+            "retire-session" | "restore-session" => {
+                if name == "retire-session" && tx.reason.is_none() {
+                    return Err(
+                        "retire-session 会改变 Session 注意力，transaction 必须提供 (reason \"...\")"
+                            .to_string(),
+                    );
+                }
+                require_min_len(
+                    op,
+                    2,
+                    "(retire-session SESSION-ID...) / (restore-session SESSION-ID...)",
+                )?;
+                for item in op.iter().skip(1) {
+                    let id = validated_id(as_atom(item, "session id")?)?;
+                    changes.push(change(name, id, tx.reason.clone()));
+                }
+            }
             "protect" | "unprotect" => {
                 if name == "unprotect" && tx.reason.is_none() {
                     return Err(
@@ -1776,7 +2239,7 @@ fn apply_parsed_transaction(
             }
             other => {
                 return Err(format!(
-                    "未知 Context 原语 '{}'。当前支持 create/derive/revise/retire/restore/protect/unprotect/place/relate/unrelate/checkpoint/rollback/drop-checkpoint",
+                    "未知 Context 原语 '{}'。当前支持 create/derive/revise/retire/restore/retire-session/restore-session/protect/unprotect/place/relate/unrelate/checkpoint/rollback/drop-checkpoint",
                     other
                 ));
             }
@@ -1822,7 +2285,9 @@ struct ContextRenderInput<'a> {
     active_session_id: &'a str,
     parent_session_id: Option<&'a str>,
     ready_sessions: &'a [ReadySessionEvaluation],
-    sessions: &'a [SessionRecord],
+    sessions: &'a [ProjectedSession],
+    session_working_set: &'a SessionWorkingSetView,
+    active_work_items: &'a [EvaluationWorkItemRecord],
     objectives: &'a [ObjectiveRecord],
     state: &'a MindState,
     observations: &'a [ContextObservation],
@@ -1927,6 +2392,9 @@ fn render_objectives(objectives: &[ObjectiveRecord]) -> SExpr {
                 if let Some(evaluation_id) = &objective.active_evaluation_id {
                     fields.push(pair("evaluation", atom(evaluation_id)));
                 }
+                if let Some(reason) = &objective.status_reason {
+                    fields.push(pair("status-reason", atom(reason)));
+                }
                 if let Some(token_budget) = objective.token_budget {
                     fields.push(pair("token-budget", atom(token_budget.to_string())));
                     fields.push(pair("tokens-used", atom(objective.tokens_used.to_string())));
@@ -1979,6 +2447,8 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         parent_session_id,
         ready_sessions,
         sessions,
+        session_working_set,
+        active_work_items,
         objectives,
         state,
         observations,
@@ -2019,6 +2489,16 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         }
     }
     kernel.push(pair("version", atom(state.version.to_string())));
+    kernel.push(pair(
+        "in-flight-evaluations",
+        atom(
+            active_work_items
+                .iter()
+                .filter(|item| !item.status.is_terminal())
+                .count()
+                .to_string(),
+        ),
+    ));
     if !objectives.is_empty() {
         kernel.push(render_objectives(objectives));
     }
@@ -2054,19 +2534,103 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
     ));
     kernel.push(render_turn_control(turn_budget));
 
+    kernel.push(list(
+        "session-working-set",
+        vec![
+            pair(
+                "active-window-seconds",
+                atom(session_working_set.active_window_secs.to_string()),
+            ),
+            pair(
+                "max-sessions",
+                atom(session_working_set.max_sessions.to_string()),
+            ),
+            list(
+                "current",
+                session_working_set
+                    .current_session_ids
+                    .iter()
+                    .map(atom)
+                    .collect(),
+            ),
+            pair(
+                "included-count",
+                atom(session_working_set.full_session_ids.len().to_string()),
+            ),
+            list(
+                "excluded",
+                vec![
+                    pair(
+                        "archived",
+                        atom(session_working_set.excluded.archived.to_string()),
+                    ),
+                    pair(
+                        "retired",
+                        atom(session_working_set.excluded.retired.to_string()),
+                    ),
+                    pair(
+                        "outside-window",
+                        atom(session_working_set.excluded.outside_window.to_string()),
+                    ),
+                    pair(
+                        "over-count",
+                        atom(session_working_set.excluded.over_count.to_string()),
+                    ),
+                    pair(
+                        "token-budget",
+                        atom(session_working_set.excluded.token_budget.to_string()),
+                    ),
+                ],
+            ),
+            pair("selection", atom(&session_working_set.selection)),
+            pair(
+                "absence-semantics",
+                atom("not projected does not mean nonexistent; use recall or Session control metadata when evidence is required"),
+            ),
+        ],
+    ));
+
     let session_directory = list(
         "session-directory",
         sessions
             .iter()
-            .map(|session| {
+            .map(|entry| {
+                let session = &entry.session;
                 let mut fields = vec![
                     pair("id", atom(&session.id)),
                     pair("status", atom(session.status.as_str())),
+                    pair("attention", atom(session.attention_state.as_str())),
+                    pair(
+                        "attention-revision",
+                        atom(session.attention_revision.to_string()),
+                    ),
+                    pair(
+                        "projection",
+                        atom(match entry.projection {
+                            SessionProjection::Full => "full",
+                            SessionProjection::MetadataOnly => "metadata-only",
+                        }),
+                    ),
                     pair("title", atom(&session.title)),
                     pair("last-activity", atom(session.last_activity_at.to_rfc3339())),
                 ];
                 if let Some(parent) = &session.parent_session_id {
                     fields.push(pair("parent-session", atom(parent)));
+                }
+                if let Some(reason) = &session.attention_reason {
+                    fields.push(pair("attention-reason", atom(reason)));
+                }
+                if !entry.active_work_item_ids.is_empty() {
+                    fields.push(list(
+                        "active-work-items",
+                        entry.active_work_item_ids.iter().map(atom).collect(),
+                    ));
+                }
+                if !entry.active_objective_ids.is_empty() {
+                    fields.push(list(
+                        "active-objectives",
+                        entry.active_objective_ids.iter().map(atom).collect(),
+                    ));
                 }
                 list("session", fields)
             })
@@ -2381,6 +2945,52 @@ fn render_protocol() -> SExpr {
                     pair("shared-evidence", atom("inbox observation 按 session 标记来源，但均属于当前 Context，可跨 Session 推理与复用")),
                     pair("reply-routing", atom("single 求值的标准 reply 与可见 progress 必须对应 kernel.active-session")),
                     pair("write-serialization", atom("context_tx 修改共享 Mind；Runtime 按 Context 串行提交并执行 version 检查")),
+                ],
+            ),
+            list(
+                "session-concurrency-contract",
+                vec![
+                    pair(
+                        "identity",
+                        atom("Agent 可同时运行多个 Evaluation；Session 只是 IO 路由和局部连续性边界"),
+                    ),
+                    pair(
+                        "ordering",
+                        atom("Ledger seq 表示物理写入顺序；root-turn/work-item/caused-by 表示计算与工具因果链"),
+                    ),
+                    pair(
+                        "tool-wait",
+                        atom("等待某个 Tool 不会阻塞同一或其他 Session 的新用户消息求值"),
+                    ),
+                    pair(
+                        "late-result",
+                        atom("迟到结果必须结合后续 Ledger 与最新 Shared Mind 重新判断，不得静默恢复已被取代的旧计划"),
+                    ),
+                    pair(
+                        "reply-uniqueness",
+                        atom("每个 session + root-turn 最多提交一次终态 Reply；重复提交由 Runtime 抑制"),
+                    ),
+                ],
+            ),
+            list(
+                "session-attention-contract",
+                vec![
+                    pair(
+                        "working-set",
+                        atom("时间窗口、数量与 token budget 只控制本轮投影；未出现不等于 Session 不存在"),
+                    ),
+                    pair(
+                        "retire-session",
+                        atom("Agent 主动移出自动认知候选；不删除 Session、Ledger 或 Shared Mind Frame"),
+                    ),
+                    pair(
+                        "restore-session",
+                        atom("重新允许 Session 进入自动 Working Set 候选"),
+                    ),
+                    pair(
+                        "auto-restore",
+                        atom("retired Session 收到新定向事件时 Runtime 确定性恢复，并强制作为 current full projection"),
+                    ),
                 ],
             ),
             render_contract(
@@ -2762,6 +3372,10 @@ fn wake_for(events: &[Event]) -> WakeSignal {
             visible_in_inbox: false,
         };
     };
+    wake_for_event(event)
+}
+
+fn wake_for_event(event: &Event) -> WakeSignal {
     let tool_name = event
         .payload
         .get("tool_name")
@@ -3063,6 +3677,36 @@ fn is_observation(event: &Event) -> bool {
     )
 }
 
+fn context_wide_observation_allowed(event: &Event) -> bool {
+    event.topic == "chat/context_observation"
+        && event
+            .payload
+            .get("context_wide")
+            .and_then(|value| value.as_bool())
+            == Some(true)
+}
+
+fn event_visible_at_causal_frontier(
+    event: &Event,
+    work_item: &EvaluationWorkItemRecord,
+    root_sequence: u64,
+) -> bool {
+    if event.id == work_item.root_turn_id || event.id == work_item.trigger_event_id {
+        return true;
+    }
+    if event
+        .payload
+        .get("root_turn_id")
+        .and_then(|value| value.as_str())
+        == Some(work_item.root_turn_id.as_str())
+    {
+        return true;
+    }
+    event
+        .sequence
+        .is_some_and(|sequence| sequence <= root_sequence)
+}
+
 fn event_session(event: &Event) -> Option<&str> {
     event
         .payload
@@ -3285,11 +3929,240 @@ fn list(key: &str, values: Vec<SExpr>) -> SExpr {
 mod tests {
     use super::*;
     use crate::memory::sqlite::SqliteStore;
-    use crate::memory::{NewCognitiveContext, NewSession, SessionStore};
+    use crate::memory::{
+        NewAgent, NewCognitiveContext, NewSession, SessionMountKind, SessionStore,
+    };
     use tempfile::TempDir;
 
     fn observations(ids: &[&str]) -> HashSet<String> {
         ids.iter().map(|id| id.to_string()).collect()
+    }
+
+    fn working_set_session(
+        id: impl Into<String>,
+        last_activity_at: chrono::DateTime<Utc>,
+    ) -> SessionRecord {
+        let id = id.into();
+        SessionRecord {
+            id: id.clone(),
+            agent_id: "agent-test".to_string(),
+            context_id: "context-test".to_string(),
+            parent_session_id: None,
+            title: id,
+            status: SessionStatus::Active,
+            created_at: last_activity_at,
+            updated_at: last_activity_at,
+            last_activity_at,
+            attention_state: SessionAttentionState::Active,
+            attention_revision: 0,
+            attention_reason: None,
+            attention_changed_at: None,
+            attention_event_id: None,
+        }
+    }
+
+    #[test]
+    fn working_set_is_bounded_current_first_and_deterministic() {
+        let now = Utc::now();
+        let config = crate::config::SessionWorkingSetConfig {
+            active_window: crate::config::HumanDuration::from_secs(86_400),
+            max_sessions: 50,
+        };
+        let sessions = (0..70)
+            .map(|index| {
+                working_set_session(
+                    format!("session-{index:02}"),
+                    now - chrono::Duration::seconds(index),
+                )
+            })
+            .collect::<Vec<_>>();
+        let (projected, view) = select_session_working_set(
+            &sessions,
+            &["session-69".to_string()],
+            now,
+            &config,
+            &[],
+            &[],
+        );
+        assert_eq!(view.full_session_ids.len(), 50);
+        assert_eq!(view.full_session_ids[0], "session-69");
+        assert_eq!(view.excluded.over_count, 20);
+        assert_eq!(
+            projected
+                .iter()
+                .filter(|entry| entry.projection == SessionProjection::Full)
+                .count(),
+            50
+        );
+        assert!(view.full_session_ids.contains(&"session-00".to_string()));
+        assert!(!view.full_session_ids.contains(&"session-49".to_string()));
+
+        let tied = vec![
+            working_set_session("session-z", now),
+            working_set_session("session-a", now),
+            working_set_session("session-current", now),
+        ];
+        let (_, tied_view) = select_session_working_set(
+            &tied,
+            &["session-current".to_string()],
+            now,
+            &config,
+            &[],
+            &[],
+        );
+        assert_eq!(
+            tied_view.full_session_ids,
+            vec!["session-current", "session-a", "session-z"]
+        );
+    }
+
+    #[test]
+    fn working_set_max_one_and_large_registry_do_not_expand_projection() {
+        let now = Utc::now();
+        let config = crate::config::SessionWorkingSetConfig {
+            active_window: crate::config::HumanDuration::from_secs(60),
+            max_sessions: 1,
+        };
+        let mut sessions = (0..10_000)
+            .map(|index| {
+                working_set_session(
+                    format!("session-{index:05}"),
+                    now - chrono::Duration::hours(48),
+                )
+            })
+            .collect::<Vec<_>>();
+        sessions[9_999].last_activity_at = now;
+        let (projected, view) = select_session_working_set(
+            &sessions,
+            &["session-00000".to_string()],
+            now,
+            &config,
+            &[],
+            &[],
+        );
+        assert_eq!(view.full_session_ids, vec!["session-00000"]);
+        assert_eq!(projected.len(), 1);
+        assert_eq!(view.excluded.outside_window, 9_998);
+        assert_eq!(view.excluded.over_count, 1);
+    }
+
+    #[tokio::test]
+    async fn token_budget_evicts_old_non_current_sessions_before_current_session() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("working-set-token-budget.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "budget-agent".to_string(),
+                    title: "Budget Agent".to_string(),
+                    root_context_id: "budget-context".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "budget-context".to_string(),
+                    agent_id: "budget-agent".to_string(),
+                    title: "Budget Context".to_string(),
+                },
+                NewSession {
+                    id: "budget-current".to_string(),
+                    agent_id: "budget-agent".to_string(),
+                    context_id: "budget-context".to_string(),
+                    parent_session_id: None,
+                    title: "Current".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        for session_id in ["budget-newer", "budget-older"] {
+            store
+                .create_session(NewSession {
+                    id: session_id.to_string(),
+                    agent_id: "budget-agent".to_string(),
+                    context_id: "budget-context".to_string(),
+                    parent_session_id: None,
+                    title: session_id.to_string(),
+                    mount_kind: SessionMountKind::ExistingContext,
+                })
+                .await
+                .unwrap();
+        }
+        let now = Utc::now();
+        store.touch_session("budget-current", now).await.unwrap();
+        store
+            .touch_session("budget-newer", now - chrono::Duration::seconds(1))
+            .await
+            .unwrap();
+        store
+            .touch_session("budget-older", now - chrono::Duration::seconds(2))
+            .await
+            .unwrap();
+        for (index, session_id) in ["budget-current", "budget-newer", "budget-older"]
+            .into_iter()
+            .enumerate()
+        {
+            let text = if session_id == "budget-current" {
+                "current input".to_string()
+            } else {
+                "x".repeat(16_000)
+            };
+            store
+                .append(Event::new(
+                    format!("budget-event-{index}"),
+                    "User".to_string(),
+                    TYPE_USER_MESSAGE.to_string(),
+                    "chat/user_message".to_string(),
+                    vec![
+                        ("context_id".to_string(), json!("budget-context")),
+                        ("session_id".to_string(), json!(session_id)),
+                        ("text".to_string(), json!(text)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+                .await
+                .unwrap();
+        }
+        let config = OrchestratorConfig {
+            context_soft_token_limit: 4_000,
+            context_hard_token_limit: 5_000,
+            context_maintenance_reserve_tokens: 1_000,
+            session_working_set: crate::config::SessionWorkingSetConfig {
+                active_window: crate::config::HumanDuration::from_secs(86_400),
+                max_sessions: 3,
+            },
+            ..Default::default()
+        };
+        let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config)
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>);
+        let view = engine
+            .build_context_encoding("budget-context", "budget-current", &HashSet::new())
+            .await
+            .unwrap();
+
+        assert!(view
+            .session_working_set
+            .full_session_ids
+            .contains(&"budget-current".to_string()));
+        assert!(view.session_working_set.excluded.token_budget >= 1);
+        assert!(!view
+            .session_working_set
+            .metadata_only_session_ids
+            .is_empty());
+        let metadata_only = view
+            .session_working_set
+            .metadata_only_session_ids
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        assert!(view
+            .observations
+            .iter()
+            .any(|observation| observation.session_id.as_deref() == Some("budget-current")));
+        assert!(view.observations.iter().all(|observation| observation
+            .session_id
+            .as_ref()
+            .is_none_or(|session_id| !metadata_only.contains(session_id))));
     }
 
     #[test]
@@ -3431,12 +4304,23 @@ mod tests {
             visible_in_inbox: true,
         };
         let references = ContextReferences::default();
+        let working_set = SessionWorkingSetView {
+            active_window_secs: 86_400,
+            max_sessions: 50,
+            current_session_ids: vec!["s1".to_string()],
+            full_session_ids: Vec::new(),
+            metadata_only_session_ids: Vec::new(),
+            excluded: SessionWorkingSetExclusions::default(),
+            selection: "test".to_string(),
+        };
         let rendered = render_context(ContextRenderInput {
             context_id: "context-1",
             active_session_id: "s1",
             parent_session_id: None,
             ready_sessions: &[],
             sessions: &[],
+            session_working_set: &working_set,
+            active_work_items: &[],
             objectives: &[],
             state: &state,
             observations: &[],
@@ -3492,6 +4376,8 @@ mod tests {
             parent_session_id: None,
             ready_sessions: &[],
             sessions: &[],
+            session_working_set: &working_set,
+            active_work_items: &[],
             objectives: &[],
             state: &state,
             observations: &[],
@@ -4362,6 +5248,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mind_update_and_session_retirement_commit_atomically_and_message_restores_once() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("session-attention.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "attention-agent".to_string(),
+                    title: "Attention Agent".to_string(),
+                    root_context_id: "attention-context".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "attention-context".to_string(),
+                    agent_id: "attention-agent".to_string(),
+                    title: "Attention Context".to_string(),
+                },
+                NewSession {
+                    id: "session-current".to_string(),
+                    agent_id: "attention-agent".to_string(),
+                    context_id: "attention-context".to_string(),
+                    parent_session_id: None,
+                    title: "Current".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        for id in ["session-b", "session-c"] {
+            store
+                .create_session(NewSession {
+                    id: id.to_string(),
+                    agent_id: "attention-agent".to_string(),
+                    context_id: "attention-context".to_string(),
+                    parent_session_id: None,
+                    title: id.to_string(),
+                    mount_kind: SessionMountKind::ExistingContext,
+                })
+                .await
+                .unwrap();
+        }
+        store
+            .append(Event::new(
+                "attention-evidence".to_string(),
+                "User".to_string(),
+                TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                vec![
+                    ("context_id".to_string(), json!("attention-context")),
+                    ("session_id".to_string(), json!("session-b")),
+                    ("text".to_string(), json!("reusable evidence")),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await
+            .unwrap();
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>);
+        engine
+            .apply_context_transaction(
+                "attention-context",
+                "session-current",
+                r#"(context-tx
+                    (base-version 0)
+                    (reason "保留共享经验并释放两个陈旧会话")
+                    (derive shared-experience (from attention-evidence)
+                        (lesson "reusable evidence"))
+                    (retire-session session-b session-c))"#,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(engine.mind_version("attention-context").await.unwrap(), 1);
+        assert_eq!(
+            engine
+                .find_frame("attention-context", "shared-experience")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            "shared-experience"
+        );
+        for id in ["session-b", "session-c"] {
+            let session = store.get_session(id).await.unwrap().unwrap();
+            assert_eq!(session.attention_state, SessionAttentionState::Retired);
+            assert_eq!(session.attention_revision, 1);
+        }
+
+        let message = Event::new(
+            "restoring-message".to_string(),
+            "User".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            vec![
+                ("context_id".to_string(), json!("attention-context")),
+                ("session_id".to_string(), json!("session-b")),
+                ("text".to_string(), json!("I am back")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        store
+            .claim_message("session-b", "client-restore-1", &message)
+            .await
+            .unwrap();
+        store
+            .claim_message("session-b", "client-restore-1", &message)
+            .await
+            .unwrap();
+        let restored = store.get_session("session-b").await.unwrap().unwrap();
+        assert_eq!(restored.attention_state, SessionAttentionState::Active);
+        assert_eq!(restored.attention_revision, 2);
+        let restore_events = store
+            .query(QueryFilter {
+                context_id: Some("attention-context".to_string()),
+                topic: Some("runtime/session_restored".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(restore_events.len(), 1);
+    }
+
+    #[tokio::test]
     async fn concurrent_transactions_are_single_writer_and_version_checked() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("context-concurrency.db");
@@ -4508,7 +5521,7 @@ mod tests {
             .unwrap();
         assert_eq!(child.state.version, 0);
         assert_eq!(child.sessions.len(), 1);
-        assert_eq!(child.sessions[0].id, "seed-session-c");
+        assert_eq!(child.sessions[0].session.id, "seed-session-c");
         assert!(child.observations.is_empty());
         assert!(child.state.protected.contains("stable-principle"));
         assert!(child.state.retired.contains("evidence-frame"));

@@ -9,9 +9,10 @@ use crate::llm::Client;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, DelegationRecord, DelegationStatus,
-    EventStore, MessageClaim, NewAgent, NewCognitiveContext, NewDelegation, NewObjective,
-    NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, SessionRecord, SessionStore, SessionUpdate,
+    EvaluationWorkItemRecord, EventStore, MessageClaim, NewAgent, NewCognitiveContext,
+    NewDelegation, NewObjective, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, QueryFilter, SessionRecord, SessionStore,
+    SessionUpdate,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -796,6 +797,27 @@ impl MorphzRuntime {
         self.inner
             .orchestrator
             .get_context_encoding(&session.context_id, session_id)
+            .await
+    }
+
+    pub async fn session_attention_state(
+        &self,
+        session_id: &str,
+    ) -> Result<SessionRecord, RuntimeError> {
+        self.inner
+            .store
+            .get_session(session_id)
+            .await?
+            .ok_or_else(|| format!("Session '{}' 不存在", session_id).into())
+    }
+
+    pub async fn active_evaluation_work_items(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<EvaluationWorkItemRecord>, RuntimeError> {
+        self.inner
+            .store
+            .list_context_evaluation_work_items(context_id, false)
             .await
     }
 
@@ -2292,6 +2314,7 @@ mod tests {
                     1,
                     ObjectiveStatus::Active,
                     Some(ObjectiveWaitCondition::Timer { deadline }),
+                    Some("等待计时器到期"),
                 )
                 .await
                 .unwrap(),

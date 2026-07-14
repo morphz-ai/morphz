@@ -245,11 +245,14 @@ impl UiState {
             .filter(|objective| objective.status == ObjectiveStatus::Active)
             .count();
         self.context_status = format!(
-            "{} · {}/{} tok · {} frame · {} objective",
+            "{} · {}/{} tok · {} frame · {} session + {} meta · {} work · {} objective",
             view.pressure.level,
             view.pressure.estimated_tokens,
             view.pressure.hard_limit,
             view.pressure.active_frames,
+            view.session_working_set.full_session_ids.len(),
+            view.session_working_set.metadata_only_session_ids.len(),
+            view.active_work_items.len(),
             active_objectives
         );
     }
@@ -780,6 +783,14 @@ impl UiState {
                         Style::default().fg(TEXT),
                     )));
                 }
+                if let Some(reason) = objective.status_reason.as_deref() {
+                    for reason_line in reason.lines() {
+                        lines.push(Line::from(vec![
+                            Span::styled("   原因  ", Style::default().fg(MUTED)),
+                            Span::styled(reason_line, Style::default().fg(TEXT)),
+                        ]));
+                    }
+                }
                 let mut facts = vec![format!("rev {}", objective.revision)];
                 if objective.coordinator_session_id == self.session_id {
                     facts.push("current session".to_string());
@@ -1015,8 +1026,17 @@ pub async fn run(
                     state.busy = false;
                     continue;
                 };
-                let refresh = matches!(event.topic.as_str(), "chat/reply" | "chat/reply_suppressed" | "context/transaction")
-                    || event.topic.starts_with("objective/");
+                let refresh = matches!(
+                    event.topic.as_str(),
+                    "chat/user_message"
+                        | "chat/reply"
+                        | "chat/reply_suppressed"
+                        | "chat/tool_output"
+                        | "context/transaction"
+                        | "runtime/model_attempt_started"
+                        | "runtime/tool_calls_selected"
+                        | "runtime/session_restored"
+                ) || event.topic.starts_with("objective/");
                 state.on_runtime_event(event);
                 if refresh {
                     if let Ok(view) = session.inspect_context_view().await {
@@ -1364,10 +1384,12 @@ fn format_tool_activity(payload: &serde_json::Map<String, Value>) -> Option<Tool
             lines.push(format!("   {}", summary.meta.join("  ·  ")));
         }
         compact.push(lines.join("\n"));
+        let route = format_causal_route(payload);
         detail.push(format!(
-            "{} · {}\n{}",
+            "{} · {}{}\n{}",
             name,
             short_call_id(id),
+            route,
             pretty_json(arguments)
         ));
     }
@@ -1434,13 +1456,33 @@ fn format_tool_result(payload: &serde_json::Map<String, Value>) -> Option<ToolAc
         .map(short_call_id)
         .unwrap_or_else(|| "no call id".to_string());
     let detail = format!(
-        "{} · {} · {}\n{}",
+        "{} · {} · {}{}\n{}",
         name,
         call_id,
         status,
+        format_causal_route(payload),
         truncate(text, 2_000)
     );
     Some(ToolActivity { compact, detail })
+}
+
+fn format_causal_route(payload: &serde_json::Map<String, Value>) -> String {
+    let mut fields = Vec::new();
+    for (label, key) in [
+        ("work", "work_item_id"),
+        ("root", "root_turn_id"),
+        ("trigger", "trigger_event_id"),
+        ("cause", "caused_by"),
+    ] {
+        if let Some(value) = payload.get(key).and_then(Value::as_str) {
+            fields.push(format!("{label} {}", short_id(value)));
+        }
+    }
+    if fields.is_empty() {
+        String::new()
+    } else {
+        format!(" · {}", fields.join(" · "))
+    }
 }
 
 fn summarize_tool_call(name: &str, arguments: &str, _call_id: Option<&str>) -> ToolSummary {
@@ -1726,6 +1768,7 @@ mod tests {
             stated_objective: "Win TankWar and keep improving strategy".to_string(),
             revision: 3,
             status: ObjectiveStatus::Active,
+            status_reason: Some("等待后台比赛结束后继续分析".to_string()),
             wait_condition: Some(ObjectiveWaitCondition::ToolTask {
                 task_id: "task-123".to_string(),
             }),
@@ -1925,8 +1968,14 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
+        let compact_screen = screen
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
         assert!(screen.contains("Context Objectives"));
         assert!(screen.contains("ACTIVE"));
+        assert!(compact_screen.contains("原因"));
+        assert!(compact_screen.contains("等待后台比赛结束后继续分析"));
         assert!(screen.contains("waiting: tool task task-123"));
         assert!(screen.contains("32000 / 256000 tok"));
         assert!(!terminal.backend().cursor_visible());

@@ -1137,15 +1137,46 @@ async fn show_context(
     if status {
         let version = runtime.mind_version(id).await?;
         let sessions = runtime.list_context_sessions(id, false).await?;
-        println!(
-            "{}  [{}]  mind_version={}  active_sessions={}  agent={}  {}",
-            record.id,
-            record.status.as_str(),
-            version,
-            sessions.len(),
-            record.agent_id,
-            record.title
-        );
+        let retired = sessions
+            .iter()
+            .filter(|session| {
+                session.attention_state == morphz::memory::SessionAttentionState::Retired
+            })
+            .count();
+        let work_items = runtime.active_evaluation_work_items(id).await?;
+        let active_session = sessions.iter().max_by(|left, right| {
+            left.last_activity_at
+                .cmp(&right.last_activity_at)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        if let Some(active_session) = active_session {
+            let view = runtime.context_encoding(id, &active_session.id).await?;
+            println!(
+                "{}  [{}]  mind_version={}  sessions={} retired={} full={} metadata={} work_items={} pressure={}/{}tok  agent={}  {}",
+                record.id,
+                record.status.as_str(),
+                version,
+                sessions.len(),
+                retired,
+                view.session_working_set.full_session_ids.len(),
+                view.session_working_set.metadata_only_session_ids.len(),
+                work_items.len(),
+                view.pressure.level,
+                view.pressure.estimated_tokens,
+                record.agent_id,
+                record.title
+            );
+        } else {
+            println!(
+                "{}  [{}]  mind_version={}  sessions=0 retired=0 work_items={}  agent={}  {}",
+                record.id,
+                record.status.as_str(),
+                version,
+                work_items.len(),
+                record.agent_id,
+                record.title
+            );
+        }
     } else {
         println!("{}", serde_json::to_string_pretty(&record)?);
     }
@@ -1167,9 +1198,10 @@ async fn list_sessions(runtime: &MorphzRuntime, invocation: &Invocation) -> Resu
     } else {
         for record in records {
             println!(
-                "{}  [{}]  context={}  last={}  {}",
+                "{}  [{}; attention={}]  context={}  last={}  {}",
                 record.id,
                 record.status.as_str(),
+                record.attention_state.as_str(),
                 record.context_id,
                 record.last_activity_at.to_rfc3339(),
                 record.title

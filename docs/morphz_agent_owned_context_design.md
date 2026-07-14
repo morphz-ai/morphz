@@ -1,6 +1,6 @@
 # Morphz Agent-Owned Context：由 LLM 自主管理的心智上下文
 
-> 状态：核心设计基线；Agent-Owned Context protocol v11 已实现并进入评测
+> 状态：核心设计基线；Agent-Owned Context protocol v15 已实现并进入评测
 > 适用范围：Morphz Agent Runtime、SExpr DSL、Context 生命周期、记忆召回与产品调试界面
 > 设计优先级：本文件用于澄清 Morphz 的核心方向；当既有文档中的“自动评分、自动裁剪、自动摘要、自动注入”与本文冲突时，应以本文的职责划分为准。
 
@@ -201,6 +201,8 @@ v1 放弃以 `set/push/pop/clear` 作为正式认知接口。它们暴露的是�
 | `protect` / `unprotect` | 建立或解除由 Kernel 强制执行的遗忘保护 |
 | `place` | 调整 Frame 的注意力顺序 |
 | `relate` / `unrelate` | 建立或撤销两个稳定 ID 之间的开放语义关系；Runtime 只特别解释 `supersedes` |
+
+> 长期语义修正：当前 v1 的 `retire/restore` 同时承担“退出活跃 Context”的作用。随着 Frame 数量增长，容量换出不能继续与语义退役混为一谈。未来 Frame Virtual Memory 将区分 `active/retired` 的语义生命周期、`resident/swapped_out` 的长期驻留以及本次 Evaluation 的临时激活；仍然有效但暂时不占模型窗口的 Frame 应 swap out，而不是 retire。完整方向见 [`morphz_single_identity_distributed_cognition_architecture.md`](morphz_single_identity_distributed_cognition_architecture.md) 的 Frame Virtual Memory 章节。
 
 摘要不是 Runtime 原语。LLM 通过 `derive` 自己写出摘要 body，并在同一事务中显式 retire 被替代的原始 Observation：
 
@@ -588,7 +590,7 @@ Mind Inspector 至少应支持：
 9. Context transaction 作为 Event Ledger 事件保存完整 state-after、version 和 Diff；
 10. Dashboard 已能直接观察 Mind Frames、来源、revision、保护状态、Inbox 和 Pressure；
 11. Kernel 已分离物理 Attempt 与 Context transaction 预算，并强制执行一次性 Context closure 和最终回复，防止模型无界探索或元认知循环；
-12. 每轮 Context 已自描述 response contract、工具结果回传契约、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数；protocol v11 同时说明稳定短引用、多 BODY 规范化、完整 revise 替换、恢复点、标准工具回传和显式 `reply` 终止规则。
+12. 每轮 Context 已自描述 response contract、工具结果回传契约、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数；protocol v15 同时说明稳定短引用、多 BODY 规范化、完整 revise 替换、恢复点、标准工具回传、显式 `reply`、Session Working Set、attention 与并发因果边界。
 13. `read` 已支持带行号的文本查询与行范围读取，减少长文件证据在 Inbox 中的重复膨胀。
 14. Coding Tools v1 已提供 `list_files/search/read/edit/write/exec` 最小闭环；文件修改带 SHA-256 版本前提、原子提交、Diff 和 `file_change` Observation。
 15. Event Ledger 通过 SQLite `rowid` 暴露稳定写入 `sequence`，并为 Observation 提供 turn、attempt、caused-by、residency、resource、freshness 与 usage。

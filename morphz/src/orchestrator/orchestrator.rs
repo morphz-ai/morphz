@@ -2,8 +2,10 @@ use crate::config::OrchestratorConfig;
 use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
 use crate::llm::{Client, Message, PromptTokenCount};
 use crate::memory::{
-    DelegationStatus, EventStore, NewCognitiveContext, NewDelegation, NewSession, QueryFilter,
-    SessionMountKind, SessionStatus, SessionStore, SessionUpdate,
+    DelegationStatus, EvaluationWorkItemMutation, EvaluationWorkItemRecord,
+    EvaluationWorkItemStatus, EventStore, NewCognitiveContext, NewDelegation,
+    NewEvaluationWorkItem, NewSession, QueryFilter, ReplyCommit, SessionAttentionState,
+    SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionStore, SessionUpdate,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{ContextEngine, ContextView};
@@ -281,11 +283,21 @@ struct ToolExecutionOptions {
     wake_on_output: bool,
     transcript_tool_calls: Option<Vec<crate::llm::ToolCall>>,
     allowed_tool_names: HashSet<String>,
+    record_assistant_call: bool,
 }
 
 #[derive(Debug, Default)]
 struct ToolExecutionOutcome {
     context_tx_succeeded: bool,
+}
+
+#[derive(Debug, Clone)]
+struct EvaluationRoute {
+    work_item_id: String,
+    root_turn_id: String,
+    trigger_event_id: String,
+    trigger_sequence: u64,
+    context_snapshot_version: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -491,6 +503,7 @@ pub struct Orchestrator {
     read_turn_guards: DashMap<String, Arc<Mutex<ReadTurnGuard>>>,
     cancellation_epochs: DashMap<String, watch::Sender<u64>>,
     active_session_turns: DashMap<String, Arc<AtomicUsize>>,
+    evaluation_routes: DashMap<String, EvaluationRoute>,
     cancelled_at: DashMap<String, chrono::DateTime<Utc>>,
     /// Runtime routing identity: a Session is an IO connection inside one
     /// Cognitive Context. This cache is populated from every incoming routed
@@ -593,6 +606,7 @@ impl Orchestrator {
             read_turn_guards: DashMap::new(),
             cancellation_epochs: DashMap::new(),
             active_session_turns: DashMap::new(),
+            evaluation_routes: DashMap::new(),
             cancelled_at: DashMap::new(),
             session_contexts: DashMap::new(),
             context_message_queues: DashMap::new(),
@@ -642,6 +656,74 @@ impl Orchestrator {
             }),
         );
 
+        self.recover_evaluation_work_items().await?;
+        Ok(())
+    }
+
+    async fn recover_evaluation_work_items(&self) -> Result<(), DynError> {
+        let Some(session_store) = self.context_engine.session_store() else {
+            return Ok(());
+        };
+        let now = Utc::now();
+        for context in session_store.list_contexts(false).await? {
+            let work_items = session_store
+                .list_context_evaluation_work_items(&context.id, false)
+                .await?;
+            if work_items.is_empty() {
+                continue;
+            }
+            let events = self
+                .store
+                .query(QueryFilter {
+                    context_id: Some(context.id.clone()),
+                    ..Default::default()
+                })
+                .await?;
+            let events = events
+                .into_iter()
+                .map(|event| (event.id.clone(), event))
+                .collect::<HashMap<_, _>>();
+            for work_item in work_items {
+                let Some(trigger) = events.get(&work_item.trigger_event_id).cloned() else {
+                    tracing::error!(
+                        work_item_id = %work_item.id,
+                        trigger_event_id = %work_item.trigger_event_id,
+                        "无法恢复 Work Item：Ledger 中不存在 Trigger Event"
+                    );
+                    continue;
+                };
+                match work_item.status {
+                    EvaluationWorkItemStatus::Queued => {
+                        self.bus.dispatch_persisted(trigger).await?;
+                    }
+                    EvaluationWorkItemStatus::Running => {
+                        let delay = work_item
+                            .lease_expires_at
+                            .filter(|expires_at| *expires_at > now)
+                            .and_then(|expires_at| (expires_at - now).to_std().ok());
+                        if let Some(delay) = delay {
+                            let bus = Arc::clone(&self.bus);
+                            tokio::spawn(async move {
+                                tokio::time::sleep(delay).await;
+                                if let Err(error) = bus.dispatch_persisted(trigger).await {
+                                    tracing::error!(%error, "Work Item lease 到期后重新派发失败");
+                                }
+                            });
+                        } else {
+                            self.bus.dispatch_persisted(trigger).await?;
+                        }
+                    }
+                    EvaluationWorkItemStatus::WaitingTool
+                    | EvaluationWorkItemStatus::WaitingExternal => {
+                        // A physical result/timer/approval event owns the next wake. Replaying
+                        // the prior request here would duplicate an external action.
+                    }
+                    EvaluationWorkItemStatus::Completed
+                    | EvaluationWorkItemStatus::Cancelled
+                    | EvaluationWorkItemStatus::Failed => {}
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1163,6 +1245,15 @@ impl Orchestrator {
             self.read_turn_guards.remove(&session_id);
         }
 
+        let Some(work_item) = self.claim_evaluation_work_item(&event).await? else {
+            tracing::debug!(
+                session_id,
+                event_id = %event.id,
+                "Evaluation Work Item 已由其他 worker claim 或已经终止"
+            );
+            return Ok(());
+        };
+
         let deadline = std::time::Duration::from_secs(
             self.orchestrator_config
                 .model_attempt_timeout_secs
@@ -1181,8 +1272,6 @@ impl Orchestrator {
         active_counter.fetch_add(1, Ordering::SeqCst);
         let attempt = tokio::select! {
             result = tokio::time::timeout(deadline, async {
-            let lock = self.session_lock(&session_id);
-            let _session_guard = lock.lock().await;
             let force_evaluation = event
                 .payload
                 .get("runtime_force_evaluation")
@@ -1204,7 +1293,7 @@ impl Orchestrator {
             if let Some(supervisor) = &self.objective_supervisor {
                 supervisor.prepare_routed_event(&event).await?;
             }
-            self.run_attempt(&session_id).await
+            self.run_attempt(&session_id, &work_item).await
             }) => Some(result),
             _ = cancellation.changed() => {
                 debug_assert_ne!(*cancellation.borrow(), start_epoch);
@@ -1212,22 +1301,318 @@ impl Orchestrator {
             }
         };
         active_counter.fetch_sub(1, Ordering::SeqCst);
-        match attempt {
-            Some(Ok(result)) => result,
+        let (result, final_status) = match attempt {
+            Some(Ok(result)) => {
+                let status = if result.is_ok() {
+                    EvaluationWorkItemStatus::Completed
+                } else {
+                    EvaluationWorkItemStatus::Failed
+                };
+                (result, status)
+            }
             Some(Err(error)) => {
-                self.publish_runtime_failure(
-                    &session_id,
-                    &watchdog_attempt_id,
-                    "attempt_watchdog",
-                    &error,
-                    None,
-                )
-                .await
+                let result = self
+                    .publish_runtime_failure(
+                        &session_id,
+                        &watchdog_attempt_id,
+                        "attempt_watchdog",
+                        &error,
+                        None,
+                    )
+                    .await;
+                (result, EvaluationWorkItemStatus::Failed)
             }
             None => {
                 tracing::info!(session_id, "当前 Session 执行已由用户取消");
+                (Ok(()), EvaluationWorkItemStatus::Cancelled)
+            }
+        };
+        if let Err(error) = self
+            .finish_evaluation_work_item(&work_item, final_status)
+            .await
+        {
+            self.evaluation_routes.remove(&work_item.id);
+            if result.is_ok() {
+                return Err(error);
+            }
+            tracing::warn!(
+                work_item_id = %work_item.id,
+                error = %error,
+                "Work Item 终态提交失败；保留原始执行错误"
+            );
+        }
+        self.evaluation_routes.remove(&work_item.id);
+        result
+    }
+
+    async fn claim_evaluation_work_item(
+        &self,
+        event: &Event,
+    ) -> Result<Option<EvaluationWorkItemRecord>, DynError> {
+        let session_id = required_payload_str(event, "session_id")?;
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Evaluation Work Item 需要持久化 SessionStore")?;
+        let mut session = session_store
+            .get_session(session_id)
+            .await?
+            .ok_or_else(|| format!("Session '{session_id}' 不存在"))?;
+
+        // Directed events are physical activity. A retired Session must be restored
+        // before it participates in Context Encoding again. User messages already do
+        // this atomically in `claim_message`; this branch covers tool/background wakes.
+        if session.attention_state == SessionAttentionState::Retired {
+            let restore_event_id = format!(
+                "session_restored_{}_{}",
+                session_id,
+                Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            );
+            let mut restore_event = Event::new(
+                restore_event_id.clone(),
+                "Runtime-Orchestrator".to_string(),
+                "session_lifecycle".to_string(),
+                "runtime/session_restored".to_string(),
+                vec![
+                    ("agent_id".to_string(), json!(session.agent_id)),
+                    ("context_id".to_string(), json!(session.context_id)),
+                    ("session_id".to_string(), json!(session.id)),
+                    ("trigger_event_id".to_string(), json!(event.id)),
+                    ("reason".to_string(), json!("directed_event")),
+                ]
+                .into_iter()
+                .collect(),
+            );
+            let attention_update = SessionAttentionUpdate {
+                session_id: session.id.clone(),
+                context_id: session.context_id.clone(),
+                expected_revision: session.attention_revision,
+                state: SessionAttentionState::Active,
+                reason: Some("directed_event".to_string()),
+                changed_at: restore_event.timestamp,
+                event_id: restore_event_id,
+            };
+            match session_store
+                .commit_context_transaction(&restore_event, &[attention_update])
+                .await
+            {
+                Ok(()) => {
+                    // The audit fact is already durable; dispatch it without crossing the
+                    // persistence boundary a second time.
+                    self.bus.publish_ephemeral(restore_event.clone()).await?;
+                    session.attention_state = SessionAttentionState::Active;
+                    session.attention_revision = session.attention_revision.saturating_add(1);
+                }
+                Err(error) => {
+                    session = session_store
+                        .get_session(session_id)
+                        .await?
+                        .ok_or_else(|| format!("Session '{session_id}' 在恢复时消失"))?;
+                    if session.attention_state != SessionAttentionState::Active {
+                        return Err(error);
+                    }
+                    // A concurrent worker won the restore CAS. The event it committed is
+                    // already the authoritative audit record.
+                    restore_event
+                        .payload
+                        .insert("restore_race_lost".to_string(), json!(true));
+                }
+            }
+        }
+
+        if event.event_type != TYPE_USER_MESSAGE {
+            session_store
+                .touch_session(session_id, event.timestamp)
+                .await?;
+        }
+
+        let trigger_sequence = match event.sequence {
+            Some(sequence) => sequence,
+            None => self
+                .store
+                .query(QueryFilter {
+                    session_id: Some(session_id.to_string()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .find(|stored| stored.id == event.id)
+                .and_then(|stored| stored.sequence)
+                .ok_or_else(|| {
+                    format!(
+                        "Trigger Event '{}' 尚未进入 Ledger，不能创建 Work Item",
+                        event.id
+                    )
+                })?,
+        };
+        let parent_work_item_id = event
+            .payload
+            .get("work_item_id")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned);
+        let parent = match parent_work_item_id.as_deref() {
+            Some(id) => session_store.get_evaluation_work_item(id).await?,
+            None => None,
+        };
+        let root_turn_id = event
+            .payload
+            .get("root_turn_id")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned)
+            .or_else(|| parent.as_ref().map(|item| item.root_turn_id.clone()))
+            .unwrap_or_else(|| event.id.clone());
+        let digest = Sha256::digest(event.id.as_bytes());
+        let work_item_id = format!("work_{:x}", digest);
+        let work_item_id = work_item_id[..29].to_string();
+        let work_item = session_store
+            .ensure_evaluation_work_item(NewEvaluationWorkItem {
+                id: work_item_id,
+                agent_id: session.agent_id.clone(),
+                context_id: session.context_id.clone(),
+                session_id: session.id.clone(),
+                trigger_event_id: event.id.clone(),
+                trigger_sequence,
+                trigger_kind: event.topic.clone(),
+                parent_work_item_id,
+                root_turn_id,
+            })
+            .await?;
+        if work_item.status.is_terminal() {
+            return Ok(None);
+        }
+        let now = Utc::now();
+        if work_item.status == EvaluationWorkItemStatus::Running
+            && work_item
+                .lease_expires_at
+                .is_some_and(|expires_at| expires_at > now)
+        {
+            return Ok(None);
+        }
+        let lease_seconds = self
+            .orchestrator_config
+            .model_attempt_timeout_secs
+            .max(1)
+            .saturating_mul((MAX_REPLY_PROTOCOL_RETRIES + 1) as u64)
+            .saturating_add(30)
+            .max(
+                self.orchestrator_config
+                    .tool_timeout_secs
+                    .max(1)
+                    .saturating_add(30),
+            );
+        let lease_seconds = i64::try_from(lease_seconds).unwrap_or(i64::MAX);
+        let lease_expires_at = now + chrono::Duration::seconds(lease_seconds);
+        match session_store
+            .update_evaluation_work_item(
+                &work_item.id,
+                work_item.revision,
+                EvaluationWorkItemStatus::Running,
+                Some(&format!("runtime:{}", std::process::id())),
+                Some(lease_expires_at),
+                None,
+            )
+            .await?
+        {
+            EvaluationWorkItemMutation::Updated(claimed) => Ok(Some(claimed)),
+            EvaluationWorkItemMutation::Conflict { .. } => Ok(None),
+            EvaluationWorkItemMutation::NotFound => {
+                Err(format!("Work Item '{}' 在 claim 时消失", work_item.id).into())
+            }
+        }
+    }
+
+    async fn finish_evaluation_work_item(
+        &self,
+        work_item: &EvaluationWorkItemRecord,
+        status: EvaluationWorkItemStatus,
+    ) -> Result<EvaluationWorkItemRecord, DynError> {
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Evaluation Work Item 需要持久化 SessionStore")?;
+        let Some(current) = session_store
+            .get_evaluation_work_item(&work_item.id)
+            .await?
+        else {
+            return Err(format!("Work Item '{}' 在结束时消失", work_item.id).into());
+        };
+        if current.status.is_terminal() {
+            return Ok(current);
+        }
+        match session_store
+            .update_evaluation_work_item(
+                &current.id,
+                current.revision,
+                status,
+                None,
+                None,
+                current.context_snapshot_version,
+            )
+            .await?
+        {
+            EvaluationWorkItemMutation::Updated(updated) => Ok(updated),
+            EvaluationWorkItemMutation::Conflict { current } if current.status.is_terminal() => {
+                Ok(current)
+            }
+            EvaluationWorkItemMutation::Conflict { current } => Err(format!(
+                "Work Item '{}' 终态提交冲突：当前 revision={} status={}",
+                current.id,
+                current.revision,
+                current.status.as_str()
+            )
+            .into()),
+            EvaluationWorkItemMutation::NotFound => {
+                Err(format!("Work Item '{}' 在结束时消失", work_item.id).into())
+            }
+        }
+    }
+
+    async fn record_work_item_context_snapshot(
+        &self,
+        work_item: &EvaluationWorkItemRecord,
+        context_version: u64,
+    ) -> Result<(), DynError> {
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Evaluation Work Item 需要持久化 SessionStore")?;
+        let Some(current) = session_store
+            .get_evaluation_work_item(&work_item.id)
+            .await?
+        else {
+            return Err(format!("Work Item '{}' 在记录快照时消失", work_item.id).into());
+        };
+        if current.status.is_terminal() || current.context_snapshot_version == Some(context_version)
+        {
+            return Ok(());
+        }
+        match session_store
+            .update_evaluation_work_item(
+                &current.id,
+                current.revision,
+                current.status,
+                current.claimed_by.as_deref(),
+                current.lease_expires_at,
+                Some(context_version),
+            )
+            .await?
+        {
+            EvaluationWorkItemMutation::Updated(_) => Ok(()),
+            EvaluationWorkItemMutation::Conflict { current }
+                if current.context_snapshot_version == Some(context_version) =>
+            {
                 Ok(())
             }
+            EvaluationWorkItemMutation::Conflict { current } => Err(format!(
+                "Work Item '{}' Context snapshot 提交冲突：revision={}",
+                current.id, current.revision
+            )
+            .into()),
+            EvaluationWorkItemMutation::NotFound => Err(format!(
+                "Work Item '{}' 在记录 Context snapshot 时消失",
+                work_item.id
+            )
+            .into()),
         }
     }
 
@@ -1236,6 +1621,23 @@ impl Orchestrator {
         session_id: &str,
         trigger: &Event,
     ) -> Result<bool, DynError> {
+        let trigger_root_turn_id = trigger
+            .payload
+            .get("root_turn_id")
+            .and_then(|value| value.as_str());
+        let trigger_sequence = match trigger.sequence {
+            Some(sequence) => Some(sequence),
+            None => self
+                .store
+                .query(QueryFilter {
+                    session_id: Some(session_id.to_string()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .find(|event| event.id == trigger.id)
+                .and_then(|event| event.sequence),
+        };
         let inspections = self
             .store
             .query(QueryFilter {
@@ -1244,16 +1646,39 @@ impl Orchestrator {
                 ..Default::default()
             })
             .await?;
-        Ok(inspections
-            .iter()
-            .any(|inspection| inspection.timestamp > trigger.timestamp))
+        Ok(inspections.iter().any(|inspection| {
+            let same_causal_turn = match trigger_root_turn_id {
+                Some(root_turn_id) => {
+                    inspection
+                        .payload
+                        .get("root_turn_id")
+                        .and_then(|value| value.as_str())
+                        == Some(root_turn_id)
+                }
+                None => true,
+            };
+            if !same_causal_turn {
+                return false;
+            }
+            match (trigger_sequence, inspection.sequence) {
+                (Some(trigger_sequence), Some(inspection_sequence)) => {
+                    inspection_sequence > trigger_sequence
+                }
+                _ => inspection.timestamp > trigger.timestamp,
+            }
+        }))
     }
 
     /// Rebuild the standard Function Calling transcript for the active user
     /// turn. Long-term conversation history is still represented only by the
     /// compiled Context snapshot; assistant/tool messages here are transient
     /// protocol messages since the latest user observation.
-    async fn turn_tool_transcript(&self, session_id: &str) -> Result<TurnToolTranscript, DynError> {
+    async fn turn_tool_transcript(
+        &self,
+        session_id: &str,
+        root_turn_id: Option<&str>,
+        trigger_event_id: Option<&str>,
+    ) -> Result<TurnToolTranscript, DynError> {
         let events = self
             .store
             .query(QueryFilter {
@@ -1261,16 +1686,47 @@ impl Orchestrator {
                 ..Default::default()
             })
             .await?;
-        let turn_start = events
-            .iter()
-            .rposition(|event| {
-                event.event_type == TYPE_USER_MESSAGE
-                    || event.topic == "objective/evaluation_started"
-            })
-            .unwrap_or(0);
-        let turn_events = &events[turn_start..];
+        let trigger_attempt_id = trigger_event_id.and_then(|trigger_event_id| {
+            events
+                .iter()
+                .find(|event| event.id == trigger_event_id)
+                .and_then(|event| event.payload.get("attempt_id"))
+                .and_then(|value| value.as_str())
+        });
+        let turn_events = match root_turn_id {
+            Some(root_turn_id) => events
+                .iter()
+                .filter(|event| {
+                    let same_root = event
+                        .payload
+                        .get("root_turn_id")
+                        .and_then(|value| value.as_str())
+                        == Some(root_turn_id);
+                    let is_trigger = trigger_event_id == Some(event.id.as_str());
+                    let legacy_assistant_call = trigger_attempt_id.is_some_and(|attempt_id| {
+                        event.topic == "chat/assistant_call"
+                            && event
+                                .payload
+                                .get("attempt_id")
+                                .and_then(|value| value.as_str())
+                                == Some(attempt_id)
+                    });
+                    same_root || is_trigger || legacy_assistant_call
+                })
+                .collect::<Vec<_>>(),
+            None => {
+                let turn_start = events
+                    .iter()
+                    .rposition(|event| {
+                        event.event_type == TYPE_USER_MESSAGE
+                            || event.topic == "objective/evaluation_started"
+                    })
+                    .unwrap_or(0);
+                events[turn_start..].iter().collect::<Vec<_>>()
+            }
+        };
         let mut outputs = HashMap::<(String, String), Event>::new();
-        for event in turn_events {
+        for event in &turn_events {
             if event.event_type != TYPE_TOOL_OUTPUT {
                 continue;
             }
@@ -1290,12 +1746,12 @@ impl Orchestrator {
             };
             outputs.insert(
                 (attempt_id.to_string(), tool_call_id.to_string()),
-                event.clone(),
+                (*event).clone(),
             );
         }
 
         let mut transcript = TurnToolTranscript::default();
-        for event in turn_events {
+        for event in &turn_events {
             if event.topic != "chat/assistant_call" {
                 continue;
             }
@@ -1416,7 +1872,7 @@ impl Orchestrator {
             {
                 continue;
             }
-            let transcript = self.turn_tool_transcript(&session_id).await?;
+            let transcript = self.turn_tool_transcript(&session_id, None, None).await?;
             transcript_messages.extend(transcript.messages);
             delivered_output_ids.extend(transcript.delivered_output_ids);
             session_ids.push(session_id);
@@ -1810,6 +2266,7 @@ impl Orchestrator {
                     wake_on_output: true,
                     transcript_tool_calls: Some(lane.transcript_calls),
                     allowed_tool_names: allowed_tool_names.clone(),
+                    record_assistant_call: true,
                 },
             )
             .await
@@ -2070,18 +2527,191 @@ impl Orchestrator {
         Ok(measurement)
     }
 
-    async fn run_attempt(&self, session_id: &str) -> Result<(), DynError> {
-        let attempt_id = format!(
-            "attempt_{}_{}",
-            session_id,
-            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+    /// Resume a model decision that crossed the durable assistant-call boundary before the
+    /// owning Work Item reached a terminal state. Re-asking the model here could produce a new
+    /// set of call IDs and repeat an external side effect, so recovery always reuses the exact
+    /// persisted plan. `execute_tool_calls` also reuses any already durable output events.
+    async fn resume_persisted_work_item(
+        &self,
+        session_id: &str,
+        work_item: &EvaluationWorkItemRecord,
+    ) -> Result<bool, DynError> {
+        let assistant_event_id = format!("call_{}", work_item.id);
+        let Some(assistant_call) = self
+            .context_engine
+            .find_event(&work_item.context_id, &assistant_event_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        if assistant_call.topic != "chat/assistant_call" {
+            return Err(format!(
+                "Work Item '{}' 的恢复边界 '{}' 不是 assistant_call",
+                work_item.id, assistant_event_id
+            )
+            .into());
+        }
+
+        let calls_value = assistant_call
+            .payload
+            .get("tool_calls")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        let calls = serde_json::from_value::<Vec<crate::llm::ToolCall>>(calls_value)?;
+        let response = crate::llm::Response {
+            content: assistant_call
+                .payload
+                .get("text")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            tool_calls: calls
+                .iter()
+                .map(|call| crate::llm::ToolCallRepr {
+                    id: call.id.clone(),
+                    r#type: call.r#type.clone(),
+                    func_name: call.function.name.clone(),
+                    arguments: call.function.arguments.clone(),
+                })
+                .collect(),
+        };
+
+        if assistant_call
+            .payload
+            .get("terminal_reply")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            let decision = classify_reply_response(&response)
+                .map_err(|error| -> DynError { error.into() })?
+                .ok_or_else(|| {
+                    format!(
+                        "Work Item '{}' 的持久化 terminal reply 不包含合法 reply 调用",
+                        work_item.id
+                    )
+                })?;
+            let parent = self
+                .parent_session_for(&work_item.context_id, session_id)
+                .await?;
+            tracing::info!(
+                work_item_id = %work_item.id,
+                disposition = decision.disposition(),
+                "从持久化 assistant_call 恢复终态回复"
+            );
+            match decision {
+                ReplyDecision::Deliver(content) => {
+                    self.publish_reply(session_id, &work_item.id, content, parent.as_deref())
+                        .await?;
+                }
+                ReplyDecision::Suppress => {
+                    self.publish_reply_suppressed(session_id, &work_item.id, parent.as_deref())
+                        .await?;
+                }
+            }
+            return Ok(true);
+        }
+
+        if response.tool_calls.is_empty() {
+            return Err(format!(
+                "Work Item '{}' 的持久化 assistant_call 既非终态回复也没有工具调用",
+                work_item.id
+            )
+            .into());
+        }
+        let unavailable_names = assistant_call
+            .payload
+            .get("unavailable_tool_names")
+            .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let allowed_tool_names = response
+            .tool_calls
+            .iter()
+            .map(|call| call.func_name.clone())
+            .filter(|name| !unavailable_names.contains(name))
+            .collect::<HashSet<_>>();
+        let transcript_tool_calls = assistant_call
+            .payload
+            .get("transcript_tool_calls")
+            .and_then(|value| {
+                serde_json::from_value::<Vec<crate::llm::ToolCall>>(value.clone()).ok()
+            });
+        let context_tx_allowed = assistant_call
+            .payload
+            .get("context_tx_rejection_status")
+            .and_then(|value| value.as_str())
+            != Some("budget-exhausted");
+        let phase = assistant_call
+            .payload
+            .get("phase")
+            .and_then(|value| value.as_str())
+            .unwrap_or("work");
+        tracing::info!(
+            work_item_id = %work_item.id,
+            tool_calls = response.tool_calls.len(),
+            "从持久化 assistant_call 恢复工具执行计划"
         );
-        let transcript = self.turn_tool_transcript(session_id).await?;
-        let context_id = self.context_id_for_session(session_id)?;
+        self.execute_tool_calls(
+            session_id,
+            &work_item.id,
+            response,
+            phase,
+            ToolExecutionOptions {
+                context_tx_allowed,
+                wake_on_output: true,
+                transcript_tool_calls,
+                allowed_tool_names,
+                record_assistant_call: false,
+            },
+        )
+        .await?;
+        Ok(true)
+    }
+
+    async fn run_attempt(
+        &self,
+        session_id: &str,
+        work_item: &EvaluationWorkItemRecord,
+    ) -> Result<(), DynError> {
+        let attempt_id = work_item.id.clone();
+        self.evaluation_routes.insert(
+            attempt_id.clone(),
+            EvaluationRoute {
+                work_item_id: work_item.id.clone(),
+                root_turn_id: work_item.root_turn_id.clone(),
+                trigger_event_id: work_item.trigger_event_id.clone(),
+                trigger_sequence: work_item.trigger_sequence,
+                context_snapshot_version: work_item.context_snapshot_version,
+            },
+        );
+        if self
+            .resume_persisted_work_item(session_id, work_item)
+            .await?
+        {
+            return Ok(());
+        }
+        let transcript = self
+            .turn_tool_transcript(
+                session_id,
+                Some(&work_item.root_turn_id),
+                Some(&work_item.trigger_event_id),
+            )
+            .await?;
+        let context_id = work_item.context_id.clone();
         let mut context = self
             .context_engine
-            .build_context_encoding(&context_id, session_id, &transcript.delivered_output_ids)
+            .build_context_encoding_for_work_item(
+                &context_id,
+                work_item,
+                &transcript.delivered_output_ids,
+            )
             .await?;
+        self.record_work_item_context_snapshot(work_item, context.state.version)
+            .await?;
+        if let Some(mut route) = self.evaluation_routes.get_mut(&attempt_id) {
+            route.context_snapshot_version = Some(context.state.version);
+        }
         let context_tx_receipt = self.context_tx_receipt(&context).await?;
         let objective_control_available = context.objectives.iter().any(|objective| {
             objective.coordinator_session_id == session_id
@@ -2412,6 +3042,7 @@ impl Orchestrator {
                     wake_on_output: true,
                     transcript_tool_calls: None,
                     allowed_tool_names,
+                    record_assistant_call: true,
                 },
             )
             .await?;
@@ -2429,6 +3060,15 @@ impl Orchestrator {
         reason: &str,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
+        let mut payload = vec![
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("error_count".to_string(), json!(error_count)),
+            ("max_retries".to_string(), json!(MAX_REPLY_PROTOCOL_RETRIES)),
+            ("reason".to_string(), json!(reason)),
+        ];
+        self.append_evaluation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
                 format!(
@@ -2438,16 +3078,7 @@ impl Orchestrator {
                 "Runtime-Orchestrator".to_string(),
                 "runtime_control".to_string(),
                 "runtime/reply_protocol_error".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(context_id)),
-                    ("session_id".to_string(), json!(session_id)),
-                    ("attempt_id".to_string(), json!(attempt_id)),
-                    ("error_count".to_string(), json!(error_count)),
-                    ("max_retries".to_string(), json!(MAX_REPLY_PROTOCOL_RETRIES)),
-                    ("reason".to_string(), json!(reason)),
-                ]
-                .into_iter()
-                .collect(),
+                payload.into_iter().collect(),
             ))
             .await?;
         Ok(())
@@ -2460,6 +3091,16 @@ impl Orchestrator {
         parent_session_id: Option<&str>,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
+        let mut payload = vec![
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            (
+                "invalid_responses".to_string(),
+                json!(MAX_REPLY_PROTOCOL_RETRIES + 1),
+            ),
+        ];
+        self.append_evaluation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
                 format!(
@@ -2469,17 +3110,7 @@ impl Orchestrator {
                 "Runtime-Orchestrator".to_string(),
                 "runtime_error".to_string(),
                 "runtime/reply_protocol_fused".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(context_id)),
-                    ("session_id".to_string(), json!(session_id)),
-                    ("attempt_id".to_string(), json!(attempt_id)),
-                    (
-                        "invalid_responses".to_string(),
-                        json!(MAX_REPLY_PROTOCOL_RETRIES + 1),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
+                payload.into_iter().collect(),
             ))
             .await?;
         self.publish_reply(
@@ -2512,27 +3143,27 @@ impl Orchestrator {
                 },
             })
             .collect::<Vec<_>>();
+        let mut payload = vec![
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("phase".to_string(), json!(phase)),
+            ("text".to_string(), json!(response.content)),
+            ("tool_calls".to_string(), json!(tool_calls)),
+            ("terminal_reply".to_string(), json!(true)),
+            (
+                "reply_disposition".to_string(),
+                json!(decision.disposition()),
+            ),
+        ];
+        self.append_evaluation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
                 format!("call_{attempt_id}"),
                 "Agent-Morphz".to_string(),
                 TYPE_AGENT_CALL.to_string(),
                 "chat/assistant_call".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(context_id)),
-                    ("session_id".to_string(), json!(session_id)),
-                    ("attempt_id".to_string(), json!(attempt_id)),
-                    ("phase".to_string(), json!(phase)),
-                    ("text".to_string(), json!(response.content)),
-                    ("tool_calls".to_string(), json!(tool_calls)),
-                    ("terminal_reply".to_string(), json!(true)),
-                    (
-                        "reply_disposition".to_string(),
-                        json!(decision.disposition()),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
+                payload.into_iter().collect(),
             ))
             .await?;
         Ok(())
@@ -2560,6 +3191,7 @@ impl Orchestrator {
         if let Some(parent_session_id) = parent_session_id {
             payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
         }
+        self.append_evaluation_route(attempt_id, &mut payload);
         self.append_objective_evaluation_route(session_id, &mut payload);
         let event = Event::new(
             format!(
@@ -2571,9 +3203,10 @@ impl Orchestrator {
             "chat/reply_suppressed".to_string(),
             payload.into_iter().collect(),
         );
-        self.bus.publish(event.clone()).await?;
-        if let Some(supervisor) = &self.objective_supervisor {
-            supervisor.terminal_reply(&event).await?;
+        if self.commit_and_dispatch_reply(attempt_id, &event).await? {
+            if let Some(supervisor) = &self.objective_supervisor {
+                supervisor.terminal_reply(&event).await?;
+            }
         }
         Ok(())
     }
@@ -2590,11 +3223,13 @@ impl Orchestrator {
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
+            ("disposition".to_string(), json!("deliver")),
             ("text".to_string(), json!(content)),
         ];
         if let Some(parent_session_id) = parent_session_id {
             payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
         }
+        self.append_evaluation_route(attempt_id, &mut payload);
         self.append_objective_evaluation_route(session_id, &mut payload);
         let event = Event::new(
             format!("reply_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
@@ -2603,11 +3238,45 @@ impl Orchestrator {
             "chat/reply".to_string(),
             payload.into_iter().collect(),
         );
-        self.bus.publish(event.clone()).await?;
-        if let Some(supervisor) = &self.objective_supervisor {
-            supervisor.terminal_reply(&event).await?;
+        if self.commit_and_dispatch_reply(attempt_id, &event).await? {
+            if let Some(supervisor) = &self.objective_supervisor {
+                supervisor.terminal_reply(&event).await?;
+            }
         }
         Ok(())
+    }
+
+    async fn commit_and_dispatch_reply(
+        &self,
+        attempt_id: &str,
+        event: &Event,
+    ) -> Result<bool, DynError> {
+        let Some(route) = self.evaluation_route(attempt_id) else {
+            self.bus.publish(event.clone()).await?;
+            return Ok(true);
+        };
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Evaluation reply 需要持久化 SessionStore")?;
+        match session_store
+            .commit_evaluation_reply(&route.root_turn_id, event)
+            .await?
+        {
+            ReplyCommit::Committed => {
+                self.bus.dispatch_persisted(event.clone()).await?;
+                Ok(true)
+            }
+            ReplyCommit::Existing { event_id } => {
+                tracing::warn!(
+                    root_turn_id = %route.root_turn_id,
+                    duplicate_event_id = %event.id,
+                    committed_event_id = %event_id,
+                    "抑制同一 Root Turn 的重复终态回复"
+                );
+                Ok(false)
+            }
+        }
     }
 
     fn append_objective_evaluation_route(
@@ -2635,20 +3304,20 @@ impl Orchestrator {
         content: String,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
+        let mut payload = vec![
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("text".to_string(), json!(content)),
+        ];
+        self.append_evaluation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
                 format!("progress_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
                 "Agent-Morphz".to_string(),
                 TYPE_AGENT_CALL.to_string(),
                 "chat/progress".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(context_id)),
-                    ("session_id".to_string(), json!(session_id)),
-                    ("attempt_id".to_string(), json!(attempt_id)),
-                    ("text".to_string(), json!(content)),
-                ]
-                .into_iter()
-                .collect(),
+                payload.into_iter().collect(),
             ))
             .await?;
         Ok(())
@@ -2670,6 +3339,14 @@ impl Orchestrator {
             error = %error_text,
             "LLM 请求在重试后失败；终止本回合并向用户返回可见错误"
         );
+        let mut payload = vec![
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("stage".to_string(), json!(stage)),
+            ("error".to_string(), json!(error_text)),
+        ];
+        self.append_evaluation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
                 format!(
@@ -2679,15 +3356,7 @@ impl Orchestrator {
                 "Runtime-Orchestrator".to_string(),
                 "runtime_error".to_string(),
                 "chat/runtime_error".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(context_id)),
-                    ("session_id".to_string(), json!(session_id)),
-                    ("attempt_id".to_string(), json!(attempt_id)),
-                    ("stage".to_string(), json!(stage)),
-                    ("error".to_string(), json!(error_text)),
-                ]
-                .into_iter()
-                .collect(),
+                payload.into_iter().collect(),
             ))
             .await?;
 
@@ -2720,6 +3389,18 @@ impl Orchestrator {
                 return;
             }
         };
+        let mut payload = vec![
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("phase".to_string(), json!(phase)),
+            ("tool_count".to_string(), json!(tool_count)),
+            (
+                "deadline_secs".to_string(),
+                json!(self.orchestrator_config.model_attempt_timeout_secs.max(1)),
+            ),
+        ];
+        self.append_evaluation_route(attempt_id, &mut payload);
         let event = Event::new(
             format!(
                 "model_attempt_started_{}",
@@ -2728,19 +3409,7 @@ impl Orchestrator {
             "Runtime-Orchestrator".to_string(),
             "runtime_control".to_string(),
             "runtime/model_attempt_started".to_string(),
-            vec![
-                ("context_id".to_string(), json!(context_id)),
-                ("session_id".to_string(), json!(session_id)),
-                ("attempt_id".to_string(), json!(attempt_id)),
-                ("phase".to_string(), json!(phase)),
-                ("tool_count".to_string(), json!(tool_count)),
-                (
-                    "deadline_secs".to_string(),
-                    json!(self.orchestrator_config.model_attempt_timeout_secs.max(1)),
-                ),
-            ]
-            .into_iter()
-            .collect(),
+            payload.into_iter().collect(),
         );
         tokio::spawn(async move {
             if let Err(error) = bus.publish(event).await {
@@ -2758,6 +3427,11 @@ impl Orchestrator {
         options: ToolExecutionOptions,
     ) -> Result<ToolExecutionOutcome, DynError> {
         let context_id = self.context_id_for_session(session_id)?;
+        let evaluation_route = self.evaluation_route(attempt_id);
+        let read_guard_key = evaluation_route
+            .as_ref()
+            .map(|route| route.root_turn_id.clone())
+            .unwrap_or_else(|| session_id.to_string());
         let requested_tool_calls = response.tool_calls;
         let mapped_tool_calls = requested_tool_calls
             .iter()
@@ -2941,75 +3615,88 @@ impl Orchestrator {
             (!unavailable_tool_calls.is_empty())
                 .then(|| "tool-not-available-in-current-phase".to_string())
         });
-        self.bus
-            .publish(Event::new(
-                format!("call_{}", attempt_id),
-                "Agent-Morphz".to_string(),
-                TYPE_AGENT_CALL.to_string(),
-                "chat/assistant_call".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(context_id)),
-                    ("session_id".to_string(), json!(session_id)),
-                    ("attempt_id".to_string(), json!(attempt_id)),
-                    ("phase".to_string(), json!(phase)),
-                    ("text".to_string(), json!(response.content)),
-                    ("tool_calls".to_string(), json!(mapped_tool_calls)),
-                    (
-                        "transcript_tool_calls".to_string(),
-                        json!(transcript_tool_calls),
-                    ),
-                    (
-                        "deduplicated_context_tx_ids".to_string(),
-                        json!(deduplicated_context_tx_ids),
-                    ),
-                    (
-                        "deduplicated_delegate_ids".to_string(),
-                        json!(deduplicated_delegate_ids),
-                    ),
-                    (
-                        "rejected_context_tx_ids".to_string(),
-                        json!(rejected_context_tx_ids),
-                    ),
-                    (
-                        "context_tx_rejection_status".to_string(),
-                        json!(context_tx_batch_status),
-                    ),
-                    (
-                        "unavailable_tool_call_ids".to_string(),
-                        json!(unavailable_call_ids),
-                    ),
-                    (
-                        "unavailable_tool_names".to_string(),
-                        json!(unavailable_call_names),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ))
-            .await?;
-        self.bus
-            .publish(Event::new(
-                format!("tool_calls_selected_{attempt_id}"),
-                "Runtime-Orchestrator".to_string(),
-                "runtime_control".to_string(),
-                "runtime/tool_calls_selected".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(context_id)),
-                    ("session_id".to_string(), json!(session_id)),
-                    ("attempt_id".to_string(), json!(attempt_id)),
-                    ("requested_count".to_string(), json!(requested_count)),
-                    ("calls".to_string(), json!(selected_call_previews)),
-                    ("deduplicated_count".to_string(), json!(deduplicated_count)),
-                    ("rejected_count".to_string(), json!(rejected_count)),
-                    ("rejection_status".to_string(), json!(rejection_status)),
-                ]
-                .into_iter()
-                .collect(),
-            ))
-            .await?;
+        let mut assistant_call_payload = vec![
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("phase".to_string(), json!(phase)),
+            ("text".to_string(), json!(response.content)),
+            ("tool_calls".to_string(), json!(mapped_tool_calls)),
+            (
+                "transcript_tool_calls".to_string(),
+                json!(transcript_tool_calls),
+            ),
+            (
+                "deduplicated_context_tx_ids".to_string(),
+                json!(deduplicated_context_tx_ids),
+            ),
+            (
+                "deduplicated_delegate_ids".to_string(),
+                json!(deduplicated_delegate_ids),
+            ),
+            (
+                "rejected_context_tx_ids".to_string(),
+                json!(rejected_context_tx_ids),
+            ),
+            (
+                "context_tx_rejection_status".to_string(),
+                json!(context_tx_batch_status),
+            ),
+            (
+                "unavailable_tool_call_ids".to_string(),
+                json!(unavailable_call_ids),
+            ),
+            (
+                "unavailable_tool_names".to_string(),
+                json!(unavailable_call_names),
+            ),
+        ];
+        if options.record_assistant_call {
+            self.append_evaluation_route(attempt_id, &mut assistant_call_payload);
+            self.bus
+                .publish(Event::new(
+                    format!("call_{}", attempt_id),
+                    "Agent-Morphz".to_string(),
+                    TYPE_AGENT_CALL.to_string(),
+                    "chat/assistant_call".to_string(),
+                    assistant_call_payload.into_iter().collect(),
+                ))
+                .await?;
+        }
+        let mut selected_payload = vec![
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("requested_count".to_string(), json!(requested_count)),
+            ("calls".to_string(), json!(selected_call_previews)),
+            ("deduplicated_count".to_string(), json!(deduplicated_count)),
+            ("rejected_count".to_string(), json!(rejected_count)),
+            ("rejection_status".to_string(), json!(rejection_status)),
+        ];
+        let selected_event_id = format!("tool_calls_selected_{attempt_id}");
+        let record_selection = if options.record_assistant_call {
+            true
+        } else {
+            self.context_engine
+                .find_event(&context_id, &selected_event_id)
+                .await?
+                .is_none()
+        };
+        if record_selection {
+            self.append_evaluation_route(attempt_id, &mut selected_payload);
+            self.bus
+                .publish(Event::new(
+                    selected_event_id,
+                    "Runtime-Orchestrator".to_string(),
+                    "runtime_control".to_string(),
+                    "runtime/tool_calls_selected".to_string(),
+                    selected_payload.into_iter().collect(),
+                ))
+                .await?;
+        }
 
         let mut tasks = Vec::new();
-        let mut guarded_outputs = Vec::new();
+        let mut outputs = Vec::<(Event, bool)>::new();
         let mut allowed_tool_names = options
             .allowed_tool_names
             .iter()
@@ -3017,6 +3704,15 @@ impl Orchestrator {
             .collect::<Vec<_>>();
         allowed_tool_names.sort();
         for call in unavailable_tool_calls {
+            let output_id = format!("output_{}_{}", attempt_id, call.id);
+            if let Some(existing) = self
+                .context_engine
+                .find_event(&context_id, &output_id)
+                .await?
+            {
+                outputs.push((existing, true));
+                continue;
+            }
             let guidance = if phase == "critical-maintenance" {
                 "当前 Context 处于 critical-maintenance。请不要重复该物理工具调用；先使用 context_tx 压缩并保留继续任务所需的最新状态，等待 Runtime 重新提供物理工具。"
             } else {
@@ -3032,33 +3728,46 @@ impl Orchestrator {
                 "guidance": guidance,
             })
             .to_string();
-            guarded_outputs.push(Event::new(
-                format!("output_{}_{}", attempt_id, call.id),
-                "System-ToolPolicy".to_string(),
-                TYPE_TOOL_OUTPUT.to_string(),
-                "chat/tool_output".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(context_id)),
-                    ("session_id".to_string(), json!(session_id)),
-                    ("attempt_id".to_string(), json!(attempt_id)),
-                    ("tool_call_id".to_string(), json!(call.id)),
-                    ("tool_name".to_string(), json!(call.func_name)),
-                    ("tool_status".to_string(), json!("rejected")),
-                    ("executed".to_string(), json!(false)),
-                    (
-                        "rejection_code".to_string(),
-                        json!("TOOL_NOT_AVAILABLE_IN_CURRENT_PHASE"),
-                    ),
-                    ("phase".to_string(), json!(phase)),
-                    ("text".to_string(), json!(output)),
-                ]
-                .into_iter()
-                .collect(),
+            let mut payload = vec![
+                ("context_id".to_string(), json!(context_id)),
+                ("session_id".to_string(), json!(session_id)),
+                ("attempt_id".to_string(), json!(attempt_id)),
+                ("tool_call_id".to_string(), json!(call.id)),
+                ("caused_by".to_string(), json!(call.id)),
+                ("tool_name".to_string(), json!(call.func_name)),
+                ("tool_status".to_string(), json!("rejected")),
+                ("executed".to_string(), json!(false)),
+                (
+                    "rejection_code".to_string(),
+                    json!("TOOL_NOT_AVAILABLE_IN_CURRENT_PHASE"),
+                ),
+                ("phase".to_string(), json!(phase)),
+                ("text".to_string(), json!(output)),
+            ];
+            self.append_evaluation_route(attempt_id, &mut payload);
+            outputs.push((
+                Event::new(
+                    output_id,
+                    "System-ToolPolicy".to_string(),
+                    TYPE_TOOL_OUTPUT.to_string(),
+                    "chat/tool_output".to_string(),
+                    payload.into_iter().collect(),
+                ),
+                false,
             ));
         }
         for call in selected_tool_calls {
+            let output_id = format!("output_{}_{}", attempt_id, call.id);
+            if let Some(existing) = self
+                .context_engine
+                .find_event(&context_id, &output_id)
+                .await?
+            {
+                outputs.push((existing, true));
+                continue;
+            }
             if matches!(call.func_name.as_str(), "write" | "edit") {
-                self.read_guard(session_id)
+                self.read_guard(&read_guard_key)
                     .lock()
                     .await
                     .invalidate_path_from_arguments(&call.arguments);
@@ -3066,7 +3775,7 @@ impl Orchestrator {
             if call.func_name == "read" {
                 let evidence_event_id = format!("output_{}_{}", attempt_id, call.id);
                 let duplicate = self
-                    .read_guard(session_id)
+                    .read_guard(&read_guard_key)
                     .lock()
                     .await
                     .reserve(&call.arguments, &evidence_event_id);
@@ -3085,23 +3794,27 @@ impl Orchestrator {
                         "READ_ALREADY_COVERED: '{}' 的相同版本内容已在本轮 Inbox 中覆盖；本次未再次读取，也不会复制旧内容。{evidence_hint} 包含原 read 结果与 sha256，请直接使用它进行 edit/write、必要测试或回复用户。仅在 file_change 后才需要重新 read。",
                         duplicate.path
                     );
-                    guarded_outputs.push(Event::new(
-                        format!("output_{}_{}", attempt_id, call.id),
-                        "System-ReadGuard".to_string(),
-                        TYPE_TOOL_OUTPUT.to_string(),
-                        "chat/tool_output".to_string(),
-                        vec![
-                            ("context_id".to_string(), json!(context_id)),
-                            ("session_id".to_string(), json!(session_id)),
-                            ("attempt_id".to_string(), json!(attempt_id)),
-                            ("tool_call_id".to_string(), json!(call.id)),
-                            ("tool_name".to_string(), json!(call.func_name)),
-                            ("tool_status".to_string(), json!("guarded")),
-                            ("read_guard_status".to_string(), json!("already-covered")),
-                            ("text".to_string(), json!(output)),
-                        ]
-                        .into_iter()
-                        .collect(),
+                    let mut payload = vec![
+                        ("context_id".to_string(), json!(context_id)),
+                        ("session_id".to_string(), json!(session_id)),
+                        ("attempt_id".to_string(), json!(attempt_id)),
+                        ("tool_call_id".to_string(), json!(call.id)),
+                        ("caused_by".to_string(), json!(call.id)),
+                        ("tool_name".to_string(), json!(call.func_name)),
+                        ("tool_status".to_string(), json!("guarded")),
+                        ("read_guard_status".to_string(), json!("already-covered")),
+                        ("text".to_string(), json!(output)),
+                    ];
+                    self.append_evaluation_route(attempt_id, &mut payload);
+                    outputs.push((
+                        Event::new(
+                            output_id,
+                            "System-ReadGuard".to_string(),
+                            TYPE_TOOL_OUTPUT.to_string(),
+                            "chat/tool_output".to_string(),
+                            payload.into_iter().collect(),
+                        ),
+                        false,
                     ));
                     continue;
                 }
@@ -3110,76 +3823,127 @@ impl Orchestrator {
             let session_id = session_id.to_string();
             let context_id = context_id.clone();
             let attempt_id = attempt_id.to_string();
+            let evaluation_route = evaluation_route.clone();
+            let tool_causal_route =
+                evaluation_route
+                    .as_ref()
+                    .map(|route| crate::tool::ToolCausalRoute {
+                        work_item_id: route.work_item_id.clone(),
+                        root_turn_id: route.root_turn_id.clone(),
+                        trigger_event_id: route.trigger_event_id.clone(),
+                        trigger_sequence: route.trigger_sequence,
+                    });
             let timeout_secs = self.orchestrator_config.tool_timeout_secs;
             tasks.push(tokio::spawn(async move {
-                crate::tool::CURRENT_ATTEMPT_ID
-                    .scope(attempt_id.clone(), async move {
-                        crate::tool::CURRENT_CONTEXT_ID
-                            .scope(context_id.clone(), async move {
-                                crate::tool::CURRENT_SESSION_ID
-                                    .scope(session_id.clone(), async move {
-                                        let result = tokio::time::timeout(
-                                            tokio::time::Duration::from_secs(timeout_secs),
-                                            async {
-                                                match registry.get(&call.func_name) {
-                                                    Some(tool) => {
-                                                        tool.execute(&call.arguments).await
+                crate::tool::CURRENT_CAUSAL_ROUTE
+                    .scope(tool_causal_route, async move {
+                        crate::tool::CURRENT_ATTEMPT_ID
+                            .scope(attempt_id.clone(), async move {
+                                crate::tool::CURRENT_CONTEXT_ID
+                                    .scope(context_id.clone(), async move {
+                                        crate::tool::CURRENT_SESSION_ID
+                                            .scope(session_id.clone(), async move {
+                                                let result = tokio::time::timeout(
+                                                    tokio::time::Duration::from_secs(timeout_secs),
+                                                    async {
+                                                        match registry.get(&call.func_name) {
+                                                            Some(tool) => {
+                                                                tool.execute(&call.arguments).await
+                                                            }
+                                                            None => Err(format!(
+                                                                "未注册的工具: {}",
+                                                                call.func_name
+                                                            )
+                                                            .into()),
+                                                        }
+                                                    },
+                                                )
+                                                .await;
+                                                let (output, tool_status) = match result {
+                                                    Ok(Ok(output)) => {
+                                                        let status = infer_tool_status(&output);
+                                                        (output, status)
                                                     }
-                                                    None => Err(format!(
-                                                        "未注册的工具: {}",
-                                                        call.func_name
-                                                    )
-                                                    .into()),
+                                                    Ok(Err(error)) => {
+                                                        (format!("执行失败: {}", error), "error")
+                                                    }
+                                                    Err(_) => (
+                                                        format!(
+                                                            "执行超时: 超过 {} 秒限额",
+                                                            timeout_secs
+                                                        ),
+                                                        "timeout",
+                                                    ),
+                                                };
+                                                let wake_policy = if call.func_name == "delegate"
+                                                    && tool_status == "success"
+                                                    && delegation_mode_from_arguments(
+                                                        &call.arguments,
+                                                    ) != "detached"
+                                                {
+                                                    "delegation_result"
+                                                } else {
+                                                    "immediate"
+                                                };
+                                                let output_empty = output.trim().is_empty();
+                                                let mut payload = vec![
+                                                    ("context_id".to_string(), json!(context_id)),
+                                                    ("session_id".to_string(), json!(session_id)),
+                                                    ("attempt_id".to_string(), json!(attempt_id)),
+                                                    ("tool_call_id".to_string(), json!(call.id)),
+                                                    ("caused_by".to_string(), json!(call.id)),
+                                                    (
+                                                        "tool_name".to_string(),
+                                                        json!(call.func_name),
+                                                    ),
+                                                    ("tool_status".to_string(), json!(tool_status)),
+                                                    ("wake_policy".to_string(), json!(wake_policy)),
+                                                    (
+                                                        "output_empty".to_string(),
+                                                        json!(output_empty),
+                                                    ),
+                                                    ("text".to_string(), json!(output)),
+                                                ]
+                                                .into_iter()
+                                                .collect::<serde_json::Map<_, _>>();
+                                                if let Some(route) = evaluation_route {
+                                                    payload.insert(
+                                                        "work_item_id".to_string(),
+                                                        json!(route.work_item_id),
+                                                    );
+                                                    payload.insert(
+                                                        "root_turn_id".to_string(),
+                                                        json!(route.root_turn_id),
+                                                    );
+                                                    payload.insert(
+                                                        "trigger_event_id".to_string(),
+                                                        json!(route.trigger_event_id),
+                                                    );
+                                                    payload.insert(
+                                                        "trigger_sequence".to_string(),
+                                                        json!(route.trigger_sequence),
+                                                    );
+                                                    if let Some(version) =
+                                                        route.context_snapshot_version
+                                                    {
+                                                        payload.insert(
+                                                            "context_snapshot_version".to_string(),
+                                                            json!(version),
+                                                        );
+                                                    }
                                                 }
-                                            },
-                                        )
-                                        .await;
-                                        let (output, tool_status) = match result {
-                                            Ok(Ok(output)) => {
-                                                let status = infer_tool_status(&output);
-                                                (output, status)
-                                            }
-                                            Ok(Err(error)) => {
-                                                (format!("执行失败: {}", error), "error")
-                                            }
-                                            Err(_) => (
-                                                format!("执行超时: 超过 {} 秒限额", timeout_secs),
-                                                "timeout",
-                                            ),
-                                        };
-                                        let wake_policy = if call.func_name == "delegate"
-                                            && tool_status == "success"
-                                            && delegation_mode_from_arguments(&call.arguments)
-                                                != "detached"
-                                        {
-                                            "delegation_result"
-                                        } else {
-                                            "immediate"
-                                        };
-                                        let output_empty = output.trim().is_empty();
-                                        let mut payload = vec![
-                                            ("context_id".to_string(), json!(context_id)),
-                                            ("session_id".to_string(), json!(session_id)),
-                                            ("attempt_id".to_string(), json!(attempt_id)),
-                                            ("tool_call_id".to_string(), json!(call.id)),
-                                            ("tool_name".to_string(), json!(call.func_name)),
-                                            ("tool_status".to_string(), json!(tool_status)),
-                                            ("wake_policy".to_string(), json!(wake_policy)),
-                                            ("output_empty".to_string(), json!(output_empty)),
-                                            ("text".to_string(), json!(output)),
-                                        ]
-                                        .into_iter()
-                                        .collect::<serde_json::Map<_, _>>();
-                                        if call.func_name == "exec" {
-                                            extend_exec_output_facts(&mut payload, &output);
-                                        }
-                                        Event::new(
-                                            format!("output_{}_{}", attempt_id, call.id),
-                                            "System-Executor".to_string(),
-                                            TYPE_TOOL_OUTPUT.to_string(),
-                                            "chat/tool_output".to_string(),
-                                            payload,
-                                        )
+                                                if call.func_name == "exec" {
+                                                    extend_exec_output_facts(&mut payload, &output);
+                                                }
+                                                Event::new(
+                                                    format!("output_{}_{}", attempt_id, call.id),
+                                                    "System-Executor".to_string(),
+                                                    TYPE_TOOL_OUTPUT.to_string(),
+                                                    "chat/tool_output".to_string(),
+                                                    payload,
+                                                )
+                                            })
+                                            .await
                                     })
                                     .await
                             })
@@ -3189,14 +3953,16 @@ impl Orchestrator {
             }));
         }
 
-        let mut outputs = guarded_outputs;
         if let Some(error) = context_tx_batch_error {
-            outputs.push(Event::new(
-                format!("output_{}_context_tx_batch_rejected", attempt_id),
-                "System-ContextGuard".to_string(),
-                TYPE_TOOL_OUTPUT.to_string(),
-                "chat/tool_output".to_string(),
-                vec![
+            let output_id = format!("output_{}_context_tx_batch_rejected", attempt_id);
+            if let Some(existing) = self
+                .context_engine
+                .find_event(&context_id, &output_id)
+                .await?
+            {
+                outputs.push((existing, true));
+            } else {
+                let mut payload = vec![
                     ("context_id".to_string(), json!(context_id)),
                     ("session_id".to_string(), json!(session_id)),
                     ("attempt_id".to_string(), json!(attempt_id)),
@@ -3204,6 +3970,7 @@ impl Orchestrator {
                         "tool_call_id".to_string(),
                         json!("context_tx_batch_rejected"),
                     ),
+                    ("caused_by".to_string(), json!("context_tx_batch_rejected")),
                     ("tool_name".to_string(), json!("context_tx")),
                     ("tool_status".to_string(), json!("rejected")),
                     (
@@ -3211,14 +3978,23 @@ impl Orchestrator {
                         json!(context_tx_batch_status.as_deref().unwrap_or("rejected")),
                     ),
                     ("text".to_string(), json!(error)),
-                ]
-                .into_iter()
-                .collect(),
-            ));
+                ];
+                self.append_evaluation_route(attempt_id, &mut payload);
+                outputs.push((
+                    Event::new(
+                        output_id,
+                        "System-ContextGuard".to_string(),
+                        TYPE_TOOL_OUTPUT.to_string(),
+                        "chat/tool_output".to_string(),
+                        payload.into_iter().collect(),
+                    ),
+                    false,
+                ));
+            }
         }
         for task in tasks {
             match task.await {
-                Ok(output) => outputs.push(output),
+                Ok(output) => outputs.push((output, false)),
                 Err(error) => tracing::error!(?error, "工具任务 join 失败"),
             }
         }
@@ -3226,7 +4002,7 @@ impl Orchestrator {
             return Err("所有工具任务都在产生结果前异常终止".into());
         }
         let mut outcome = ToolExecutionOutcome::default();
-        for output in &outputs {
+        for (output, _) in &outputs {
             if output
                 .payload
                 .get("tool_name")
@@ -3239,7 +4015,7 @@ impl Orchestrator {
         let wake_index = options
             .wake_on_output
             .then(|| {
-                outputs.iter().rposition(|output| {
+                outputs.iter().rposition(|(output, _)| {
                     output
                         .payload
                         .get("wake_policy")
@@ -3248,10 +4024,14 @@ impl Orchestrator {
                 })
             })
             .flatten();
-        for (index, output) in outputs.into_iter().enumerate() {
+        for (index, (output, already_persisted)) in outputs.into_iter().enumerate() {
             if wake_index == Some(index) {
-                self.bus.publish(output).await?;
-            } else {
+                if already_persisted {
+                    self.bus.dispatch_persisted(output).await?;
+                } else {
+                    self.bus.publish(output).await?;
+                }
+            } else if !already_persisted {
                 self.store.append(output).await?;
             }
         }
@@ -3285,29 +4065,29 @@ impl Orchestrator {
         messages: &[Message],
     ) {
         let bus = Arc::clone(&self.bus);
+        let mut payload = vec![
+            ("context_id".to_string(), json!(context.context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("text".to_string(), json!(context.sexpr)),
+            ("messages".to_string(), json!(messages)),
+            ("mind".to_string(), json!(context.state)),
+            ("inbox".to_string(), json!(context.observations)),
+            ("pressure".to_string(), json!(context.pressure)),
+            ("turn_budget".to_string(), json!(context.turn_budget)),
+            (
+                "model_attempt_timeout_secs".to_string(),
+                json!(self.orchestrator_config.model_attempt_timeout_secs),
+            ),
+            ("wake".to_string(), json!(context.wake)),
+        ];
+        self.append_evaluation_route(attempt_id, &mut payload);
         let event = Event::new(
             format!("context_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
             "System-ContextKernel".to_string(),
             crate::event::TYPE_PROPOSAL.to_string(),
             "chat/context_inspect".to_string(),
-            vec![
-                ("context_id".to_string(), json!(context.context_id)),
-                ("session_id".to_string(), json!(session_id)),
-                ("attempt_id".to_string(), json!(attempt_id)),
-                ("text".to_string(), json!(context.sexpr)),
-                ("messages".to_string(), json!(messages)),
-                ("mind".to_string(), json!(context.state)),
-                ("inbox".to_string(), json!(context.observations)),
-                ("pressure".to_string(), json!(context.pressure)),
-                ("turn_budget".to_string(), json!(context.turn_budget)),
-                (
-                    "model_attempt_timeout_secs".to_string(),
-                    json!(self.orchestrator_config.model_attempt_timeout_secs),
-                ),
-                ("wake".to_string(), json!(context.wake)),
-            ]
-            .into_iter()
-            .collect(),
+            payload.into_iter().collect(),
         );
         tokio::spawn(async move {
             if let Err(error) = bus.publish(event).await {
@@ -3321,6 +4101,47 @@ impl Orchestrator {
             .entry(session_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
+    }
+
+    fn evaluation_route(&self, attempt_id: &str) -> Option<EvaluationRoute> {
+        self.evaluation_routes
+            .get(attempt_id)
+            .map(|route| route.clone())
+            .or_else(|| {
+                attempt_id
+                    .split_once("_reply_retry_")
+                    .and_then(|(base, _)| {
+                        self.evaluation_routes.get(base).map(|route| route.clone())
+                    })
+            })
+    }
+
+    fn append_evaluation_route(
+        &self,
+        attempt_id: &str,
+        payload: &mut Vec<(String, serde_json::Value)>,
+    ) {
+        let Some(route) = self.evaluation_route(attempt_id) else {
+            return;
+        };
+        payload.extend([
+            ("work_item_id".to_string(), json!(route.work_item_id)),
+            ("root_turn_id".to_string(), json!(route.root_turn_id)),
+            (
+                "trigger_event_id".to_string(),
+                json!(route.trigger_event_id),
+            ),
+            (
+                "trigger_sequence".to_string(),
+                json!(route.trigger_sequence),
+            ),
+        ]);
+        if let Some(version) = route.context_snapshot_version {
+            payload.push(("context_snapshot_version".to_string(), json!(version)));
+        }
+        if !payload.iter().any(|(key, _)| key == "caused_by") {
+            payload.push(("caused_by".to_string(), json!(route.trigger_event_id)));
+        }
     }
 
     fn context_id_for_session(&self, session_id: &str) -> Result<String, DynError> {

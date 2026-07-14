@@ -262,6 +262,14 @@ impl Server {
                 get(handle_list_contexts).post(handle_create_context),
             )
             .route(
+                "/api/contexts/:context_id/working-set",
+                get(handle_get_context_working_set),
+            )
+            .route(
+                "/api/contexts/:context_id/work-items",
+                get(handle_get_context_work_items),
+            )
+            .route(
                 "/api/sessions",
                 get(handle_list_sessions).post(handle_create_session),
             )
@@ -655,6 +663,98 @@ async fn handle_list_contexts(
     }
     match state.runtime.list_contexts(query.include_archived).await {
         Ok(contexts) => Json(json!({ "contexts": contexts })).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_get_context_working_set(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.runtime.get_context(&context_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Context 不存在"),
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+    let sessions = match state
+        .runtime
+        .list_context_sessions(&context_id, false)
+        .await
+    {
+        Ok(sessions) => sessions,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    let active_session_id = match query.session_id {
+        Some(session_id) => match sessions.iter().find(|session| session.id == session_id) {
+            Some(_) => session_id,
+            None => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "session_id 不属于目标 Context，或 Session 已归档",
+                )
+            }
+        },
+        None => match sessions
+            .iter()
+            .max_by(|left, right| {
+                left.last_activity_at
+                    .cmp(&right.last_activity_at)
+                    .then_with(|| right.id.cmp(&left.id))
+            })
+            .map(|session| session.id.clone())
+        {
+            Some(session_id) => session_id,
+            None => return error_response(StatusCode::CONFLICT, "Context 没有活跃 Session"),
+        },
+    };
+    match state
+        .runtime
+        .context_encoding(&context_id, &active_session_id)
+        .await
+    {
+        Ok(context) => Json(json!({
+            "context_id": context_id,
+            "active_session_id": active_session_id,
+            "working_set": context.session_working_set,
+            "session_directory": context.sessions,
+            "active_work_items": context.active_work_items,
+            "pressure": context.pressure,
+            "context_version": context.state.version,
+        }))
+        .into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_get_context_work_items(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.runtime.get_context(&context_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Context 不存在"),
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+    match state
+        .runtime
+        .active_evaluation_work_items(&context_id)
+        .await
+    {
+        Ok(work_items) => Json(json!({
+            "context_id": context_id,
+            "work_items": work_items,
+        }))
+        .into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
@@ -1306,6 +1406,65 @@ mod tests {
             1
         );
         assert!(events.iter().any(|event| event.topic == "chat/reply"));
+    }
+
+    #[tokio::test]
+    async fn context_observability_endpoints_expose_working_set_and_work_items() {
+        let (state, _) = test_state().await;
+        let create = handle_create_session(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("api-observability-session".to_string()),
+                agent_id: None,
+                parent_session_id: None,
+                title: Some("Observability Session".to_string()),
+                mount: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(create.status(), StatusCode::CREATED);
+
+        let working_set = handle_get_context_working_set(
+            State(Arc::clone(&state)),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery {
+                token: None,
+                session_id: Some("api-observability-session".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(working_set.status(), StatusCode::OK);
+        let working_set_body = axum::body::to_bytes(working_set.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let working_set_json: serde_json::Value =
+            serde_json::from_slice(&working_set_body).unwrap();
+        assert_eq!(
+            working_set_json["active_session_id"],
+            json!("api-observability-session")
+        );
+        assert!(working_set_json.get("working_set").is_some());
+        assert!(working_set_json.get("session_directory").is_some());
+
+        let work_items = handle_get_context_work_items(
+            State(Arc::clone(&state)),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(work_items.status(), StatusCode::OK);
+        let work_items_body = axum::body::to_bytes(work_items.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let work_items_json: serde_json::Value = serde_json::from_slice(&work_items_body).unwrap();
+        assert!(work_items_json["work_items"].is_array());
     }
 
     #[tokio::test]

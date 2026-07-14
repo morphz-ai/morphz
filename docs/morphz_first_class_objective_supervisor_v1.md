@@ -85,6 +85,7 @@ ObjectiveRecord
 ├── stated_objective             用户或调用方声明的原始目标
 ├── revision
 ├── status
+├── status_reason                当前状态的最近一次明确原因
 ├── wait_condition               optional
 ├── active_evaluation_id         optional / lease
 ├── continuation_sequence
