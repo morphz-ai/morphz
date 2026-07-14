@@ -2118,6 +2118,12 @@ impl Tool for ExecuteCommandTool {
         &self,
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        // `exec` is also wrapped by the orchestrator's whole-tool timeout. Permission review,
+        // sandbox preparation and process spawning consume part of that same budget, so the
+        // synchronous child wait must be measured from tool entry rather than process start.
+        // Otherwise an approval delay can let the outer timeout cancel this future while the
+        // child is still in `Starting`, before its background watcher has been installed.
+        let sync_budget_started_at = tokio::time::Instant::now();
         let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
         let cmd_trimmed = args.command.trim();
         validate_managed_shell_command(cmd_trimmed)?;
@@ -2392,7 +2398,10 @@ impl Tool for ExecuteCommandTool {
         } else {
             tokio::time::Duration::from_millis(10_000)
         };
-        let wait_duration = requested_wait.min(self.max_sync_wait);
+        let remaining_sync_budget = self
+            .max_sync_wait
+            .saturating_sub(sync_budget_started_at.elapsed());
+        let wait_duration = requested_wait.min(remaining_sync_budget);
         let wait_result = tokio::time::timeout(wait_duration, child.wait()).await;
 
         match wait_result {
@@ -3414,6 +3423,26 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    struct DelayedApprovalProvider {
+        delay: tokio::time::Duration,
+    }
+
+    #[cfg(target_os = "macos")]
+    #[async_trait::async_trait]
+    impl ApprovalProvider for DelayedApprovalProvider {
+        async fn review(
+            &self,
+            _request: &ApprovalRequest,
+        ) -> Result<ApprovalDecision, Box<dyn std::error::Error + Send + Sync>> {
+            tokio::time::sleep(self.delay).await;
+            Ok(ApprovalDecision::AllowOnce {
+                rationale: "测试延迟审批".to_string(),
+                risk_tags: Vec::new(),
+            })
+        }
+    }
+
     fn hash_from_read(output: &str) -> &str {
         output
             .lines()
@@ -4117,6 +4146,60 @@ mod tests {
         assert!(!denied.contains("退出码: 0"));
         assert!(!denied_path.exists());
         assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn exec_approval_time_is_deducted_before_synchronous_child_wait() {
+        let _sandbox_guard = MACOS_SANDBOX_EXEC_TEST_LOCK.lock().await;
+        let workspace = TempDir::new().unwrap();
+        let bus = Arc::new(crate::event::InMemoryEventBus::new());
+        let tool = ExecuteCommandTool::new_with_runtime(
+            Arc::clone(&bus),
+            Arc::new(BackgroundTaskConfig {
+                timeout_notify_enabled: false,
+                artifact_dir: workspace
+                    .path()
+                    .join("artifacts")
+                    .to_string_lossy()
+                    .into_owned(),
+                ..BackgroundTaskConfig::default()
+            }),
+            jailed_security(workspace.path()),
+            Arc::new(DelayedApprovalProvider {
+                delay: tokio::time::Duration::from_millis(800),
+            }),
+            2,
+        );
+
+        // The orchestrator applies this same two-second timeout around the complete tool call.
+        // Approval consumes 800ms. The child must therefore detach using the remaining budget,
+        // rather than waiting another full 1.75s and being abandoned in `Starting`.
+        let result = tokio::time::timeout(
+            tokio::time::Duration::from_secs(2),
+            tool.execute(
+                &serde_json::json!({
+                    "command": "sleep 5",
+                    "wait_ms": 2_000,
+                    "sandbox_permissions": "require_escalated",
+                    "requested_permissions": { "network": true },
+                    "justification": "验证审批耗时计入 exec 同步预算"
+                })
+                .to_string(),
+            ),
+        )
+        .await
+        .expect("exec must detach before the whole-tool timeout")
+        .unwrap();
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["execution"], "background", "{result}");
+        assert_eq!(result["task_status"], "running", "{result}");
+
+        let task_id = result["task_id"].as_str().unwrap();
+        KillTaskTool
+            .execute(&serde_json::json!({ "task_id": task_id }).to_string())
+            .await
+            .unwrap();
     }
 
     #[cfg(target_os = "macos")]
