@@ -3,6 +3,7 @@
 > 状态：设计共识 v1
 > 日期：2026-07-13
 > 适用范围：System Prompt、Context Encoding、Mind、高层身份、Session、Delegate 与未来非助手形态
+> 延伸设计：[`morphz_frame_vm_model_cognition_decoupling.md`](morphz_frame_vm_model_cognition_decoupling.md) 讨论专用小型 Frame VM、外置认知和异构模型算力
 
 ## 1. 核心结论
 
@@ -42,6 +43,8 @@ Agent = VM Kernel
 ```
 
 推理节点只提供算力，不拥有 Agent 身份；身份与 Mind 随 Context 持久化，可由不同模型节点继续求值。
+
+这一定义还允许进一步将模型能力与具体认知解耦：模型主要学习稳定的 Frame 求值能力，领域知识、个体经历和人格则保留在外部 Mind 中。由此产生的专用 Frame VM、跨模型兼容与分层算力设计见 [Frame VM：模型、认知与算力解耦](./morphz_frame_vm_model_cognition_decoupling.md)。
 
 ## 3. 底层 VM 的 System Prompt 形态
 
