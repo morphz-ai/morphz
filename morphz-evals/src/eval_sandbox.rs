@@ -1,8 +1,12 @@
 use chrono::Utc;
+use morphz::config::BackgroundTaskConfig;
+use morphz::permission::{PermissionConfig, PermissionMode};
+use morphz::tool::{ExecuteCommandTool, Tool};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use walkdir::WalkDir;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
@@ -34,6 +38,11 @@ pub struct CodingEvalManifest {
     pub tool_coverage_targets: Vec<String>,
     #[serde(default)]
     pub hidden_test_suite: Option<String>,
+    /// External cognitive frames present before the evaluated user turn.
+    /// This is evaluation metadata; the Agent still sees the frames only
+    /// through the normal Context Encoding.
+    #[serde(default)]
+    pub injected_frame_ids: Vec<String>,
     pub user_prompt: String,
 }
 
@@ -127,6 +136,7 @@ pub fn create_coding_eval_v1(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
         verify_command: "cargo test".to_string(),
         tool_coverage_targets: default_tool_coverage_targets(),
         hidden_test_suite: None,
+        injected_frame_ids: Vec::new(),
         user_prompt: "修复当前 Rust crate 中 parse_retry_after 无法接受首尾 HTTP 空白字符的缺陷。先运行测试复现失败，再定位和修改实现，最后运行完整测试。持续约束：只能修改 src/lib.rs；不得修改或删除测试与 Cargo.toml；不得使用 unsafe；根据任务需要自主选择 list_files/search/read/edit/exec 等工具；最终结论必须引用 file_change 与通过的测试输出，并把目标、约束和结论维护到 Mind。"
             .to_string(),
     };
@@ -203,6 +213,7 @@ pub fn create_coding_eval_v2(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
         verify_command: "cargo test --all-targets".to_string(),
         tool_coverage_targets: default_tool_coverage_targets(),
         hidden_test_suite: Some("coding_eval_v2_retry_state_machine".to_string()),
+        injected_frame_ids: Vec::new(),
         user_prompt: "修复当前 Rust crate 中任务队列的重试状态机。临时失败任务的退避时间和最大尝试次数存在错误，已经取消的任务还可能被失败结果重新入队。先运行完整测试复现问题，追踪 claim、执行结果、retry 计算与持久化状态迁移，再完成最小修改并运行完整测试。持续约束：只允许修改 src/retry.rs、src/store.rs、src/worker.rs；不得修改或删除测试、Cargo.toml、公共 API 或其他文件；不得增加依赖、访问网络或使用 unsafe；根据任务需要自主选择工具；最终结论必须引用 file_change 与通过的测试证据，并把目标、已确认的不变量、关键判断和结论维护到 Mind。"
             .to_string(),
     };
@@ -258,7 +269,18 @@ pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynEr
         serde_json::from_slice(&std::fs::read(run_root.join("manifest.json"))?)?;
     let scope_audit = audit_coding_eval(&run_root)?;
     let store = SqliteStore::new(manifest.database_path.to_string_lossy().as_ref()).await?;
-    let events = store.query(QueryFilter::default()).await?;
+    let events = store
+        .query(QueryFilter::default())
+        .await?
+        .into_iter()
+        .filter(|event| {
+            event
+                .payload
+                .get("context_id")
+                .and_then(|value| value.as_str())
+                .is_none_or(|context_id| context_id == manifest.context_id)
+        })
+        .collect::<Vec<_>>();
 
     let mut tools_used = BTreeSet::new();
     let mut work_attempts = 0;
@@ -299,7 +321,9 @@ pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynEr
         .count();
     let commits = events
         .iter()
-        .filter(|event| event.topic == "chat/context_tx_committed")
+        .filter(|event| {
+            event.topic == "chat/context_tx_committed" && !is_external_frame_seed(event)
+        })
         .collect::<Vec<_>>();
     let context_failures = events
         .iter()
@@ -340,10 +364,10 @@ pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynEr
             .get("text")
             .and_then(|value| value.as_str())
             .unwrap_or("");
-        if text.contains("退出码: 101") || text.contains("test result: FAILED") {
+        if exec_output_failed_tests(text) {
             saw_initial_test_failure = true;
         }
-        if text.contains("退出码: 0") && text.contains("test result: ok") {
+        if exec_output_successful_tests(text) {
             saw_final_test_success = true;
             last_success_at = Some(event.timestamp);
         }
@@ -418,6 +442,14 @@ pub async fn score_coding_eval(run_root: &Path) -> Result<CodingEvalScore, DynEr
     })
 }
 
+fn is_external_frame_seed(event: &morphz::event::Event) -> bool {
+    event
+        .payload
+        .get("reason")
+        .and_then(|value| value.as_str())
+        .is_some_and(|reason| reason.starts_with("evaluator-external-frame:"))
+}
+
 fn is_physical_tool_name(name: &str) -> bool {
     !matches!(name, "context_tx" | "reply" | "session_output")
 }
@@ -477,6 +509,85 @@ pub fn record_verification(
         serde_json::to_vec_pretty(&report)?,
     )?;
     Ok(report)
+}
+
+/// Run the manifest-owned verifier in a fresh copy that the Agent cannot
+/// mutate or inspect. A failed verification is returned as data rather than
+/// converted into an infrastructure error.
+pub async fn verify_coding_eval(run_root: &Path) -> Result<CodingEvalVerification, DynError> {
+    let run_root = std::fs::canonicalize(run_root)?;
+    let manifest: CodingEvalManifest =
+        serde_json::from_slice(&std::fs::read(run_root.join("manifest.json"))?)?;
+    let verification_workspace = prepare_verification_workspace(&run_root, &manifest)?;
+    let tool = coding_eval_tool(&manifest, &verification_workspace);
+    let output = tool
+        .execute(
+            &serde_json::json!({
+                "command": manifest.verify_command,
+                "cwd": ".",
+                "wait_ms": 120_000
+            })
+            .to_string(),
+        )
+        .await?;
+    let success = exec_output_succeeded(&output);
+    record_verification(&run_root, &manifest, success, output)
+}
+
+pub fn exec_output_succeeded(text: &str) -> bool {
+    structured_exec_result(text)
+        .and_then(|value| value.get("exit_code").and_then(|value| value.as_i64()))
+        .map_or_else(|| text.contains("退出码: 0"), |exit_code| exit_code == 0)
+}
+
+pub(crate) fn exec_output_failed_tests(text: &str) -> bool {
+    let structured_output = structured_exec_output(text);
+    let output = structured_output.as_deref().unwrap_or(text);
+    output.contains("test result: FAILED")
+        || (!exec_output_succeeded(text) && output.to_lowercase().contains("test"))
+}
+
+pub(crate) fn exec_output_successful_tests(text: &str) -> bool {
+    let structured_output = structured_exec_output(text);
+    let output = structured_output.as_deref().unwrap_or(text);
+    exec_output_succeeded(text) && output.contains("test result: ok")
+}
+
+fn structured_exec_result(text: &str) -> Option<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .filter(|value| value.get("kind").and_then(|value| value.as_str()) == Some("exec_result"))
+}
+
+fn structured_exec_output(text: &str) -> Option<String> {
+    structured_exec_result(text)?
+        .get("output")
+        .and_then(|value| value.as_str())
+        .map(str::to_owned)
+}
+
+pub fn coding_eval_tool(
+    manifest: &CodingEvalManifest,
+    workspace_root: &Path,
+) -> ExecuteCommandTool {
+    let permissions = Arc::new(PermissionConfig {
+        mode: PermissionMode::AutoReview,
+        workspace_root: workspace_root.to_string_lossy().to_string(),
+        read_roots: Vec::new(),
+        write_roots: Vec::new(),
+        network: false,
+        ..Default::default()
+    });
+    let background = Arc::new(BackgroundTaskConfig {
+        artifact_dir: manifest.artifact_dir.to_string_lossy().to_string(),
+        ..Default::default()
+    });
+    ExecuteCommandTool::new_with_configs(
+        Arc::new(morphz::event::InMemoryEventBus::new()),
+        background,
+        permissions,
+        120,
+    )
 }
 
 pub fn audit_coding_eval(run_root: &Path) -> Result<CodingEvalAudit, DynError> {
@@ -674,6 +785,36 @@ mod tests {
     use morphz::memory::EventStore;
     use serde_json::json;
     use tempfile::TempDir;
+
+    #[test]
+    fn recognizes_structured_and_legacy_exec_results() {
+        let structured_success = json!({
+            "kind": "exec_result",
+            "exit_code": 0,
+            "output": "test result: ok. 11 passed"
+        })
+        .to_string();
+        let structured_failure = json!({
+            "kind": "exec_result",
+            "exit_code": 101,
+            "output": "test result: FAILED. 1 failed"
+        })
+        .to_string();
+
+        assert!(exec_output_succeeded(&structured_success));
+        assert!(exec_output_successful_tests(&structured_success));
+        assert!(!exec_output_failed_tests(&structured_success));
+        assert!(!exec_output_succeeded(&structured_failure));
+        assert!(exec_output_failed_tests(&structured_failure));
+        assert!(!exec_output_successful_tests(&structured_failure));
+
+        assert!(exec_output_succeeded(
+            "执行结束 [退出码: 0] test result: ok. 5 passed"
+        ));
+        assert!(exec_output_failed_tests(
+            "执行结束 [退出码: 101] test result: FAILED"
+        ));
+    }
 
     #[test]
     fn creates_private_isolated_fixture_and_audits_scope() {

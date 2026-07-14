@@ -100,11 +100,11 @@ pub fn configure_agent_model_profile(
     )?;
     command
         .env("MORPHZ_HOME", &home)
-        .arg("--config")
-        .arg(config_path);
+        .arg(format!("--config-file={}", config_path.to_string_lossy()));
     Ok(())
 }
 
+pub mod coding_frame_eval;
 pub mod context_long_run_eval;
 pub mod context_metacognition_eval;
 pub mod context_pressure_eval;

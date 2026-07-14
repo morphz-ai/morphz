@@ -1,13 +1,9 @@
-use morphz::config::BackgroundTaskConfig;
-use morphz::event::InMemoryEventBus;
-use morphz::permission::{PermissionConfig, PermissionMode};
-use morphz::tool::{ExecuteCommandTool, Tool};
+use morphz::tool::Tool;
 use morphz_evals::eval_sandbox::{
-    audit_coding_eval, create_coding_eval_v1, create_coding_eval_v2,
-    prepare_verification_workspace, record_verification, score_coding_eval, CodingEvalManifest,
+    audit_coding_eval, coding_eval_tool, create_coding_eval_v1, create_coding_eval_v2,
+    exec_output_succeeded, score_coding_eval, verify_coding_eval, CodingEvalManifest,
 };
 use std::path::Path;
-use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -49,30 +45,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
         [command, run_root] if command == "verify" => {
-            let manifest = load_manifest(run_root)?;
-            let verification_workspace =
-                prepare_verification_workspace(Path::new(run_root), &manifest)?;
-            let tool = seatbelt_tool(&manifest, &verification_workspace);
-            let result = tool
-                .execute(
-                    &serde_json::json!({
-                        "command": manifest.verify_command,
-                        "cwd": ".",
-                        "wait_ms": 120_000
-                    })
-                    .to_string(),
-                )
-                .await?;
-            let success = result.contains("退出码: 0");
-            record_verification(Path::new(run_root), &manifest, success, result.clone())?;
-            println!("{result}");
-            if !success {
+            let report = verify_coding_eval(Path::new(run_root)).await?;
+            println!("{}", report.output);
+            if !report.success {
                 std::process::exit(1);
             }
         }
         [command, run_root] if command == "probe" => {
             let manifest = load_manifest(run_root)?;
-            let tool = seatbelt_tool(&manifest, &manifest.workspace_root);
+            let tool = coding_eval_tool(&manifest, &manifest.workspace_root);
             let result = tool
                 .execute(
                     &serde_json::json!({
@@ -84,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 )
                 .await?;
             println!("{result}");
-            if !result.contains("退出码: 0") {
+            if !exec_output_succeeded(&result) {
                 std::process::exit(1);
             }
         }
@@ -105,25 +86,4 @@ fn load_manifest(
     Ok(serde_json::from_slice(&std::fs::read(
         run_root.join("manifest.json"),
     )?)?)
-}
-
-fn seatbelt_tool(manifest: &CodingEvalManifest, workspace_root: &Path) -> ExecuteCommandTool {
-    let permissions = Arc::new(PermissionConfig {
-        mode: PermissionMode::AutoReview,
-        workspace_root: workspace_root.to_string_lossy().to_string(),
-        read_roots: Vec::new(),
-        write_roots: Vec::new(),
-        network: false,
-        ..Default::default()
-    });
-    let background = Arc::new(BackgroundTaskConfig {
-        artifact_dir: manifest.artifact_dir.to_string_lossy().to_string(),
-        ..Default::default()
-    });
-    ExecuteCommandTool::new_with_configs(
-        Arc::new(InMemoryEventBus::new()),
-        background,
-        permissions,
-        120,
-    )
 }
