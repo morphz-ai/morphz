@@ -54,12 +54,11 @@ WORKDIR /home/morphz
 # 从 builder 复制编译产物
 COPY --from=builder /app/target/release/morphz /usr/local/bin/morphz
 
-# 复制默认配置与模型
+# 复制模型；Provider/凭证配置由 setup 写入宿主挂载的用户配置卷。
 COPY --from=builder /app/models /home/morphz/models
-COPY morphz.toml /home/morphz/morphz.toml
 
 # 数据目录（SQLite + LanceDB）
-RUN mkdir -p /home/morphz/data && chown -R morphz:morphz /home/morphz
+RUN mkdir -p /home/morphz/data /home/morphz/.config/morphz && chown -R morphz:morphz /home/morphz
 
 USER morphz
 

@@ -483,6 +483,17 @@ pub fn morphz_command_line_parser() -> CommandLineParser {
         &["exec"][..],
         &["resume"],
         &["serve"],
+        &["setup"],
+        &["provider"],
+        &["provider", "list"],
+        &["provider", "test"],
+        &["model"],
+        &["model", "list"],
+        &["model", "use"],
+        &["profile"],
+        &["profile", "list"],
+        &["profile", "show"],
+        &["profile", "use"],
         &["context"],
         &["context", "show"],
         &["context", "status"],
@@ -496,6 +507,14 @@ pub fn morphz_command_line_parser() -> CommandLineParser {
         &["agent", "list"],
         &["agent", "show"],
         &["agent", "create"],
+        &["objective"],
+        &["objective", "list"],
+        &["objective", "show"],
+        &["objective", "create"],
+        &["objective", "edit"],
+        &["objective", "pause"],
+        &["objective", "resume"],
+        &["objective", "cancel"],
         &["job"],
         &["job", "list"],
         &["job", "cancel"],
@@ -503,6 +522,7 @@ pub fn morphz_command_line_parser() -> CommandLineParser {
         &["config", "show"],
         &["config", "check"],
         &["config", "path"],
+        &["config", "explain"],
         &["doctor"],
         &["completion"],
         &["version"],
@@ -538,7 +558,12 @@ pub fn morphz_command_line_parser() -> CommandLineParser {
         OptionSpec::switch("independent", ["--independent"]),
         OptionSpec::switch("last", ["--last"]),
         OptionSpec::switch("include-archived", ["--include-archived"]),
+        OptionSpec::switch("include-terminal", ["--include-terminal"]),
+        OptionSpec::value("reason", ["--reason"]),
+        OptionSpec::value("token-budget", ["--token-budget"]),
         OptionSpec::switch("network", ["--network"]),
+        OptionSpec::switch("tui", ["--tui"]),
+        OptionSpec::switch("plain", ["--plain"]),
     ] {
         parser
             .add_option(spec)
@@ -796,5 +821,41 @@ mod tests {
         let ordinary_prompt = parser.parse(["continue", "刚才的工作"]).unwrap();
         assert!(ordinary_prompt.command_path().is_empty());
         assert_eq!(ordinary_prompt.prompt(), "continue 刚才的工作");
+    }
+
+    #[test]
+    fn objective_commands_keep_free_form_goals_and_lifecycle_reasons() {
+        let parser = morphz_command_line_parser();
+        let create = parser
+            .parse([
+                "objective",
+                "create",
+                "--token-budget=256000",
+                "实现",
+                "一个",
+                "新闻系统",
+            ])
+            .unwrap();
+        assert_eq!(create.command_path(), ["objective", "create"]);
+        assert_eq!(
+            create.option("token-budget").unwrap().last_value(),
+            Some("256000")
+        );
+        assert_eq!(create.prompt(), "实现 一个 新闻系统");
+
+        let pause = parser
+            .parse([
+                "objective",
+                "pause",
+                "objective-1",
+                "--reason=等待用户确认范围",
+            ])
+            .unwrap();
+        assert_eq!(pause.command_path(), ["objective", "pause"]);
+        assert_eq!(pause.prompt(), "objective-1");
+        assert_eq!(
+            pause.option("reason").unwrap().last_value(),
+            Some("等待用户确认范围")
+        );
     }
 }

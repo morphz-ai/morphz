@@ -147,7 +147,10 @@ pub fn create_coding_eval_v1(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
             "MORPHZ_ARTIFACT_DIR".to_string(),
             artifact_dir.to_string_lossy().to_string(),
         ),
-        ("MORPHZ_EXEC_SEATBELT".to_string(), "true".to_string()),
+        (
+            "MORPHZ_PERMISSION_MODE".to_string(),
+            "auto_review".to_string(),
+        ),
         ("MORPHZ_EXEC_NETWORK".to_string(), "false".to_string()),
         ("MORPHZ_CODING_EVAL_MODE".to_string(), "true".to_string()),
     ]);
@@ -220,7 +223,10 @@ pub fn create_coding_eval_v2(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
             "MORPHZ_ARTIFACT_DIR".to_string(),
             artifact_dir.to_string_lossy().to_string(),
         ),
-        ("MORPHZ_EXEC_SEATBELT".to_string(), "true".to_string()),
+        (
+            "MORPHZ_PERMISSION_MODE".to_string(),
+            "auto_review".to_string(),
+        ),
         ("MORPHZ_EXEC_NETWORK".to_string(), "false".to_string()),
         ("MORPHZ_CODING_EVAL_MODE".to_string(), "true".to_string()),
     ]);
@@ -679,8 +685,8 @@ mod tests {
             .starts_with(std::fs::canonicalize(base.path()).unwrap()));
         assert!(environment.manifest_path.exists());
         assert_eq!(
-            environment.environment.get("MORPHZ_EXEC_SEATBELT"),
-            Some(&"true".to_string())
+            environment.environment.get("MORPHZ_PERMISSION_MODE"),
+            Some(&"auto_review".to_string())
         );
         assert_ne!(
             environment.manifest.context_id,

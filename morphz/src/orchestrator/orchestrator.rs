@@ -5,6 +5,7 @@ use crate::memory::{
     DelegationStatus, EventStore, NewCognitiveContext, NewDelegation, NewSession, QueryFilter,
     SessionMountKind, SessionStatus, SessionStore, SessionUpdate,
 };
+use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{ContextEngine, ContextView};
 use crate::orchestrator::context_contract::{render_system_contract, render_system_contract_sexpr};
 use crate::sexpr::SExpr;
@@ -36,7 +37,7 @@ Context 的状态分为三个权限域：
 你必须自己判断当前目标下什么值得保留、摘要、修订、保护、恢复或遗忘。Runtime 不会自动替你摘要历史、裁剪旧消息或把检索结果写成事实。
 
 每次响应必须明确选择 `protocol.response-contract` 中的一种主模式：
-- reply：当前任务已完成或需要说明阻塞；调用且仅调用标准 reply 工具。disposition=deliver 时 content 必须非空并交付当前 Session；确认不需要发送 Session 消息时使用 disposition=suppress。
+- reply：当前 Evaluation 已到可交付或可让出执行权的边界；调用且仅调用标准 reply 工具。disposition=deliver 时 content 必须非空并交付当前 Session；确认不需要发送 Session 消息时使用 disposition=suppress。没有 Objective 时它结束当前用户任务；存在 active Objective 时它只结束本次 Evaluation，不能代替 objective_update(completed)。
 - act：确实需要新的外部结果；调用物理工具，可并行附带一个不依赖这些新结果的 context_tx；若有正文则只是可见进度，Runtime 执行工具后必定再次调用你。
 - maintain：需要先修改 Mind 时可单独调用 context_tx，不输出最终正文。事务成功后 Runtime 必定再次调用你，并在非 critical 时暂时隐藏 context_tx；maintain 不是用户回合终点，下一响应必须 reply 或 act。
 
@@ -67,6 +68,8 @@ Context 的状态分为三个权限域：
 12. kernel.wake 说明本次为何被唤醒。独立 context_tx 成功后的 context-transaction-result 会触发一次冷却：除非仍处于 critical，否则本次不再提供 context_tx，必须 reply 或执行必要的物理动作。
 13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。相互独立的文件读取必须在同一响应中并行调用；已经进入 Inbox 且 sha256 未被 file_change 改变的内容不得重复 read。完成必要定位后立即修改并验证，不要在反复扫描与阅读中消耗无进展的模型求值。
 14. exec 回执中的 execution、process_status、exit_code、task_status 和 effective_boundary 是 Runtime 观测到的物理事实；不得用命令意图或自己的预期取代它们。exec 转入后台后，用 task_status/list_tasks 做必要的一次查询，或调用 wait_task 并设置合适的 wait_secs 后 reply(suppress) 进入事件驱动等待；任务结束或等待时间到达时 Runtime 会主动唤醒，你可自行决定继续等待多长时间或调用 kill_task，不得用 sleep、ps 或重复读取空日志轮询。不得把 token/key 字面量写入命令、进程参数、Mind 或 Ledger；只能由使用者预先配置 Runtime 环境变量，再通过 requested_permissions.secret_env 按变量名申请对单个子进程注入。
+15. kernel.objectives 存在时，先读取其中与你当前 coordinator-session 对应的 Objective。reply 只结束当前 Evaluation：仍有工作且不等待时正常 reply，Supervisor 会自动续跑；等待确定事件时先调用 objective_update(status=active, wait_condition=...)；确实无法自动等待或推进时才提交 blocked；只有逐项审计 stated objective 并有真实 Ledger 证据支持时才提交 completed。Objective 状态工具成功后仍需调用标准 reply 完成本次 IO。
+16. 你可以调用 objective_create，把当前 Session 中确实需要跨多次 Evaluation、异步等待或 Runtime 重启继续推进的工作升级为 First-Class Objective。它不是普通 Todo 或延长思考时间的手段：当前 Evaluation 可以可靠完成的任务不得创建 Objective；创建时完整保留用户范围与完成条件，并说明持久化的必要性。Runtime 自动绑定当前 Agent/Context/Session 并生成 ID；成功或返回 existing 后不得为同一目标重复创建。若指定 parent_objective_id，它必须是当前正在求值的 Objective。创建成功后继续工作，标准 reply 只结束被收编后的当前 Evaluation，未完成 Objective 将由 Supervisor 自动续跑。
 
 Context 的修改是你的元认知行为；read/write/exec/delegate 等工具是对外部世界的行为。保持二者边界清晰。"#;
 
@@ -248,9 +251,9 @@ const CRITICAL_MAINTENANCE_PROMPT: &str = r#"Runtime 当前进入 critical-maint
 - recall 仅用于维护前确实缺失的原始证据；不要借此展开新的外部工作。完成维护后 Runtime 会重新计算压力并恢复适用的物理工具。
 - 若调用本轮未提供的工具，Runtime 会拒绝执行，并以对应 tool_call_id 返回明确的 rejected 工具结果。"#;
 
-const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context 已处于 critical，且本回合普通 context_tx 额度已经耗尽。为避免在不可执行的维护请求中循环，本次强制进入 reply-only 阶段。只允许调用标准 reply 工具；请如实交付已完成状态、最近一次可靠验证和剩余工作。"#;
+const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context 已处于 critical，且本轮普通 context_tx 额度已经耗尽。为避免在不可执行的维护请求中循环，本次 Evaluation 强制进入 reply-only 阶段。只允许调用标准 reply 工具；请如实交付已完成状态、最近一次可靠验证和剩余工作。若存在 active Objective，这不会把 Objective 标记为完成；Supervisor 将按其持久状态决定后续。"#;
 
-const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请调用 reply 工具结束当前任务，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
+const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请调用 reply 工具结束当前 Evaluation，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
 const REPLY_TOOL_NAME: &str = "reply";
 const MAX_REPLY_PROTOCOL_RETRIES: usize = 2;
 const TOOL_ARGUMENT_PREVIEW_CHARS: usize = 4_096;
@@ -496,6 +499,8 @@ pub struct Orchestrator {
     context_message_queues: DashMap<String, Arc<Mutex<Vec<Event>>>>,
     context_batch_workers: DashMap<String, Arc<AtomicBool>>,
     delegation_start_lock: Mutex<()>,
+    objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
+    objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
 }
 
 impl Orchestrator {
@@ -528,6 +533,49 @@ impl Orchestrator {
         orchestrator_config: OrchestratorConfig,
         context_engine: Arc<ContextEngine>,
     ) -> Self {
+        Self::new_with_context_engine_and_objectives(
+            bus,
+            store,
+            client,
+            registry,
+            orchestrator_config,
+            context_engine,
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+        )
+    }
+
+    pub fn new_with_context_engine_and_objectives(
+        bus: Arc<InMemoryEventBus>,
+        store: Arc<dyn EventStore>,
+        client: Arc<dyn Client>,
+        registry: Arc<Registry>,
+        orchestrator_config: OrchestratorConfig,
+        context_engine: Arc<ContextEngine>,
+        objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
+    ) -> Self {
+        Self::new_with_context_engine_and_objectives_and_supervisor(
+            bus,
+            store,
+            client,
+            registry,
+            orchestrator_config,
+            context_engine,
+            objective_evaluations,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_context_engine_and_objectives_and_supervisor(
+        bus: Arc<InMemoryEventBus>,
+        store: Arc<dyn EventStore>,
+        client: Arc<dyn Client>,
+        registry: Arc<Registry>,
+        orchestrator_config: OrchestratorConfig,
+        context_engine: Arc<ContextEngine>,
+        objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
+        objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
+    ) -> Self {
         let concurrency_semaphore = Arc::new(tokio::sync::Semaphore::new(
             orchestrator_config.concurrency_limit.max(1),
         ));
@@ -550,7 +598,13 @@ impl Orchestrator {
             context_message_queues: DashMap::new(),
             context_batch_workers: DashMap::new(),
             delegation_start_lock: Mutex::new(()),
+            objective_evaluations,
+            objective_supervisor,
         }
+    }
+
+    pub fn objective_evaluations(&self) -> Arc<ObjectiveEvaluationRegistry> {
+        Arc::clone(&self.objective_evaluations)
     }
 
     pub async fn start(self: Arc<Self>) -> Result<(), DynError> {
@@ -588,14 +642,6 @@ impl Orchestrator {
             }),
         );
 
-        let orchestrator = Arc::clone(&self);
-        self.bus.subscribe(
-            "chat/spawn".to_string(),
-            Arc::new(move |event| {
-                let orchestrator = Arc::clone(&orchestrator);
-                Box::pin(async move { orchestrator.handle_spawn_event(event).await })
-            }),
-        );
         Ok(())
     }
 
@@ -850,53 +896,6 @@ impl Orchestrator {
         Ok(depth)
     }
 
-    async fn handle_spawn_event(&self, event: Event) -> Result<(), DynError> {
-        let sub_session_id = required_payload_str(&event, "session_id")?.to_string();
-        let parent_session_id = required_payload_str(&event, "parent_session_id")?.to_string();
-        let context_id = event
-            .payload
-            .get("context_id")
-            .and_then(|value| value.as_str())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| self.context_id_for_session(&parent_session_id));
-        self.session_contexts
-            .insert(sub_session_id.clone(), context_id.clone());
-        let delegation = required_payload_str(&event, "delegation")?;
-        let canonical_delegation = crate::sexpr::parse(delegation)
-            .map_err(|error| format!("spawn delegation 必须是合法 SExpr: {}", error))?
-            .to_string();
-
-        let transaction = format!(
-            "(context-tx (base-version 0) (derive delegated-task (from {}) {}) (protect delegated-task))",
-            event.id, canonical_delegation
-        );
-        self.context_engine
-            .apply_context_transaction(&context_id, &sub_session_id, &transaction)
-            .await?;
-
-        let mut payload = serde_json::Map::new();
-        payload.insert("context_id".to_string(), json!(context_id));
-        payload.insert("session_id".to_string(), json!(sub_session_id));
-        payload.insert("parent_session_id".to_string(), json!(parent_session_id));
-        payload.insert(
-            "text".to_string(),
-            json!("Begin the delegated task using the protected delegated-task frame."),
-        );
-        self.bus
-            .publish(Event::new(
-                format!(
-                    "sub_start_{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
-                "System-Spawner".to_string(),
-                TYPE_USER_MESSAGE.to_string(),
-                "chat/user_message".to_string(),
-                payload,
-            ))
-            .await?;
-        Ok(())
-    }
-
     async fn handle_chat_event(&self, event: Event) -> Result<(), DynError> {
         let Some(session_id) = event
             .payload
@@ -910,7 +909,7 @@ impl Orchestrator {
             .payload
             .get("context_id")
             .and_then(|value| value.as_str())
-            .unwrap_or(&session_id)
+            .ok_or_else(|| format!("事件 '{}' 缺少 context_id 路由", event.id))?
             .to_string();
         self.session_contexts
             .insert(session_id.clone(), context_id.clone());
@@ -924,7 +923,6 @@ impl Orchestrator {
             {
                 return Ok(());
             }
-            self.wake_parent_if_needed(&event, &session_id).await?;
             return Ok(());
         }
         if event.event_type != TYPE_USER_MESSAGE && event.event_type != TYPE_TOOL_OUTPUT {
@@ -1203,6 +1201,9 @@ impl Orchestrator {
                 );
                 return Ok(());
             }
+            if let Some(supervisor) = &self.objective_supervisor {
+                supervisor.prepare_routed_event(&event).await?;
+            }
             self.run_attempt(&session_id).await
             }) => Some(result),
             _ = cancellation.changed() => {
@@ -1262,7 +1263,10 @@ impl Orchestrator {
             .await?;
         let turn_start = events
             .iter()
-            .rposition(|event| event.event_type == TYPE_USER_MESSAGE)
+            .rposition(|event| {
+                event.event_type == TYPE_USER_MESSAGE
+                    || event.topic == "objective/evaluation_started"
+            })
             .unwrap_or(0);
         let turn_events = &events[turn_start..];
         let mut outputs = HashMap::<(String, String), Event>::new();
@@ -1925,6 +1929,7 @@ impl Orchestrator {
 
     async fn request_model_completion(
         &self,
+        session_id: &str,
         attempt_id: &str,
         messages: Vec<Message>,
         tools: Vec<crate::llm::ToolDefinition>,
@@ -1935,6 +1940,35 @@ impl Orchestrator {
         );
         let _permit = self.concurrency_semaphore.acquire().await?;
         let client = Arc::clone(&self.client);
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel();
+        let stream_bus = Arc::clone(&self.bus);
+        let stream_session_id = session_id.to_string();
+        let stream_context_id = self.context_id_for_session(session_id)?;
+        let stream_attempt_id = attempt_id.to_string();
+        let stream_forwarder = tokio::spawn(async move {
+            while let Some(stream_event) = stream_rx.recv().await {
+                let event = Event::new(
+                    format!(
+                        "model_stream_{}",
+                        Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                    ),
+                    "Model-Provider".to_string(),
+                    "runtime_ephemeral".to_string(),
+                    "runtime/model_stream".to_string(),
+                    vec![
+                        ("context_id".to_string(), json!(&stream_context_id)),
+                        ("session_id".to_string(), json!(&stream_session_id)),
+                        ("attempt_id".to_string(), json!(&stream_attempt_id)),
+                        ("stream".to_string(), json!(stream_event)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                );
+                if let Err(error) = stream_bus.publish_ephemeral(event).await {
+                    tracing::debug!(%error, "发布瞬时模型流事件失败");
+                }
+            }
+        });
         let (model_tx, model_rx) = tokio::sync::oneshot::channel();
         std::thread::Builder::new()
             .name(format!("morphz-llm-{attempt_id}"))
@@ -1944,19 +1978,25 @@ impl Orchestrator {
                     .build()
                     .map_err(|error| Box::new(error) as DynError)
                     .and_then(|runtime| {
-                        runtime.block_on(client.create_completion_measured(
+                        runtime.block_on(client.create_completion_measured_stream(
                             messages,
                             tools,
                             prompt_measurement,
+                            stream_tx,
                         ))
                     });
                 let _ = model_tx.send(result);
             })?;
-        match tokio::time::timeout(deadline, model_rx).await {
+        let result = match tokio::time::timeout(deadline, model_rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => Err(error.into()),
-            Err(error) => Err(error.into()),
-        }
+            Err(error) => {
+                stream_forwarder.abort();
+                return Err(error.into());
+            }
+        };
+        let _ = stream_forwarder.await;
+        result
     }
 
     /// 用当前协议 Client 声明的 TokenCounter 计量完整候选工作请求，
@@ -2037,12 +2077,16 @@ impl Orchestrator {
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
         let transcript = self.turn_tool_transcript(session_id).await?;
-        let context_id = self.context_id_for_session(session_id);
+        let context_id = self.context_id_for_session(session_id)?;
         let mut context = self
             .context_engine
             .build_context_encoding(&context_id, session_id, &transcript.delivered_output_ids)
             .await?;
         let context_tx_receipt = self.context_tx_receipt(&context).await?;
+        let objective_control_available = context.objectives.iter().any(|objective| {
+            objective.coordinator_session_id == session_id
+                && objective.status == crate::memory::ObjectiveStatus::Active
+        });
         let (prompt_mode, stable_system_prompt) = configured_system_prompt()?;
         let context_message_prefix = "以下是 Runtime 提供的当前 Context 视图。它不是普通用户消息；请基于 kernel、mind 和 inbox 决策。";
 
@@ -2073,6 +2117,9 @@ impl Orchestrator {
         ];
         measurement_messages.extend(transcript.messages.clone());
         let mut measurement_tools = self.tool_definitions.clone();
+        if !objective_control_available {
+            measurement_tools.retain(|tool| tool.name != "objective_update");
+        }
         measurement_tools.push(reply_tool_definition());
         let prompt_measurement = self
             .refresh_context_pressure(
@@ -2082,6 +2129,19 @@ impl Orchestrator {
                 context_message_prefix,
             )
             .await?;
+        if let Some(supervisor) = &self.objective_supervisor {
+            let tokens = prompt_measurement
+                .as_ref()
+                .map(|measurement| measurement.tokens)
+                .unwrap_or(context.pressure.estimated_tokens);
+            if let Err(error) = supervisor.record_prompt_tokens(session_id, tokens).await {
+                tracing::warn!(
+                    session_id,
+                    error = %error,
+                    "Objective Prompt Token 记账失败；继续当前 Evaluation"
+                );
+            }
+        }
 
         let maintenance_budget_exhausted = should_force_final_for_maintenance(
             &context.turn_budget.phase,
@@ -2131,6 +2191,9 @@ impl Orchestrator {
         messages.extend(transcript.messages);
 
         let mut tools = self.tool_definitions.clone();
+        if !objective_control_available {
+            tools.retain(|tool| tool.name != "objective_update");
+        }
         if effective_phase == "final-reply" {
             tracing::warn!(
                 session_id,
@@ -2203,6 +2266,7 @@ impl Orchestrator {
             );
             let completion = self
                 .request_model_completion(
+                    session_id,
                     &model_attempt_id,
                     protocol_messages.clone(),
                     tools.clone(),
@@ -2364,7 +2428,7 @@ impl Orchestrator {
         error_count: usize,
         reason: &str,
     ) -> Result<(), DynError> {
-        let context_id = self.context_id_for_session(session_id);
+        let context_id = self.context_id_for_session(session_id)?;
         self.bus
             .publish(Event::new(
                 format!(
@@ -2395,7 +2459,7 @@ impl Orchestrator {
         attempt_id: &str,
         parent_session_id: Option<&str>,
     ) -> Result<(), DynError> {
-        let context_id = self.context_id_for_session(session_id);
+        let context_id = self.context_id_for_session(session_id)?;
         self.bus
             .publish(Event::new(
                 format!(
@@ -2435,7 +2499,7 @@ impl Orchestrator {
         response: &crate::llm::Response,
         decision: &ReplyDecision,
     ) -> Result<(), DynError> {
-        let context_id = self.context_id_for_session(session_id);
+        let context_id = self.context_id_for_session(session_id)?;
         let tool_calls = response
             .tool_calls
             .iter()
@@ -2480,7 +2544,7 @@ impl Orchestrator {
         attempt_id: &str,
         parent_session_id: Option<&str>,
     ) -> Result<(), DynError> {
-        let context_id = self.context_id_for_session(session_id);
+        let context_id = self.context_id_for_session(session_id)?;
         let active_background_tasks = active_background_task_count(session_id, context_id.as_str());
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
@@ -2496,18 +2560,21 @@ impl Orchestrator {
         if let Some(parent_session_id) = parent_session_id {
             payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
         }
-        self.bus
-            .publish(Event::new(
-                format!(
-                    "reply_suppressed_{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
-                "Agent-Morphz".to_string(),
-                TYPE_AGENT_CALL.to_string(),
-                "chat/reply_suppressed".to_string(),
-                payload.into_iter().collect(),
-            ))
-            .await?;
+        self.append_objective_evaluation_route(session_id, &mut payload);
+        let event = Event::new(
+            format!(
+                "reply_suppressed_{}",
+                Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            ),
+            "Agent-Morphz".to_string(),
+            TYPE_AGENT_CALL.to_string(),
+            "chat/reply_suppressed".to_string(),
+            payload.into_iter().collect(),
+        );
+        self.bus.publish(event.clone()).await?;
+        if let Some(supervisor) = &self.objective_supervisor {
+            supervisor.terminal_reply(&event).await?;
+        }
         Ok(())
     }
 
@@ -2518,7 +2585,7 @@ impl Orchestrator {
         content: String,
         parent_session_id: Option<&str>,
     ) -> Result<(), DynError> {
-        let context_id = self.context_id_for_session(session_id);
+        let context_id = self.context_id_for_session(session_id)?;
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
@@ -2528,16 +2595,37 @@ impl Orchestrator {
         if let Some(parent_session_id) = parent_session_id {
             payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
         }
-        self.bus
-            .publish(Event::new(
-                format!("reply_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
-                "Agent-Morphz".to_string(),
-                TYPE_AGENT_CALL.to_string(),
-                "chat/reply".to_string(),
-                payload.into_iter().collect(),
-            ))
-            .await?;
+        self.append_objective_evaluation_route(session_id, &mut payload);
+        let event = Event::new(
+            format!("reply_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
+            "Agent-Morphz".to_string(),
+            TYPE_AGENT_CALL.to_string(),
+            "chat/reply".to_string(),
+            payload.into_iter().collect(),
+        );
+        self.bus.publish(event.clone()).await?;
+        if let Some(supervisor) = &self.objective_supervisor {
+            supervisor.terminal_reply(&event).await?;
+        }
         Ok(())
+    }
+
+    fn append_objective_evaluation_route(
+        &self,
+        session_id: &str,
+        payload: &mut Vec<(String, serde_json::Value)>,
+    ) {
+        let Some(active) = self.objective_evaluations.get(session_id) else {
+            return;
+        };
+        payload.extend([
+            ("objective_id".to_string(), json!(active.objective_id)),
+            (
+                "objective_evaluation_id".to_string(),
+                json!(active.evaluation_id),
+            ),
+            ("objective_revision".to_string(), json!(active.revision)),
+        ]);
     }
 
     async fn publish_progress(
@@ -2546,7 +2634,7 @@ impl Orchestrator {
         attempt_id: &str,
         content: String,
     ) -> Result<(), DynError> {
-        let context_id = self.context_id_for_session(session_id);
+        let context_id = self.context_id_for_session(session_id)?;
         self.bus
             .publish(Event::new(
                 format!("progress_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
@@ -2574,7 +2662,7 @@ impl Orchestrator {
         error: &(dyn std::error::Error + Send + Sync),
         parent_session_id: Option<&str>,
     ) -> Result<(), DynError> {
-        let context_id = self.context_id_for_session(session_id);
+        let context_id = self.context_id_for_session(session_id)?;
         let error_text: String = error.to_string().chars().take(2_000).collect();
         tracing::error!(
             session_id,
@@ -2625,7 +2713,13 @@ impl Orchestrator {
         tool_count: usize,
     ) {
         let bus = Arc::clone(&self.bus);
-        let context_id = self.context_id_for_session(session_id);
+        let context_id = match self.context_id_for_session(session_id) {
+            Ok(context_id) => context_id,
+            Err(error) => {
+                tracing::error!(session_id, %error, "拒绝记录缺少 Context 挂载的模型求值");
+                return;
+            }
+        };
         let event = Event::new(
             format!(
                 "model_attempt_started_{}",
@@ -2663,7 +2757,7 @@ impl Orchestrator {
         phase: &str,
         options: ToolExecutionOptions,
     ) -> Result<ToolExecutionOutcome, DynError> {
-        let context_id = self.context_id_for_session(session_id);
+        let context_id = self.context_id_for_session(session_id)?;
         let requested_tool_calls = response.tool_calls;
         let mapped_tool_calls = requested_tool_calls
             .iter()
@@ -3222,45 +3316,6 @@ impl Orchestrator {
         });
     }
 
-    async fn wake_parent_if_needed(&self, event: &Event, session_id: &str) -> Result<(), DynError> {
-        let Some(parent_session_id) = event
-            .payload
-            .get("parent_session_id")
-            .and_then(|value| value.as_str())
-        else {
-            return Ok(());
-        };
-        let text = event
-            .payload
-            .get("text")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        let context_id = self.context_id_for_session(parent_session_id);
-        self.bus
-            .publish(Event::new(
-                format!(
-                    "wakeup_{}_{}",
-                    parent_session_id,
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
-                format!("Sub-Agent-{}", session_id),
-                TYPE_TOOL_OUTPUT.to_string(),
-                "chat/tool_output".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(context_id)),
-                    ("session_id".to_string(), json!(parent_session_id)),
-                    ("source_event_id".to_string(), json!(event.id)),
-                    ("sub_session_id".to_string(), json!(session_id)),
-                    ("tool_name".to_string(), json!("spawn")),
-                    ("text".to_string(), json!(text)),
-                ]
-                .into_iter()
-                .collect(),
-            ))
-            .await?;
-        Ok(())
-    }
-
     fn session_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
         self.session_locks
             .entry(session_id.to_string())
@@ -3268,13 +3323,11 @@ impl Orchestrator {
             .clone()
     }
 
-    fn context_id_for_session(&self, session_id: &str) -> String {
+    fn context_id_for_session(&self, session_id: &str) -> Result<String, DynError> {
         self.session_contexts
             .get(session_id)
             .map(|value| value.clone())
-            // Compatibility for legacy callers and old test fixtures where
-            // Context and Session intentionally used the same identifier.
-            .unwrap_or_else(|| session_id.to_string())
+            .ok_or_else(|| format!("Session '{session_id}' 没有挂载 Cognitive Context").into())
     }
 
     fn cancellation_sender(&self, session_id: &str) -> watch::Sender<u64> {
@@ -3305,6 +3358,10 @@ impl Orchestrator {
         active
     }
 
+    pub fn resume_session(&self, session_id: &str) {
+        self.cancelled_at.remove(session_id);
+    }
+
     fn read_guard(&self, session_id: &str) -> Arc<Mutex<ReadTurnGuard>> {
         self.read_turn_guards
             .entry(session_id.to_string())
@@ -3316,7 +3373,7 @@ impl Orchestrator {
         &self,
         session_id: &str,
     ) -> Result<crate::sexpr::SExpr, DynError> {
-        let context_id = self.context_id_for_session(session_id);
+        let context_id = self.context_id_for_session(session_id)?;
         let view = self
             .context_engine
             .build_context_encoding(&context_id, session_id, &HashSet::new())
@@ -3328,7 +3385,7 @@ impl Orchestrator {
         &self,
         session_id: &str,
     ) -> Result<ContextView, DynError> {
-        let context_id = self.context_id_for_session(session_id);
+        let context_id = self.context_id_for_session(session_id)?;
         self.context_engine
             .build_context_encoding(&context_id, session_id, &HashSet::new())
             .await
@@ -3728,12 +3785,12 @@ mod tests {
         assert!(composed.contains("(kind final-reply)"));
         crate::sexpr::parse(&composed).expect("dynamic semantic prompt must remain one SExpr");
 
-        let legacy = compose_system_prompt(
+        let cognitive = compose_system_prompt(
             SystemPromptMode::CognitiveSexprVm,
             cognitive_sexpr_vm_system_prompt(),
             Some(("final-reply", "只调用 reply")),
         );
-        assert!(legacy.ends_with("只调用 reply"));
+        assert!(cognitive.ends_with("只调用 reply"));
     }
 
     #[test]

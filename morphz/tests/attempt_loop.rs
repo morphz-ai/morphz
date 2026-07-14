@@ -15,7 +15,7 @@ use morphz::orchestrator::orchestrator::Orchestrator;
 use morphz::permission::PermissionConfig;
 use morphz::tool::{
     get_tasks_map, BackgroundTask, BackgroundTaskStatus, DelegateTool, EditFileTool, ReadFileTool,
-    Registry, SpawnAgentTool, Tool, WriteFileTool,
+    Registry, Tool, WriteFileTool,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -470,6 +470,7 @@ async fn publish_tool_output(bus: &Arc<InMemoryEventBus>, session_id: &str, id: 
         TYPE_TOOL_OUTPUT.to_string(),
         "chat/tool_output".to_string(),
         vec![
+            ("context_id".to_string(), json!(session_id)),
             ("session_id".to_string(), json!(session_id)),
             ("tool_name".to_string(), json!("test")),
             ("text".to_string(), json!(id)),
@@ -1202,7 +1203,6 @@ async fn test_attempt_loop_context_tx_failure_does_not_corrupt_mind() {
                 r#type: "function".to_string(),
                 func_name: "context_tx".to_string(),
                 arguments: json!({
-                    "session_id": session_id,
                     "transaction": "(context-tx (base-version 0) (create objective (goal \"A\")) (retire missing-id))"
                 }).to_string(),
             }],
@@ -1223,20 +1223,18 @@ async fn test_attempt_loop_context_tx_failure_does_not_corrupt_mind() {
 }
 
 #[tokio::test]
-async fn test_deprecated_final_reply_flag_is_ignored_and_tool_loop_continues() {
-    let session_id = "attempt_deprecated_context_final_reply";
+async fn test_context_transaction_progress_keeps_tool_loop_running_until_reply() {
+    let session_id = "attempt_context_then_reply";
     let (bus, store, orchestrator, client, _tmp) = build_orchestrator_with_config(
         vec![
             Response {
                 content: "我现在提交 Context 收口，稍后给出最终结果。".to_string(),
                 tool_calls: vec![ToolCallRepr {
-                    id: "context-with-deprecated-final-reply".to_string(),
+                    id: "context-before-reply".to_string(),
                     r#type: "function".to_string(),
                     func_name: "context_tx".to_string(),
                     arguments: json!({
-                        "session_id": session_id,
-                        "transaction": "(context-tx (base-version 0) (reason \"收口\") (create result (result (status completed))) (protect result))",
-                        "final_reply": true
+                        "transaction": "(context-tx (base-version 0) (reason \"收口\") (create result (result (status completed))) (protect result))"
                     })
                     .to_string(),
                 }],
@@ -1297,7 +1295,6 @@ async fn test_tool_call_preamble_is_progress_and_does_not_end_the_loop() {
                     r#type: "function".to_string(),
                     func_name: "context_tx".to_string(),
                     arguments: json!({
-                        "session_id": session_id,
                         "transaction": "(context-tx (base-version 0) (create result (status completed)))"
                     })
                     .to_string(),
@@ -1355,7 +1352,6 @@ async fn test_context_only_call_commits_then_cooldown_forces_user_response() {
                     r#type: "function".to_string(),
                     func_name: "context_tx".to_string(),
                     arguments: json!({
-                        "session_id": session_id,
                         "transaction": "(context-tx (base-version 0) (create state (state active)))"
                     })
                     .to_string(),
@@ -1421,7 +1417,6 @@ async fn test_failed_context_only_call_keeps_context_tool_for_repair() {
                     r#type: "function".to_string(),
                     func_name: "context_tx".to_string(),
                     arguments: json!({
-                        "session_id": session_id,
                         "transaction": "(context-tx (base-version 0) (retire missing))"
                     })
                     .to_string(),
@@ -1434,7 +1429,6 @@ async fn test_failed_context_only_call_keeps_context_tool_for_repair() {
                     r#type: "function".to_string(),
                     func_name: "context_tx".to_string(),
                     arguments: json!({
-                        "session_id": session_id,
                         "transaction": "(context-tx (base-version 0) (create repaired (status completed)))"
                     })
                     .to_string(),
@@ -1609,7 +1603,6 @@ async fn test_critical_transaction_that_relieves_pressure_cools_down_next_attemp
                     r#type: "function".to_string(),
                     func_name: "context_tx".to_string(),
                     arguments: json!({
-                        "session_id": session_id,
                         "transaction": "(context-tx (base-version 0) (reason \"释放 critical 压力\") (retire critical-seed))"
                     })
                     .to_string(),
@@ -1672,7 +1665,6 @@ async fn test_critical_pressure_does_not_cool_down_context_tool() {
                     r#type: "function".to_string(),
                     func_name: "context_tx".to_string(),
                     arguments: json!({
-                        "session_id": session_id,
                         "transaction": "(context-tx (base-version 0) (create checkpoint (status partial)))"
                     })
                     .to_string(),
@@ -1706,7 +1698,6 @@ async fn test_identical_context_transactions_are_normalized_and_deduplicated() {
         r#type: "function".to_string(),
         func_name: "context_tx".to_string(),
         arguments: json!({
-            "session_id": session_id,
             "transaction": "(context-tx (base-version 0) (create first (status active)))"
         })
         .to_string(),
@@ -1764,7 +1755,6 @@ async fn test_distinct_context_transactions_are_rejected_then_combined_atomicall
         r#type: "function".to_string(),
         func_name: "context_tx".to_string(),
         arguments: json!({
-            "session_id": session_id,
             "transaction": format!("(context-tx (base-version 0) (create {frame} (status active)))")
         })
         .to_string(),
@@ -1790,7 +1780,6 @@ async fn test_distinct_context_transactions_are_rejected_then_combined_atomicall
                 r#type: "function".to_string(),
                 func_name: "context_tx".to_string(),
                 arguments: json!({
-                    "session_id": session_id,
                     "transaction": "(context-tx (base-version 0) (reason \"合并多个修改\") (create first (status active)) (create second (status active)) (protect first second))"
                 })
                 .to_string(),
@@ -1844,7 +1833,6 @@ async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
                     r#type: "function".to_string(),
                     func_name: "context_tx".to_string(),
                     arguments: json!({
-                        "session_id": session_id,
                         "transaction": "(context-tx (base-version 0) (create task (status active)))"
                     })
                     .to_string(),
@@ -1865,7 +1853,6 @@ async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
                     r#type: "function".to_string(),
                     func_name: "context_tx".to_string(),
                     arguments: json!({
-                        "session_id": session_id,
                         "transaction": "(context-tx (base-version 1) (revise task (status still-active)))"
                     })
                     .to_string(),
@@ -2092,7 +2079,6 @@ async fn test_soft_checkpoint_allows_context_maintenance_without_forcing_final_r
                 r#type: "function".to_string(),
                 func_name: "context_tx".to_string(),
                 arguments: json!({
-                    "session_id": session_id,
                     "transaction": "(context-tx (base-version 0) (create task (task (goal repair) (status completed) (evidence tests-passed))) (protect task))"
                 })
                 .to_string(),
@@ -2192,7 +2178,6 @@ async fn test_failed_context_tx_at_soft_checkpoint_does_not_force_final_reply() 
                 r#type: "function".to_string(),
                 func_name: "context_tx".to_string(),
                 arguments: json!({
-                    "session_id": session_id,
                     "transaction": "(context-tx (base-version 0) (retire missing-frame))"
                 })
                 .to_string(),
@@ -2346,56 +2331,6 @@ async fn test_edit_file_change_becomes_next_attempt_observation() {
         .get("text")
         .and_then(|value| value.as_str())
         .is_some_and(|text| text.contains("(kind file_change)"))));
-}
-
-#[tokio::test]
-async fn test_spawn_child_reply_wakes_parent() {
-    let parent_session_id = "attempt_spawn_parent";
-    let child_session_id = "attempt_spawn_child";
-    let (bus, store, _orc, _tmp) = build_orchestrator(vec![
-        Response {
-            content: "子任务已完成".to_string(),
-            tool_calls: Vec::new(),
-        },
-        Response {
-            content: "父任务已收到子任务结果".to_string(),
-            tool_calls: Vec::new(),
-        },
-    ])
-    .await;
-
-    let spawn = SpawnAgentTool::new(Arc::clone(&bus));
-    spawn
-        .execute(
-            &json!({
-                "sub_session_id": child_session_id,
-                "parent_session_id": parent_session_id,
-                "delegation": "(delegation (goal \"执行子任务\") (success-when \"返回结果\"))",
-            })
-            .to_string(),
-        )
-        .await
-        .unwrap();
-
-    let child_replies = wait_for_topic(&store, "chat/reply", child_session_id).await;
-    assert_eq!(child_replies.len(), 1);
-    assert_eq!(
-        child_replies[0]
-            .payload
-            .get("parent_session_id")
-            .and_then(|value| value.as_str()),
-        Some(parent_session_id)
-    );
-
-    let parent_wakeups = wait_for_topic(&store, "chat/tool_output", parent_session_id).await;
-    assert_eq!(parent_wakeups.len(), 1);
-    assert!(
-        parent_wakeups[0]
-            .payload
-            .get("sub_session_id")
-            .and_then(|value| value.as_str())
-            == Some(child_session_id)
-    );
 }
 
 #[tokio::test]

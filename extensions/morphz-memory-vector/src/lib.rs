@@ -207,7 +207,7 @@ impl SqliteVectorMemory {
         sqlx::query("PRAGMA foreign_keys = ON;")
             .execute(&pool)
             .await?;
-        initialize_legacy_compatible_schema(&pool).await?;
+        initialize_schema(&pool).await?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         for (key, value) in [
             ("embedding_provider", embeddings.id().to_string()),
@@ -488,7 +488,7 @@ fn candidate_from_node(node: GraphNode, score: Option<f32>) -> RecallCandidate {
     }
 }
 
-async fn initialize_legacy_compatible_schema(pool: &SqlitePool) -> Result<(), ExtensionError> {
+async fn initialize_schema(pool: &SqlitePool) -> Result<(), ExtensionError> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS graph_nodes (
@@ -522,36 +522,25 @@ async fn initialize_legacy_compatible_schema(pool: &SqlitePool) -> Result<(), Ex
         CREATE VIRTUAL TABLE IF NOT EXISTS graph_nodes_fts USING fts5(
             id UNINDEXED,
             label,
-            properties_text,
+            properties,
             content='graph_nodes',
             content_rowid='rowid'
         );
         CREATE TRIGGER IF NOT EXISTS graph_nodes_ai AFTER INSERT ON graph_nodes BEGIN
-            INSERT INTO graph_nodes_fts(rowid, id, label, properties_text)
+            INSERT INTO graph_nodes_fts(rowid, id, label, properties)
             VALUES (new.rowid, new.id, new.label, new.properties);
         END;
         CREATE TRIGGER IF NOT EXISTS graph_nodes_ad AFTER DELETE ON graph_nodes BEGIN
-            INSERT INTO graph_nodes_fts(graph_nodes_fts, rowid, id, label, properties_text)
+            INSERT INTO graph_nodes_fts(graph_nodes_fts, rowid, id, label, properties)
             VALUES ('delete', old.rowid, old.id, old.label, old.properties);
         END;
         CREATE TRIGGER IF NOT EXISTS graph_nodes_au AFTER UPDATE ON graph_nodes BEGIN
-            INSERT INTO graph_nodes_fts(graph_nodes_fts, rowid, id, label, properties_text)
+            INSERT INTO graph_nodes_fts(graph_nodes_fts, rowid, id, label, properties)
             VALUES ('delete', old.rowid, old.id, old.label, old.properties);
-            INSERT INTO graph_nodes_fts(rowid, id, label, properties_text)
+            INSERT INTO graph_nodes_fts(rowid, id, label, properties)
             VALUES (new.rowid, new.id, new.label, new.properties);
         END;
         "#,
-    )
-    .execute(pool)
-    .await?;
-    // The historical FTS table names its JSON column `properties_text` while
-    // the external content table names it `properties`. SQLite's `rebuild`
-    // command assumes identical names and therefore fails on the legacy
-    // schema. Re-index explicitly so old databases remain readable without a
-    // destructive table migration.
-    sqlx::query(
-        "INSERT OR REPLACE INTO graph_nodes_fts(rowid, id, label, properties_text) \
-         SELECT rowid, id, label, properties FROM graph_nodes",
     )
     .execute(pool)
     .await?;
@@ -672,7 +661,7 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[tokio::test]
-    async fn extension_reopens_legacy_tables_and_recalls_without_lancedb() {
+    async fn extension_reopens_database_and_recalls_without_lancedb() {
         let file = NamedTempFile::new().unwrap();
         let config = VectorMemoryConfig::for_database(file.path().to_string_lossy());
         let memory = SqliteVectorMemory::open(config.clone(), Arc::new(HashingEmbeddingProvider))

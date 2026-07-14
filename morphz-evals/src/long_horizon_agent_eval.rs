@@ -2200,7 +2200,10 @@ fn runtime_environment(manifest: &LongHorizonEvalManifest) -> BTreeMap<String, S
             manifest.artifact_dir.to_string_lossy().to_string(),
         ),
         ("MORPHZ_CODING_EVAL_MODE".to_string(), "true".to_string()),
-        ("MORPHZ_EXEC_SEATBELT".to_string(), "true".to_string()),
+        (
+            "MORPHZ_PERMISSION_MODE".to_string(),
+            "auto_review".to_string(),
+        ),
         ("MORPHZ_EXEC_NETWORK".to_string(), "false".to_string()),
         (
             "MORPHZ_CONTEXT_SOFT_TOKEN_LIMIT".to_string(),
@@ -2239,16 +2242,14 @@ fn spawn_agent(
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
     if let Some(profile) = profile {
-        let api_key = std::env::var(&profile.api_key_env).map_err(|_| {
-            format!(
-                "模型 profile '{}' 需要环境变量 {}",
-                profile.name, profile.api_key_env
-            )
-        })?;
-        command
-            .env("OPENAI_BASE_URL", &profile.base_url)
-            .env("OPENAI_MODEL", &profile.model)
-            .env("OPENAI_API_KEY", api_key);
+        crate::configure_agent_model_profile(
+            &mut command,
+            stdout_path.parent().ok_or("评测日志路径缺少父目录")?,
+            profile.protocol.as_str(),
+            &profile.base_url,
+            &profile.model,
+            &profile.api_key_env,
+        )?;
     }
     Ok(command.spawn()?)
 }

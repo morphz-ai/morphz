@@ -1,5 +1,5 @@
 use chrono::Utc;
-use morphz::config::OrchestratorConfig;
+use morphz::config::{ModelProtocol, OrchestratorConfig};
 use morphz::event::{Event, TYPE_TOOL_OUTPUT};
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{EventStore, QueryFilter};
@@ -129,6 +129,7 @@ pub struct MetacognitionEvalRun {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelProfileIdentity {
     pub name: String,
+    pub protocol: ModelProtocol,
     pub base_url: String,
     pub model: String,
     pub api_key_env: String,
@@ -737,16 +738,14 @@ pub async fn run_metacognition_eval_with_profile(
         .stderr(Stdio::from(stderr));
     if let Some(profile) = profile {
         validate_model_profile(profile)?;
-        let api_key = std::env::var(&profile.api_key_env).map_err(|_| {
-            format!(
-                "模型 profile '{}' 需要环境变量 {}，但当前未设置",
-                profile.name, profile.api_key_env
-            )
-        })?;
-        command
-            .env("OPENAI_BASE_URL", &profile.base_url)
-            .env("OPENAI_MODEL", &profile.model)
-            .env("OPENAI_API_KEY", api_key);
+        crate::configure_agent_model_profile(
+            &mut command,
+            &environment.run_root,
+            profile.protocol.as_str(),
+            &profile.base_url,
+            &profile.model,
+            &profile.api_key_env,
+        )?;
     }
     let mut child = command.spawn()?;
     let input = format!("{}\nexit\n", environment.manifest.user_prompt);
@@ -1138,9 +1137,6 @@ fn validate_model_profile(profile: &ModelProfileIdentity) -> Result<(), DynError
     {
         return Err("模型 profile 的 name/base_url/model/api_key_env 均不能为空".into());
     }
-    if profile.api_key_env == "OPENAI_API_KEY" {
-        return Err("profile 请使用独立的 api_key_env，避免不同模型意外共享 OPENAI_API_KEY".into());
-    }
     if !profile.api_key_env.chars().all(|character| {
         character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
     }) {
@@ -1512,6 +1508,7 @@ mod tests {
             &path,
             r#"[[profiles]]
 name = "local-qwen"
+protocol = "openai-chat"
 base_url = "http://127.0.0.1:8000/v1"
 model = "qwen-local"
 api_key_env = "MORPHZ_LOCAL_QWEN_API_KEY"
@@ -1521,6 +1518,7 @@ api_key_env = "MORPHZ_LOCAL_QWEN_API_KEY"
         let loaded = load_model_profiles(&path).unwrap();
         assert_eq!(loaded.profiles.len(), 1);
         assert_eq!(loaded.profiles[0].name, "local-qwen");
+        assert_eq!(loaded.profiles[0].protocol, ModelProtocol::OpenaiChat);
         assert!(!std::fs::read_to_string(path).unwrap().contains("sk-"));
     }
 }

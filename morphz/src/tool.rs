@@ -2029,12 +2029,11 @@ fn terminate_residual_process_group(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ExecuteCommandArgs {
     command: String,
     cwd: Option<String>,
     wait_ms: Option<u64>,
-    timeout_secs: Option<u64>,
-    session_id: Option<String>,
     #[serde(default)]
     sandbox_permissions: SandboxPermissionMode,
     #[serde(default)]
@@ -2063,10 +2062,6 @@ impl Tool for ExecuteCommandTool {
                 "wait_ms": {
                     "type": "integer",
                     "description": "同步等待输出的最长超时毫秒数。默认 10000 毫秒；测试/编译超过该时长后自动转入后台异步运行。"
-                },
-                "timeout_secs": {
-                    "type": "integer",
-                    "description": "同步等待输出的最长超时秒数(旧接口，建议改用 wait_ms)。"
                 },
                 "sandbox_permissions": {
                     "type": "string",
@@ -2129,9 +2124,7 @@ impl Tool for ExecuteCommandTool {
         validate_managed_shell_command(cmd_trimmed)?;
 
         let mut request_context = approval_context();
-        let mut session_id = args
-            .session_id
-            .unwrap_or(request_context.session_id.clone());
+        let mut session_id = request_context.session_id.clone();
         if session_id.is_empty() {
             if let Ok(fallback_id) = CURRENT_SESSION_ID.try_with(|id| id.clone()) {
                 session_id = fallback_id;
@@ -2391,13 +2384,7 @@ impl Tool for ExecuteCommandTool {
         );
 
         // 同步等待设定时间
-        let requested_wait = if let Some(ms) = args.wait_ms {
-            tokio::time::Duration::from_millis(ms)
-        } else if let Some(secs) = args.timeout_secs {
-            tokio::time::Duration::from_secs(secs)
-        } else {
-            tokio::time::Duration::from_millis(10_000)
-        };
+        let requested_wait = tokio::time::Duration::from_millis(args.wait_ms.unwrap_or(10_000));
         let remaining_sync_budget = self
             .max_sync_wait
             .saturating_sub(sync_budget_started_at.elapsed());
@@ -2554,13 +2541,7 @@ impl Tool for ExecuteCommandTool {
                     prune_background_task_history();
                 });
 
-                let elapsed_str = if args.wait_ms.is_some() {
-                    format!("{} 毫秒", wait_duration.as_millis())
-                } else if args.timeout_secs.is_some() {
-                    format!("{} 秒", wait_duration.as_secs())
-                } else {
-                    format!("{} 毫秒", wait_duration.as_millis())
-                };
+                let elapsed_str = format!("{} 毫秒", wait_duration.as_millis());
 
                 let output_str = buffer.get_all();
                 Ok(serde_json::json!({
@@ -2927,12 +2908,8 @@ impl Tool for KillTaskTool {
 }
 
 // ==========================================
-// 6. SpawnAgentTool 并发子智能体派生
+// 6. DelegateTool 并发子智能体派生
 // ==========================================
-pub struct SpawnAgentTool {
-    bus: Arc<crate::event::InMemoryEventBus>,
-}
-
 pub struct DelegateTool {
     bus: Arc<InMemoryEventBus>,
 }
@@ -3093,117 +3070,6 @@ impl Tool for DelegateTool {
             }
         })
         .to_string())
-    }
-}
-
-impl SpawnAgentTool {
-    pub fn new(bus: Arc<crate::event::InMemoryEventBus>) -> Self {
-        Self { bus }
-    }
-}
-
-#[derive(Deserialize)]
-struct SpawnAgentArgs {
-    sub_session_id: String,
-    #[serde(default)]
-    parent_session_id: String,
-    delegation: String,
-}
-
-#[async_trait::async_trait]
-impl Tool for SpawnAgentTool {
-    fn name(&self) -> &str {
-        "spawn"
-    }
-
-    fn definition(&self) -> ToolDefinition {
-        let params_json = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "sub_session_id": {
-                    "type": "string",
-                    "description": "唯一的子会话 ID，例如 sess_sub_tcp_01"
-                },
-                "parent_session_id": {
-                    "type": "string",
-                    "description": "当前父会话的 Session ID"
-                },
-                "delegation": {
-                    "type": "string",
-                    "description": "父 Agent 主动选择并传递的 SExpr 委托 Frame，例如 (delegation (goal ...) (success-when ...) (constraints ...) (evidence-refs ...))。不要传递完整父 Context。"
-                }
-            },
-            "required": ["sub_session_id", "delegation"]
-        });
-
-        ToolDefinition {
-            name: "spawn".to_string(),
-            description: "在后台并发启动一个新的子智能体协程，专门处理独立的子任务。此工具为非阻塞，调用后立即返回。".to_string(),
-            parameters: params_json,
-        }
-    }
-
-    async fn execute(
-        &self,
-        arguments: &str,
-    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let mut val: serde_json::Value = serde_json::from_str(arguments)?;
-
-        if let Some(obj) = val.as_object_mut() {
-            let has_parent = obj
-                .get("parent_session_id")
-                .and_then(|v| v.as_str())
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-
-            if !has_parent {
-                if let Ok(fallback_id) = CURRENT_SESSION_ID.try_with(|id| id.clone()) {
-                    obj.insert(
-                        "parent_session_id".to_string(),
-                        serde_json::json!(fallback_id),
-                    );
-                }
-            }
-        }
-
-        let args: SpawnAgentArgs = serde_json::from_value(val)?;
-        let context_id = CURRENT_CONTEXT_ID
-            .try_with(Clone::clone)
-            .unwrap_or_else(|_| args.parent_session_id.clone());
-
-        let mut payload = serde_json::Map::new();
-        payload.insert("context_id".to_string(), serde_json::json!(context_id));
-        payload.insert(
-            "session_id".to_string(),
-            serde_json::json!(args.sub_session_id),
-        );
-        payload.insert(
-            "parent_session_id".to_string(),
-            serde_json::json!(args.parent_session_id),
-        );
-        payload.insert("delegation".to_string(), serde_json::json!(args.delegation));
-        payload.insert(
-            "text".to_string(),
-            serde_json::json!(format!("Spawning agent {}...", args.sub_session_id)),
-        );
-
-        let ev = Event::new(
-            format!(
-                "spawn_{}",
-                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-            ),
-            format!("Parent-Agent-{}", args.parent_session_id),
-            crate::event::TYPE_AGENT_CALL.to_string(),
-            "chat/spawn".to_string(),
-            payload,
-        );
-
-        self.bus.publish(ev).await?;
-
-        Ok(format!(
-            "子智能体 {} 成功排队并提交，正在启动并发心智协程...",
-            args.sub_session_id
-        ))
     }
 }
 
@@ -4280,7 +4146,7 @@ mod tests {
         // 启动一个长耗时命令并缩短同步等待超时
         let args = serde_json::json!({
             "command": "sleep 10 && echo 'finished'",
-            "timeout_secs": 1
+            "wait_ms": 1000
         });
 
         let res = tool.execute(&args.to_string()).await.unwrap();
@@ -4381,7 +4247,7 @@ mod tests {
 
         let exec_args = serde_json::json!({
             "command": "sleep 100",
-            "timeout_secs": 1
+            "wait_ms": 1000
         });
 
         let res = exec_tool.execute(&exec_args.to_string()).await.unwrap();

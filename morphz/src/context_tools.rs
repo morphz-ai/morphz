@@ -18,13 +18,8 @@ impl ContextTxTool {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ContextTxArgs {
-    #[serde(default)]
-    context_id: String,
-    /// Legacy wire compatibility only. The public schema intentionally omits
-    /// routing identifiers; Runtime task-local routing is authoritative.
-    #[serde(default)]
-    session_id: String,
     transaction: String,
 }
 
@@ -55,25 +50,16 @@ impl Tool for ContextTxTool {
         &self,
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let mut args: ContextTxArgs = serde_json::from_str(arguments)?;
+        let args: ContextTxArgs = serde_json::from_str(arguments)?;
         let session_id = CURRENT_SESSION_ID
             .try_with(Clone::clone)
-            .unwrap_or_else(|_| args.session_id.clone());
-        if session_id.trim().is_empty() {
-            return Err("context_tx 缺少 Runtime 注入的当前 active session".into());
-        }
-        args.context_id = CURRENT_CONTEXT_ID
+            .map_err(|_| "context_tx 缺少 Runtime 注入的当前 active session")?;
+        let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
-            .unwrap_or_else(|_| {
-                if args.context_id.trim().is_empty() {
-                    session_id.clone()
-                } else {
-                    args.context_id.clone()
-                }
-            });
+            .map_err(|_| "context_tx 缺少 Runtime 注入的当前 cognitive context")?;
         let commit = self
             .context_engine
-            .apply_context_transaction(&args.context_id, &session_id, &args.transaction)
+            .apply_context_transaction(&context_id, &session_id, &args.transaction)
             .await?;
         Ok(serde_json::to_string_pretty(&serde_json::json!({
             "status": "committed",
@@ -97,11 +83,8 @@ impl RecallTool {
 }
 
 #[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RecallArgs {
-    #[serde(default)]
-    context_id: String,
-    #[serde(default)]
-    session_id: String,
     event_id: Option<String>,
     frame_id: Option<String>,
     query: Option<String>,
@@ -123,7 +106,7 @@ impl Tool for RecallTool {
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "event_id": { "type": "string", "description": "Context observation 的稳定短 ref（如 @e27）；兼容完整 Ledger event ID" },
+                    "event_id": { "type": "string", "description": "Context observation 的稳定短 ref（如 @e27），也接受完整 Ledger event ID" },
                     "frame_id": { "type": "string", "description": "已存在或已退役的 frame ID" },
                     "query": { "type": "string", "description": "在当前 Cognitive Context 的 Ledger 中搜索（覆盖其中所有 Session）" },
                     "offset": { "type": "integer", "minimum": 0, "description": "读取 event 原文的字符偏移；连续分页时必须使用上次结果的 next_offset" },
@@ -141,15 +124,9 @@ impl Tool for RecallTool {
         args.event_id = non_empty(args.event_id);
         args.frame_id = non_empty(args.frame_id);
         args.query = non_empty(args.query);
-        args.context_id = CURRENT_CONTEXT_ID
+        let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
-            .unwrap_or_else(|_| args.context_id.clone());
-        if args.context_id.trim().is_empty() {
-            args.context_id = args.session_id.clone();
-        }
-        if args.context_id.trim().is_empty() {
-            return Err("recall 缺少 Runtime 注入的当前 cognitive context".into());
-        }
+            .map_err(|_| "recall 缺少 Runtime 注入的当前 cognitive context")?;
         let selected = usize::from(args.event_id.is_some())
             + usize::from(args.frame_id.is_some())
             + usize::from(args.query.is_some());
@@ -160,7 +137,7 @@ impl Tool for RecallTool {
         if let Some(frame_id) = args.frame_id {
             let frame = self
                 .context_engine
-                .find_frame(&args.context_id, &frame_id)
+                .find_frame(&context_id, &frame_id)
                 .await?
                 .ok_or_else(|| format!("frame '{}' 不存在", frame_id))?;
             return Ok(serde_json::to_string_pretty(&frame)?);
@@ -169,7 +146,7 @@ impl Tool for RecallTool {
         if let Some(event_id) = args.event_id {
             let event = self
                 .context_engine
-                .find_event(&args.context_id, &event_id)
+                .find_event(&context_id, &event_id)
                 .await?
                 .ok_or_else(|| format!("event '{}' 不存在或不属于当前 Context", event_id))?;
             let event_reference = self.context_engine.event_reference(&event);
@@ -186,7 +163,7 @@ impl Tool for RecallTool {
         let limit = args.limit.unwrap_or(10).clamp(1, 50);
         let events = self
             .context_engine
-            .search_events(&args.context_id, &query, limit)
+            .search_events(&context_id, &query, limit)
             .await?;
         let max_chunk_chars = self.context_engine.recall_chunk_chars();
         let matches = events
@@ -309,19 +286,27 @@ mod tests {
             definition.parameters["required"],
             serde_json::json!(["transaction"])
         );
-        let result = tool
-            .execute(
-                &serde_json::json!({
-                    "session_id": "session_test",
-                    "transaction": "(context-tx (base-version 0) (create objective (goal \"test\")))"
-                })
-                .to_string(),
+        let result = CURRENT_CONTEXT_ID
+            .scope(
+                "context_test".to_string(),
+                CURRENT_SESSION_ID.scope(
+                    "session_test".to_string(),
+                    tool.execute(
+                        &serde_json::json!({
+                            "transaction": "(context-tx (base-version 0) (create objective (goal \"test\")))"
+                        })
+                        .to_string(),
+                    ),
+                ),
             )
             .await
             .unwrap();
 
         assert!(result.contains("committed"));
-        let view = engine.build_view("session_test").await.unwrap();
+        let view = engine
+            .build_context_encoding("context_test", "session_test", &Default::default())
+            .await
+            .unwrap();
         assert_eq!(view.state.version, 1);
         assert_eq!(view.state.frames[0].id, "objective");
     }
@@ -354,15 +339,17 @@ mod tests {
             OrchestratorConfig::default(),
         ));
         let tool = RecallTool::new(engine);
-        let result = tool
-            .execute(
-                &serde_json::json!({
-                    "session_id": "recall-session",
-                    "event_id": "event:unicode",
-                    "offset": 2,
-                    "limit": 3
-                })
-                .to_string(),
+        let result = CURRENT_CONTEXT_ID
+            .scope(
+                "recall-session".to_string(),
+                tool.execute(
+                    &serde_json::json!({
+                        "event_id": "event:unicode",
+                        "offset": 2,
+                        "limit": 3
+                    })
+                    .to_string(),
+                ),
             )
             .await
             .unwrap();
@@ -372,15 +359,17 @@ mod tests {
         assert_eq!(result["next_offset"], 5);
         assert_eq!(result["total_chars"], 6);
 
-        let aliased = tool
-            .execute(
-                &serde_json::json!({
-                    "session_id": "recall-session",
-                    "event_id": "@e1",
-                    "offset": 0,
-                    "limit": 2
-                })
-                .to_string(),
+        let aliased = CURRENT_CONTEXT_ID
+            .scope(
+                "recall-session".to_string(),
+                tool.execute(
+                    &serde_json::json!({
+                        "event_id": "@e1",
+                        "offset": 0,
+                        "limit": 2
+                    })
+                    .to_string(),
+                ),
             )
             .await
             .unwrap();
@@ -416,17 +405,20 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         ));
-        let result = RecallTool::new(engine)
-            .execute(
-                &serde_json::json!({
-                    "session_id": "recall-session",
-                    "event_id": "event:source",
-                    "frame_id": "",
-                    "query": "",
-                    "offset": 0,
-                    "limit": 100
-                })
-                .to_string(),
+        let tool = RecallTool::new(engine);
+        let result = CURRENT_CONTEXT_ID
+            .scope(
+                "recall-session".to_string(),
+                tool.execute(
+                    &serde_json::json!({
+                        "event_id": "event:source",
+                        "frame_id": "",
+                        "query": "",
+                        "offset": 0,
+                        "limit": 100
+                    })
+                    .to_string(),
+                ),
             )
             .await
             .unwrap();

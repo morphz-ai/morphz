@@ -86,12 +86,14 @@ cargo run -p morphz-evals --bin context_metacognition_eval -- compare-suites BAS
 ```toml
 [[profiles]]
 name = "local-model-a"
+protocol = "openai-chat"
 base_url = "http://127.0.0.1:8000/v1"
 model = "local-model-a"
 api_key_env = "MORPHZ_LOCAL_MODEL_A_API_KEY"
 
 [[profiles]]
 name = "local-model-b"
+protocol = "openai-chat"
 base_url = "http://127.0.0.1:9000/v1"
 model = "local-model-b"
 api_key_env = "MORPHZ_LOCAL_MODEL_B_API_KEY"

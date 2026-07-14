@@ -49,7 +49,7 @@ pub enum ShellEnvironmentPolicy {
 /// 用户可配置的权限输入。非 custom 模式会使用对应预设覆盖
 /// sandbox/approval/reviewer 三项，路径和环境策略仍可配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PermissionConfig {
     pub mode: PermissionMode,
     pub workspace_root: String,
@@ -77,7 +77,7 @@ impl Default for PermissionConfig {
                 "**/.git/**".to_string(),
                 "**/.ssh".to_string(),
                 "**/.ssh/**".to_string(),
-                "morphz.toml".to_string(),
+                ".morphz/config.toml".to_string(),
             ],
             network: false,
             sandbox_mode: SandboxMode::WorkspaceWrite,

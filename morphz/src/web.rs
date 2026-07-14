@@ -59,7 +59,6 @@ struct SessionListQuery {
 struct CreateSessionRequest {
     id: Option<String>,
     agent_id: Option<String>,
-    context_id: Option<String>,
     parent_session_id: Option<String>,
     title: Option<String>,
     mount: Option<ContextMountRequest>,
@@ -417,16 +416,9 @@ struct ResolvedMount {
 
 async fn resolve_context_mount(
     state: &AppState,
-    legacy_context_id: Option<String>,
     requested_agent_id: Option<String>,
     mount: Option<ContextMountRequest>,
 ) -> Result<ResolvedMount, (StatusCode, String)> {
-    if legacy_context_id.is_some() && mount.is_some() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "context_id 与 mount 不能同时提供".to_string(),
-        ));
-    }
     let agent_was_explicit = requested_agent_id.is_some();
     let requested_agent_id = requested_agent_id.unwrap_or_else(|| state.default_agent_id.clone());
     if let Err(error) = validate_identifier("agent_id", &requested_agent_id) {
@@ -436,7 +428,7 @@ async fn resolve_context_mount(
         None | Some(ContextMountRequest::ExistingContext { .. }) => {
             let context_id = match mount {
                 Some(ContextMountRequest::ExistingContext { context_id }) => context_id,
-                _ => legacy_context_id.unwrap_or_else(|| state.default_context_id.clone()),
+                _ => state.default_context_id.clone(),
             };
             if let Err(error) = validate_identifier("context_id", &context_id) {
                 return Err((StatusCode::BAD_REQUEST, error));
@@ -740,13 +732,10 @@ async fn handle_create_session(
         Ok(None) => {}
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
-    let mount =
-        match resolve_context_mount(&state, request.context_id, request.agent_id, request.mount)
-            .await
-        {
-            Ok(mount) => mount,
-            Err((status, error)) => return error_response(status, error),
-        };
+    let mount = match resolve_context_mount(&state, request.agent_id, request.mount).await {
+        Ok(mount) => mount,
+        Err((status, error)) => return error_response(status, error),
+    };
     match state
         .runtime
         .create_session(NewSession {
@@ -784,7 +773,6 @@ async fn handle_create_independent_session(
     }
     let mount = match resolve_context_mount(
         &state,
-        None,
         None,
         Some(ContextMountRequest::NewContextFromMind {
             source_context_id: request.source_context_id,
@@ -1277,7 +1265,6 @@ mod tests {
             Json(CreateSessionRequest {
                 id: Some("api-session".to_string()),
                 agent_id: None,
-                context_id: None,
                 parent_session_id: None,
                 title: Some("API Session".to_string()),
                 mount: None,
@@ -1356,7 +1343,6 @@ mod tests {
             Json(CreateSessionRequest {
                 id: Some("source-session".to_string()),
                 agent_id: Some("agent-test".to_string()),
-                context_id: None,
                 parent_session_id: None,
                 title: Some("Source".to_string()),
                 mount: Some(ContextMountRequest::ExistingContext {
@@ -1405,7 +1391,6 @@ mod tests {
             Json(CreateSessionRequest {
                 id: Some("wrong-agent-session".to_string()),
                 agent_id: Some("agent-fresh".to_string()),
-                context_id: None,
                 parent_session_id: None,
                 title: None,
                 mount: Some(ContextMountRequest::ExistingContext {

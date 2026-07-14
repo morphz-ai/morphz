@@ -241,7 +241,7 @@ impl<'a> Parser<'a> {
             return Err(self.make_error("Unexpected EOF".to_string()));
         };
 
-        // Quote 语法糖兼容：Lisp 家族常用 '(...) 表示字面量列表 / 'atom 表示字面量 Atom。
+        // 支持 Lisp 家族常用的 Quote 语法糖：'(...) 是字面量列表，'atom 是字面量 Atom。
         // Yao-lang 中列表默认就是数据，无需 quote 防求值，因此直接剥离前缀 ' 并继续解析。
         // 这避免 LLM 误用 quote 时把整个表达式解析为 [Atom("'"), List(...)] 进而破坏 (set path value) 的 3 段语法。
         if c == '\'' {

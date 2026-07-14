@@ -16,7 +16,7 @@ Agent 拥有 Mind 的认识论与语义控制权；Runtime 则负责不可伪造
 
 Reality Contract v1 已将上述现实约束与认识纪律统一生成到 System Prompt、Context Protocol 和 `context_tx` 工具说明，并完成 Gemini 跨领域五次回归。实现细节、Prefix Cache 编排和真实结果见 [Reality Contract v1 验证报告](docs/morphz_reality_contract_v1_validation.md)。
 
-当前各项真实测试的最终结果、模型身份、结论边界和未完成项见 [Morphz 当前评测状态总览](docs/morphz_eval_status.md)。日常主测 Agent 为 `gemini-3-flash-agent`，其他模型用于对照与兼容性验证。
+当前各项真实测试的最终结果、模型身份、结论边界和未完成项见 [Morphz 当前评测状态总览](docs/morphz_eval_status.md)。日常主测 Agent 为 `gemini-3-flash-agent`，其他模型用于能力对照与 Provider 协议覆盖验证。
 
 Experience Transfer v1 以相关经验、无关经验和全新 Agent 三 arm 同条件比较已有 Mind 对后续任务的影响。初版结果后来发现 Inbox 可以替 Mind 通过的评分缺陷；当前已改为严格检查活动 Mind Frame/Relation。场景设计、无效夹具与历史结果更正见 [Experience Transfer Benchmark v1](docs/morphz_experience_transfer_benchmark_v1.md)。
 
@@ -42,32 +42,31 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
 
 ## 本地启动
 
-1. 复制 `.env.example` 为 `.env`，配置 `OPENAI_API_KEY`，并按需设置 `OPENAI_BASE_URL`、`OPENAI_MODEL`。
-2. 编译核心，并从独立运行目录启动。不要把 Morphz 源码仓库同时作为 Agent 的工作区：
+1. 编译核心，并把二进制放到独立运行目录。不要把 Morphz 源码仓库同时作为 Agent 的工作区：
 
    ```bash
    cargo build --release -p morphz
    mkdir -p ../morphz-runtime
-   cp morphz.toml ../morphz-runtime/morphz.toml
-   cp .env ../morphz-runtime/.env
+   cp target/release/morphz ../morphz-runtime/morphz
    cd ../morphz-runtime
-   ../Morphz/target/release/morphz
+   ./morphz setup
+   ./morphz
    ```
 
-   上例假设运行目录与 `Morphz` 源码目录同级；路径不同时请替换最后一行。默认
-   `workspace_root = "."`、数据库和 Agent 产物都会落在独立运行目录。Runtime 会把
+   全屏 `setup` 可选择 OpenAI、Anthropic、Gemini 或自定义 Provider，并把协议、凭证
+   引用和模型选择保存到用户级 Morphz 配置目录。API Key 可存入系统 Keychain、权限为
+   `0600` 的用户级明文 Morphz secrets 文件，或引用既有环境变量；本地无认证服务不需要 Key。
+   工作目录中的 `.env` 不会被隐式加载，防止不可信项目把宿主凭证重定向到项目指定端点。
+
+   默认 `workspace_root = "."`、数据库和 Agent 产物都会落在独立运行目录。Runtime 会把
    实际加载的 `MORPHZ_CONFIG_PATH`、当前可执行文件、SQLite 主库及 `-wal/-shm` 强制
    加入不可覆盖保护，Agent 不能通过文件工具、Shell 或自动审批修改 Runtime 自身；
    `.env`、`.git`、`.ssh` 同样默认受保护。
 
-   终端默认按回车发送单行消息。长任务规格可使用显式多行模式：先输入
-   `/multi`，粘贴任意多行正文，再单独输入 `/send` 原子发送；使用
-   `/cancel` 放弃当前多行输入。多行正文中的 `ctx`、`exit` 等文本不会被解释为终端命令。
-   Agent 执行期间，终端会显示 Runtime 实际选中执行的工具名、`call_id` 与结构化参数；
-   超长参数只展示前 4096 字符，常见密钥字段会自动遮蔽。
-   输入 `jobs` 可查看 Sub Agent 状态；`cancel-job <delegation_id>` 会递归取消该任务及其
-   后代。`delegate` 默认为 attached，父 Session 等待结果且不会轮询；只有显式选择
-   detached 时才立即转为后台任务。
+   交互式 TTY 默认进入 Ratatui 界面：Enter 发送，Shift/Alt+Enter 换行；`/ctx`、
+   `/jobs`、`/cancel`、`/help` 可检查或控制当前运行。模型正文和工具参数按统一流式事件
+   展示，但只有成功执行的 `reply` 才会成为持久化 Session 消息。`--plain` 可选择
+   行式界面；非 TTY 与 `morphz exec` 自动使用纯文本，适合脚本和管道。
 
    CLI 也可以直接携带提示词；未被已注册命令和选项消费的文本都会交给 Agent：
 
@@ -84,7 +83,17 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    当前 Mind snapshot 创建一个隔离 Context，再把新 Session 挂载上去。可用
    `morphz context/session/agent/job --help` 查看总览，或直接运行 `morphz --help`。
 
-3. 如需 HTTP/WebSocket 与 Inspector，先启动 Server：
+   Provider 与配置诊断命令：
+
+   ```bash
+   morphz provider list
+   morphz provider test <provider-id>
+   morphz model list --provider=<provider-id>
+   morphz config explain --format=json
+   morphz doctor
+   ```
+
+2. 如需 HTTP/WebSocket 与 Inspector，先启动 Server：
 
    ```bash
    morphz serve
@@ -99,7 +108,10 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    ```
 
 `morphz serve` 默认监听 `127.0.0.1:8080`。可通过 `--bind`、`MORPHZ_BIND` 和
-`MORPHZ_DB_PATH` 覆盖监听地址及数据库路径，其余参数见 `morphz.toml`。
+`MORPHZ_DB_PATH` 覆盖数据库路径；监听地址可用 `--bind` 或 `MORPHZ_BIND` 设置。新项目的
+非敏感配置放在 `.morphz/config.toml`，Provider、Credential、权限和监听地址属于用户或
+系统控制面，项目配置不能修改。完整分层设计见
+[CLI 产品化 v1](docs/morphz_cli_productization_v1.md)。
 
 监听非本机地址时，必须设置 `MORPHZ_DASHBOARD_TOKEN`。Dashboard 可通过 `VITE_MORPHZ_TOKEN` 携带同一 token，也可分别用 `VITE_MORPHZ_HTTP_URL`、`VITE_MORPHZ_WS_URL` 指定 Core 地址。
 
@@ -107,9 +119,15 @@ Docker 示例：
 
 ```bash
 docker build -t morphz .
+docker volume create morphz-config
+docker run --rm -it \
+  -e OPENAI_API_KEY \
+  -v morphz-config:/home/morphz/.config/morphz \
+  morphz setup
 docker run --rm -p 8080:8080 \
   -e OPENAI_API_KEY \
   -e MORPHZ_DASHBOARD_TOKEN="replace-with-a-long-random-token" \
+  -v morphz-config:/home/morphz/.config/morphz \
   -v morphz-data:/home/morphz/data \
   morphz
 ```

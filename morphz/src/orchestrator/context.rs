@@ -3,7 +3,9 @@ use crate::event::{
     Event, TYPE_AGENT_CALL, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_EXCEPTION,
     TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
-use crate::memory::{EventStore, QueryFilter, SessionRecord, SessionStore};
+use crate::memory::{
+    EventStore, ObjectiveRecord, ObjectiveStore, QueryFilter, SessionRecord, SessionStore,
+};
 use crate::orchestrator::context_contract::{
     render_context_tx_epistemic_guidance, ContractClause, EPISTEMIC_CONTRACT,
     EPISTEMIC_CONTRACT_NAME, REALITY_CONTRACT, REALITY_CONTRACT_NAME,
@@ -20,7 +22,7 @@ use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 12;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 14;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 
 struct ContextOperationSpec {
@@ -370,6 +372,7 @@ pub struct ContextView {
     /// Context-level evaluation batch.
     pub ready_sessions: Vec<ReadySessionEvaluation>,
     pub sessions: Vec<SessionRecord>,
+    pub objectives: Vec<ObjectiveRecord>,
     pub state: MindState,
     pub observations: Vec<ContextObservation>,
     pub pressure: ContextPressure,
@@ -385,6 +388,7 @@ pub struct ContextView {
 pub struct ContextEngine {
     store: Arc<dyn EventStore>,
     session_store: Option<Arc<dyn SessionStore>>,
+    objective_store: Option<Arc<dyn ObjectiveStore>>,
     config: OrchestratorConfig,
     context_locks: DashMap<String, Arc<Mutex<()>>>,
 }
@@ -394,6 +398,7 @@ impl ContextEngine {
         Self {
             store,
             session_store: None,
+            objective_store: None,
             config,
             context_locks: DashMap::new(),
         }
@@ -404,21 +409,25 @@ impl ContextEngine {
         self
     }
 
+    pub fn with_objective_store(mut self, objective_store: Arc<dyn ObjectiveStore>) -> Self {
+        self.objective_store = Some(objective_store);
+        self
+    }
+
     pub fn session_store(&self) -> Option<Arc<dyn SessionStore>> {
         self.session_store.clone()
     }
 
     async fn context_id_for_session(&self, session_id: &str) -> Result<String, DynError> {
-        let Some(store) = self.session_store.as_ref() else {
-            return Ok(session_id.to_string());
-        };
-        Ok(store
+        let store = self
+            .session_store
+            .as_ref()
+            .ok_or("ContextEngine 没有配置 SessionStore，不能从 Session 解析 Context")?;
+        store
             .get_session(session_id)
             .await?
             .map(|session| session.context_id)
-            // Compatibility for legacy fixtures whose Context and Session
-            // intentionally shared one identifier and had no Session registry.
-            .unwrap_or_else(|| session_id.to_string()))
+            .ok_or_else(|| format!("Session '{session_id}' 不存在").into())
     }
 
     /// Maximum event-text slice that a recall result can deliver without its
@@ -428,15 +437,6 @@ impl ContextEngine {
             .observation_preview_chars
             .saturating_sub(512)
             .clamp(4_000, 20_000)
-    }
-
-    pub async fn apply_transaction(
-        &self,
-        legacy_scope_id: &str,
-        transaction: &str,
-    ) -> Result<ContextCommit, DynError> {
-        self.apply_context_transaction(legacy_scope_id, legacy_scope_id, transaction)
-            .await
     }
 
     pub async fn apply_context_transaction(
@@ -703,6 +703,10 @@ impl ContextEngine {
         let state = load_mind_from_events(&events)?;
         let metadata = observation_metadata(&events, &state);
         let sessions = self.context_sessions(context_id, &events).await?;
+        let objectives = match &self.objective_store {
+            Some(store) => store.list_context_objectives(context_id, false).await?,
+            None => Vec::new(),
+        };
         let parent_session_id = sessions
             .iter()
             .find(|session| session.id == *active_session_id)
@@ -803,6 +807,7 @@ impl ContextEngine {
             parent_session_id: parent_session_id.as_deref(),
             ready_sessions: &ready_sessions,
             sessions: &sessions,
+            objectives: &objectives,
             state: &state,
             observations: &observations,
             pressure: &pressure,
@@ -818,6 +823,7 @@ impl ContextEngine {
             parent_session_id,
             ready_sessions,
             sessions,
+            objectives,
             state,
             observations,
             pressure,
@@ -859,6 +865,7 @@ impl ContextEngine {
             parent_session_id: view.parent_session_id.as_deref(),
             ready_sessions: &view.ready_sessions,
             sessions: &view.sessions,
+            objectives: &view.objectives,
             state: &view.state,
             observations: &view.observations,
             pressure: &view.pressure,
@@ -1816,6 +1823,7 @@ struct ContextRenderInput<'a> {
     parent_session_id: Option<&'a str>,
     ready_sessions: &'a [ReadySessionEvaluation],
     sessions: &'a [SessionRecord],
+    objectives: &'a [ObjectiveRecord],
     state: &'a MindState,
     observations: &'a [ContextObservation],
     pressure: &'a ContextPressure,
@@ -1891,6 +1899,79 @@ fn render_turn_control(turn_budget: &TurnBudget) -> SExpr {
     )
 }
 
+fn render_objectives(objectives: &[ObjectiveRecord]) -> SExpr {
+    list(
+        "objectives",
+        objectives
+            .iter()
+            .map(|objective| {
+                let mut fields = vec![
+                    pair("id", atom(&objective.id)),
+                    pair("status", atom(objective.status.as_str())),
+                    pair("revision", atom(objective.revision.to_string())),
+                    pair("statement", atom(&objective.stated_objective)),
+                    pair(
+                        "coordinator-session",
+                        atom(&objective.coordinator_session_id),
+                    ),
+                    pair("delivery-session", atom(&objective.delivery_session_id)),
+                    pair(
+                        "wait",
+                        objective
+                            .wait_condition
+                            .as_ref()
+                            .map(render_objective_wait)
+                            .unwrap_or_else(|| atom("none")),
+                    ),
+                ];
+                if let Some(evaluation_id) = &objective.active_evaluation_id {
+                    fields.push(pair("evaluation", atom(evaluation_id)));
+                }
+                if let Some(token_budget) = objective.token_budget {
+                    fields.push(pair("token-budget", atom(token_budget.to_string())));
+                    fields.push(pair("tokens-used", atom(objective.tokens_used.to_string())));
+                }
+                list("objective", fields)
+            })
+            .collect(),
+    )
+}
+
+fn render_objective_wait(wait: &crate::memory::ObjectiveWaitCondition) -> SExpr {
+    use crate::memory::ObjectiveWaitCondition;
+    match wait {
+        ObjectiveWaitCondition::ToolTask { task_id } => {
+            list("tool-task", vec![pair("task-id", atom(task_id))])
+        }
+        ObjectiveWaitCondition::Delegation { delegation_id } => list(
+            "delegation",
+            vec![pair("delegation-id", atom(delegation_id))],
+        ),
+        ObjectiveWaitCondition::Timer { deadline } => {
+            list("timer", vec![pair("deadline", atom(deadline.to_rfc3339()))])
+        }
+        ObjectiveWaitCondition::Permission { request_id } => {
+            list("permission", vec![pair("request-id", atom(request_id))])
+        }
+        ObjectiveWaitCondition::UserInput { session_id } => {
+            list("user-input", vec![pair("session-id", atom(session_id))])
+        }
+        ObjectiveWaitCondition::ExternalEvent {
+            topic,
+            correlation_id,
+        } => list(
+            "external-event",
+            vec![
+                pair("topic", atom(topic)),
+                pair("correlation-id", atom(correlation_id)),
+            ],
+        ),
+        ObjectiveWaitCondition::ResourceAvailable { resource } => {
+            list("resource-available", vec![pair("resource", atom(resource))])
+        }
+    }
+}
+
 fn render_context(input: ContextRenderInput<'_>) -> String {
     let ContextRenderInput {
         context_id,
@@ -1898,6 +1979,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         parent_session_id,
         ready_sessions,
         sessions,
+        objectives,
         state,
         observations,
         pressure,
@@ -1937,6 +2019,9 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         }
     }
     kernel.push(pair("version", atom(state.version.to_string())));
+    if !objectives.is_empty() {
+        kernel.push(render_objectives(objectives));
+    }
     kernel.push(render_wake(wake, references));
     kernel.push(list(
         "context-pressure",
@@ -2338,6 +2423,51 @@ fn render_protocol() -> SExpr {
                 ],
             ),
             list(
+                "objective-contract",
+                vec![
+                    pair(
+                        "identity",
+                        atom("Objective 是属于 Cognitive Context 的持久 Runtime 控制对象；Mind 仍由 Agent 自由表达目标的计划、经验与认识"),
+                    ),
+                    pair(
+                        "creation",
+                        atom("Agent 可用 objective_create 把当前 Session 中真正需要跨 Evaluation、异步等待或重启恢复的工作升级为 First-Class Objective；Runtime 生成 ID 并绑定当前 Agent/Context/Session，普通问答或一次求值可完成的动作不得创建，existing 回执后不得重复创建"),
+                    ),
+                    pair(
+                        "evaluation",
+                        atom("一次 Evaluation 只是 Objective 的一个执行切片；标准 reply 只结束并路由本次 Evaluation，不表示长期 Objective 已完成"),
+                    ),
+                    pair(
+                        "completion",
+                        atom("只有调用 objective_update(status=completed) 并通过 revision 与证据引用校验，才会把 Objective 提交为完成；不得从回复文本猜测完成"),
+                    ),
+                    pair(
+                        "continuation",
+                        atom("active 且 wait=none 时，ObjectiveSupervisor 会在 reply 后自动开启下一次 Evaluation；软检查点、Context 压力或单次错误都不能冒充完成"),
+                    ),
+                    pair(
+                        "waiting",
+                        atom("等待工具任务、Delegation、审批、定时器、用户输入或外部事件时，用 objective_update(status=active, wait_condition=...) 登记精确条件；Runtime 事件驱动唤醒，禁止轮询"),
+                    ),
+                    pair(
+                        "blocked",
+                        atom("blocked 只表示没有确定可等待事件且当前确实没有可靠进展路径；存在 wait_condition 时必须保持 active"),
+                    ),
+                    pair(
+                        "control-authority",
+                        atom("Agent 可创建当前路由内的 Objective，并提交 active-wait、blocked、completed；pause、resume、cancel 属于用户或 Runtime 控制面"),
+                    ),
+                    pair(
+                        "revision",
+                        atom("每次 objective_update 必须使用 kernel.objectives 中最新 base_revision；冲突时重新读取，不得覆盖并发控制状态"),
+                    ),
+                    pair(
+                        "evidence",
+                        atom("evidence_refs 必须引用当前 Context 中真实 Ledger 事件；Runtime 验证存在性与时序，业务充分性仍由 Agent 判断"),
+                    ),
+                ],
+            ),
+            list(
                 "response-contract",
                 vec![
                     list(
@@ -2560,12 +2690,14 @@ fn pressure_for(
 fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget {
     let checkpoint_interval = config.attempt_soft_checkpoint_interval.max(1);
     let context_transactions_limit = config.max_context_transactions_per_turn.max(1);
-    let after_last_user = events
+    let after_cycle_boundary = events
         .iter()
-        .rposition(|event| event.event_type == TYPE_USER_MESSAGE)
+        .rposition(|event| {
+            event.event_type == TYPE_USER_MESSAGE || event.topic == "objective/evaluation_started"
+        })
         .map(|index| &events[index + 1..])
         .unwrap_or(events);
-    let assistant_calls = after_last_user
+    let assistant_calls = after_cycle_boundary
         .iter()
         .filter(|event| event.topic == "chat/assistant_call")
         .collect::<Vec<_>>();
@@ -2586,7 +2718,8 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
                 })
         })
         .count();
-    // Attempt 表示本用户回合内的模型求值次数，而不是工具调用数量；一次响应中
+    // Attempt 表示本用户回合或 Objective continuation cycle 内的模型求值次数，
+    // 而不是工具调用数量；一次响应中
     // 并行发起多个工具仍只算一次。检查点仅在整倍数的求值上出现一次，下一次
     // 求值自动恢复 work，不会形成需要额外状态解除的硬门槛。
     let attempt = assistant_calls.len().saturating_add(1);
@@ -2638,6 +2771,8 @@ fn wake_for(events: &[Event]) -> WakeSignal {
         "user-message"
     } else if tool_name.as_deref() == Some("context_tx") {
         "context-transaction-result"
+    } else if tool_name.as_deref() == Some("objective_supervisor") {
+        "objective-continuation"
     } else {
         "tool-output"
     };
@@ -3302,6 +3437,7 @@ mod tests {
             parent_session_id: None,
             ready_sessions: &[],
             sessions: &[],
+            objectives: &[],
             state: &state,
             observations: &[],
             pressure: &pressure,
@@ -3332,6 +3468,9 @@ mod tests {
             assert!(rendered.contains(clause.meaning));
         }
         assert!(rendered.contains("(context-tx-contract"));
+        assert!(rendered.contains("(objective-contract"));
+        assert!(rendered.contains("objective_create"));
+        assert!(rendered.contains("Runtime 生成 ID 并绑定当前 Agent/Context/Session"));
         assert!(rendered.contains("(body-arity \"create derive revise one-or-more\")"));
         assert!(rendered.contains("(body-normalization"));
         assert!(rendered.contains("(revise-semantics"));
@@ -3353,6 +3492,7 @@ mod tests {
             parent_session_id: None,
             ready_sessions: &[],
             sessions: &[],
+            objectives: &[],
             state: &state,
             observations: &[],
             pressure: &pressure,
@@ -3412,6 +3552,51 @@ mod tests {
         assert!(!continued.checkpoint_due);
         assert_eq!(continued.next_checkpoint_at, 6);
         assert_eq!(continued.attempts_until_checkpoint, 2);
+    }
+
+    #[test]
+    fn objective_evaluation_started_resets_attempt_and_context_tx_cycle_budgets() {
+        let event = |id: &str, event_type: &str, topic: &str, payload: serde_json::Value| {
+            Event::new(
+                id.to_string(),
+                "test".to_string(),
+                event_type.to_string(),
+                topic.to_string(),
+                payload.as_object().unwrap().clone(),
+            )
+        };
+        let context_tx_call = |id: &str| {
+            event(
+                id,
+                TYPE_AGENT_CALL,
+                "chat/assistant_call",
+                json!({
+                    "tool_calls": [{
+                        "function": {"name": "context_tx", "arguments": "{}"}
+                    }]
+                }),
+            )
+        };
+        let events = vec![
+            event("user-1", TYPE_USER_MESSAGE, "chat/user_message", json!({})),
+            context_tx_call("call-old-1"),
+            context_tx_call("call-old-2"),
+            event(
+                "objective-cycle-2",
+                crate::objective::TYPE_OBJECTIVE_CONTROL,
+                "objective/evaluation_started",
+                json!({"objective_id":"objective-1"}),
+            ),
+            context_tx_call("call-current"),
+        ];
+        let config = OrchestratorConfig {
+            max_context_transactions_per_turn: 2,
+            ..OrchestratorConfig::default()
+        };
+        let budget = turn_budget_for(&events, &config);
+        assert_eq!(budget.attempt, 2);
+        assert_eq!(budget.context_transactions_used, 1);
+        assert!(budget.context_tx_available);
     }
 
     #[test]
@@ -3811,7 +3996,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_mind_state_without_relations_remains_readable() {
+    fn mind_state_defaults_optional_relation_collections() {
         let state: MindState = serde_json::from_value(json!({
             "version": 2,
             "frames": [],
@@ -3905,14 +4090,18 @@ mod tests {
         let config = OrchestratorConfig::default();
         let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone());
 
-        let before = engine.build_view(session_id).await.unwrap();
+        let before = engine
+            .build_context_encoding(session_id, session_id, &HashSet::new())
+            .await
+            .unwrap();
         assert_eq!(before.observations[0].reference, "@e1");
         assert!(before.sexpr.contains("(ref @e1)"));
         assert!(before.sexpr.contains("(event @e1)"));
         assert!(!before.sexpr.contains(&long_id));
 
         engine
-            .apply_transaction(
+            .apply_context_transaction(
+                session_id,
                 session_id,
                 r#"(context-tx (base-version 0) (reason "evidence absorbed")
                     (derive finding (from @e1) (finding stable) (confidence high))
@@ -3923,7 +4112,10 @@ mod tests {
             .await
             .unwrap();
 
-        let after = engine.build_view(session_id).await.unwrap();
+        let after = engine
+            .build_context_encoding(session_id, session_id, &HashSet::new())
+            .await
+            .unwrap();
         assert_eq!(after.state.frames[0].sources, vec![long_id.clone()]);
         assert_eq!(
             after.state.frames[0].body,
@@ -3951,7 +4143,11 @@ mod tests {
 
         let restarted = ContextEngine::new(store, config);
         assert_eq!(
-            restarted.build_view(session_id).await.unwrap().state,
+            restarted
+                .build_context_encoding(session_id, session_id, &HashSet::new())
+                .await
+                .unwrap()
+                .state,
             after.state
         );
     }
@@ -4132,7 +4328,8 @@ mod tests {
             OrchestratorConfig::default(),
         );
         engine
-            .apply_transaction(
+            .apply_context_transaction(
+                session_id,
                 session_id,
                 r#"(context-tx
                     (base-version 0)
@@ -4149,7 +4346,10 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         );
-        let view = restarted.build_view(session_id).await.unwrap();
+        let view = restarted
+            .build_context_encoding(session_id, session_id, &HashSet::new())
+            .await
+            .unwrap();
         assert_eq!(view.state.version, 1);
         assert_eq!(view.state.frames[0].id, "durable-constraint");
         assert!(view.state.protected.contains("durable-constraint"));
@@ -4386,7 +4586,10 @@ mod tests {
             ..OrchestratorConfig::default()
         };
         let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config);
-        let view = engine.build_view(session_id).await.unwrap();
+        let view = engine
+            .build_context_encoding(session_id, session_id, &HashSet::new())
+            .await
+            .unwrap();
         assert_eq!(view.observations.len(), 5);
         assert_eq!(view.pressure.level, "critical");
     }

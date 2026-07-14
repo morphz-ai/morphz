@@ -24,7 +24,8 @@ models/
 *.log
 task-*
 .system_generated/
-.morphz/
+.morphz/*
+!.morphz/config.toml
 
 # OS files
 .DS_Store

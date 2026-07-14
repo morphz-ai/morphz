@@ -2,13 +2,18 @@ use chrono::Utc;
 use morphz::approval::ApprovalDecision;
 use morphz::cli::{morphz_command_line_parser, Invocation};
 use morphz::config;
-use morphz::llm::{Client, Message, OpenAIClient, Response, ToolDefinition};
+use morphz::event::Event;
+use morphz::llm::{Client, Message, Response, ToolDefinition};
 use morphz::memory::{
-    NewAgent, NewCognitiveContext, NewSession, SessionMountKind, SessionRecord, SessionStatus,
+    NewAgent, NewCognitiveContext, NewObjective, NewSession, ObjectiveMutation, ObjectiveStatus,
+    SessionMountKind, SessionRecord, SessionStatus,
 };
 use morphz::permission::{ApprovalPolicy, PermissionMode, ReviewerKind, SandboxMode};
-use morphz::runtime::{MorphzRuntime, RuntimeIdentity, SessionHandle};
+use morphz::provider::build_configured_client;
+use morphz::provider::{list_provider_models, probe_provider};
+use morphz::runtime::{MorphzRuntime, RuntimeEventStream, RuntimeIdentity, SessionHandle};
 use morphz::web::{Server, ServerDefaults};
+use std::io::IsTerminal;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -22,7 +27,7 @@ USAGE:
   morphz [OPTIONS] [PROMPT...]
   morphz exec [OPTIONS] PROMPT...
   morphz serve [OPTIONS]
-  morphz <context|session|agent|job|config> <COMMAND> [ARGS...]
+  morphz <context|session|agent|objective|job|config> <COMMAND> [ARGS...]
 
 SESSION SEMANTICS:
   A bare invocation creates a new Session mounted in the selected shared Context.
@@ -32,17 +37,25 @@ CORE COMMANDS:
   exec PROMPT...                 Run one prompt and print the final reply
   resume [ID] [PROMPT...]        Reattach ID, or the most recently active Session when omitted
   serve                          Start the HTTP/WebSocket server
+  setup                          Configure a model Provider interactively
+  provider list|test             Inspect and verify model Providers
+  model list|use                 Discover or select models
+  profile list|show|use          Inspect or select configuration Profiles
   context list|show|status       Inspect Cognitive Contexts
   session list|show|create       Manage Sessions
   session resume [ID] [PROMPT...] Reattach ID, or the most recently active Session when omitted
   agent list|show|create         Manage Agents
+  objective list|show            Inspect persistent Objectives
+  objective create GOAL...       Create and run a long-lived Objective
+  objective edit ID GOAL...      Revise an Objective with CAS protection
+  objective pause|resume|cancel  Control an Objective lifecycle
   job list|cancel                Inspect or cancel Sub Agent jobs
-  config show|check|path         Inspect configuration
+  config show|check|path|explain Inspect configuration and value sources
   doctor                         Check the local Runtime setup
 
 GLOBAL OPTIONS:
   -C, --cwd=DIR                  Change working directory before loading config
-      --config-file=FILE         Select morphz.toml
+      --config-file=FILE         Load an explicit trusted config file
   -m, --model=MODEL              Override the configured model
       --agent=ID                 Select an Agent
       --context=ID               Select or mount a Cognitive Context
@@ -53,7 +66,11 @@ GLOBAL OPTIONS:
       --network[=BOOL]           Allow sandboxed command network access
       --bind=ADDR                Override server bind address
       --format=human|json        Management-command output format
+      --token-budget=N           Optional Objective token budget
+      --reason=TEXT              Auditable lifecycle-control reason
       --log-level=LEVEL          Override the tracing filter
+      --tui                      Force the fullscreen terminal UI
+      --plain                    Use the classic line-oriented terminal
   -h, --help                     Print help
   -V, --version                  Print version
 
@@ -61,29 +78,43 @@ Use `--` to force every remaining argv token to be prompt text.
 Options that take values support --name=value; this form also removes command/value ambiguity.
 "#;
 
-fn init_logging(log_level: Option<&str>) -> Result<(), AppError> {
+fn init_logging(log_level: Option<&str>, tui_mode: bool) -> Result<(), AppError> {
     let filter = match log_level {
         Some(level) => EnvFilter::try_new(level)?,
         None => EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new("info,morphz=debug")),
     };
 
-    fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .with_timer(fmt::time::UtcTime::rfc_3339())
-        .try_init()?;
+    if tui_mode {
+        fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .with_timer(fmt::time::UtcTime::rfc_3339())
+            .with_writer(std::io::sink)
+            .try_init()?;
+    } else {
+        fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .with_timer(fmt::time::UtcTime::rfc_3339())
+            .try_init()?;
+    }
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
     let invocation = morphz_command_line_parser().parse(std::env::args().skip(1))?;
+    let tui_mode = should_use_tui(&invocation)?;
+    // Resolve the host-owned environment file before `--cwd` changes the
+    // process directory. A project `.env` must never be able to redirect an
+    // already-exported host credential to a project-controlled endpoint.
+    let host_env_path = config::host_env_path().map(|path| absolute_path(&path));
     if let Some(cwd) = option_value(&invocation, "cwd") {
         std::env::set_current_dir(cwd)
             .map_err(|error| format!("无法切换工作目录到 '{cwd}': {error}"))?;
     }
-    init_logging(option_value(&invocation, "log-level"))?;
+    init_logging(option_value(&invocation, "log-level"), tui_mode)?;
 
     if invocation.has_option("help") || invocation.command_path() == ["help"] {
         print!("{HELP}");
@@ -94,19 +125,70 @@ async fn main() -> Result<(), AppError> {
         return Ok(());
     }
 
+    if let Some(path) = host_env_path {
+        if let Err(error) = config::load_env(&path.to_string_lossy()) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(%error, path = %path.display(), "无法加载用户级 Morphz 环境文件");
+            }
+        } else {
+            tracing::debug!(path = %path.display(), "已加载用户级 Morphz 环境文件");
+        }
+    }
+
     reject_unimplemented_options(&invocation)?;
-    let config_path = selected_config_path(&invocation);
-    if dispatch_config_command(&invocation, &config_path)? {
+    let cwd = std::env::current_dir()?;
+    let explicit_config_path = selected_config_path(&invocation);
+    let active_profile = if invocation.has_option("profile") {
+        None
+    } else {
+        config::active_profile()?
+    };
+    let selected_profile = option_value(&invocation, "profile").or(active_profile.as_deref());
+    let mut resolved = resolve_invocation_config(
+        &invocation,
+        &cwd,
+        explicit_config_path.as_deref(),
+        selected_profile,
+    )?;
+
+    // Setup is a host-side control-plane action. It must be available before
+    // database/runtime initialization and, most importantly, before a model
+    // credential exists.
+    if invocation.command_path() == ["setup"] {
+        morphz::setup::run_interactive_setup().await?;
         return Ok(());
     }
 
-    if let Err(error) = config::load_env(".env") {
-        tracing::debug!(%error, "未加载 .env，继续使用进程环境变量");
+    let interactive_terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if should_run_first_time_setup_with_terminal(
+        &invocation,
+        &resolved.config,
+        interactive_terminal,
+    ) {
+        println!(
+            "尚未配置模型 Provider，正在进入首次启动设置。\n\
+             （Morphz 不会自动读取工作目录中的 .env；凭证将保存到用户级配置。）\n"
+        );
+        morphz::setup::run_interactive_setup().await?;
+        // The setup wizard writes the managed user layer. Re-resolve all
+        // layers so this very invocation can continue into the TUI without a
+        // restart, while preserving Profile/project/CLI precedence.
+        resolved = resolve_invocation_config(
+            &invocation,
+            &cwd,
+            explicit_config_path.as_deref(),
+            selected_profile,
+        )?;
     }
-    let mut app_config = config::AppConfig::load_or_default(&config_path.to_string_lossy());
-    app_config.apply_runtime_env_overrides()?;
-    apply_cli_config(&invocation, &mut app_config)?;
-    protect_runtime_files(&mut app_config, &config_path);
+    if dispatch_config_command(&invocation, &resolved)? {
+        return Ok(());
+    }
+    let protected_config_paths = resolved
+        .loaded_paths()
+        .map(Path::to_path_buf)
+        .collect::<Vec<_>>();
+    let mut app_config = resolved.config;
+    protect_runtime_files(&mut app_config, &protected_config_paths);
 
     let default_agent_id =
         std::env::var("MORPHZ_AGENT_ID").unwrap_or_else(|_| "default-agent".to_string());
@@ -153,6 +235,7 @@ async fn main() -> Result<(), AppError> {
         app_config,
         default_agent_id,
         default_context_id,
+        tui_mode,
     )
     .await
 }
@@ -177,17 +260,35 @@ fn switch_enabled(invocation: &Invocation, name: &str) -> Result<bool, AppError>
     }
 }
 
-fn selected_config_path(invocation: &Invocation) -> PathBuf {
+fn should_use_tui(invocation: &Invocation) -> Result<bool, AppError> {
+    should_use_tui_with_terminal(
+        invocation,
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+    )
+}
+
+fn should_use_tui_with_terminal(
+    invocation: &Invocation,
+    interactive_terminal: bool,
+) -> Result<bool, AppError> {
+    let force_tui = switch_enabled(invocation, "tui")?;
+    let force_plain = switch_enabled(invocation, "plain")?;
+    if force_tui && force_plain {
+        return Err("--tui 与 --plain 不能同时使用".into());
+    }
+    let command = invocation.command_path().join(" ");
+    let conversational = matches!(command.as_str(), "" | "resume" | "session resume");
+    Ok(conversational && !force_plain && (force_tui || interactive_terminal))
+}
+
+fn selected_config_path(invocation: &Invocation) -> Option<PathBuf> {
     option_value(invocation, "config-file")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("MORPHZ_CONFIG_PATH").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("morphz.toml"))
 }
 
 fn reject_unimplemented_options(invocation: &Invocation) -> Result<(), AppError> {
     for (name, explanation) in [
-        ("profile", "Profile 配置叠加尚未接入，不能静默忽略"),
-        ("set", "单项配置覆盖尚未接入，不能静默忽略"),
         ("output", "输出文件写入尚未接入，请使用 Shell 重定向"),
         ("schema", "结构化输出 Schema 尚未接入"),
     ] {
@@ -195,41 +296,191 @@ fn reject_unimplemented_options(invocation: &Invocation) -> Result<(), AppError>
             return Err(format!("--{name} 当前不可用：{explanation}").into());
         }
     }
-    if let Some(provider) = option_value(invocation, "provider") {
-        if !matches!(provider, "openai" | "openai-compatible") {
-            return Err(format!(
-                "当前只实现 openai-compatible 协议 Client，不能使用 Provider '{provider}'"
-            )
-            .into());
-        }
-    }
     Ok(())
 }
 
-fn dispatch_config_command(invocation: &Invocation, path: &Path) -> Result<bool, AppError> {
+fn resolve_invocation_config(
+    invocation: &Invocation,
+    cwd: &Path,
+    explicit_config_path: Option<&Path>,
+    selected_profile: Option<&str>,
+) -> Result<config::ResolvedConfig, AppError> {
+    let mut resolved = config::resolve_config(cwd, explicit_config_path, selected_profile)?;
+    for warning in &resolved.warnings {
+        tracing::warn!("{warning}");
+    }
+    resolved.config.apply_runtime_env_overrides()?;
+    mark_environment_config_sources(&mut resolved);
+    let set_overrides: Vec<String> = invocation
+        .option("set")
+        .map(|option| option.occurrences().iter().flatten().cloned().collect())
+        .unwrap_or_default();
+    resolved.apply_cli_set_overrides(&set_overrides)?;
+    apply_cli_config(invocation, &mut resolved.config)?;
+    mark_cli_config_sources(invocation, &mut resolved);
+    Ok(resolved)
+}
+
+fn should_run_first_time_setup_with_terminal(
+    invocation: &Invocation,
+    app_config: &config::AppConfig,
+    interactive_terminal: bool,
+) -> bool {
+    if !interactive_terminal {
+        return false;
+    }
+    let command = invocation.command_path().join(" ");
+    let interactive_conversation = matches!(command.as_str(), "" | "resume" | "session resume");
+    interactive_conversation
+        && option_value(invocation, "provider").is_none()
+        && app_config.llm.provider.is_none()
+}
+
+fn dispatch_config_command(
+    invocation: &Invocation,
+    resolved: &config::ResolvedConfig,
+) -> Result<bool, AppError> {
     let command = invocation.command_path().join(" ");
     if !matches!(
         command.as_str(),
-        "config" | "config show" | "config check" | "config path"
+        "config" | "config show" | "config check" | "config path" | "config explain"
     ) {
         return Ok(false);
     }
     if command == "config path" {
-        println!("{}", absolute_path(path).display());
+        if resolved.layers.is_empty() {
+            println!("未加载配置文件；当前仅使用内置默认值");
+        } else {
+            for layer in &resolved.layers {
+                println!("{}\t{}", layer.kind.as_str(), layer.path.display());
+            }
+        }
         return Ok(true);
     }
-    let config = match std::fs::read_to_string(path) {
-        Ok(content) => toml::from_str::<config::AppConfig>(&content)
-            .map_err(|error| format!("配置 '{}' 解析失败: {error}", path.display()))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => config::AppConfig::default(),
-        Err(error) => return Err(format!("无法读取配置 '{}': {error}", path.display()).into()),
-    };
     if command == "config check" {
-        println!("配置有效：{}", absolute_path(path).display());
+        println!("配置有效：{} 个文件层", resolved.layers.len());
+        for warning in &resolved.warnings {
+            println!("警告：{warning}");
+        }
+    } else if command == "config explain" {
+        let rows = config_explain_rows(resolved)?;
+        if json_output(invocation) {
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+        } else {
+            for row in rows {
+                println!(
+                    "{} = {}\tsource={}\tchain={}",
+                    row["key"].as_str().unwrap_or_default(),
+                    row["value"].as_str().unwrap_or_default(),
+                    row["source"].as_str().unwrap_or_default(),
+                    row["chain"].as_str().unwrap_or_default()
+                );
+            }
+        }
     } else {
-        println!("{config:#?}");
+        println!("{:#?}", resolved.config);
     }
     Ok(true)
+}
+
+fn config_explain_rows(
+    resolved: &config::ResolvedConfig,
+) -> Result<Vec<serde_json::Value>, AppError> {
+    let value = toml::Value::try_from(&resolved.config)?;
+    let mut leaves = Vec::new();
+    collect_config_leaves(&value, "", &mut leaves);
+    Ok(leaves
+        .into_iter()
+        .map(|(key, value)| {
+            let source = resolved.source_for(&key);
+            let chain = resolved.source_history_for(&key).join(" -> ");
+            serde_json::json!({
+                "key": key,
+                "value": display_config_value(&key, &value),
+                "source": source,
+                "chain": chain,
+            })
+        })
+        .collect())
+}
+
+fn collect_config_leaves(
+    value: &toml::Value,
+    prefix: &str,
+    output: &mut Vec<(String, toml::Value)>,
+) {
+    match value {
+        toml::Value::Table(table) if !table.is_empty() => {
+            for (key, value) in table {
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                collect_config_leaves(value, &path, output);
+            }
+        }
+        _ if !prefix.is_empty() => output.push((prefix.to_string(), value.clone())),
+        _ => {}
+    }
+}
+
+fn display_config_value(key: &str, value: &toml::Value) -> String {
+    let lowered = key.to_ascii_lowercase();
+    if lowered.contains("api_key")
+        || lowered.contains("password")
+        || lowered.contains("secret")
+        || lowered.contains(".headers.")
+        || lowered.ends_with(".command")
+    {
+        return "<redacted>".to_string();
+    }
+    value.to_string()
+}
+
+fn mark_environment_config_sources(resolved: &mut config::ResolvedConfig) {
+    for (variable, key) in [
+        ("MORPHZ_WORKSPACE_ROOT", "permissions.workspace_root"),
+        ("MORPHZ_ARTIFACT_DIR", "background_task.artifact_dir"),
+        ("MORPHZ_EXEC_NETWORK", "permissions.network"),
+        ("MORPHZ_PERMISSION_MODE", "permissions.mode"),
+        (
+            "MORPHZ_CONTEXT_SOFT_TOKEN_LIMIT",
+            "orchestrator.context_soft_token_limit",
+        ),
+        (
+            "MORPHZ_CONTEXT_HARD_TOKEN_LIMIT",
+            "orchestrator.context_hard_token_limit",
+        ),
+        (
+            "MORPHZ_CONTEXT_MAINTENANCE_RESERVE_TOKENS",
+            "orchestrator.context_maintenance_reserve_tokens",
+        ),
+        (
+            "MORPHZ_LLM_REQUEST_TIMEOUT_SECS",
+            "llm.request_timeout_secs",
+        ),
+        ("MORPHZ_LLM_MAX_OUTPUT_TOKENS", "llm.max_output_tokens"),
+    ] {
+        if std::env::var_os(variable).is_some() {
+            resolved.mark_source(key, format!("environment:{variable}"));
+        }
+    }
+}
+
+fn mark_cli_config_sources(invocation: &Invocation, resolved: &mut config::ResolvedConfig) {
+    for (option, key) in [
+        ("model", "llm.model"),
+        ("bind", "server.bind"),
+        ("sandbox", "permissions.sandbox_mode"),
+        ("approval", "permissions.approval_policy"),
+        ("network", "permissions.network"),
+        ("add-dir", "permissions.read_roots/write_roots"),
+    ] {
+        if invocation.has_option(option) {
+            resolved.mark_source(key, format!("cli:--{option}"));
+        }
+    }
 }
 
 fn absolute_path(path: &Path) -> PathBuf {
@@ -313,13 +564,11 @@ fn apply_cli_config(
     Ok(())
 }
 
-fn protect_runtime_files(app_config: &mut config::AppConfig, config_path: &Path) {
-    for path in [
-        Some(absolute_path(config_path)),
-        std::env::current_exe().ok(),
-    ]
-    .into_iter()
-    .flatten()
+fn protect_runtime_files(app_config: &mut config::AppConfig, config_paths: &[PathBuf]) {
+    for path in config_paths
+        .iter()
+        .cloned()
+        .chain(std::env::current_exe().ok())
     {
         let protected = path.to_string_lossy().into_owned();
         if !app_config.permissions.protected_paths.contains(&protected) {
@@ -331,7 +580,12 @@ fn protect_runtime_files(app_config: &mut config::AppConfig, config_path: &Path)
 fn command_needs_llm(invocation: &Invocation) -> bool {
     matches!(
         invocation.command_path().join(" ").as_str(),
-        "" | "exec" | "resume" | "serve" | "session resume"
+        "" | "exec"
+            | "resume"
+            | "serve"
+            | "session resume"
+            | "objective create"
+            | "objective resume"
     )
 }
 
@@ -343,21 +597,19 @@ fn build_client(
     if !required {
         return Ok(Arc::new(OfflineClient));
     }
-    let api_key = std::env::var("OPENAI_API_KEY").ok();
-    let api_key = api_key
-        .ok_or("当前命令需要 LLM，但未检测到 OPENAI_API_KEY（可在环境变量或 .env 中配置）")?;
-    let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_default();
-    let model = option_value(invocation, "model")
-        .map(str::to_string)
-        .or_else(|| std::env::var("OPENAI_MODEL").ok())
-        .unwrap_or_else(|| app_config.llm.model.clone());
-    tracing::info!(%model, protocol = "openai-compatible", "当前使用模型");
-    Ok(Arc::new(OpenAIClient::new_with_config(
-        api_key,
-        base_url,
-        model,
-        &app_config.llm,
-    )?))
+    let (client, selected) = build_configured_client(
+        app_config,
+        option_value(invocation, "provider"),
+        option_value(invocation, "model"),
+    )?;
+    tracing::info!(
+        provider = %selected.id,
+        protocol = selected.protocol.as_str(),
+        model = %selected.model,
+        base_url = %selected.base_url,
+        "当前使用已配置 Provider"
+    );
+    Ok(client)
 }
 
 struct OfflineClient;
@@ -379,6 +631,7 @@ async fn dispatch_runtime_command(
     app_config: config::AppConfig,
     default_agent_id: String,
     default_context_id: String,
+    tui_mode: bool,
 ) -> Result<(), AppError> {
     let command = invocation.command_path().join(" ");
     match command.as_str() {
@@ -391,13 +644,17 @@ async fn dispatch_runtime_command(
             )
             .await?;
             let prompt = nonempty_prompt(invocation.prompt());
-            run_interactive(
-                runtime,
-                session,
-                prompt,
-                app_config.orchestrator.reply_wait_notice_secs,
-            )
-            .await
+            if tui_mode {
+                morphz::tui::run(runtime, session, prompt).await
+            } else {
+                run_interactive(
+                    runtime,
+                    session,
+                    prompt,
+                    app_config.orchestrator.reply_wait_notice_secs,
+                )
+                .await
+            }
         }
         "exec" => {
             let prompt = nonempty_prompt(invocation.prompt())
@@ -425,15 +682,26 @@ async fn dispatch_runtime_command(
             shutdown_signal().await;
             Ok(())
         }
+        "provider" | "provider list" => list_providers(&app_config, &invocation),
+        "provider test" => test_provider(&app_config, &invocation).await,
+        "model" | "model list" => list_models(&app_config, &invocation).await,
+        "model use" => use_model(&app_config, &invocation),
+        "profile" | "profile list" => list_profiles(&invocation),
+        "profile show" => show_profile(&invocation),
+        "profile use" => use_profile(&invocation),
         "resume" | "session resume" => {
             let (session, prompt) = resolve_resumed_session(&runtime, &invocation).await?;
-            run_interactive(
-                runtime,
-                session,
-                nonempty_prompt(prompt),
-                app_config.orchestrator.reply_wait_notice_secs,
-            )
-            .await
+            if tui_mode {
+                morphz::tui::run(runtime, session, nonempty_prompt(prompt)).await
+            } else {
+                run_interactive(
+                    runtime,
+                    session,
+                    nonempty_prompt(prompt),
+                    app_config.orchestrator.reply_wait_notice_secs,
+                )
+                .await
+            }
         }
         "context" | "context list" => list_contexts(&runtime, &invocation).await,
         "context show" => show_context(&runtime, &invocation, &default_context_id, false).await,
@@ -452,12 +720,208 @@ async fn dispatch_runtime_command(
         "agent" | "agent list" => list_agents(&runtime, &invocation).await,
         "agent show" => show_agent(&runtime, &invocation, &default_agent_id).await,
         "agent create" => create_agent_command(&runtime, &invocation).await,
+        "objective" | "objective list" => {
+            list_objectives(&runtime, &invocation, &default_context_id).await
+        }
+        "objective show" => show_objective(&runtime, &invocation).await,
+        "objective create" => {
+            create_objective_command(&runtime, &invocation, &default_context_id).await
+        }
+        "objective edit" => edit_objective_command(&runtime, &invocation).await,
+        "objective pause" => pause_objective_command(&runtime, &invocation).await,
+        "objective resume" => resume_objective_command(&runtime, &invocation).await,
+        "objective cancel" => cancel_objective_command(&runtime, &invocation).await,
         "job" | "job list" => list_jobs(&runtime, &invocation).await,
         "job cancel" => cancel_job(&runtime, &invocation).await,
         "doctor" => doctor(&runtime, &app_config),
         "completion" => Err("Shell completion 生成器尚未实现".into()),
         command => Err(format!("命令尚未实现: {command}").into()),
     }
+}
+
+fn selected_provider_id<'a>(
+    app_config: &'a config::AppConfig,
+    invocation: &'a Invocation,
+) -> Result<&'a str, AppError> {
+    option_value(invocation, "provider")
+        .or_else(|| invocation.prompt_args().first().map(String::as_str))
+        .or(app_config.llm.provider.as_deref())
+        .ok_or_else(|| "尚未选择 Provider；请先运行 `morphz setup`".into())
+}
+
+fn list_providers(app_config: &config::AppConfig, invocation: &Invocation) -> Result<(), AppError> {
+    let mut providers = morphz::provider::builtin_provider_catalog()
+        .into_iter()
+        .map(|(id, provider)| (id, (provider, false)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (id, provider) in &app_config.providers {
+        providers.insert(id.clone(), (provider.clone(), true));
+    }
+    if json_output(invocation) {
+        let rows = providers
+            .iter()
+            .map(|(id, (provider, configured))| {
+                serde_json::json!({
+                    "id": id,
+                    "protocol": provider.protocol.as_str(),
+                    "base_url": provider.base_url,
+                    "credential": provider.credential,
+                    "configured": configured,
+                    "selected": app_config.llm.provider.as_deref() == Some(id),
+                })
+            })
+            .collect::<Vec<_>>();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+    } else {
+        for (id, (provider, configured)) in providers {
+            let selected = if app_config.llm.provider.as_deref() == Some(id.as_str()) {
+                "*"
+            } else {
+                " "
+            };
+            println!(
+                "{selected} {id}\t{}\t{}\t{}",
+                provider.protocol.as_str(),
+                provider.base_url,
+                if configured { "configured" } else { "catalog" }
+            );
+        }
+        if app_config.providers.is_empty() {
+            println!("尚未配置 Provider；运行 `morphz setup` 从 Catalog 开始配置。");
+        }
+    }
+    Ok(())
+}
+
+async fn test_provider(
+    app_config: &config::AppConfig,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let provider_id = selected_provider_id(app_config, invocation)?;
+    let probe = probe_provider(app_config, provider_id, Some(&app_config.llm.model)).await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&probe)?);
+    } else {
+        println!(
+            "Provider '{}' 测试完成：protocol={}，models={}，当前模型可用={}，流式正文={}，工具调用={}",
+            probe.provider,
+            probe.protocol,
+            probe.models_discovered,
+            probe
+                .selected_model_available
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            probe.completion_stream_verified,
+            probe.tool_call_verified,
+        );
+        if let Some(error) = &probe.catalog_error {
+            println!("模型目录不可用（不影响已通过的请求握手）：{error}");
+        }
+    }
+    Ok(())
+}
+
+async fn list_models(
+    app_config: &config::AppConfig,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let provider_id = selected_provider_id(app_config, invocation)?;
+    let models = list_provider_models(app_config, provider_id).await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&models)?);
+    } else {
+        for model in models {
+            let selected = if app_config.llm.provider.as_deref() == Some(provider_id)
+                && app_config.llm.model == model
+            {
+                "*"
+            } else {
+                " "
+            };
+            println!("{selected} {provider_id}/{model}");
+        }
+    }
+    Ok(())
+}
+
+fn use_model(app_config: &config::AppConfig, invocation: &Invocation) -> Result<(), AppError> {
+    let value = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz model use [provider/]model")?;
+    let (provider, model) = value
+        .split_once('/')
+        .filter(|(provider, _)| app_config.providers.contains_key(*provider))
+        .map(|(provider, model)| (provider.to_string(), model.to_string()))
+        .unwrap_or_else(|| {
+            (
+                app_config.llm.provider.clone().unwrap_or_default(),
+                value.clone(),
+            )
+        });
+    if provider.is_empty() {
+        return Err("模型没有 Provider 前缀，且当前没有默认 Provider".into());
+    }
+    if !app_config.providers.contains_key(&provider) {
+        return Err(format!("Provider '{provider}' 未定义").into());
+    }
+    let path = config::save_managed_model(&provider, &model)?;
+    println!(
+        "已将默认模型设为 {provider}/{model}；配置将在下一次求值或重启后生效。\n{}",
+        path.display()
+    );
+    Ok(())
+}
+
+fn list_profiles(invocation: &Invocation) -> Result<(), AppError> {
+    let profiles = config::list_profiles()?;
+    let active = config::active_profile()?;
+    if json_output(invocation) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "active": active,
+                "profiles": profiles,
+            }))?
+        );
+    } else if profiles.is_empty() {
+        println!("尚未创建 Profile；可在 Morphz 用户配置目录的 profiles/ 中添加 TOML 文件。");
+    } else {
+        for profile in profiles {
+            let selected = if active.as_deref() == Some(&profile) {
+                "*"
+            } else {
+                " "
+            };
+            println!("{selected} {profile}");
+        }
+    }
+    Ok(())
+}
+
+fn show_profile(invocation: &Invocation) -> Result<(), AppError> {
+    let profile = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz profile show <NAME>")?;
+    let cwd = std::env::current_dir()?;
+    let resolved = config::resolve_config(
+        &cwd,
+        selected_config_path(invocation).as_deref(),
+        Some(profile),
+    )?;
+    println!("{:#?}", resolved.config);
+    Ok(())
+}
+
+fn use_profile(invocation: &Invocation) -> Result<(), AppError> {
+    let profile = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz profile use <NAME>")?;
+    let path = config::select_active_profile(profile)?;
+    println!("已将默认 Profile 设为 '{profile}'。\n{}", path.display());
+    Ok(())
 }
 
 fn nonempty_prompt(prompt: String) -> Option<String> {
@@ -858,6 +1322,369 @@ async fn create_agent_command(
     Ok(())
 }
 
+async fn list_objectives(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    default_context_id: &str,
+) -> Result<(), AppError> {
+    let context_id = option_value(invocation, "context").unwrap_or(default_context_id);
+    let records = runtime
+        .list_context_objectives(context_id, switch_enabled(invocation, "include-terminal")?)
+        .await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&records)?);
+    } else {
+        for record in records {
+            let wait = record
+                .wait_condition
+                .as_ref()
+                .map(|wait| serde_json::to_string(wait).unwrap_or_else(|_| "invalid".to_string()))
+                .unwrap_or_else(|| "none".to_string());
+            println!(
+                "{}  [{}]  rev={}  session={}  wait={}  {}",
+                record.id,
+                record.status.as_str(),
+                record.revision,
+                record.coordinator_session_id,
+                wait,
+                record
+                    .stated_objective
+                    .replace('\n', " ")
+                    .chars()
+                    .take(120)
+                    .collect::<String>()
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn show_objective(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {
+    let id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz objective show <ID>")?;
+    let record = runtime
+        .get_objective(id)
+        .await?
+        .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+    println!("{}", serde_json::to_string_pretty(&record)?);
+    Ok(())
+}
+
+async fn objective_session(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    context_id: &str,
+) -> Result<SessionRecord, AppError> {
+    if let Some(session_id) = option_value(invocation, "session") {
+        let session = runtime
+            .get_session(session_id)
+            .await?
+            .ok_or_else(|| format!("Session '{session_id}' 不存在"))?;
+        ensure_active_session(&session)?;
+        if session.context_id != context_id {
+            return Err(format!(
+                "Session '{}' 挂载在 Context '{}'，不是 Objective Context '{}'",
+                session.id, session.context_id, context_id
+            )
+            .into());
+        }
+        return Ok(session);
+    }
+    if let Some(session) = runtime
+        .list_context_sessions(context_id, false)
+        .await?
+        .into_iter()
+        .next()
+    {
+        return Ok(session);
+    }
+    let context = runtime
+        .get_context(context_id)
+        .await?
+        .ok_or_else(|| format!("Context '{context_id}' 不存在"))?;
+    runtime
+        .create_session(NewSession {
+            id: generated_id("session"),
+            agent_id: context.agent_id,
+            context_id: context.id,
+            parent_session_id: None,
+            title: "Objective Coordinator".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+}
+
+async fn create_objective_command(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    default_context_id: &str,
+) -> Result<(), AppError> {
+    let stated_objective = invocation.prompt();
+    if stated_objective.trim().is_empty() {
+        return Err("用法: morphz objective create [--session=ID] GOAL...".into());
+    }
+    let context_id = option_value(invocation, "context").unwrap_or(default_context_id);
+    let context = runtime
+        .get_context(context_id)
+        .await?
+        .ok_or_else(|| format!("Context '{context_id}' 不存在"))?;
+    let session = objective_session(runtime, invocation, context_id).await?;
+    if session.agent_id != context.agent_id {
+        return Err("Objective coordinator Session 与 Context 的 Agent 不一致".into());
+    }
+    let objective_id = option_value(invocation, "id")
+        .map(str::to_string)
+        .unwrap_or_else(|| generated_id("objective"));
+    validate_identifier("objective_id", &objective_id)?;
+    let token_budget = option_value(invocation, "token-budget")
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|_| "--token-budget 必须是正整数")
+                .and_then(|value| {
+                    (value > 0)
+                        .then_some(value)
+                        .ok_or("--token-budget 必须大于 0")
+                })
+        })
+        .transpose()?;
+    let mut events = runtime.subscribe("*", 256);
+    let source_event_id = generated_id("objective_request");
+    runtime
+        .publish(Event::new(
+            source_event_id.clone(),
+            "User-CLI".to_string(),
+            "objective_request".to_string(),
+            "objective/requested".to_string(),
+            vec![
+                ("context_id".to_string(), serde_json::json!(context.id)),
+                ("session_id".to_string(), serde_json::json!(session.id)),
+                (
+                    "requested_objective_id".to_string(),
+                    serde_json::json!(objective_id),
+                ),
+                ("text".to_string(), serde_json::json!(stated_objective)),
+            ]
+            .into_iter()
+            .collect(),
+        ))
+        .await?;
+    let objective = runtime
+        .create_objective(NewObjective {
+            id: objective_id,
+            agent_id: context.agent_id,
+            context_id: context.id,
+            coordinator_session_id: session.id.clone(),
+            delivery_session_id: session.id.clone(),
+            parent_objective_id: None,
+            source_event_id,
+            stated_objective,
+            token_budget,
+        })
+        .await?;
+    eprintln!(
+        "[Objective 已启动] {}  session={}  revision={}",
+        objective.id, objective.coordinator_session_id, objective.revision
+    );
+    monitor_objective(runtime, &objective.id, &session.id, &mut events).await
+}
+
+async fn edit_objective_command(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz objective edit <ID> NEW_GOAL...")?;
+    let stated_objective = invocation.prompt_args()[1..].join(" ");
+    if stated_objective.trim().is_empty() {
+        return Err("objective edit 缺少 NEW_GOAL".into());
+    }
+    let current = runtime
+        .get_objective(id)
+        .await?
+        .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+    print_objective_mutation(
+        runtime
+            .edit_objective(id, current.revision, &stated_objective)
+            .await?,
+    )
+}
+
+fn lifecycle_reason(invocation: &Invocation, fallback: &str) -> String {
+    option_value(invocation, "reason")
+        .map(str::to_string)
+        .or_else(|| {
+            (invocation.prompt_args().len() > 1).then(|| invocation.prompt_args()[1..].join(" "))
+        })
+        .filter(|reason| !reason.trim().is_empty())
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+async fn pause_objective_command(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz objective pause <ID> [--reason=TEXT]")?;
+    let current = runtime
+        .get_objective(id)
+        .await?
+        .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+    print_objective_mutation(
+        runtime
+            .pause_objective(
+                id,
+                current.revision,
+                &lifecycle_reason(invocation, "用户通过 CLI 暂停"),
+            )
+            .await?,
+    )
+}
+
+async fn resume_objective_command(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz objective resume <ID> [--reason=TEXT]")?;
+    let current = runtime
+        .get_objective(id)
+        .await?
+        .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+    let mut events = runtime.subscribe("*", 256);
+    let mutation = runtime
+        .resume_objective(
+            id,
+            current.revision,
+            &lifecycle_reason(invocation, "用户通过 CLI 恢复"),
+        )
+        .await?;
+    let updated = mutation_updated(mutation)?;
+    eprintln!(
+        "[Objective 已恢复] {}  revision={}",
+        updated.id, updated.revision
+    );
+    monitor_objective(
+        runtime,
+        &updated.id,
+        &updated.delivery_session_id,
+        &mut events,
+    )
+    .await
+}
+
+async fn cancel_objective_command(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz objective cancel <ID> [--reason=TEXT]")?;
+    let current = runtime
+        .get_objective(id)
+        .await?
+        .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+    print_objective_mutation(
+        runtime
+            .cancel_objective(
+                id,
+                current.revision,
+                &lifecycle_reason(invocation, "用户通过 CLI 取消"),
+            )
+            .await?,
+    )
+}
+
+fn mutation_updated(
+    mutation: ObjectiveMutation,
+) -> Result<morphz::memory::ObjectiveRecord, AppError> {
+    match mutation {
+        ObjectiveMutation::Updated(updated) => Ok(updated),
+        ObjectiveMutation::Conflict { current } => Err(format!(
+            "Objective revision 冲突；当前 revision={} status={}",
+            current.revision,
+            current.status.as_str()
+        )
+        .into()),
+        ObjectiveMutation::NotFound => Err("Objective 不存在".into()),
+    }
+}
+
+fn print_objective_mutation(mutation: ObjectiveMutation) -> Result<(), AppError> {
+    let updated = mutation_updated(mutation)?;
+    println!("{}", serde_json::to_string_pretty(&updated)?);
+    Ok(())
+}
+
+async fn monitor_objective(
+    runtime: &MorphzRuntime,
+    objective_id: &str,
+    delivery_session_id: &str,
+    events: &mut RuntimeEventStream,
+) -> Result<(), AppError> {
+    while let Some(event) = events.recv().await {
+        let Some((event_session, text, kind)) = console_message_from_event(&event) else {
+            continue;
+        };
+        if event_session != delivery_session_id {
+            continue;
+        }
+        match kind {
+            ConsoleMessageKind::Final => {
+                if !text.trim().is_empty() {
+                    println!("{text}");
+                }
+            }
+            ConsoleMessageKind::Suppressed => {}
+            ConsoleMessageKind::Progress => {
+                if !text.trim().is_empty() {
+                    eprintln!("[Agent 进度] {text}");
+                }
+            }
+            ConsoleMessageKind::ToolCall => eprintln!("{text}"),
+            ConsoleMessageKind::Approval => {
+                let mut stdin = std::io::stdin().lock();
+                let mut stderr = std::io::stderr();
+                prompt_for_human_approval(&text, runtime, &mut stdin, &mut stderr)
+                    .map_err(|error| format!("审批失败: {error}"))?;
+            }
+        }
+        if matches!(
+            kind,
+            ConsoleMessageKind::Final | ConsoleMessageKind::Suppressed
+        ) {
+            let objective = runtime
+                .get_objective(objective_id)
+                .await?
+                .ok_or_else(|| format!("Objective '{objective_id}' 在运行中丢失"))?;
+            if objective.status.is_terminal()
+                || matches!(
+                    objective.status,
+                    ObjectiveStatus::Paused | ObjectiveStatus::Blocked
+                )
+            {
+                eprintln!(
+                    "[Objective 结束监控] {}  status={}  revision={}",
+                    objective.id,
+                    objective.status.as_str(),
+                    objective.revision
+                );
+                return Ok(());
+            }
+        }
+    }
+    Err("Objective 事件通道已关闭".into())
+}
+
 async fn list_jobs(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {
     let jobs = runtime.list_delegations().await?;
     if json_output(invocation) {
@@ -900,14 +1727,19 @@ fn doctor(runtime: &MorphzRuntime, app_config: &config::AppConfig) -> Result<(),
         app_config.permissions.preset().0,
         app_config.permissions.preset().1
     );
-    println!(
-        "[{}] OPENAI_API_KEY",
-        if std::env::var_os("OPENAI_API_KEY").is_some() {
-            "ok"
-        } else {
-            "optional-missing"
+    if let Some(provider) = app_config.llm.provider.as_deref() {
+        match build_configured_client(app_config, Some(provider), None) {
+            Ok((_, selected)) => println!(
+                "[ok] provider: {}/{} ({})",
+                selected.id,
+                selected.model,
+                selected.protocol.as_str()
+            ),
+            Err(error) => println!("[error] provider: {provider}: {error}"),
         }
-    );
+    } else {
+        println!("[missing] provider: run `morphz setup`");
+    }
     println!("[ok] tools: {}", runtime.tool_names().join(", "));
     Ok(())
 }
@@ -1563,8 +2395,9 @@ mod tests {
     use super::{
         apply_cli_config, command_needs_llm, console_message_from_event, create_session_command,
         format_tool_call_activity, parse_terminal_approval_input, read_console_input,
-        resolve_resumed_session, select_or_create_console_session, wait_for_session_reply,
-        ConsoleInput, ConsoleMessageKind, OfflineClient,
+        resolve_resumed_session, select_or_create_console_session,
+        should_run_first_time_setup_with_terminal, should_use_tui_with_terminal,
+        wait_for_session_reply, ConsoleInput, ConsoleMessageKind, OfflineClient,
     };
     use morphz::approval::ApprovalDecision;
     use morphz::cli::morphz_command_line_parser;
@@ -1578,7 +2411,64 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn single_line_input_remains_backward_compatible() {
+    fn tui_is_default_only_for_interactive_conversations_and_can_be_overridden() {
+        let parser = morphz_command_line_parser();
+        assert!(should_use_tui_with_terminal(&parser.parse(["hello"]).unwrap(), true).unwrap());
+        assert!(!should_use_tui_with_terminal(&parser.parse(["hello"]).unwrap(), false).unwrap());
+        assert!(
+            should_use_tui_with_terminal(&parser.parse(["--tui", "hello"]).unwrap(), false)
+                .unwrap()
+        );
+        assert!(
+            !should_use_tui_with_terminal(&parser.parse(["--plain", "hello"]).unwrap(), true)
+                .unwrap()
+        );
+        assert!(
+            !should_use_tui_with_terminal(&parser.parse(["exec", "hello"]).unwrap(), true).unwrap()
+        );
+        assert!(
+            should_use_tui_with_terminal(&parser.parse(["--tui", "--plain"]).unwrap(), true)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn first_interactive_conversation_enters_setup_only_without_any_model_selection() {
+        let parser = morphz_command_line_parser();
+        let bare = parser.parse(std::iter::empty::<&str>()).unwrap();
+        let resume = parser.parse(["resume"]).unwrap();
+        let exec = parser.parse(["exec", "hello"]).unwrap();
+        let mut config = AppConfig::default();
+
+        assert!(should_run_first_time_setup_with_terminal(
+            &bare, &config, true
+        ));
+        assert!(should_run_first_time_setup_with_terminal(
+            &resume, &config, true
+        ));
+        assert!(!should_run_first_time_setup_with_terminal(
+            &bare, &config, false
+        ));
+        assert!(!should_run_first_time_setup_with_terminal(
+            &exec, &config, true
+        ));
+
+        config.llm.provider = Some("configured".to_string());
+        assert!(!should_run_first_time_setup_with_terminal(
+            &bare, &config, true
+        ));
+
+        let provider_override = parser.parse(["--provider=custom"]).unwrap();
+        config.llm.provider = None;
+        assert!(!should_run_first_time_setup_with_terminal(
+            &provider_override,
+            &config,
+            true,
+        ));
+    }
+
+    #[test]
+    fn single_line_input_preserves_prompt_text() {
         let mut input = Cursor::new("  hello Morphz  \n");
         let mut output = Vec::new();
 

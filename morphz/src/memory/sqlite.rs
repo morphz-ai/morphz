@@ -2,8 +2,10 @@ use crate::config::MemoryConfig;
 use crate::event::Event;
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, DelegationRecord, DelegationStatus,
-    EventStore, MessageClaim, NewAgent, NewCognitiveContext, NewDelegation, NewSession,
-    QueryFilter, SessionMountKind, SessionRecord, SessionStatus, SessionStore, SessionUpdate,
+    EventStore, MessageClaim, NewAgent, NewCognitiveContext, NewDelegation, NewObjective,
+    NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, SessionMountKind, SessionRecord, SessionStatus,
+    SessionStore, SessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -54,6 +56,8 @@ impl SqliteStore {
         );
         CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
         CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic);
+        CREATE INDEX IF NOT EXISTS idx_events_session_time ON events(session_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_events_context_time ON events(context_id, timestamp);
 
         CREATE TABLE IF NOT EXISTS agents (
             id TEXT PRIMARY KEY,
@@ -127,6 +131,36 @@ impl SqliteStore {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_delegations_child
             ON delegations(child_session_id);
 
+        CREATE TABLE IF NOT EXISTS objectives (
+            id TEXT PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            context_id TEXT NOT NULL,
+            coordinator_session_id TEXT NOT NULL,
+            delivery_session_id TEXT NOT NULL,
+            parent_objective_id TEXT,
+            source_event_id TEXT NOT NULL,
+            stated_objective TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK(revision >= 1),
+            status TEXT NOT NULL CHECK(status IN ('active', 'paused', 'blocked', 'completed', 'cancelled', 'failed')),
+            wait_condition_json TEXT,
+            active_evaluation_id TEXT,
+            evaluation_lease_expires_at TEXT,
+            continuation_sequence INTEGER NOT NULL DEFAULT 0 CHECK(continuation_sequence >= 0),
+            token_budget INTEGER,
+            tokens_used INTEGER NOT NULL DEFAULT 0 CHECK(tokens_used >= 0),
+            time_used_seconds INTEGER NOT NULL DEFAULT 0 CHECK(time_used_seconds >= 0),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(context_id) REFERENCES cognitive_contexts(id),
+            FOREIGN KEY(coordinator_session_id) REFERENCES sessions(id),
+            FOREIGN KEY(delivery_session_id) REFERENCES sessions(id),
+            FOREIGN KEY(parent_objective_id) REFERENCES objectives(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_objectives_context_status_updated
+            ON objectives(context_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_objectives_coordinator_status
+            ON objectives(coordinator_session_id, status);
+
         CREATE TABLE IF NOT EXISTS session_message_requests (
             session_id TEXT NOT NULL,
             client_message_id TEXT NOT NULL,
@@ -138,114 +172,6 @@ impl SqliteStore {
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
-
-        let context_columns = sqlx::query("PRAGMA table_info(cognitive_contexts)")
-            .fetch_all(&pool)
-            .await?;
-        for (name, definition) in [
-            ("seed_context_id", "TEXT"),
-            ("seed_context_version", "INTEGER"),
-            ("seed_snapshot_hash", "TEXT"),
-            ("seed_projection", "TEXT"),
-        ] {
-            if !context_columns
-                .iter()
-                .any(|row| row.get::<String, _>("name") == name)
-            {
-                sqlx::query(&format!(
-                    "ALTER TABLE cognitive_contexts ADD COLUMN {name} {definition}"
-                ))
-                .execute(&pool)
-                .await?;
-            }
-        }
-
-        // v1 migration：旧 events 表没有 session_id 物理列。Context Engine 必须能按
-        // session 精确查询，不能每轮加载全局事件后在 Rust 中过滤。
-        let columns = sqlx::query("PRAGMA table_info(events)")
-            .fetch_all(&pool)
-            .await?;
-        let has_session_id = columns
-            .iter()
-            .any(|row| row.get::<String, _>("name") == "session_id");
-        if !has_session_id {
-            sqlx::query("ALTER TABLE events ADD COLUMN session_id TEXT")
-                .execute(&pool)
-                .await?;
-        }
-        let has_context_id = columns
-            .iter()
-            .any(|row| row.get::<String, _>("name") == "context_id");
-        if !has_context_id {
-            sqlx::query("ALTER TABLE events ADD COLUMN context_id TEXT")
-                .execute(&pool)
-                .await?;
-        }
-        sqlx::query(
-            "UPDATE events SET session_id = json_extract(payload, '$.session_id') WHERE session_id IS NULL",
-        )
-        .execute(&pool)
-        .await?;
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_events_session_time ON events(session_id, timestamp)",
-        )
-        .execute(&pool)
-        .await?;
-        sqlx::query(
-            "UPDATE events SET context_id = COALESCE(json_extract(payload, '$.context_id'), session_id) WHERE context_id IS NULL",
-        )
-        .execute(&pool)
-        .await?;
-        sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_events_context_time ON events(context_id, timestamp)",
-        )
-        .execute(&pool)
-        .await?;
-
-        // Backfill product-level Session identities for databases created before
-        // Session Registry v1. Context attachment is intentionally one-to-one in
-        // this version; the separate column preserves the future shared/COW seam.
-        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        sqlx::query(
-            r#"INSERT OR IGNORE INTO sessions
-               (id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, last_activity_at)
-               SELECT session_id, 'default-agent', COALESCE(MIN(context_id), session_id), NULL, session_id, 'active',
-                      MIN(timestamp), MAX(timestamp), MAX(timestamp)
-               FROM events
-               WHERE session_id IS NOT NULL AND session_id != ''
-               GROUP BY session_id"#,
-        )
-        .execute(&pool)
-        .await?;
-        sqlx::query(
-            r#"INSERT OR IGNORE INTO cognitive_contexts
-               (id, agent_id, title, status, created_at, updated_at)
-               SELECT context_id, agent_id, context_id, 'active', MIN(created_at), MAX(updated_at)
-               FROM sessions
-               GROUP BY context_id, agent_id"#,
-        )
-        .execute(&pool)
-        .await?;
-        sqlx::query(
-            r#"INSERT OR IGNORE INTO agents
-               (id, title, status, root_context_id, created_at, updated_at)
-               SELECT agent_id, agent_id, 'active', MIN(id), MIN(created_at), MAX(updated_at)
-               FROM cognitive_contexts
-               GROUP BY agent_id"#,
-        )
-        .execute(&pool)
-        .await?;
-        sqlx::query(
-            r#"INSERT OR IGNORE INTO session_mounts
-               (session_id, generation, context_id, mount_kind, mounted_at, unmounted_at)
-               SELECT id, 1, context_id, 'existing_context', created_at, NULL
-               FROM sessions"#,
-        )
-        .execute(&pool)
-        .await?;
-        // `events` can be empty, but retaining this bind-worthy value here makes
-        // the migration timestamp policy explicit for future schema additions.
-        let _migration_time = now;
 
         Ok(Self { pool })
     }
@@ -266,6 +192,40 @@ fn parse_delegation_status(value: &str) -> DelegationStatus {
         "cancelled" => DelegationStatus::Cancelled,
         _ => DelegationStatus::Queued,
     }
+}
+
+fn parse_objective_status(
+    value: &str,
+) -> Result<ObjectiveStatus, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "active" => Ok(ObjectiveStatus::Active),
+        "paused" => Ok(ObjectiveStatus::Paused),
+        "blocked" => Ok(ObjectiveStatus::Blocked),
+        "completed" => Ok(ObjectiveStatus::Completed),
+        "cancelled" => Ok(ObjectiveStatus::Cancelled),
+        "failed" => Ok(ObjectiveStatus::Failed),
+        other => Err(format!("未知 Objective 状态：'{other}'").into()),
+    }
+}
+
+fn sqlite_u64(
+    row: &sqlx::sqlite::SqliteRow,
+    column: &str,
+) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+    let value = row.get::<i64, _>(column);
+    u64::try_from(value).map_err(|_| format!("Objective 字段 '{column}' 不能为负数").into())
+}
+
+fn sqlite_optional_u64(
+    row: &sqlx::sqlite::SqliteRow,
+    column: &str,
+) -> Result<Option<u64>, Box<dyn std::error::Error + Send + Sync>> {
+    row.get::<Option<i64>, _>(column)
+        .map(|value| {
+            u64::try_from(value).map_err(|_| format!("Objective 字段 '{column}' 不能为负数"))
+        })
+        .transpose()
+        .map_err(Into::into)
 }
 
 fn agent_from_row(row: &sqlx::sqlite::SqliteRow) -> AgentRecord {
@@ -326,6 +286,39 @@ fn context_from_row(row: &sqlx::sqlite::SqliteRow) -> CognitiveContextRecord {
         seed_snapshot_hash: row.get("seed_snapshot_hash"),
         seed_projection: row.get("seed_projection"),
     }
+}
+
+fn objective_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<ObjectiveRecord, Box<dyn std::error::Error + Send + Sync>> {
+    let wait_condition = row
+        .get::<Option<String>, _>("wait_condition_json")
+        .map(|json| serde_json::from_str::<ObjectiveWaitCondition>(&json))
+        .transpose()?;
+    Ok(ObjectiveRecord {
+        id: row.get("id"),
+        agent_id: row.get("agent_id"),
+        context_id: row.get("context_id"),
+        coordinator_session_id: row.get("coordinator_session_id"),
+        delivery_session_id: row.get("delivery_session_id"),
+        parent_objective_id: row.get("parent_objective_id"),
+        source_event_id: row.get("source_event_id"),
+        stated_objective: row.get("stated_objective"),
+        revision: sqlite_u64(row, "revision")?,
+        status: parse_objective_status(&row.get::<String, _>("status"))?,
+        wait_condition,
+        active_evaluation_id: row.get("active_evaluation_id"),
+        evaluation_lease_expires_at: row
+            .get::<Option<String>, _>("evaluation_lease_expires_at")
+            .as_deref()
+            .map(parse_time),
+        continuation_sequence: sqlite_u64(row, "continuation_sequence")?,
+        token_budget: sqlite_optional_u64(row, "token_budget")?,
+        tokens_used: sqlite_u64(row, "tokens_used")?,
+        time_used_seconds: sqlite_u64(row, "time_used_seconds")?,
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
 }
 
 #[async_trait::async_trait]
@@ -927,13 +920,390 @@ impl SessionStore for SqliteStore {
     }
 }
 
+const OBJECTIVE_SELECT: &str = r#"SELECT id, agent_id, context_id,
+    coordinator_session_id, delivery_session_id, parent_objective_id, source_event_id,
+    stated_objective, revision, status, wait_condition_json, active_evaluation_id,
+    evaluation_lease_expires_at, continuation_sequence, token_budget, tokens_used,
+    time_used_seconds, created_at, updated_at
+    FROM objectives"#;
+
+fn validate_stated_objective(
+    stated_objective: &str,
+) -> Result<&str, Box<dyn std::error::Error + Send + Sync>> {
+    let stated_objective = stated_objective.trim();
+    if stated_objective.is_empty() {
+        return Err("Objective 目标不能为空".into());
+    }
+    if stated_objective.chars().count() > 1_000_000 {
+        return Err("Objective 目标超过 1,000,000 字符上限".into());
+    }
+    Ok(stated_objective)
+}
+
+#[async_trait::async_trait]
+impl ObjectiveStore for SqliteStore {
+    async fn create_objective(
+        &self,
+        objective: NewObjective,
+    ) -> Result<ObjectiveRecord, Box<dyn std::error::Error + Send + Sync>> {
+        let stated_objective = validate_stated_objective(&objective.stated_objective)?;
+        let context = self
+            .get_context(&objective.context_id)
+            .await?
+            .ok_or_else(|| format!("Objective Context '{}' 不存在", objective.context_id))?;
+        let coordinator = self
+            .get_session(&objective.coordinator_session_id)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Objective 协调 Session '{}' 不存在",
+                    objective.coordinator_session_id
+                )
+            })?;
+        let delivery = self
+            .get_session(&objective.delivery_session_id)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Objective 交付 Session '{}' 不存在",
+                    objective.delivery_session_id
+                )
+            })?;
+        if context.agent_id != objective.agent_id
+            || coordinator.agent_id != objective.agent_id
+            || delivery.agent_id != objective.agent_id
+            || coordinator.context_id != objective.context_id
+            || delivery.context_id != objective.context_id
+        {
+            return Err("Objective 的 Agent/Context/Session 路由不一致".into());
+        }
+        if let Some(parent_id) = objective.parent_objective_id.as_deref() {
+            let parent = self
+                .get_objective(parent_id)
+                .await?
+                .ok_or_else(|| format!("父 Objective '{parent_id}' 不存在"))?;
+            if parent.agent_id != objective.agent_id {
+                return Err(format!(
+                    "父 Objective '{parent_id}' 属于 Agent '{}'，不能挂到 Agent '{}'",
+                    parent.agent_id, objective.agent_id
+                )
+                .into());
+            }
+        }
+        let token_budget = objective
+            .token_budget
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| "Objective token budget 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT INTO objectives
+               (id, agent_id, context_id, coordinator_session_id, delivery_session_id,
+                parent_objective_id, source_event_id, stated_objective, revision, status,
+                wait_condition_json, active_evaluation_id, evaluation_lease_expires_at,
+                continuation_sequence, token_budget, tokens_used, time_used_seconds,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', NULL, NULL, NULL, 0, ?, 0, 0, ?, ?)"#,
+        )
+        .bind(&objective.id)
+        .bind(&objective.agent_id)
+        .bind(&objective.context_id)
+        .bind(&objective.coordinator_session_id)
+        .bind(&objective.delivery_session_id)
+        .bind(&objective.parent_objective_id)
+        .bind(&objective.source_event_id)
+        .bind(stated_objective)
+        .bind(token_budget)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.get_objective(&objective.id)
+            .await?
+            .ok_or_else(|| "Objective 创建后无法读取".into())
+    }
+
+    async fn get_objective(
+        &self,
+        id: &str,
+    ) -> Result<Option<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query(&format!("{OBJECTIVE_SELECT} WHERE id = ?"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(objective_from_row).transpose()
+    }
+
+    async fn list_context_objectives(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let sql = if include_terminal {
+            format!("{OBJECTIVE_SELECT} WHERE context_id = ? ORDER BY updated_at DESC")
+        } else {
+            format!(
+                "{OBJECTIVE_SELECT} WHERE context_id = ? AND status NOT IN ('completed', 'cancelled', 'failed') ORDER BY updated_at DESC"
+            )
+        };
+        let rows = sqlx::query(&sql)
+            .bind(context_id)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(objective_from_row).collect()
+    }
+
+    async fn list_recoverable_objectives(
+        &self,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(&format!(
+            "{OBJECTIVE_SELECT} WHERE status IN ('active', 'paused', 'blocked') OR active_evaluation_id IS NOT NULL ORDER BY updated_at"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(objective_from_row).collect()
+    }
+
+    async fn edit_objective(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        stated_objective: &str,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let stated_objective = validate_stated_objective(stated_objective)?;
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if current.revision != expected_revision {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        if current.status.is_terminal() {
+            return Err(format!("终态 Objective '{id}' 不能再修改目标").into());
+        }
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Objective revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            "UPDATE objectives SET stated_objective = ?, revision = revision + 1, updated_at = ? WHERE id = ? AND revision = ?",
+        )
+        .bind(stated_objective)
+        .bind(now)
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective 更新后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
+    async fn update_objective_state(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        status: ObjectiveStatus,
+        wait_condition: Option<ObjectiveWaitCondition>,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if current.revision != expected_revision {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        if !current.status.can_transition_to(status) {
+            return Err(format!(
+                "Objective '{id}' 不允许从 '{}' 迁移到 '{}'",
+                current.status.as_str(),
+                status.as_str()
+            )
+            .into());
+        }
+        if status != ObjectiveStatus::Active && wait_condition.is_some() {
+            return Err("只有 active Objective 可以携带等待条件".into());
+        }
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Objective revision 超出 SQLite INTEGER 范围")?;
+        let wait_condition_json = wait_condition
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET status = ?, wait_condition_json = ?,
+                   revision = revision + 1, updated_at = ?
+               WHERE id = ? AND revision = ?"#,
+        )
+        .bind(status.as_str())
+        .bind(wait_condition_json)
+        .bind(now)
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective 状态更新后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
+    async fn claim_objective_evaluation(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if evaluation_id.trim().is_empty() {
+            return Err("Objective Evaluation ID 不能为空".into());
+        }
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if current.revision != expected_revision
+            || current.status != ObjectiveStatus::Active
+            || current.wait_condition.is_some()
+            || current
+                .evaluation_lease_expires_at
+                .is_some_and(|expires_at| expires_at > Utc::now())
+        {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Objective revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let lease_expires_at = lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET active_evaluation_id = ?, evaluation_lease_expires_at = ?,
+                   continuation_sequence = continuation_sequence + 1,
+                   revision = revision + 1, updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'active'
+                 AND wait_condition_json IS NULL
+                 AND (active_evaluation_id IS NULL OR evaluation_lease_expires_at <= ?)"#,
+        )
+        .bind(evaluation_id)
+        .bind(lease_expires_at)
+        .bind(&now)
+        .bind(id)
+        .bind(expected_revision)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective Evaluation 租约提交后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
+    async fn finish_objective_evaluation(
+        &self,
+        id: &str,
+        evaluation_id: &str,
+        tokens_used: u64,
+        time_used_seconds: u64,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if current.active_evaluation_id.as_deref() != Some(evaluation_id) {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        let revision = i64::try_from(current.revision)
+            .map_err(|_| "Objective revision 超出 SQLite INTEGER 范围")?;
+        let tokens_used = i64::try_from(tokens_used)
+            .map_err(|_| "Objective token 增量超出 SQLite INTEGER 范围")?;
+        let time_used_seconds = i64::try_from(time_used_seconds)
+            .map_err(|_| "Objective time 增量超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET active_evaluation_id = NULL, evaluation_lease_expires_at = NULL,
+                   tokens_used = tokens_used + ?, time_used_seconds = time_used_seconds + ?,
+                   revision = revision + 1, updated_at = ?
+               WHERE id = ? AND revision = ? AND active_evaluation_id = ?"#,
+        )
+        .bind(tokens_used)
+        .bind(time_used_seconds)
+        .bind(now)
+        .bind(id)
+        .bind(revision)
+        .bind(evaluation_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective Evaluation 结束后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
+    async fn record_objective_evaluation_usage(
+        &self,
+        id: &str,
+        evaluation_id: &str,
+        prompt_tokens_used: u64,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let prompt_tokens_used = i64::try_from(prompt_tokens_used)
+            .map_err(|_| "Objective token 增量超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET tokens_used = tokens_used + ?, updated_at = ?
+               WHERE id = ? AND status = 'active' AND active_evaluation_id = ?"#,
+        )
+        .bind(prompt_tokens_used)
+        .bind(now)
+        .bind(id)
+        .bind(evaluation_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective Evaluation 记账后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+}
+
 fn parse_time(s: &str) -> DateTime<Utc> {
     DateTime::parse_from_rfc3339(s)
         .map(|dt| dt.with_timezone(&Utc))
-        .unwrap_or_else(|_| {
-            // 兼容其他可能非 RFC3339 的标准格式
-            Utc::now()
-        })
+        .expect("Morphz 数据库时间戳必须是 RFC3339")
 }
 
 #[async_trait::async_trait]
@@ -1145,53 +1515,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_event_schema_migrates_and_backfills_session_id() {
+    async fn incomplete_event_schema_is_rejected() {
         let tmp_file = NamedTempFile::new().unwrap();
         let url = format!("sqlite://{}", tmp_file.path().display());
-        let legacy_pool = SqlitePool::connect(&url).await.unwrap();
+        let incomplete_pool = SqlitePool::connect(&url).await.unwrap();
         sqlx::query(
             "CREATE TABLE events (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, actor TEXT NOT NULL, type TEXT NOT NULL, topic TEXT NOT NULL, payload TEXT NOT NULL)",
         )
-        .execute(&legacy_pool)
+        .execute(&incomplete_pool)
         .await
         .unwrap();
         sqlx::query(
             "INSERT INTO events (id, timestamp, actor, type, topic, payload) VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .bind("legacy-event")
+        .bind("incomplete-event")
         .bind(Utc::now().to_rfc3339())
-        .bind("legacy")
+        .bind("fixture")
         .bind("user_message")
         .bind("chat/user_message")
-        .bind(r#"{"session_id":"legacy-session","text":"hello"}"#)
-        .execute(&legacy_pool)
+        .bind(r#"{"session_id":"incomplete-session","text":"hello"}"#)
+        .execute(&incomplete_pool)
         .await
         .unwrap();
-        legacy_pool.close().await;
+        incomplete_pool.close().await;
 
-        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
-            .await
-            .unwrap();
-        let events = store
-            .query(QueryFilter {
-                session_id: Some("legacy-session".to_string()),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].id, "legacy-event");
-        let session = store
-            .get_session("legacy-session")
-            .await
-            .unwrap()
-            .expect("legacy Event 应回填 Session Registry");
-        assert_eq!(session.context_id, "legacy-session");
-        assert_eq!(session.agent_id, "default-agent");
+        let result = SqliteStore::new(tmp_file.path().to_str().unwrap()).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn session_backfill_preserves_an_explicit_context_route() {
+    async fn events_do_not_implicitly_create_session_registry_entries() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
@@ -1224,12 +1577,8 @@ mod tests {
         let reopened = SqliteStore::new(tmp_file.path().to_str().unwrap())
             .await
             .unwrap();
-        let session = reopened
-            .get_session("mounted-session")
-            .await
-            .unwrap()
-            .expect("Event route should backfill the Session registry");
-        assert_eq!(session.context_id, "shared-context");
+        let session = reopened.get_session("mounted-session").await.unwrap();
+        assert!(session.is_none());
     }
 
     #[tokio::test]
@@ -1489,5 +1838,226 @@ mod tests {
                 .status,
             DelegationStatus::Completed
         );
+    }
+
+    #[tokio::test]
+    async fn objectives_persist_wait_state_and_enforce_revisioned_lifecycle() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let db_path = tmp_file.path().to_path_buf();
+        let store = SqliteStore::new(db_path.to_str().unwrap()).await.unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "agent-objective".to_string(),
+                    title: "Objective Agent".to_string(),
+                    root_context_id: "context-objective".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "context-objective".to_string(),
+                    agent_id: "agent-objective".to_string(),
+                    title: "Objective Context".to_string(),
+                },
+                NewSession {
+                    id: "session-objective".to_string(),
+                    agent_id: "agent-objective".to_string(),
+                    context_id: "context-objective".to_string(),
+                    parent_session_id: None,
+                    title: "Objective Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+
+        let created = store
+            .create_objective(NewObjective {
+                id: "objective-1".to_string(),
+                agent_id: "agent-objective".to_string(),
+                context_id: "context-objective".to_string(),
+                coordinator_session_id: "session-objective".to_string(),
+                delivery_session_id: "session-objective".to_string(),
+                parent_objective_id: None,
+                source_event_id: "user-event-1".to_string(),
+                stated_objective: "完成一项可恢复的长程工作".to_string(),
+                token_budget: Some(256_000),
+            })
+            .await
+            .unwrap();
+        assert_eq!(created.status, ObjectiveStatus::Active);
+        assert_eq!(created.revision, 1);
+
+        let waiting = store
+            .update_objective_state(
+                "objective-1",
+                1,
+                ObjectiveStatus::Active,
+                Some(ObjectiveWaitCondition::ToolTask {
+                    task_id: "task-1".to_string(),
+                }),
+            )
+            .await
+            .unwrap();
+        let ObjectiveMutation::Updated(waiting) = waiting else {
+            panic!("expected an updated Objective");
+        };
+        assert_eq!(waiting.revision, 2);
+        assert_eq!(
+            waiting.wait_condition,
+            Some(ObjectiveWaitCondition::ToolTask {
+                task_id: "task-1".to_string()
+            })
+        );
+
+        let stale = store
+            .edit_objective("objective-1", 1, "这个写入必须因修订号过期而失败")
+            .await
+            .unwrap();
+        assert!(matches!(
+            stale,
+            ObjectiveMutation::Conflict {
+                current: ObjectiveRecord { revision: 2, .. }
+            }
+        ));
+
+        let paused = store
+            .update_objective_state("objective-1", 2, ObjectiveStatus::Paused, None)
+            .await
+            .unwrap();
+        let ObjectiveMutation::Updated(paused) = paused else {
+            panic!("expected a paused Objective");
+        };
+        assert_eq!(paused.status, ObjectiveStatus::Paused);
+        assert!(paused.wait_condition.is_none());
+        assert!(store
+            .update_objective_state("objective-1", 3, ObjectiveStatus::Completed, None)
+            .await
+            .is_err());
+
+        let resumed = store
+            .update_objective_state("objective-1", 3, ObjectiveStatus::Active, None)
+            .await
+            .unwrap();
+        let ObjectiveMutation::Updated(resumed) = resumed else {
+            panic!("expected a resumed Objective");
+        };
+        assert_eq!(resumed.revision, 4);
+        let completed = store
+            .update_objective_state("objective-1", 4, ObjectiveStatus::Completed, None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            completed,
+            ObjectiveMutation::Updated(ObjectiveRecord {
+                status: ObjectiveStatus::Completed,
+                revision: 5,
+                ..
+            })
+        ));
+        assert!(store
+            .update_objective_state("objective-1", 5, ObjectiveStatus::Active, None)
+            .await
+            .is_err());
+        assert!(store
+            .list_context_objectives("context-objective", false)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .list_context_objectives("context-objective", true)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        store
+            .create_objective(NewObjective {
+                id: "objective-usage".to_string(),
+                agent_id: "agent-objective".to_string(),
+                context_id: "context-objective".to_string(),
+                coordinator_session_id: "session-objective".to_string(),
+                delivery_session_id: "session-objective".to_string(),
+                parent_objective_id: None,
+                source_event_id: "user-event-usage".to_string(),
+                stated_objective: "验证 Evaluation 成本按租约隔离记账".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let claimed = store
+            .claim_objective_evaluation(
+                "objective-usage",
+                1,
+                "evaluation-usage",
+                Utc::now() + chrono::Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(claimed, ObjectiveMutation::Updated(_)));
+        let accounted = store
+            .record_objective_evaluation_usage("objective-usage", "evaluation-usage", 123)
+            .await
+            .unwrap();
+        assert!(matches!(
+            accounted,
+            ObjectiveMutation::Updated(ObjectiveRecord {
+                revision: 2,
+                tokens_used: 123,
+                ..
+            })
+        ));
+        assert!(matches!(
+            store
+                .record_objective_evaluation_usage("objective-usage", "another-evaluation", 999)
+                .await
+                .unwrap(),
+            ObjectiveMutation::Conflict { .. }
+        ));
+        let completed_with_lease = store
+            .update_objective_state("objective-usage", 2, ObjectiveStatus::Completed, None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            completed_with_lease,
+            ObjectiveMutation::Updated(ObjectiveRecord {
+                revision: 3,
+                tokens_used: 123,
+                status: ObjectiveStatus::Completed,
+                active_evaluation_id: Some(_),
+                ..
+            })
+        ));
+        let finished = store
+            .finish_objective_evaluation("objective-usage", "evaluation-usage", 0, 3)
+            .await
+            .unwrap();
+        assert!(matches!(
+            finished,
+            ObjectiveMutation::Updated(ObjectiveRecord {
+                revision: 4,
+                tokens_used: 123,
+                time_used_seconds: 3,
+                status: ObjectiveStatus::Completed,
+                active_evaluation_id: None,
+                ..
+            })
+        ));
+
+        store.pool.close().await;
+        drop(store);
+        let restarted = SqliteStore::new(db_path.to_str().unwrap()).await.unwrap();
+        let recovered = restarted
+            .get_objective("objective-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.status, ObjectiveStatus::Completed);
+        assert_eq!(recovered.token_budget, Some(256_000));
+        assert!(restarted
+            .list_recoverable_objectives()
+            .await
+            .unwrap()
+            .is_empty());
     }
 }

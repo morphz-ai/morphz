@@ -170,6 +170,119 @@ pub struct NewDelegation {
     pub context_scope: String,
 }
 
+/// Runtime-owned lifecycle state for a persistent Objective. This is control
+/// state, not the Agent's free-form semantic task representation in Mind.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ObjectiveStatus {
+    Active,
+    Paused,
+    Blocked,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+impl ObjectiveStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::Blocked => "blocked",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Cancelled | Self::Failed)
+    }
+
+    pub fn can_transition_to(self, next: Self) -> bool {
+        match self {
+            Self::Active => true,
+            Self::Paused | Self::Blocked => {
+                matches!(next, Self::Active | Self::Cancelled | Self::Failed)
+            }
+            Self::Completed | Self::Cancelled | Self::Failed => false,
+        }
+    }
+}
+
+/// An active Objective may sleep on one deterministic wake source. Keeping the
+/// wait condition separate from lifecycle status prevents both busy polling and
+/// treating ordinary asynchronous waits as permanent blockers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ObjectiveWaitCondition {
+    ToolTask {
+        task_id: String,
+    },
+    Delegation {
+        delegation_id: String,
+    },
+    Timer {
+        deadline: DateTime<Utc>,
+    },
+    Permission {
+        request_id: String,
+    },
+    UserInput {
+        session_id: String,
+    },
+    ExternalEvent {
+        topic: String,
+        correlation_id: String,
+    },
+    ResourceAvailable {
+        resource: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ObjectiveRecord {
+    pub id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub coordinator_session_id: String,
+    pub delivery_session_id: String,
+    pub parent_objective_id: Option<String>,
+    pub source_event_id: String,
+    pub stated_objective: String,
+    pub revision: u64,
+    pub status: ObjectiveStatus,
+    pub wait_condition: Option<ObjectiveWaitCondition>,
+    pub active_evaluation_id: Option<String>,
+    pub evaluation_lease_expires_at: Option<DateTime<Utc>>,
+    pub continuation_sequence: u64,
+    pub token_budget: Option<u64>,
+    pub tokens_used: u64,
+    pub time_used_seconds: u64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewObjective {
+    pub id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub coordinator_session_id: String,
+    pub delivery_session_id: String,
+    pub parent_objective_id: Option<String>,
+    pub source_event_id: String,
+    pub stated_objective: String,
+    pub token_budget: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObjectiveMutation {
+    Updated(ObjectiveRecord),
+    Conflict { current: ObjectiveRecord },
+    NotFound,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageClaim {
     Accepted,
@@ -310,4 +423,61 @@ pub trait SessionStore: Send + Sync {
         status: DelegationStatus,
         result_event_id: Option<&str>,
     ) -> Result<Option<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Persistent Objective control plane. Implementations enforce lifecycle and
+/// optimistic concurrency; Objective semantics remain in Context Mind/Ledger.
+#[async_trait::async_trait]
+pub trait ObjectiveStore: Send + Sync {
+    async fn create_objective(
+        &self,
+        objective: NewObjective,
+    ) -> Result<ObjectiveRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_objective(
+        &self,
+        id: &str,
+    ) -> Result<Option<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_context_objectives(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_recoverable_objectives(
+        &self,
+    ) -> Result<Vec<ObjectiveRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn edit_objective(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        stated_objective: &str,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn update_objective_state(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        status: ObjectiveStatus,
+        wait_condition: Option<ObjectiveWaitCondition>,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn claim_objective_evaluation(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// 记录一次已准备提交给模型的完整 Prompt 成本。该记账不改变
+    /// Objective 的语义 revision，并以 Evaluation ID 防止串账。
+    async fn record_objective_evaluation_usage(
+        &self,
+        id: &str,
+        evaluation_id: &str,
+        prompt_tokens_used: u64,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn finish_objective_evaluation(
+        &self,
+        id: &str,
+        evaluation_id: &str,
+        tokens_used: u64,
+        time_used_seconds: u64,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
 }

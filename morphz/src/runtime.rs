@@ -9,8 +9,12 @@ use crate::llm::Client;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, DelegationRecord, DelegationStatus,
-    EventStore, MessageClaim, NewAgent, NewCognitiveContext, NewDelegation, NewSession,
-    QueryFilter, SessionRecord, SessionStore, SessionUpdate,
+    EventStore, MessageClaim, NewAgent, NewCognitiveContext, NewDelegation, NewObjective,
+    NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, SessionRecord, SessionStore, SessionUpdate,
+};
+use crate::objective::{
+    ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
 };
 use crate::orchestrator::context::{ContextEngine, ContextView};
 use crate::orchestrator::orchestrator::Orchestrator;
@@ -126,7 +130,8 @@ impl MorphzRuntimeBuilder {
                 Arc::clone(&store) as Arc<dyn EventStore>,
                 self.config.orchestrator.clone(),
             )
-            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>),
         );
         let human_approval_hub = HumanApprovalHub::default();
         let permission_profile = Arc::new(PermissionProfile::from_config(&permission_config)?);
@@ -157,23 +162,43 @@ impl MorphzRuntimeBuilder {
             }
         };
         let permissions = Arc::new(PermissionBroker::new(permission_profile, approval_provider));
+        let objective_lease_secs = self
+            .config
+            .orchestrator
+            .model_attempt_timeout_secs
+            .saturating_mul(4)
+            .saturating_add(self.config.orchestrator.tool_timeout_secs.saturating_mul(4))
+            .max(600);
+        let objective_evaluations = Arc::new(ObjectiveEvaluationRegistry::default());
+        let objective_supervisor = Arc::new(ObjectiveSupervisor::new(
+            Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            Arc::clone(&bus),
+            Arc::clone(&objective_evaluations),
+            std::time::Duration::from_secs(objective_lease_secs),
+        ));
         let registry = Arc::new(Registry::new());
         register_default_tools(
             &registry,
             &context_engine,
+            &objective_supervisor,
             &permissions,
             &bus,
             &self.config,
             self.tool_policy,
         );
-        let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
-            Arc::clone(&bus),
-            Arc::clone(&store) as Arc<dyn EventStore>,
-            self.client,
-            Arc::clone(&registry),
-            self.config.orchestrator.clone(),
-            Arc::clone(&context_engine),
-        ));
+        let orchestrator = Arc::new(
+            Orchestrator::new_with_context_engine_and_objectives_and_supervisor(
+                Arc::clone(&bus),
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                self.client,
+                Arc::clone(&registry),
+                self.config.orchestrator.clone(),
+                Arc::clone(&context_engine),
+                objective_evaluations,
+                Some(Arc::clone(&objective_supervisor)),
+            ),
+        );
         Ok(MorphzRuntime {
             inner: Arc::new(RuntimeInner {
                 config: self.config,
@@ -183,6 +208,7 @@ impl MorphzRuntimeBuilder {
                 store,
                 registry,
                 orchestrator,
+                objective_supervisor,
                 human_approval_hub,
                 started: AtomicBool::new(false),
                 start_lock: tokio::sync::Mutex::new(()),
@@ -194,12 +220,21 @@ impl MorphzRuntimeBuilder {
 fn register_default_tools(
     registry: &Arc<Registry>,
     context_engine: &Arc<ContextEngine>,
+    objective_supervisor: &Arc<ObjectiveSupervisor>,
     permissions: &Arc<PermissionBroker>,
     bus: &Arc<InMemoryEventBus>,
     config: &AppConfig,
     policy: RuntimeToolPolicy,
 ) {
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(context_engine))));
+    registry.register(Arc::new(ObjectiveCreateTool::new(
+        Arc::clone(objective_supervisor),
+        Arc::clone(context_engine),
+    )));
+    registry.register(Arc::new(ObjectiveUpdateTool::new(
+        Arc::clone(objective_supervisor),
+        Arc::clone(context_engine),
+    )));
     if policy.context_only {
         return;
     }
@@ -248,6 +283,7 @@ struct RuntimeInner {
     store: Arc<SqliteStore>,
     registry: Arc<Registry>,
     orchestrator: Arc<Orchestrator>,
+    objective_supervisor: Arc<ObjectiveSupervisor>,
     human_approval_hub: HumanApprovalHub,
     started: AtomicBool,
     start_lock: tokio::sync::Mutex<()>,
@@ -298,6 +334,7 @@ impl MorphzRuntime {
                 .register_session_context(&session.id, &session.context_id);
         }
         Arc::clone(&self.inner.orchestrator).start().await?;
+        Arc::clone(&self.inner.objective_supervisor).start().await?;
         self.inner.started.store(true, Ordering::Release);
         Ok(())
     }
@@ -479,6 +516,131 @@ impl MorphzRuntime {
             .store
             .update_delegation_status(id, status, result_event_id)
             .await
+    }
+
+    pub async fn create_objective(
+        &self,
+        objective: NewObjective,
+    ) -> Result<ObjectiveRecord, RuntimeError> {
+        self.inner.objective_supervisor.create(objective).await
+    }
+
+    pub async fn get_objective(&self, id: &str) -> Result<Option<ObjectiveRecord>, RuntimeError> {
+        self.inner.objective_supervisor.get(id).await
+    }
+
+    pub async fn list_context_objectives(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<ObjectiveRecord>, RuntimeError> {
+        self.inner
+            .objective_supervisor
+            .list(context_id, include_terminal)
+            .await
+    }
+
+    pub async fn edit_objective(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        stated_objective: &str,
+    ) -> Result<ObjectiveMutation, RuntimeError> {
+        self.inner
+            .objective_supervisor
+            .edit(id, expected_revision, stated_objective)
+            .await
+    }
+
+    pub async fn update_objective_state(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        status: ObjectiveStatus,
+        wait_condition: Option<ObjectiveWaitCondition>,
+        reason: Option<&str>,
+    ) -> Result<ObjectiveMutation, RuntimeError> {
+        self.inner
+            .objective_supervisor
+            .update_state(id, expected_revision, status, wait_condition, reason)
+            .await
+    }
+
+    pub async fn pause_objective(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: &str,
+    ) -> Result<ObjectiveMutation, RuntimeError> {
+        let current = self
+            .get_objective(id)
+            .await?
+            .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+        let mutation = self
+            .update_objective_state(
+                id,
+                expected_revision,
+                ObjectiveStatus::Paused,
+                None,
+                Some(reason),
+            )
+            .await?;
+        if matches!(&mutation, ObjectiveMutation::Updated(_)) {
+            self.inner
+                .orchestrator
+                .cancel_session(&current.coordinator_session_id);
+        }
+        Ok(mutation)
+    }
+
+    pub async fn resume_objective(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: &str,
+    ) -> Result<ObjectiveMutation, RuntimeError> {
+        let current = self
+            .get_objective(id)
+            .await?
+            .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+        self.inner
+            .orchestrator
+            .resume_session(&current.coordinator_session_id);
+        self.update_objective_state(
+            id,
+            expected_revision,
+            ObjectiveStatus::Active,
+            None,
+            Some(reason),
+        )
+        .await
+    }
+
+    pub async fn cancel_objective(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: &str,
+    ) -> Result<ObjectiveMutation, RuntimeError> {
+        let current = self
+            .get_objective(id)
+            .await?
+            .ok_or_else(|| format!("Objective '{id}' 不存在"))?;
+        let mutation = self
+            .update_objective_state(
+                id,
+                expected_revision,
+                ObjectiveStatus::Cancelled,
+                None,
+                Some(reason),
+            )
+            .await?;
+        if matches!(&mutation, ObjectiveMutation::Updated(_)) {
+            self.inner
+                .orchestrator
+                .cancel_session(&current.coordinator_session_id);
+        }
+        Ok(mutation)
     }
 
     /// Cancel a Delegation and every active descendant it spawned. The requested root's parent
@@ -905,6 +1067,452 @@ mod tests {
         }
     }
 
+    struct ObjectiveCompletingClient {
+        calls: AtomicU64,
+    }
+
+    struct ObjectiveBlockedClient {
+        calls: AtomicU64,
+    }
+
+    struct ObjectiveLongRunClient {
+        calls: AtomicU64,
+    }
+
+    struct ObjectiveAutonomousCreateClient {
+        calls: AtomicU64,
+    }
+
+    struct ObjectiveWaitingClient {
+        calls: AtomicU64,
+    }
+
+    struct ObjectiveRecoveryClient {
+        calls: AtomicU64,
+    }
+
+    struct SharedContextObjectiveClient {
+        calls: AtomicU64,
+    }
+
+    #[async_trait::async_trait]
+    impl Client for ObjectiveBlockedClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let (name, arguments) = if call == 0 {
+                (
+                    "objective_update",
+                    json!({
+                        "objective_id": "objective-blocked",
+                        "base_revision": 2,
+                        "status": "blocked",
+                        "reason": "缺少只能由使用者提供的必要决策",
+                        "evidence_refs": []
+                    }),
+                )
+            } else {
+                (
+                    "reply",
+                    json!({
+                        "disposition": "deliver",
+                        "content": "objective-needs-user-decision"
+                    }),
+                )
+            };
+            Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: format!("objective-blocked-call-{call}"),
+                    r#type: "function".to_string(),
+                    func_name: name.to_string(),
+                    arguments: arguments.to_string(),
+                }],
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for ObjectiveLongRunClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let (name, arguments) = if call < 100 {
+                (
+                    "reply",
+                    json!({
+                        "disposition": "suppress"
+                    }),
+                )
+            } else if tools.iter().any(|tool| tool.name == "objective_update") {
+                (
+                    "objective_update",
+                    json!({
+                        "objective_id": "objective-long-run",
+                        "base_revision": objective_revision_from_messages(
+                            &messages,
+                            "objective-long-run"
+                        ),
+                        "status": "completed",
+                        "reason": "已跨越一百次持续求值并完成确定性验收",
+                        "evidence_refs": []
+                    }),
+                )
+            } else {
+                (
+                    "reply",
+                    json!({
+                        "disposition": "deliver",
+                        "content": "long-objective-complete"
+                    }),
+                )
+            };
+            Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: format!("objective-long-run-call-{call}"),
+                    r#type: "function".to_string(),
+                    func_name: name.to_string(),
+                    arguments: arguments.to_string(),
+                }],
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for ObjectiveAutonomousCreateClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let (name, arguments) = match call {
+                0 | 1 => {
+                    let create = tools
+                        .iter()
+                        .find(|tool| tool.name == "objective_create")
+                        .expect("普通 Evaluation 应提供 objective_create");
+                    let properties = create.parameters["properties"]
+                        .as_object()
+                        .expect("objective_create properties");
+                    assert!(!properties.contains_key("objective_id"));
+                    assert!(!properties.contains_key("context_id"));
+                    assert!(!properties.contains_key("session_id"));
+                    (
+                        "objective_create",
+                        json!({
+                            "stated_objective": "自主创建并完成一个跨 Evaluation 的持久目标",
+                            "reason": "该验收明确要求跨 Evaluation 自动续跑并验证重启级控制对象",
+                            "source_refs": []
+                        }),
+                    )
+                }
+                2 => (
+                    "reply",
+                    json!({
+                        "disposition": "suppress"
+                    }),
+                ),
+                3 => {
+                    let objective_id = autonomous_objective_id_from_messages(&messages);
+                    (
+                        "objective_update",
+                        json!({
+                            "objective_id": objective_id,
+                            "base_revision": objective_revision_from_messages(
+                                &messages,
+                                &objective_id
+                            ),
+                            "status": "completed",
+                            "reason": "已验证自主创建、幂等与 Supervisor 续跑",
+                            "evidence_refs": []
+                        }),
+                    )
+                }
+                _ => (
+                    "reply",
+                    json!({
+                        "disposition": "deliver",
+                        "content": "autonomous-objective-complete"
+                    }),
+                ),
+            };
+            Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: format!("objective-autonomous-call-{call}"),
+                    r#type: "function".to_string(),
+                    func_name: name.to_string(),
+                    arguments: arguments.to_string(),
+                }],
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for SharedContextObjectiveClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let context = messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let (session_id, objective_id) = if context.contains("(active-session session-a)") {
+                ("session-a", "objective-a")
+            } else if context.contains("(active-session session-b)") {
+                ("session-b", "objective-b")
+            } else {
+                return Err("shared Context Objective test cannot identify active Session".into());
+            };
+            let (name, arguments) = if tools.iter().any(|tool| tool.name == "objective_update") {
+                (
+                    "objective_update",
+                    json!({
+                        "objective_id": objective_id,
+                        "base_revision": objective_revision_from_messages(&messages, objective_id),
+                        "status": "completed",
+                        "reason": format!("{session_id} 已完成自己的 Objective"),
+                        "evidence_refs": []
+                    }),
+                )
+            } else {
+                (
+                    "reply",
+                    json!({
+                        "disposition": "deliver",
+                        "content": format!("{session_id}-complete")
+                    }),
+                )
+            };
+            Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: format!(
+                        "shared-objective-{}-{}",
+                        session_id,
+                        self.calls.load(Ordering::SeqCst)
+                    ),
+                    r#type: "function".to_string(),
+                    func_name: name.to_string(),
+                    arguments: arguments.to_string(),
+                }],
+            })
+        }
+    }
+
+    fn objective_revision_from_messages(messages: &[Message], objective_id: &str) -> u64 {
+        let marker = format!("(id {objective_id})");
+        messages
+            .iter()
+            .find_map(|message| {
+                let objective_at = message.content.find(&marker)?;
+                let suffix = &message.content[objective_at..];
+                let revision_at = suffix.find("(revision ")? + "(revision ".len();
+                let digits = suffix[revision_at..]
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect::<String>();
+                digits.parse().ok()
+            })
+            .expect("Objective revision should be visible in Context Encoding")
+    }
+
+    fn autonomous_objective_id_from_messages(messages: &[Message]) -> String {
+        const MARKER: &str = "(objective (id ";
+        messages
+            .iter()
+            .find_map(|message| {
+                let start = message.content.find(MARKER)? + MARKER.len();
+                let suffix = &message.content[start..];
+                let end = suffix.find(')')?;
+                let id = &suffix[..end];
+                id.starts_with("objective-auto-").then(|| id.to_string())
+            })
+            .expect("autonomous Objective should be visible in Context Encoding")
+    }
+
+    async fn objective_after_evaluation_release(
+        runtime: &MorphzRuntime,
+        objective_id: &str,
+    ) -> ObjectiveRecord {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let objective = runtime
+                    .get_objective(objective_id)
+                    .await
+                    .unwrap()
+                    .expect("Objective should exist");
+                if objective.active_evaluation_id.is_none() {
+                    break objective;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("terminal reply should release its Objective Evaluation")
+    }
+
+    #[async_trait::async_trait]
+    impl Client for ObjectiveRecoveryClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let (name, arguments) = if call == 0 {
+                (
+                    "objective_update",
+                    json!({
+                        "objective_id": "objective-recover",
+                        "base_revision": objective_revision_from_messages(&messages, "objective-recover"),
+                        "status": "completed",
+                        "reason": "重启后已恢复并完成",
+                        "evidence_refs": []
+                    }),
+                )
+            } else {
+                (
+                    "reply",
+                    json!({
+                        "disposition": "deliver",
+                        "content": "recovered-objective-complete"
+                    }),
+                )
+            };
+            Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: format!("objective-recovery-call-{call}"),
+                    r#type: "function".to_string(),
+                    func_name: name.to_string(),
+                    arguments: arguments.to_string(),
+                }],
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for ObjectiveWaitingClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let (name, arguments) = match call {
+                0 => (
+                    "objective_update",
+                    json!({
+                        "objective_id": "objective-wait",
+                        "base_revision": 2,
+                        "status": "active",
+                        "reason": "必须等待已启动的后台任务产生物理终态",
+                        "evidence_refs": [],
+                        "wait_condition": {
+                            "kind": "tool_task",
+                            "task_id": "task-wait-42"
+                        }
+                    }),
+                ),
+                1 => (
+                    "reply",
+                    json!({
+                        "disposition": "suppress"
+                    }),
+                ),
+                2 => (
+                    "objective_update",
+                    json!({
+                        "objective_id": "objective-wait",
+                        "base_revision": 6,
+                        "status": "completed",
+                        "reason": "后台任务已经成功结束",
+                        "evidence_refs": []
+                    }),
+                ),
+                _ => (
+                    "reply",
+                    json!({
+                        "disposition": "deliver",
+                        "content": "wait-objective-complete"
+                    }),
+                ),
+            };
+            Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: format!("objective-wait-call-{call}"),
+                    r#type: "function".to_string(),
+                    func_name: name.to_string(),
+                    arguments: arguments.to_string(),
+                }],
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for ObjectiveCompletingClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                assert!(tools.iter().any(|tool| tool.name == "objective_update"));
+                assert!(messages
+                    .iter()
+                    .any(|message| message.content.contains("(objective-contract")));
+                assert!(messages
+                    .iter()
+                    .any(|message| message.content.contains("objective-continuation")));
+                return Ok(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallRepr {
+                        id: "complete-objective".to_string(),
+                        r#type: "function".to_string(),
+                        func_name: "objective_update".to_string(),
+                        arguments: json!({
+                            "objective_id": "objective-runtime",
+                            "base_revision": 2,
+                            "status": "completed",
+                            "reason": "测试目标已由确定性夹具完成",
+                            "evidence_refs": []
+                        })
+                        .to_string(),
+                    }],
+                });
+            }
+            assert!(!tools.iter().any(|tool| tool.name == "objective_update"));
+            Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "objective-final-reply".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "reply".to_string(),
+                    arguments: json!({
+                        "disposition": "deliver",
+                        "content": "objective-complete"
+                    })
+                    .to_string(),
+                }],
+            })
+        }
+    }
+
     #[tokio::test]
     async fn runtime_builder_handles_message_event_and_context_through_one_api() {
         let database = NamedTempFile::new().unwrap();
@@ -952,6 +1560,791 @@ mod tests {
             "session-runtime"
         );
         assert!(session.inspect_context().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn objective_supervisor_continues_without_fake_user_message_and_stops_after_commit() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let client = Arc::new(ObjectiveCompletingClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-objective-runtime".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Objective runtime test".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        runtime
+            .create_objective(NewObjective {
+                id: "objective-runtime".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                coordinator_session_id: "session-objective-runtime".to_string(),
+                delivery_session_id: "session-objective-runtime".to_string(),
+                parent_objective_id: None,
+                source_event_id: "runtime-test-source".to_string(),
+                stated_objective: "完成 Supervisor 确定性回归测试".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload.get("text").and_then(|value| value.as_str()),
+            Some("objective-complete")
+        );
+        assert_eq!(
+            reply
+                .payload
+                .get("objective_id")
+                .and_then(|value| value.as_str()),
+            Some("objective-runtime")
+        );
+        let objective = objective_after_evaluation_release(&runtime, "objective-runtime").await;
+        assert_eq!(objective.status, ObjectiveStatus::Completed);
+        assert!(objective.active_evaluation_id.is_none());
+        assert!(
+            objective.tokens_used > 0,
+            "Objective 应累计每次 Evaluation 的完整 Prompt 本地计量"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+
+        let events = runtime
+            .query_events(QueryFilter {
+                session_id: Some("session-objective-runtime".to_string()),
+                top_k: Some(100),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.topic == "objective/evaluation_started"));
+        let continuation = events
+            .iter()
+            .find(|event| {
+                event.topic == "chat/tool_output"
+                    && event
+                        .payload
+                        .get("tool_name")
+                        .and_then(|value| value.as_str())
+                        == Some("objective_supervisor")
+            })
+            .expect("Supervisor should persist an internal continuation event");
+        assert_ne!(continuation.event_type, TYPE_USER_MESSAGE);
+    }
+
+    #[tokio::test]
+    async fn blocked_objective_keeps_final_reply_routing_then_releases_its_evaluation() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let client = Arc::new(ObjectiveBlockedClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-objective-blocked".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Objective blocked test".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        runtime
+            .create_objective(NewObjective {
+                id: "objective-blocked".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                coordinator_session_id: "session-objective-blocked".to_string(),
+                delivery_session_id: "session-objective-blocked".to_string(),
+                parent_objective_id: None,
+                source_event_id: "runtime-test-blocked-source".to_string(),
+                stated_objective: "验证真实阻塞会交付说明并停止自动续跑".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload.get("text").and_then(|value| value.as_str()),
+            Some("objective-needs-user-decision")
+        );
+        assert_eq!(
+            reply
+                .payload
+                .get("objective_id")
+                .and_then(|value| value.as_str()),
+            Some("objective-blocked")
+        );
+        let objective = objective_after_evaluation_release(&runtime, "objective-blocked").await;
+        assert_eq!(objective.status, ObjectiveStatus::Blocked);
+        assert!(objective.active_evaluation_id.is_none());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn active_objective_survives_more_than_one_hundred_model_evaluations() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let client = Arc::new(ObjectiveLongRunClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-objective-long-run".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Objective long-run test".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        runtime
+            .create_objective(NewObjective {
+                id: "objective-long-run".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                coordinator_session_id: "session-objective-long-run".to_string(),
+                delivery_session_id: "session-objective-long-run".to_string(),
+                parent_objective_id: None,
+                source_event_id: "runtime-test-long-run-source".to_string(),
+                stated_objective: "持续求值超过一百次后再显式完成".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload.get("text").and_then(|value| value.as_str()),
+            Some("long-objective-complete")
+        );
+        let objective = objective_after_evaluation_release(&runtime, "objective-long-run").await;
+        assert_eq!(objective.status, ObjectiveStatus::Completed);
+        assert_eq!(objective.continuation_sequence, 101);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 102);
+    }
+
+    #[tokio::test]
+    async fn llm_can_create_one_idempotent_objective_and_current_evaluation_is_adopted() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let client = Arc::new(ObjectiveAutonomousCreateClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-objective-autonomous".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Autonomous Objective test".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        session
+            .send(
+                "请自主建立一个需要跨 Evaluation 完成的持久目标并完成它",
+                "User-Test",
+                Some("autonomous-objective-message".to_string()),
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload.get("text").and_then(|value| value.as_str()),
+            Some("autonomous-objective-complete")
+        );
+        let objective_id = reply
+            .payload
+            .get("objective_id")
+            .and_then(|value| value.as_str())
+            .expect("final reply should retain autonomous Objective routing")
+            .to_string();
+        assert!(objective_id.starts_with("objective-auto-"));
+        let objective = objective_after_evaluation_release(&runtime, &objective_id).await;
+        assert_eq!(objective.status, ObjectiveStatus::Completed);
+        assert_eq!(objective.continuation_sequence, 2);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 5);
+
+        let matching = runtime
+            .list_context_objectives(&runtime.identity().context_id, true)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|objective| {
+                objective.stated_objective == "自主创建并完成一个跨 Evaluation 的持久目标"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(matching.len(), 1, "重复 objective_create 必须幂等");
+
+        let autonomous_requests = runtime
+            .query_events(QueryFilter {
+                topic: Some("objective/autonomous_requested".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(autonomous_requests.len(), 1);
+        assert_eq!(
+            autonomous_requests[0]
+                .payload
+                .get("requested_objective_id")
+                .and_then(|value| value.as_str()),
+            Some(objective_id.as_str())
+        );
+
+        let continuations = runtime
+            .query_events(QueryFilter {
+                session_id: Some("session-objective-autonomous".to_string()),
+                topic: Some("chat/tool_output".to_string()),
+                top_k: Some(100),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|event| {
+                event
+                    .payload
+                    .get("tool_name")
+                    .and_then(|value| value.as_str())
+                    == Some("objective_supervisor")
+            })
+            .count();
+        assert_eq!(
+            continuations, 1,
+            "创建时应收编当前 Evaluation，只在第一次 reply 后续跑一次"
+        );
+    }
+
+    #[tokio::test]
+    async fn objective_wait_is_event_driven_and_the_matching_task_event_resumes_it_once() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let client = Arc::new(ObjectiveWaitingClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-objective-wait".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Objective wait test".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut suppressed = runtime.subscribe("chat/reply_suppressed", 8);
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        runtime
+            .create_objective(NewObjective {
+                id: "objective-wait".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                coordinator_session_id: "session-objective-wait".to_string(),
+                delivery_session_id: "session-objective-wait".to_string(),
+                parent_objective_id: None,
+                source_event_id: "runtime-wait-source".to_string(),
+                stated_objective: "等待后台任务后完成".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), suppressed.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut waiting = runtime
+            .get_objective("objective-wait")
+            .await
+            .unwrap()
+            .unwrap();
+        for _ in 0..50 {
+            if waiting.active_evaluation_id.is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            waiting = runtime
+                .get_objective("objective-wait")
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(
+            waiting.wait_condition,
+            Some(ObjectiveWaitCondition::ToolTask {
+                task_id: "task-wait-42".to_string()
+            })
+        );
+        assert!(waiting.active_evaluation_id.is_none());
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+
+        runtime
+            .publish(Event::new(
+                "task-wait-42-completed".to_string(),
+                "System-TaskMonitor".to_string(),
+                crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                vec![
+                    (
+                        "context_id".to_string(),
+                        json!(runtime.identity().context_id),
+                    ),
+                    ("session_id".to_string(), json!("session-objective-wait")),
+                    ("task_id".to_string(), json!("task-wait-42")),
+                    ("task_status".to_string(), json!("succeeded")),
+                    ("tool_name".to_string(), json!("exec")),
+                    ("text".to_string(), json!("background task succeeded")),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload.get("text").and_then(|value| value.as_str()),
+            Some("wait-objective-complete")
+        );
+        assert_eq!(
+            runtime
+                .get_objective("objective-wait")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ObjectiveStatus::Completed
+        );
+        assert_eq!(client.calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn runtime_restart_recovers_an_expired_objective_evaluation_lease_once() {
+        let database = NamedTempFile::new().unwrap();
+        let database_path = database.path().to_string_lossy().into_owned();
+        let store = SqliteStore::new(&database_path).await.unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "default-agent".to_string(),
+                    title: "Recovery Agent".to_string(),
+                    root_context_id: "context-default".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "context-default".to_string(),
+                    agent_id: "default-agent".to_string(),
+                    title: "Recovery Context".to_string(),
+                },
+                NewSession {
+                    id: "session-objective-recover".to_string(),
+                    agent_id: "default-agent".to_string(),
+                    context_id: "context-default".to_string(),
+                    parent_session_id: None,
+                    title: "Recovery Session".to_string(),
+                    mount_kind: crate::memory::SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .create_objective(NewObjective {
+                id: "objective-recover".to_string(),
+                agent_id: "default-agent".to_string(),
+                context_id: "context-default".to_string(),
+                coordinator_session_id: "session-objective-recover".to_string(),
+                delivery_session_id: "session-objective-recover".to_string(),
+                parent_objective_id: None,
+                source_event_id: "recovery-source".to_string(),
+                stated_objective: "验证 Runtime 重启恢复".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let stale = store
+            .claim_objective_evaluation(
+                "objective-recover",
+                1,
+                "evaluation-from-dead-process",
+                chrono::Utc::now() - chrono::Duration::seconds(1),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(stale, ObjectiveMutation::Updated(_)));
+        drop(store);
+
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let client = Arc::new(ObjectiveRecoveryClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(&database_path)
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        runtime.start().await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload.get("text").and_then(|value| value.as_str()),
+            Some("recovered-objective-complete")
+        );
+        let recovered = runtime
+            .get_objective("objective-recover")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.status, ObjectiveStatus::Completed);
+        assert_eq!(recovered.continuation_sequence, 2);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+        assert!(runtime
+            .query_events(QueryFilter {
+                topic: Some("objective/recovered".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event
+                    .payload
+                    .get("objective_id")
+                    .and_then(|value| value.as_str())
+                    == Some("objective-recover")
+            }));
+    }
+
+    #[tokio::test]
+    async fn shared_context_objectives_keep_two_session_evaluations_and_replies_isolated() {
+        let database = NamedTempFile::new().unwrap();
+        let database_path = database.path().to_string_lossy().into_owned();
+        let store = SqliteStore::new(&database_path).await.unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "default-agent".to_string(),
+                    title: "Shared Objective Agent".to_string(),
+                    root_context_id: "context-default".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "context-default".to_string(),
+                    agent_id: "default-agent".to_string(),
+                    title: "Shared Objective Context".to_string(),
+                },
+                NewSession {
+                    id: "session-a".to_string(),
+                    agent_id: "default-agent".to_string(),
+                    context_id: "context-default".to_string(),
+                    parent_session_id: None,
+                    title: "Session A".to_string(),
+                    mount_kind: crate::memory::SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "session-b".to_string(),
+                agent_id: "default-agent".to_string(),
+                context_id: "context-default".to_string(),
+                parent_session_id: None,
+                title: "Session B".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        for (objective_id, session_id) in
+            [("objective-a", "session-a"), ("objective-b", "session-b")]
+        {
+            store
+                .create_objective(NewObjective {
+                    id: objective_id.to_string(),
+                    agent_id: "default-agent".to_string(),
+                    context_id: "context-default".to_string(),
+                    coordinator_session_id: session_id.to_string(),
+                    delivery_session_id: session_id.to_string(),
+                    parent_objective_id: None,
+                    source_event_id: format!("source-{objective_id}"),
+                    stated_objective: format!("完成 {session_id} 的独立目标"),
+                    token_budget: None,
+                })
+                .await
+                .unwrap();
+        }
+        drop(store);
+
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let client = Arc::new(SharedContextObjectiveClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(&database_path)
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        runtime.start().await.unwrap();
+        let mut delivered = std::collections::HashMap::new();
+        while delivered.len() < 2 {
+            let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            delivered.insert(
+                reply
+                    .payload
+                    .get("session_id")
+                    .and_then(|value| value.as_str())
+                    .unwrap()
+                    .to_string(),
+                (
+                    reply
+                        .payload
+                        .get("objective_id")
+                        .and_then(|value| value.as_str())
+                        .unwrap()
+                        .to_string(),
+                    reply
+                        .payload
+                        .get("text")
+                        .and_then(|value| value.as_str())
+                        .unwrap()
+                        .to_string(),
+                ),
+            );
+        }
+        assert_eq!(
+            delivered.get("session-a"),
+            Some(&("objective-a".to_string(), "session-a-complete".to_string()))
+        );
+        assert_eq!(
+            delivered.get("session-b"),
+            Some(&("objective-b".to_string(), "session-b-complete".to_string()))
+        );
+        for objective_id in ["objective-a", "objective-b"] {
+            assert_eq!(
+                runtime
+                    .get_objective(objective_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                ObjectiveStatus::Completed
+            );
+        }
+        assert_eq!(client.calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn persisted_objective_timer_wakes_after_restart_without_polling() {
+        let database = NamedTempFile::new().unwrap();
+        let database_path = database.path().to_string_lossy().into_owned();
+        let store = SqliteStore::new(&database_path).await.unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "default-agent".to_string(),
+                    title: "Timer Agent".to_string(),
+                    root_context_id: "context-default".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "context-default".to_string(),
+                    agent_id: "default-agent".to_string(),
+                    title: "Timer Context".to_string(),
+                },
+                NewSession {
+                    id: "session-objective-recover".to_string(),
+                    agent_id: "default-agent".to_string(),
+                    context_id: "context-default".to_string(),
+                    parent_session_id: None,
+                    title: "Timer Session".to_string(),
+                    mount_kind: crate::memory::SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .create_objective(NewObjective {
+                id: "objective-recover".to_string(),
+                agent_id: "default-agent".to_string(),
+                context_id: "context-default".to_string(),
+                coordinator_session_id: "session-objective-recover".to_string(),
+                delivery_session_id: "session-objective-recover".to_string(),
+                parent_objective_id: None,
+                source_event_id: "timer-source".to_string(),
+                stated_objective: "计时器到达后继续".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let deadline = chrono::Utc::now() + chrono::Duration::milliseconds(150);
+        assert!(matches!(
+            store
+                .update_objective_state(
+                    "objective-recover",
+                    1,
+                    ObjectiveStatus::Active,
+                    Some(ObjectiveWaitCondition::Timer { deadline }),
+                )
+                .await
+                .unwrap(),
+            ObjectiveMutation::Updated(_)
+        ));
+        drop(store);
+
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let client = Arc::new(ObjectiveRecoveryClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(&database_path)
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        runtime.start().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(client.calls.load(Ordering::SeqCst), 0);
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload.get("text").and_then(|value| value.as_str()),
+            Some("recovered-objective-complete")
+        );
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+        let objective = runtime
+            .get_objective("objective-recover")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(objective.status, ObjectiveStatus::Completed);
+        assert!(runtime
+            .query_events(QueryFilter {
+                topic: Some("objective/wait_satisfied".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .iter()
+            .any(
+                |event| event.payload.get("reason").and_then(|value| value.as_str())
+                    == Some("timer-deadline-reached")
+            ));
     }
 
     #[tokio::test]

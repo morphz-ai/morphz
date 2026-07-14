@@ -1,6 +1,5 @@
 use chrono::Utc;
-use morphz::config::{self, AppConfig};
-use morphz::llm::{Client, FunctionCall, Message, OpenAIClient, ToolCall, ToolDefinition};
+use morphz::llm::{Client, FunctionCall, Message, ToolCall, ToolDefinition};
 use morphz::sexpr_vm_contract::ANNOTATED_REPLY_KERNEL;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -122,12 +121,7 @@ pub async fn run_reply_eval(
     if repetitions == 0 {
         return Err("repetitions 必须大于 0".into());
     }
-    let _ = config::load_env(".env");
-    let api_key = std::env::var("OPENAI_API_KEY")?;
-    let base_url = std::env::var("OPENAI_BASE_URL").unwrap_or_default();
-    let app_config = AppConfig::load_or_default("morphz.toml");
-    let model = std::env::var("OPENAI_MODEL").unwrap_or_else(|_| app_config.llm.model.clone());
-    let client = OpenAIClient::new_with_config(api_key, base_url, model.clone(), &app_config.llm)?;
+    let (client, model) = crate::configured_model_client()?;
     let id = format!(
         "sexpr-explicit-reply-ab-v1-{}-{}",
         Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
@@ -142,7 +136,7 @@ pub async fn run_reply_eval(
             let rotation = (run - 1) % Arm::ALL.len();
             for offset in 0..Arm::ALL.len() {
                 let arm = Arm::ALL[(rotation + offset) % Arm::ALL.len()];
-                let report = run_episode(&client, run, arm, &task).await?;
+                let report = run_episode(client.as_ref(), run, arm, &task).await?;
                 std::fs::write(
                     output_dir.join(format!("run-{run}-{}-{}.json", task.id, arm.name())),
                     serde_json::to_vec_pretty(&report)?,

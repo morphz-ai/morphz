@@ -155,6 +155,25 @@ impl InMemoryEventBus {
     }
 
     pub async fn publish(&self, ev: Event) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.publish_with_durability(ev, true).await
+    }
+
+    /// Delivers transient UI/progress events without crossing the durable
+    /// Ledger boundary. Ephemeral events must never be used for user messages,
+    /// tool receipts, Context transactions, replies, or any other physical
+    /// fact that must survive restart.
+    pub async fn publish_ephemeral(
+        &self,
+        ev: Event,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.publish_with_durability(ev, false).await
+    }
+
+    async fn publish_with_durability(
+        &self,
+        ev: Event,
+        durable: bool,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut durable_subs = Vec::new();
         let mut sync_subs = Vec::new();
         let mut async_subs = Vec::new();
@@ -173,7 +192,7 @@ impl InMemoryEventBus {
         }
 
         // 1. 先通过可靠、串行的持久化边界。失败时不得继续派发业务事件。
-        if !durable_subs.is_empty() {
+        if durable && !durable_subs.is_empty() {
             let _durable_guard = self.durable_lock.lock().await;
             for sub in durable_subs {
                 (sub.handler)(ev.clone()).await?;
@@ -542,5 +561,48 @@ mod tests {
         assert!(result.is_err());
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert!(!business_seen.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn ephemeral_event_reaches_live_subscriber_without_crossing_durable_boundary() {
+        let bus = InMemoryEventBus::new();
+        let durable = Arc::new(Mutex::new(Vec::new()));
+        let live = Arc::new(Mutex::new(Vec::new()));
+        let durable_capture = Arc::clone(&durable);
+        bus.subscribe_durable(
+            "runtime/model_stream".to_string(),
+            Arc::new(move |event| {
+                let capture = Arc::clone(&durable_capture);
+                Box::pin(async move {
+                    capture.lock().unwrap().push(event.id);
+                    Ok(())
+                })
+            }),
+        );
+        let live_capture = Arc::clone(&live);
+        bus.subscribe(
+            "runtime/model_stream".to_string(),
+            Arc::new(move |event| {
+                let capture = Arc::clone(&live_capture);
+                Box::pin(async move {
+                    capture.lock().unwrap().push(event.id);
+                    Ok(())
+                })
+            }),
+        );
+
+        bus.publish_ephemeral(Event::new(
+            "draft-1".to_string(),
+            "model".to_string(),
+            "runtime_ephemeral".to_string(),
+            "runtime/model_stream".to_string(),
+            Default::default(),
+        ))
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+
+        assert!(durable.lock().unwrap().is_empty());
+        assert_eq!(live.lock().unwrap().as_slice(), ["draft-1"]);
     }
 }
