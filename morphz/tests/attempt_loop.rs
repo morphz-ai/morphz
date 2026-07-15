@@ -30,7 +30,6 @@ struct MockClient {
     tools_seen: Mutex<Vec<Vec<String>>>,
     messages_seen: Mutex<Vec<Vec<Message>>>,
     prompt_token_count: Mutex<Option<usize>>,
-    auto_reply: bool,
 }
 
 struct ConcurrencyProbeClient {
@@ -56,10 +55,6 @@ struct CancellableClient {
     calls: AtomicUsize,
 }
 
-struct SlowBatchClient {
-    started: AtomicUsize,
-}
-
 struct EmptyOutputTool;
 
 struct RoutingProbeTool {
@@ -67,30 +62,21 @@ struct RoutingProbeTool {
     delay_ms: u64,
 }
 
-fn explicit_reply_response(content: impl Into<String>) -> Response {
+fn text_reply_response(content: impl Into<String>) -> Response {
     Response {
-        content: String::new(),
-        tool_calls: vec![ToolCallRepr {
-            id: "reply-decision".to_string(),
-            r#type: "function".to_string(),
-            func_name: "reply".to_string(),
-            arguments: json!({
-                "disposition": "deliver",
-                "content": content.into()
-            })
-            .to_string(),
-        }],
+        content: content.into(),
+        tool_calls: Vec::new(),
     }
 }
 
-fn suppressed_reply_response() -> Response {
+fn no_reply_response() -> Response {
     Response {
         content: String::new(),
         tool_calls: vec![ToolCallRepr {
-            id: "reply-suppressed".to_string(),
+            id: "no-reply".to_string(),
             r#type: "function".to_string(),
-            func_name: "reply".to_string(),
-            arguments: json!({"disposition": "suppress"}).to_string(),
+            func_name: "no_reply".to_string(),
+            arguments: json!({}).to_string(),
         }],
     }
 }
@@ -195,34 +181,7 @@ impl Client for CancellableClient {
             tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             unreachable!("first attempt must be cancelled")
         }
-        Ok(explicit_reply_response("resumed-after-cancel"))
-    }
-}
-
-#[async_trait::async_trait]
-impl Client for SlowBatchClient {
-    async fn create_completion(
-        &self,
-        _messages: Vec<Message>,
-        _tools: Vec<ToolDefinition>,
-    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
-        self.started.fetch_add(1, Ordering::SeqCst);
-        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-        Ok(Response {
-            content: String::new(),
-            tool_calls: vec![ToolCallRepr {
-                id: "cancel-batch-output".to_string(),
-                r#type: "function".to_string(),
-                func_name: "session_output".to_string(),
-                arguments: json!({
-                    "deliveries": [
-                        {"session_id": "cancel-batch-a", "kind": "final", "text": "should-be-suppressed"},
-                        {"session_id": "cancel-batch-b", "kind": "final", "text": "b-survives"}
-                    ]
-                })
-                .to_string(),
-            }],
-        })
+        Ok(text_reply_response("resumed-after-cancel"))
     }
 }
 
@@ -239,7 +198,7 @@ impl Client for BudgetProbeClient {
             .map_err(|_| "budget probe mutex poisoned")?
             .push(tools.len());
         if call >= self.reply_after {
-            return Ok(explicit_reply_response("soft checkpoint continued"));
+            return Ok(text_reply_response("soft checkpoint continued"));
         }
         Ok(Response {
             content: String::new(),
@@ -267,26 +226,17 @@ impl Client for ConcurrencyProbeClient {
         tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
         self.active.fetch_sub(1, Ordering::SeqCst);
         let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
-        Ok(explicit_reply_response(format!("reply-{call}")))
+        Ok(text_reply_response(format!("reply-{call}")))
     }
 }
 
 impl MockClient {
     fn new(responses: Vec<Response>) -> Self {
-        Self::with_auto_reply(responses, true)
-    }
-
-    fn new_raw(responses: Vec<Response>) -> Self {
-        Self::with_auto_reply(responses, false)
-    }
-
-    fn with_auto_reply(responses: Vec<Response>, auto_reply: bool) -> Self {
         Self {
             responses: Mutex::new(VecDeque::from(responses)),
             tools_seen: Mutex::new(Vec::new()),
             messages_seen: Mutex::new(Vec::new()),
             prompt_token_count: Mutex::new(None),
-            auto_reply,
         }
     }
 
@@ -331,7 +281,6 @@ impl Client for MockClient {
         tools: Vec<ToolDefinition>,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
         let tool_names = tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
-        let reply_available = tool_names.iter().any(|name| name == "reply");
         self.tools_seen
             .lock()
             .map_err(|_| "mock tools mutex poisoned")?
@@ -340,19 +289,12 @@ impl Client for MockClient {
             .lock()
             .map_err(|_| "mock messages mutex poisoned")?
             .push(messages);
-        let mut response = self
+        let response = self
             .responses
             .lock()
             .map_err(|_| "mock response mutex poisoned")?
             .pop_front()
             .ok_or("mock response queue exhausted")?;
-        if self.auto_reply
-            && reply_available
-            && response.tool_calls.is_empty()
-            && !response.content.trim().is_empty()
-        {
-            response = explicit_reply_response(response.content);
-        }
         Ok(response)
     }
 }
@@ -387,7 +329,7 @@ async fn build_orchestrator_with_config(
 async fn build_orchestrator_with_config_and_reply_mode(
     responses: Vec<Response>,
     mut orchestrator_config: morphz::config::OrchestratorConfig,
-    auto_reply: bool,
+    _auto_reply: bool,
 ) -> (
     Arc<InMemoryEventBus>,
     Arc<SqliteStore>,
@@ -403,11 +345,7 @@ async fn build_orchestrator_with_config_and_reply_mode(
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     install_test_session_registry(&bus, &store);
-    let client = Arc::new(if auto_reply {
-        MockClient::new(responses)
-    } else {
-        MockClient::new_raw(responses)
-    });
+    let client = Arc::new(MockClient::new(responses));
     let context_engine = Arc::new(
         ContextEngine::new(
             Arc::clone(&store) as Arc<dyn EventStore>,
@@ -489,14 +427,6 @@ fn install_test_session_registry(bus: &Arc<InMemoryEventBus>, store: &Arc<Sqlite
     );
 }
 
-fn deterministic_batch_config() -> morphz::config::OrchestratorConfig {
-    morphz::config::OrchestratorConfig {
-        merged_evaluation_enabled: true,
-        session_batch_coalesce_ms: 200,
-        ..Default::default()
-    }
-}
-
 async fn publish_user(bus: &Arc<InMemoryEventBus>, session_id: &str, text: &str) {
     publish_user_in_context(bus, session_id, session_id, text).await;
 }
@@ -571,10 +501,10 @@ async fn wait_for_topic_count(
 }
 
 #[tokio::test]
-async fn test_attempt_loop_explicit_reply_delivers() {
-    let session_id = "attempt_explicit_reply";
+async fn test_attempt_loop_plain_text_reply_delivers() {
+    let session_id = "attempt_plain_text_reply";
     let (bus, store, _orc, _tmp) =
-        build_orchestrator(vec![explicit_reply_response("hello user")]).await;
+        build_orchestrator(vec![text_reply_response("hello user")]).await;
 
     publish_user(&bus, session_id, "hello").await;
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
@@ -590,7 +520,7 @@ async fn test_attempt_loop_explicit_reply_delivers() {
 async fn duplicate_routed_event_creates_one_work_item_and_one_reply() {
     let session_id = "duplicate-routed-event";
     let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
-        vec![explicit_reply_response("exactly once")],
+        vec![text_reply_response("exactly once")],
         morphz::config::OrchestratorConfig::default(),
     )
     .await;
@@ -725,8 +655,8 @@ async fn runtime_start_recovers_queued_and_expired_running_work_items() {
     }
 
     let client = Arc::new(MockClient::new(vec![
-        explicit_reply_response("recovered-one"),
-        explicit_reply_response("recovered-two"),
+        text_reply_response("recovered-one"),
+        text_reply_response("recovered-two"),
     ]));
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -887,7 +817,7 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         arguments: Arc::clone(&routed_arguments),
         delay_ms: 0,
     }));
-    let client = Arc::new(MockClient::new(vec![explicit_reply_response(
+    let client = Arc::new(MockClient::new(vec![text_reply_response(
         "recovered plan completed",
     )]));
     let config = morphz::config::OrchestratorConfig::default();
@@ -936,15 +866,9 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
 }
 
 #[tokio::test]
-async fn test_plain_text_terminal_is_corrected_to_explicit_reply() {
-    let session_id = "attempt_reply_protocol_correction";
-    let responses = vec![
-        Response {
-            content: "I am done".to_string(),
-            tool_calls: Vec::new(),
-        },
-        explicit_reply_response("corrected reply"),
-    ];
+async fn test_plain_text_terminal_is_delivered_without_correction() {
+    let session_id = "attempt_plain_text_terminal";
+    let responses = vec![text_reply_response("I am done")];
     let (bus, store, _orc, client, _tmp) = build_orchestrator_with_config_and_reply_mode(
         responses,
         morphz::config::OrchestratorConfig::default(),
@@ -954,26 +878,18 @@ async fn test_plain_text_terminal_is_corrected_to_explicit_reply() {
 
     publish_user(&bus, session_id, "finish explicitly").await;
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
-    let errors = wait_for_topic(&store, "runtime/reply_protocol_error", session_id).await;
+    let errors = wait_for_topic(&store, "runtime/response_protocol_error", session_id).await;
 
     assert_eq!(replies.len(), 1);
-    assert_eq!(
-        replies[0].payload.get("text"),
-        Some(&json!("corrected reply"))
-    );
-    assert_eq!(errors.len(), 1);
-    assert_eq!(client.messages_seen().len(), 2);
-    assert!(client.messages_seen()[1]
-        .last()
-        .unwrap()
-        .content
-        .contains("Reply protocol error"));
+    assert_eq!(replies[0].payload.get("text"), Some(&json!("I am done")));
+    assert!(errors.is_empty());
+    assert_eq!(client.messages_seen().len(), 1);
 }
 
 #[tokio::test]
-async fn test_reply_suppress_is_terminal_without_session_delivery() {
-    let session_id = "attempt_reply_suppress";
-    let task_id = "attempt_reply_suppress_background";
+async fn test_no_reply_is_terminal_without_session_delivery() {
+    let session_id = "attempt_no_reply";
+    let task_id = "attempt_no_reply_background";
     let now = chrono::Utc::now();
     get_tasks_map().insert(
         task_id.to_string(),
@@ -1001,14 +917,14 @@ async fn test_reply_suppress_is_terminal_without_session_delivery() {
         },
     );
     let (bus, store, _orc, _client, _tmp) = build_orchestrator_with_config_and_reply_mode(
-        vec![suppressed_reply_response()],
+        vec![no_reply_response()],
         morphz::config::OrchestratorConfig::default(),
         false,
     )
     .await;
 
     publish_user(&bus, session_id, "background event").await;
-    let suppressed = wait_for_topic(&store, "chat/reply_suppressed", session_id).await;
+    let suppressed = wait_for_topic(&store, "chat/no_reply", session_id).await;
     let delivered = store
         .query(QueryFilter {
             session_id: Some(session_id.to_string()),
@@ -1022,7 +938,7 @@ async fn test_reply_suppress_is_terminal_without_session_delivery() {
     assert!(delivered.is_empty());
     assert_eq!(
         suppressed[0].payload.get("disposition"),
-        Some(&json!("suppress"))
+        Some(&json!("no_reply"))
     );
     assert_eq!(
         suppressed[0].payload.get("active_background_tasks"),
@@ -1032,12 +948,12 @@ async fn test_reply_suppress_is_terminal_without_session_delivery() {
 }
 
 #[tokio::test]
-async fn test_reply_protocol_fuses_after_two_failed_corrections() {
-    let session_id = "attempt_reply_protocol_fuse";
+async fn test_response_protocol_fuses_after_two_failed_corrections() {
+    let session_id = "attempt_response_protocol_fuse";
     let responses = (0..3)
         .map(|_| Response {
-            content: "done without reply tool".to_string(),
-            tool_calls: Vec::new(),
+            content: "no_reply cannot carry text".to_string(),
+            tool_calls: no_reply_response().tool_calls,
         })
         .collect();
     let (bus, store, _orc, client, _tmp) = build_orchestrator_with_config_and_reply_mode(
@@ -1049,8 +965,9 @@ async fn test_reply_protocol_fuses_after_two_failed_corrections() {
 
     publish_user(&bus, session_id, "fail reply protocol").await;
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
-    let errors = wait_for_topic_count(&store, "runtime/reply_protocol_error", session_id, 3).await;
-    let fused = wait_for_topic(&store, "runtime/reply_protocol_fused", session_id).await;
+    let errors =
+        wait_for_topic_count(&store, "runtime/response_protocol_error", session_id, 3).await;
+    let fused = wait_for_topic(&store, "runtime/response_protocol_fused", session_id).await;
 
     assert_eq!(client.messages_seen().len(), 3);
     assert_eq!(errors.len(), 3);
@@ -1912,7 +1829,7 @@ async fn model_native_prompt_count_drives_pressure_before_completion() {
     assert!(messages[0][1]
         .content
         .contains("(token-scope full-work-prompt)"));
-    assert_eq!(client.tools_seen()[0], vec!["context_tx", "reply"]);
+    assert_eq!(client.tools_seen()[0], vec!["context_tx", "no_reply"]);
 }
 
 #[tokio::test]
@@ -1980,8 +1897,8 @@ async fn critical_maintenance_rejects_unoffered_physical_tool_with_same_call_id_
 
     let tools_seen = client.tools_seen();
     assert_eq!(tools_seen.len(), 2);
-    assert_eq!(tools_seen[0], vec!["context_tx", "reply"]);
-    assert_eq!(tools_seen[1], vec!["context_tx", "reply"]);
+    assert_eq!(tools_seen[0], vec!["context_tx", "no_reply"]);
+    assert_eq!(tools_seen[1], vec!["context_tx", "no_reply"]);
     let messages = client.messages_seen();
     assert_eq!(messages.len(), 2);
     assert!(messages[0][0].content.contains("critical-maintenance"));
@@ -2060,7 +1977,7 @@ async fn test_critical_transaction_that_relieves_pressure_cools_down_next_attemp
     );
     let tools_seen = client.tools_seen();
     assert_eq!(tools_seen.len(), 2);
-    assert_eq!(tools_seen[0], vec!["context_tx", "reply"]);
+    assert_eq!(tools_seen[0], vec!["context_tx", "no_reply"]);
     assert!(!tools_seen[1].contains(&"context_tx".to_string()));
 }
 
@@ -2103,8 +2020,8 @@ async fn test_critical_pressure_does_not_cool_down_context_tool() {
     );
     let tools_seen = client.tools_seen();
     assert_eq!(tools_seen.len(), 2);
-    assert_eq!(tools_seen[0], vec!["context_tx", "reply"]);
-    assert_eq!(tools_seen[1], vec!["context_tx", "reply"]);
+    assert_eq!(tools_seen[0], vec!["context_tx", "no_reply"]);
+    assert_eq!(tools_seen[1], vec!["context_tx", "no_reply"]);
 }
 
 #[tokio::test]
@@ -2547,10 +2464,10 @@ async fn test_soft_checkpoint_allows_context_maintenance_without_forcing_final_r
     assert!(tools_seen[1].contains(&"read".to_string()));
     assert!(tools_seen[2].contains(&"read".to_string()));
     assert!(tools_seen[2].contains(&"context_tx".to_string()));
-    assert!(tools_seen[2].contains(&"reply".to_string()));
+    assert!(tools_seen[2].contains(&"no_reply".to_string()));
     assert!(tools_seen[3].contains(&"read".to_string()));
     assert!(!tools_seen[3].contains(&"context_tx".to_string()));
-    assert!(tools_seen[3].contains(&"reply".to_string()));
+    assert!(tools_seen[3].contains(&"no_reply".to_string()));
 
     let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
     assert_eq!(assistant_calls.len(), 4);
@@ -2636,10 +2553,10 @@ async fn test_failed_context_tx_at_soft_checkpoint_does_not_force_final_reply() 
     assert_eq!(client.tools_seen().len(), 3);
     assert!(client.tools_seen()[1].contains(&"read".to_string()));
     assert!(client.tools_seen()[1].contains(&"context_tx".to_string()));
-    assert!(client.tools_seen()[1].contains(&"reply".to_string()));
+    assert!(client.tools_seen()[1].contains(&"no_reply".to_string()));
     assert!(client.tools_seen()[2].contains(&"read".to_string()));
     assert!(client.tools_seen()[2].contains(&"context_tx".to_string()));
-    assert!(client.tools_seen()[2].contains(&"reply".to_string()));
+    assert!(client.tools_seen()[2].contains(&"no_reply".to_string()));
     let context = orchestrator
         .get_current_context_view(session_id)
         .await
@@ -3259,8 +3176,8 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
                 arguments: json!({"value": "tool-a"}).to_string(),
             }],
         },
-        explicit_reply_response("message-b-reply"),
-        explicit_reply_response("tool-a-finished"),
+        text_reply_response("message-b-reply"),
+        text_reply_response("tool-a-finished"),
     ]));
     let routed_arguments = Arc::new(Mutex::new(Vec::new()));
     let registry = Arc::new(Registry::new());
@@ -3387,8 +3304,8 @@ async fn concurrent_session_inspect_cannot_suppress_another_root_turns_tool_wake
                 },
             ],
         },
-        explicit_reply_response("root-b-reply"),
-        explicit_reply_response("root-a-finished"),
+        text_reply_response("root-b-reply"),
+        text_reply_response("root-a-finished"),
     ]));
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
@@ -3461,7 +3378,7 @@ async fn concurrent_session_inspect_cannot_suppress_another_root_turns_tool_wake
 }
 
 #[tokio::test]
-async fn test_distinct_sessions_fall_back_to_concurrent_evaluations_when_batching_is_disabled() {
+async fn test_distinct_sessions_evaluate_concurrently_in_shared_context() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("shared-context-concurrency.db");
     let bus = Arc::new(InMemoryEventBus::new());
@@ -3472,10 +3389,7 @@ async fn test_distinct_sessions_fall_back_to_concurrent_evaluations_when_batchin
         max_active: AtomicUsize::new(0),
         calls: AtomicUsize::new(0),
     });
-    let config = morphz::config::OrchestratorConfig {
-        merged_evaluation_enabled: false,
-        ..Default::default()
-    };
+    let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
@@ -3536,561 +3450,6 @@ async fn test_distinct_sessions_fall_back_to_concurrent_evaluations_when_batchin
     assert!(encoding_b.sexpr.contains("(active-session session-b)"));
     assert!(encoding_b.sexpr.contains("(session session-a)"));
     assert!(encoding_b.sexpr.contains("(session session-b)"));
-}
-
-#[tokio::test]
-async fn test_ready_sessions_share_one_model_request_and_receive_routed_final_replies() {
-    let response = Response {
-        content: String::new(),
-        tool_calls: vec![ToolCallRepr {
-            id: "batch-output-1".to_string(),
-            r#type: "function".to_string(),
-            func_name: "session_output".to_string(),
-            arguments: json!({
-                "deliveries": [
-                    {"session_id": "batch-session-a", "kind": "final", "text": "reply-a"},
-                    {"session_id": "batch-session-b", "kind": "final", "text": "reply-b"}
-                ]
-            })
-            .to_string(),
-        }],
-    };
-    let (bus, store, _orchestrator, client, _tmp) =
-        build_orchestrator_with_config(vec![response], deterministic_batch_config()).await;
-
-    tokio::join!(
-        publish_user_in_context(&bus, "batch-context", "batch-session-a", "question-a"),
-        publish_user_in_context(&bus, "batch-context", "batch-session-b", "question-b"),
-    );
-
-    let replies_a = wait_for_topic(&store, "chat/reply", "batch-session-a").await;
-    let replies_b = wait_for_topic(&store, "chat/reply", "batch-session-b").await;
-    assert_eq!(replies_a.len(), 1);
-    assert_eq!(replies_b.len(), 1);
-    assert_eq!(replies_a[0].payload.get("text"), Some(&json!("reply-a")));
-    assert_eq!(replies_b[0].payload.get("text"), Some(&json!("reply-b")));
-    let messages = client.messages_seen();
-    assert_eq!(messages.len(), 1);
-    assert!(messages[0][1].content.contains("(evaluation-mode batch)"));
-    assert!(messages[0][1].content.contains("(ready-sessions"));
-    assert!(messages[0][1].content.contains("(work-item @e"));
-    assert!(messages[0][1]
-        .content
-        .contains("(input-preview question-a)"));
-    assert!(messages[0][1]
-        .content
-        .contains("(input-preview question-b)"));
-    assert!(client.tools_seen()[0]
-        .iter()
-        .any(|tool| tool == "session_output"));
-}
-
-#[tokio::test]
-async fn test_partial_batch_delivery_only_falls_back_the_missing_session() {
-    let batch_response = Response {
-        content: String::new(),
-        tool_calls: vec![ToolCallRepr {
-            id: "partial-output".to_string(),
-            r#type: "function".to_string(),
-            func_name: "session_output".to_string(),
-            arguments: json!({
-                "deliveries": [
-                    {"session_id": "partial-session-a", "kind": "final", "text": "batch-a"}
-                ]
-            })
-            .to_string(),
-        }],
-    };
-    let fallback_response = Response {
-        content: "fallback-b".to_string(),
-        tool_calls: Vec::new(),
-    };
-    let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
-        vec![batch_response, fallback_response],
-        deterministic_batch_config(),
-    )
-    .await;
-
-    tokio::join!(
-        publish_user_in_context(&bus, "partial-context", "partial-session-a", "question-a"),
-        publish_user_in_context(&bus, "partial-context", "partial-session-b", "question-b"),
-    );
-
-    let replies_a = wait_for_topic(&store, "chat/reply", "partial-session-a").await;
-    let replies_b = wait_for_topic(&store, "chat/reply", "partial-session-b").await;
-    assert_eq!(replies_a.len(), 1);
-    assert_eq!(replies_b.len(), 1);
-    assert_eq!(replies_a[0].payload.get("text"), Some(&json!("batch-a")));
-    assert_eq!(replies_b[0].payload.get("text"), Some(&json!("fallback-b")));
-    assert_eq!(client.messages_seen().len(), 2);
-}
-
-#[tokio::test]
-async fn test_batch_can_finish_one_session_while_another_updates_shared_mind() {
-    let batch_response = Response {
-        content: String::new(),
-        tool_calls: vec![
-            ToolCallRepr {
-                id: "mixed-output".to_string(),
-                r#type: "function".to_string(),
-                func_name: "session_output".to_string(),
-                arguments: json!({
-                    "deliveries": [
-                        {"session_id": "mixed-session-a", "kind": "progress", "text": "updating shared mind"},
-                        {"session_id": "mixed-session-b", "kind": "final", "text": "b-finished"}
-                    ]
-                })
-                .to_string(),
-            },
-            ToolCallRepr {
-                id: "mixed-context-tx".to_string(),
-                r#type: "function".to_string(),
-                func_name: "context_tx".to_string(),
-                arguments: json!({
-                    "session_id": "mixed-session-a",
-                    "transaction": "(context-tx (base-version 0) (create batch-fact (value shared)))"
-                })
-                .to_string(),
-            },
-        ],
-    };
-    let after_transaction = Response {
-        content: "a-finished".to_string(),
-        tool_calls: Vec::new(),
-    };
-    let (bus, store, orchestrator, client, _tmp) = build_orchestrator_with_config(
-        vec![batch_response, after_transaction],
-        deterministic_batch_config(),
-    )
-    .await;
-
-    tokio::join!(
-        publish_user_in_context(&bus, "mixed-context", "mixed-session-a", "remember a fact"),
-        publish_user_in_context(
-            &bus,
-            "mixed-context",
-            "mixed-session-b",
-            "answer immediately"
-        ),
-    );
-
-    let replies_a = wait_for_topic(&store, "chat/reply", "mixed-session-a").await;
-    let replies_b = wait_for_topic(&store, "chat/reply", "mixed-session-b").await;
-    assert_eq!(replies_a.len(), 1);
-    assert_eq!(replies_b.len(), 1);
-    assert_eq!(replies_a[0].payload.get("text"), Some(&json!("a-finished")));
-    assert_eq!(replies_b[0].payload.get("text"), Some(&json!("b-finished")));
-    assert_eq!(client.messages_seen().len(), 2);
-    let view = orchestrator
-        .get_context_encoding("mixed-context", "mixed-session-b")
-        .await
-        .unwrap();
-    assert!(view
-        .state
-        .frames
-        .iter()
-        .any(|frame| frame.id == "batch-fact"));
-}
-
-#[tokio::test]
-async fn test_batch_physical_tool_route_is_removed_before_execution_and_wakes_only_owner() {
-    let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("batch-tool-routing.db");
-    let bus = Arc::new(InMemoryEventBus::new());
-    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
-    install_test_session_registry(&bus, &store);
-    let client = Arc::new(MockClient::new(vec![
-        Response {
-            content: String::new(),
-            tool_calls: vec![
-                ToolCallRepr {
-                    id: "route-progress".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "session_output".to_string(),
-                    arguments: json!({
-                        "deliveries": [
-                            {"session_id": "route-session-a", "kind": "progress", "text": "running probe"},
-                            {"session_id": "route-session-b", "kind": "final", "text": "b-complete"}
-                        ]
-                    })
-                    .to_string(),
-                },
-                ToolCallRepr {
-                    id: "route-call".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "route_probe".to_string(),
-                    arguments: json!({
-                        "session_id": "route-session-a",
-                        "value": "owned-by-a"
-                    })
-                    .to_string(),
-                },
-            ],
-        },
-        Response {
-            content: "a-complete".to_string(),
-            tool_calls: Vec::new(),
-        },
-    ]));
-    let config = deterministic_batch_config();
-    let engine = Arc::new(
-        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
-            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
-    );
-    let routed_arguments = Arc::new(Mutex::new(Vec::new()));
-    let registry = Arc::new(Registry::new());
-    registry.register(Arc::new(RoutingProbeTool {
-        arguments: Arc::clone(&routed_arguments),
-        delay_ms: 150,
-    }));
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
-        Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        Arc::clone(&client) as Arc<dyn Client>,
-        registry,
-        config,
-        engine,
-    ));
-    Arc::clone(&orchestrator).start().await.unwrap();
-
-    tokio::join!(
-        publish_user_in_context(&bus, "route-context", "route-session-a", "run a tool"),
-        publish_user_in_context(&bus, "route-context", "route-session-b", "reply now"),
-    );
-
-    let replies_a = wait_for_topic(&store, "chat/reply", "route-session-a").await;
-    let replies_b = wait_for_topic(&store, "chat/reply", "route-session-b").await;
-    assert_eq!(replies_a[0].payload.get("text"), Some(&json!("a-complete")));
-    assert_eq!(replies_b[0].payload.get("text"), Some(&json!("b-complete")));
-    assert_eq!(
-        routed_arguments.lock().unwrap().as_slice(),
-        &[json!({"value": "owned-by-a"})]
-    );
-    let outputs_a = store
-        .query(QueryFilter {
-            session_id: Some("route-session-a".to_string()),
-            types: vec![TYPE_TOOL_OUTPUT.to_string()],
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    let outputs_b = store
-        .query(QueryFilter {
-            session_id: Some("route-session-b".to_string()),
-            types: vec![TYPE_TOOL_OUTPUT.to_string()],
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    assert!(outputs_a.iter().any(|event| event
-        .payload
-        .get("tool_name")
-        .and_then(|value| value.as_str())
-        == Some("route_probe")));
-    let routed_output = outputs_a
-        .iter()
-        .find(|event| {
-            event
-                .payload
-                .get("tool_name")
-                .and_then(|value| value.as_str())
-                == Some("route_probe")
-        })
-        .unwrap();
-    assert!(replies_b[0].timestamp < routed_output.timestamp);
-    assert!(!outputs_b.iter().any(|event| event
-        .payload
-        .get("tool_name")
-        .and_then(|value| value.as_str())
-        == Some("route_probe")));
-}
-
-#[tokio::test]
-async fn test_two_tool_result_lanes_merge_again_into_one_followup_model_request() {
-    let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("batch-tool-followup.db");
-    let bus = Arc::new(InMemoryEventBus::new());
-    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
-    install_test_session_registry(&bus, &store);
-    let client = Arc::new(MockClient::new(vec![
-        Response {
-            content: String::new(),
-            tool_calls: vec![
-                ToolCallRepr {
-                    id: "follow-progress".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "session_output".to_string(),
-                    arguments: json!({
-                        "deliveries": [
-                            {"session_id": "follow-session-a", "kind": "progress", "text": "tool-a"},
-                            {"session_id": "follow-session-b", "kind": "progress", "text": "tool-b"}
-                        ]
-                    })
-                    .to_string(),
-                },
-                ToolCallRepr {
-                    id: "follow-call-a".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "route_probe".to_string(),
-                    arguments: json!({"session_id": "follow-session-a", "value": "a"})
-                        .to_string(),
-                },
-                ToolCallRepr {
-                    id: "follow-call-b".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "route_probe".to_string(),
-                    arguments: json!({"session_id": "follow-session-b", "value": "b"})
-                        .to_string(),
-                },
-            ],
-        },
-        Response {
-            content: String::new(),
-            tool_calls: vec![ToolCallRepr {
-                id: "follow-final".to_string(),
-                r#type: "function".to_string(),
-                func_name: "session_output".to_string(),
-                arguments: json!({
-                    "deliveries": [
-                        {"session_id": "follow-session-a", "kind": "final", "text": "done-a"},
-                        {"session_id": "follow-session-b", "kind": "final", "text": "done-b"}
-                    ]
-                })
-                .to_string(),
-            }],
-        },
-    ]));
-    let config = deterministic_batch_config();
-    let engine = Arc::new(
-        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
-            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
-    );
-    let routed_arguments = Arc::new(Mutex::new(Vec::new()));
-    let registry = Arc::new(Registry::new());
-    registry.register(Arc::new(RoutingProbeTool {
-        arguments: Arc::clone(&routed_arguments),
-        delay_ms: 20,
-    }));
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
-        Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        Arc::clone(&client) as Arc<dyn Client>,
-        registry,
-        config,
-        engine,
-    ));
-    Arc::clone(&orchestrator).start().await.unwrap();
-
-    tokio::join!(
-        publish_user_in_context(&bus, "follow-context", "follow-session-a", "task-a"),
-        publish_user_in_context(&bus, "follow-context", "follow-session-b", "task-b"),
-    );
-
-    let replies_a = wait_for_topic(&store, "chat/reply", "follow-session-a").await;
-    let replies_b = wait_for_topic(&store, "chat/reply", "follow-session-b").await;
-    assert_eq!(replies_a[0].payload.get("text"), Some(&json!("done-a")));
-    assert_eq!(replies_b[0].payload.get("text"), Some(&json!("done-b")));
-    let messages = client.messages_seen();
-    assert_eq!(messages.len(), 2);
-    let followup_tools = messages[1]
-        .iter()
-        .filter(|message| message.role == "tool")
-        .collect::<Vec<_>>();
-    let followup_assistant_calls = messages[1]
-        .iter()
-        .filter(|message| message.role == "assistant")
-        .flat_map(|message| message.tool_calls.iter().flatten())
-        .collect::<Vec<_>>();
-    assert_eq!(followup_assistant_calls.len(), 2);
-    assert!(followup_assistant_calls.iter().all(|call| {
-        call.function.arguments.contains("session_id")
-            && (call.function.arguments.contains("follow-session-a")
-                || call.function.arguments.contains("follow-session-b"))
-    }));
-    assert_eq!(followup_tools.len(), 2);
-    assert!(followup_tools
-        .iter()
-        .any(|message| message.content.contains("follow-session-a")));
-    assert!(followup_tools
-        .iter()
-        .any(|message| message.content.contains("follow-session-b")));
-    assert_eq!(routed_arguments.lock().unwrap().len(), 2);
-}
-
-#[tokio::test]
-async fn test_omitted_tool_result_lane_is_forced_through_single_fallback() {
-    let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("batch-tool-fallback.db");
-    let bus = Arc::new(InMemoryEventBus::new());
-    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
-    install_test_session_registry(&bus, &store);
-    let client = Arc::new(MockClient::new(vec![
-        Response {
-            content: String::new(),
-            tool_calls: vec![
-                ToolCallRepr {
-                    id: "fallback-progress".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "session_output".to_string(),
-                    arguments: json!({
-                        "deliveries": [
-                            {"session_id": "fallback-tool-a", "kind": "progress", "text": "tool-a"},
-                            {"session_id": "fallback-tool-b", "kind": "progress", "text": "tool-b"}
-                        ]
-                    })
-                    .to_string(),
-                },
-                ToolCallRepr {
-                    id: "fallback-call-a".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "route_probe".to_string(),
-                    arguments: json!({"session_id": "fallback-tool-a", "value": "a"}).to_string(),
-                },
-                ToolCallRepr {
-                    id: "fallback-call-b".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "route_probe".to_string(),
-                    arguments: json!({"session_id": "fallback-tool-b", "value": "b"}).to_string(),
-                },
-            ],
-        },
-        Response {
-            content: String::new(),
-            tool_calls: vec![ToolCallRepr {
-                id: "fallback-only-a".to_string(),
-                r#type: "function".to_string(),
-                func_name: "session_output".to_string(),
-                arguments: json!({
-                    "deliveries": [
-                        {"session_id": "fallback-tool-a", "kind": "final", "text": "done-a"}
-                    ]
-                })
-                .to_string(),
-            }],
-        },
-        Response {
-            content: "done-b".to_string(),
-            tool_calls: Vec::new(),
-        },
-    ]));
-    let config = deterministic_batch_config();
-    let engine = Arc::new(
-        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
-            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
-    );
-    let registry = Arc::new(Registry::new());
-    registry.register(Arc::new(RoutingProbeTool {
-        arguments: Arc::new(Mutex::new(Vec::new())),
-        delay_ms: 20,
-    }));
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
-        Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        Arc::clone(&client) as Arc<dyn Client>,
-        registry,
-        config,
-        engine,
-    ));
-    Arc::clone(&orchestrator).start().await.unwrap();
-
-    tokio::join!(
-        publish_user_in_context(&bus, "fallback-context", "fallback-tool-a", "task-a"),
-        publish_user_in_context(&bus, "fallback-context", "fallback-tool-b", "task-b"),
-    );
-
-    let replies_a = wait_for_topic(&store, "chat/reply", "fallback-tool-a").await;
-    let replies_b = wait_for_topic(&store, "chat/reply", "fallback-tool-b").await;
-    assert_eq!(replies_a[0].payload.get("text"), Some(&json!("done-a")));
-    assert_eq!(replies_b[0].payload.get("text"), Some(&json!("done-b")));
-    let messages = client.messages_seen();
-    assert_eq!(messages.len(), 3);
-    assert!(messages[2]
-        .iter()
-        .any(|message| { message.role == "tool" && message.content.contains("fallback-tool-b") }));
-
-    let evaluations = store
-        .query(QueryFilter {
-            topic: Some("runtime/batch_evaluation".to_string()),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    assert!(evaluations.iter().any(|event| {
-        event
-            .payload
-            .get("fallback_sessions")
-            .and_then(|value| value.as_array())
-            .is_some_and(|sessions| sessions.iter().any(|value| value == "fallback-tool-b"))
-    }));
-}
-
-#[tokio::test]
-async fn test_cancelling_one_batch_lane_does_not_cancel_other_session_delivery() {
-    let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("batch-cancel.db");
-    let bus = Arc::new(InMemoryEventBus::new());
-    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
-    install_test_session_registry(&bus, &store);
-    let client = Arc::new(SlowBatchClient {
-        started: AtomicUsize::new(0),
-    });
-    let config = deterministic_batch_config();
-    let engine = Arc::new(
-        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
-            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
-    );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
-        Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        Arc::clone(&client) as Arc<dyn Client>,
-        Arc::new(Registry::new()),
-        config,
-        engine,
-    ));
-    Arc::clone(&orchestrator).start().await.unwrap();
-
-    let bus_a = Arc::clone(&bus);
-    let bus_b = Arc::clone(&bus);
-    let send_a = tokio::spawn(async move {
-        publish_user_in_context(
-            &bus_a,
-            "cancel-batch-context",
-            "cancel-batch-a",
-            "message-a",
-        )
-        .await;
-    });
-    let send_b = tokio::spawn(async move {
-        publish_user_in_context(
-            &bus_b,
-            "cancel-batch-context",
-            "cancel-batch-b",
-            "message-b",
-        )
-        .await;
-    });
-    for _ in 0..100 {
-        if client.started.load(Ordering::SeqCst) > 0 {
-            break;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-    }
-    assert!(orchestrator.cancel_session("cancel-batch-a"));
-    send_a.await.unwrap();
-    send_b.await.unwrap();
-
-    let replies_b = wait_for_topic(&store, "chat/reply", "cancel-batch-b").await;
-    assert_eq!(replies_b.len(), 1);
-    assert_eq!(replies_b[0].payload.get("text"), Some(&json!("b-survives")));
-    let replies_a = store
-        .query(QueryFilter {
-            session_id: Some("cancel-batch-a".to_string()),
-            topic: Some("chat/reply".to_string()),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
-    assert!(replies_a.is_empty());
 }
 
 #[tokio::test]

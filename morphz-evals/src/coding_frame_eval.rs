@@ -414,7 +414,7 @@ async fn inspect_coding_discipline(
                 continue;
             };
             let arguments = normalized_arguments(function.get("arguments"));
-            if !matches!(name, "context_tx" | "reply" | "session_output") {
+            if !matches!(name, "context_tx" | "no_reply") {
                 physical_calls.push((name.to_string(), arguments.clone()));
             }
             if before_first_change && name == "read" {

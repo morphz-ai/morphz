@@ -22,7 +22,7 @@ Experience Transfer v1 以相关经验、无关经验和全新 Agent 三 arm 同
 
 Cognitive SExpr VM Prompt 将 LLM 定义为持续运行的 S 表达式认知机器的非确定性语义处理器。严格 Mind-only 评分下的五次 Gemini 配对实验中，VM related 为 15/15、原 Agent Prompt 为 14/15，三 arm 总语义为 31/45 对 26/45；模型尝试略降但物理工具增加，且尚未形成显式抽象原则。候选已证明当前任务族中非退化，完整判据、Mind 审计和结论见 [Cognitive S-Expression VM Prompt A/B](docs/morphz_cognitive_sexpr_vm_prompt_ab.md)。
 
-Runtime 现在提供三个可运行的 System Prompt Profile，并默认使用 `semantic_sexpr_vm`：整个稳定 Prompt 是一棵 SExpr，`seq/call/fallback/bind/if/reply` 的自然语言语义位于各自节点内部。旧的 `cognitive_sexpr_vm` 与 `agent_owned_context` 仍可通过 `MORPHZ_SYSTEM_PROMPT_MODE` 选择。三者共享 Context Protocol、DSL、工具、持久化状态和标准 `reply(deliver/suppress)` Function Calling，因此可以做不混淆终止机制的回归对照。完整定义见 [三版本 System Prompt 与显式 Reply 协议](docs/morphz_system_prompt_profiles_and_reply_v1.md)。
+Runtime 现在提供三个可运行的 System Prompt Profile，并默认使用 `semantic_sexpr_vm`：整个稳定 Prompt 是一棵 SExpr，`seq/call/fallback/bind/if/reply` 的自然语言语义位于各自节点内部。`cognitive_sexpr_vm` 与 `agent_owned_context` 仍可通过 `MORPHZ_SYSTEM_PROMPT_MODE` 选择。三者共享 Context Protocol、DSL、工具和持久化状态；普通无工具文本直接回复当前 active Session，`no_reply` 表示显式静默，`send_message` 用于主动联系另一 Session。完整响应协议见 [单 Session 求值与响应路由协议 v1](docs/morphz_response_routing_protocol_v1.md)。
 
 Context-Owned Session Service v1 提供持久化 Context/Session Registry、消息幂等、按 Session 的消息与回复路由、共享 Context Encoding、过滤 WebSocket 和取消语义。一个 Context 拥有一个共享 Mind 和多个可并发活跃的 Session；同一 Session 的独立 Work Item 也可以并发求值，回复和工具 continuation 通过 `root_turn_id` 保持因果隔离，`context_tx` 仍按 Context 加锁串行提交。接口与边界见 [Session Service v1](docs/morphz_session_service_v1.md)。
 
@@ -32,7 +32,7 @@ Coding Tools v1 提供 `list_files/search/read/edit/write/exec` 最小开发闭�
 
 真实 Coding Agent 测试使用独立 fixture、数据库、Artifact 目录和 macOS Seatbelt exec 边界；v2 提供多文件重试状态机任务，并在 Agent 不可见的 verifier 副本中注入隐藏测试。创建、探针、固定验证、范围审计与 Ledger 评分见 [Coding Eval Sandbox](docs/morphz_coding_eval_sandbox.md)。
 
-Attempt Runtime 将物理工作与 Context transaction 分开控制。Protocol v10 增加实验性的同一 Context 多 Session 合并求值；v11 把 single 模式终态统一为标准 `reply(deliver/suppress)` Function Calling；v12 以默认每 90 次模型求值一次的 `soft-checkpoint` 取代小规模硬上限；当前 v15 又加入 Evaluation Work Item、Session Working Set、Session attention 和因果可见边界。普通文本或空响应不再被静默当作终态，Runtime 会有限纠错后安全熔断。物理工具结果会持久化并只恢复所属 `root_turn_id`；旧 Work Item 的当前 Session 视图不会倒灌更晚到达的并发消息。合并求值仍默认关闭，可用 `MORPHZ_MERGED_EVALUATION_ENABLED=true` 显式开启。
+Attempt Runtime 将物理工作与 Context transaction 分开控制。当前 Protocol v16 以 Evaluation Work Item、Session Working Set、Session attention 和因果可见边界承载并发；每个模型请求只有一个 active Session，不再保留多 Session 合并求值。无工具非空文本是当前 Work Item 的可投递终态，独占 `no_reply` 是静默终态；空响应或非法混用会有限纠错后安全熔断。物理工具结果只恢复所属因果链，更晚到达的并发消息不会倒灌进旧 Work Item；终态唯一性也按 Work Item 提交，因此同一 Root Turn 的后台唤醒可以产生新的、不会被早先响应抑制的结果。
 
 Session Working Set 默认选择当前 Session 与最近 24 小时内最多 50 个活跃 Session；共享 Mind 始终保留，超出窗口、数量或 Token Budget 的 Session 只退出完整 Observation 投影。Agent 可用 `retire-session/restore-session` 持久维护注意力，新定向消息或工具结果会自动恢复目标 Session。可用 `MORPHZ_SESSION_ACTIVE_WINDOW` 和 `MORPHZ_SESSION_WORKING_SET_MAX` 调整策略；`morphz context status`、TUI 顶栏以及 `/api/contexts/:context_id/working-set`、`/api/contexts/:context_id/work-items` 可查看实际编译状态。完整实现与真实 Gemini 并发结果见 [并发 Session 与认知工作集 v1](docs/morphz_concurrent_session_working_set_v1.md)。
 
@@ -66,8 +66,8 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    `.env`、`.git`、`.ssh` 同样默认受保护。
 
    交互式 TTY 默认进入 Ratatui 界面：Enter 发送，Shift/Alt+Enter 换行；`/ctx`、
-   `/jobs`、`/cancel`、`/help` 可检查或控制当前运行。模型正文和工具参数按统一流式事件
-   展示，但只有成功执行的 `reply` 才会成为持久化 Session 消息。`--plain` 可选择
+   `/jobs`、`/cancel`、`/help` 可检查或控制当前运行。Provider 返回的模型正文和工具参数按统一流式事件
+   展示；无工具正文完整返回后会提交为持久化 Session 消息。`--plain` 可选择
    行式界面；非 TTY 与 `morphz exec` 自动使用纯文本，适合脚本和管道。
 
    CLI 也可以直接携带提示词；未被已注册命令和选项消费的文本都会交给 Agent：

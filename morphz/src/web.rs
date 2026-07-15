@@ -1273,7 +1273,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: 
 mod tests {
     use super::*;
     use crate::config::AppConfig;
-    use crate::llm::{Client, Message, Response, ToolCallRepr, ToolDefinition};
+    use crate::llm::{Client, Message, Response, ToolDefinition};
     use crate::runtime::{RuntimeIdentity, RuntimeToolPolicy};
     use tempfile::NamedTempFile;
 
@@ -1287,17 +1287,8 @@ mod tests {
             _tools: Vec<ToolDefinition>,
         ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
             Ok(Response {
-                content: String::new(),
-                tool_calls: vec![ToolCallRepr {
-                    id: "session-api-reply-call".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "reply".to_string(),
-                    arguments: json!({
-                        "disposition": "deliver",
-                        "content": "session-api-reply"
-                    })
-                    .to_string(),
-                }],
+                content: "session-api-reply".to_string(),
+                tool_calls: Vec::new(),
             })
         }
     }

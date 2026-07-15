@@ -24,7 +24,7 @@ use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 15;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 16;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 
 struct ContextOperationSpec {
@@ -363,16 +363,6 @@ pub struct WakeSignal {
     pub visible_in_inbox: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReadySessionEvaluation {
-    pub session_id: String,
-    pub parent_session_id: Option<String>,
-    pub work_item_id: Option<String>,
-    pub input_preview: Option<String>,
-    pub turn_budget: TurnBudget,
-    pub wake: WakeSignal,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SessionProjection {
@@ -417,9 +407,6 @@ pub struct ContextView {
     /// Compatibility alias for clients written before Context-owned Sessions.
     pub session_id: String,
     pub parent_session_id: Option<String>,
-    /// One entry in normal evaluation; multiple entries in a merged
-    /// Context-level evaluation batch.
-    pub ready_sessions: Vec<ReadySessionEvaluation>,
     /// Only Full and metadata-only directory entries are materialized. The
     /// excluded population is represented by `session_working_set` counts so
     /// Prompt size does not scale with the total Session registry.
@@ -953,11 +940,11 @@ impl ContextEngine {
         active_session_id: &str,
         excluded_observation_ids: &HashSet<String>,
     ) -> Result<ContextView, DynError> {
-        self.build_context_encoding_for_sessions(
+        self.build_context_encoding_for_session(
             context_id,
-            &[active_session_id.to_string()],
+            active_session_id,
             excluded_observation_ids,
-            &[],
+            None,
         )
         .await
     }
@@ -968,52 +955,22 @@ impl ContextEngine {
         work_item: &EvaluationWorkItemRecord,
         excluded_observation_ids: &HashSet<String>,
     ) -> Result<ContextView, DynError> {
-        self.build_context_encoding_for_sessions(
+        self.build_context_encoding_for_session(
             context_id,
-            std::slice::from_ref(&work_item.session_id),
+            &work_item.session_id,
             excluded_observation_ids,
-            std::slice::from_ref(work_item),
+            Some(work_item),
         )
         .await
     }
 
-    pub async fn build_batch_context_encoding(
+    async fn build_context_encoding_for_session(
         &self,
         context_id: &str,
-        ready_session_ids: &[String],
-    ) -> Result<ContextView, DynError> {
-        self.build_batch_context_encoding_excluding(context_id, ready_session_ids, &HashSet::new())
-            .await
-    }
-
-    pub async fn build_batch_context_encoding_excluding(
-        &self,
-        context_id: &str,
-        ready_session_ids: &[String],
+        active_session_id: &str,
         excluded_observation_ids: &HashSet<String>,
+        evaluation_work_item: Option<&EvaluationWorkItemRecord>,
     ) -> Result<ContextView, DynError> {
-        if ready_session_ids.is_empty() {
-            return Err("batch Context Encoding 至少需要一个 ready Session".into());
-        }
-        self.build_context_encoding_for_sessions(
-            context_id,
-            ready_session_ids,
-            excluded_observation_ids,
-            &[],
-        )
-        .await
-    }
-
-    async fn build_context_encoding_for_sessions(
-        &self,
-        context_id: &str,
-        ready_session_ids: &[String],
-        excluded_observation_ids: &HashSet<String>,
-        evaluation_work_items: &[EvaluationWorkItemRecord],
-    ) -> Result<ContextView, DynError> {
-        let active_session_id = ready_session_ids
-            .first()
-            .ok_or("Context Encoding 缺少 active Session")?;
         let events = self.context_events(context_id).await?;
         let references = ContextReferences::from_events(&events);
         let state = load_mind_from_events(&events)?;
@@ -1031,9 +988,10 @@ impl ContextEngine {
             }
             None => Vec::new(),
         };
+        let current_session_ids = [active_session_id.to_string()];
         let (mut sessions, mut session_working_set) = select_session_working_set(
             &registry_sessions,
-            ready_session_ids,
+            &current_session_ids,
             Utc::now(),
             &self.config.session_working_set,
             &objectives,
@@ -1041,11 +999,11 @@ impl ContextEngine {
         );
         let parent_session_id = registry_sessions
             .iter()
-            .find(|session| session.id == *active_session_id)
+            .find(|session| session.id == active_session_id)
             .and_then(|session| session.parent_session_id.clone())
             .or_else(|| {
                 events.iter().find_map(|event| {
-                    (event_session(event) == Some(active_session_id.as_str()))
+                    (event_session(event) == Some(active_session_id))
                         .then(|| {
                             event
                                 .payload
@@ -1063,8 +1021,8 @@ impl ContextEngine {
             .iter()
             .filter(|frame| !state.retired.contains(&frame.id))
             .collect::<Vec<_>>();
-        let causal_frontiers = evaluation_work_items
-            .iter()
+        let causal_frontiers = evaluation_work_item
+            .into_iter()
             .map(|work_item| {
                 let root_sequence = events
                     .iter()
@@ -1074,7 +1032,7 @@ impl ContextEngine {
                 (work_item.session_id.as_str(), (work_item, root_sequence))
             })
             .collect::<HashMap<_, _>>();
-        let ready_set = ready_session_ids.iter().cloned().collect::<HashSet<_>>();
+        let ready_set = current_session_ids.iter().cloned().collect::<HashSet<_>>();
         let (observations, estimated_tokens) = loop {
             let full_set = sessions
                 .iter()
@@ -1156,91 +1114,42 @@ impl ContextEngine {
             observations.len(),
             &self.config,
         );
-        let ready_sessions = ready_session_ids
+        let session_events = events
             .iter()
-            .map(|session_id| {
-                let session_events = events
-                    .iter()
-                    .filter(|event| event_session(event) == Some(session_id.as_str()))
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let parent_session_id = registry_sessions
-                    .iter()
-                    .find(|session| session.id == *session_id)
-                    .and_then(|session| session.parent_session_id.clone())
-                    .or_else(|| {
-                        session_events.iter().find_map(|event| {
-                            event
-                                .payload
-                                .get("parent_session_id")
-                                .and_then(|value| value.as_str())
-                                .map(ToOwned::to_owned)
-                        })
-                    });
-                let evaluation_work_item = evaluation_work_items
-                    .iter()
-                    .find(|item| item.session_id == *session_id);
-                let causal_events = evaluation_work_item.map(|work_item| {
-                    session_events
-                        .iter()
-                        .filter(|event| {
-                            event.id == work_item.root_turn_id
-                                || event.id == work_item.trigger_event_id
-                                || event
-                                    .payload
-                                    .get("root_turn_id")
-                                    .and_then(|value| value.as_str())
-                                    == Some(work_item.root_turn_id.as_str())
-                        })
-                        .cloned()
-                        .collect::<Vec<_>>()
-                });
-                let wake = evaluation_work_item
-                    .and_then(|work_item| {
-                        session_events
-                            .iter()
-                            .find(|event| event.id == work_item.trigger_event_id)
-                    })
-                    .map(wake_for_event)
-                    .unwrap_or_else(|| wake_for(&session_events));
-                let ready_observation = wake.event_id.as_deref().and_then(|event_id| {
-                    observations
-                        .iter()
-                        .find(|observation| observation.id == event_id)
-                });
-                ReadySessionEvaluation {
-                    session_id: session_id.clone(),
-                    parent_session_id,
-                    work_item_id: evaluation_work_item
-                        .map(|item| item.id.clone())
-                        .or_else(|| {
-                            wake.event_id.as_deref().and_then(|event_id| {
-                                active_work_items
-                                    .iter()
-                                    .find(|item| item.trigger_event_id == event_id)
-                                    .map(|item| item.id.clone())
-                            })
-                        })
-                        .or_else(|| {
-                            ready_observation.map(|observation| observation.reference.clone())
-                        }),
-                    input_preview: ready_observation
-                        .map(|observation| preview_text(&observation.preview, 4_000).0),
-                    turn_budget: turn_budget_for(
-                        causal_events.as_deref().unwrap_or(&session_events),
-                        &self.config,
-                    ),
-                    wake,
-                }
-            })
+            .filter(|event| event_session(event) == Some(active_session_id))
+            .cloned()
             .collect::<Vec<_>>();
-        let turn_budget = ready_sessions[0].turn_budget.clone();
-        let wake = ready_sessions[0].wake.clone();
+        let causal_events = evaluation_work_item.map(|work_item| {
+            session_events
+                .iter()
+                .filter(|event| {
+                    event.id == work_item.root_turn_id
+                        || event.id == work_item.trigger_event_id
+                        || event
+                            .payload
+                            .get("root_turn_id")
+                            .and_then(|value| value.as_str())
+                            == Some(work_item.root_turn_id.as_str())
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        let wake = evaluation_work_item
+            .and_then(|work_item| {
+                session_events
+                    .iter()
+                    .find(|event| event.id == work_item.trigger_event_id)
+            })
+            .map(wake_for_event)
+            .unwrap_or_else(|| wake_for(&session_events));
+        let turn_budget = turn_budget_for(
+            causal_events.as_deref().unwrap_or(&session_events),
+            &self.config,
+        );
         let sexpr = render_context(ContextRenderInput {
             context_id,
-            active_session_id: active_session_id.as_str(),
+            active_session_id,
             parent_session_id: parent_session_id.as_deref(),
-            ready_sessions: &ready_sessions,
             sessions: &sessions,
             session_working_set: &session_working_set,
             active_work_items: &active_work_items,
@@ -1255,10 +1164,9 @@ impl ContextEngine {
 
         Ok(ContextView {
             context_id: context_id.to_string(),
-            active_session_id: active_session_id.clone(),
-            session_id: active_session_id.clone(),
+            active_session_id: active_session_id.to_string(),
+            session_id: active_session_id.to_string(),
             parent_session_id,
-            ready_sessions,
             sessions,
             session_working_set,
             active_work_items,
@@ -1302,7 +1210,6 @@ impl ContextEngine {
             context_id: &view.context_id,
             active_session_id: &view.active_session_id,
             parent_session_id: view.parent_session_id.as_deref(),
-            ready_sessions: &view.ready_sessions,
             sessions: &view.sessions,
             session_working_set: &view.session_working_set,
             active_work_items: &view.active_work_items,
@@ -2284,7 +2191,6 @@ struct ContextRenderInput<'a> {
     context_id: &'a str,
     active_session_id: &'a str,
     parent_session_id: Option<&'a str>,
-    ready_sessions: &'a [ReadySessionEvaluation],
     sessions: &'a [ProjectedSession],
     session_working_set: &'a SessionWorkingSetView,
     active_work_items: &'a [EvaluationWorkItemRecord],
@@ -2445,7 +2351,6 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         context_id,
         active_session_id,
         parent_session_id,
-        ready_sessions,
         sessions,
         session_working_set,
         active_work_items,
@@ -2458,35 +2363,9 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         references,
     } = input;
     let mut kernel = vec![atom("kernel"), pair("context", atom(context_id))];
-    if ready_sessions.len() > 1 {
-        kernel.push(pair("evaluation-mode", atom("batch")));
-        kernel.push(list(
-            "ready-sessions",
-            ready_sessions
-                .iter()
-                .map(|ready| {
-                    let mut fields = vec![pair("id", atom(&ready.session_id))];
-                    if let Some(parent) = &ready.parent_session_id {
-                        fields.push(pair("parent-session", atom(parent)));
-                    }
-                    if let Some(work_item_id) = &ready.work_item_id {
-                        fields.push(pair("work-item", atom(work_item_id)));
-                    }
-                    if let Some(input_preview) = &ready.input_preview {
-                        fields.push(pair("input-preview", atom(input_preview)));
-                    }
-                    fields.push(render_wake(&ready.wake, references));
-                    fields.push(render_turn_control(&ready.turn_budget));
-                    list("session", fields)
-                })
-                .collect(),
-        ));
-    } else {
-        kernel.push(pair("evaluation-mode", atom("single")));
-        kernel.push(pair("active-session", atom(active_session_id)));
-        if let Some(parent) = parent_session_id {
-            kernel.push(pair("parent-session", atom(parent)));
-        }
+    kernel.push(pair("active-session", atom(active_session_id)));
+    if let Some(parent) = parent_session_id {
+        kernel.push(pair("parent-session", atom(parent)));
     }
     kernel.push(pair("version", atom(state.version.to_string())));
     kernel.push(pair(
@@ -2939,11 +2818,10 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair("ownership", atom("一个 Cognitive Context 持有一个共享 Mind 与多个 Session")),
                     pair("session-role", atom("Session 是输入输出连接与进展边界，不拥有独立 Mind")),
-                    pair("active-session", atom("single 求值时表示输入来源与回复目标；不是 Context 的全局唯一活动 Session")),
-                    pair("ready-sessions", atom("batch 求值时列出每个必须分别处理的 Session、稳定 work-item 和当前 input-preview；不存在可承载所有回复的单一正文目标")),
+                    pair("active-session", atom("本次求值唯一的输入来源与普通文本回复目标；不是 Context 的全局唯一活动 Session")),
                     pair("concurrency", atom("同一 Context 可有多个 Session 同时进行各自求值与回复")),
                     pair("shared-evidence", atom("inbox observation 按 session 标记来源，但均属于当前 Context，可跨 Session 推理与复用")),
-                    pair("reply-routing", atom("single 求值的标准 reply 与可见 progress 必须对应 kernel.active-session")),
+                    pair("reply-routing", atom("无工具普通 assistant 文本与可见 progress 必须对应 kernel.active-session；其他 Session 使用 send_message")),
                     pair("write-serialization", atom("context_tx 修改共享 Mind；Runtime 按 Context 串行提交并执行 version 检查")),
                 ],
             ),
@@ -3045,7 +2923,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "evaluation",
-                        atom("一次 Evaluation 只是 Objective 的一个执行切片；标准 reply 只结束并路由本次 Evaluation，不表示长期 Objective 已完成"),
+                        atom("一次 Evaluation 只是 Objective 的一个执行切片；普通文本或 no_reply 只结束本次 Evaluation，不表示长期 Objective 已完成"),
                     ),
                     pair(
                         "completion",
@@ -3053,7 +2931,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "continuation",
-                        atom("active 且 wait=none 时，ObjectiveSupervisor 会在 reply 后自动开启下一次 Evaluation；软检查点、Context 压力或单次错误都不能冒充完成"),
+                        atom("active 且 wait=none 时，ObjectiveSupervisor 会在当前 Evaluation 终态后自动开启下一次 Evaluation；软检查点、Context 压力或单次错误都不能冒充完成"),
                     ),
                     pair(
                         "waiting",
@@ -3083,14 +2961,10 @@ fn render_protocol() -> SExpr {
                     list(
                         "reply",
                         vec![
-                            pair("evaluation-mode", atom("single")),
                             pair("when", atom("当前用户任务已经完成，或必须向用户说明阻塞")),
-                            pair("tool", atom("reply")),
-                            pair("exclusive", atom("reply 必须是终态响应中唯一的工具调用")),
-                            pair("deliver", atom("disposition=deliver；content 必须非空并交付当前 Session")),
-                            pair("suppress", atom("disposition=suppress；明确结束但不向当前 Session 投递消息")),
-                            pair("plain-text", atom("普通文本或空响应都不是终态；Runtime 返回协议错误并有限重试")),
-                            pair("circuit-breaker", atom("允许两次纠错；第三次仍无合法 reply 时安全熔断")),
+                            pair("form", atom("返回非空普通 assistant 文本，不调用工具")),
+                            pair("routing", atom("正文自动交付 kernel.active-session")),
+                            pair("stream", atom("如 Provider 返回文本增量，Runtime 立即向 active Session 转发；完整响应成功后再持久化终态")),
                             list(
                                 "preflight",
                                 vec![
@@ -3110,13 +2984,12 @@ fn render_protocol() -> SExpr {
                         ],
                     ),
                     list(
-                        "batch-reply",
+                        "no-reply",
                         vec![
-                            pair("evaluation-mode", atom("batch")),
-                            pair("tool", atom("session_output")),
-                            pair("content", atom("empty; 可见文本必须显式路由")),
-                            pair("coverage", atom("每个 ready Session 必须 final、progress+action 或明确阻塞")),
-                            pair("fallback", atom("遗漏或歧义项由 Runtime 单独重新求值；已交付项不重放")),
+                            pair("when", atom("确认当前 Evaluation 无需向 active Session 发送任何消息")),
+                            pair("tool", atom("no_reply")),
+                            pair("exclusive", atom("no_reply 必须独占响应，无参数且不携带正文")),
+                            pair("scope", atom("只结束当前 Evaluation；不完成 Objective，不取消后台任务")),
                         ],
                     ),
                     list(
@@ -3146,7 +3019,7 @@ fn render_protocol() -> SExpr {
                             pair("content", atom("empty | visible progress; 不是最终答复")),
                             pair(
                                 "after-commit",
-                                atom("Runtime 必定再次调用；非 critical 时冷却 context_tx，必须调用 reply 或执行 act"),
+                                atom("Runtime 必定再次调用；非 critical 时冷却 context_tx，必须返回普通文本、调用 no_reply 或执行 act"),
                             ),
                         ],
                     ),
@@ -3155,12 +3028,10 @@ fn render_protocol() -> SExpr {
             list(
                 "session-output-contract",
                 vec![
-                    pair("role", atom("外部 Session IO；不是 Mind transaction")),
-                    pair("tool", atom("session_output")),
-                    pair("syntax", atom("{deliveries:[{session_id,kind:progress|final,text},...]}")),
-                    pair("final", atom("结束该 Session 当前回合；同一 Session 不得同时 final 和调用工具")),
-                    pair("progress", atom("只发送可见进度，不结束回合；必须同时有后续动作或由 Runtime 重新调度")),
-                    pair("routing", atom("session_id 必须来自 kernel.ready-sessions，Runtime 拒绝伪造目标")),
+                    pair("current", atom("无工具的普通文本只回复 kernel.active-session")),
+                    pair("other-session-tool", atom("send_message {session_id,content}")),
+                    pair("other-session", atom("send_message 只向同一 Agent 的其他 Session 主动投递，不结束当前 Evaluation，不触发目标 Session 求值")),
+                    pair("current-session-guard", atom("不得用 send_message 回复 active Session；Runtime 会拒绝")),
                     pair("context-boundary", atom("context_tx 只修改共享 Mind，不能向用户发送消息")),
                 ],
             ),
@@ -3651,6 +3522,7 @@ fn observation_ids(events: &[Event]) -> HashSet<String> {
 fn is_observation(event: &Event) -> bool {
     if event.topic == "chat/assistant_call"
         || event.topic == "chat/progress"
+        || event.topic == "chat/no_reply"
         || event.topic == "chat/context_inspect"
         || event.topic == "chat/context_tx_committed"
         || event.topic == "chat/runtime_error"
@@ -4317,7 +4189,6 @@ mod tests {
             context_id: "context-1",
             active_session_id: "s1",
             parent_session_id: None,
-            ready_sessions: &[],
             sessions: &[],
             session_working_set: &working_set,
             active_work_items: &[],
@@ -4374,7 +4245,6 @@ mod tests {
             context_id: "context-1",
             active_session_id: "s2",
             parent_session_id: None,
-            ready_sessions: &[],
             sessions: &[],
             session_working_set: &working_set,
             active_work_items: &[],

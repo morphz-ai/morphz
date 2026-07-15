@@ -68,9 +68,9 @@ SQLite 包含：
 - 修改 Mind：`context_tx` 使用 Context 级互斥锁串行提交；
 - 并发事务：提交时检查 `base-version`。先提交者成功，基于旧版本的后提交者收到版本冲突，不会覆盖新状态。
 
-模型思考、物理工具执行和等待不持有 Session/Context 排他锁。每个 Work Item 固定 `root_turn_id` 和根事件的 Ledger sequence：同根后续工具事件可见，更晚到达的其他用户回合不会倒灌进旧 Work Item；Reply 以 `(session_id, root_turn_id)` 唯一提交。锁只覆盖共享 Mind 的事务提交临界区。
+模型思考、物理工具执行和等待不持有 Session/Context 排他锁。每个 Work Item 固定 `root_turn_id` 和根事件的 Ledger sequence：同根后续工具事件可见，更晚到达的其他用户回合不会倒灌进旧 Work Item；终态以 `work_item_id` 唯一提交。锁只覆盖共享 Mind 的事务提交临界区。
 
-近同时到达的多个用户消息可以进入一次 Context-level 合并求值。模型通过 `session_output` Function Calling 分别回复 ready Session；`context_tx` 仍只负责共享 Mind。遗漏项会精确降级为独立求值。该能力在轻对话中通过、在重量编码中尚不稳定，因此当前默认关闭，完整设计、配置和 Gemini 结果见 [多 Session 自适应合并求值 v1](morphz_merged_session_evaluation_v1.md)。
+每个模型请求只编译一个 active Session。多个 Session 即使共享同一个 Context，也各自发起独立且可并行的模型请求；它们共享已提交 Mind，但不会要求模型在一个响应里拆分多个回复。普通无工具文本投递给 active Session；跨 Session 主动消息使用 `send_message`。
 
 ## 5. HTTP API
 

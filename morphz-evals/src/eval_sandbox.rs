@@ -451,7 +451,7 @@ fn is_external_frame_seed(event: &morphz::event::Event) -> bool {
 }
 
 fn is_physical_tool_name(name: &str) -> bool {
-    !matches!(name, "context_tx" | "reply" | "session_output")
+    !matches!(name, "context_tx" | "no_reply")
 }
 
 fn load_verification(run_root: &Path) -> Result<Option<CodingEvalVerification>, DynError> {
@@ -913,7 +913,7 @@ mod tests {
                 "chat/assistant_call".to_string(),
                 payload(vec![(
                     "tool_calls",
-                    json!([{"function": {"name": "reply"}}]),
+                    json!([{"function": {"name": "no_reply"}}]),
                 )]),
             ))
             .await

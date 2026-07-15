@@ -228,7 +228,7 @@ pub enum EvaluationWorkItemMutation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReplyCommit {
+pub enum EvaluationOutcomeCommit {
     Committed,
     Existing { event_id: String },
 }
@@ -547,13 +547,13 @@ pub trait SessionStore: Send + Sync {
         lease_expires_at: Option<DateTime<Utc>>,
         context_snapshot_version: Option<u64>,
     ) -> Result<EvaluationWorkItemMutation, Box<dyn std::error::Error + Send + Sync>>;
-    /// Claim the one externally visible terminal reply for a root turn and
-    /// append it in the same SQLite transaction.
-    async fn commit_evaluation_reply(
+    /// Claim the one terminal outcome for an Evaluation Work Item and append
+    /// it in the same SQLite transaction.
+    async fn commit_evaluation_outcome(
         &self,
-        root_turn_id: &str,
+        work_item_id: &str,
         event: &crate::event::Event,
-    ) -> Result<ReplyCommit, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<EvaluationOutcomeCommit, Box<dyn std::error::Error + Send + Sync>>;
     async fn claim_message(
         &self,
         session_id: &str,

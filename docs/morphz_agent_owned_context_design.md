@@ -8,7 +8,7 @@
 
 > 现实约束与认识论说明：Agent 拥有 Context 语义，不等于 Runtime 只提供存储。Runtime 还应提供不可伪造的顺序、直接因果、身份、来源、版本、事务和控制反馈，但不能替 Agent 认证业务真理。完整契约见 [`morphz_reality_constrained_epistemic_context.md`](morphz_reality_constrained_epistemic_context.md)。
 
-> Protocol v11 更新（2026-07-13）：本文后部关于“无工具纯文本是最终 reply”的 v6 历史说明已被显式 Reply 协议取代。当前三个 System Prompt Profile 都使用标准 `reply(disposition=deliver|suppress)` Function Calling；普通文本和空响应不是终态，Runtime 最多纠错两次后熔断。完整定义见 [三版本 System Prompt 与显式 Reply 协议](./morphz_system_prompt_profiles_and_reply_v1.md)。
+> Protocol v16 更新（2026-07-15）：当前每次模型请求只有一个 active Session；无工具非空普通文本是该 Session 的终态响应，独占 `no_reply` 表示静默，`send_message` 用于其他 Session。空响应不是终态，Runtime 最多纠错两次后熔断。完整定义见 [单 Session 求值与响应路由协议 v1](./morphz_response_routing_protocol_v1.md)。
 
 ## 1. 设计命题
 
@@ -278,13 +278,13 @@ Agent 负责语义判断，不等于 Runtime 应让它在信息不完备的情�
 
 每轮 Context 必须携带由 Runtime 生成的 `protocol`，使 Agent 不依赖隐藏约定猜测自己的操作方式。协议至少自描述：
 
-- `reply`：通过标准 `reply(deliver/suppress)` Function Calling 明确结束 single 求值；`deliver` 投递正文，`suppress` 明确不向 Session 投递；
+- `reply`：无工具非空普通文本结束当前 active Session 的求值并投递正文；独占 `no_reply` 明确静默；`send_message` 用于另一 Session；
 - `act`：调用物理工具以取得必要的新结果，可并行附带一个不依赖本批新结果的 `context_tx`；正文只是可见进度，工具执行后 Runtime 必定再次调用模型；
 - `maintain`：可单独调用 `context_tx`；它不是用户回合终点，Runtime 执行后必须再次调用模型，且非 critical 时下一响应冷却 `context_tx`；
 - `context-tx-contract`：事务骨架、reason 作用域及全部可用原语的准确语法；
 - `kernel.wake`：本轮由用户消息、外部工具结果还是 Context transaction 回执唤醒。
 
-protocol v6 不再向模型暴露 `context_tx.final_reply` 布尔参数，也不再提供“事务与最终正文同响应终止”的快速路径；当时曾采用“有工具则继续、无工具纯文本结束”的响应形态。Protocol v11 已进一步把 single 求值终态统一为标准 `reply(deliver/suppress)` Function Calling；普通文本或空响应会触发有限纠错，不能再静默结束用户回合。
+protocol v6 不再向模型暴露 `context_tx.final_reply` 布尔参数，也不再提供“事务与最终正文同响应终止”的快速路径。Protocol v16 采用“有工具则继续、无工具非空文本结束当前 active Session”的响应形态；空响应会触发有限纠错，明确静默必须调用 `no_reply`。
 
 Context 修改继续只暴露一个标准 Function Calling 工具：`context_tx(transaction: string)`。外层遵循模型训练过的标准工具调用接口，内部参数保留 canonical SExpr；暂不把 operations 改成结构化 JSON。真实测试发现，多种模型会自然地把 goal、status、source 等多个字段写成并列 BODY；这些表达语义明确，没有必要要求模型添加无业务含义的 `record/frame` 外壳。protocol v5 因此正式接受 `BODY...`，由 Runtime 规范化为单一 `(context-body ...)` 后写入 Ledger。来源语义仍保持严格：`create` 不接受 `from`，有来源时使用 `derive`，避免容错吞掉证据血缘。
 
@@ -590,7 +590,7 @@ Mind Inspector 至少应支持：
 9. Context transaction 作为 Event Ledger 事件保存完整 state-after、version 和 Diff；
 10. Dashboard 已能直接观察 Mind Frames、来源、revision、保护状态、Inbox 和 Pressure；
 11. Kernel 已分离物理 Attempt 与 Context transaction 预算，并强制执行一次性 Context closure 和最终回复，防止模型无界探索或元认知循环；
-12. 每轮 Context 已自描述 response contract、工具结果回传契约、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数；protocol v15 同时说明稳定短引用、多 BODY 规范化、完整 revise 替换、恢复点、标准工具回传、显式 `reply`、Session Working Set、attention 与并发因果边界。
+12. 每轮 Context 已自描述 response contract、工具结果回传契约、`context_tx` DSL，并暴露动态 wake cause；`context_tx` 继续使用单一 SExpr transaction 参数；protocol v16 同时说明稳定短引用、多 BODY 规范化、完整 revise 替换、恢复点、标准工具回传、普通文本/`no_reply`/`send_message`、Session Working Set、attention 与并发因果边界。
 13. `read` 已支持带行号的文本查询与行范围读取，减少长文件证据在 Inbox 中的重复膨胀。
 14. Coding Tools v1 已提供 `list_files/search/read/edit/write/exec` 最小闭环；文件修改带 SHA-256 版本前提、原子提交、Diff 和 `file_change` Observation。
 15. Event Ledger 通过 SQLite `rowid` 暴露稳定写入 `sequence`，并为 Observation 提供 turn、attempt、caused-by、residency、resource、freshness 与 usage。
@@ -598,7 +598,7 @@ Mind Inspector 至少应支持：
 17. 已建立 `context_metacognition_eval` 黑盒评测，分别评分 Runtime 契约与 Agent 元认知策略，并支持基线/候选对比。
 18. Observation、wake、frame sources、freshness 与 relation 在模型视口中统一使用 `@eN`；Runtime 只解析操作参数中的引用位，Ledger transaction 与 Mind state 始终保存完整 canonical ID，保证确定性重放与旧数据兼容。
 19. `create/derive/revise` 正式接受 `BODY...`；多项由 Runtime 确定性规范化为 `(context-body BODY...)`，单项保持原样。`create` 不接受 `from`，`derive/revise` 的来源必须紧跟 ID，避免容错掩盖证据血缘错误。
-20. `context_tx.final_reply` 已从 Function Calling schema 和 Runtime 终止逻辑中移除；物理工具和 `context_tx` 响应展示为进度并续跑，single 求值只有标准 `reply(deliver/suppress)` 能形成模型选择的正常终态。
+20. `context_tx.final_reply` 与 `reply(deliver/suppress)` 已从 Function Calling schema 和 Runtime 终止逻辑中移除；物理工具和 `context_tx` 响应展示为进度并续跑，无工具非空文本或独占 `no_reply` 形成正常终态。
 21. `revise` 的完整替换语义已在三层契约中显式公开；`checkpoint/rollback/drop-checkpoint` 提供 Agent 可控、可重放的 Mind 恢复。
 22. 当前用户回合内建立临时标准 Function Calling transcript：工具输出先写 Ledger，再以匹配原始 `tool_call_id` 的 `role=tool` message 返回；同一请求从 Inbox 排除这批结果正文，下一独立 Context 快照再按 active/retired 状态恢复为 Observation。空输出使用显式 `status=success, output_state=empty`，避免模型把沉默误判为未执行。
 

@@ -416,7 +416,7 @@ v1 明确不实现：
 ### 15.1 兼容性
 
 1. 没有 Objective 的普通聊天、代码任务和工具循环行为不变；
-2. `reply(deliver/suppress)` 仍是 single Evaluation 的唯一正常终态；
+2. 无工具非空文本或独占 `no_reply` 是 Evaluation 的正常终态；
 3. 现有多 Session 独立求值和 Delegation 回传不退化。
 
 ### 15.2 长程连续性
@@ -475,7 +475,7 @@ Morphz 采用相同的依赖方向，但不复制 `ThreadGoal` 层级：
 5. token/time budget 达到边界时使用 paused 还是独立 reason/status；
 6. v1 是否允许 coordinator 与 delivery Session 不同，还是只在 schema 中预留。
 
-这些问题不会改变本文冻结的核心边界：Objective 是第一等控制对象，Mind 保有语义自治，ObjectiveSupervisor 是内置监督模块，`reply` 只结束一次 Evaluation。
+这些问题不会改变本文冻结的核心边界：Objective 是第一等控制对象，Mind 保有语义自治，ObjectiveSupervisor 是内置监督模块，普通文本或 `no_reply` 只结束一次 Evaluation。
 
 ## 18. v1 实施记录
 
@@ -484,7 +484,7 @@ Morphz 采用相同的依赖方向，但不复制 `ThreadGoal` 层级：
 ### 18.1 已落地能力
 
 - SQLite 持久化 `ObjectiveRecord`，支持 revision CAS、生命周期校验、等待条件、Evaluation 租约、continuation sequence、Prompt Token 本地计量与运行时间记账；
-- 内置 `ObjectiveSupervisor` 在 `reply(deliver/suppress)` 后依据最新状态自动续跑，内部 continuation 使用可审计的 `chat/tool_output` Runtime Event，不伪造 user message；
+- 内置 `ObjectiveSupervisor` 在普通文本或 `no_reply` 终态后依据最新状态自动续跑，内部 continuation 使用可审计的 `chat/tool_output` Runtime Event，不伪造 user message；
 - Evaluation 租约在认领时登记到期唤醒；过期后释放本地路由并可重新认领，旧定时器不能清除新租约；进程重启会恢复 active/waiting Objective，并清理非 active Objective 的残留 Evaluation；
 - 标准 `objective_update` Function Calling 只允许当前 coordinator Session 更新自身 Objective，验证 revision、状态转换和 Ledger evidence reference；模型可以提交 `completed`、真实 `blocked` 或带精确等待条件的 `active`；
 - 标准 `objective_create` Function Calling 允许模型把真正需要跨 Evaluation、异步等待或重启恢复的当前工作升级为 Objective；Runtime 独占 Agent/Context/Session/ID 路由，审计创建原因和来源，并对同一非终态目标做串行幂等去重；

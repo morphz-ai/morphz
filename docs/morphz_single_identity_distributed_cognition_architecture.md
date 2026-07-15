@@ -672,7 +672,7 @@ Morphz 已经拥有一部分重要基础：
 - 多 Session 挂载共享 Context，以及创建继承 Mind 的独立 Session；
 - Ledger、Context revision、SExpr `context_tx` 和确定性 replay；
 - Session 路由、Delegation、后台任务和标准 Tool Result；
-- 分离求值与实验性的合并求值；
+- 每个请求单 active Session 的独立并发求值；
 - Agent 自主维护 Frame、Relation、Observation 和 Context pressure；
 - Objective、Sandbox、审批与多 Provider 接口。
 

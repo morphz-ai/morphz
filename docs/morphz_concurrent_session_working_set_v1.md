@@ -42,7 +42,7 @@ v1 必须同时建立以下语义：
 - 标准 Tool Call / Tool Result 身份；
 - 后台任务、`wait_task` 定时唤醒、`kill_task` 和终态事件；
 - Objective continuation；
-- 多 Session 独立求值和实验性 merged evaluation；
+- 多 Session 独立并发求值；每个请求只有一个 active Session；
 - Shared Mind、Frame revision、Mind Seed 与 Session Projection 基础。
 
 ### 2.2 已解除的阻塞点
@@ -113,7 +113,7 @@ v1 规则：
 3. `max_sessions` 包含当前 Session；
 4. `max_sessions=1` 表示只投影当前 Session 的历史；
 5. 现有 `context_soft_token_limit/context_hard_token_limit` 继续作为最终物理容量边界；
-6. merged evaluation 的 `max_sessions_per_evaluation` 是“一次请求处理几个 ready Session”，与 Working Set 的“可以看到几个近期 Session”不是同一个配置；
+6. 每次 Evaluation 只有一个 active Session；Working Set 只控制该请求还能看到哪些共享 Session 证据，不改变响应路由；
 7. 配置重载后只影响后续 Encoding，不修改 Session 持久状态。
 
 ## 5. Session Working Set 选择算法
@@ -445,17 +445,17 @@ sequence(ToolCall A) < sequence(Message B) < sequence(ToolResult A)
 2. 无 Session/Context 排他锁地编译 Snapshot；
 3. 无排他锁地执行 LLM 请求和工具等待；
 4. Context 修改继续使用短 Context transaction lock；
-5. Reply 使用 `(session_id, root_turn_id, disposition)` 唯一提交约束；
+5. Evaluation outcome 使用 `work_item_id` 唯一提交约束；
 6. Work Item 状态使用 revision/CAS 更新；
 7. 工具使用稳定 call ID 和执行租约。
 
-同一个 Session 的两个 Work Item 可以并行计算，但不能静默覆盖相同的 Reply、Objective、Task 或 Mind revision。
+同一个 Session 的两个 Work Item 可以并行计算，但不能静默覆盖相同的 Evaluation outcome、Objective、Task 或 Mind revision。
 
 ### 11.3 Foreground Tool
 
 首版不要求所有快速 Tool 都变成显式后台任务。Evaluation 可以 await 一个 Tool，但等待期间不得持有 Session/Context 全局锁，因此新 Work Item 仍可并行运行。
 
-耗时命令继续使用现有 Background Task：调用后当前 Evaluation 应 `reply(suppress)` 或进入 waiting 状态，结果和 timer 以后主动唤醒。
+耗时命令继续使用现有 Background Task：调用后当前 Evaluation 可用 `no_reply` 显式静默结束，结果和 timer 以后主动唤醒新的 Work Item。
 
 ### 11.4 新消息可以改变旧任务
 
@@ -746,7 +746,7 @@ B 没有等待 A；A 的 continuation 保持 A 的 `root_turn_id`，其 Context 
 
 - 不实现 Raft/Paxos 或多副本 Ledger；
 - 不实现 Frame 级 MVCC；v1 继续允许 Context 全局 version 冲突后重求值；
-- 不实现所有 Session 一次合并求值；merged evaluation 继续默认关闭；
+- 不实现所有 Session 一次合并求值；该实验路径已从 Runtime 删除；
 - 不实现 Session 内部 Observation 分页换入；
 - 不让 Runtime 自动为旧 Session 生成业务摘要；
 - 不实现 `pin-session`、`retire-after-reply` 或复杂优先级；

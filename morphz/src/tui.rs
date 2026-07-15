@@ -2,7 +2,7 @@
 //!
 //! The TUI consumes the same Runtime event stream as the classic CLI. Model
 //! deltas are deliberately transient presentation state; only durable Runtime
-//! facts such as user messages, tool receipts and `reply` enter the transcript.
+//! facts such as user messages, tool receipts and terminal responses enter the transcript.
 
 use crate::approval::ApprovalDecision;
 use crate::event::Event as RuntimeEvent;
@@ -156,7 +156,6 @@ struct UiState {
     composer: Composer,
     live_text: String,
     live_tools: BTreeMap<usize, LiveToolCall>,
-    reply_draft: String,
     status: String,
     context_status: String,
     objectives: Vec<ObjectiveRecord>,
@@ -180,7 +179,6 @@ impl UiState {
             composer: Composer::new(),
             live_text: String::new(),
             live_tools: BTreeMap::new(),
-            reply_draft: String::new(),
             status: "ready".to_string(),
             context_status: "Context loading".to_string(),
             objectives: Vec::new(),
@@ -234,7 +232,6 @@ impl UiState {
         self.status = "queued".to_string();
         self.live_text.clear();
         self.live_tools.clear();
-        self.reply_draft.clear();
     }
 
     fn update_context(&mut self, view: &ContextView) {
@@ -263,7 +260,6 @@ impl UiState {
             self.push(EntryKind::Progress, text);
         }
         self.live_tools.clear();
-        self.reply_draft.clear();
     }
 
     fn ingest_history(&mut self, event: &RuntimeEvent) {
@@ -277,7 +273,7 @@ impl UiState {
             .unwrap_or_default();
         match event.topic.as_str() {
             "chat/user_message" => self.push(EntryKind::User, text),
-            "chat/reply" => self.push(EntryKind::Assistant, text),
+            "chat/reply" | "chat/outbound_message" => self.push(EntryKind::Assistant, text),
             "chat/progress" => self.push(EntryKind::Progress, text),
             "runtime/tool_calls_selected" => {
                 if let Some(activity) = format_tool_activity(&event.payload) {
@@ -336,23 +332,29 @@ impl UiState {
                     .unwrap_or_default();
                 self.live_text.clear();
                 self.live_tools.clear();
-                self.reply_draft.clear();
                 self.push(EntryKind::Assistant, text);
                 self.busy = false;
                 self.status = "ready".to_string();
             }
-            "chat/reply_suppressed" => {
+            "chat/outbound_message" => {
+                let text = event
+                    .payload
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                self.push(EntryKind::Assistant, text);
+            }
+            "chat/no_reply" => {
                 self.live_text.clear();
                 self.live_tools.clear();
-                self.reply_draft.clear();
                 let background = event
                     .payload
                     .get("active_background_tasks")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
                 if background > 0 {
-                    self.busy = true;
-                    self.status = format!("waiting · {background} background task(s)");
+                    self.busy = false;
+                    self.status = format!("ready · {background} background task(s)");
                 } else {
                     self.busy = false;
                     self.status = "ready · no reply".to_string();
@@ -384,14 +386,13 @@ impl UiState {
                 self.busy = true;
                 self.live_text.clear();
                 self.live_tools.clear();
-                self.reply_draft.clear();
                 self.status = "thinking".to_string();
             }
             ModelStreamEvent::TextDelta { text } => self.live_text.push_str(&text),
             ModelStreamEvent::ToolCallStarted { index, name, .. } => {
                 self.live_tools.entry(index).or_default().name = name.clone();
-                self.status = if name == "reply" {
-                    "composing reply".to_string()
+                self.status = if name == "no_reply" {
+                    "finishing silently".to_string()
                 } else {
                     format!("preparing {name}")
                 };
@@ -399,9 +400,6 @@ impl UiState {
             ModelStreamEvent::ToolArgumentsDelta { index, delta } => {
                 let tool = self.live_tools.entry(index).or_default();
                 tool.arguments.push_str(&delta);
-                if tool.name == "reply" {
-                    self.reply_draft = extract_partial_json_string(&tool.arguments, "content");
-                }
             }
             ModelStreamEvent::ToolCallCompleted { index } => {
                 if let Some(tool) = self.live_tools.get_mut(&index) {
@@ -573,7 +571,7 @@ impl UiState {
             }
             lines.push(Line::from(""));
         }
-        for tool in self.live_tools.values().filter(|tool| tool.name != "reply") {
+        for tool in self.live_tools.values() {
             let activity = summarize_tool_call(&tool.name, &tool.arguments, None);
             let marker = if tool.completed { "✓" } else { "◇" };
             lines.push(Line::from(Span::styled(
@@ -595,15 +593,6 @@ impl UiState {
                 )));
             }
             lines.push(Line::from(""));
-        }
-        if !self.reply_draft.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "MORPHZ · DRAFT",
-                Style::default().fg(SUCCESS).add_modifier(Modifier::BOLD),
-            )));
-            for line in self.reply_draft.lines() {
-                lines.push(Line::from(format!("  {line}")));
-            }
         }
         lines
     }
@@ -925,8 +914,8 @@ impl Drop for TerminalSession {
     }
 }
 
-/// Runs the fullscreen frontend. `reply` remains the only final delivery fact;
-/// streamed text/tool arguments are rendered as an in-memory draft.
+/// Runs the fullscreen frontend. Streamed assistant text is transient until the
+/// Runtime commits the corresponding `chat/reply` terminal fact.
 pub async fn run(
     runtime: MorphzRuntime,
     session: SessionHandle,
@@ -1030,7 +1019,8 @@ pub async fn run(
                     event.topic.as_str(),
                     "chat/user_message"
                         | "chat/reply"
-                        | "chat/reply_suppressed"
+                        | "chat/no_reply"
+                        | "chat/outbound_message"
                         | "chat/tool_output"
                         | "context/transaction"
                         | "runtime/model_attempt_started"
@@ -1080,7 +1070,6 @@ async fn handle_command(
             state.entries.clear();
             state.live_text.clear();
             state.live_tools.clear();
-            state.reply_draft.clear();
             Ok(true)
         }
         "/cancel" => {
@@ -1364,9 +1353,6 @@ fn format_tool_activity(payload: &serde_json::Map<String, Value>) -> Option<Tool
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        if name == "reply" {
-            continue;
-        }
         let id = call
             .get("id")
             .and_then(Value::as_str)
@@ -1511,7 +1497,8 @@ fn summarize_tool_call(name: &str, arguments: &str, _call_id: Option<&str>) -> T
         "delegate" => string("task"),
         "wait_task" | "task_status" | "kill_task" => string("task_id"),
         "context_tx" => "Mind / Frame transaction".to_string(),
-        "reply" => string("content"),
+        "send_message" => format!("{} · {}", string("session_id"), string("content")),
+        "no_reply" => "No message to active Session".to_string(),
         _ => first_scalar(&value),
     };
     target = truncate(&target.replace('\n', " "), 180);
@@ -1556,7 +1543,8 @@ fn tool_title(name: &str) -> &'static str {
         "wait_task" => "Schedule task wakeup",
         "task_status" => "Inspect background task",
         "kill_task" => "Stop background task",
-        "reply" => "Prepare reply",
+        "send_message" => "Send Session message",
+        "no_reply" => "Finish without message",
         _ => "Use tool",
     }
 }
@@ -1638,51 +1626,6 @@ fn pretty_json(value: &str) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
-fn extract_partial_json_string(arguments: &str, key: &str) -> String {
-    let marker = format!("\"{key}\"");
-    let Some(key_start) = arguments.find(&marker) else {
-        return String::new();
-    };
-    let tail = &arguments[key_start + marker.len()..];
-    let Some(colon) = tail.find(':') else {
-        return String::new();
-    };
-    let tail = tail[colon + 1..].trim_start();
-    let Some(mut chars) = tail.strip_prefix('"').map(str::chars) else {
-        return String::new();
-    };
-    let mut output = String::new();
-    while let Some(character) = chars.next() {
-        match character {
-            '"' => break,
-            '\\' => match chars.next() {
-                Some('n') => output.push('\n'),
-                Some('r') => output.push('\r'),
-                Some('t') => output.push('\t'),
-                Some('"') => output.push('"'),
-                Some('\\') => output.push('\\'),
-                Some('/') => output.push('/'),
-                Some('b') => output.push('\u{0008}'),
-                Some('f') => output.push('\u{000c}'),
-                Some('u') => {
-                    let digits = chars.by_ref().take(4).collect::<String>();
-                    if digits.len() == 4 {
-                        if let Ok(code) = u32::from_str_radix(&digits, 16) {
-                            if let Some(value) = char::from_u32(code) {
-                                output.push(value);
-                            }
-                        }
-                    }
-                }
-                Some(other) => output.push(other),
-                None => break,
-            },
-            other => output.push(other),
-        }
-    }
-    output
-}
-
 fn truncate(value: &str, max_chars: usize) -> String {
     let mut output = value.chars().take(max_chars).collect::<String>();
     if value.chars().count() > max_chars {
@@ -1739,7 +1682,6 @@ mod tests {
             composer,
             live_text: String::new(),
             live_tools: BTreeMap::new(),
-            reply_draft: String::new(),
             status: "ready".to_string(),
             context_status: "normal".to_string(),
             objectives: Vec::new(),
@@ -1793,15 +1735,6 @@ mod tests {
         assert_eq!(composer.text(), "你好");
         composer.cursor = composer.chars.len();
         assert_eq!(composer.row_col(), (0, 4));
-    }
-
-    #[test]
-    fn partial_reply_content_is_visible_before_json_closes() {
-        let arguments = r#"{"disposition":"deliver","content":"hello\n世界"#;
-        assert_eq!(
-            extract_partial_json_string(arguments, "content"),
-            "hello\n世界"
-        );
     }
 
     #[test]

@@ -1,6 +1,6 @@
 use chrono::Utc;
 use morphz::llm::{Client, FunctionCall, Message, ToolCall, ToolDefinition};
-use morphz::sexpr_vm_contract::ANNOTATED_REPLY_KERNEL;
+use morphz::sexpr_vm_contract::ANNOTATED_RESPONSE_KERNEL;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -11,9 +11,9 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 const MAX_ATTEMPTS: usize = 16;
 const MAX_PROTOCOL_RETRIES: usize = 2;
 const EMPTY_RESPONSE_ERROR: &str = "既没有非空正文，也没有工具调用";
-const REPLY_PROTOCOL_ERROR: &str = "Protocol error: this evaluation has not completed because the response did not make a valid reply decision. Continue the remaining S-expression and call the standard reply tool exactly once. Use disposition=deliver with non-empty content, or disposition=suppress when no Session message is needed. Plain text and an empty response do not complete this evaluation.";
+const RESPONSE_PROTOCOL_ERROR: &str = "Protocol error: this evaluation has not produced a valid terminal response. Continue the remaining S-expression. Return non-empty plain assistant text with no tool calls to reply to the active Session, or call no_reply exactly once with no arguments and no text when no Session message is needed. Empty output is not terminal.";
 
-const EXTERNAL_NL_VM: &str = "You are the semantic processor of a Cognitive S-Expression VM. Evaluate the supplied S-expression through real standard Function Calling. Evaluate seq left-to-right; fallback uses its backup only after primary failure; bind stores exact observed results in local scope; if evaluates exactly one branch; named process calls have independent local scope. Every evaluation path must end by calling the standard reply tool exactly once. Use disposition=deliver with non-empty content to send a Session response, or disposition=suppress when no Session response is needed. Plain text and empty output are not terminal reply decisions. Tool results are authoritative observations; never explain or simulate the form instead of evaluating it.";
+const EXTERNAL_NL_VM: &str = "You are the semantic processor of a Cognitive S-Expression VM. Evaluate the supplied S-expression through real standard Function Calling. Evaluate seq left-to-right; fallback uses its backup only after primary failure; bind stores exact observed results in local scope; if evaluates exactly one branch; named process calls have independent local scope. A reply expression produces non-empty plain assistant text with no tool call. If no Session message is needed, call the no_reply tool exactly once with no arguments and no text. Empty output is not terminal. Tool results are authoritative observations; never explain or simulate the form instead of evaluating it.";
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,7 +34,7 @@ impl Arm {
 
     fn system_prompt(self) -> &'static str {
         match self {
-            Self::AnnotatedKernel => ANNOTATED_REPLY_KERNEL,
+            Self::AnnotatedKernel => ANNOTATED_RESPONSE_KERNEL,
             Self::ExternalNlVm => EXTERNAL_NL_VM,
         }
     }
@@ -80,8 +80,8 @@ pub struct EpisodeReport {
     pub protocol_errors: usize,
     pub system_prompt_chars: usize,
     pub task_prompt_chars: usize,
-    pub reply_disposition: Option<String>,
-    pub reply_content: Option<String>,
+    pub response_disposition: Option<String>,
+    pub response_content: Option<String>,
     pub tool_trace: Vec<ToolTrace>,
     pub error: Option<String>,
     pub criteria: Vec<CriterionResult>,
@@ -102,7 +102,7 @@ pub struct ArmSummary {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ReplyEvalReport {
+pub struct ResponseEvalReport {
     pub id: String,
     pub created_at: String,
     pub model: String,
@@ -117,13 +117,13 @@ pub struct ReplyEvalReport {
 pub async fn run_reply_eval(
     output_base: &Path,
     repetitions: usize,
-) -> Result<ReplyEvalReport, DynError> {
+) -> Result<ResponseEvalReport, DynError> {
     if repetitions == 0 {
         return Err("repetitions 必须大于 0".into());
     }
     let (client, model) = crate::configured_model_client()?;
     let id = format!(
-        "sexpr-explicit-reply-ab-v1-{}-{}",
+        "sexpr-response-routing-ab-v1-{}-{}",
         Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
         std::process::id()
     );
@@ -146,7 +146,7 @@ pub async fn run_reply_eval(
         }
     }
 
-    let report = ReplyEvalReport {
+    let report = ResponseEvalReport {
         id,
         created_at: Utc::now().to_rfc3339(),
         model,
@@ -155,7 +155,7 @@ pub async fn run_reply_eval(
         output_dir: output_dir.clone(),
         summaries: summarize(&episodes),
         episodes,
-        conclusion_boundary: "该基准只比较 SExpr 内算子描述与外部自然语言 VM 契约在显式 reply(deliver/suppress) 协议下的行为。普通文本和空响应不是终止；Runtime 最多纠错重试两次。确定性工具隔离了真实网络和业务质量。".to_string(),
+        conclusion_boundary: "该基准只比较 SExpr 内算子描述与外部自然语言 VM 契约在普通文本/no_reply 响应协议下的行为。空响应不是终止；Runtime 最多纠错重试两次。确定性工具隔离了真实网络和业务质量。".to_string(),
     };
     std::fs::write(
         output_dir.join("report.json"),
@@ -176,8 +176,8 @@ async fn run_episode(
     ];
     let definitions = tool_definitions();
     let mut trace = Vec::new();
-    let mut reply_disposition = None;
-    let mut reply_content = None;
+    let mut response_disposition = None;
+    let mut response_content = None;
     let mut episode_error = None;
     let mut attempts = 0usize;
     let mut protocol_errors = 0usize;
@@ -197,7 +197,7 @@ async fn run_episode(
                     ));
                     break;
                 }
-                messages.push(message("user", REPLY_PROTOCOL_ERROR));
+                messages.push(message("user", RESPONSE_PROTOCOL_ERROR));
                 continue;
             }
             Err(error) => {
@@ -207,72 +207,64 @@ async fn run_episode(
         };
 
         if response.tool_calls.is_empty() {
-            protocol_errors += 1;
             if !response.content.trim().is_empty() {
-                messages.push(message("assistant", &response.content));
+                trace.push(ToolTrace {
+                    attempt,
+                    name: "response".to_string(),
+                    arguments: json!({
+                        "disposition": "deliver",
+                        "content": response.content
+                    }),
+                    output: json!({"ok":true,"delivered":true}),
+                });
+                response_disposition = Some("deliver".to_string());
+                response_content = Some(response.content);
+                break;
             }
+            protocol_errors += 1;
             if protocol_errors > MAX_PROTOCOL_RETRIES {
                 episode_error = Some(format!(
-                    "reply protocol circuit breaker after {protocol_errors} invalid responses"
+                    "response protocol circuit breaker after {protocol_errors} invalid responses"
                 ));
                 break;
             }
-            messages.push(message("user", REPLY_PROTOCOL_ERROR));
+            messages.push(message("user", RESPONSE_PROTOCOL_ERROR));
             continue;
         }
 
-        let reply_calls = response
+        let no_reply_calls = response
             .tool_calls
             .iter()
-            .filter(|call| call.func_name == "reply")
+            .filter(|call| call.func_name == "no_reply")
             .collect::<Vec<_>>();
-        if !reply_calls.is_empty() {
-            if response.tool_calls.len() != 1 {
+        if !no_reply_calls.is_empty() {
+            let arguments = serde_json::from_str::<Value>(&no_reply_calls[0].arguments)
+                .unwrap_or_else(|_| json!({"_invalid_json":no_reply_calls[0].arguments}));
+            let valid = no_reply_calls.len() == 1
+                && response.tool_calls.len() == 1
+                && response.content.trim().is_empty()
+                && arguments
+                    .as_object()
+                    .is_some_and(|object| object.is_empty());
+            if !valid {
                 protocol_errors += 1;
                 if protocol_errors > MAX_PROTOCOL_RETRIES {
                     episode_error = Some(format!(
-                        "reply protocol circuit breaker after {protocol_errors} invalid responses"
+                        "response protocol circuit breaker after {protocol_errors} invalid responses"
                     ));
                     break;
                 }
-                messages.push(message(
-                    "user",
-                    "Protocol error: reply must be the only tool call in its terminal response. Continue evaluation and call reply exactly once after all other tools have completed.",
-                ));
+                messages.push(message("user", RESPONSE_PROTOCOL_ERROR));
                 continue;
             }
-
-            let call = reply_calls[0];
-            let arguments = serde_json::from_str::<Value>(&call.arguments)
-                .unwrap_or_else(|_| json!({"_invalid_json":call.arguments}));
-            match validate_reply(&arguments) {
-                Ok((disposition, content)) => {
-                    let delivered = disposition == "deliver";
-                    trace.push(ToolTrace {
-                        attempt,
-                        name: "reply".to_string(),
-                        arguments: arguments.clone(),
-                        output: json!({"ok":true,"delivered":delivered}),
-                    });
-                    reply_disposition = Some(disposition.to_string());
-                    reply_content = content.map(ToOwned::to_owned);
-                    break;
-                }
-                Err(reason) => {
-                    protocol_errors += 1;
-                    if protocol_errors > MAX_PROTOCOL_RETRIES {
-                        episode_error = Some(format!(
-                            "reply protocol circuit breaker after {protocol_errors} invalid responses: {reason}"
-                        ));
-                        break;
-                    }
-                    messages.push(message(
-                        "user",
-                        &format!("Protocol error: invalid reply arguments: {reason}. {REPLY_PROTOCOL_ERROR}"),
-                    ));
-                    continue;
-                }
-            }
+            trace.push(ToolTrace {
+                attempt,
+                name: "response".to_string(),
+                arguments: json!({"disposition":"no_reply"}),
+                output: json!({"ok":true,"delivered":false}),
+            });
+            response_disposition = Some("no_reply".to_string());
+            break;
         }
 
         let calls = response
@@ -314,9 +306,9 @@ async fn run_episode(
         }
     }
 
-    if reply_disposition.is_none() && episode_error.is_none() {
+    if response_disposition.is_none() && episode_error.is_none() {
         episode_error = Some(format!(
-            "attempt budget exhausted without reply after {attempts} attempts"
+            "attempt budget exhausted without terminal response after {attempts} attempts"
         ));
     }
     let criteria = score_episode(task, &trace, protocol_errors);
@@ -346,31 +338,12 @@ async fn run_episode(
         protocol_errors,
         system_prompt_chars: arm.system_prompt().chars().count(),
         task_prompt_chars: task.sexpr.chars().count(),
-        reply_disposition,
-        reply_content,
+        response_disposition,
+        response_content,
         tool_trace: trace,
         error: episode_error,
         criteria,
     })
-}
-
-fn validate_reply(arguments: &Value) -> Result<(&str, Option<&str>), String> {
-    let disposition = arguments
-        .get("disposition")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "missing disposition".to_string())?;
-    match disposition {
-        "deliver" => {
-            let content = arguments
-                .get("content")
-                .and_then(Value::as_str)
-                .filter(|content| !content.trim().is_empty())
-                .ok_or_else(|| "deliver requires non-empty content".to_string())?;
-            Ok((disposition, Some(content)))
-        }
-        "suppress" => Ok((disposition, None)),
-        other => Err(format!("unsupported disposition {other:?}")),
-    }
 }
 
 fn tasks() -> Vec<EvalTask> {
@@ -378,8 +351,8 @@ fn tasks() -> Vec<EvalTask> {
         EvalTask {
             id: "linear-discovery",
             sexpr: "(seq (bind capabilities (call skills_list)) (bind skill (if (contains capabilities.skills (name smart-search) (cap find web live news)) smart-search (reply no-reply))) (bind skill-spec (call skill_view (name skill))) (bind result (call skill_run (name skill) (input Nova-7))) (bind verification (call evidence_verify (evidence_id result.evidence_id))) (reply verification.delivery_token))",
-            expected_tools: &["skills_list", "skill_view:smart-search", "skill_run:smart-search:Nova-7", "evidence_verify:E-NOVA", "reply:deliver:D-7Q4M-9182"],
-            dependencies: &[("skills_list", "skill_view:smart-search"), ("skill_view:smart-search", "skill_run:smart-search:Nova-7"), ("skill_run:smart-search:Nova-7", "evidence_verify:E-NOVA"), ("evidence_verify:E-NOVA", "reply:deliver:D-7Q4M-9182")],
+            expected_tools: &["skills_list", "skill_view:smart-search", "skill_run:smart-search:Nova-7", "evidence_verify:E-NOVA", "response:deliver:D-7Q4M-9182"],
+            dependencies: &[("skills_list", "skill_view:smart-search"), ("skill_view:smart-search", "skill_run:smart-search:Nova-7"), ("skill_run:smart-search:Nova-7", "evidence_verify:E-NOVA"), ("evidence_verify:E-NOVA", "response:deliver:D-7Q4M-9182")],
             forbidden_tools: &[],
             expected_disposition: "deliver",
             final_tokens: &["D-7Q4M-9182"],
@@ -387,8 +360,8 @@ fn tasks() -> Vec<EvalTask> {
         EvalTask {
             id: "conditional-fallback",
             sexpr: "(seq (bind capabilities (call skills_list)) (bind primary-spec (call skill_view (name smart-search))) (bind search-result (fallback (call skill_run (name smart-search) (input Orion-9)) (seq (bind fallback-spec (call skill_view (name browser-research))) (call skill_run (name browser-research) (input Orion-9))))) (bind verification (call evidence_verify (evidence_id search-result.evidence_id))) (reply verification.delivery_token))",
-            expected_tools: &["skills_list", "skill_view:smart-search", "skill_run:smart-search:Orion-9", "skill_view:browser-research", "skill_run:browser-research:Orion-9", "evidence_verify:E-ORION", "reply:deliver:D-2K9R-6417"],
-            dependencies: &[("skills_list", "skill_view:smart-search"), ("skill_view:smart-search", "skill_run:smart-search:Orion-9"), ("skill_run:smart-search:Orion-9", "skill_view:browser-research"), ("skill_view:browser-research", "skill_run:browser-research:Orion-9"), ("skill_run:browser-research:Orion-9", "evidence_verify:E-ORION"), ("evidence_verify:E-ORION", "reply:deliver:D-2K9R-6417")],
+            expected_tools: &["skills_list", "skill_view:smart-search", "skill_run:smart-search:Orion-9", "skill_view:browser-research", "skill_run:browser-research:Orion-9", "evidence_verify:E-ORION", "response:deliver:D-2K9R-6417"],
+            dependencies: &[("skills_list", "skill_view:smart-search"), ("skill_view:smart-search", "skill_run:smart-search:Orion-9"), ("skill_run:smart-search:Orion-9", "skill_view:browser-research"), ("skill_view:browser-research", "skill_run:browser-research:Orion-9"), ("skill_run:browser-research:Orion-9", "evidence_verify:E-ORION"), ("evidence_verify:E-ORION", "response:deliver:D-2K9R-6417")],
             forbidden_tools: &[],
             expected_disposition: "deliver",
             final_tokens: &["D-2K9R-6417"],
@@ -396,8 +369,8 @@ fn tasks() -> Vec<EvalTask> {
         EvalTask {
             id: "module-reuse",
             sexpr: "(process research-one (params subject) (seq (bind search-result (call skill_run (name smart-search) (input subject))) (call evidence_verify (evidence_id search-result.evidence_id))))\n\n(seq (bind capabilities (call skills_list)) (bind skill-spec (call skill_view (name smart-search))) (bind alpha-result (research-one Alpha-1)) (bind beta-result (research-one Beta-2)) (reply (tokens alpha-result.delivery_token beta-result.delivery_token)))",
-            expected_tools: &["skills_list", "skill_view:smart-search", "skill_run:smart-search:Alpha-1", "evidence_verify:E-ALPHA", "skill_run:smart-search:Beta-2", "evidence_verify:E-BETA", "reply:deliver:D-8P3A-2754:D-5T1B-8036"],
-            dependencies: &[("skills_list", "skill_view:smart-search"), ("skill_view:smart-search", "skill_run:smart-search:Alpha-1"), ("skill_run:smart-search:Alpha-1", "evidence_verify:E-ALPHA"), ("evidence_verify:E-ALPHA", "skill_run:smart-search:Beta-2"), ("skill_run:smart-search:Beta-2", "evidence_verify:E-BETA"), ("evidence_verify:E-BETA", "reply:deliver:D-8P3A-2754:D-5T1B-8036")],
+            expected_tools: &["skills_list", "skill_view:smart-search", "skill_run:smart-search:Alpha-1", "evidence_verify:E-ALPHA", "skill_run:smart-search:Beta-2", "evidence_verify:E-BETA", "response:deliver:D-8P3A-2754:D-5T1B-8036"],
+            dependencies: &[("skills_list", "skill_view:smart-search"), ("skill_view:smart-search", "skill_run:smart-search:Alpha-1"), ("skill_run:smart-search:Alpha-1", "evidence_verify:E-ALPHA"), ("evidence_verify:E-ALPHA", "skill_run:smart-search:Beta-2"), ("skill_run:smart-search:Beta-2", "evidence_verify:E-BETA"), ("evidence_verify:E-BETA", "response:deliver:D-8P3A-2754:D-5T1B-8036")],
             forbidden_tools: &[],
             expected_disposition: "deliver",
             final_tokens: &["D-8P3A-2754", "D-5T1B-8036"],
@@ -405,7 +378,7 @@ fn tasks() -> Vec<EvalTask> {
         EvalTask {
             id: "guard-no-action",
             sexpr: "(bind input (record (kind archived) (freshness archival)))\n\n(if (= input.freshness live) (seq (call skills_list) (call skill_run)) (reply ARCHIVE-DIRECT))",
-            expected_tools: &["reply:deliver:ARCHIVE-DIRECT"],
+            expected_tools: &["response:deliver:ARCHIVE-DIRECT"],
             dependencies: &[],
             forbidden_tools: &["skills_list", "skill_view", "skill_run", "evidence_verify"],
             expected_disposition: "deliver",
@@ -413,11 +386,11 @@ fn tasks() -> Vec<EvalTask> {
         },
         EvalTask {
             id: "explicit-no-reply",
-            sexpr: "(bind event (record (kind background-cache-refresh) (requires-session-reply false)))\n\n(if event.requires-session-reply (reply CACHE-REFRESHED) (reply no-reply))",
-            expected_tools: &["reply:suppress"],
+            sexpr: "(bind event (record (kind background-cache-refresh) (requires-session-reply false)))\n\n(if event.requires-session-reply (reply CACHE-REFRESHED) (call no_reply))",
+            expected_tools: &["response:no_reply"],
             dependencies: &[],
             forbidden_tools: &["skills_list", "skill_view", "skill_run", "evidence_verify"],
-            expected_disposition: "suppress",
+            expected_disposition: "no_reply",
             final_tokens: &[],
         },
     ]
@@ -429,7 +402,7 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         tool("skill_view", "Load the operational content of one skill before using it.", json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})),
         tool("skill_run", "Apply a loaded skill to an input. Tool output is authoritative for success or failure.", json!({"type":"object","properties":{"name":{"type":"string"},"input":{"type":"string"}},"required":["name","input"]})),
         tool("evidence_verify", "Verify one evidence ID and return its opaque delivery token.", json!({"type":"object","properties":{"evidence_id":{"type":"string"}},"required":["evidence_id"]})),
-        tool("reply", "Resolve the current Session reply obligation. Use deliver with non-empty content to send a message, or suppress to explicitly finish without external delivery. This terminal tool must be called exactly once after all other work.", json!({"type":"object","properties":{"disposition":{"type":"string","enum":["deliver","suppress"]},"content":{"type":"string"}},"required":["disposition"],"additionalProperties":false})),
+        tool("no_reply", "Finish the current Evaluation without sending a message to the active Session. It must be the only tool call and cannot accompany text.", json!({"type":"object","properties":{},"additionalProperties":false})),
     ]
 }
 
@@ -534,12 +507,12 @@ fn score_episode(
         .filter(|entry| task.forbidden_tools.contains(&entry.name.as_str()))
         .map(|entry| entry.name.clone())
         .collect::<Vec<_>>();
-    let reply = trace.iter().find(|entry| entry.name == "reply");
-    let reply_disposition = reply.map(|entry| string(&entry.arguments, "disposition"));
-    let reply_content = reply.map(|entry| string(&entry.arguments, "content"));
-    let reply_valid = reply_disposition == Some(task.expected_disposition)
+    let response = trace.iter().find(|entry| entry.name == "response");
+    let response_disposition = response.map(|entry| string(&entry.arguments, "disposition"));
+    let response_content = response.map(|entry| string(&entry.arguments, "content"));
+    let response_valid = response_disposition == Some(task.expected_disposition)
         && task.final_tokens.iter().all(|token| {
-            reply_content.is_some_and(|content| contains_standalone_token(content, token))
+            response_content.is_some_and(|content| contains_standalone_token(content, token))
         });
     vec![
         CriterionResult {
@@ -563,10 +536,10 @@ fn score_episode(
             evidence: format!("forbidden_calls={forbidden:?}"),
         },
         CriterionResult {
-            id: "reply-decision".to_string(),
-            passed: reply_valid,
+            id: "response-decision".to_string(),
+            passed: response_valid,
             evidence: format!(
-                "expected_disposition={:?}; expected_tokens={:?}; disposition={reply_disposition:?}; content={reply_content:?}",
+                "expected_disposition={:?}; expected_tokens={:?}; disposition={response_disposition:?}; content={response_content:?}",
                 task.expected_disposition, task.final_tokens
             ),
         },
@@ -590,10 +563,10 @@ fn trace_key(trace: &ToolTrace) -> String {
             "evidence_verify:{}",
             string(&trace.arguments, "evidence_id")
         ),
-        "reply" => {
+        "response" => {
             let disposition = string(&trace.arguments, "disposition");
-            if disposition == "suppress" {
-                "reply:suppress".to_string()
+            if disposition == "no_reply" {
+                "response:no_reply".to_string()
             } else {
                 let content = string(&trace.arguments, "content");
                 let tokens = [
@@ -607,7 +580,7 @@ fn trace_key(trace: &ToolTrace) -> String {
                 .filter(|token| contains_standalone_token(content, token))
                 .collect::<Vec<_>>()
                 .join(":");
-                format!("reply:deliver:{tokens}")
+                format!("response:deliver:{tokens}")
             }
         }
         other => other.to_string(),
@@ -698,25 +671,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reply_validation_distinguishes_delivery_and_suppression() {
-        assert_eq!(
-            validate_reply(&json!({"disposition":"deliver","content":"done"})),
-            Ok(("deliver", Some("done")))
-        );
-        assert_eq!(
-            validate_reply(&json!({"disposition":"suppress"})),
-            Ok(("suppress", None))
-        );
-        assert!(validate_reply(&json!({"disposition":"deliver","content":""})).is_err());
-    }
-
-    #[test]
     fn explicit_no_reply_is_a_valid_clean_terminal_decision() {
         let task = tasks().remove(4);
         let trace = vec![ToolTrace {
             attempt: 1,
-            name: "reply".to_string(),
-            arguments: json!({"disposition":"suppress"}),
+            name: "response".to_string(),
+            arguments: json!({"disposition":"no_reply"}),
             output: json!({"ok":true,"delivered":false}),
         }];
         assert!(score_episode(&task, &trace, 0)
@@ -725,11 +685,11 @@ mod tests {
     }
 
     #[test]
-    fn corrected_reply_is_outcome_success_but_not_clean() {
+    fn corrected_response_is_outcome_success_but_not_clean() {
         let task = tasks().remove(3);
         let trace = vec![ToolTrace {
             attempt: 2,
-            name: "reply".to_string(),
+            name: "response".to_string(),
             arguments: json!({"disposition":"deliver","content":"ARCHIVE-DIRECT"}),
             output: json!({"ok":true,"delivered":true}),
         }];

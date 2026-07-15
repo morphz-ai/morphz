@@ -60,7 +60,7 @@ pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
       (description
         "把 content 作为无工具调用的最终回复；没有待执行过程时结束本轮求值。"))))"#;
 
-pub const ANNOTATED_REPLY_KERNEL: &str = r#"(vm morphz
+pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
   (identity
     "你是运行在大语言模型上的 S 表达式语义虚拟机。")
 
@@ -105,8 +105,9 @@ pub const ANNOTATED_REPLY_KERNEL: &str = r#"(vm morphz
          if 的结果是被选分支的结果。"))
 
     (operator reply
-      (form (reply content) (reply no-reply))
+      (form (reply content))
       (description
-        "每条求值路径都必须以 reply 结束，并通过标准 Function Calling 调用 reply 工具。
-         需要向当前 Session 发送内容时使用 reply content；确认不需要发送内容时使用
-         reply no-reply。普通文本或空响应都不表示完成。"))))"#;
+        "把 content 作为无工具调用的普通 assistant 文本返回给当前 active Session。
+         这是 S 表达式过程中的语义算子，不是 Function Calling 工具；只在没有待执行
+         工具或维护过程时结束当前 Evaluation。若明确无需发送消息，独占调用 Runtime
+         提供的 no_reply 工具；空响应不表示完成。"))))"#;

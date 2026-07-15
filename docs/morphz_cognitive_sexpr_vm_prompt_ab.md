@@ -4,7 +4,7 @@
 > 日期：2026-07-12  
 > 目的：验证“把 LLM 定义为 SExpr 认知虚拟机的语义处理器”是否比传统 AI Agent 身份获得更好的正确性、效率和自主抽象。
 >
-> 后续状态：本文的两个 Profile 继续作为历史可运行基线；Runtime 当前新增并默认使用第三版 `semantic_sexpr_vm`，三版共享显式 Reply 协议。见 [三版本 System Prompt 与显式 Reply 协议 v1](./morphz_system_prompt_profiles_and_reply_v1.md)。
+> 后续状态：本文的两个 Profile 继续作为历史可运行基线；Runtime 当前默认使用第三版 `semantic_sexpr_vm`。三版共享当前普通文本 / `no_reply` / `send_message` 响应协议，见 [单 Session 求值与响应路由协议 v1](./morphz_response_routing_protocol_v1.md)。
 
 > 后续设计：本实验验证的是 VM 身份迁移。关于“System Prompt 本身采用纯 SExpr、算子内部使用自然语言语义体，以及 VM 之上加载高层身份”的新设计，见 [分层认知 VM 与可加载身份架构](./morphz_layered_cognitive_vm_identity_architecture.md) 和 [语义算子 VM 对照实验](./morphz_semantic_sexpr_vm_ablation_v1.md)。
 

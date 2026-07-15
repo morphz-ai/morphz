@@ -255,7 +255,7 @@ impl Tool for ObjectiveCreateTool {
 
         let adopted = if self.supervisor.evaluations.get(&session_id).is_none() {
             self.supervisor
-                .claim_routed_evaluation(&created, &attempt_id, false)
+                .claim_routed_evaluation(&created, &attempt_id, Some(&attempt_id), false)
                 .await?
         } else {
             None
@@ -279,7 +279,7 @@ impl Tool for ObjectiveCreateTool {
             "coordinator_session_id": created.coordinator_session_id,
             "parent_objective_id": created.parent_objective_id,
             "evaluation_adoption": if adopted.is_some() { "current-evaluation" } else { "queued-behind-current-objective" },
-            "guidance": "Objective 已持久化。不要重复创建；继续当前工作。reply 只结束当前 Evaluation，Objective 未完成时 Supervisor 会自动续跑。"
+            "guidance": "Objective 已持久化。不要重复创建；继续当前工作。普通文本或 no_reply 只结束当前 Evaluation，Objective 未完成时 Supervisor 会自动续跑。"
         }))?)
     }
 }
@@ -331,7 +331,7 @@ impl Tool for ObjectiveUpdateTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "objective_update".to_string(),
-            description: "显式提交当前长期 Objective 的 Runtime 控制状态。reply 只结束本次 Evaluation，不能替代 Objective 完成。completed 必须给出真实原因并引用已有证据；需要等待确定事件时保持 active 并提交 wait_condition；只有确实无法自动等待或继续推进时才用 blocked。Agent 无权通过此工具 pause/cancel。".to_string(),
+            description: "显式提交当前长期 Objective 的 Runtime 控制状态。普通文本或 no_reply 只结束本次 Evaluation，不能替代 Objective 完成。completed 必须给出真实原因并引用已有证据；需要等待确定事件时保持 active 并提交 wait_condition；只有确实无法自动等待或继续推进时才用 blocked。Agent 无权通过此工具 pause/cancel。".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -505,11 +505,11 @@ impl Tool for ObjectiveUpdateTool {
                 "wait_condition": updated.wait_condition,
                 "evidence_refs": args.evidence_refs,
                 "next_action": if updated.status.is_terminal() {
-                    "调用标准 reply 交付最终报告；reply 只结束当前 Evaluation。"
+                    "返回无工具普通文本交付最终报告；它只结束当前 Evaluation。"
                 } else if updated.status == ObjectiveStatus::Blocked {
-                    "调用标准 reply 向使用者说明阻塞原因；Runtime 将停止自动续跑，直到收到显式恢复。"
+                    "返回无工具普通文本向使用者说明阻塞原因；Runtime 将停止自动续跑，直到收到显式恢复。"
                 } else if updated.wait_condition.is_some() {
-                    "调用 reply(deliver) 说明等待状态，或 reply(suppress) 明确无需发送消息；Runtime 将在条件满足时唤醒。"
+                    "返回普通文本说明等待状态，或调用 no_reply 明确无需发送消息；Runtime 将在条件满足时唤醒。"
                 } else {
                     "继续推进 Objective。"
                 }
@@ -546,11 +546,28 @@ pub struct ActiveObjectiveEvaluation {
 #[derive(Default)]
 pub struct ObjectiveEvaluationRegistry {
     by_session: DashMap<String, ActiveObjectiveEvaluation>,
+    by_work_item: DashMap<String, ActiveObjectiveEvaluation>,
 }
 
 impl ObjectiveEvaluationRegistry {
     pub fn get(&self, session_id: &str) -> Option<ActiveObjectiveEvaluation> {
         self.by_session.get(session_id).map(|entry| entry.clone())
+    }
+
+    pub fn get_for_work_item(&self, work_item_id: &str) -> Option<ActiveObjectiveEvaluation> {
+        self.by_work_item
+            .get(canonical_work_item_id(work_item_id))
+            .map(|entry| entry.clone())
+    }
+
+    pub fn bind_work_item(&self, work_item_id: &str, evaluation: ActiveObjectiveEvaluation) {
+        self.by_work_item
+            .insert(canonical_work_item_id(work_item_id).to_string(), evaluation);
+    }
+
+    pub fn remove_work_item(&self, work_item_id: &str) {
+        self.by_work_item
+            .remove(canonical_work_item_id(work_item_id));
     }
 
     fn try_bind(
@@ -571,7 +588,16 @@ impl ObjectiveEvaluationRegistry {
         self.by_session.remove_if(session_id, |_, active| {
             active.evaluation_id == evaluation_id
         });
+        self.by_work_item
+            .retain(|_, active| active.evaluation_id != evaluation_id);
     }
+}
+
+fn canonical_work_item_id(attempt_id: &str) -> &str {
+    attempt_id
+        .split_once("_response_retry_")
+        .map(|(base, _)| base)
+        .unwrap_or(attempt_id)
 }
 
 /// Built-in policy module for persistent Objective scheduling. It owns no task
@@ -751,7 +777,11 @@ impl ObjectiveSupervisor {
     /// lane and before it evaluates a newly routed user/tool event. A matching
     /// wait is cleared and the physical event itself becomes the wake input;
     /// no duplicate synthetic continuation is emitted.
-    pub async fn prepare_routed_event(self: &Arc<Self>, event: &Event) -> Result<(), DynError> {
+    pub async fn prepare_routed_event(
+        self: &Arc<Self>,
+        event: &Event,
+        work_item_id: &str,
+    ) -> Result<(), DynError> {
         let Some(context_id) = event
             .payload
             .get("context_id")
@@ -790,7 +820,7 @@ impl ObjectiveSupervisor {
             self.publish_state_event("wait_satisfied", &woken, Some(&event.id))
                 .await?;
             if route_session_id == Some(woken.coordinator_session_id.as_str()) {
-                self.claim_routed_evaluation(&woken, &event.id, true)
+                self.claim_routed_evaluation(&woken, &event.id, Some(work_item_id), true)
                     .await?;
             } else {
                 self.reconcile(woken).await?;
@@ -837,7 +867,7 @@ impl ObjectiveSupervisor {
         Ok(())
     }
 
-    pub async fn terminal_reply(self: &Arc<Self>, event: &Event) -> Result<(), DynError> {
+    pub async fn terminal_outcome(self: &Arc<Self>, event: &Event) -> Result<(), DynError> {
         let Some(session_id) = event
             .payload
             .get("session_id")
@@ -845,37 +875,38 @@ impl ObjectiveSupervisor {
         else {
             return Ok(());
         };
-        let binding = match (
-            event
-                .payload
-                .get("objective_id")
-                .and_then(|value| value.as_str()),
-            event
-                .payload
-                .get("objective_evaluation_id")
-                .and_then(|value| value.as_str()),
-        ) {
-            (Some(objective_id), Some(evaluation_id)) => self
-                .evaluations
-                .get(session_id)
-                .filter(|active| {
-                    active.objective_id == objective_id && active.evaluation_id == evaluation_id
-                })
-                .unwrap_or_else(|| ActiveObjectiveEvaluation {
-                    objective_id: objective_id.to_string(),
-                    evaluation_id: evaluation_id.to_string(),
-                    revision: event
-                        .payload
-                        .get("objective_revision")
-                        .and_then(|value| value.as_u64())
-                        .unwrap_or_default(),
-                    started_at: event.timestamp,
-                }),
-            _ => match self.evaluations.get(session_id) {
-                Some(binding) => binding,
-                None => return Ok(()),
-            },
+        let Some(objective_id) = event
+            .payload
+            .get("objective_id")
+            .and_then(|value| value.as_str())
+        else {
+            return Ok(());
         };
+        let Some(evaluation_id) = event
+            .payload
+            .get("objective_evaluation_id")
+            .and_then(|value| value.as_str())
+        else {
+            return Ok(());
+        };
+        let binding = event
+            .payload
+            .get("work_item_id")
+            .and_then(|value| value.as_str())
+            .and_then(|work_item_id| self.evaluations.get_for_work_item(work_item_id))
+            .filter(|active| {
+                active.objective_id == objective_id && active.evaluation_id == evaluation_id
+            })
+            .unwrap_or_else(|| ActiveObjectiveEvaluation {
+                objective_id: objective_id.to_string(),
+                evaluation_id: evaluation_id.to_string(),
+                revision: event
+                    .payload
+                    .get("objective_revision")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or_default(),
+                started_at: event.timestamp,
+            });
 
         let elapsed_seconds = (Utc::now() - binding.started_at).num_seconds().max(0) as u64;
         let mutation = self
@@ -900,7 +931,7 @@ impl ObjectiveSupervisor {
             ObjectiveMutation::Conflict { current } if current.status.is_terminal() => {
                 context_to_reconcile = Some(current.context_id);
                 // objective_update may have committed a terminal state before
-                // the final reply. The reply still releases local routing.
+                // the terminal response. Its outcome still releases local routing.
             }
             ObjectiveMutation::Conflict { current } => {
                 context_to_reconcile = Some(current.context_id.clone());
@@ -1011,6 +1042,7 @@ impl ObjectiveSupervisor {
         self: &Arc<Self>,
         objective: &ObjectiveRecord,
         source_event_id: &str,
+        work_item_id: Option<&str>,
         publish_started: bool,
     ) -> Result<Option<ObjectiveRecord>, DynError> {
         let evaluation_id = format!(
@@ -1055,6 +1087,17 @@ impl ObjectiveSupervisor {
             if active.evaluation_id == evaluation_id {
                 active.revision = claimed.revision;
             }
+        }
+        if let Some(work_item_id) = work_item_id {
+            self.evaluations.bind_work_item(
+                work_item_id,
+                ActiveObjectiveEvaluation {
+                    objective_id: claimed.id.clone(),
+                    evaluation_id: evaluation_id.clone(),
+                    revision: claimed.revision,
+                    started_at: Utc::now(),
+                },
+            );
         }
         self.schedule_lease_expiry(claimed.id.clone(), lease_expires_at);
         if publish_started {
@@ -1462,6 +1505,9 @@ mod tests {
             started_at: Utc::now(),
         };
         assert!(registry.try_bind("session-a", first.clone()).is_ok());
+        registry.bind_work_item("work-a", first.clone());
+        assert_eq!(registry.get_for_work_item("work-a"), Some(first.clone()));
+        assert!(registry.get_for_work_item("work-b").is_none());
         let second = ActiveObjectiveEvaluation {
             objective_id: "objective-b".to_string(),
             evaluation_id: "evaluation-b".to_string(),
@@ -1473,6 +1519,7 @@ mod tests {
         assert_eq!(registry.get("session-a"), Some(first));
         registry.unbind("session-a", "evaluation-a");
         assert!(registry.get("session-a").is_none());
+        assert!(registry.get_for_work_item("work-a").is_none());
     }
 
     #[test]

@@ -153,7 +153,7 @@ Frame VM 后训练应让模型掌握稳定的求值协议，而不是把所有�
 - Frame 查找、读取、组合和适用性判断；
 - Tool Calling 与 Observation 处理；
 - `context_tx` 的创建、派生、修订、关系和生命周期操作；
-- `reply(deliver/suppress)` 的显式终态；
+- 普通文本终态、显式 `no_reply` 与跨 Session `send_message`；
 - 冲突、版本变化和错误反馈后的重新求值；
 - Session 路由、披露边界和目标连续性。
 

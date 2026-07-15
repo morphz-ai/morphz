@@ -1,7 +1,8 @@
 use crate::approval::{ApprovalAction, ApprovalProvider, CapabilityDelta, DenyAllApprovalProvider};
 use crate::config::BackgroundTaskConfig;
-use crate::event::{Event, InMemoryEventBus, TYPE_FILE_CHANGE};
+use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_FILE_CHANGE};
 use crate::llm::ToolDefinition;
+use crate::memory::{SessionStatus, SessionStore};
 use crate::permission::{
     ApprovalContext, FilesystemAccess, PermissionBroker, PermissionConfig, PermissionProfile,
     SandboxMode, ShellEnvironmentPolicy,
@@ -143,6 +144,139 @@ impl Registry {
             .values()
             .map(|entry| entry.definition.clone())
             .collect()
+    }
+}
+
+pub struct SendMessageTool {
+    bus: Arc<InMemoryEventBus>,
+    sessions: Arc<dyn SessionStore>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SendMessageArgs {
+    session_id: String,
+    content: String,
+}
+
+impl SendMessageTool {
+    pub fn new(bus: Arc<InMemoryEventBus>, sessions: Arc<dyn SessionStore>) -> Self {
+        Self { bus, sessions }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for SendMessageTool {
+    fn name(&self) -> &str {
+        "send_message"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "向同一 Agent 的另一个 Session 主动发送消息。它不是当前 active Session 的回复，不结束当前 Evaluation，也不触发目标 Session 的新求值。当前 active Session 必须使用普通 assistant 文本回复。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "目标 Session ID；必须属于当前 Agent 且不能是当前 active Session"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "发送给目标 Session 的非空消息"
+                    }
+                },
+                "required": ["session_id", "content"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(
+        &self,
+        arguments: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let args: SendMessageArgs = serde_json::from_str(arguments)?;
+        let source_session_id = CURRENT_SESSION_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "send_message 缺少当前 Session 路由")?;
+        let source_context_id = CURRENT_CONTEXT_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "send_message 缺少当前 Context 路由")?;
+        let attempt_id = CURRENT_ATTEMPT_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "send_message 缺少当前 Evaluation 路由")?;
+        let target_session_id = args.session_id.trim();
+        if target_session_id.is_empty() {
+            return Err("send_message.session_id 不能为空".into());
+        }
+        if target_session_id == source_session_id {
+            return Err(
+                "不能用 send_message 回复当前 active Session；请返回普通 assistant 文本".into(),
+            );
+        }
+        if args.content.trim().is_empty() {
+            return Err("send_message.content 不能为空".into());
+        }
+        if args.content.chars().count() > 1_000_000 {
+            return Err("send_message.content 超过 1,000,000 字符".into());
+        }
+        let source = self
+            .sessions
+            .get_session(&source_session_id)
+            .await?
+            .ok_or("当前 Session 不存在")?;
+        let target = self
+            .sessions
+            .get_session(target_session_id)
+            .await?
+            .ok_or_else(|| format!("目标 Session '{target_session_id}' 不存在"))?;
+        if source.agent_id != target.agent_id {
+            return Err("send_message 只能投递给同一 Agent 拥有的 Session".into());
+        }
+        if target.status == SessionStatus::Archived {
+            return Err("目标 Session 已归档，不能接收新消息".into());
+        }
+
+        let digest =
+            sha256_hex(format!("{attempt_id}\0{target_session_id}\0{}", args.content).as_bytes());
+        let event_id = format!("outbound_{}_{}", attempt_id, &digest[..16]);
+        let mut payload = serde_json::Map::from_iter([
+            (
+                "context_id".to_string(),
+                serde_json::json!(target.context_id),
+            ),
+            ("session_id".to_string(), serde_json::json!(target.id)),
+            (
+                "source_context_id".to_string(),
+                serde_json::json!(source_context_id),
+            ),
+            (
+                "source_session_id".to_string(),
+                serde_json::json!(source_session_id),
+            ),
+            ("attempt_id".to_string(), serde_json::json!(attempt_id)),
+            ("text".to_string(), serde_json::json!(args.content)),
+        ]);
+        let causal_route = CURRENT_CAUSAL_ROUTE.try_with(Clone::clone).ok().flatten();
+        extend_causal_route(&mut payload, causal_route.as_ref());
+        self.bus
+            .publish(Event::new(
+                event_id.clone(),
+                "Agent-Morphz".to_string(),
+                TYPE_AGENT_CALL.to_string(),
+                "chat/outbound_message".to_string(),
+                payload,
+            ))
+            .await?;
+        Ok(serde_json::json!({
+            "status": "sent",
+            "session_id": target_session_id,
+            "event_id": event_id,
+            "guidance": "消息已投递给目标 Session；当前 Evaluation 尚未结束。如果当前 active Session 需要回复，请最终返回普通 assistant 文本。"
+        })
+        .to_string())
     }
 }
 
@@ -2847,7 +2981,7 @@ impl Tool for WaitTaskTool {
             "wait_secs": wait_secs,
             "wakeup_at": wakeup_at,
             "task": background_task_snapshot(&task),
-            "next_action": "调用 reply(disposition=suppress) 结束当前求值；任务结束或 wait_secs 到期时 Runtime 会主动唤醒。不要 sleep、ps、轮询日志或立即重复调用 wait_task。",
+            "next_action": "若无需立即发送消息，调用 no_reply 结束当前求值；任务结束或 wait_secs 到期时 Runtime 会主动唤醒。不要 sleep、ps、轮询日志或立即重复调用 wait_task。",
         })
         .to_string())
     }
@@ -3233,6 +3367,10 @@ fn tail_chars(s: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use crate::approval::{ApprovalDecision, ApprovalRequest};
+    use crate::memory::sqlite::SqliteStore;
+    use crate::memory::{
+        NewAgent, NewCognitiveContext, NewSession, SessionMountKind, SessionStore,
+    };
     use crate::permission::PermissionMode;
     #[cfg(target_os = "macos")]
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
@@ -3244,6 +3382,88 @@ mod tests {
     static SECRET_ENV_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     struct ReplacementDefinitionTool;
+
+    #[tokio::test]
+    async fn send_message_routes_to_another_session_without_ending_current_evaluation() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        store
+            .ensure_agent(NewAgent {
+                id: "agent-a".to_string(),
+                title: "Agent A".to_string(),
+                root_context_id: "context-a".to_string(),
+            })
+            .await
+            .unwrap();
+        for context_id in ["context-a", "context-b"] {
+            store
+                .ensure_context(NewCognitiveContext {
+                    id: context_id.to_string(),
+                    agent_id: "agent-a".to_string(),
+                    title: context_id.to_string(),
+                })
+                .await
+                .unwrap();
+        }
+        for (session_id, context_id) in [("session-a", "context-a"), ("session-b", "context-b")] {
+            store
+                .ensure_session(NewSession {
+                    id: session_id.to_string(),
+                    agent_id: "agent-a".to_string(),
+                    context_id: context_id.to_string(),
+                    parent_session_id: None,
+                    title: session_id.to_string(),
+                    mount_kind: SessionMountKind::ExistingContext,
+                })
+                .await
+                .unwrap();
+        }
+
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
+        bus.subscribe(
+            "chat/outbound_message".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let tool = SendMessageTool::new(
+            Arc::clone(&bus),
+            Arc::clone(&store) as Arc<dyn SessionStore>,
+        );
+        let arguments = serde_json::json!({
+            "session_id": "session-b",
+            "content": "background task finished"
+        })
+        .to_string();
+        let result = CURRENT_SESSION_ID
+            .scope(
+                "session-a".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-a".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "work-item-a".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(None, tool.execute(&arguments)),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let receipt: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(receipt["status"], "sent");
+        assert!(receipt["guidance"].as_str().unwrap().contains("尚未结束"));
+
+        let event = receiver.recv().await.unwrap();
+        assert_eq!(event.payload["session_id"], "session-b");
+        assert_eq!(event.payload["context_id"], "context-b");
+        assert_eq!(event.payload["source_session_id"], "session-a");
+        assert_eq!(event.payload["text"], "background task finished");
+    }
 
     #[async_trait::async_trait]
     impl Tool for ReplacementDefinitionTool {

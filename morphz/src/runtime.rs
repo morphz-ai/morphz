@@ -22,7 +22,8 @@ use crate::orchestrator::orchestrator::Orchestrator;
 use crate::permission::{PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode};
 use crate::tool::{
     DelegateTool, EditFileTool, ExecuteCommandTool, KillTaskTool, ListFilesTool, ListSkillsTool,
-    ListTasksTool, ReadFileTool, Registry, SearchTool, TaskStatusTool, WaitTaskTool, WriteFileTool,
+    ListTasksTool, ReadFileTool, Registry, SearchTool, SendMessageTool, TaskStatusTool,
+    WaitTaskTool, WriteFileTool,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -235,6 +236,12 @@ fn register_default_tools(
     registry.register(Arc::new(ObjectiveUpdateTool::new(
         Arc::clone(objective_supervisor),
         Arc::clone(context_engine),
+    )));
+    registry.register(Arc::new(SendMessageTool::new(
+        Arc::clone(bus),
+        context_engine
+            .session_store()
+            .expect("Runtime ContextEngine 必须配置 SessionStore"),
     )));
     if policy.context_only {
         return;
@@ -1066,6 +1073,25 @@ mod tests {
 
     struct ReplyClient;
 
+    fn text_response(content: impl Into<String>) -> Response {
+        Response {
+            content: content.into(),
+            tool_calls: Vec::new(),
+        }
+    }
+
+    fn no_reply_response(id: impl Into<String>) -> Response {
+        Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                id: id.into(),
+                r#type: "function".to_string(),
+                func_name: "no_reply".to_string(),
+                arguments: json!({}).to_string(),
+            }],
+        }
+    }
+
     #[async_trait::async_trait]
     impl Client for ReplyClient {
         async fn create_completion(
@@ -1073,19 +1099,7 @@ mod tests {
             _messages: Vec<Message>,
             _tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
-            Ok(Response {
-                content: String::new(),
-                tool_calls: vec![ToolCallRepr {
-                    id: "runtime-reply".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "reply".to_string(),
-                    arguments: json!({
-                        "disposition": "deliver",
-                        "content": "runtime-ok"
-                    })
-                    .to_string(),
-                }],
-            })
+            Ok(text_response("runtime-ok"))
         }
     }
 
@@ -1117,6 +1131,35 @@ mod tests {
         calls: AtomicU64,
     }
 
+    struct ConcurrentObjectiveRouteClient {
+        objective_started: tokio::sync::Notify,
+        release_objective: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl Client for ConcurrentObjectiveRouteClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            let context = messages
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if context.contains("unrelated concurrent message") {
+                return Ok(text_response("unrelated-user-reply"));
+            }
+            if context.contains("objective-continuation") {
+                self.objective_started.notify_one();
+                self.release_objective.notified().await;
+                return Ok(no_reply_response("objective-concurrent-no-reply"));
+            }
+            Err("concurrent Objective route test received an unknown Evaluation".into())
+        }
+    }
+
     #[async_trait::async_trait]
     impl Client for ObjectiveBlockedClient {
         async fn create_completion(
@@ -1125,32 +1168,22 @@ mod tests {
             _tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            let (name, arguments) = if call == 0 {
-                (
-                    "objective_update",
-                    json!({
-                        "objective_id": "objective-blocked",
-                        "base_revision": 2,
-                        "status": "blocked",
-                        "reason": "缺少只能由使用者提供的必要决策",
-                        "evidence_refs": []
-                    }),
-                )
-            } else {
-                (
-                    "reply",
-                    json!({
-                        "disposition": "deliver",
-                        "content": "objective-needs-user-decision"
-                    }),
-                )
-            };
+            if call > 0 {
+                return Ok(text_response("objective-needs-user-decision"));
+            }
+            let arguments = json!({
+                "objective_id": "objective-blocked",
+                "base_revision": 2,
+                "status": "blocked",
+                "reason": "缺少只能由使用者提供的必要决策",
+                "evidence_refs": []
+            });
             Ok(Response {
                 content: String::new(),
                 tool_calls: vec![ToolCallRepr {
                     id: format!("objective-blocked-call-{call}"),
                     r#type: "function".to_string(),
-                    func_name: name.to_string(),
+                    func_name: "objective_update".to_string(),
                     arguments: arguments.to_string(),
                 }],
             })
@@ -1165,42 +1198,28 @@ mod tests {
             tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            let (name, arguments) = if call < 100 {
-                (
-                    "reply",
-                    json!({
-                        "disposition": "suppress"
-                    }),
-                )
-            } else if tools.iter().any(|tool| tool.name == "objective_update") {
-                (
-                    "objective_update",
-                    json!({
-                        "objective_id": "objective-long-run",
-                        "base_revision": objective_revision_from_messages(
-                            &messages,
-                            "objective-long-run"
-                        ),
-                        "status": "completed",
-                        "reason": "已跨越一百次持续求值并完成确定性验收",
-                        "evidence_refs": []
-                    }),
-                )
-            } else {
-                (
-                    "reply",
-                    json!({
-                        "disposition": "deliver",
-                        "content": "long-objective-complete"
-                    }),
-                )
-            };
+            if call < 100 {
+                return Ok(no_reply_response(format!("objective-long-run-call-{call}")));
+            }
+            if !tools.iter().any(|tool| tool.name == "objective_update") {
+                return Ok(text_response("long-objective-complete"));
+            }
+            let arguments = json!({
+                "objective_id": "objective-long-run",
+                "base_revision": objective_revision_from_messages(
+                    &messages,
+                    "objective-long-run"
+                ),
+                "status": "completed",
+                "reason": "已跨越一百次持续求值并完成确定性验收",
+                "evidence_refs": []
+            });
             Ok(Response {
                 content: String::new(),
                 tool_calls: vec![ToolCallRepr {
                     id: format!("objective-long-run-call-{call}"),
                     r#type: "function".to_string(),
-                    func_name: name.to_string(),
+                    func_name: "objective_update".to_string(),
                     arguments: arguments.to_string(),
                 }],
             })
@@ -1215,6 +1234,12 @@ mod tests {
             tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 2 {
+                return Ok(no_reply_response("objective-autonomous-call-2"));
+            }
+            if call > 3 {
+                return Ok(text_response("autonomous-objective-complete"));
+            }
             let (name, arguments) = match call {
                 0 | 1 => {
                     let create = tools
@@ -1236,12 +1261,6 @@ mod tests {
                         }),
                     )
                 }
-                2 => (
-                    "reply",
-                    json!({
-                        "disposition": "suppress"
-                    }),
-                ),
                 3 => {
                     let objective_id = autonomous_objective_id_from_messages(&messages);
                     (
@@ -1258,13 +1277,7 @@ mod tests {
                         }),
                     )
                 }
-                _ => (
-                    "reply",
-                    json!({
-                        "disposition": "deliver",
-                        "content": "autonomous-objective-complete"
-                    }),
-                ),
+                _ => unreachable!("handled terminal response above"),
             };
             Ok(Response {
                 content: String::new(),
@@ -1298,26 +1311,16 @@ mod tests {
             } else {
                 return Err("shared Context Objective test cannot identify active Session".into());
             };
-            let (name, arguments) = if tools.iter().any(|tool| tool.name == "objective_update") {
-                (
-                    "objective_update",
-                    json!({
-                        "objective_id": objective_id,
-                        "base_revision": objective_revision_from_messages(&messages, objective_id),
-                        "status": "completed",
-                        "reason": format!("{session_id} 已完成自己的 Objective"),
-                        "evidence_refs": []
-                    }),
-                )
-            } else {
-                (
-                    "reply",
-                    json!({
-                        "disposition": "deliver",
-                        "content": format!("{session_id}-complete")
-                    }),
-                )
-            };
+            if !tools.iter().any(|tool| tool.name == "objective_update") {
+                return Ok(text_response(format!("{session_id}-complete")));
+            }
+            let arguments = json!({
+                "objective_id": objective_id,
+                "base_revision": objective_revision_from_messages(&messages, objective_id),
+                "status": "completed",
+                "reason": format!("{session_id} 已完成自己的 Objective"),
+                "evidence_refs": []
+            });
             Ok(Response {
                 content: String::new(),
                 tool_calls: vec![ToolCallRepr {
@@ -1327,7 +1330,7 @@ mod tests {
                         self.calls.load(Ordering::SeqCst)
                     ),
                     r#type: "function".to_string(),
-                    func_name: name.to_string(),
+                    func_name: "objective_update".to_string(),
                     arguments: arguments.to_string(),
                 }],
             })
@@ -1394,32 +1397,22 @@ mod tests {
             _tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            let (name, arguments) = if call == 0 {
-                (
-                    "objective_update",
-                    json!({
-                        "objective_id": "objective-recover",
-                        "base_revision": objective_revision_from_messages(&messages, "objective-recover"),
-                        "status": "completed",
-                        "reason": "重启后已恢复并完成",
-                        "evidence_refs": []
-                    }),
-                )
-            } else {
-                (
-                    "reply",
-                    json!({
-                        "disposition": "deliver",
-                        "content": "recovered-objective-complete"
-                    }),
-                )
-            };
+            if call > 0 {
+                return Ok(text_response("recovered-objective-complete"));
+            }
+            let arguments = json!({
+                "objective_id": "objective-recover",
+                "base_revision": objective_revision_from_messages(&messages, "objective-recover"),
+                "status": "completed",
+                "reason": "重启后已恢复并完成",
+                "evidence_refs": []
+            });
             Ok(Response {
                 content: String::new(),
                 tool_calls: vec![ToolCallRepr {
                     id: format!("objective-recovery-call-{call}"),
                     r#type: "function".to_string(),
-                    func_name: name.to_string(),
+                    func_name: "objective_update".to_string(),
                     arguments: arguments.to_string(),
                 }],
             })
@@ -1434,6 +1427,12 @@ mod tests {
             _tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 1 {
+                return Ok(no_reply_response("objective-wait-call-1"));
+            }
+            if call > 2 {
+                return Ok(text_response("wait-objective-complete"));
+            }
             let (name, arguments) = match call {
                 0 => (
                     "objective_update",
@@ -1449,12 +1448,6 @@ mod tests {
                         }
                     }),
                 ),
-                1 => (
-                    "reply",
-                    json!({
-                        "disposition": "suppress"
-                    }),
-                ),
                 2 => (
                     "objective_update",
                     json!({
@@ -1465,13 +1458,7 @@ mod tests {
                         "evidence_refs": []
                     }),
                 ),
-                _ => (
-                    "reply",
-                    json!({
-                        "disposition": "deliver",
-                        "content": "wait-objective-complete"
-                    }),
-                ),
+                _ => unreachable!("handled terminal response above"),
             };
             Ok(Response {
                 content: String::new(),
@@ -1519,19 +1506,7 @@ mod tests {
                 });
             }
             assert!(!tools.iter().any(|tool| tool.name == "objective_update"));
-            Ok(Response {
-                content: String::new(),
-                tool_calls: vec![ToolCallRepr {
-                    id: "objective-final-reply".to_string(),
-                    r#type: "function".to_string(),
-                    func_name: "reply".to_string(),
-                    arguments: json!({
-                        "disposition": "deliver",
-                        "content": "objective-complete"
-                    })
-                    .to_string(),
-                }],
-            })
+            Ok(text_response("objective-complete"))
         }
     }
 
@@ -1677,6 +1652,91 @@ mod tests {
             })
             .expect("Supervisor should persist an internal continuation event");
         assert_ne!(continuation.event_type, TYPE_USER_MESSAGE);
+    }
+
+    #[tokio::test]
+    async fn concurrent_user_reply_cannot_steal_an_active_objective_evaluation() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let client = Arc::new(ConcurrentObjectiveRouteClient {
+            objective_started: tokio::sync::Notify::new(),
+            release_objective: tokio::sync::Notify::new(),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-objective-concurrent".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Concurrent Objective route test".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        runtime
+            .create_objective(NewObjective {
+                id: "objective-concurrent-route".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                coordinator_session_id: session.id().to_string(),
+                delivery_session_id: session.id().to_string(),
+                parent_objective_id: None,
+                source_event_id: "objective-concurrent-source".to_string(),
+                stated_objective: "保持一个尚未结束的 Objective Evaluation".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.objective_started.notified(),
+        )
+        .await
+        .expect("Objective Evaluation should enter the model before the user message");
+
+        session
+            .send(
+                "unrelated concurrent message",
+                "User-Test",
+                Some("objective-concurrent-user-message".to_string()),
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(2), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload.get("text"),
+            Some(&json!("unrelated-user-reply"))
+        );
+        assert!(reply.payload.get("objective_id").is_none());
+        assert!(reply.payload.get("objective_evaluation_id").is_none());
+
+        let active = runtime
+            .get_objective("objective-concurrent-route")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(active.active_evaluation_id.is_some());
+        runtime
+            .cancel_objective(&active.id, active.revision, "结束并发路由确定性测试")
+            .await
+            .unwrap();
+        client.release_objective.notify_one();
     }
 
     #[tokio::test]
@@ -1945,7 +2005,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let mut suppressed = runtime.subscribe("chat/reply_suppressed", 8);
+        let mut no_reply = runtime.subscribe("chat/no_reply", 8);
         let mut replies = runtime.subscribe("chat/reply", 8);
         runtime
             .create_objective(NewObjective {
@@ -1961,7 +2021,7 @@ mod tests {
             })
             .await
             .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(3), suppressed.recv())
+        tokio::time::timeout(std::time::Duration::from_secs(3), no_reply.recv())
             .await
             .unwrap()
             .unwrap();

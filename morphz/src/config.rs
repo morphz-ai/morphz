@@ -266,12 +266,6 @@ pub struct OrchestratorConfig {
     pub attempt_soft_checkpoint_interval: usize,
     /// 单个用户回合允许提交的 Context transaction 次数；不限制物理工具或回复
     pub max_context_transactions_per_turn: usize,
-    /// 是否允许同一 Context 中同时就绪的多个 Session 合并为一次模型求值。
-    pub merged_evaluation_enabled: bool,
-    /// 收集近同时到达消息的短窗口；只增加首个消息最多该数值的调度延迟。
-    pub session_batch_coalesce_ms: u64,
-    /// 一次合并求值最多包含的 ready Session 数。
-    pub max_sessions_per_evaluation: usize,
     /// 当前 Context Encoding 自动包含哪些 Session 历史。
     pub session_working_set: SessionWorkingSetConfig,
     /// 是否在 Ledger 中保留完整 Context Encoding 与模型消息。
@@ -294,9 +288,6 @@ impl Default for OrchestratorConfig {
             observation_preview_chars: 16_000,
             attempt_soft_checkpoint_interval: 90,
             max_context_transactions_per_turn: 6,
-            merged_evaluation_enabled: false,
-            session_batch_coalesce_ms: 25,
-            max_sessions_per_evaluation: 8,
             session_working_set: SessionWorkingSetConfig::default(),
             persist_full_context_inspect: false,
         }
@@ -1219,20 +1210,6 @@ impl AppConfig {
             "MORPHZ_LLM_MAX_OUTPUT_TOKENS",
             &mut self.llm.max_output_tokens,
         )?;
-        if let Ok(value) = std::env::var("MORPHZ_MERGED_EVALUATION_ENABLED") {
-            self.orchestrator.merged_evaluation_enabled =
-                parse_env_bool(&value).ok_or_else(|| {
-                    format!("MORPHZ_MERGED_EVALUATION_ENABLED 不是合法布尔值: {value}")
-                })?;
-        }
-        apply_u64_env(
-            "MORPHZ_SESSION_BATCH_COALESCE_MS",
-            &mut self.orchestrator.session_batch_coalesce_ms,
-        )?;
-        apply_usize_env(
-            "MORPHZ_MAX_SESSIONS_PER_EVALUATION",
-            &mut self.orchestrator.max_sessions_per_evaluation,
-        )?;
         if let Ok(value) = std::env::var("MORPHZ_SESSION_ACTIVE_WINDOW") {
             self.orchestrator.session_working_set.active_window = parse_human_duration(&value)
                 .map_err(|error| {
@@ -1523,13 +1500,20 @@ mod tests {
         resolved
             .apply_cli_set_overrides(&[
                 "llm.max_retries=2".to_string(),
-                "orchestrator.merged_evaluation_enabled=true".to_string(),
+                "orchestrator.session_working_set.max_sessions=12".to_string(),
                 "llm.model=custom-model".to_string(),
             ])
             .unwrap();
 
         assert_eq!(resolved.config.llm.max_retries, 2);
-        assert!(resolved.config.orchestrator.merged_evaluation_enabled);
+        assert_eq!(
+            resolved
+                .config
+                .orchestrator
+                .session_working_set
+                .max_sessions,
+            12
+        );
         assert_eq!(resolved.config.llm.model, "custom-model");
         assert_eq!(resolved.source_for("llm.model"), "cli:--set");
 
@@ -1614,7 +1598,6 @@ mod tests {
         assert_eq!(cfg.llm.max_output_tokens, None);
         assert_eq!(cfg.orchestrator.reply_wait_notice_secs, 120);
         assert_eq!(cfg.orchestrator.attempt_soft_checkpoint_interval, 90);
-        assert!(!cfg.orchestrator.merged_evaluation_enabled);
         assert_eq!(cfg.permissions.mode, PermissionMode::AutoReview);
         assert_eq!(cfg.background_task.timeout_notify_secs, 300);
     }

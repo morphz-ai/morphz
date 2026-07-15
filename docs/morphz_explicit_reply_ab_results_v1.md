@@ -5,7 +5,7 @@
 正式重复：每组每任务 5 次
 正式报告：`/private/tmp/morphz-sexpr-explicit-reply-formal/sexpr-explicit-reply-ab-v1-20260713T073816.868Z-96303/report.json`
 
-> 实现状态：本文验证的 `reply(deliver/suppress)` 已进入生产 Runtime，并成为三个 System Prompt Profile 的共享行为；见 [三版本 System Prompt 与显式 Reply 协议 v1](./morphz_system_prompt_profiles_and_reply_v1.md)。
+> 历史状态：本文验证了“静默也必须显式表达”的价值。Protocol v16 保留这一结论，但以更小的 `no_reply` 工具表达静默；当前 Session 的普通回复恢复为无工具文本。见 [单 Session 求值与响应路由协议 v1](./morphz_response_routing_protocol_v1.md)。本文后续实验结果保留了 v11 当时的指标和术语，用于解释设计如何演进，不代表当前接口。
 
 ## 1. 结论摘要
 

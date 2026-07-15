@@ -1676,7 +1676,12 @@ async fn monitor_objective(
                     println!("{text}");
                 }
             }
-            ConsoleMessageKind::Suppressed => {}
+            ConsoleMessageKind::NoReply => {}
+            ConsoleMessageKind::Message => {
+                if !text.trim().is_empty() {
+                    println!("{text}");
+                }
+            }
             ConsoleMessageKind::Progress => {
                 if !text.trim().is_empty() {
                     eprintln!("[Agent 进度] {text}");
@@ -1692,7 +1697,7 @@ async fn monitor_objective(
         }
         if matches!(
             kind,
-            ConsoleMessageKind::Final | ConsoleMessageKind::Suppressed
+            ConsoleMessageKind::Final | ConsoleMessageKind::NoReply
         ) {
             let objective = runtime
                 .get_objective(objective_id)
@@ -1798,7 +1803,8 @@ async fn run_once(
                 println!("{text}");
                 return Ok(());
             }
-            ConsoleMessageKind::Suppressed => return Ok(()),
+            ConsoleMessageKind::NoReply => return Ok(()),
+            ConsoleMessageKind::Message => print_agent_message(&text),
             ConsoleMessageKind::Progress => {
                 if !text.trim().is_empty() {
                     eprintln!("[Agent 进度] {text}");
@@ -1829,13 +1835,27 @@ async fn run_interactive(
     let session_id = session.id().to_string();
     let session_id_clone = session_id.clone();
 
-    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::channel::<ConsoleMessage>(100);
+    let (reply_tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<ConsoleMessage>();
+    let waiting_for_reply = Arc::new(std::sync::Mutex::new(false));
+    let event_waiting_for_reply = Arc::clone(&waiting_for_reply);
+    let event_session_id = session_id.clone();
     let mut console_events = runtime.subscribe("*", 256);
     tokio::spawn(async move {
         while let Some(event) = console_events.recv().await {
             if let Some(message) = console_message_from_event(&event) {
-                if reply_tx.send(message).await.is_err() {
-                    break;
+                if message.0 != event_session_id {
+                    continue;
+                }
+                let waiting = event_waiting_for_reply
+                    .lock()
+                    .map(|waiting| *waiting)
+                    .unwrap_or(true);
+                if waiting {
+                    if reply_tx.send(message).is_err() {
+                        break;
+                    }
+                } else {
+                    print_idle_console_message(&message);
                 }
             }
         }
@@ -1964,8 +1984,15 @@ async fn run_interactive(
 
             msg_counter += 1;
 
-            // 清理已经结束的上一轮残留通知；正常等待不会因时间流逝而提前结束。
-            while reply_rx.try_recv().is_ok() {}
+            let Ok(mut waiting) = waiting_for_reply.lock() else {
+                let _ = writeln!(stdout, "Console 状态锁已损坏，退出 Morphz。");
+                std::process::exit(1);
+            };
+            while let Ok(message) = reply_rx.try_recv() {
+                print_console_notification(&message);
+            }
+            *waiting = true;
+            drop(waiting);
 
             let client_message_id = format!(
                 "cli_{}_{}",
@@ -1975,6 +2002,9 @@ async fn run_interactive(
             if let Err(error) =
                 rt.block_on(console_session.send(text, "User-Shafreeck", Some(client_message_id)))
             {
+                if let Ok(mut waiting) = waiting_for_reply.lock() {
+                    *waiting = false;
+                }
                 let _ = writeln!(stdout, "发送消息失败: {error}");
                 continue;
             }
@@ -1994,7 +2024,7 @@ async fn run_interactive(
                         let _ = writeln!(stdout, "\n{}\n", reply);
                         break;
                     }
-                    Some(ConsoleWaitOutcome::Suppressed) => break,
+                    Some(ConsoleWaitOutcome::NoReply) => break,
                     Some(ConsoleWaitOutcome::Approval(payload)) => {
                         if let Err(error) = prompt_for_human_approval(
                             &payload,
@@ -2008,6 +2038,25 @@ async fn run_interactive(
                     None => {
                         let _ = writeln!(stdout, "Agent 回复通道已关闭。");
                         break;
+                    }
+                }
+            }
+
+            if let Ok(mut waiting) = waiting_for_reply.lock() {
+                *waiting = false;
+                while let Ok(message) = reply_rx.try_recv() {
+                    match message.2 {
+                        ConsoleMessageKind::Approval => {
+                            if let Err(error) = prompt_for_human_approval(
+                                &message.1,
+                                &console_runtime,
+                                &mut stdin,
+                                &mut stdout,
+                            ) {
+                                let _ = writeln!(stdout, "[审批失败] {error}");
+                            }
+                        }
+                        _ => print_console_notification(&message),
                     }
                 }
             }
@@ -2041,7 +2090,8 @@ enum ConsoleInput {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConsoleMessageKind {
     Final,
-    Suppressed,
+    NoReply,
+    Message,
     Progress,
     ToolCall,
     Approval,
@@ -2052,7 +2102,7 @@ type ConsoleMessage = (String, String, ConsoleMessageKind);
 #[derive(Debug, PartialEq, Eq)]
 enum ConsoleWaitOutcome {
     Final(String),
-    Suppressed,
+    NoReply,
     Approval(String),
 }
 
@@ -2073,24 +2123,17 @@ fn console_message_from_event(event: &morphz::event::Event) -> Option<ConsoleMes
                 .to_string(),
             ConsoleMessageKind::Final,
         )),
-        "chat/reply_suppressed" => {
-            let active_background_tasks = event
+        "chat/no_reply" => Some((session_id, String::new(), ConsoleMessageKind::NoReply)),
+        "chat/outbound_message" => Some((
+            session_id,
+            event
                 .payload
-                .get("active_background_tasks")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            if active_background_tasks > 0 {
-                Some((
-                    session_id,
-                    format!(
-                        "Agent 已进入事件驱动等待；当前还有 {active_background_tasks} 个后台任务运行。"
-                    ),
-                    ConsoleMessageKind::Progress,
-                ))
-            } else {
-                Some((session_id, String::new(), ConsoleMessageKind::Suppressed))
-            }
-        }
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            ConsoleMessageKind::Message,
+        )),
         "chat/progress" => Some((
             session_id,
             event
@@ -2128,7 +2171,7 @@ fn console_message_from_event(event: &morphz::event::Event) -> Option<ConsoleMes
 }
 
 async fn wait_for_session_activity(
-    reply_rx: &mut tokio::sync::mpsc::Receiver<ConsoleMessage>,
+    reply_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ConsoleMessage>,
     session_id: &str,
     notice_interval: Option<std::time::Duration>,
 ) -> Option<ConsoleWaitOutcome> {
@@ -2139,8 +2182,9 @@ async fn wait_for_session_activity(
             }
             match kind {
                 ConsoleMessageKind::Final => return Some(ConsoleWaitOutcome::Final(text)),
-                ConsoleMessageKind::Suppressed => return Some(ConsoleWaitOutcome::Suppressed),
+                ConsoleMessageKind::NoReply => return Some(ConsoleWaitOutcome::NoReply),
                 ConsoleMessageKind::Approval => return Some(ConsoleWaitOutcome::Approval(text)),
+                ConsoleMessageKind::Message => print_agent_message(&text),
                 ConsoleMessageKind::Progress => print_agent_progress(&text),
                 ConsoleMessageKind::ToolCall => print_tool_call_activity(&text),
             }
@@ -2161,8 +2205,9 @@ async fn wait_for_session_activity(
                 }
                 match kind {
                     ConsoleMessageKind::Final => return Some(ConsoleWaitOutcome::Final(text)),
-                    ConsoleMessageKind::Suppressed => return Some(ConsoleWaitOutcome::Suppressed),
+                    ConsoleMessageKind::NoReply => return Some(ConsoleWaitOutcome::NoReply),
                     ConsoleMessageKind::Approval => return Some(ConsoleWaitOutcome::Approval(text)),
+                    ConsoleMessageKind::Message => print_agent_message(&text),
                     ConsoleMessageKind::Progress => print_agent_progress(&text),
                     ConsoleMessageKind::ToolCall => print_tool_call_activity(&text),
                 }
@@ -2182,14 +2227,14 @@ async fn wait_for_session_activity(
 
 #[cfg(test)]
 async fn wait_for_session_reply(
-    reply_rx: &mut tokio::sync::mpsc::Receiver<ConsoleMessage>,
+    reply_rx: &mut tokio::sync::mpsc::UnboundedReceiver<ConsoleMessage>,
     session_id: &str,
     notice_interval: Option<std::time::Duration>,
 ) -> Option<String> {
     loop {
         match wait_for_session_activity(reply_rx, session_id, notice_interval).await? {
             ConsoleWaitOutcome::Final(text) => return Some(text),
-            ConsoleWaitOutcome::Suppressed => return Some(String::new()),
+            ConsoleWaitOutcome::NoReply => return Some(String::new()),
             ConsoleWaitOutcome::Approval(_) => continue,
         }
     }
@@ -2263,6 +2308,37 @@ fn print_agent_progress(text: &str) {
     if !text.trim().is_empty() {
         let mut stdout = std::io::stdout();
         let _ = writeln!(stdout, "\n[Agent 进度] {}", text);
+        let _ = stdout.flush();
+    }
+}
+
+fn print_agent_message(text: &str) {
+    if !text.trim().is_empty() {
+        let mut stdout = std::io::stdout();
+        let _ = writeln!(stdout, "\n{}", text);
+        let _ = stdout.flush();
+    }
+}
+
+fn print_console_notification(message: &ConsoleMessage) {
+    match message.2 {
+        ConsoleMessageKind::Final | ConsoleMessageKind::Message => print_agent_message(&message.1),
+        ConsoleMessageKind::NoReply => {}
+        ConsoleMessageKind::Progress => print_agent_progress(&message.1),
+        ConsoleMessageKind::ToolCall => print_tool_call_activity(&message.1),
+        ConsoleMessageKind::Approval => {
+            let mut stdout = std::io::stdout();
+            let _ = writeln!(stdout, "\n[需要审批] {}", message.1);
+            let _ = stdout.flush();
+        }
+    }
+}
+
+fn print_idle_console_message(message: &ConsoleMessage) {
+    print_console_notification(message);
+    if !matches!(message.2, ConsoleMessageKind::NoReply) {
+        let mut stdout = std::io::stdout();
+        let _ = write!(stdout, "> ");
         let _ = stdout.flush();
     }
 }
@@ -2555,7 +2631,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_notice_never_becomes_a_reply_timeout() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(35)).await;
             tx.send((
@@ -2563,7 +2639,6 @@ mod tests {
                 "late reply".to_string(),
                 ConsoleMessageKind::Final,
             ))
-            .await
             .unwrap();
         });
 
@@ -2578,13 +2653,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn suppressed_reply_ends_cli_wait_only_after_background_tasks_finish() {
+    async fn no_reply_ends_cli_wait_even_when_background_tasks_remain() {
         let event = |active_background_tasks| {
             Event::new(
-                format!("suppressed-{active_background_tasks}"),
+                format!("no-reply-{active_background_tasks}"),
                 "Agent-Morphz".to_string(),
                 "agent_call".to_string(),
-                "chat/reply_suppressed".to_string(),
+                "chat/no_reply".to_string(),
                 serde_json::Map::from_iter([
                     ("session_id".to_string(), serde_json::json!("session-a")),
                     (
@@ -2595,14 +2670,14 @@ mod tests {
             )
         };
 
-        let (_, progress, kind) = console_message_from_event(&event(1)).unwrap();
-        assert_eq!(kind, ConsoleMessageKind::Progress);
-        assert!(progress.contains("1 个后台任务"));
-
         let terminal = console_message_from_event(&event(0)).unwrap();
-        assert_eq!(terminal.2, ConsoleMessageKind::Suppressed);
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        tx.send(terminal).await.unwrap();
+        assert_eq!(terminal.2, ConsoleMessageKind::NoReply);
+        assert_eq!(
+            console_message_from_event(&event(1)).unwrap().2,
+            ConsoleMessageKind::NoReply
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(terminal).unwrap();
         let reply = wait_for_session_reply(&mut rx, "session-a", None).await;
         assert_eq!(reply.as_deref(), Some(""));
     }

@@ -2,24 +2,23 @@ use crate::config::OrchestratorConfig;
 use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
 use crate::llm::{Client, Message, PromptTokenCount};
 use crate::memory::{
-    DelegationStatus, EvaluationWorkItemMutation, EvaluationWorkItemRecord,
-    EvaluationWorkItemStatus, EventStore, NewCognitiveContext, NewDelegation,
-    NewEvaluationWorkItem, NewSession, QueryFilter, ReplyCommit, SessionAttentionState,
+    DelegationStatus, EvaluationOutcomeCommit, EvaluationWorkItemMutation,
+    EvaluationWorkItemRecord, EvaluationWorkItemStatus, EventStore, NewCognitiveContext,
+    NewDelegation, NewEvaluationWorkItem, NewSession, QueryFilter, SessionAttentionState,
     SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionStore, SessionUpdate,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{ContextEngine, ContextView};
 use crate::orchestrator::context_contract::{render_system_contract, render_system_contract_sexpr};
 use crate::sexpr::SExpr;
-use crate::sexpr_vm_contract::ANNOTATED_REPLY_KERNEL;
+use crate::sexpr_vm_contract::ANNOTATED_RESPONSE_KERNEL;
 use crate::tool::{active_background_task_count, Registry};
 use chrono::Utc;
 use dashmap::DashMap;
-use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{watch, Mutex};
 
@@ -39,11 +38,12 @@ Context 的状态分为三个权限域：
 你必须自己判断当前目标下什么值得保留、摘要、修订、保护、恢复或遗忘。Runtime 不会自动替你摘要历史、裁剪旧消息或把检索结果写成事实。
 
 每次响应必须明确选择 `protocol.response-contract` 中的一种主模式：
-- reply：当前 Evaluation 已到可交付或可让出执行权的边界；调用且仅调用标准 reply 工具。disposition=deliver 时 content 必须非空并交付当前 Session；确认不需要发送 Session 消息时使用 disposition=suppress。没有 Objective 时它结束当前用户任务；存在 active Objective 时它只结束本次 Evaluation，不能代替 objective_update(completed)。
+- reply：当前 Evaluation 已到可交付边界时，返回非空普通 assistant 文本且不调用工具。Runtime 将文本流式路由到 kernel.active-session，并在完整响应成功后持久化为终态回复。存在 active Objective 时，它只结束本次 Evaluation，不能代替 objective_update(completed)。
+- no-reply：确认本次 Evaluation 无需向 active Session 发送任何消息时，独占调用无参数的 no_reply。它只让出本次求值，不代表 Objective 完成，不取消后台任务。
 - act：确实需要新的外部结果；调用物理工具，可并行附带一个不依赖这些新结果的 context_tx；若有正文则只是可见进度，Runtime 执行工具后必定再次调用你。
-- maintain：需要先修改 Mind 时可单独调用 context_tx，不输出最终正文。事务成功后 Runtime 必定再次调用你，并在非 critical 时暂时隐藏 context_tx；maintain 不是用户回合终点，下一响应必须 reply 或 act。
+- maintain：需要先修改 Mind 时可单独调用 context_tx，不输出最终正文。事务成功后 Runtime 必定再次调用你，并在非 critical 时暂时隐藏 context_tx；maintain 不是用户回合终点，下一响应必须 reply、no-reply 或 act。
 
-上述标准 reply 工具只适用于 kernel.evaluation-mode=single。普通文本或空响应都不是终态；缺少合法 reply 时 Runtime 会返回协议错误并有限重试。evaluation-mode=batch 时没有唯一正文路由，必须遵循 protocol.session-output-contract，通过 session_output 把 progress/final 分别发送到 ready Session；context_tx 永远不能替代用户消息输出。
+每个模型请求只有一个 kernel.active-session，普通文本只路由到它。需要主动向同一 Agent 的其他 Session 发送消息时，调用 send_message；该工具不结束当前 Evaluation，也不触发目标 Session 的新求值。context_tx 永远不能代替 Session 消息输出。空响应不是终态；Runtime 会返回协议错误并有限重试。
 
 使用 context_tx 原子修改 Mind，并严格遵循 `protocol.context-tx-contract` 展示的语法。每次事务使用 kernel 中当前的 version。reason 是 context-tx 的事务级子项，绝不能作为 retire/unprotect 的参数。`revise` 会完整替换 frame body，不是局部 merge；仍需保留的字段必须在新 BODY 中重述。高风险重组前可由你显式建立 checkpoint，必要时带 reason rollback。
 
@@ -58,20 +58,20 @@ Context 的状态分为三个权限域：
    用户明确声明“始终、整个任务期间、不得、必须”等持续约束时，应将其写入受保护 frame，直到用户明确撤销或任务生命周期真正结束。
 3. 大段 observation 可先 derive 成忠实摘要，再在同一 transaction 中 retire 原始 observation。不要把假设写成事实。已完成、可从 Ledger 召回且没有改变目标、约束或结论的过程记录应直接 retire，不得为每个批次创建或保护长期 frame。
 4. 用户要求在已知文件中查证具体结论时，直接使用 read.query 取得带行号的窄证据；需要连续上下文时再用 start_line/end_line 精确分页。不要先整读长文件，也不要用 exec/grep 反复产生大段重复输出。Context observation 的 `ref`（如 `@e27`）是 Runtime 提供的稳定短引用；recall 与 context_tx 必须原样使用，不要猜测或抄写隐藏的完整 Event ID。被 truncated 的 observation 可使用 recall 按 ref 分段读取原文；若 recall 返回 next_offset，下一次必须把该值原样作为 offset，不得重复 offset=0 或猜测跳转；已知关键词时优先 query，并使用命中片段或 suggested_recall。exec 若给出 artifact path，则使用 read 按需读取完整归档。recall/read 结果只进入 inbox，你决定是否写入 Mind。
-5. context_tx 可以与不依赖本批新结果的物理工具并行；如果新 frame 依赖工具结果，应等结果返回后再提交。当前用户回合内，Runtime 按标准 assistant.tool_calls → role=tool/tool_call_id 返回工具结果；物理结果已同时持久化到 Ledger，并带 observation_ref。同一请求的 Context View 不会重复注入这批结果正文，下一独立快照才按 active/retired 状态展示。status=success 且 output_state=empty 表示工具已经完成但没有文本，不得仅因空输出重复调用。除终态 reply 外，任何包含工具调用的响应都是中间状态：正文只作为可见进度，Runtime 执行完工具后必定再次调用你。reply 必须独占终态响应。
+5. context_tx 可以与不依赖本批新结果的物理工具并行；如果新 frame 依赖工具结果，应等结果返回后再提交。当前用户回合内，Runtime 按标准 assistant.tool_calls → role=tool/tool_call_id 返回工具结果；物理结果已同时持久化到 Ledger，并带 observation_ref。同一请求的 Context View 不会重复注入这批结果正文，下一独立快照才按 active/retired 状态展示。status=success 且 output_state=empty 表示工具已经完成但没有文本，不得仅因空输出重复调用。任何包含工具调用的响应都是中间状态：正文只作为当前 Session 的可见进度，Runtime 执行完工具后必定再次调用你。最终回复必须是无工具的普通文本，no_reply 必须独占。
 6. 同一响应最多提交一个 context_tx；把多个修改合并进同一事务，避免版本冲突。
    retire 或 unprotect 时 reason 是必需的，使遗忘与解除保护可审计。
-7. pressure=normal/notice 时不要仅为降低体积而压缩；只在出现必须跨轮保留的目标、约束或结论变化时做语义维护。pressure=warning 时考虑在最终 reply 前或随 act 提交压缩事务；pressure=critical 时必须先 maintain-only 释放预算。
-8. 完成任务前，确认 Mind 中仍需跨轮保留的目标、约束、结论和开放问题准确；若物理工具结果改变了任务状态，在最终 reply 之前用一次 context_tx 完成收口。Runtime 会在事务回执后再次调用你，届时通过标准 reply 工具作出 deliver 或 suppress 决定。
+7. pressure=normal/notice 时不要仅为降低体积而压缩；只在出现必须跨轮保留的目标、约束或结论变化时做语义维护。pressure=warning 时考虑在最终文本前或随 act 提交压缩事务；pressure=critical 时必须先 maintain-only 释放预算。
+8. 完成任务前，确认 Mind 中仍需跨轮保留的目标、约束、结论和开放问题准确；若物理工具结果改变了任务状态，在最终文本之前用一次 context_tx 完成收口。Runtime 会在事务回执后再次调用你，届时返回普通文本或独占调用 no_reply。
 9. assistant_call 与 context_tx 回执属于 Runtime 控制轨迹，只保存在 Ledger，不会进入 Inbox；不要为了清理 context_tx 自己产生的记录而连续提交 housekeeping transaction。
    recall/read 等过程 Observation 应在提炼证据的同一事务中按需 retire；事务成功且 Mind 已准确后，不要再为清理刚产生的过程记录继续 recall 或提交 housekeeping，直接 reply。
 10. 每次调用物理工具前，必须确认它是完成当前用户明确任务所必需的新信息。当 Mind/inbox 已足以回答时，立即使用 reply；不要重复验证、扫描工作区或自行发明后续目标。
 11. kernel.turn-control 描述当前用户回合的模型求值进度。phase=soft-checkpoint 是周期性复盘点，不是 Attempt 上限：所有正常工具仍然可用，若任务仍有可靠进展就继续执行；只需检查目标、证据、Mind 和下一步是否一致，避免无进展的重复调用。一次模型响应里并行调用多个工具只计为一次 Attempt。
-12. kernel.wake 说明本次为何被唤醒。独立 context_tx 成功后的 context-transaction-result 会触发一次冷却：除非仍处于 critical，否则本次不再提供 context_tx，必须 reply 或执行必要的物理动作。
+12. kernel.wake 说明本次为何被唤醒。独立 context_tx 成功后的 context-transaction-result 会触发一次冷却：除非仍处于 critical，否则本次不再提供 context_tx，必须返回普通文本、调用 no_reply 或执行必要的物理动作。
 13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。相互独立的文件读取必须在同一响应中并行调用；已经进入 Inbox 且 sha256 未被 file_change 改变的内容不得重复 read。完成必要定位后立即修改并验证，不要在反复扫描与阅读中消耗无进展的模型求值。
-14. exec 回执中的 execution、process_status、exit_code、task_status 和 effective_boundary 是 Runtime 观测到的物理事实；不得用命令意图或自己的预期取代它们。exec 转入后台后，用 task_status/list_tasks 做必要的一次查询，或调用 wait_task 并设置合适的 wait_secs 后 reply(suppress) 进入事件驱动等待；任务结束或等待时间到达时 Runtime 会主动唤醒，你可自行决定继续等待多长时间或调用 kill_task，不得用 sleep、ps 或重复读取空日志轮询。不得把 token/key 字面量写入命令、进程参数、Mind 或 Ledger；只能由使用者预先配置 Runtime 环境变量，再通过 requested_permissions.secret_env 按变量名申请对单个子进程注入。
-15. kernel.objectives 存在时，先读取其中与你当前 coordinator-session 对应的 Objective。reply 只结束当前 Evaluation：仍有工作且不等待时正常 reply，Supervisor 会自动续跑；等待确定事件时先调用 objective_update(status=active, wait_condition=...)；确实无法自动等待或推进时才提交 blocked；只有逐项审计 stated objective 并有真实 Ledger 证据支持时才提交 completed。Objective 状态工具成功后仍需调用标准 reply 完成本次 IO。
-16. 你可以调用 objective_create，把当前 Session 中确实需要跨多次 Evaluation、异步等待或 Runtime 重启继续推进的工作升级为 First-Class Objective。它不是普通 Todo 或延长思考时间的手段：当前 Evaluation 可以可靠完成的任务不得创建 Objective；创建时完整保留用户范围与完成条件，并说明持久化的必要性。Runtime 自动绑定当前 Agent/Context/Session 并生成 ID；成功或返回 existing 后不得为同一目标重复创建。若指定 parent_objective_id，它必须是当前正在求值的 Objective。创建成功后继续工作，标准 reply 只结束被收编后的当前 Evaluation，未完成 Objective 将由 Supervisor 自动续跑。
+14. exec 回执中的 execution、process_status、exit_code、task_status 和 effective_boundary 是 Runtime 观测到的物理事实；不得用命令意图或自己的预期取代它们。exec 转入后台后，用 task_status/list_tasks 做必要的一次查询，或调用 wait_task 并设置合适的 wait_secs 后调用 no_reply 进入事件驱动等待；任务结束或等待时间到达时 Runtime 会主动唤醒，你可自行决定继续等待多长时间或调用 kill_task，不得用 sleep、ps 或重复读取空日志轮询。不得把 token/key 字面量写入命令、进程参数、Mind 或 Ledger；只能由使用者预先配置 Runtime 环境变量，再通过 requested_permissions.secret_env 按变量名申请对单个子进程注入。
+15. kernel.objectives 存在时，先读取其中与你当前 coordinator-session 对应的 Objective。普通文本或 no_reply 只结束当前 Evaluation：仍有工作且不等待时正常交付当前进度，Supervisor 会自动续跑；等待确定事件时先调用 objective_update(status=active, wait_condition=...)；确实无法自动等待或推进时才提交 blocked；只有逐项审计 stated objective 并有真实 Ledger 证据支持时才提交 completed。Objective 状态工具成功后仍需产生普通文本或调用 no_reply 完成本次 IO。
+16. 你可以调用 objective_create，把当前 Session 中确实需要跨多次 Evaluation、异步等待或 Runtime 重启继续推进的工作升级为 First-Class Objective。它不是普通 Todo 或延长思考时间的手段：当前 Evaluation 可以可靠完成的任务不得创建 Objective；创建时完整保留用户范围与完成条件，并说明持久化的必要性。Runtime 自动绑定当前 Agent/Context/Session 并生成 ID；成功或返回 existing 后不得为同一目标重复创建。若指定 parent_objective_id，它必须是当前正在求值的 Objective。创建成功后继续工作，普通文本或 no_reply 只结束被收编后的当前 Evaluation，未完成 Objective 将由 Supervisor 自动续跑。
 
 Context 的修改是你的元认知行为；read/write/exec/delegate 等工具是对外部世界的行为。保持二者边界清晰。"#;
 
@@ -159,7 +159,7 @@ fn build_semantic_sexpr_system_prompt() -> String {
     let guidance = render_semantic_sections("runtime-guidance", common_rules);
     let prompt = format!(
         "(system-prompt morphz\n  {kernel}\n  {architecture}\n  {guidance}\n  {contracts})",
-        kernel = ANNOTATED_REPLY_KERNEL,
+        kernel = ANNOTATED_RESPONSE_KERNEL,
         contracts = render_system_contract_sexpr(),
     );
     crate::sexpr::parse(&prompt).expect("Semantic SExpr VM system prompt 必须是完整合法的 SExpr");
@@ -253,23 +253,14 @@ const CRITICAL_MAINTENANCE_PROMPT: &str = r#"Runtime 当前进入 critical-maint
 - recall 仅用于维护前确实缺失的原始证据；不要借此展开新的外部工作。完成维护后 Runtime 会重新计算压力并恢复适用的物理工具。
 - 若调用本轮未提供的工具，Runtime 会拒绝执行，并以对应 tool_call_id 返回明确的 rejected 工具结果。"#;
 
-const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context 已处于 critical，且本轮普通 context_tx 额度已经耗尽。为避免在不可执行的维护请求中循环，本次 Evaluation 强制进入 reply-only 阶段。只允许调用标准 reply 工具；请如实交付已完成状态、最近一次可靠验证和剩余工作。若存在 active Objective，这不会把 Objective 标记为完成；Supervisor 将按其持久状态决定后续。"#;
+const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context 已处于 critical，且本轮普通 context_tx 额度已经耗尽。为避免在不可执行的维护请求中循环，本次 Evaluation 强制进入 final-reply 阶段。请返回无工具的普通文本，如实交付已完成状态、最近一次可靠验证和剩余工作；若确认无需发送消息，可独占调用 no_reply。若存在 active Objective，这不会把 Objective 标记为完成；Supervisor 将按其持久状态决定后续。"#;
 
-const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请调用 reply 工具结束当前 Evaluation，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
-const REPLY_TOOL_NAME: &str = "reply";
-const MAX_REPLY_PROTOCOL_RETRIES: usize = 2;
+const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请返回普通文本结束当前 Evaluation、独占调用 no_reply，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
+const NO_REPLY_TOOL_NAME: &str = "no_reply";
+const MAX_RESPONSE_PROTOCOL_RETRIES: usize = 2;
 const TOOL_ARGUMENT_PREVIEW_CHARS: usize = 4_096;
 const EMPTY_RESPONSE_ERROR: &str = "既没有非空正文，也没有工具调用";
-const REPLY_PROTOCOL_ERROR: &str = "Reply protocol error：当前求值尚未结束。继续尚未完成的动作，并在终态调用且仅调用一次标准 reply 工具。需要向当前 Session 发送消息时使用 disposition=deliver 和非空 content；确认不需要发送消息时使用 disposition=suppress。普通文本和空响应都不是终态。";
-const BATCH_EVALUATION_PROMPT: &str = r#"Runtime 当前进行多 Session 合并求值。kernel.ready-sessions 中每个 Session 都有一条等待处理的 user/tool event；它们共享 Mind，但回复与动作必须保持 Session 路由。
-- 先读取 ready-sessions 中每个 session 的 id、work-item 和 input-preview；在调用工具前逐一确认每个 id 都有对应输出或动作。不要只处理列表最后一项。
-- 给用户的任何可见文本必须通过一次 session_output Function Calling 提交；不要把未路由正文写在 assistant content 中。
-- session_output.deliveries 可同时包含多个 Session。kind=final 表示该 Session 当前回合完成；kind=progress 只是中间进度。
-- 每个物理工具和 context_tx 调用都必须提供 Runtime 增加的 session_id 路由字段。Runtime 会在执行工具前移除该字段。
-- 同一 Session 不得同时 final 和调用工具；需要工具时可发送 progress，工具结果返回后再 final。
-- 可以为一个 Session final，同时为另一个 Session 调用工具。
-- 必须处理每个 ready Session。无法处理的 Session 也应 final 说明阻塞；若遗漏，Runtime 只会把遗漏项降级为独立求值。
-- context_tx 修改共享 Mind，不用于向用户发送消息。一个合并响应最多调用一次 context_tx。"#;
+const RESPONSE_PROTOCOL_ERROR: &str = "Response protocol error：当前 Evaluation 尚未产生合法终态。需要向当前 active Session 回复时，返回非空普通 assistant 文本且不调用工具；确认本次无需发送消息时，独占调用 no_reply。空响应、no_reply 与其他工具混用、或 no_reply 同时携带正文都是协议错误。";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContextTxReceipt {
     None,
@@ -300,95 +291,66 @@ struct EvaluationRoute {
     context_snapshot_version: Option<u64>,
 }
 
-#[derive(Debug, Deserialize)]
-struct SessionOutputArgs {
-    #[serde(alias = "outputs")]
-    deliveries: Vec<SessionDelivery>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct SessionDelivery {
-    session_id: String,
-    kind: String,
-    text: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ReplyArgs {
-    disposition: String,
-    content: Option<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ReplyDecision {
+enum TerminalDecision {
     Deliver(String),
-    Suppress,
+    NoReply,
 }
 
-impl ReplyDecision {
+impl TerminalDecision {
     fn disposition(&self) -> &'static str {
         match self {
             Self::Deliver(_) => "deliver",
-            Self::Suppress => "suppress",
+            Self::NoReply => "no_reply",
         }
     }
 }
 
-fn reply_tool_definition() -> crate::llm::ToolDefinition {
+fn no_reply_tool_definition() -> crate::llm::ToolDefinition {
     crate::llm::ToolDefinition {
-        name: REPLY_TOOL_NAME.to_string(),
-        description: "结束当前 single Session 求值的标准 IO 工具。需要发送消息时使用 deliver + 非空 content；确认无需发送消息时使用 suppress。reply 必须是终态响应中唯一的工具调用。".to_string(),
+        name: NO_REPLY_TOOL_NAME.to_string(),
+        description: "结束当前 Evaluation，并明确不向当前 active Session 发送消息。它只结束本次求值，不代表 Objective 完成，不取消后台任务。no_reply 必须是响应中唯一的工具调用，且不能同时返回正文。".to_string(),
         parameters: json!({
             "type": "object",
-            "properties": {
-                "disposition": {
-                    "type": "string",
-                    "enum": ["deliver", "suppress"]
-                },
-                "content": { "type": "string" }
-            },
-            "required": ["disposition"],
+            "properties": {},
             "additionalProperties": false
         }),
     }
 }
 
-fn classify_reply_response(
+fn classify_terminal_response(
     response: &crate::llm::Response,
-) -> Result<Option<ReplyDecision>, String> {
-    let reply_calls = response
+) -> Result<Option<TerminalDecision>, String> {
+    let no_reply_calls = response
         .tool_calls
         .iter()
-        .filter(|call| call.func_name == REPLY_TOOL_NAME)
+        .filter(|call| call.func_name == NO_REPLY_TOOL_NAME)
         .collect::<Vec<_>>();
-    if reply_calls.is_empty() {
+    if no_reply_calls.is_empty() {
         if response.tool_calls.is_empty() {
-            return Err("响应没有工具调用，因此缺少显式 reply 决策".to_string());
+            let content = response.content.trim();
+            if content.is_empty() {
+                return Err("响应既没有非空正文，也没有调用 no_reply".to_string());
+            }
+            return Ok(Some(TerminalDecision::Deliver(response.content.clone())));
         }
         return Ok(None);
     }
-    if reply_calls.len() != 1 || response.tool_calls.len() != 1 {
-        return Err("reply 必须在终态响应中独占且只调用一次".to_string());
+    if no_reply_calls.len() != 1 || response.tool_calls.len() != 1 {
+        return Err("no_reply 必须独占响应且只调用一次".to_string());
     }
-    let arguments: ReplyArgs = serde_json::from_str(&reply_calls[0].arguments)
-        .map_err(|error| format!("reply 参数 JSON 非法: {error}"))?;
-    match arguments.disposition.as_str() {
-        "deliver" => {
-            let content = arguments
-                .content
-                .filter(|content| !content.trim().is_empty())
-                .ok_or_else(|| "reply deliver 必须提供非空 content".to_string())?;
-            Ok(Some(ReplyDecision::Deliver(content)))
-        }
-        "suppress" => Ok(Some(ReplyDecision::Suppress)),
-        other => Err(format!("未知 reply disposition: {other}")),
+    if !response.content.trim().is_empty() {
+        return Err("no_reply 不能同时携带普通文本".to_string());
     }
-}
-
-struct MergedLaneWork {
-    deliveries: Vec<SessionDelivery>,
-    calls: Vec<crate::llm::ToolCallRepr>,
-    transcript_calls: Vec<crate::llm::ToolCall>,
+    let arguments: serde_json::Value = serde_json::from_str(&no_reply_calls[0].arguments)
+        .map_err(|error| format!("no_reply 参数 JSON 非法: {error}"))?;
+    if arguments
+        .as_object()
+        .is_none_or(|object| !object.is_empty())
+    {
+        return Err("no_reply 不接受参数".to_string());
+    }
+    Ok(Some(TerminalDecision::NoReply))
 }
 
 #[derive(Debug, Default)]
@@ -499,7 +461,6 @@ pub struct Orchestrator {
     context_engine: Arc<ContextEngine>,
     orchestrator_config: OrchestratorConfig,
     pub concurrency_semaphore: Arc<tokio::sync::Semaphore>,
-    session_locks: DashMap<String, Arc<Mutex<()>>>,
     read_turn_guards: DashMap<String, Arc<Mutex<ReadTurnGuard>>>,
     cancellation_epochs: DashMap<String, watch::Sender<u64>>,
     active_session_turns: DashMap<String, Arc<AtomicUsize>>,
@@ -509,8 +470,6 @@ pub struct Orchestrator {
     /// Cognitive Context. This cache is populated from every incoming routed
     /// event and is deliberately separate from the shared Mind state.
     session_contexts: DashMap<String, String>,
-    context_message_queues: DashMap<String, Arc<Mutex<Vec<Event>>>>,
-    context_batch_workers: DashMap<String, Arc<AtomicBool>>,
     delegation_start_lock: Mutex<()>,
     objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
     objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
@@ -602,15 +561,12 @@ impl Orchestrator {
             context_engine,
             orchestrator_config,
             concurrency_semaphore,
-            session_locks: DashMap::new(),
             read_turn_guards: DashMap::new(),
             cancellation_epochs: DashMap::new(),
             active_session_turns: DashMap::new(),
             evaluation_routes: DashMap::new(),
             cancelled_at: DashMap::new(),
             session_contexts: DashMap::new(),
-            context_message_queues: DashMap::new(),
-            context_batch_workers: DashMap::new(),
             delegation_start_lock: Mutex::new(()),
             objective_evaluations,
             objective_supervisor,
@@ -997,7 +953,7 @@ impl Orchestrator {
             .insert(session_id.clone(), context_id.clone());
 
         if event.event_type == TYPE_AGENT_CALL
-            && matches!(event.topic.as_str(), "chat/reply" | "chat/reply_suppressed")
+            && matches!(event.topic.as_str(), "chat/reply" | "chat/no_reply")
         {
             if self
                 .complete_delegation_if_needed(&event, &session_id)
@@ -1009,14 +965,6 @@ impl Orchestrator {
         }
         if event.event_type != TYPE_USER_MESSAGE && event.event_type != TYPE_TOOL_OUTPUT {
             return Ok(());
-        }
-
-        if matches!(
-            event.event_type.as_str(),
-            TYPE_USER_MESSAGE | TYPE_TOOL_OUTPUT
-        ) && self.orchestrator_config.merged_evaluation_enabled
-        {
-            return self.enqueue_context_message(context_id, event).await;
         }
 
         self.process_routed_event(event).await
@@ -1103,120 +1051,6 @@ impl Orchestrator {
         Ok(true)
     }
 
-    async fn enqueue_context_message(
-        &self,
-        context_id: String,
-        event: Event,
-    ) -> Result<(), DynError> {
-        let queue = self
-            .context_message_queues
-            .entry(context_id.clone())
-            .or_insert_with(|| Arc::new(Mutex::new(Vec::new())))
-            .clone();
-        queue.lock().await.push(event);
-        let worker = self
-            .context_batch_workers
-            .entry(context_id.clone())
-            .or_insert_with(|| Arc::new(AtomicBool::new(false)))
-            .clone();
-        if worker.swap(true, Ordering::SeqCst) {
-            return Ok(());
-        }
-
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(
-                self.orchestrator_config.session_batch_coalesce_ms,
-            ))
-            .await;
-            let drained = {
-                let mut guard = queue.lock().await;
-                let mut events = std::mem::take(&mut *guard);
-                events.sort_by_key(|event| event.timestamp);
-                events
-            };
-            if !drained.is_empty() {
-                let max_batch = self.orchestrator_config.max_sessions_per_evaluation.max(1);
-                let mut selected = Vec::new();
-                let mut selected_sessions = HashSet::new();
-                let mut deferred = Vec::new();
-                for event in drained {
-                    let session_id = event
-                        .payload
-                        .get("session_id")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    if session_id.is_empty()
-                        || selected_sessions.contains(&session_id)
-                        || selected.len() >= max_batch
-                    {
-                        deferred.push(event);
-                    } else {
-                        selected_sessions.insert(session_id);
-                        selected.push(event);
-                    }
-                }
-                if !deferred.is_empty() {
-                    queue.lock().await.extend(deferred);
-                }
-
-                if selected.len() > 1 {
-                    let handled = match self.run_merged_attempt(&context_id, &selected).await {
-                        Ok(handled) => handled,
-                        Err(error) => {
-                            tracing::warn!(
-                                context_id,
-                                ?error,
-                                "合并求值失败；全部 ready Session 降级为独立求值"
-                            );
-                            HashSet::new()
-                        }
-                    };
-                    let fallbacks = selected
-                        .into_iter()
-                        .filter(|event| {
-                            event
-                                .payload
-                                .get("session_id")
-                                .and_then(|value| value.as_str())
-                                .is_none_or(|session_id| !handled.contains(session_id))
-                        })
-                        .map(|mut event| {
-                            // The event was present in the merged request, but the
-                            // model produced no output or action for this Session.
-                            // A tool-output trigger must therefore bypass the usual
-                            // "already covered by a context inspection" dedupe check:
-                            // submitted is not the same as semantically handled.
-                            event
-                                .payload
-                                .insert("runtime_force_evaluation".to_string(), json!(true));
-                            self.process_routed_event(event)
-                        });
-                    for result in futures_util::future::join_all(fallbacks).await {
-                        if let Err(error) = result {
-                            tracing::error!(context_id, ?error, "独立降级求值失败");
-                        }
-                    }
-                } else if let Some(event) = selected.pop() {
-                    if let Err(error) = self.process_routed_event(event).await {
-                        tracing::error!(context_id, ?error, "单 Session 求值失败");
-                    }
-                }
-            }
-
-            // Change the worker flag while holding the queue lock. A producer
-            // therefore cannot observe `running=true`, enqueue, return, and
-            // leave an item stranded after this worker exits.
-            let guard = queue.lock().await;
-            if guard.is_empty() {
-                worker.store(false, Ordering::SeqCst);
-                break;
-            }
-            drop(guard);
-        }
-        Ok(())
-    }
-
     async fn process_routed_event(&self, event: Event) -> Result<(), DynError> {
         let Some(session_id) = event
             .payload
@@ -1258,7 +1092,7 @@ impl Orchestrator {
             self.orchestrator_config
                 .model_attempt_timeout_secs
                 .max(1)
-                .saturating_mul((MAX_REPLY_PROTOCOL_RETRIES + 1) as u64)
+                .saturating_mul((MAX_RESPONSE_PROTOCOL_RETRIES + 1) as u64)
                 .saturating_add(1),
         );
         let watchdog_attempt_id = format!(
@@ -1291,8 +1125,9 @@ impl Orchestrator {
                 return Ok(());
             }
             if let Some(supervisor) = &self.objective_supervisor {
-                supervisor.prepare_routed_event(&event).await?;
+                supervisor.prepare_routed_event(&event, &work_item.id).await?;
             }
+            self.bind_embedded_objective_route(&work_item.id, &event);
             self.run_attempt(&session_id, &work_item).await
             }) => Some(result),
             _ = cancellation.changed() => {
@@ -1332,6 +1167,7 @@ impl Orchestrator {
             .await
         {
             self.evaluation_routes.remove(&work_item.id);
+            self.objective_evaluations.remove_work_item(&work_item.id);
             if result.is_ok() {
                 return Err(error);
             }
@@ -1342,6 +1178,7 @@ impl Orchestrator {
             );
         }
         self.evaluation_routes.remove(&work_item.id);
+        self.objective_evaluations.remove_work_item(&work_item.id);
         result
     }
 
@@ -1492,7 +1329,7 @@ impl Orchestrator {
             .orchestrator_config
             .model_attempt_timeout_secs
             .max(1)
-            .saturating_mul((MAX_REPLY_PROTOCOL_RETRIES + 1) as u64)
+            .saturating_mul((MAX_RESPONSE_PROTOCOL_RETRIES + 1) as u64)
             .saturating_add(30)
             .max(
                 self.orchestrator_config
@@ -1845,445 +1682,6 @@ impl Orchestrator {
         }
     }
 
-    async fn run_merged_attempt(
-        &self,
-        context_id: &str,
-        triggers: &[Event],
-    ) -> Result<HashSet<String>, DynError> {
-        let mut session_ids = Vec::with_capacity(triggers.len());
-        let mut transcript_messages = Vec::new();
-        let mut delivered_output_ids = HashSet::new();
-        for trigger in triggers {
-            let session_id = required_payload_str(trigger, "session_id")?.to_string();
-            if let Some(cancelled_at) = self.cancelled_at.get(&session_id).map(|value| *value) {
-                if trigger.event_type == TYPE_USER_MESSAGE && trigger.timestamp > cancelled_at {
-                    self.cancelled_at.remove(&session_id);
-                } else {
-                    continue;
-                }
-            }
-            if trigger.event_type == TYPE_USER_MESSAGE {
-                self.read_turn_guards.remove(&session_id);
-            }
-            if trigger.event_type == TYPE_TOOL_OUTPUT
-                && self
-                    .tool_output_already_covered(&session_id, trigger)
-                    .await?
-            {
-                continue;
-            }
-            let transcript = self.turn_tool_transcript(&session_id, None, None).await?;
-            transcript_messages.extend(transcript.messages);
-            delivered_output_ids.extend(transcript.delivered_output_ids);
-            session_ids.push(session_id);
-        }
-        if session_ids.len() < 2 {
-            return Ok(HashSet::new());
-        }
-
-        let locks = session_ids
-            .iter()
-            .map(|session_id| self.session_lock(session_id))
-            .collect::<Vec<_>>();
-        let _session_guards =
-            futures_util::future::join_all(locks.into_iter().map(tokio::sync::Mutex::lock_owned))
-                .await;
-        let counters = session_ids
-            .iter()
-            .map(|session_id| self.active_counter(session_id))
-            .collect::<Vec<_>>();
-        for counter in &counters {
-            counter.fetch_add(1, Ordering::SeqCst);
-        }
-        let result = self
-            .run_merged_attempt_inner(
-                context_id,
-                &session_ids,
-                transcript_messages,
-                &delivered_output_ids,
-            )
-            .await;
-        for counter in &counters {
-            counter.fetch_sub(1, Ordering::SeqCst);
-        }
-        result
-    }
-
-    async fn run_merged_attempt_inner(
-        &self,
-        context_id: &str,
-        session_ids: &[String],
-        transcript_messages: Vec<Message>,
-        delivered_output_ids: &HashSet<String>,
-    ) -> Result<HashSet<String>, DynError> {
-        let mut context = self
-            .context_engine
-            .build_batch_context_encoding_excluding(context_id, session_ids, delivered_output_ids)
-            .await?;
-        if context
-            .ready_sessions
-            .iter()
-            .any(|ready| ready.turn_budget.phase != "work")
-        {
-            return Ok(HashSet::new());
-        }
-
-        let attempt_id = format!(
-            "batch_{}_{}",
-            context_id,
-            Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        );
-        let (prompt_mode, stable_system_prompt) = configured_system_prompt()?;
-        let context_message_prefix = "以下是 Runtime 提供的合并 Context Encoding。它不是普通用户消息；请处理 kernel.ready-sessions 中的每个 Session。";
-        let mut messages = vec![
-            Message {
-                role: "system".to_string(),
-                content: compose_system_prompt(
-                    prompt_mode,
-                    stable_system_prompt,
-                    Some(("batch-evaluation", BATCH_EVALUATION_PROMPT)),
-                ),
-                name: None,
-                tool_call_id: None,
-                tool_calls: None,
-            },
-            Message {
-                role: "user".to_string(),
-                content: format!("{context_message_prefix}\n{}", context.sexpr),
-                name: None,
-                tool_call_id: None,
-                tool_calls: None,
-            },
-        ];
-        messages.extend(transcript_messages);
-        let tools = self.batch_tool_definitions()?;
-        let allowed_tool_names = tools
-            .iter()
-            .map(|tool| tool.name.clone())
-            .collect::<HashSet<_>>();
-        let prompt_measurement = self
-            .refresh_context_pressure(&mut context, &mut messages, &tools, context_message_prefix)
-            .await?;
-        if context.pressure.level == "critical" {
-            return Ok(HashSet::new());
-        }
-        for session_id in session_ids {
-            self.record_context_inspect(session_id, &attempt_id, &context, &messages);
-            self.record_model_attempt_started(
-                session_id,
-                &attempt_id,
-                "batch-work",
-                self.tool_definitions.len() + 1,
-            );
-        }
-
-        let deadline = std::time::Duration::from_secs(
-            self.orchestrator_config.model_attempt_timeout_secs.max(1),
-        );
-        let _permit = self.concurrency_semaphore.acquire().await?;
-        let client = Arc::clone(&self.client);
-        let worker_attempt_id = attempt_id.clone();
-        let (model_tx, model_rx) = tokio::sync::oneshot::channel();
-        std::thread::Builder::new()
-            .name(format!("morphz-llm-{worker_attempt_id}"))
-            .spawn(move || {
-                let result = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|error| Box::new(error) as DynError)
-                    .and_then(|runtime| {
-                        runtime.block_on(client.create_completion_measured(
-                            messages,
-                            tools,
-                            prompt_measurement,
-                        ))
-                    });
-                let _ = model_tx.send(result);
-            })?;
-        let response = match tokio::time::timeout(deadline, model_rx).await {
-            Ok(Ok(Ok(response))) => response,
-            Ok(Ok(Err(error))) => return Err(error),
-            Ok(Err(error)) => return Err(error.into()),
-            Err(error) => return Err(error.into()),
-        };
-        self.record_batch_assistant_call(context_id, session_ids, &attempt_id, &response)
-            .await?;
-        let response_tool_calls = response.tool_calls.len();
-        let response_content_nonempty = !response.content.trim().is_empty();
-        let context_tx_allowed = context
-            .ready_sessions
-            .iter()
-            .filter(|ready| ready.turn_budget.context_tx_available)
-            .map(|ready| ready.session_id.clone())
-            .collect::<HashSet<_>>();
-        let handled = self
-            .apply_merged_response(
-                context_id,
-                session_ids,
-                &context_tx_allowed,
-                &allowed_tool_names,
-                &attempt_id,
-                response,
-            )
-            .await?;
-        self.record_batch_evaluation(
-            context_id,
-            session_ids,
-            &handled,
-            &attempt_id,
-            response_tool_calls,
-            response_content_nonempty,
-        )
-        .await?;
-        Ok(handled)
-    }
-
-    fn batch_tool_definitions(&self) -> Result<Vec<crate::llm::ToolDefinition>, DynError> {
-        let mut definitions = self.tool_definitions.clone();
-        for definition in &mut definitions {
-            let object = definition
-                .parameters
-                .as_object_mut()
-                .ok_or_else(|| format!("工具 '{}' parameters 不是 object", definition.name))?;
-            let properties = object
-                .entry("properties")
-                .or_insert_with(|| json!({}))
-                .as_object_mut()
-                .ok_or_else(|| format!("工具 '{}' properties 不是 object", definition.name))?;
-            properties.insert(
-                "session_id".to_string(),
-                json!({
-                    "type": "string",
-                    "description": "该工具动作所属的 ready Session ID；Runtime 用于路由工具结果"
-                }),
-            );
-            let required = object
-                .entry("required")
-                .or_insert_with(|| json!([]))
-                .as_array_mut()
-                .ok_or_else(|| format!("工具 '{}' required 不是 array", definition.name))?;
-            if !required
-                .iter()
-                .any(|value| value.as_str() == Some("session_id"))
-            {
-                required.push(json!("session_id"));
-            }
-        }
-        definitions.push(crate::llm::ToolDefinition {
-            name: "session_output".to_string(),
-            description:
-                "向一个或多个 ready Session 发送进度或最终回复。这是外部 IO，不修改 Mind。"
-                    .to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "deliveries": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "session_id": { "type": "string" },
-                                "kind": { "type": "string", "enum": ["progress", "final"] },
-                                "text": { "type": "string" }
-                            },
-                            "required": ["session_id", "kind", "text"]
-                        }
-                    }
-                },
-                "required": ["deliveries"]
-            }),
-        });
-        Ok(definitions)
-    }
-
-    async fn apply_merged_response(
-        &self,
-        context_id: &str,
-        session_ids: &[String],
-        context_tx_allowed: &HashSet<String>,
-        allowed_tool_names: &HashSet<String>,
-        attempt_id: &str,
-        response: crate::llm::Response,
-    ) -> Result<HashSet<String>, DynError> {
-        let ready = session_ids.iter().cloned().collect::<HashSet<_>>();
-        let mut deliveries = HashMap::<String, Vec<SessionDelivery>>::new();
-        let mut calls = HashMap::<String, Vec<crate::llm::ToolCallRepr>>::new();
-        let mut transcript_calls = HashMap::<String, Vec<crate::llm::ToolCall>>::new();
-        let mut context_tx_count = 0usize;
-
-        for call in response.tool_calls {
-            if call.func_name == "session_output" {
-                let args: SessionOutputArgs = serde_json::from_str(&call.arguments)?;
-                for delivery in args.deliveries {
-                    if !ready.contains(&delivery.session_id)
-                        || !matches!(delivery.kind.as_str(), "progress" | "final")
-                        || delivery.text.trim().is_empty()
-                    {
-                        return Ok(HashSet::new());
-                    }
-                    deliveries
-                        .entry(delivery.session_id.clone())
-                        .or_default()
-                        .push(delivery);
-                }
-                continue;
-            }
-
-            let original_arguments = call.arguments.clone();
-            let mut arguments: serde_json::Value = serde_json::from_str(&call.arguments)?;
-            let object = arguments
-                .as_object_mut()
-                .ok_or("合并求值的工具参数必须是 JSON object")?;
-            let session_id = object
-                .remove("session_id")
-                .and_then(|value| value.as_str().map(ToOwned::to_owned))
-                .ok_or("合并求值的工具调用缺少 session_id")?;
-            if !ready.contains(&session_id) {
-                return Ok(HashSet::new());
-            }
-            if call.func_name == "context_tx" {
-                context_tx_count += 1;
-            }
-            transcript_calls
-                .entry(session_id.clone())
-                .or_default()
-                .push(crate::llm::ToolCall {
-                    id: call.id.clone(),
-                    r#type: call.r#type.clone(),
-                    function: crate::llm::FunctionCall {
-                        name: call.func_name.clone(),
-                        arguments: original_arguments,
-                    },
-                });
-            calls
-                .entry(session_id)
-                .or_default()
-                .push(crate::llm::ToolCallRepr {
-                    id: call.id,
-                    r#type: call.r#type,
-                    func_name: call.func_name,
-                    arguments: serde_json::to_string(&arguments)?,
-                });
-        }
-        if context_tx_count > 1 {
-            return Ok(HashSet::new());
-        }
-
-        let lane_futures = session_ids.iter().map(|session_id| {
-            let lane_deliveries = deliveries.remove(session_id).unwrap_or_default();
-            let lane_calls = calls.remove(session_id).unwrap_or_default();
-            let lane_transcript_calls = transcript_calls.remove(session_id).unwrap_or_default();
-            let lane = MergedLaneWork {
-                deliveries: lane_deliveries,
-                calls: lane_calls,
-                transcript_calls: lane_transcript_calls,
-            };
-            async move {
-                let result = self
-                    .apply_merged_lane(
-                        context_id,
-                        context_tx_allowed,
-                        allowed_tool_names,
-                        attempt_id,
-                        session_id,
-                        lane,
-                    )
-                    .await;
-                (session_id.clone(), result)
-            }
-        });
-        let mut handled = HashSet::new();
-        for (session_id, result) in futures_util::future::join_all(lane_futures).await {
-            match result {
-                Ok(true) => {
-                    handled.insert(session_id);
-                }
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::error!(session_id, ?error, "batch Session lane 执行失败");
-                }
-            }
-        }
-        Ok(handled)
-    }
-
-    async fn apply_merged_lane(
-        &self,
-        context_id: &str,
-        context_tx_allowed: &HashSet<String>,
-        allowed_tool_names: &HashSet<String>,
-        attempt_id: &str,
-        session_id: &str,
-        lane: MergedLaneWork,
-    ) -> Result<bool, DynError> {
-        if self.cancelled_at.contains_key(session_id) {
-            return Ok(true);
-        }
-        let finals = lane
-            .deliveries
-            .iter()
-            .filter(|delivery| delivery.kind == "final")
-            .collect::<Vec<_>>();
-        if finals.len() > 1 || (!finals.is_empty() && !lane.calls.is_empty()) {
-            return Ok(false);
-        }
-        if let Some(final_delivery) = finals.first() {
-            let parent = self.parent_session_for(context_id, session_id).await?;
-            self.publish_reply(
-                session_id,
-                attempt_id,
-                final_delivery.text.clone(),
-                parent.as_deref(),
-            )
-            .await?;
-            return Ok(true);
-        }
-
-        for delivery in lane
-            .deliveries
-            .iter()
-            .filter(|delivery| delivery.kind == "progress")
-        {
-            self.publish_progress(session_id, attempt_id, delivery.text.clone())
-                .await?;
-        }
-        if lane.calls.is_empty() {
-            return Ok(false);
-        }
-        let lane_response = crate::llm::Response {
-            content: String::new(),
-            tool_calls: lane.calls,
-        };
-        if let Err(error) = self
-            .execute_tool_calls(
-                session_id,
-                &format!("{}_{}", attempt_id, session_id),
-                lane_response,
-                "batch-work",
-                ToolExecutionOptions {
-                    context_tx_allowed: context_tx_allowed.contains(session_id),
-                    wake_on_output: true,
-                    transcript_tool_calls: Some(lane.transcript_calls),
-                    allowed_tool_names: allowed_tool_names.clone(),
-                    record_assistant_call: true,
-                },
-            )
-            .await
-        {
-            let parent = self.parent_session_for(context_id, session_id).await?;
-            self.publish_runtime_failure(
-                session_id,
-                attempt_id,
-                "batch_tool_execution",
-                error.as_ref(),
-                parent.as_deref(),
-            )
-            .await?;
-        }
-        Ok(true)
-    }
-
     async fn parent_session_for(
         &self,
         context_id: &str,
@@ -2294,94 +1692,6 @@ impl Orchestrator {
             .build_context_encoding(context_id, session_id, &HashSet::new())
             .await?
             .parent_session_id)
-    }
-
-    async fn record_batch_evaluation(
-        &self,
-        context_id: &str,
-        session_ids: &[String],
-        handled: &HashSet<String>,
-        attempt_id: &str,
-        response_tool_calls: usize,
-        response_content_nonempty: bool,
-    ) -> Result<(), DynError> {
-        let Some(route_session_id) = session_ids.first() else {
-            return Ok(());
-        };
-        let fallback_sessions = session_ids
-            .iter()
-            .filter(|session_id| !handled.contains(*session_id))
-            .cloned()
-            .collect::<Vec<_>>();
-        let handled_sessions = session_ids
-            .iter()
-            .filter(|session_id| handled.contains(*session_id))
-            .cloned()
-            .collect::<Vec<_>>();
-        self.bus
-            .publish(Event::new(
-                format!(
-                    "batch_evaluation_{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
-                "Runtime-Orchestrator".to_string(),
-                "runtime_control".to_string(),
-                "runtime/batch_evaluation".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(context_id)),
-                    ("session_id".to_string(), json!(route_session_id)),
-                    ("attempt_id".to_string(), json!(attempt_id)),
-                    ("ready_sessions".to_string(), json!(session_ids)),
-                    ("handled_sessions".to_string(), json!(handled_sessions)),
-                    ("fallback_sessions".to_string(), json!(fallback_sessions)),
-                    (
-                        "response_tool_calls".to_string(),
-                        json!(response_tool_calls),
-                    ),
-                    (
-                        "response_content_nonempty".to_string(),
-                        json!(response_content_nonempty),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ))
-            .await?;
-        Ok(())
-    }
-
-    async fn record_batch_assistant_call(
-        &self,
-        context_id: &str,
-        session_ids: &[String],
-        attempt_id: &str,
-        response: &crate::llm::Response,
-    ) -> Result<(), DynError> {
-        let Some(route_session_id) = session_ids.first() else {
-            return Ok(());
-        };
-        self.bus
-            .publish(Event::new(
-                format!(
-                    "batch_assistant_call_{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
-                "Agent-Morphz".to_string(),
-                TYPE_AGENT_CALL.to_string(),
-                "runtime/batch_assistant_call".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(context_id)),
-                    ("session_id".to_string(), json!(route_session_id)),
-                    ("attempt_id".to_string(), json!(attempt_id)),
-                    ("ready_sessions".to_string(), json!(session_ids)),
-                    ("text".to_string(), json!(response.content)),
-                    ("tool_calls".to_string(), json!(response.tool_calls)),
-                ]
-                .into_iter()
-                .collect(),
-            ))
-            .await?;
-        Ok(())
     }
 
     async fn request_model_completion(
@@ -2578,33 +1888,28 @@ impl Orchestrator {
 
         if assistant_call
             .payload
-            .get("terminal_reply")
+            .get("terminal_outcome")
             .and_then(|value| value.as_bool())
             .unwrap_or(false)
         {
-            let decision = classify_reply_response(&response)
+            let decision = classify_terminal_response(&response)
                 .map_err(|error| -> DynError { error.into() })?
-                .ok_or_else(|| {
-                    format!(
-                        "Work Item '{}' 的持久化 terminal reply 不包含合法 reply 调用",
-                        work_item.id
-                    )
-                })?;
+                .ok_or_else(|| format!("Work Item '{}' 的持久化终态响应不合法", work_item.id))?;
             let parent = self
                 .parent_session_for(&work_item.context_id, session_id)
                 .await?;
             tracing::info!(
                 work_item_id = %work_item.id,
                 disposition = decision.disposition(),
-                "从持久化 assistant_call 恢复终态回复"
+                "从持久化 assistant_call 恢复 Evaluation 终态"
             );
             match decision {
-                ReplyDecision::Deliver(content) => {
+                TerminalDecision::Deliver(content) => {
                     self.publish_reply(session_id, &work_item.id, content, parent.as_deref())
                         .await?;
                 }
-                ReplyDecision::Suppress => {
-                    self.publish_reply_suppressed(session_id, &work_item.id, parent.as_deref())
+                TerminalDecision::NoReply => {
+                    self.publish_no_reply(session_id, &work_item.id, parent.as_deref())
                         .await?;
                 }
             }
@@ -2750,7 +2055,7 @@ impl Orchestrator {
         if !objective_control_available {
             measurement_tools.retain(|tool| tool.name != "objective_update");
         }
-        measurement_tools.push(reply_tool_definition());
+        measurement_tools.push(no_reply_tool_definition());
         let prompt_measurement = self
             .refresh_context_pressure(
                 &mut context,
@@ -2874,7 +2179,7 @@ impl Orchestrator {
                 tools.retain(|tool| tool.name != "context_tx");
             }
         }
-        tools.push(reply_tool_definition());
+        tools.push(no_reply_tool_definition());
         let allowed_tool_names = tools
             .iter()
             .map(|tool| tool.name.clone())
@@ -2882,11 +2187,11 @@ impl Orchestrator {
         self.record_context_inspect(session_id, &attempt_id, &context, &messages);
         let mut protocol_messages = messages;
         let mut protocol_errors = 0usize;
-        let (response, reply_decision) = loop {
+        let (response, terminal_decision) = loop {
             let model_attempt_id = if protocol_errors == 0 {
                 attempt_id.clone()
             } else {
-                format!("{attempt_id}_reply_retry_{protocol_errors}")
+                format!("{attempt_id}_response_retry_{protocol_errors}")
             };
             self.record_model_attempt_started(
                 session_id,
@@ -2909,16 +2214,16 @@ impl Orchestrator {
                 Ok(response) => response,
                 Err(error) if error.to_string().contains(EMPTY_RESPONSE_ERROR) => {
                     protocol_errors += 1;
-                    self.record_reply_protocol_error(
+                    self.record_response_protocol_error(
                         session_id,
                         &model_attempt_id,
                         protocol_errors,
                         "模型返回空响应",
                     )
                     .await?;
-                    if protocol_errors > MAX_REPLY_PROTOCOL_RETRIES {
+                    if protocol_errors > MAX_RESPONSE_PROTOCOL_RETRIES {
                         return self
-                            .publish_reply_protocol_failure(
+                            .publish_response_protocol_failure(
                                 session_id,
                                 &model_attempt_id,
                                 context.parent_session_id.as_deref(),
@@ -2927,7 +2232,7 @@ impl Orchestrator {
                     }
                     protocol_messages.push(Message {
                         role: "user".to_string(),
-                        content: REPLY_PROTOCOL_ERROR.to_string(),
+                        content: RESPONSE_PROTOCOL_ERROR.to_string(),
                         name: None,
                         tool_call_id: None,
                         tool_calls: None,
@@ -2947,9 +2252,9 @@ impl Orchestrator {
                 }
             };
 
-            let classification = classify_reply_response(&response).and_then(|decision| {
+            let classification = classify_terminal_response(&response).and_then(|decision| {
                 if decision.is_none() && effective_phase == "final-reply" {
-                    Err("final-reply 阶段只允许标准 reply 工具".to_string())
+                    Err("final-reply 阶段必须返回普通文本或独占调用 no_reply".to_string())
                 } else {
                     Ok(decision)
                 }
@@ -2958,16 +2263,16 @@ impl Orchestrator {
                 Ok(decision) => break (response, decision),
                 Err(reason) => {
                     protocol_errors += 1;
-                    self.record_reply_protocol_error(
+                    self.record_response_protocol_error(
                         session_id,
                         &model_attempt_id,
                         protocol_errors,
                         &reason,
                     )
                     .await?;
-                    if protocol_errors > MAX_REPLY_PROTOCOL_RETRIES {
+                    if protocol_errors > MAX_RESPONSE_PROTOCOL_RETRIES {
                         return self
-                            .publish_reply_protocol_failure(
+                            .publish_response_protocol_failure(
                                 session_id,
                                 &model_attempt_id,
                                 context.parent_session_id.as_deref(),
@@ -2985,7 +2290,7 @@ impl Orchestrator {
                     }
                     protocol_messages.push(Message {
                         role: "user".to_string(),
-                        content: format!("{reason}。{REPLY_PROTOCOL_ERROR}"),
+                        content: format!("{reason}。{RESPONSE_PROTOCOL_ERROR}"),
                         name: None,
                         tool_call_id: None,
                         tool_calls: None,
@@ -2994,8 +2299,8 @@ impl Orchestrator {
             }
         };
 
-        if let Some(decision) = reply_decision {
-            self.record_terminal_reply_call(
+        if let Some(decision) = terminal_decision {
+            self.record_terminal_response(
                 session_id,
                 &attempt_id,
                 effective_phase,
@@ -3004,7 +2309,7 @@ impl Orchestrator {
             )
             .await?;
             return match decision {
-                ReplyDecision::Deliver(content) => {
+                TerminalDecision::Deliver(content) => {
                     self.publish_reply(
                         session_id,
                         &attempt_id,
@@ -3013,8 +2318,8 @@ impl Orchestrator {
                     )
                     .await
                 }
-                ReplyDecision::Suppress => {
-                    self.publish_reply_suppressed(
+                TerminalDecision::NoReply => {
+                    self.publish_no_reply(
                         session_id,
                         &attempt_id,
                         context.parent_session_id.as_deref(),
@@ -3049,10 +2354,10 @@ impl Orchestrator {
             return Ok(());
         }
 
-        unreachable!("无工具响应应由 Reply 协议纠错或熔断处理")
+        unreachable!("无工具响应应由终态协议分类、纠错或熔断处理")
     }
 
-    async fn record_reply_protocol_error(
+    async fn record_response_protocol_error(
         &self,
         session_id: &str,
         attempt_id: &str,
@@ -3065,26 +2370,29 @@ impl Orchestrator {
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
             ("error_count".to_string(), json!(error_count)),
-            ("max_retries".to_string(), json!(MAX_REPLY_PROTOCOL_RETRIES)),
+            (
+                "max_retries".to_string(),
+                json!(MAX_RESPONSE_PROTOCOL_RETRIES),
+            ),
             ("reason".to_string(), json!(reason)),
         ];
         self.append_evaluation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
                 format!(
-                    "reply_protocol_error_{}",
+                    "response_protocol_error_{}",
                     Utc::now().timestamp_nanos_opt().unwrap_or(0)
                 ),
                 "Runtime-Orchestrator".to_string(),
                 "runtime_control".to_string(),
-                "runtime/reply_protocol_error".to_string(),
+                "runtime/response_protocol_error".to_string(),
                 payload.into_iter().collect(),
             ))
             .await?;
         Ok(())
     }
 
-    async fn publish_reply_protocol_failure(
+    async fn publish_response_protocol_failure(
         &self,
         session_id: &str,
         attempt_id: &str,
@@ -3097,38 +2405,38 @@ impl Orchestrator {
             ("attempt_id".to_string(), json!(attempt_id)),
             (
                 "invalid_responses".to_string(),
-                json!(MAX_REPLY_PROTOCOL_RETRIES + 1),
+                json!(MAX_RESPONSE_PROTOCOL_RETRIES + 1),
             ),
         ];
         self.append_evaluation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
                 format!(
-                    "reply_protocol_fused_{}",
+                    "response_protocol_fused_{}",
                     Utc::now().timestamp_nanos_opt().unwrap_or(0)
                 ),
                 "Runtime-Orchestrator".to_string(),
                 "runtime_error".to_string(),
-                "runtime/reply_protocol_fused".to_string(),
+                "runtime/response_protocol_fused".to_string(),
                 payload.into_iter().collect(),
             ))
             .await?;
         self.publish_reply(
             session_id,
             attempt_id,
-            "模型连续三次没有作出合法的 reply(deliver/suppress) 决策，Runtime 已安全熔断本回合；已提交的 Mind、文件修改和 Ledger 均已保留。".to_string(),
+            "模型连续三次没有返回合法的普通文本或 no_reply，Runtime 已安全熔断本回合；已提交的 Mind、文件修改和 Ledger 均已保留。".to_string(),
             parent_session_id,
         )
         .await
     }
 
-    async fn record_terminal_reply_call(
+    async fn record_terminal_response(
         &self,
         session_id: &str,
         attempt_id: &str,
         phase: &str,
         response: &crate::llm::Response,
-        decision: &ReplyDecision,
+        decision: &TerminalDecision,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let tool_calls = response
@@ -3150,9 +2458,9 @@ impl Orchestrator {
             ("phase".to_string(), json!(phase)),
             ("text".to_string(), json!(response.content)),
             ("tool_calls".to_string(), json!(tool_calls)),
-            ("terminal_reply".to_string(), json!(true)),
+            ("terminal_outcome".to_string(), json!(true)),
             (
-                "reply_disposition".to_string(),
+                "outcome_disposition".to_string(),
                 json!(decision.disposition()),
             ),
         ];
@@ -3169,7 +2477,7 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn publish_reply_suppressed(
+    async fn publish_no_reply(
         &self,
         session_id: &str,
         attempt_id: &str,
@@ -3181,7 +2489,7 @@ impl Orchestrator {
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
-            ("disposition".to_string(), json!("suppress")),
+            ("disposition".to_string(), json!("no_reply")),
             ("text".to_string(), json!("")),
             (
                 "active_background_tasks".to_string(),
@@ -3192,20 +2500,17 @@ impl Orchestrator {
             payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
         }
         self.append_evaluation_route(attempt_id, &mut payload);
-        self.append_objective_evaluation_route(session_id, &mut payload);
+        self.append_objective_evaluation_route(attempt_id, &mut payload);
         let event = Event::new(
-            format!(
-                "reply_suppressed_{}",
-                Utc::now().timestamp_nanos_opt().unwrap_or(0)
-            ),
+            format!("no_reply_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
             "Agent-Morphz".to_string(),
             TYPE_AGENT_CALL.to_string(),
-            "chat/reply_suppressed".to_string(),
+            "chat/no_reply".to_string(),
             payload.into_iter().collect(),
         );
-        if self.commit_and_dispatch_reply(attempt_id, &event).await? {
+        if self.commit_and_dispatch_outcome(attempt_id, &event).await? {
             if let Some(supervisor) = &self.objective_supervisor {
-                supervisor.terminal_reply(&event).await?;
+                supervisor.terminal_outcome(&event).await?;
             }
         }
         Ok(())
@@ -3230,7 +2535,7 @@ impl Orchestrator {
             payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
         }
         self.append_evaluation_route(attempt_id, &mut payload);
-        self.append_objective_evaluation_route(session_id, &mut payload);
+        self.append_objective_evaluation_route(attempt_id, &mut payload);
         let event = Event::new(
             format!("reply_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
             "Agent-Morphz".to_string(),
@@ -3238,15 +2543,15 @@ impl Orchestrator {
             "chat/reply".to_string(),
             payload.into_iter().collect(),
         );
-        if self.commit_and_dispatch_reply(attempt_id, &event).await? {
+        if self.commit_and_dispatch_outcome(attempt_id, &event).await? {
             if let Some(supervisor) = &self.objective_supervisor {
-                supervisor.terminal_reply(&event).await?;
+                supervisor.terminal_outcome(&event).await?;
             }
         }
         Ok(())
     }
 
-    async fn commit_and_dispatch_reply(
+    async fn commit_and_dispatch_outcome(
         &self,
         attempt_id: &str,
         event: &Event,
@@ -3258,21 +2563,21 @@ impl Orchestrator {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Evaluation reply 需要持久化 SessionStore")?;
+            .ok_or("Evaluation outcome 需要持久化 SessionStore")?;
         match session_store
-            .commit_evaluation_reply(&route.root_turn_id, event)
+            .commit_evaluation_outcome(&route.work_item_id, event)
             .await?
         {
-            ReplyCommit::Committed => {
+            EvaluationOutcomeCommit::Committed => {
                 self.bus.dispatch_persisted(event.clone()).await?;
                 Ok(true)
             }
-            ReplyCommit::Existing { event_id } => {
+            EvaluationOutcomeCommit::Existing { event_id } => {
                 tracing::warn!(
-                    root_turn_id = %route.root_turn_id,
+                    work_item_id = %route.work_item_id,
                     duplicate_event_id = %event.id,
                     committed_event_id = %event_id,
-                    "抑制同一 Root Turn 的重复终态回复"
+                    "抑制同一 Evaluation Work Item 的重复终态输出"
                 );
                 Ok(false)
             }
@@ -3281,10 +2586,10 @@ impl Orchestrator {
 
     fn append_objective_evaluation_route(
         &self,
-        session_id: &str,
+        attempt_id: &str,
         payload: &mut Vec<(String, serde_json::Value)>,
     ) {
-        let Some(active) = self.objective_evaluations.get(session_id) else {
+        let Some(active) = self.objective_evaluations.get_for_work_item(attempt_id) else {
             return;
         };
         payload.extend([
@@ -3295,6 +2600,36 @@ impl Orchestrator {
             ),
             ("objective_revision".to_string(), json!(active.revision)),
         ]);
+    }
+
+    fn bind_embedded_objective_route(&self, work_item_id: &str, event: &Event) {
+        let Some(objective_id) = event
+            .payload
+            .get("objective_id")
+            .and_then(|value| value.as_str())
+        else {
+            return;
+        };
+        let Some(evaluation_id) = event
+            .payload
+            .get("objective_evaluation_id")
+            .and_then(|value| value.as_str())
+        else {
+            return;
+        };
+        self.objective_evaluations.bind_work_item(
+            work_item_id,
+            crate::objective::ActiveObjectiveEvaluation {
+                objective_id: objective_id.to_string(),
+                evaluation_id: evaluation_id.to_string(),
+                revision: event
+                    .payload
+                    .get("objective_revision")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or_default(),
+                started_at: event.timestamp,
+            },
+        );
     }
 
     async fn publish_progress(
@@ -3465,7 +2800,7 @@ impl Orchestrator {
             rejected_context_tx_ids.extend(context_tx_calls.into_iter().map(|call| call.id));
             context_tx_batch_status = Some("budget-exhausted".to_string());
             context_tx_batch_error = Some(format!(
-                "执行拒绝: CONTEXT_TX_BUDGET_EXHAUSTED：当前用户回合的 Context transaction 已达到 {} 次上限。物理工具与 reply 仍然可用；请使用现有 Mind 继续必要工作，避免连续 housekeeping transaction。",
+                "执行拒绝: CONTEXT_TX_BUDGET_EXHAUSTED：当前用户回合的 Context transaction 已达到 {} 次上限。物理工具、普通文本和 no_reply 仍然可用；请使用现有 Mind 继续必要工作，避免连续 housekeeping transaction。",
                 self.orchestrator_config.max_context_transactions_per_turn.max(1)
             ));
         } else {
@@ -3994,7 +3329,17 @@ impl Orchestrator {
         }
         for task in tasks {
             match task.await {
-                Ok(output) => outputs.push((output, false)),
+                Ok(mut output) => {
+                    if let Some(attempt_id) = output
+                        .payload
+                        .get("attempt_id")
+                        .and_then(|value| value.as_str())
+                        .map(ToOwned::to_owned)
+                    {
+                        self.stamp_objective_evaluation_route(&attempt_id, &mut output.payload);
+                    }
+                    outputs.push((output, false));
+                }
                 Err(error) => tracing::error!(?error, "工具任务 join 失败"),
             }
         }
@@ -4096,20 +3441,13 @@ impl Orchestrator {
         });
     }
 
-    fn session_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
-        self.session_locks
-            .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
-    }
-
     fn evaluation_route(&self, attempt_id: &str) -> Option<EvaluationRoute> {
         self.evaluation_routes
             .get(attempt_id)
             .map(|route| route.clone())
             .or_else(|| {
                 attempt_id
-                    .split_once("_reply_retry_")
+                    .split_once("_response_retry_")
                     .and_then(|(base, _)| {
                         self.evaluation_routes.get(base).map(|route| route.clone())
                     })
@@ -4142,6 +3480,32 @@ impl Orchestrator {
         if !payload.iter().any(|(key, _)| key == "caused_by") {
             payload.push(("caused_by".to_string(), json!(route.trigger_event_id)));
         }
+        if let Some(active) = self.objective_evaluations.get_for_work_item(attempt_id) {
+            payload.extend([
+                ("objective_id".to_string(), json!(active.objective_id)),
+                (
+                    "objective_evaluation_id".to_string(),
+                    json!(active.evaluation_id),
+                ),
+                ("objective_revision".to_string(), json!(active.revision)),
+            ]);
+        }
+    }
+
+    fn stamp_objective_evaluation_route(
+        &self,
+        attempt_id: &str,
+        payload: &mut serde_json::Map<String, serde_json::Value>,
+    ) {
+        let Some(active) = self.objective_evaluations.get_for_work_item(attempt_id) else {
+            return;
+        };
+        payload.insert("objective_id".to_string(), json!(active.objective_id));
+        payload.insert(
+            "objective_evaluation_id".to_string(),
+            json!(active.evaluation_id),
+        );
+        payload.insert("objective_revision".to_string(), json!(active.revision));
     }
 
     fn context_id_for_session(&self, session_id: &str) -> Result<String, DynError> {
@@ -4520,11 +3884,11 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        baseline_system_prompt, classify_reply_response, cognitive_sexpr_vm_system_prompt,
+        baseline_system_prompt, classify_terminal_response, cognitive_sexpr_vm_system_prompt,
         compact_context_inspect_for_persistence, compose_system_prompt, extend_exec_output_facts,
         render_system_contract, semantic_sexpr_vm_system_prompt,
         should_force_final_for_maintenance, tool_call_activity_preview, ReadTurnGuard,
-        ReplyDecision, SystemPromptMode, AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        SystemPromptMode, TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::event::Event;
 
@@ -4580,7 +3944,8 @@ mod tests {
             "(operator bind",
             "(operator if",
             "(operator reply",
-            "reply no-reply",
+            "普通 assistant 文本",
+            "no_reply",
             "runtime-contracts",
             "reality-contract-v1",
             "claims-no-stronger-than-sources",
@@ -4599,7 +3964,7 @@ mod tests {
         let composed = compose_system_prompt(
             SystemPromptMode::SemanticSexprVm,
             stable,
-            Some(("final-reply", "只调用 reply")),
+            Some(("final-reply", "返回普通文本")),
         );
         assert!(composed.starts_with("(system-evaluation"));
         assert!(composed.contains("(runtime-directive"));
@@ -4609,46 +3974,41 @@ mod tests {
         let cognitive = compose_system_prompt(
             SystemPromptMode::CognitiveSexprVm,
             cognitive_sexpr_vm_system_prompt(),
-            Some(("final-reply", "只调用 reply")),
+            Some(("final-reply", "返回普通文本")),
         );
-        assert!(cognitive.ends_with("只调用 reply"));
+        assert!(cognitive.ends_with("返回普通文本"));
     }
 
     #[test]
-    fn reply_classifier_requires_an_explicit_exclusive_terminal_decision() {
+    fn response_classifier_accepts_plain_text_and_exclusive_no_reply() {
         let plain = crate::llm::Response {
             content: "done".to_string(),
             tool_calls: Vec::new(),
         };
-        assert!(classify_reply_response(&plain).is_err());
+        assert_eq!(
+            classify_terminal_response(&plain),
+            Ok(Some(TerminalDecision::Deliver("done".to_string())))
+        );
 
-        let deliver = crate::llm::Response {
+        let no_reply = crate::llm::Response {
             content: String::new(),
             tool_calls: vec![crate::llm::ToolCallRepr {
-                id: "reply-1".to_string(),
+                id: "no-reply-1".to_string(),
                 r#type: "function".to_string(),
-                func_name: "reply".to_string(),
-                arguments: json!({"disposition":"deliver","content":"done"}).to_string(),
+                func_name: "no_reply".to_string(),
+                arguments: json!({}).to_string(),
             }],
         };
         assert_eq!(
-            classify_reply_response(&deliver),
-            Ok(Some(ReplyDecision::Deliver("done".to_string())))
+            classify_terminal_response(&no_reply),
+            Ok(Some(TerminalDecision::NoReply))
         );
 
-        let suppress = crate::llm::Response {
-            content: String::new(),
-            tool_calls: vec![crate::llm::ToolCallRepr {
-                id: "reply-2".to_string(),
-                r#type: "function".to_string(),
-                func_name: "reply".to_string(),
-                arguments: json!({"disposition":"suppress"}).to_string(),
-            }],
+        let mixed = crate::llm::Response {
+            content: "not silent".to_string(),
+            tool_calls: no_reply.tool_calls,
         };
-        assert_eq!(
-            classify_reply_response(&suppress),
-            Ok(Some(ReplyDecision::Suppress))
-        );
+        assert!(classify_terminal_response(&mixed).is_err());
     }
 
     #[test]

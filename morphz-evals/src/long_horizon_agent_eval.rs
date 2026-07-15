@@ -2684,7 +2684,7 @@ async fn build_eval_context_view(
 }
 
 fn is_physical_tool_name(name: &str) -> bool {
-    !matches!(name, "context_tx" | "reply" | "session_output")
+    !matches!(name, "context_tx" | "no_reply")
 }
 
 fn apply_injections(workspace: &Path, injections: &[FileInjection]) -> Result<(), DynError> {
@@ -3158,8 +3158,7 @@ mod tests {
     #[test]
     fn runtime_control_tools_are_not_counted_as_physical_work() {
         assert!(!is_physical_tool_name("context_tx"));
-        assert!(!is_physical_tool_name("reply"));
-        assert!(!is_physical_tool_name("session_output"));
+        assert!(!is_physical_tool_name("no_reply"));
         assert!(is_physical_tool_name("read"));
         assert!(is_physical_tool_name("write"));
         assert!(is_physical_tool_name("exec"));

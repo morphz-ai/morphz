@@ -1,12 +1,12 @@
-# Morphz 三版本 System Prompt 与显式 Reply 协议 v1
+# Morphz 三版本 System Prompt 与历史显式 Reply 实验 v1
 
 日期：2026-07-13
 Context Protocol：v11
-状态：已进入生产 Runtime；`semantic_sexpr_vm` 为默认候选，旧两版保留回归入口
+状态：三个 Prompt Profile 仍可运行；本文的 `reply(deliver/suppress)` Function Calling 已于 Protocol v16 被普通文本、`no_reply` 和 `send_message` 取代。当前协议见 [单 Session 求值与响应路由协议 v1](./morphz_response_routing_protocol_v1.md)。
 
 ## 1. 设计结论
 
-Morphz 将 System Prompt 分为三个可选择的版本，但三者共享完全相同的 Runtime、Context Encoding、物理工具、`context_tx` DSL 和标准 Reply 协议：
+Morphz 将 System Prompt 分为三个可选择的版本，三者共享完全相同的 Runtime、Context Encoding、物理工具、`context_tx` DSL 和当前响应协议：
 
 | `MORPHZ_SYSTEM_PROMPT_MODE` | 定位 | Prompt 结构 |
 |---|---|---|
@@ -14,7 +14,7 @@ Morphz 将 System Prompt 分为三个可选择的版本，但三者共享完全�
 | `cognitive_sexpr_vm` | 第二版认知 VM 身份 | 外部自然语言定义 Cognitive S-Expression Machine，再复用公共执行规则 |
 | `semantic_sexpr_vm` | 第三版语义 SExpr VM，当前默认 | 整个稳定 System Prompt 是一个 SExpr；算子节点内部使用自然语言定义语义 |
 
-这三个版本比较的是模型如何理解身份、Context 和求值过程，而不是比较不同的工具或终止机制。标准 `reply` Function Calling 是通用 Runtime 原语，不属于第三版 Prompt 私有能力。
+这三个版本比较的是模型如何理解身份、Context 和求值过程，而不是比较不同的工具或终止机制。SExpr 的 `(reply content)` 是普通文本回复的语义算子，不是 Function Calling 工具。
 
 未设置环境变量时使用：
 
@@ -69,36 +69,25 @@ MORPHZ_SYSTEM_PROMPT_MODE=agent_owned_context
 
 ```lisp
 (reply content)
-(reply no-reply)
 ```
 
-`reply` 是求值终态，但物理执行统一映射到标准 Function Calling，见下一节。
+`reply` 把 content 作为无工具普通 assistant 文本返回当前 active Session。明确静默时使用 Runtime 的 `no_reply` 工具。
 
 `process` 属于声明层：它定义可复用的命名过程、参数、局部作用域和返回值，不作为第七个基础算子。
 
-## 3. 通用 Reply Runtime 协议
+## 3. 当前通用 Response Runtime 协议
 
-single Session 求值始终暴露一个标准 `reply` 工具：
-
-```json
-{"disposition":"deliver","content":"交付给当前 Session 的消息"}
-{"disposition":"suppress"}
-```
+每次求值只有一个 active Session：
 
 规则如下：
 
-1. `deliver` 必须提供非空 `content`，Runtime 将其发布为 `chat/reply`；
-2. `suppress` 明确结束当前求值，但不向 Session 投递消息；Runtime 只记录 `chat/reply_suppressed` 审计事件；
-3. `reply` 必须是终态响应中唯一的工具调用，不能与物理工具或 `context_tx` 混合；
-4. 带物理工具但不带 `reply` 的响应是合法中间状态，工具执行后继续循环；
-5. 普通文本或空响应都不是终态；Runtime 返回紧凑协议错误，要求继续未完成过程并调用 `reply`；
-6. Runtime 允许两次纠错；第三次仍不合法时发布 `runtime/reply_protocol_fused` 并安全熔断，防止无响应循环；
-7. Reply 纠错是模型请求，会记录 `runtime/model_attempt_started` 和 `runtime/reply_protocol_error`；
-8. `kernel.turn-control.phase=soft-checkpoint` 是默认每 90 次模型求值出现一次的复盘提示，不限制工具、不强制 `reply`，下一次求值自动恢复 `work`；只有 Context 已处于 `critical` 且维护事务预算耗尽等明确的物理不可执行状态，Runtime 才进入安全熔断。
-
-`suppress` 是一个可观测决定，不等于模型什么都没有返回。对于被委派的子 Session，`suppress` 仍会确定性结束子任务并向父级产生空结果状态，避免委派永久悬挂；它不会向外部 Session 伪造一条可见文本。
-
-batch 合并求值仍使用带明确 `session_id` 的 `session_output`，因为一次模型响应可能同时覆盖多个 Session。遗漏的 Session 会降级到 single 求值，并使用上述标准 `reply`。
+1. 无工具非空普通文本发布为当前 active Session 的 `chat/reply`；
+2. `no_reply` 独占调用表示显式静默，并记录 `chat/no_reply`；
+3. `send_message` 向同一 Agent 的另一 Session 发送消息，但不结束当前 Evaluation；
+4. 带物理工具或 `context_tx` 的响应是中间状态，工具执行后继续循环；
+5. 空响应、`no_reply` 携带正文或与其他工具混用都是协议错误；
+6. Runtime 允许两次纠错；第三次仍不合法时发布 `runtime/response_protocol_fused` 并安全熔断；
+7. 每个请求只求值一个 active Session，不存在 batch 合并回复。
 
 ## 4. 第三版 Prompt 的结构
 
@@ -220,6 +209,6 @@ batch 合并求值仍使用带明确 `session_id` 的 `session_output`，因为�
 
 第一次试跑还暴露了两项旧评测器兼容问题，因此被标记为无效诊断样本：评分器仍把
 `session_id` 当作 `context_id` 读取 Mind，并把新的 Runtime `reply` 算作物理工具。评测器现已按
-Session 的真实挂载解析 Context，同时排除 `context_tx/reply/session_output` 三种 Runtime 控制工具；对应自动化回归已补齐。有效原始报告保存在：
+Session 的真实挂载解析 Context；当时的评测器排除了 v11 的 Runtime 控制工具。当前评测应只把 `context_tx/no_reply` 视为控制调用，并把 `send_message` 计为真实跨 Session IO。对应自动化回归已补齐。有效原始报告保存在：
 
 `/private/tmp/morphz-semantic-vm-transfer-regression-valid/autonomous_transfer_v1-20260713T083323.698Z-68126/run_report.json`

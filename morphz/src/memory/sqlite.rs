@@ -2,12 +2,12 @@ use crate::config::MemoryConfig;
 use crate::event::Event;
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, DelegationRecord, DelegationStatus,
-    EvaluationWorkItemMutation, EvaluationWorkItemRecord, EvaluationWorkItemStatus, EventStore,
-    MessageClaim, NewAgent, NewCognitiveContext, NewDelegation, NewEvaluationWorkItem,
-    NewObjective, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, ReplyCommit, SessionAttentionState,
-    SessionAttentionUpdate, SessionMountKind, SessionRecord, SessionStatus, SessionStore,
-    SessionUpdate,
+    EvaluationOutcomeCommit, EvaluationWorkItemMutation, EvaluationWorkItemRecord,
+    EvaluationWorkItemStatus, EventStore, MessageClaim, NewAgent, NewCognitiveContext,
+    NewDelegation, NewEvaluationWorkItem, NewObjective, NewSession, ObjectiveMutation,
+    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
+    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionRecord, SessionStatus,
+    SessionStore, SessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -207,19 +207,18 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_evaluation_work_items_root_turn
             ON evaluation_work_items(root_turn_id, updated_at);
 
-        CREATE TABLE IF NOT EXISTS evaluation_replies (
+        CREATE TABLE IF NOT EXISTS evaluation_outcomes (
+            work_item_id TEXT NOT NULL PRIMARY KEY,
             session_id TEXT NOT NULL,
-            root_turn_id TEXT NOT NULL,
             disposition TEXT NOT NULL,
             event_id TEXT NOT NULL UNIQUE,
             created_at TEXT NOT NULL,
-            PRIMARY KEY(session_id, root_turn_id),
+            FOREIGN KEY(work_item_id) REFERENCES evaluation_work_items(id) ON DELETE CASCADE,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
-
         let mount_columns = sqlx::query("PRAGMA table_info(session_mounts)")
             .fetch_all(&pool)
             .await?;
@@ -1181,16 +1180,16 @@ impl SessionStore for SqliteStore {
         })
     }
 
-    async fn commit_evaluation_reply(
+    async fn commit_evaluation_outcome(
         &self,
-        root_turn_id: &str,
+        work_item_id: &str,
         event: &Event,
-    ) -> Result<ReplyCommit, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<EvaluationOutcomeCommit, Box<dyn std::error::Error + Send + Sync>> {
         let session_id = event
             .payload
             .get("session_id")
             .and_then(JsonValue::as_str)
-            .ok_or("Reply Event 缺少 session_id")?;
+            .ok_or("Evaluation outcome Event 缺少 session_id")?;
         let disposition = event
             .payload
             .get("disposition")
@@ -1199,25 +1198,23 @@ impl SessionStore for SqliteStore {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
-            "INSERT OR IGNORE INTO evaluation_replies (session_id, root_turn_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO evaluation_outcomes (work_item_id, session_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(work_item_id) DO NOTHING",
         )
+        .bind(work_item_id)
         .bind(session_id)
-        .bind(root_turn_id)
         .bind(disposition)
         .bind(&event.id)
         .bind(now)
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 0 {
-            let existing = sqlx::query(
-                "SELECT event_id FROM evaluation_replies WHERE session_id = ? AND root_turn_id = ?",
-            )
-            .bind(session_id)
-            .bind(root_turn_id)
-            .fetch_one(&mut *tx)
-            .await?;
+            let existing =
+                sqlx::query("SELECT event_id FROM evaluation_outcomes WHERE work_item_id = ?")
+                    .bind(work_item_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
             tx.commit().await?;
-            return Ok(ReplyCommit::Existing {
+            return Ok(EvaluationOutcomeCommit::Existing {
                 event_id: existing.get("event_id"),
             });
         }
@@ -1232,7 +1229,7 @@ impl SessionStore for SqliteStore {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(ReplyCommit::Committed)
+        Ok(EvaluationOutcomeCommit::Committed)
     }
 
     async fn claim_message(

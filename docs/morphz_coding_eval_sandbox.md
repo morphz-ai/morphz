@@ -1,7 +1,7 @@
 # Morphz Coding Eval Sandbox
 
 当前每个 Coding Eval 夹具都会生成独立且不同的 `context_id`、`session_id`、SQLite 和 Workspace，
-并把两项路由同时写入环境变量。Ledger 评分将 `reply/context_tx/session_output` 视为 Runtime 控制调用，
+并把两项路由同时写入环境变量。Ledger 评分将 `context_tx/no_reply` 视为 Runtime 控制调用，
 不会把它们误计为代码开发的物理 work Attempt。
 
 Coding Eval Sandbox 为每次真实模型代码修复测试创建独立、可审计的运行环境，避免把主仓库直接暴露给 Agent 或让测试命令以无限制宿主 Shell 运行。
