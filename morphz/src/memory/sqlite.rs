@@ -2,16 +2,17 @@ use crate::config::MemoryConfig;
 use crate::event::Event;
 use crate::memory::{
     ActivationOutcomeCommit, AgentBootstrapRecord, AgentRecord, CognitiveContextRecord,
-    DelegationRecord, DelegationStatus, DeliveryStatus, EventStore, MessageClaim, NewAgent,
-    NewCognitiveContext, NewDelegation, NewObjective, NewRuntimeTimer, NewScheduledIntent,
-    NewSession, NewThreadActivation, NewThreadSignal, NewWorkThread, ObjectiveMutation,
-    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduledIntentRecord,
-    ScheduledIntentStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
-    SessionRecord, SessionStatus, SessionStore, SessionUpdate, SignalOutboxRecord,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadLifecycle, ThreadSignalRecord, ThreadSignalStatus, TimerStore, WorkThreadKind,
-    WorkThreadMutation, WorkThreadRecord,
+    DelegationRecord, DelegationStatus, DeliveryStatus, EventStore, ExecutionJobFilter,
+    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim, NewAgent, NewCognitiveContext,
+    NewDelegation, NewExecutionJob, NewObjective, NewRuntimeTimer, NewScheduledIntent, NewSession,
+    NewThreadActivation, NewThreadSignal, NewWorkThread, ObjectiveMutation, ObjectiveRecord,
+    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind,
+    RuntimeTimerRecord, RuntimeTimerStatus, ScheduledIntentRecord, ScheduledIntentStatus,
+    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionRecord, SessionStatus,
+    SessionStore, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadLifecycle, ThreadSignalRecord,
+    ThreadSignalStatus, TimerStore, WorkThreadKind, WorkThreadMutation, WorkThreadRecord,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -320,6 +321,62 @@ impl SqliteStore {
             ON work_threads(context_id, status, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_work_threads_session_delivery
             ON work_threads(session_id, delivery_status, updated_at);
+
+        CREATE TABLE IF NOT EXISTS execution_jobs (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            activation_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            context_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            tool_call_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            request_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'queued', 'waiting_approval', 'running', 'succeeded',
+                'failed', 'cancelled', 'lost'
+            )),
+            retry_safety TEXT NOT NULL CHECK(retry_safety IN (
+                'idempotent', 'reconcile_required', 'at_most_once'
+            )),
+            claimed_by TEXT,
+            claim_token TEXT,
+            lease_expires_at TEXT,
+            heartbeat_at TEXT,
+            approval_ref TEXT,
+            side_effect_started_at TEXT,
+            cancel_requested_at TEXT,
+            cancel_reason TEXT,
+            progress_ref TEXT,
+            result_event_id TEXT,
+            result_refs_json TEXT NOT NULL DEFAULT '[]',
+            error TEXT,
+            exit_code INTEGER,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            updated_at TEXT NOT NULL,
+            finished_at TEXT,
+            UNIQUE(activation_id, tool_call_id),
+            FOREIGN KEY(activation_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
+            FOREIGN KEY(thread_id) REFERENCES work_threads(id) ON DELETE CASCADE,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_execution_jobs_queue
+            ON execution_jobs(status, created_at, id);
+        CREATE INDEX IF NOT EXISTS idx_execution_jobs_context_status
+            ON execution_jobs(context_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_execution_jobs_thread_status
+            ON execution_jobs(thread_id, status, created_at, id);
+        CREATE INDEX IF NOT EXISTS idx_execution_jobs_lease
+            ON execution_jobs(status, lease_expires_at, id);
+        CREATE TRIGGER IF NOT EXISTS execution_jobs_terminal_status_is_irreversible
+        BEFORE UPDATE OF status ON execution_jobs
+        WHEN OLD.status IN ('succeeded', 'failed', 'cancelled', 'lost')
+             AND NEW.status <> OLD.status
+        BEGIN
+            SELECT RAISE(ABORT, 'execution job terminal status is irreversible');
+        END;
 
         CREATE TABLE IF NOT EXISTS thread_signals (
             id TEXT PRIMARY KEY,
@@ -853,6 +910,86 @@ fn signal_outbox_from_row(
         created_at: parse_time(&row.get::<String, _>("created_at")),
         resolved_at: row
             .get::<Option<String>, _>("resolved_at")
+            .as_deref()
+            .map(parse_time),
+    })
+}
+
+fn parse_execution_job_status(
+    value: &str,
+) -> Result<ExecutionJobStatus, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "queued" => Ok(ExecutionJobStatus::Queued),
+        "waiting_approval" => Ok(ExecutionJobStatus::WaitingApproval),
+        "running" => Ok(ExecutionJobStatus::Running),
+        "succeeded" => Ok(ExecutionJobStatus::Succeeded),
+        "failed" => Ok(ExecutionJobStatus::Failed),
+        "cancelled" => Ok(ExecutionJobStatus::Cancelled),
+        "lost" => Ok(ExecutionJobStatus::Lost),
+        other => Err(format!("未知 Execution Job status：'{other}'").into()),
+    }
+}
+
+fn parse_execution_retry_safety(
+    value: &str,
+) -> Result<ExecutionRetrySafety, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "idempotent" => Ok(ExecutionRetrySafety::Idempotent),
+        "reconcile_required" => Ok(ExecutionRetrySafety::ReconcileRequired),
+        "at_most_once" => Ok(ExecutionRetrySafety::AtMostOnce),
+        other => Err(format!("未知 Execution Job retry safety：'{other}'").into()),
+    }
+}
+
+fn execution_job_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ExecutionJobRecord {
+        id: row.get("id"),
+        revision: sqlite_u64(row, "revision")?,
+        activation_id: row.get("activation_id"),
+        thread_id: row.get("thread_id"),
+        agent_id: row.get("agent_id"),
+        context_id: row.get("context_id"),
+        session_id: row.get("session_id"),
+        tool_call_id: row.get("tool_call_id"),
+        tool_name: row.get("tool_name"),
+        request: serde_json::from_str(&row.get::<String, _>("request_json"))?,
+        status: parse_execution_job_status(&row.get::<String, _>("status"))?,
+        retry_safety: parse_execution_retry_safety(&row.get::<String, _>("retry_safety"))?,
+        claimed_by: row.get("claimed_by"),
+        claim_token: row.get("claim_token"),
+        lease_expires_at: row
+            .get::<Option<String>, _>("lease_expires_at")
+            .as_deref()
+            .map(parse_time),
+        heartbeat_at: row
+            .get::<Option<String>, _>("heartbeat_at")
+            .as_deref()
+            .map(parse_time),
+        approval_ref: row.get("approval_ref"),
+        side_effect_started_at: row
+            .get::<Option<String>, _>("side_effect_started_at")
+            .as_deref()
+            .map(parse_time),
+        cancel_requested_at: row
+            .get::<Option<String>, _>("cancel_requested_at")
+            .as_deref()
+            .map(parse_time),
+        cancel_reason: row.get("cancel_reason"),
+        progress_ref: row.get("progress_ref"),
+        result_event_id: row.get("result_event_id"),
+        result_refs: serde_json::from_str(&row.get::<String, _>("result_refs_json"))?,
+        error: row.get("error"),
+        exit_code: row.get("exit_code"),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        started_at: row
+            .get::<Option<String>, _>("started_at")
+            .as_deref()
+            .map(parse_time),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+        finished_at: row
+            .get::<Option<String>, _>("finished_at")
             .as_deref()
             .map(parse_time),
     })
@@ -3397,6 +3534,24 @@ fn parse_time(s: &str) -> DateTime<Utc> {
         .expect("Morphz 数据库时间戳必须是 RFC3339")
 }
 
+async fn execution_job_mutation_failure(
+    store: &SqliteStore,
+    id: &str,
+    expected_revision: u64,
+    reason: impl Into<String>,
+) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(match store.get_execution_job(id).await? {
+        Some(current) if current.revision != expected_revision => {
+            ExecutionJobMutation::Conflict { current }
+        }
+        Some(current) => ExecutionJobMutation::Rejected {
+            current,
+            reason: reason.into(),
+        },
+        None => ExecutionJobMutation::NotFound,
+    })
+}
+
 #[async_trait::async_trait]
 impl TimerStore for SqliteStore {
     async fn upsert_runtime_timer(
@@ -3621,6 +3776,499 @@ impl TimerStore for SqliteStore {
 }
 
 #[async_trait::async_trait]
+impl ExecutionJobStore for SqliteStore {
+    async fn create_execution_job(
+        &self,
+        job: NewExecutionJob,
+    ) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>> {
+        for (field, value) in [
+            ("id", job.id.as_str()),
+            ("activation_id", job.activation_id.as_str()),
+            ("thread_id", job.thread_id.as_str()),
+            ("agent_id", job.agent_id.as_str()),
+            ("context_id", job.context_id.as_str()),
+            ("session_id", job.session_id.as_str()),
+            ("tool_call_id", job.tool_call_id.as_str()),
+            ("tool_name", job.tool_name.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!("Execution Job {field} 不能为空").into());
+            }
+        }
+        let request_json = serde_json::to_string(&job.request)?;
+        let status = if job.requires_approval {
+            ExecutionJobStatus::WaitingApproval
+        } else {
+            ExecutionJobStatus::Queued
+        };
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+
+        // A Job must route back through the same causal identity as both its
+        // Activation and stable Thread. Foreign keys alone cannot prove this.
+        let causal = sqlx::query(
+            r#"SELECT activations.agent_id AS activation_agent_id,
+                      activations.context_id AS activation_context_id,
+                      activations.session_id AS activation_session_id,
+                      activations.root_turn_id AS activation_root_turn_id,
+                      threads.agent_id AS thread_agent_id,
+                      threads.context_id AS thread_context_id,
+                      threads.session_id AS thread_session_id,
+                      threads.root_turn_id AS thread_root_turn_id
+               FROM thread_activations activations, work_threads threads
+               WHERE activations.id = ? AND threads.id = ?"#,
+        )
+        .bind(&job.activation_id)
+        .bind(&job.thread_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let causal = causal.ok_or("Execution Job 引用的 Activation 或 Thread 不存在")?;
+        let activation_agent_id: String = causal.get("activation_agent_id");
+        let activation_context_id: String = causal.get("activation_context_id");
+        let activation_session_id: String = causal.get("activation_session_id");
+        let activation_root_turn_id: String = causal.get("activation_root_turn_id");
+        let thread_agent_id: String = causal.get("thread_agent_id");
+        let thread_context_id: String = causal.get("thread_context_id");
+        let thread_session_id: String = causal.get("thread_session_id");
+        let thread_root_turn_id: String = causal.get("thread_root_turn_id");
+        if activation_agent_id != job.agent_id
+            || thread_agent_id != job.agent_id
+            || activation_context_id != job.context_id
+            || thread_context_id != job.context_id
+            || activation_session_id != job.session_id
+            || thread_session_id != job.session_id
+            || activation_root_turn_id != thread_root_turn_id
+        {
+            return Err("Execution Job 的 Agent/Context/Session/Root Turn 因果边界不一致".into());
+        }
+
+        sqlx::query(
+            r#"INSERT OR IGNORE INTO execution_jobs
+               (id, revision, activation_id, thread_id, agent_id, context_id,
+                session_id, tool_call_id, tool_name, request_json, status,
+                retry_safety, result_refs_json, created_at, updated_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)"#,
+        )
+        .bind(&job.id)
+        .bind(&job.activation_id)
+        .bind(&job.thread_id)
+        .bind(&job.agent_id)
+        .bind(&job.context_id)
+        .bind(&job.session_id)
+        .bind(&job.tool_call_id)
+        .bind(&job.tool_name)
+        .bind(&request_json)
+        .bind(status.as_str())
+        .bind(job.retry_safety.as_str())
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query(
+            "SELECT * FROM execution_jobs WHERE activation_id = ? AND tool_call_id = ?",
+        )
+        .bind(&job.activation_id)
+        .bind(&job.tool_call_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or("Execution Job 创建失败：ID 或因果唯一键已被其他记录占用")?;
+        let existing = execution_job_from_row(&row)?;
+        if existing.id != job.id
+            || existing.thread_id != job.thread_id
+            || existing.agent_id != job.agent_id
+            || existing.context_id != job.context_id
+            || existing.session_id != job.session_id
+            || existing.tool_name != job.tool_name
+            || existing.request != job.request
+            || existing.retry_safety != job.retry_safety
+        {
+            return Err(format!(
+                "Execution Job 因果键 ('{}', '{}') 已被不同请求占用",
+                job.activation_id, job.tool_call_id
+            )
+            .into());
+        }
+        tx.commit().await?;
+        Ok(existing)
+    }
+
+    async fn get_execution_job(
+        &self,
+        id: &str,
+    ) -> Result<Option<ExecutionJobRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(execution_job_from_row)
+            .transpose()
+    }
+
+    async fn list_execution_jobs(
+        &self,
+        filter: ExecutionJobFilter,
+    ) -> Result<Vec<ExecutionJobRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if filter.limit == Some(0) {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::<sqlx::Sqlite>::new("SELECT * FROM execution_jobs WHERE 1=1");
+        if let Some(context_id) = filter.context_id {
+            query.push(" AND context_id = ").push_bind(context_id);
+        }
+        if let Some(session_id) = filter.session_id {
+            query.push(" AND session_id = ").push_bind(session_id);
+        }
+        if let Some(thread_id) = filter.thread_id {
+            query.push(" AND thread_id = ").push_bind(thread_id);
+        }
+        if let Some(activation_id) = filter.activation_id {
+            query.push(" AND activation_id = ").push_bind(activation_id);
+        }
+        if let Some(status) = filter.status {
+            query.push(" AND status = ").push_bind(status.as_str());
+        } else if !filter.include_terminal {
+            query.push(" AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')");
+        }
+        query.push(" ORDER BY created_at, id");
+        if let Some(limit) = filter.limit {
+            let limit = i64::try_from(limit)
+                .map_err(|_| "Execution Job 查询上限超出 SQLite INTEGER 范围")?;
+            query.push(" LIMIT ").push_bind(limit);
+        }
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(execution_job_from_row).collect()
+    }
+
+    async fn claim_execution_job(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        worker_id: &str,
+        claim_token: &str,
+        lease_expires_at: DateTime<Utc>,
+        approval_ref: Option<&str>,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if worker_id.trim().is_empty() || claim_token.trim().is_empty() {
+            return Err("Execution Job worker_id/claim_token 不能为空".into());
+        }
+        let now = Utc::now();
+        if lease_expires_at <= now {
+            return Err("Execution Job claim lease 必须在未来".into());
+        }
+        let Some(current) = self.get_execution_job(id).await? else {
+            return Ok(ExecutionJobMutation::NotFound);
+        };
+        if current.revision != expected_revision {
+            return Ok(ExecutionJobMutation::Conflict { current });
+        }
+        if current.cancel_requested_at.is_some() {
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "已请求取消的 Execution Job 不能再 claim".to_string(),
+            });
+        }
+        match current.status {
+            ExecutionJobStatus::Queued => {}
+            ExecutionJobStatus::WaitingApproval => {
+                if approval_ref.is_none_or(|value| value.trim().is_empty()) {
+                    return Ok(ExecutionJobMutation::Rejected {
+                        current,
+                        reason: "waiting_approval Job 必须携带非空 approval_ref".to_string(),
+                    });
+                }
+            }
+            _ => {
+                return Ok(ExecutionJobMutation::Rejected {
+                    current,
+                    reason: "只有 queued/waiting_approval Job 可以被 claim".to_string(),
+                });
+            }
+        }
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Execution Job revision 超出 SQLite INTEGER 范围")?;
+        let now_text = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let lease_text = lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE execution_jobs
+               SET revision = revision + 1, status = 'running', claimed_by = ?,
+                   claim_token = ?, lease_expires_at = ?, heartbeat_at = ?,
+                   approval_ref = COALESCE(?, approval_ref),
+                   started_at = COALESCE(started_at, ?), updated_at = ?
+               WHERE id = ? AND revision = ?
+                 AND status IN ('queued', 'waiting_approval')
+                 AND cancel_requested_at IS NULL"#,
+        )
+        .bind(worker_id)
+        .bind(claim_token)
+        .bind(lease_text)
+        .bind(&now_text)
+        .bind(approval_ref)
+        .bind(&now_text)
+        .bind(&now_text)
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            return execution_job_mutation_failure(
+                self,
+                id,
+                u64::try_from(expected_revision).expect("validated revision"),
+                "Execution Job claim 前置条件不再成立",
+            )
+            .await;
+        }
+        Ok(ExecutionJobMutation::Updated(
+            self.get_execution_job(id)
+                .await?
+                .ok_or("Execution Job claim 后无法读取")?,
+        ))
+    }
+
+    async fn heartbeat_execution_job(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        lease_expires_at: DateTime<Utc>,
+        side_effect_started_at: Option<DateTime<Utc>>,
+        progress_ref: Option<&str>,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if claim_token.trim().is_empty() {
+            return Err("Execution Job claim_token 不能为空".into());
+        }
+        let now = Utc::now();
+        if lease_expires_at <= now {
+            return Err("Execution Job heartbeat lease 必须在未来".into());
+        }
+        let expected_sql = i64::try_from(expected_revision)
+            .map_err(|_| "Execution Job revision 超出 SQLite INTEGER 范围")?;
+        let now_text = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let lease_text = lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let side_effect_started_at = side_effect_started_at
+            .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let result = sqlx::query(
+            r#"UPDATE execution_jobs
+               SET revision = revision + 1, lease_expires_at = ?, heartbeat_at = ?,
+                   side_effect_started_at = COALESCE(side_effect_started_at, ?),
+                   progress_ref = COALESCE(?, progress_ref), updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'running'
+                 AND claim_token = ?"#,
+        )
+        .bind(lease_text)
+        .bind(&now_text)
+        .bind(side_effect_started_at)
+        .bind(progress_ref)
+        .bind(&now_text)
+        .bind(id)
+        .bind(expected_sql)
+        .bind(claim_token)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            return execution_job_mutation_failure(
+                self,
+                id,
+                expected_revision,
+                "Execution Job heartbeat 需要当前 running claim token",
+            )
+            .await;
+        }
+        Ok(ExecutionJobMutation::Updated(
+            self.get_execution_job(id)
+                .await?
+                .ok_or("Execution Job heartbeat 后无法读取")?,
+        ))
+    }
+
+    async fn request_cancel_execution_job(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: Option<&str>,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(current) = self.get_execution_job(id).await? else {
+            return Ok(ExecutionJobMutation::NotFound);
+        };
+        if current.revision != expected_revision {
+            return Ok(ExecutionJobMutation::Conflict { current });
+        }
+        if current.status.is_terminal() {
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "Execution Job 终态不可请求取消".to_string(),
+            });
+        }
+        let reason = reason.map(|value| value.chars().take(10_000).collect::<String>());
+        if current.cancel_requested_at.is_some() && current.cancel_reason == reason {
+            return Ok(ExecutionJobMutation::Updated(current));
+        }
+        let expected_sql = i64::try_from(expected_revision)
+            .map_err(|_| "Execution Job revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE execution_jobs
+               SET revision = revision + 1,
+                   cancel_requested_at = COALESCE(cancel_requested_at, ?),
+                   cancel_reason = ?, updated_at = ?
+               WHERE id = ? AND revision = ?
+                 AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')"#,
+        )
+        .bind(&now)
+        .bind(reason)
+        .bind(&now)
+        .bind(id)
+        .bind(expected_sql)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            return execution_job_mutation_failure(
+                self,
+                id,
+                expected_revision,
+                "Execution Job cancel 前置条件不再成立",
+            )
+            .await;
+        }
+        Ok(ExecutionJobMutation::Updated(
+            self.get_execution_job(id)
+                .await?
+                .ok_or("Execution Job cancel request 后无法读取")?,
+        ))
+    }
+
+    async fn finish_execution_job(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        claim_token: Option<&str>,
+        terminal: ExecutionJobTerminal,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if !terminal.status.is_terminal() {
+            return Err("Execution Job finish 只能提交终态".into());
+        }
+        let Some(current) = self.get_execution_job(id).await? else {
+            return Ok(ExecutionJobMutation::NotFound);
+        };
+        if current.revision != expected_revision {
+            return Ok(ExecutionJobMutation::Conflict { current });
+        }
+        if current.status.is_terminal() {
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "Execution Job 终态不可逆".to_string(),
+            });
+        }
+        let worker_terminal = matches!(
+            terminal.status,
+            ExecutionJobStatus::Succeeded | ExecutionJobStatus::Failed
+        );
+        if worker_terminal
+            && (current.status != ExecutionJobStatus::Running
+                || claim_token.is_none_or(|token| {
+                    token.is_empty() || current.claim_token.as_deref() != Some(token)
+                }))
+        {
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "succeeded/failed 需要当前 running claim token".to_string(),
+            });
+        }
+        if worker_terminal && current.cancel_requested_at.is_some() {
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "已请求取消的 running Job 只能确认 cancelled，不能再提交 succeeded/failed"
+                    .to_string(),
+            });
+        }
+        if terminal.status == ExecutionJobStatus::Lost
+            && current.status != ExecutionJobStatus::Running
+        {
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "只有 running Job 可以被 reconcile 为 lost".to_string(),
+            });
+        }
+        if terminal.status == ExecutionJobStatus::Cancelled
+            && current.status == ExecutionJobStatus::Running
+            && current.cancel_requested_at.is_none()
+            && claim_token != current.claim_token.as_deref()
+        {
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "running Job 只能由当前 worker 或已请求取消的控制面确认 cancelled"
+                    .to_string(),
+            });
+        }
+
+        let expected_sql = i64::try_from(expected_revision)
+            .map_err(|_| "Execution Job revision 超出 SQLite INTEGER 范围")?;
+        let result_refs_json = serde_json::to_string(&terminal.result_refs)?;
+        let error = terminal
+            .error
+            .map(|value| value.chars().take(100_000).collect::<String>());
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = if worker_terminal {
+            sqlx::query(
+                r#"UPDATE execution_jobs
+                   SET revision = revision + 1, status = ?, lease_expires_at = NULL,
+                       result_event_id = ?, result_refs_json = ?, error = ?,
+                       exit_code = ?, updated_at = ?, finished_at = ?
+                   WHERE id = ? AND revision = ? AND status = 'running'
+                     AND claim_token = ?"#,
+            )
+            .bind(terminal.status.as_str())
+            .bind(terminal.result_event_id)
+            .bind(result_refs_json)
+            .bind(error)
+            .bind(terminal.exit_code)
+            .bind(&now)
+            .bind(&now)
+            .bind(id)
+            .bind(expected_sql)
+            .bind(claim_token)
+            .execute(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"UPDATE execution_jobs
+                   SET revision = revision + 1, status = ?, lease_expires_at = NULL,
+                       result_event_id = ?, result_refs_json = ?, error = ?,
+                       exit_code = ?, updated_at = ?, finished_at = ?
+                   WHERE id = ? AND revision = ?
+                     AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')"#,
+            )
+            .bind(terminal.status.as_str())
+            .bind(terminal.result_event_id)
+            .bind(result_refs_json)
+            .bind(error)
+            .bind(terminal.exit_code)
+            .bind(&now)
+            .bind(&now)
+            .bind(id)
+            .bind(expected_sql)
+            .execute(&self.pool)
+            .await?
+        };
+        if result.rows_affected() != 1 {
+            return execution_job_mutation_failure(
+                self,
+                id,
+                expected_revision,
+                "Execution Job terminal commit 前置条件不再成立",
+            )
+            .await;
+        }
+        Ok(ExecutionJobMutation::Updated(
+            self.get_execution_job(id)
+                .await?
+                .ok_or("Execution Job terminal commit 后无法读取")?,
+        ))
+    }
+}
+
+#[async_trait::async_trait]
 impl EventStore for SqliteStore {
     async fn append(&self, ev: Event) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut tx = self.pool.begin().await?;
@@ -3790,6 +4438,377 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tempfile::NamedTempFile;
+
+    async fn seed_execution_job(
+        store: &SqliteStore,
+        suffix: &str,
+        requires_approval: bool,
+        retry_safety: ExecutionRetrySafety,
+    ) -> ExecutionJobRecord {
+        let context_id = format!("job-context-{suffix}");
+        let session_id = format!("job-session-{suffix}");
+        let thread_id = format!("job-thread-{suffix}");
+        let activation_id = format!("job-activation-{suffix}");
+        let root_turn_id = format!("job-root-{suffix}");
+        store
+            .create_context(NewCognitiveContext {
+                id: context_id.clone(),
+                agent_id: "job-agent".to_string(),
+                title: "Job Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: session_id.clone(),
+                agent_id: "job-agent".to_string(),
+                context_id: context_id.clone(),
+                parent_session_id: None,
+                title: "Job Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_work_thread(NewWorkThread {
+                id: thread_id.clone(),
+                agent_id: "job-agent".to_string(),
+                context_id: context_id.clone(),
+                session_id: session_id.clone(),
+                root_turn_id: root_turn_id.clone(),
+                kind: WorkThreadKind::Work,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_thread_activation(NewThreadActivation {
+                id: activation_id.clone(),
+                agent_id: "job-agent".to_string(),
+                context_id: context_id.clone(),
+                session_id: session_id.clone(),
+                trigger_event_id: format!("job-trigger-{suffix}"),
+                trigger_sequence: 1,
+                trigger_kind: "chat/user_message".to_string(),
+                parent_activation_id: None,
+                root_turn_id,
+            })
+            .await
+            .unwrap();
+        store
+            .create_execution_job(NewExecutionJob {
+                id: format!("job-{suffix}"),
+                activation_id,
+                thread_id,
+                agent_id: "job-agent".to_string(),
+                context_id,
+                session_id,
+                tool_call_id: format!("call-{suffix}"),
+                tool_name: "exec".to_string(),
+                request: serde_json::json!({"command": "printf ok"}),
+                retry_safety,
+                requires_approval,
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn execution_job_claim_heartbeat_cancel_and_terminal_are_fenced() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let created = seed_execution_job(
+            &store,
+            "fenced",
+            true,
+            ExecutionRetrySafety::ReconcileRequired,
+        )
+        .await;
+        assert_eq!(created.status, ExecutionJobStatus::WaitingApproval);
+        assert_eq!(created.revision, 1);
+
+        let lease = Utc::now() + chrono::Duration::minutes(1);
+        assert!(matches!(
+            store
+                .claim_execution_job(&created.id, 1, "worker-a", "claim-a", lease, None)
+                .await
+                .unwrap(),
+            ExecutionJobMutation::Rejected { .. }
+        ));
+        let claimed = match store
+            .claim_execution_job(
+                &created.id,
+                1,
+                "worker-a",
+                "claim-a",
+                lease,
+                Some("approval:event-1"),
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected claim result: {other:?}"),
+        };
+        assert_eq!(claimed.status, ExecutionJobStatus::Running);
+        assert_eq!(claimed.revision, 2);
+        assert_eq!(claimed.approval_ref.as_deref(), Some("approval:event-1"));
+        assert!(matches!(
+            store
+                .heartbeat_execution_job(
+                    &created.id,
+                    claimed.revision,
+                    "stale-claim",
+                    Utc::now() + chrono::Duration::minutes(2),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap(),
+            ExecutionJobMutation::Rejected { .. }
+        ));
+
+        let effect_at = Utc::now();
+        let heartbeat = match store
+            .heartbeat_execution_job(
+                &created.id,
+                claimed.revision,
+                "claim-a",
+                Utc::now() + chrono::Duration::minutes(2),
+                Some(effect_at),
+                Some("artifact:progress"),
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected heartbeat result: {other:?}"),
+        };
+        assert_eq!(heartbeat.revision, 3);
+        assert!(heartbeat.side_effect_started_at.is_some());
+        assert_eq!(heartbeat.progress_ref.as_deref(), Some("artifact:progress"));
+
+        let cancelling = match store
+            .request_cancel_execution_job(&created.id, heartbeat.revision, Some("user stopped it"))
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected cancel request: {other:?}"),
+        };
+        assert_eq!(cancelling.status, ExecutionJobStatus::Running);
+        assert!(cancelling.cancel_requested_at.is_some());
+        assert!(matches!(
+            store
+                .finish_execution_job(
+                    &created.id,
+                    heartbeat.revision,
+                    Some("claim-a"),
+                    ExecutionJobTerminal {
+                        status: ExecutionJobStatus::Succeeded,
+                        result_event_id: None,
+                        result_refs: vec![],
+                        error: None,
+                        exit_code: Some(0),
+                    },
+                )
+                .await
+                .unwrap(),
+            ExecutionJobMutation::Conflict { .. }
+        ));
+        assert!(matches!(
+            store
+                .finish_execution_job(
+                    &created.id,
+                    cancelling.revision,
+                    Some("claim-a"),
+                    ExecutionJobTerminal {
+                        status: ExecutionJobStatus::Succeeded,
+                        result_event_id: None,
+                        result_refs: vec![],
+                        error: None,
+                        exit_code: Some(0),
+                    },
+                )
+                .await
+                .unwrap(),
+            ExecutionJobMutation::Rejected { .. }
+        ));
+        let cancelled = match store
+            .finish_execution_job(
+                &created.id,
+                cancelling.revision,
+                None,
+                ExecutionJobTerminal {
+                    status: ExecutionJobStatus::Cancelled,
+                    result_event_id: Some("job-cancelled-event".to_string()),
+                    result_refs: vec![],
+                    error: None,
+                    exit_code: None,
+                },
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected terminal result: {other:?}"),
+        };
+        assert_eq!(cancelled.status, ExecutionJobStatus::Cancelled);
+        assert!(cancelled.finished_at.is_some());
+        assert!(matches!(
+            store
+                .finish_execution_job(
+                    &created.id,
+                    cancelled.revision,
+                    None,
+                    ExecutionJobTerminal {
+                        status: ExecutionJobStatus::Lost,
+                        result_event_id: None,
+                        result_refs: vec![],
+                        error: None,
+                        exit_code: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            ExecutionJobMutation::Rejected { .. }
+        ));
+        assert!(
+            sqlx::query("UPDATE execution_jobs SET status = 'running' WHERE id = ?")
+                .bind(&created.id)
+                .execute(&store.pool)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn execution_job_creation_is_causally_idempotent_and_results_are_durable() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let store = SqliteStore::new(path).await.unwrap();
+        let created =
+            seed_execution_job(&store, "durable", false, ExecutionRetrySafety::AtMostOnce).await;
+        let duplicate = store
+            .create_execution_job(NewExecutionJob {
+                id: created.id.clone(),
+                activation_id: created.activation_id.clone(),
+                thread_id: created.thread_id.clone(),
+                agent_id: created.agent_id.clone(),
+                context_id: created.context_id.clone(),
+                session_id: created.session_id.clone(),
+                tool_call_id: created.tool_call_id.clone(),
+                tool_name: created.tool_name.clone(),
+                request: created.request.clone(),
+                retry_safety: created.retry_safety,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(duplicate, created);
+        assert!(store
+            .create_execution_job(NewExecutionJob {
+                id: "different-id".to_string(),
+                activation_id: created.activation_id.clone(),
+                thread_id: created.thread_id.clone(),
+                agent_id: created.agent_id.clone(),
+                context_id: created.context_id.clone(),
+                session_id: created.session_id.clone(),
+                tool_call_id: created.tool_call_id.clone(),
+                tool_name: "read".to_string(),
+                request: serde_json::json!({"path": "other"}),
+                retry_safety: ExecutionRetrySafety::Idempotent,
+                requires_approval: false,
+            })
+            .await
+            .is_err());
+        let listed = store
+            .list_execution_jobs(ExecutionJobFilter {
+                context_id: Some(created.context_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+
+        let claimed = match store
+            .claim_execution_job(
+                &created.id,
+                created.revision,
+                "worker",
+                "claim",
+                Utc::now() + chrono::Duration::minutes(1),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected claim: {other:?}"),
+        };
+        let succeeded = match store
+            .finish_execution_job(
+                &created.id,
+                claimed.revision,
+                Some("claim"),
+                ExecutionJobTerminal {
+                    status: ExecutionJobStatus::Succeeded,
+                    result_event_id: Some("job-result-event".to_string()),
+                    result_refs: vec!["artifact:stdout".to_string()],
+                    error: None,
+                    exit_code: Some(0),
+                },
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected completion: {other:?}"),
+        };
+        assert_eq!(succeeded.result_refs, vec!["artifact:stdout"]);
+        assert_eq!(succeeded.exit_code, Some(0));
+        let replayed = store
+            .create_execution_job(NewExecutionJob {
+                id: created.id.clone(),
+                activation_id: created.activation_id.clone(),
+                thread_id: created.thread_id.clone(),
+                agent_id: created.agent_id.clone(),
+                context_id: created.context_id.clone(),
+                session_id: created.session_id.clone(),
+                tool_call_id: created.tool_call_id.clone(),
+                tool_name: created.tool_name.clone(),
+                request: created.request.clone(),
+                retry_safety: created.retry_safety,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(replayed.status, ExecutionJobStatus::Succeeded);
+        assert_eq!(replayed.revision, succeeded.revision);
+        assert!(store
+            .list_execution_jobs(ExecutionJobFilter {
+                context_id: Some(created.context_id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+
+        store.pool.close().await;
+        drop(store);
+        let reopened = SqliteStore::new(path).await.unwrap();
+        assert_eq!(
+            reopened
+                .get_execution_job(&created.id)
+                .await
+                .unwrap()
+                .unwrap(),
+            succeeded
+        );
+    }
 
     #[tokio::test]
     async fn runtime_timer_claim_is_leased_and_generation_safe() {

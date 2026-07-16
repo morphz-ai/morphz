@@ -376,6 +376,151 @@ pub struct NewRuntimeTimer {
     pub payload: serde_json::Value,
 }
 
+/// Authoritative lifecycle of one physical execution attempt materialized from
+/// a model Action. Cancellation is requested separately: a running process is
+/// not `cancelled` until an executor or reconciler proves that it stopped.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionJobStatus {
+    Queued,
+    WaitingApproval,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+    Lost,
+}
+
+impl ExecutionJobStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::WaitingApproval => "waiting_approval",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Lost => "lost",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Lost
+        )
+    }
+}
+
+/// Recovery policy after the Runtime loses ownership of a running Job.
+/// `side_effect_started_at` determines whether the stricter branch applies.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionRetrySafety {
+    /// Repeating the action with the same causal identity is safe.
+    Idempotent,
+    /// The Runtime must inspect external state before deciding to retry.
+    ReconcileRequired,
+    /// Once a side effect may have started, automatic retry is forbidden.
+    AtMostOnce,
+}
+
+impl ExecutionRetrySafety {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idempotent => "idempotent",
+            Self::ReconcileRequired => "reconcile_required",
+            Self::AtMostOnce => "at_most_once",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExecutionJobRecord {
+    pub id: String,
+    pub revision: u64,
+    pub activation_id: String,
+    pub thread_id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub request: serde_json::Value,
+    pub status: ExecutionJobStatus,
+    pub retry_safety: ExecutionRetrySafety,
+    pub claimed_by: Option<String>,
+    /// Opaque per-claim fencing identity. A stale worker cannot heartbeat or
+    /// publish a terminal result after another control-plane mutation wins.
+    pub claim_token: Option<String>,
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    pub heartbeat_at: Option<DateTime<Utc>>,
+    pub approval_ref: Option<String>,
+    pub side_effect_started_at: Option<DateTime<Utc>>,
+    pub cancel_requested_at: Option<DateTime<Utc>>,
+    pub cancel_reason: Option<String>,
+    pub progress_ref: Option<String>,
+    pub result_event_id: Option<String>,
+    /// Durable references to stdout/stderr/artifacts or provider-owned result
+    /// objects. Empty output is valid and is represented by an empty vector.
+    pub result_refs: Vec<String>,
+    pub error: Option<String>,
+    pub exit_code: Option<i32>,
+    pub created_at: DateTime<Utc>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub updated_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewExecutionJob {
+    pub id: String,
+    pub activation_id: String,
+    pub thread_id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub request: serde_json::Value,
+    pub retry_safety: ExecutionRetrySafety,
+    pub requires_approval: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExecutionJobFilter {
+    pub context_id: Option<String>,
+    pub session_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub activation_id: Option<String>,
+    pub status: Option<ExecutionJobStatus>,
+    /// When no exact status is selected, terminal rows are omitted by default.
+    pub include_terminal: bool,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExecutionJobMutation {
+    Updated(ExecutionJobRecord),
+    Conflict {
+        current: ExecutionJobRecord,
+    },
+    Rejected {
+        current: ExecutionJobRecord,
+        reason: String,
+    },
+    NotFound,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionJobTerminal {
+    pub status: ExecutionJobStatus,
+    pub result_event_id: Option<String>,
+    pub result_refs: Vec<String>,
+    pub error: Option<String>,
+    pub exit_code: Option<i32>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActivationSignalRecord {
     pub activation_id: String,
@@ -823,6 +968,70 @@ pub trait TimerStore: Send + Sync {
         &self,
         id: &str,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Durable physical execution plane. Every mutating operation is fenced by the
+/// Job revision; worker-owned operations additionally require the current claim
+/// token. This keeps process ownership separate from semantic Thread outcome.
+#[async_trait::async_trait]
+pub trait ExecutionJobStore: Send + Sync {
+    /// Idempotent on `(activation_id, tool_call_id)`. Reusing that causal key
+    /// with different immutable fields is rejected instead of silently merged.
+    async fn create_execution_job(
+        &self,
+        job: NewExecutionJob,
+    ) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_execution_job(
+        &self,
+        id: &str,
+    ) -> Result<Option<ExecutionJobRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_execution_jobs(
+        &self,
+        filter: ExecutionJobFilter,
+    ) -> Result<Vec<ExecutionJobRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Claims a queued Job, or consumes a waiting-approval Job when a durable
+    /// approval reference is supplied. Running Jobs are never stolen merely
+    /// because their lease expired; recovery must first reconcile them.
+    #[allow(clippy::too_many_arguments)]
+    async fn claim_execution_job(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        worker_id: &str,
+        claim_token: &str,
+        lease_expires_at: DateTime<Utc>,
+        approval_ref: Option<&str>,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Extends worker ownership and optionally records the first known moment
+    /// at which an external side effect may have begun.
+    #[allow(clippy::too_many_arguments)]
+    async fn heartbeat_execution_job(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        lease_expires_at: DateTime<Utc>,
+        side_effect_started_at: Option<DateTime<Utc>>,
+        progress_ref: Option<&str>,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Records intent to cancel without claiming that a running process has
+    /// already stopped. A controller must subsequently commit `cancelled`.
+    async fn request_cancel_execution_job(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: Option<&str>,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Commits exactly one terminal physical fact. Succeeded/failed completion
+    /// must carry the current worker claim token; cancelled/lost may be committed
+    /// by the control-plane after a revision-fenced reconciliation.
+    async fn finish_execution_job(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        claim_token: Option<&str>,
+        terminal: ExecutionJobTerminal,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Persistent product-level Session directory. It deliberately owns routing and
