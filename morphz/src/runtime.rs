@@ -173,15 +173,17 @@ impl MorphzRuntimeBuilder {
             .saturating_add(self.config.orchestrator.tool_timeout_secs.saturating_mul(4))
             .max(600);
         let objective_evaluations = Arc::new(ObjectiveEvaluationRegistry::default());
+        let timer_engine = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
         let objective_supervisor = Arc::new(ObjectiveSupervisor::new(
             Arc::clone(&store) as Arc<dyn ObjectiveStore>,
             Arc::clone(&store) as Arc<dyn EventStore>,
             Arc::clone(&bus),
             Arc::clone(&objective_evaluations),
+            Arc::clone(&timer_engine),
             std::time::Duration::from_secs(objective_lease_secs),
         ));
+        objective_supervisor.register_timer_handlers()?;
         let registry = Arc::new(Registry::new());
-        let timer_engine = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
         let thread_scheduler = Arc::new(ThreadScheduler::new(
             Arc::clone(&bus),
             Arc::clone(&store) as Arc<dyn SessionStore>,
@@ -1909,10 +1911,37 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(active.active_evaluation_id.is_some());
+        let lease_timer = runtime
+            .inner
+            .store
+            .get_runtime_timer("objective-lease:objective-concurrent-route")
+            .await
+            .unwrap()
+            .expect("active Objective Evaluation must have a persistent lease timer");
+        assert_eq!(lease_timer.generation, active.revision);
+        assert_eq!(
+            lease_timer.kind,
+            crate::memory::RuntimeTimerKind::ObjectiveLease
+        );
+        assert_eq!(
+            lease_timer.status,
+            crate::memory::RuntimeTimerStatus::Pending
+        );
         runtime
             .cancel_objective(&active.id, active.revision, "结束并发路由确定性测试")
             .await
             .unwrap();
+        assert_eq!(
+            runtime
+                .inner
+                .store
+                .get_runtime_timer("objective-lease:objective-concurrent-route")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            crate::memory::RuntimeTimerStatus::Cancelled
+        );
         client.release_objective.notify_one();
     }
 
@@ -2578,6 +2607,21 @@ mod tests {
         runtime.start().await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert_eq!(client.calls.load(Ordering::SeqCst), 0);
+        let wait_timer = runtime
+            .inner
+            .store
+            .get_runtime_timer("objective-wait:objective-recover")
+            .await
+            .unwrap()
+            .expect("recoverable timer wait must be persisted before it fires");
+        assert_eq!(
+            wait_timer.kind,
+            crate::memory::RuntimeTimerKind::ObjectiveWait
+        );
+        assert_eq!(
+            wait_timer.status,
+            crate::memory::RuntimeTimerStatus::Pending
+        );
         let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
             .await
             .unwrap()
@@ -2593,6 +2637,17 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(objective.status, ObjectiveStatus::Completed);
+        assert_eq!(
+            runtime
+                .inner
+                .store
+                .get_runtime_timer("objective-wait:objective-recover")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            crate::memory::RuntimeTimerStatus::Fired
+        );
         assert!(runtime
             .query_events(QueryFilter {
                 topic: Some("objective/wait_satisfied".to_string()),

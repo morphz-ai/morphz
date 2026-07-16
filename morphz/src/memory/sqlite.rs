@@ -3509,7 +3509,7 @@ impl TimerStore for SqliteStore {
             r#"UPDATE runtime_timers
                SET status = 'cancelled', claimed_by = NULL, claim_expires_at = NULL,
                    updated_at = ?
-               WHERE id = ? AND status IN ('pending', 'claimed')"#,
+               WHERE id = ? AND status = 'pending'"#,
         )
         .bind(now)
         .bind(id)
@@ -3746,6 +3746,10 @@ mod tests {
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].generation, 2);
         assert!(!store
+            .cancel_runtime_timer("timer-generation-safe")
+            .await
+            .unwrap());
+        assert!(!store
             .retry_runtime_timer(
                 "timer-generation-safe",
                 2,
@@ -3776,6 +3780,31 @@ mod tests {
             .cancel_runtime_timer("timer-generation-safe")
             .await
             .unwrap());
+
+        store
+            .upsert_runtime_timer(NewRuntimeTimer {
+                id: "timer-cancel-pending".to_string(),
+                generation: 1,
+                kind: RuntimeTimerKind::Schedule,
+                owner_id: "schedule-cancel-pending".to_string(),
+                due_at: now + chrono::Duration::minutes(1),
+                payload: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+        assert!(store
+            .cancel_runtime_timer("timer-cancel-pending")
+            .await
+            .unwrap());
+        assert_eq!(
+            store
+                .get_runtime_timer("timer-cancel-pending")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            RuntimeTimerStatus::Cancelled
+        );
 
         store
             .upsert_runtime_timer(NewRuntimeTimer {

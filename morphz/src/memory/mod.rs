@@ -816,6 +816,9 @@ pub trait TimerStore: Send + Sync {
         due_at: DateTime<Utc>,
         error: Option<&str>,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
+    /// Cancel a timer which has not crossed the claim boundary. A claimed timer
+    /// must finish through its fenced handler so audit state cannot hide a
+    /// physical firing and owner-level CAS remains authoritative.
     async fn cancel_runtime_timer(
         &self,
         id: &str,

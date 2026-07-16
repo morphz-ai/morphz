@@ -1,10 +1,11 @@
 use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT};
 use crate::llm::ToolDefinition;
 use crate::memory::{
-    EventStore, NewObjective, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition,
+    EventStore, NewObjective, NewRuntimeTimer, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, RuntimeTimerKind, RuntimeTimerRecord,
 };
 use crate::orchestrator::context::ContextEngine;
+use crate::timer::{TimerDisposition, TimerEngine};
 use crate::tool::{Tool, CURRENT_ATTEMPT_ID, CURRENT_CONTEXT_ID, CURRENT_SESSION_ID};
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
@@ -625,10 +626,9 @@ pub struct ObjectiveSupervisor {
     audit_store: Arc<dyn EventStore>,
     bus: Arc<InMemoryEventBus>,
     evaluations: Arc<ObjectiveEvaluationRegistry>,
+    timers: Arc<TimerEngine>,
     lease_duration: Duration,
     schedule_locks: DashMap<String, Arc<Mutex<()>>>,
-    lease_wakeups: DashMap<String, DateTime<Utc>>,
-    wait_timer_wakeups: DashMap<String, (u64, DateTime<Utc>)>,
     external_wait_subscriptions: DashMap<String, (u64, String, String)>,
     started: AtomicBool,
 }
@@ -639,6 +639,7 @@ impl ObjectiveSupervisor {
         audit_store: Arc<dyn EventStore>,
         bus: Arc<InMemoryEventBus>,
         evaluations: Arc<ObjectiveEvaluationRegistry>,
+        timers: Arc<TimerEngine>,
         lease_duration: std::time::Duration,
     ) -> Self {
         let lease_duration =
@@ -648,13 +649,38 @@ impl ObjectiveSupervisor {
             audit_store,
             bus,
             evaluations,
+            timers,
             lease_duration,
             schedule_locks: DashMap::new(),
-            lease_wakeups: DashMap::new(),
-            wait_timer_wakeups: DashMap::new(),
             external_wait_subscriptions: DashMap::new(),
             started: AtomicBool::new(false),
         }
+    }
+
+    pub fn register_timer_handlers(self: &Arc<Self>) -> Result<(), DynError> {
+        let supervisor = Arc::downgrade(self);
+        self.timers
+            .register_handler(RuntimeTimerKind::ObjectiveWait, move |timer| {
+                let supervisor = supervisor.clone();
+                async move {
+                    let Some(supervisor) = supervisor.upgrade() else {
+                        return Ok(TimerDisposition::Complete);
+                    };
+                    supervisor.dispatch_wait_timer(timer).await
+                }
+            })?;
+
+        let supervisor = Arc::downgrade(self);
+        self.timers
+            .register_handler(RuntimeTimerKind::ObjectiveLease, move |timer| {
+                let supervisor = supervisor.clone();
+                async move {
+                    let Some(supervisor) = supervisor.upgrade() else {
+                        return Ok(TimerDisposition::Complete);
+                    };
+                    supervisor.dispatch_lease_timer(timer).await
+                }
+            })
     }
 
     pub async fn start(self: Arc<Self>) -> Result<(), DynError> {
@@ -935,7 +961,7 @@ impl ObjectiveSupervisor {
                 elapsed_seconds,
             )
             .await?;
-        self.lease_wakeups.remove(&binding.objective_id);
+        self.cancel_lease_timer(&binding.objective_id).await?;
         self.evaluations.unbind(session_id, &binding.evaluation_id);
         let mut context_to_reconcile = None;
         match mutation {
@@ -1016,7 +1042,7 @@ impl ObjectiveSupervisor {
             return Ok(());
         }
         if objective.status != ObjectiveStatus::Active {
-            self.lease_wakeups.remove(&objective.id);
+            self.cancel_objective_timers(&objective.id).await?;
             if !matches!(
                 objective.status,
                 ObjectiveStatus::Completed | ObjectiveStatus::Blocked
@@ -1027,27 +1053,32 @@ impl ObjectiveSupervisor {
             return Ok(());
         }
         if let Some(wait) = &objective.wait_condition {
-            self.lease_wakeups.remove(&objective.id);
+            self.cancel_lease_timer(&objective.id).await?;
             match wait {
                 ObjectiveWaitCondition::Timer { deadline } => {
                     self.remove_external_wait_subscription(&objective.id);
-                    self.schedule_wait_timer(objective.id, objective.revision, *deadline);
+                    self.schedule_wait_timer(&objective, *deadline).await?;
                 }
                 ObjectiveWaitCondition::ExternalEvent { topic, .. } => {
+                    self.cancel_wait_timer(&objective.id).await?;
                     self.register_external_wait_subscription(
                         &objective.id,
                         objective.revision,
                         topic,
                     );
                 }
-                _ => self.remove_external_wait_subscription(&objective.id),
+                _ => {
+                    self.cancel_wait_timer(&objective.id).await?;
+                    self.remove_external_wait_subscription(&objective.id);
+                }
             }
             return Ok(());
         }
+        self.cancel_wait_timer(&objective.id).await?;
         self.remove_external_wait_subscription(&objective.id);
         if let Some(expires_at) = objective.evaluation_lease_expires_at {
             if expires_at > Utc::now() {
-                self.schedule_lease_expiry(objective.id, expires_at);
+                self.schedule_lease_expiry(&objective, expires_at).await?;
                 return Ok(());
             }
             self.clear_local_binding(&objective);
@@ -1116,7 +1147,8 @@ impl ObjectiveSupervisor {
                 },
             );
         }
-        self.schedule_lease_expiry(claimed.id.clone(), lease_expires_at);
+        self.schedule_lease_expiry(&claimed, lease_expires_at)
+            .await?;
         if publish_started {
             self.publish_state_event("evaluation_started", &claimed, Some(source_event_id))
                 .await?;
@@ -1215,122 +1247,159 @@ impl ObjectiveSupervisor {
                 active.revision = claimed.revision;
             }
         }
-        self.schedule_lease_expiry(claimed.id.clone(), lease_expires_at);
+        self.schedule_lease_expiry(&claimed, lease_expires_at)
+            .await?;
         self.publish_state_event("evaluation_started", &claimed, None)
             .await?;
         self.bus.dispatch_persisted(continuation_event).await?;
         Ok(())
     }
 
-    fn schedule_lease_expiry(self: &Arc<Self>, objective_id: String, expires_at: DateTime<Utc>) {
-        if self
-            .lease_wakeups
-            .get(&objective_id)
-            .is_some_and(|existing| *existing == expires_at)
-        {
-            return;
-        }
-        self.lease_wakeups.insert(objective_id.clone(), expires_at);
-        let supervisor = Arc::clone(self);
-        tokio::spawn(async move {
-            let delay = (expires_at - Utc::now())
-                .to_std()
-                .unwrap_or(std::time::Duration::ZERO);
-            tokio::time::sleep(delay).await;
-            if supervisor
-                .lease_wakeups
-                .remove_if(&objective_id, |_, current| *current == expires_at)
-                .is_none()
-            {
-                return;
-            }
-            if let Some(objective) = supervisor
-                .store
-                .get_objective(&objective_id)
-                .await
-                .ok()
-                .flatten()
-            {
-                if let Err(error) = supervisor.reconcile(objective).await {
-                    tracing::error!(objective_id, ?error, "Objective lease 到期恢复失败");
-                }
-            }
-        });
+    async fn schedule_lease_expiry(
+        &self,
+        objective: &ObjectiveRecord,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), DynError> {
+        let Some(evaluation_id) = objective.active_evaluation_id.as_deref() else {
+            self.cancel_lease_timer(&objective.id).await?;
+            return Ok(());
+        };
+        self.timers
+            .schedule(NewRuntimeTimer {
+                id: objective_lease_timer_id(&objective.id),
+                generation: objective.revision,
+                kind: RuntimeTimerKind::ObjectiveLease,
+                owner_id: objective.id.clone(),
+                due_at: expires_at,
+                payload: json!({
+                    "objective_id": objective.id,
+                    "evaluation_id": evaluation_id,
+                    "lease_expires_at": expires_at,
+                }),
+            })
+            .await?;
+        Ok(())
     }
 
-    fn schedule_wait_timer(
-        self: &Arc<Self>,
-        objective_id: String,
-        revision: u64,
+    async fn schedule_wait_timer(
+        &self,
+        objective: &ObjectiveRecord,
         deadline: DateTime<Utc>,
-    ) {
-        if self
-            .wait_timer_wakeups
-            .get(&objective_id)
-            .is_some_and(|existing| *existing == (revision, deadline))
-        {
-            return;
+    ) -> Result<(), DynError> {
+        self.timers
+            .schedule(NewRuntimeTimer {
+                id: objective_wait_timer_id(&objective.id),
+                generation: objective.revision,
+                kind: RuntimeTimerKind::ObjectiveWait,
+                owner_id: objective.id.clone(),
+                due_at: deadline,
+                payload: json!({
+                    "objective_id": objective.id,
+                    "deadline": deadline,
+                }),
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn dispatch_wait_timer(
+        self: Arc<Self>,
+        timer: RuntimeTimerRecord,
+    ) -> Result<TimerDisposition, DynError> {
+        let Some(current) = self.store.get_objective(&timer.owner_id).await? else {
+            return Ok(TimerDisposition::Complete);
+        };
+        let Some(ObjectiveWaitCondition::Timer { deadline }) = current.wait_condition.as_ref()
+        else {
+            return Ok(TimerDisposition::Complete);
+        };
+        if current.status != ObjectiveStatus::Active {
+            return Ok(TimerDisposition::Complete);
         }
-        self.wait_timer_wakeups
-            .insert(objective_id.clone(), (revision, deadline));
-        let supervisor = Arc::clone(self);
-        tokio::spawn(async move {
-            let delay = (deadline - Utc::now())
-                .to_std()
-                .unwrap_or(std::time::Duration::ZERO);
-            tokio::time::sleep(delay).await;
-            supervisor.wait_timer_wakeups.remove(&objective_id);
-            let Some(current) = supervisor
-                .store
-                .get_objective(&objective_id)
-                .await
-                .ok()
-                .flatten()
-            else {
-                return;
-            };
-            if current.revision != revision
-                || !matches!(
-                    current.wait_condition,
-                    Some(ObjectiveWaitCondition::Timer { deadline: current_deadline })
-                        if current_deadline == deadline
-                )
-            {
-                return;
+        if current.revision != timer.generation || *deadline != timer.due_at {
+            self.schedule_wait_timer(&current, *deadline).await?;
+            return Ok(TimerDisposition::Complete);
+        }
+        if *deadline > Utc::now() {
+            return Ok(TimerDisposition::Reschedule {
+                due_at: *deadline,
+                reason: Some("Objective timer deadline 尚未到达".to_string()),
+            });
+        }
+        match self
+            .store
+            .update_objective_state(
+                &current.id,
+                current.revision,
+                ObjectiveStatus::Active,
+                None,
+                Some("计时等待已到期"),
+            )
+            .await?
+        {
+            ObjectiveMutation::Updated(woken) => {
+                self.publish_state_event("wait_satisfied", &woken, Some("timer-deadline-reached"))
+                    .await?;
+                self.schedule(woken.id).await?;
             }
-            match supervisor
-                .store
-                .update_objective_state(
-                    &objective_id,
-                    revision,
-                    ObjectiveStatus::Active,
-                    None,
-                    Some("计时等待已到期"),
-                )
-                .await
-            {
-                Ok(ObjectiveMutation::Updated(woken)) => {
-                    if let Err(error) = supervisor
-                        .publish_state_event(
-                            "wait_satisfied",
-                            &woken,
-                            Some("timer-deadline-reached"),
-                        )
-                        .await
-                    {
-                        tracing::error!(objective_id, ?error, "Objective timer 审计失败");
-                        return;
-                    }
-                    if let Err(error) = supervisor.reconcile(woken).await {
-                        tracing::error!(objective_id, ?error, "Objective timer 续跑失败");
-                    }
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::error!(objective_id, ?error, "Objective timer 状态更新失败")
-                }
-            }
-        });
+            ObjectiveMutation::Conflict { current } => self.reconcile(current).await?,
+            ObjectiveMutation::NotFound => {}
+        }
+        Ok(TimerDisposition::Complete)
+    }
+
+    async fn dispatch_lease_timer(
+        self: Arc<Self>,
+        timer: RuntimeTimerRecord,
+    ) -> Result<TimerDisposition, DynError> {
+        let Some(current) = self.store.get_objective(&timer.owner_id).await? else {
+            return Ok(TimerDisposition::Complete);
+        };
+        let Some(expires_at) = current.evaluation_lease_expires_at else {
+            return Ok(TimerDisposition::Complete);
+        };
+        let timer_evaluation_id = timer
+            .payload
+            .get("evaluation_id")
+            .and_then(serde_json::Value::as_str);
+        if current.status != ObjectiveStatus::Active
+            || current.wait_condition.is_some()
+            || current.active_evaluation_id.as_deref() != timer_evaluation_id
+        {
+            return Ok(TimerDisposition::Complete);
+        }
+        if current.revision != timer.generation || expires_at != timer.due_at {
+            self.schedule_lease_expiry(&current, expires_at).await?;
+            return Ok(TimerDisposition::Complete);
+        }
+        if expires_at > Utc::now() {
+            return Ok(TimerDisposition::Reschedule {
+                due_at: expires_at,
+                reason: Some("Objective evaluation lease 尚未到期".to_string()),
+            });
+        }
+        self.clear_local_binding(&current);
+        self.reconcile(current).await?;
+        Ok(TimerDisposition::Complete)
+    }
+
+    async fn cancel_wait_timer(&self, objective_id: &str) -> Result<(), DynError> {
+        self.timers
+            .cancel(&objective_wait_timer_id(objective_id))
+            .await?;
+        Ok(())
+    }
+
+    async fn cancel_lease_timer(&self, objective_id: &str) -> Result<(), DynError> {
+        self.timers
+            .cancel(&objective_lease_timer_id(objective_id))
+            .await?;
+        Ok(())
+    }
+
+    async fn cancel_objective_timers(&self, objective_id: &str) -> Result<(), DynError> {
+        self.cancel_wait_timer(objective_id).await?;
+        self.cancel_lease_timer(objective_id).await
     }
 
     fn register_external_wait_subscription(
@@ -1458,6 +1527,14 @@ impl ObjectiveSupervisor {
         self.audit_store.append(event.clone()).await?;
         self.bus.publish(event).await
     }
+}
+
+fn objective_wait_timer_id(objective_id: &str) -> String {
+    format!("objective-wait:{objective_id}")
+}
+
+fn objective_lease_timer_id(objective_id: &str) -> String {
+    format!("objective-lease:{objective_id}")
 }
 
 fn wait_matches_event(wait: &ObjectiveWaitCondition, event: &Event) -> bool {

@@ -1116,5 +1116,23 @@ Phase 1 至此完成。仍然保留的独立 timer/sleep、依赖轮询和进程
 
 - 这是 Phase 2 的第一条纵切，不代表 Phase 2 已完成；
 - Schedule 的 Thread dependency 暂时仍以 Timer Engine 中的延迟重检表达，已经移除“每个依赖一个 Tokio sleep”，但尚未改为 `dependency_completed` 反向索引驱动；
-- Objective wait/lease、Background wake 和 Activation lease 尚未注册为 Timer Engine handler，仍保留现有唤醒实现；
+- Background wake 和 Activation lease 尚未注册为 Timer Engine handler，仍保留现有唤醒实现；
 - 通用 `WaitCondition` 领域结构将在上述生产者进入同一引擎时一起收口，避免先造一个没有真实消费者的抽象层。
+
+### 2026-07-16：Phase 2.2 Objective wait/lease 纵切
+
+已经实现：
+
+- `ObjectiveWaitCondition::Timer` 不再创建进程内 `DashMap + tokio::spawn + sleep`；它以 `objective-wait:<objective-id>` 持久 Timer 表达，并以 Objective revision 作为 generation fencing；
+- Objective evaluation lease 不再创建独立 sleep；每次真实 evaluation claim 会同步注册 `objective-lease:<objective-id>`，payload 绑定 evaluation ID，防止旧 lease 唤醒新的求值；
+- Objective Supervisor 注册 `ObjectiveWait` 与 `ObjectiveLease` 两类语义 handler。handler 每次触发都重新读取 Objective 的权威 status、revision、wait condition、evaluation ID 与 deadline，Timer payload 不被当作当前事实；
+- Runtime 重启时，Objective recovery/reconcile 会为数据库中只有 Objective 状态、尚无 Timer 的旧数据补齐持久 Timer，因此状态提交与 Timer 注册之间发生崩溃也不会永久丢失唤醒；
+- Objective 进入终态、非 Timer 等待或完成 evaluation 时，会取消尚未 claim 的无效 Timer；已经 claim 的 Timer 不能被旁路覆盖为 `cancelled`，必须通过带 claim token 的 handler 结束，使审计状态准确反映物理触发；
+- Timer wait 到期仍发布 `objective/wait_satisfied` 审计事实，随后由 Supervisor 创建新的 Objective 推进机会；evaluation lease 到期仍通过 Objective CAS 释放陈旧本地绑定并只恢复一次；
+- 既有计时等待重启、过期 lease 重启、事件等待、并发 Session 路由和 Supervisor 连续推进测试继续通过；测试新增对持久 wait/lease Timer generation、状态及取消语义的直接断言。
+
+当前边界：
+
+- Objective 的 Timer 型等待和 evaluation lease 已进入统一物理时钟队列；ToolTask、Delegation、Permission、UserInput、ExternalEvent 与 ResourceAvailable 等等待本来就是事件驱动，继续由精确 Event 匹配处理；
+- Background wake、Activation lease 和 Schedule dependency 反向索引仍是 Phase 2 的剩余纵切；
+- `WaitCondition` 的公共领域接口将在 Background/Activation 接入后统一命名，当前不改变已经稳定的 Objective 公共协议。
