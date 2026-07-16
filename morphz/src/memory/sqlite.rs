@@ -1,15 +1,15 @@
 use crate::config::MemoryConfig;
 use crate::event::Event;
 use crate::memory::{
-    AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, DelegationRecord, DelegationStatus,
-    DeliveryStatus, EvaluationOutcomeCommit, EvaluationWorkItemMutation, EvaluationWorkItemRecord,
-    EvaluationWorkItemStatus, EventStore, MessageClaim, NewAgent, NewCognitiveContext,
-    NewDelegation, NewEvaluationWorkItem, NewObjective, NewScheduledIntent, NewSession,
-    NewWorkThread, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, ScheduledIntentRecord, ScheduledIntentStatus,
-    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionRecord, SessionStatus,
-    SessionStore, SessionUpdate, WorkThreadKind, WorkThreadMutation, WorkThreadRecord,
-    WorkThreadStatus,
+    ActivationOutcomeCommit, AgentBootstrapRecord, AgentRecord, CognitiveContextRecord,
+    DelegationRecord, DelegationStatus, DeliveryStatus, EventStore, MessageClaim, NewAgent,
+    NewCognitiveContext, NewDelegation, NewObjective, NewScheduledIntent, NewSession,
+    NewThreadActivation, NewThreadSignal, NewWorkThread, ObjectiveMutation, ObjectiveRecord,
+    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, ScheduledIntentRecord,
+    ScheduledIntentStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
+    SessionRecord, SessionStatus, SessionStore, SessionUpdate, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadLifecycle, ThreadSignalRecord,
+    ThreadSignalStatus, WorkThreadKind, WorkThreadMutation, WorkThreadRecord,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -45,6 +45,50 @@ impl SqliteStore {
         sqlx::query("PRAGMA foreign_keys = ON;")
             .execute(&pool)
             .await?;
+
+        // Morphz is not yet released, so the Scheduler Kernel adopts its
+        // canonical domain name directly. SQLite rewrites existing foreign
+        // key targets during ALTER TABLE, preserving local development data.
+        let has_legacy_activations = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'evaluation_work_items'",
+        )
+        .fetch_one(&pool)
+        .await?
+            > 0;
+        let has_thread_activations = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'thread_activations'",
+        )
+        .fetch_one(&pool)
+        .await?
+            > 0;
+        if has_legacy_activations && has_thread_activations {
+            return Err(
+                "SQLite 同时存在 evaluation_work_items 与 thread_activations，拒绝猜测迁移来源"
+                    .into(),
+            );
+        }
+        if has_legacy_activations {
+            sqlx::query("ALTER TABLE evaluation_work_items RENAME TO thread_activations")
+                .execute(&pool)
+                .await?;
+        }
+        if has_legacy_activations || has_thread_activations {
+            let activation_columns = sqlx::query("PRAGMA table_info(thread_activations)")
+                .fetch_all(&pool)
+                .await?
+                .into_iter()
+                .map(|row| row.get::<String, _>("name"))
+                .collect::<std::collections::HashSet<_>>();
+            if activation_columns.contains("parent_work_item_id")
+                && !activation_columns.contains("parent_activation_id")
+            {
+                sqlx::query(
+                    "ALTER TABLE thread_activations RENAME COLUMN parent_work_item_id TO parent_activation_id",
+                )
+                .execute(&pool)
+                .await?;
+            }
+        }
 
         // 初始化建表 DDL
         let ddl = r#"
@@ -180,7 +224,7 @@ impl SqliteStore {
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
 
-        CREATE TABLE IF NOT EXISTS evaluation_work_items (
+        CREATE TABLE IF NOT EXISTS thread_activations (
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
             agent_id TEXT NOT NULL,
@@ -189,25 +233,25 @@ impl SqliteStore {
             trigger_event_id TEXT NOT NULL UNIQUE,
             trigger_sequence INTEGER NOT NULL CHECK(trigger_sequence >= 0),
             trigger_kind TEXT NOT NULL,
-            parent_work_item_id TEXT,
+            parent_activation_id TEXT,
             root_turn_id TEXT NOT NULL,
             context_snapshot_version INTEGER,
-            status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'waiting_tool', 'waiting_external', 'completed', 'cancelled', 'failed')),
+            status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'cancelled', 'failed')),
             claimed_by TEXT,
             lease_expires_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
-            FOREIGN KEY(parent_work_item_id) REFERENCES evaluation_work_items(id)
+            FOREIGN KEY(parent_activation_id) REFERENCES thread_activations(id)
         );
-        CREATE INDEX IF NOT EXISTS idx_evaluation_work_items_session_status
-            ON evaluation_work_items(session_id, status, updated_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_evaluation_work_items_context_status
-            ON evaluation_work_items(context_id, status, updated_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_evaluation_work_items_lease
-            ON evaluation_work_items(status, lease_expires_at);
-        CREATE INDEX IF NOT EXISTS idx_evaluation_work_items_root_turn
-            ON evaluation_work_items(root_turn_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_thread_activations_session_status
+            ON thread_activations(session_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_thread_activations_context_status
+            ON thread_activations(context_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_thread_activations_lease
+            ON thread_activations(status, lease_expires_at);
+        CREATE INDEX IF NOT EXISTS idx_thread_activations_root_turn
+            ON thread_activations(root_turn_id, updated_at);
 
         CREATE TABLE IF NOT EXISTS evaluation_outcomes (
             work_item_id TEXT NOT NULL PRIMARY KEY,
@@ -215,7 +259,7 @@ impl SqliteStore {
             disposition TEXT NOT NULL,
             event_id TEXT NOT NULL UNIQUE,
             created_at TEXT NOT NULL,
-            FOREIGN KEY(work_item_id) REFERENCES evaluation_work_items(id) ON DELETE CASCADE,
+            FOREIGN KEY(work_item_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
 
@@ -227,7 +271,7 @@ impl SqliteStore {
             session_id TEXT NOT NULL,
             root_turn_id TEXT NOT NULL UNIQUE,
             kind TEXT NOT NULL CHECK(kind IN ('dialogue', 'work', 'objective', 'delegation', 'delivery')),
-            status TEXT NOT NULL CHECK(status IN ('active', 'waiting', 'completed', 'failed', 'cancelled')),
+            status TEXT NOT NULL CHECK(status IN ('active', 'completed', 'failed', 'cancelled')),
             executor_kind TEXT NOT NULL,
             executor_id TEXT,
             result_text TEXT,
@@ -242,6 +286,35 @@ impl SqliteStore {
             ON work_threads(context_id, status, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_work_threads_session_delivery
             ON work_threads(session_id, delivery_status, updated_at);
+
+        CREATE TABLE IF NOT EXISTS thread_signals (
+            id TEXT PRIMARY KEY,
+            thread_id TEXT NOT NULL,
+            event_id TEXT NOT NULL UNIQUE,
+            sequence INTEGER NOT NULL CHECK(sequence >= 0),
+            kind TEXT NOT NULL,
+            parent_activation_id TEXT,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'claimed', 'acknowledged')),
+            created_at TEXT NOT NULL,
+            claimed_at TEXT,
+            acknowledged_at TEXT,
+            FOREIGN KEY(thread_id) REFERENCES work_threads(id) ON DELETE CASCADE,
+            FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE,
+            FOREIGN KEY(parent_activation_id) REFERENCES thread_activations(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_thread_signals_thread_status_sequence
+            ON thread_signals(thread_id, status, sequence, id);
+
+        CREATE TABLE IF NOT EXISTS activation_signals (
+            activation_id TEXT NOT NULL,
+            signal_id TEXT NOT NULL UNIQUE,
+            ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+            PRIMARY KEY(activation_id, ordinal),
+            FOREIGN KEY(activation_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
+            FOREIGN KEY(signal_id) REFERENCES thread_signals(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_activation_signals_signal
+            ON activation_signals(signal_id);
 
         CREATE TABLE IF NOT EXISTS scheduled_intents (
             id TEXT PRIMARY KEY,
@@ -269,12 +342,23 @@ impl SqliteStore {
             event_id TEXT NOT NULL UNIQUE,
             created_at TEXT NOT NULL,
             FOREIGN KEY(thread_id) REFERENCES work_threads(id) ON DELETE CASCADE,
-            FOREIGN KEY(work_item_id) REFERENCES evaluation_work_items(id) ON DELETE CASCADE,
+            FOREIGN KEY(work_item_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
+        // v1 Scheduler Kernel no longer persists `waiting` as Thread state.
+        // Existing rows are a one-way data migration to lifecycle=open; phase
+        // is derived from Signal, Activation, Schedule and Job facts.
+        sqlx::query("UPDATE work_threads SET status = 'active' WHERE status = 'waiting'")
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            "UPDATE thread_activations SET status = 'completed' WHERE status IN ('waiting_tool', 'waiting_external')",
+        )
+        .execute(&pool)
+        .await?;
         let mount_columns = sqlx::query("PRAGMA table_info(session_mounts)")
             .fetch_all(&pool)
             .await?;
@@ -363,18 +447,39 @@ fn parse_session_attention_state(value: &str) -> SessionAttentionState {
     }
 }
 
-fn parse_evaluation_work_item_status(
+fn parse_thread_activation_status(
     value: &str,
-) -> Result<EvaluationWorkItemStatus, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<ThreadActivationStatus, Box<dyn std::error::Error + Send + Sync>> {
     match value {
-        "queued" => Ok(EvaluationWorkItemStatus::Queued),
-        "running" => Ok(EvaluationWorkItemStatus::Running),
-        "waiting_tool" => Ok(EvaluationWorkItemStatus::WaitingTool),
-        "waiting_external" => Ok(EvaluationWorkItemStatus::WaitingExternal),
-        "completed" => Ok(EvaluationWorkItemStatus::Completed),
-        "cancelled" => Ok(EvaluationWorkItemStatus::Cancelled),
-        "failed" => Ok(EvaluationWorkItemStatus::Failed),
-        other => Err(format!("未知 Evaluation Work Item 状态：'{other}'").into()),
+        "queued" => Ok(ThreadActivationStatus::Queued),
+        "running" => Ok(ThreadActivationStatus::Running),
+        "waiting_tool" | "waiting_external" | "completed" | "succeeded" => {
+            Ok(ThreadActivationStatus::Succeeded)
+        }
+        "cancelled" => Ok(ThreadActivationStatus::Cancelled),
+        "failed" => Ok(ThreadActivationStatus::Failed),
+        other => Err(format!("未知 Thread Activation 状态：'{other}'").into()),
+    }
+}
+
+fn thread_activation_status_storage(status: ThreadActivationStatus) -> &'static str {
+    match status {
+        ThreadActivationStatus::Queued => "queued",
+        ThreadActivationStatus::Running => "running",
+        ThreadActivationStatus::Succeeded => "completed",
+        ThreadActivationStatus::Cancelled => "cancelled",
+        ThreadActivationStatus::Failed => "failed",
+    }
+}
+
+fn parse_thread_signal_status(
+    value: &str,
+) -> Result<ThreadSignalStatus, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "pending" => Ok(ThreadSignalStatus::Pending),
+        "claimed" => Ok(ThreadSignalStatus::Claimed),
+        "acknowledged" => Ok(ThreadSignalStatus::Acknowledged),
+        other => Err(format!("未知 Thread Signal 状态：'{other}'").into()),
     }
 }
 
@@ -391,16 +496,17 @@ fn parse_work_thread_kind(
     }
 }
 
-fn parse_work_thread_status(
+fn parse_thread_lifecycle(
     value: &str,
-) -> Result<WorkThreadStatus, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<ThreadLifecycle, Box<dyn std::error::Error + Send + Sync>> {
     match value {
-        "active" => Ok(WorkThreadStatus::Active),
-        "waiting" => Ok(WorkThreadStatus::Waiting),
-        "completed" => Ok(WorkThreadStatus::Completed),
-        "failed" => Ok(WorkThreadStatus::Failed),
-        "cancelled" => Ok(WorkThreadStatus::Cancelled),
-        other => Err(format!("未知 Work Thread status：'{other}'").into()),
+        // Old rows used active/waiting to mix lifecycle and scheduler phase.
+        // Both represent the same non-terminal lifecycle fact.
+        "active" | "waiting" | "open" => Ok(ThreadLifecycle::Open),
+        "completed" => Ok(ThreadLifecycle::Completed),
+        "failed" => Ok(ThreadLifecycle::Failed),
+        "cancelled" => Ok(ThreadLifecycle::Cancelled),
+        other => Err(format!("未知 Thread lifecycle：'{other}'").into()),
     }
 }
 
@@ -523,10 +629,10 @@ fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionRecord {
     }
 }
 
-fn evaluation_work_item_from_row(
+fn thread_activation_from_row(
     row: &sqlx::sqlite::SqliteRow,
-) -> Result<EvaluationWorkItemRecord, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(EvaluationWorkItemRecord {
+) -> Result<ThreadActivationRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ThreadActivationRecord {
         id: row.get("id"),
         revision: sqlite_u64(row, "revision")?,
         agent_id: row.get("agent_id"),
@@ -535,16 +641,37 @@ fn evaluation_work_item_from_row(
         trigger_event_id: row.get("trigger_event_id"),
         trigger_sequence: sqlite_u64(row, "trigger_sequence")?,
         trigger_kind: row.get("trigger_kind"),
-        parent_work_item_id: row.get("parent_work_item_id"),
+        parent_activation_id: row.get("parent_activation_id"),
         root_turn_id: row.get("root_turn_id"),
         context_snapshot_version: sqlite_optional_u64(row, "context_snapshot_version")?,
-        status: parse_evaluation_work_item_status(&row.get::<String, _>("status"))?,
+        status: parse_thread_activation_status(&row.get::<String, _>("status"))?,
         claimed_by: row.get("claimed_by"),
         lease_expires_at: row
             .get::<Option<String>, _>("lease_expires_at")
             .map(|value| parse_time(&value)),
         created_at: parse_time(&row.get::<String, _>("created_at")),
         updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
+}
+
+fn thread_signal_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<ThreadSignalRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ThreadSignalRecord {
+        id: row.get("id"),
+        thread_id: row.get("thread_id"),
+        event_id: row.get("event_id"),
+        sequence: sqlite_u64(row, "sequence")?,
+        kind: row.get("kind"),
+        parent_activation_id: row.get("parent_activation_id"),
+        status: parse_thread_signal_status(&row.get::<String, _>("status"))?,
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        claimed_at: row
+            .get::<Option<String>, _>("claimed_at")
+            .map(|value| parse_time(&value)),
+        acknowledged_at: row
+            .get::<Option<String>, _>("acknowledged_at")
+            .map(|value| parse_time(&value)),
     })
 }
 
@@ -559,7 +686,7 @@ fn work_thread_from_row(
         session_id: row.get("session_id"),
         root_turn_id: row.get("root_turn_id"),
         kind: parse_work_thread_kind(&row.get::<String, _>("kind"))?,
-        status: parse_work_thread_status(&row.get::<String, _>("status"))?,
+        lifecycle: parse_thread_lifecycle(&row.get::<String, _>("status"))?,
         executor_kind: row.get("executor_kind"),
         executor_id: row.get("executor_id"),
         result_text: row.get("result_text"),
@@ -1204,17 +1331,269 @@ impl SessionStore for SqliteStore {
         Ok(())
     }
 
-    async fn ensure_evaluation_work_item(
+    async fn claim_thread_signal_batch(
         &self,
-        work_item: NewEvaluationWorkItem,
-    ) -> Result<EvaluationWorkItemRecord, Box<dyn std::error::Error + Send + Sync>> {
+        signal: NewThreadSignal,
+        activation: NewThreadActivation,
+        max_signals: usize,
+    ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if max_signals == 0 {
+            return Err("Thread Signal batch 上限必须大于 0".into());
+        }
+        let sequence = i64::try_from(signal.sequence)
+            .map_err(|_| "Thread Signal sequence 超出 SQLite INTEGER 范围")?;
+        let max_signals = i64::try_from(max_signals)
+            .map_err(|_| "Thread Signal batch 上限超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+
+        // This first write serializes competing claims under SQLite WAL. The
+        // immutable Event has already crossed the Ledger boundary before the
+        // Orchestrator asks the scheduler to materialize its mailbox Signal.
+        sqlx::query(
+            r#"INSERT OR IGNORE INTO thread_signals
+               (id, thread_id, event_id, sequence, kind, parent_activation_id,
+                status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)"#,
+        )
+        .bind(&signal.id)
+        .bind(&signal.thread_id)
+        .bind(&signal.event_id)
+        .bind(sequence)
+        .bind(&signal.kind)
+        .bind(&signal.parent_activation_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+
+        let stored_signal = sqlx::query("SELECT * FROM thread_signals WHERE event_id = ?")
+            .bind(&signal.event_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let stored_signal = thread_signal_from_row(&stored_signal)?;
+        if stored_signal.thread_id != signal.thread_id {
+            return Err(format!("Event '{}' 已路由到不同 Thread Signal", signal.event_id).into());
+        }
+
+        if let Some(row) = sqlx::query(
+            r#"SELECT ew.* FROM activation_signals links
+               JOIN thread_activations ew ON ew.id = links.activation_id
+               WHERE links.signal_id = ?"#,
+        )
+        .bind(&stored_signal.id)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            let existing = thread_activation_from_row(&row)?;
+            tx.commit().await?;
+            return Ok(Some(existing));
+        }
+
+        let thread = sqlx::query("SELECT * FROM work_threads WHERE id = ?")
+            .bind(&signal.thread_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let thread = work_thread_from_row(&thread)?;
+        if thread.agent_id != activation.agent_id
+            || thread.context_id != activation.context_id
+            || thread.session_id != activation.session_id
+            || thread.root_turn_id != activation.root_turn_id
+        {
+            return Err(format!(
+                "Thread Signal '{}' 与 Activation route 不一致",
+                stored_signal.id
+            )
+            .into());
+        }
+
+        // One-way adoption for durable Activations created before explicit
+        // Thread Signals existed. The matching trigger Event is unambiguous;
+        // attaching it here avoids creating a second Activation or stranding
+        // the recovered plan behind its own queued row.
+        if let Some(row) = sqlx::query(
+            r#"SELECT * FROM thread_activations
+               WHERE root_turn_id = ? AND trigger_event_id = ?
+                 AND status IN ('queued', 'running') LIMIT 1"#,
+        )
+        .bind(&thread.root_turn_id)
+        .bind(&stored_signal.event_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            let existing = thread_activation_from_row(&row)?;
+            sqlx::query(
+                "INSERT OR IGNORE INTO activation_signals (activation_id, signal_id, ordinal) VALUES (?, ?, 0)",
+            )
+            .bind(&existing.id)
+            .bind(&stored_signal.id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE thread_signals SET status = 'claimed', claimed_at = ? WHERE id = ? AND status = 'pending'",
+            )
+            .bind(&now)
+            .bind(&stored_signal.id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(Some(existing));
+        }
+
+        // queued/running are the only Activation states that own Thread
+        // single-flight. Historical waiting_* rows represent a completed
+        // model activation waiting on a new physical Signal and must not block
+        // its successor.
+        let active = sqlx::query(
+            "SELECT id FROM thread_activations WHERE root_turn_id = ? AND status IN ('queued', 'running') LIMIT 1",
+        )
+        .bind(&thread.root_turn_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if active.is_some() {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        let pending = sqlx::query(
+            r#"SELECT * FROM thread_signals
+               WHERE thread_id = ? AND status = 'pending'
+               ORDER BY sequence, id LIMIT ?"#,
+        )
+        .bind(&thread.id)
+        .bind(max_signals)
+        .fetch_all(&mut *tx)
+        .await?;
+        if pending.is_empty() {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let primary = thread_signal_from_row(&pending[0])?;
+        let trigger_sequence = i64::try_from(primary.sequence)
+            .map_err(|_| "Activation trigger sequence 超出 SQLite INTEGER 范围")?;
+        sqlx::query(
+            r#"INSERT INTO thread_activations
+               (id, revision, agent_id, context_id, session_id, trigger_event_id,
+                trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
+                status, created_at, updated_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
+        )
+        .bind(&activation.id)
+        .bind(&activation.agent_id)
+        .bind(&activation.context_id)
+        .bind(&activation.session_id)
+        .bind(&primary.event_id)
+        .bind(trigger_sequence)
+        .bind(&primary.kind)
+        .bind(&primary.parent_activation_id)
+        .bind(&activation.root_turn_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+
+        for (ordinal, row) in pending.iter().enumerate() {
+            let pending_signal = thread_signal_from_row(row)?;
+            let ordinal = i64::try_from(ordinal)
+                .map_err(|_| "Activation Signal ordinal 超出 SQLite INTEGER 范围")?;
+            sqlx::query(
+                "INSERT INTO activation_signals (activation_id, signal_id, ordinal) VALUES (?, ?, ?)",
+            )
+            .bind(&activation.id)
+            .bind(&pending_signal.id)
+            .bind(ordinal)
+            .execute(&mut *tx)
+            .await?;
+            let claimed = sqlx::query(
+                "UPDATE thread_signals SET status = 'claimed', claimed_at = ? WHERE id = ? AND status = 'pending'",
+            )
+            .bind(&now)
+            .bind(&pending_signal.id)
+            .execute(&mut *tx)
+            .await?;
+            if claimed.rows_affected() != 1 {
+                return Err(format!(
+                    "Thread Signal '{}' 在 Activation claim 中发生并发冲突",
+                    pending_signal.id
+                )
+                .into());
+            }
+        }
+        tx.commit().await?;
+        self.get_thread_activation(&activation.id).await
+    }
+
+    async fn list_context_thread_signals(
+        &self,
+        context_id: &str,
+        status: Option<ThreadSignalStatus>,
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = if let Some(status) = status {
+            sqlx::query(
+                r#"SELECT signals.* FROM thread_signals signals
+                   JOIN work_threads threads ON threads.id = signals.thread_id
+                   WHERE threads.context_id = ? AND signals.status = ?
+                   ORDER BY signals.sequence, signals.id"#,
+            )
+            .bind(context_id)
+            .bind(status.as_str())
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"SELECT signals.* FROM thread_signals signals
+                   JOIN work_threads threads ON threads.id = signals.thread_id
+                   WHERE threads.context_id = ?
+                   ORDER BY signals.sequence, signals.id"#,
+            )
+            .bind(context_id)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.iter().map(thread_signal_from_row).collect()
+    }
+
+    async fn list_activation_signals(
+        &self,
+        activation_id: &str,
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT signals.* FROM activation_signals links
+               JOIN thread_signals signals ON signals.id = links.signal_id
+               WHERE links.activation_id = ? ORDER BY links.ordinal"#,
+        )
+        .bind(activation_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(thread_signal_from_row).collect()
+    }
+
+    async fn next_pending_thread_signal(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query(
+            r#"SELECT * FROM thread_signals WHERE thread_id = ? AND status = 'pending'
+               ORDER BY sequence, id LIMIT 1"#,
+        )
+        .bind(thread_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .as_ref()
+        .map(thread_signal_from_row)
+        .transpose()
+    }
+
+    async fn ensure_thread_activation(
+        &self,
+        work_item: NewThreadActivation,
+    ) -> Result<ThreadActivationRecord, Box<dyn std::error::Error + Send + Sync>> {
         let trigger_sequence = i64::try_from(work_item.trigger_sequence)
-            .map_err(|_| "Work Item trigger sequence 超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Thread Activation trigger sequence 超出 SQLite INTEGER 范围")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         sqlx::query(
-            r#"INSERT OR IGNORE INTO evaluation_work_items
+            r#"INSERT OR IGNORE INTO thread_activations
                (id, revision, agent_id, context_id, session_id, trigger_event_id,
-                trigger_sequence, trigger_kind, parent_work_item_id, root_turn_id,
+                trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
                 status, created_at, updated_at)
                VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
         )
@@ -1225,23 +1604,23 @@ impl SessionStore for SqliteStore {
         .bind(&work_item.trigger_event_id)
         .bind(trigger_sequence)
         .bind(&work_item.trigger_kind)
-        .bind(&work_item.parent_work_item_id)
+        .bind(&work_item.parent_activation_id)
         .bind(&work_item.root_turn_id)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
         .await?;
-        let row = sqlx::query("SELECT * FROM evaluation_work_items WHERE trigger_event_id = ?")
+        let row = sqlx::query("SELECT * FROM thread_activations WHERE trigger_event_id = ?")
             .bind(&work_item.trigger_event_id)
             .fetch_one(&self.pool)
             .await?;
-        let existing = evaluation_work_item_from_row(&row)?;
+        let existing = thread_activation_from_row(&row)?;
         if existing.context_id != work_item.context_id
             || existing.session_id != work_item.session_id
             || existing.root_turn_id != work_item.root_turn_id
         {
             return Err(format!(
-                "Trigger Event '{}' 已被不同 Evaluation Work Item 占用",
+                "Trigger Event '{}' 已被不同 Thread Activation 占用",
                 work_item.trigger_event_id
             )
             .into());
@@ -1249,51 +1628,51 @@ impl SessionStore for SqliteStore {
         Ok(existing)
     }
 
-    async fn get_evaluation_work_item(
+    async fn get_thread_activation(
         &self,
         id: &str,
-    ) -> Result<Option<EvaluationWorkItemRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        let row = sqlx::query("SELECT * FROM evaluation_work_items WHERE id = ?")
+    ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query("SELECT * FROM thread_activations WHERE id = ?")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?;
-        row.as_ref().map(evaluation_work_item_from_row).transpose()
+        row.as_ref().map(thread_activation_from_row).transpose()
     }
 
-    async fn list_context_evaluation_work_items(
+    async fn list_context_thread_activations(
         &self,
         context_id: &str,
         include_terminal: bool,
-    ) -> Result<Vec<EvaluationWorkItemRecord>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = if include_terminal {
             sqlx::query(
-                "SELECT * FROM evaluation_work_items WHERE context_id = ? ORDER BY created_at, id",
+                "SELECT * FROM thread_activations WHERE context_id = ? ORDER BY created_at, id",
             )
             .bind(context_id)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query(
-                "SELECT * FROM evaluation_work_items WHERE context_id = ? AND status NOT IN ('completed', 'cancelled', 'failed') ORDER BY created_at, id",
+                "SELECT * FROM thread_activations WHERE context_id = ? AND status NOT IN ('completed', 'cancelled', 'failed') ORDER BY created_at, id",
             )
             .bind(context_id)
             .fetch_all(&self.pool)
             .await?
         };
-        rows.iter().map(evaluation_work_item_from_row).collect()
+        rows.iter().map(thread_activation_from_row).collect()
     }
 
-    async fn update_evaluation_work_item(
+    async fn update_thread_activation(
         &self,
         id: &str,
         expected_revision: u64,
-        status: EvaluationWorkItemStatus,
+        status: ThreadActivationStatus,
         claimed_by: Option<&str>,
         lease_expires_at: Option<DateTime<Utc>>,
         context_snapshot_version: Option<u64>,
-    ) -> Result<EvaluationWorkItemMutation, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>> {
         let expected_revision = i64::try_from(expected_revision)
-            .map_err(|_| "Work Item revision 超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Thread Activation revision 超出 SQLite INTEGER 范围")?;
         let context_snapshot_version = context_snapshot_version
             .map(i64::try_from)
             .transpose()
@@ -1301,41 +1680,58 @@ impl SessionStore for SqliteStore {
         let lease_expires_at =
             lease_expires_at.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
-            r#"UPDATE evaluation_work_items
+            r#"UPDATE thread_activations
                SET revision = revision + 1, status = ?, claimed_by = ?,
                    lease_expires_at = ?,
                    context_snapshot_version = COALESCE(?, context_snapshot_version),
                    updated_at = ?
                WHERE id = ? AND revision = ?"#,
         )
-        .bind(status.as_str())
+        .bind(thread_activation_status_storage(status))
         .bind(claimed_by)
         .bind(lease_expires_at)
         .bind(context_snapshot_version)
         .bind(&now)
         .bind(id)
         .bind(expected_revision)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 1 {
-            return Ok(EvaluationWorkItemMutation::Updated(
-                self.get_evaluation_work_item(id)
-                    .await?
-                    .ok_or("Work Item 更新后无法读取")?,
-            ));
+            if status.is_terminal() {
+                sqlx::query(
+                    r#"UPDATE thread_signals
+                       SET status = 'acknowledged', acknowledged_at = ?
+                       WHERE id IN (
+                         SELECT signal_id FROM activation_signals WHERE activation_id = ?
+                       ) AND status = 'claimed'"#,
+                )
+                .bind(&now)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            let row = sqlx::query("SELECT * FROM thread_activations WHERE id = ?")
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let updated = thread_activation_from_row(&row)?;
+            tx.commit().await?;
+            return Ok(ThreadActivationMutation::Updated(updated));
         }
-        Ok(match self.get_evaluation_work_item(id).await? {
-            Some(current) => EvaluationWorkItemMutation::Conflict { current },
-            None => EvaluationWorkItemMutation::NotFound,
+        tx.commit().await?;
+        Ok(match self.get_thread_activation(id).await? {
+            Some(current) => ThreadActivationMutation::Conflict { current },
+            None => ThreadActivationMutation::NotFound,
         })
     }
 
-    async fn commit_evaluation_outcome(
+    async fn commit_activation_outcome(
         &self,
         work_item_id: &str,
         event: &Event,
-    ) -> Result<EvaluationOutcomeCommit, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<ActivationOutcomeCommit, Box<dyn std::error::Error + Send + Sync>> {
         let session_id = event
             .payload
             .get("session_id")
@@ -1377,7 +1773,7 @@ impl SessionStore for SqliteStore {
                     .fetch_one(&mut *tx)
                     .await?;
             tx.commit().await?;
-            return Ok(EvaluationOutcomeCommit::Existing {
+            return Ok(ActivationOutcomeCommit::Existing {
                 event_id: existing.get("event_id"),
             });
         }
@@ -1473,7 +1869,7 @@ impl SessionStore for SqliteStore {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        Ok(EvaluationOutcomeCommit::Committed)
+        Ok(ActivationOutcomeCommit::Committed)
     }
 
     async fn ensure_work_thread(
@@ -1568,7 +1964,7 @@ impl SessionStore for SqliteStore {
         id: &str,
         expected_revision: u64,
         kind: Option<WorkThreadKind>,
-        status: Option<WorkThreadStatus>,
+        lifecycle: Option<ThreadLifecycle>,
         result_text: Option<&str>,
         result_event_id: Option<&str>,
         delivery_status: Option<DeliveryStatus>,
@@ -1590,7 +1986,12 @@ impl SessionStore for SqliteStore {
                WHERE id = ? AND revision = ?"#,
         )
         .bind(kind.map(WorkThreadKind::as_str))
-        .bind(status.map(WorkThreadStatus::as_str))
+        // The physical column is retained until the one-way schema rebuild,
+        // but its value now stores lifecycle only.
+        .bind(lifecycle.map(|value| match value {
+            ThreadLifecycle::Open => "active",
+            other => other.as_str(),
+        }))
         .bind(result_text)
         .bind(result_event_id)
         .bind(delivery_status.map(DeliveryStatus::as_str))
@@ -1678,7 +2079,7 @@ impl SessionStore for SqliteStore {
                    (id, revision, agent_id, context_id, session_id, root_turn_id,
                     kind, status, executor_kind, executor_id, delivery_status,
                     created_at, updated_at)
-                   VALUES (?, 1, ?, ?, ?, ?, ?, 'waiting', ?, ?, 'none', ?, ?)"#,
+                   VALUES (?, 1, ?, ?, ?, ?, ?, 'active', ?, ?, 'none', ?, ?)"#,
             )
             .bind(&thread.id)
             .bind(&thread.agent_id)
@@ -2708,14 +3109,115 @@ mod tests {
     use super::*;
     use crate::memory::QueryFilter;
     use std::collections::HashMap;
+    use std::sync::Arc;
     use tempfile::NamedTempFile;
+
+    #[tokio::test]
+    async fn migrates_legacy_evaluation_work_items_into_thread_activations() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(path)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE evaluation_work_items (
+                id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL,
+                agent_id TEXT NOT NULL,
+                context_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                trigger_event_id TEXT NOT NULL UNIQUE,
+                trigger_sequence INTEGER NOT NULL,
+                trigger_kind TEXT NOT NULL,
+                parent_work_item_id TEXT,
+                root_turn_id TEXT NOT NULL,
+                context_snapshot_version INTEGER,
+                status TEXT NOT NULL,
+                claimed_by TEXT,
+                lease_expires_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE evaluation_outcomes (
+                work_item_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                disposition TEXT NOT NULL,
+                event_id TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(work_item_id) REFERENCES evaluation_work_items(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            r#"INSERT INTO evaluation_work_items
+               (id, revision, agent_id, context_id, session_id, trigger_event_id,
+                trigger_sequence, trigger_kind, parent_work_item_id, root_turn_id,
+                status, created_at, updated_at)
+               VALUES ('legacy-activation', 1, 'agent', 'context', 'session',
+                       'event', 7, 'chat/tool_output', NULL, 'root',
+                       'waiting_tool', ?, ?)"#,
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let store = SqliteStore::new(path).await.unwrap();
+        let migrated = store
+            .get_thread_activation("legacy-activation")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(migrated.status, ThreadActivationStatus::Succeeded);
+        let columns = sqlx::query("PRAGMA table_info(thread_activations)")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<std::collections::HashSet<_>>();
+        assert!(columns.contains("parent_activation_id"));
+        assert!(!columns.contains("parent_work_item_id"));
+        let legacy_table = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'evaluation_work_items'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(legacy_table, 0);
+        let outcome_foreign_keys = sqlx::query("PRAGMA foreign_key_list(evaluation_outcomes)")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap();
+        assert!(outcome_foreign_keys
+            .iter()
+            .any(|row| row.get::<String, _>("table") == "thread_activations"));
+    }
 
     #[tokio::test]
     async fn test_sqlite_event_store() {
         let tmp_file = NamedTempFile::new().unwrap();
-        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
-            .await
-            .unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
 
         let mut payload = serde_json::Map::new();
         payload.insert("key".to_string(), serde_json::json!("value"));
@@ -2753,6 +3255,291 @@ mod tests {
             .await
             .unwrap();
         assert!(other_session.is_empty());
+    }
+
+    #[tokio::test]
+    async fn thread_signals_are_claimed_in_one_bounded_ordered_activation_batch() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_context(NewCognitiveContext {
+                id: "signal-context".to_string(),
+                agent_id: "signal-agent".to_string(),
+                title: "Signal Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "signal-session".to_string(),
+                agent_id: "signal-agent".to_string(),
+                context_id: "signal-context".to_string(),
+                parent_session_id: None,
+                title: "Signal Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let thread = store
+            .ensure_work_thread(NewWorkThread {
+                id: "signal-thread".to_string(),
+                agent_id: "signal-agent".to_string(),
+                context_id: "signal-context".to_string(),
+                session_id: "signal-session".to_string(),
+                root_turn_id: "signal-root".to_string(),
+                kind: WorkThreadKind::Work,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+            })
+            .await
+            .unwrap();
+
+        for event_id in ["signal-event-1", "signal-event-2", "signal-event-3"] {
+            store
+                .append(Event::new(
+                    event_id.to_string(),
+                    "fixture".to_string(),
+                    crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                    "chat/tool_output".to_string(),
+                    [
+                        (
+                            "context_id".to_string(),
+                            serde_json::json!("signal-context"),
+                        ),
+                        (
+                            "session_id".to_string(),
+                            serde_json::json!("signal-session"),
+                        ),
+                        ("root_turn_id".to_string(), serde_json::json!("signal-root")),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+                .await
+                .unwrap();
+        }
+        let events = store
+            .query(QueryFilter {
+                context_id: Some("signal-context".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let sequence = |event_id: &str| {
+            events
+                .iter()
+                .find(|event| event.id == event_id)
+                .and_then(|event| event.sequence)
+                .unwrap()
+        };
+        let signal = |index: usize| NewThreadSignal {
+            id: format!("signal-{index}"),
+            thread_id: thread.id.clone(),
+            event_id: format!("signal-event-{index}"),
+            sequence: sequence(&format!("signal-event-{index}")),
+            kind: "chat/tool_output".to_string(),
+            parent_activation_id: None,
+        };
+        let activation = |index: usize| NewThreadActivation {
+            id: format!("activation-{index}"),
+            agent_id: "signal-agent".to_string(),
+            context_id: "signal-context".to_string(),
+            session_id: "signal-session".to_string(),
+            trigger_event_id: format!("signal-event-{index}"),
+            trigger_sequence: sequence(&format!("signal-event-{index}")),
+            trigger_kind: "chat/tool_output".to_string(),
+            parent_activation_id: None,
+            root_turn_id: "signal-root".to_string(),
+        };
+
+        let first = store
+            .claim_thread_signal_batch(signal(1), activation(1), 32)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.trigger_event_id, "signal-event-1");
+        let first_signals = store.list_activation_signals(&first.id).await.unwrap();
+        assert_eq!(first_signals.len(), 1);
+        assert_eq!(first_signals[0].id, "signal-1");
+        assert_eq!(first_signals[0].status, ThreadSignalStatus::Claimed);
+
+        assert!(store
+            .claim_thread_signal_batch(signal(2), activation(2), 32)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .claim_thread_signal_batch(signal(3), activation(3), 32)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store
+                .list_context_thread_signals("signal-context", Some(ThreadSignalStatus::Pending))
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let completed = store
+            .update_thread_activation(
+                &first.id,
+                first.revision,
+                ThreadActivationStatus::Succeeded,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(completed, ThreadActivationMutation::Updated(_)));
+        assert_eq!(
+            store.list_activation_signals(&first.id).await.unwrap()[0].status,
+            ThreadSignalStatus::Acknowledged
+        );
+
+        let batched = store
+            .claim_thread_signal_batch(signal(2), activation(2), 32)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(batched.trigger_event_id, "signal-event-2");
+        let claimed = store.list_activation_signals(&batched.id).await.unwrap();
+        assert_eq!(
+            claimed
+                .iter()
+                .map(|signal| signal.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["signal-event-2", "signal-event-3"]
+        );
+        assert!(claimed
+            .iter()
+            .all(|signal| signal.status == ThreadSignalStatus::Claimed));
+
+        let batched = match store
+            .update_thread_activation(
+                &batched.id,
+                batched.revision,
+                ThreadActivationStatus::Succeeded,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(updated) => updated,
+            other => panic!("unexpected activation mutation: {other:?}"),
+        };
+        assert!(batched.status.is_terminal());
+
+        for event_id in ["signal-event-4", "signal-event-5"] {
+            store
+                .append(Event::new(
+                    event_id.to_string(),
+                    "fixture".to_string(),
+                    crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                    "chat/tool_output".to_string(),
+                    [
+                        (
+                            "context_id".to_string(),
+                            serde_json::json!("signal-context"),
+                        ),
+                        (
+                            "session_id".to_string(),
+                            serde_json::json!("signal-session"),
+                        ),
+                        ("root_turn_id".to_string(), serde_json::json!("signal-root")),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+                .await
+                .unwrap();
+        }
+        let later = store
+            .query(QueryFilter {
+                context_id: Some("signal-context".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let later_sequence = |event_id: &str| {
+            later
+                .iter()
+                .find(|event| event.id == event_id)
+                .and_then(|event| event.sequence)
+                .unwrap()
+        };
+        let sequence_4 = later_sequence("signal-event-4");
+        let sequence_5 = later_sequence("signal-event-5");
+        let left_store = Arc::clone(&store);
+        let right_store = Arc::clone(&store);
+        let left = tokio::spawn(async move {
+            left_store
+                .claim_thread_signal_batch(
+                    NewThreadSignal {
+                        id: "signal-4".to_string(),
+                        thread_id: "signal-thread".to_string(),
+                        event_id: "signal-event-4".to_string(),
+                        sequence: sequence_4,
+                        kind: "chat/tool_output".to_string(),
+                        parent_activation_id: None,
+                    },
+                    NewThreadActivation {
+                        id: "activation-4".to_string(),
+                        agent_id: "signal-agent".to_string(),
+                        context_id: "signal-context".to_string(),
+                        session_id: "signal-session".to_string(),
+                        trigger_event_id: "signal-event-4".to_string(),
+                        trigger_sequence: sequence_4,
+                        trigger_kind: "chat/tool_output".to_string(),
+                        parent_activation_id: None,
+                        root_turn_id: "signal-root".to_string(),
+                    },
+                    1,
+                )
+                .await
+                .unwrap()
+        });
+        let right = tokio::spawn(async move {
+            right_store
+                .claim_thread_signal_batch(
+                    NewThreadSignal {
+                        id: "signal-5".to_string(),
+                        thread_id: "signal-thread".to_string(),
+                        event_id: "signal-event-5".to_string(),
+                        sequence: sequence_5,
+                        kind: "chat/tool_output".to_string(),
+                        parent_activation_id: None,
+                    },
+                    NewThreadActivation {
+                        id: "activation-5".to_string(),
+                        agent_id: "signal-agent".to_string(),
+                        context_id: "signal-context".to_string(),
+                        session_id: "signal-session".to_string(),
+                        trigger_event_id: "signal-event-5".to_string(),
+                        trigger_sequence: sequence_5,
+                        trigger_kind: "chat/tool_output".to_string(),
+                        parent_activation_id: None,
+                        root_turn_id: "signal-root".to_string(),
+                    },
+                    1,
+                )
+                .await
+                .unwrap()
+        });
+        let (left, right) = tokio::join!(left, right);
+        let claimed_count = [left.unwrap(), right.unwrap()]
+            .into_iter()
+            .filter(Option::is_some)
+            .count();
+        assert_eq!(claimed_count, 1, "Thread Activation 必须 single-flight");
     }
 
     #[tokio::test]

@@ -2,12 +2,11 @@ use crate::config::OrchestratorConfig;
 use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
 use crate::llm::{Client, Message, PromptTokenCount};
 use crate::memory::{
-    DelegationStatus, DeliveryStatus, EvaluationOutcomeCommit, EvaluationWorkItemMutation,
-    EvaluationWorkItemRecord, EvaluationWorkItemStatus, EventStore, NewCognitiveContext,
-    NewDelegation, NewEvaluationWorkItem, NewSession, NewWorkThread, QueryFilter,
+    ActivationOutcomeCommit, DelegationStatus, DeliveryStatus, EventStore, NewCognitiveContext,
+    NewDelegation, NewSession, NewThreadActivation, NewThreadSignal, NewWorkThread, QueryFilter,
     ScheduledIntentStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
-    SessionStatus, SessionStore, SessionUpdate, WorkThreadKind, WorkThreadMutation,
-    WorkThreadStatus,
+    SessionStatus, SessionStore, SessionUpdate, ThreadActivationMutation, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadLifecycle, WorkThreadKind, WorkThreadMutation,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{ContextEngine, ContextView};
@@ -25,6 +24,7 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::{watch, Mutex, Notify};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
+const MAX_ACTIVATION_SIGNAL_BATCH: usize = 32;
 
 const AGENT_OWNED_CONTEXT_PROMPT_BASE: &str = r#"你是 Morphz，一个能够管理自身工作 Context 的 AI Agent。
 
@@ -37,7 +37,7 @@ Context 的状态分为三个权限域：
 
 一个 Cognitive Context 只有一个共享 Mind，但可以包含多个 Session。Session 是输入输出连接和任务进展边界，不拥有独立 Mind。`kernel.active-session` 只表示本次求值应读取和回复的 Session；它不是 Context 的全局唯一活动状态，其他 Session 可能正在并发求值。inbox 中每条 observation 的 `session` 标记来源，你可以在共享 Context 内跨 Session 复用信息，但当前响应必须路由回 active-session，不能混淆各 Session 的请求和进展。context_tx 修改共享 Mind，由 Runtime 以 Context 为粒度串行提交并校验版本。
 
-每个 Session 有一条连续的 dialogue thread；从某个对话 turn 发起、由工具结果继续推进的工作属于独立 work thread。工具结果只唤醒其所属 work thread，新用户消息仍在 dialogue thread 中求值，不应接管或重复旧 work thread。Context 最后的 `evaluate` 表达式声明本轮唯一活动 thread、原始输入及 Objective 绑定，是本次执行的权威入口。
+每个 Session 有一条长期 Dialogue Lane，用来排序普通对话的首次求值；每条用户输入都会创建一条独立、有限的 DialogueTurn Thread。从某个对话 turn 发起、由工具结果继续推进的工作属于独立 Execution Thread。工具结果只产生其所属 Thread 的 Signal，新用户消息创建新的 DialogueTurn Thread，不应接管或重复旧 Execution Thread。一次模型请求只属于一个 Thread Activation；Context 最后的 `evaluate` 表达式声明本轮唯一活动 Thread、Activation 所领取的 Signal batch、原始输入及 Objective 绑定，是本次执行的权威入口。
 
 你必须自己判断当前目标下什么值得保留、摘要、修订、保护、恢复或遗忘。Runtime 不会自动替你摘要历史、裁剪旧消息或把检索结果写成事实。
 
@@ -291,7 +291,7 @@ struct ToolExecutionOutcome {
 }
 
 #[derive(Debug, Clone)]
-struct EvaluationRoute {
+struct ActivationRoute {
     work_thread_id: String,
     work_item_id: String,
     root_turn_id: String,
@@ -546,7 +546,7 @@ pub struct Orchestrator {
     read_turn_guards: DashMap<String, Arc<Mutex<ReadTurnGuard>>>,
     cancellation_epochs: DashMap<String, watch::Sender<u64>>,
     active_session_turns: DashMap<String, Arc<AtomicUsize>>,
-    evaluation_routes: DashMap<String, EvaluationRoute>,
+    activation_routes: DashMap<String, ActivationRoute>,
     cancelled_at: DashMap<String, chrono::DateTime<Utc>>,
     /// Runtime routing identity: a Session is an IO connection inside one
     /// Cognitive Context. This cache is populated from every incoming routed
@@ -648,7 +648,7 @@ impl Orchestrator {
             read_turn_guards: DashMap::new(),
             cancellation_epochs: DashMap::new(),
             active_session_turns: DashMap::new(),
-            evaluation_routes: DashMap::new(),
+            activation_routes: DashMap::new(),
             cancelled_at: DashMap::new(),
             session_contexts: DashMap::new(),
             delegation_start_lock: Mutex::new(()),
@@ -696,13 +696,54 @@ impl Orchestrator {
             }),
         );
 
-        self.recover_evaluation_work_items().await?;
+        self.recover_thread_activations().await?;
+        self.recover_pending_thread_signals().await?;
         self.recover_delegations().await?;
         self.reconcile_orphaned_work_threads().await?;
         Ok(())
     }
 
-    async fn recover_evaluation_work_items(&self) -> Result<(), DynError> {
+    async fn recover_pending_thread_signals(&self) -> Result<(), DynError> {
+        let Some(session_store) = self.context_engine.session_store() else {
+            return Ok(());
+        };
+        for context in session_store.list_contexts(false).await? {
+            let mut dispatched_threads = HashSet::new();
+            for signal in session_store
+                .list_context_thread_signals(
+                    &context.id,
+                    Some(crate::memory::ThreadSignalStatus::Pending),
+                )
+                .await?
+            {
+                if !dispatched_threads.insert(signal.thread_id.clone()) {
+                    continue;
+                }
+                let Some(event) = self
+                    .store
+                    .query(QueryFilter {
+                        event_id: Some(signal.event_id.clone()),
+                        context_id: Some(context.id.clone()),
+                        ..Default::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .find(|event| event.id == signal.event_id)
+                else {
+                    tracing::error!(
+                        signal_id = %signal.id,
+                        event_id = %signal.event_id,
+                        "无法恢复 pending Thread Signal：Ledger 中不存在 Event"
+                    );
+                    continue;
+                };
+                self.bus.dispatch_persisted(event).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn recover_thread_activations(&self) -> Result<(), DynError> {
         let Some(session_store) = self.context_engine.session_store() else {
             return Ok(());
         };
@@ -710,7 +751,7 @@ impl Orchestrator {
         for context in session_store.list_contexts(false).await? {
             let mut interrupted_dialogue_roots = HashSet::new();
             let work_items = session_store
-                .list_context_evaluation_work_items(&context.id, false)
+                .list_context_thread_activations(&context.id, false)
                 .await?;
             if work_items.is_empty() {
                 continue;
@@ -732,7 +773,7 @@ impl Orchestrator {
                     tracing::error!(
                         work_item_id = %work_item.id,
                         trigger_event_id = %work_item.trigger_event_id,
-                        "无法恢复 Work Item：Ledger 中不存在 Trigger Event"
+                        "无法恢复 Thread Activation：Ledger 中不存在 Trigger Event"
                     );
                     continue;
                 };
@@ -740,17 +781,17 @@ impl Orchestrator {
                     let announce =
                         interrupted_dialogue_roots.insert(work_item.root_turn_id.clone());
                     match session_store
-                        .update_evaluation_work_item(
+                        .update_thread_activation(
                             &work_item.id,
                             work_item.revision,
-                            EvaluationWorkItemStatus::Cancelled,
+                            ThreadActivationStatus::Cancelled,
                             None,
                             None,
                             None,
                         )
                         .await?
                     {
-                        EvaluationWorkItemMutation::Updated(_) => {
+                        ThreadActivationMutation::Updated(_) => {
                             tracing::info!(
                                 work_item_id = %work_item.id,
                                 root_turn_id = %work_item.root_turn_id,
@@ -793,8 +834,8 @@ impl Orchestrator {
                                     .await?;
                             }
                         }
-                        EvaluationWorkItemMutation::Conflict { .. }
-                        | EvaluationWorkItemMutation::NotFound => {}
+                        ThreadActivationMutation::Conflict { .. }
+                        | ThreadActivationMutation::NotFound => {}
                     }
                     continue;
                 }
@@ -815,32 +856,32 @@ impl Orchestrator {
                     );
                 }
                 match work_item.status {
-                    EvaluationWorkItemStatus::Queued => {
+                    ThreadActivationStatus::Queued => {
                         self.bus.dispatch_persisted(trigger).await?;
                     }
-                    EvaluationWorkItemStatus::Running => {
+                    ThreadActivationStatus::Running => {
                         if runtime_claimant_is_definitely_dead(work_item.claimed_by.as_deref()) {
                             tracing::warn!(
                                 work_item_id = %work_item.id,
                                 claimed_by = ?work_item.claimed_by,
-                                "恢复由已退出 Runtime 持有的 Work Item"
+                                "恢复由已退出 Runtime 持有的 Thread Activation"
                             );
                             match session_store
-                                .update_evaluation_work_item(
+                                .update_thread_activation(
                                     &work_item.id,
                                     work_item.revision,
-                                    EvaluationWorkItemStatus::Queued,
+                                    ThreadActivationStatus::Queued,
                                     None,
                                     None,
                                     None,
                                 )
                                 .await?
                             {
-                                EvaluationWorkItemMutation::Updated(_) => {
+                                ThreadActivationMutation::Updated(_) => {
                                     self.bus.dispatch_persisted(trigger).await?;
                                 }
-                                EvaluationWorkItemMutation::Conflict { .. }
-                                | EvaluationWorkItemMutation::NotFound => {}
+                                ThreadActivationMutation::Conflict { .. }
+                                | ThreadActivationMutation::NotFound => {}
                             }
                             continue;
                         }
@@ -853,21 +894,16 @@ impl Orchestrator {
                             tokio::spawn(async move {
                                 tokio::time::sleep(delay).await;
                                 if let Err(error) = bus.dispatch_persisted(trigger).await {
-                                    tracing::error!(%error, "Work Item lease 到期后重新派发失败");
+                                    tracing::error!(%error, "Thread Activation lease 到期后重新派发失败");
                                 }
                             });
                         } else {
                             self.bus.dispatch_persisted(trigger).await?;
                         }
                     }
-                    EvaluationWorkItemStatus::WaitingTool
-                    | EvaluationWorkItemStatus::WaitingExternal => {
-                        // A physical result/timer/approval event owns the next wake. Replaying
-                        // the prior request here would duplicate an external action.
-                    }
-                    EvaluationWorkItemStatus::Completed
-                    | EvaluationWorkItemStatus::Cancelled
-                    | EvaluationWorkItemStatus::Failed => {}
+                    ThreadActivationStatus::Succeeded
+                    | ThreadActivationStatus::Cancelled
+                    | ThreadActivationStatus::Failed => {}
                 }
             }
         }
@@ -878,7 +914,7 @@ impl Orchestrator {
     /// restart. Waiting Threads are excluded because a background result,
     /// dependency, timer, delegation or Objective supervisor may still own
     /// their next wake. An active Dialogue/Work/Delivery Thread without a
-    /// non-terminal Work Item or queued schedule is an inconsistent orphan,
+    /// non-terminal Thread Activation or queued schedule is an inconsistent orphan,
     /// usually produced by an older Runtime crossing a persistence boundary.
     async fn reconcile_orphaned_work_threads(&self) -> Result<(), DynError> {
         let Some(session_store) = self.context_engine.session_store() else {
@@ -892,7 +928,7 @@ impl Orchestrator {
             .collect::<HashSet<_>>();
         for context in session_store.list_contexts(false).await? {
             let work_items = session_store
-                .list_context_evaluation_work_items(&context.id, true)
+                .list_context_thread_activations(&context.id, true)
                 .await?;
             let active_roots = work_items
                 .iter()
@@ -903,7 +939,7 @@ impl Orchestrator {
                 .list_context_work_threads(&context.id, false)
                 .await?;
             for thread in threads {
-                if thread.status != WorkThreadStatus::Active
+                if thread.lifecycle != ThreadLifecycle::Open
                     || !matches!(
                         thread.kind,
                         WorkThreadKind::Dialogue | WorkThreadKind::Work | WorkThreadKind::Delivery
@@ -914,13 +950,13 @@ impl Orchestrator {
                     continue;
                 }
                 let event_id = format!("thread_reconciled_{}_r{}", thread.id, thread.revision);
-                let reason = "Runtime 重启时检测到 active Thread 没有非终态 Work Item、待执行调度或已提交终态；已将遗留孤儿状态标记为 cancelled。";
+                let reason = "Runtime 重启时检测到 active Thread 没有非终态 Thread Activation、待执行调度或已提交终态；已将遗留孤儿状态标记为 cancelled。";
                 match session_store
                     .update_work_thread(
                         &thread.id,
                         thread.revision,
                         None,
-                        Some(WorkThreadStatus::Cancelled),
+                        Some(ThreadLifecycle::Cancelled),
                         Some(reason),
                         Some(&event_id),
                         None,
@@ -978,7 +1014,7 @@ impl Orchestrator {
                 continue;
             }
             let work_items = session_store
-                .list_context_evaluation_work_items(&delegation.child_context_id, false)
+                .list_context_thread_activations(&delegation.child_context_id, false)
                 .await?;
             if work_items
                 .iter()
@@ -1450,11 +1486,11 @@ impl Orchestrator {
             self.read_turn_guards.remove(&session_id);
         }
 
-        let Some(work_item) = self.claim_evaluation_work_item(&event).await? else {
+        let Some(work_item) = self.claim_thread_activation(&event).await? else {
             tracing::debug!(
                 session_id,
                 event_id = %event.id,
-                "Evaluation Work Item 已由其他 worker claim 或已经终止"
+                "Thread Activation 已由其他 worker claim 或已经终止"
             );
             return Ok(());
         };
@@ -1498,7 +1534,7 @@ impl Orchestrator {
                 .get_work_thread_by_root(&work_item.root_turn_id)
                 .await?
             {
-                if thread.status.is_terminal() {
+                if thread.lifecycle.is_terminal() {
                     tracing::debug!(
                         root_turn_id = %work_item.root_turn_id,
                         event_id = %event.id,
@@ -1515,7 +1551,7 @@ impl Orchestrator {
             if event.event_type == TYPE_TOOL_OUTPUT
                 && !force_evaluation
                 && self
-                    .tool_output_already_covered(&session_id, &event)
+                    .activation_signals_already_covered(&session_id, &work_item, &event)
                     .await?
             {
                 tracing::debug!(
@@ -1542,9 +1578,9 @@ impl Orchestrator {
         let (result, final_status) = match attempt {
             Some(Ok(result)) => {
                 let status = if result.is_ok() {
-                    EvaluationWorkItemStatus::Completed
+                    ThreadActivationStatus::Succeeded
                 } else {
-                    EvaluationWorkItemStatus::Failed
+                    ThreadActivationStatus::Failed
                 };
                 (result, status)
             }
@@ -1558,25 +1594,25 @@ impl Orchestrator {
                         None,
                     )
                     .await;
-                (result, EvaluationWorkItemStatus::Failed)
+                (result, ThreadActivationStatus::Failed)
             }
             None => {
                 tracing::info!(session_id, "当前 Session 执行已由用户取消");
-                (Ok(()), EvaluationWorkItemStatus::Cancelled)
+                (Ok(()), ThreadActivationStatus::Cancelled)
             }
         };
         if matches!(
             final_status,
-            EvaluationWorkItemStatus::Cancelled | EvaluationWorkItemStatus::Failed
+            ThreadActivationStatus::Cancelled | ThreadActivationStatus::Failed
         ) {
             self.release_dialogue_thread(&session_id, &work_item.root_turn_id)
                 .await;
         }
         if let Err(error) = self
-            .finish_evaluation_work_item(&work_item, final_status)
+            .finish_thread_activation(&work_item, final_status)
             .await
         {
-            self.evaluation_routes.remove(&work_item.id);
+            self.activation_routes.remove(&work_item.id);
             self.objective_evaluations.remove_work_item(&work_item.id);
             if result.is_ok() {
                 return Err(error);
@@ -1584,23 +1620,66 @@ impl Orchestrator {
             tracing::warn!(
                 work_item_id = %work_item.id,
                 error = %error,
-                "Work Item 终态提交失败；保留原始执行错误"
+                "Thread Activation 终态提交失败；保留原始执行错误"
             );
         }
-        self.evaluation_routes.remove(&work_item.id);
+        self.activation_routes.remove(&work_item.id);
         self.objective_evaluations.remove_work_item(&work_item.id);
+        if matches!(
+            final_status,
+            ThreadActivationStatus::Succeeded | ThreadActivationStatus::Failed
+        ) {
+            self.dispatch_next_pending_thread_signal(&work_item.root_turn_id)
+                .await?;
+        }
         result
     }
 
-    async fn claim_evaluation_work_item(
+    async fn dispatch_next_pending_thread_signal(
+        &self,
+        root_turn_id: &str,
+    ) -> Result<(), DynError> {
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Thread Signal dispatch 需要持久化 SessionStore")?;
+        let Some(thread) = session_store.get_work_thread_by_root(root_turn_id).await? else {
+            return Ok(());
+        };
+        let Some(signal) = session_store.next_pending_thread_signal(&thread.id).await? else {
+            return Ok(());
+        };
+        let Some(event) = self
+            .store
+            .query(QueryFilter {
+                event_id: Some(signal.event_id.clone()),
+                context_id: Some(thread.context_id),
+                session_id: Some(thread.session_id),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .find(|event| event.id == signal.event_id)
+        else {
+            return Err(format!(
+                "Pending Thread Signal '{}' 的 Event '{}' 不存在",
+                signal.id, signal.event_id
+            )
+            .into());
+        };
+        self.bus.dispatch_persisted(event).await?;
+        Ok(())
+    }
+
+    async fn claim_thread_activation(
         &self,
         event: &Event,
-    ) -> Result<Option<EvaluationWorkItemRecord>, DynError> {
+    ) -> Result<Option<ThreadActivationRecord>, DynError> {
         let session_id = required_payload_str(event, "session_id")?;
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Evaluation Work Item 需要持久化 SessionStore")?;
+            .ok_or("Thread Activation 需要持久化 SessionStore")?;
         let mut session = session_store
             .get_session(session_id)
             .await?
@@ -1688,18 +1767,18 @@ impl Orchestrator {
                 .and_then(|stored| stored.sequence)
                 .ok_or_else(|| {
                     format!(
-                        "Trigger Event '{}' 尚未进入 Ledger，不能创建 Work Item",
+                        "Trigger Event '{}' 尚未进入 Ledger，不能创建 Thread Activation",
                         event.id
                     )
                 })?,
         };
-        let parent_work_item_id = event
+        let parent_activation_id = event
             .payload
             .get("work_item_id")
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned);
-        let parent = match parent_work_item_id.as_deref() {
-            Some(id) => session_store.get_evaluation_work_item(id).await?,
+        let parent = match parent_activation_id.as_deref() {
+            Some(id) => session_store.get_thread_activation(id).await?,
             None => None,
         };
         let root_turn_id = event
@@ -1716,7 +1795,7 @@ impl Orchestrator {
         } else {
             WorkThreadKind::Work
         };
-        session_store
+        let work_thread = session_store
             .ensure_work_thread(NewWorkThread {
                 id: stable_work_thread_id(&root_turn_id),
                 agent_id: session.agent_id.clone(),
@@ -1731,24 +1810,40 @@ impl Orchestrator {
         let digest = Sha256::digest(event.id.as_bytes());
         let work_item_id = format!("work_{:x}", digest);
         let work_item_id = work_item_id[..29].to_string();
-        let work_item = session_store
-            .ensure_evaluation_work_item(NewEvaluationWorkItem {
-                id: work_item_id,
-                agent_id: session.agent_id.clone(),
-                context_id: session.context_id.clone(),
-                session_id: session.id.clone(),
-                trigger_event_id: event.id.clone(),
-                trigger_sequence,
-                trigger_kind: event.topic.clone(),
-                parent_work_item_id,
-                root_turn_id,
-            })
-            .await?;
+        let signal_id = format!("signal_{:x}", digest);
+        let signal_id = signal_id[..31].to_string();
+        let Some(work_item) = session_store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: signal_id,
+                    thread_id: work_thread.id,
+                    event_id: event.id.clone(),
+                    sequence: trigger_sequence,
+                    kind: event.topic.clone(),
+                    parent_activation_id: parent_activation_id.clone(),
+                },
+                NewThreadActivation {
+                    id: work_item_id,
+                    agent_id: session.agent_id.clone(),
+                    context_id: session.context_id.clone(),
+                    session_id: session.id.clone(),
+                    trigger_event_id: event.id.clone(),
+                    trigger_sequence,
+                    trigger_kind: event.topic.clone(),
+                    parent_activation_id,
+                    root_turn_id,
+                },
+                MAX_ACTIVATION_SIGNAL_BATCH,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
         if work_item.status.is_terminal() {
             return Ok(None);
         }
         let now = Utc::now();
-        if work_item.status == EvaluationWorkItemStatus::Running
+        if work_item.status == ThreadActivationStatus::Running
             && work_item
                 .lease_expires_at
                 .is_some_and(|expires_at| expires_at > now)
@@ -1770,44 +1865,41 @@ impl Orchestrator {
         let lease_seconds = i64::try_from(lease_seconds).unwrap_or(i64::MAX);
         let lease_expires_at = now + chrono::Duration::seconds(lease_seconds);
         match session_store
-            .update_evaluation_work_item(
+            .update_thread_activation(
                 &work_item.id,
                 work_item.revision,
-                EvaluationWorkItemStatus::Running,
+                ThreadActivationStatus::Running,
                 Some(&format!("runtime:{}", std::process::id())),
                 Some(lease_expires_at),
                 None,
             )
             .await?
         {
-            EvaluationWorkItemMutation::Updated(claimed) => Ok(Some(claimed)),
-            EvaluationWorkItemMutation::Conflict { .. } => Ok(None),
-            EvaluationWorkItemMutation::NotFound => {
-                Err(format!("Work Item '{}' 在 claim 时消失", work_item.id).into())
+            ThreadActivationMutation::Updated(claimed) => Ok(Some(claimed)),
+            ThreadActivationMutation::Conflict { .. } => Ok(None),
+            ThreadActivationMutation::NotFound => {
+                Err(format!("Thread Activation '{}' 在 claim 时消失", work_item.id).into())
             }
         }
     }
 
-    async fn finish_evaluation_work_item(
+    async fn finish_thread_activation(
         &self,
-        work_item: &EvaluationWorkItemRecord,
-        status: EvaluationWorkItemStatus,
-    ) -> Result<EvaluationWorkItemRecord, DynError> {
+        work_item: &ThreadActivationRecord,
+        status: ThreadActivationStatus,
+    ) -> Result<ThreadActivationRecord, DynError> {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Evaluation Work Item 需要持久化 SessionStore")?;
-        let Some(current) = session_store
-            .get_evaluation_work_item(&work_item.id)
-            .await?
-        else {
-            return Err(format!("Work Item '{}' 在结束时消失", work_item.id).into());
+            .ok_or("Thread Activation 需要持久化 SessionStore")?;
+        let Some(current) = session_store.get_thread_activation(&work_item.id).await? else {
+            return Err(format!("Thread Activation '{}' 在结束时消失", work_item.id).into());
         };
         if current.status.is_terminal() {
             return Ok(current);
         }
         match session_store
-            .update_evaluation_work_item(
+            .update_thread_activation(
                 &current.id,
                 current.revision,
                 status,
@@ -1817,44 +1909,41 @@ impl Orchestrator {
             )
             .await?
         {
-            EvaluationWorkItemMutation::Updated(updated) => Ok(updated),
-            EvaluationWorkItemMutation::Conflict { current } if current.status.is_terminal() => {
+            ThreadActivationMutation::Updated(updated) => Ok(updated),
+            ThreadActivationMutation::Conflict { current } if current.status.is_terminal() => {
                 Ok(current)
             }
-            EvaluationWorkItemMutation::Conflict { current } => Err(format!(
-                "Work Item '{}' 终态提交冲突：当前 revision={} status={}",
+            ThreadActivationMutation::Conflict { current } => Err(format!(
+                "Thread Activation '{}' 终态提交冲突：当前 revision={} status={}",
                 current.id,
                 current.revision,
                 current.status.as_str()
             )
             .into()),
-            EvaluationWorkItemMutation::NotFound => {
-                Err(format!("Work Item '{}' 在结束时消失", work_item.id).into())
+            ThreadActivationMutation::NotFound => {
+                Err(format!("Thread Activation '{}' 在结束时消失", work_item.id).into())
             }
         }
     }
 
     async fn record_work_item_context_snapshot(
         &self,
-        work_item: &EvaluationWorkItemRecord,
+        work_item: &ThreadActivationRecord,
         context_version: u64,
     ) -> Result<(), DynError> {
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Evaluation Work Item 需要持久化 SessionStore")?;
-        let Some(current) = session_store
-            .get_evaluation_work_item(&work_item.id)
-            .await?
-        else {
-            return Err(format!("Work Item '{}' 在记录快照时消失", work_item.id).into());
+            .ok_or("Thread Activation 需要持久化 SessionStore")?;
+        let Some(current) = session_store.get_thread_activation(&work_item.id).await? else {
+            return Err(format!("Thread Activation '{}' 在记录快照时消失", work_item.id).into());
         };
         if current.status.is_terminal() || current.context_snapshot_version == Some(context_version)
         {
             return Ok(());
         }
         match session_store
-            .update_evaluation_work_item(
+            .update_thread_activation(
                 &current.id,
                 current.revision,
                 current.status,
@@ -1864,19 +1953,19 @@ impl Orchestrator {
             )
             .await?
         {
-            EvaluationWorkItemMutation::Updated(_) => Ok(()),
-            EvaluationWorkItemMutation::Conflict { current }
+            ThreadActivationMutation::Updated(_) => Ok(()),
+            ThreadActivationMutation::Conflict { current }
                 if current.context_snapshot_version == Some(context_version) =>
             {
                 Ok(())
             }
-            EvaluationWorkItemMutation::Conflict { current } => Err(format!(
-                "Work Item '{}' Context snapshot 提交冲突：revision={}",
+            ThreadActivationMutation::Conflict { current } => Err(format!(
+                "Thread Activation '{}' Context snapshot 提交冲突：revision={}",
                 current.id, current.revision
             )
             .into()),
-            EvaluationWorkItemMutation::NotFound => Err(format!(
-                "Work Item '{}' 在记录 Context snapshot 时消失",
+            ThreadActivationMutation::NotFound => Err(format!(
+                "Thread Activation '{}' 在记录 Context snapshot 时消失",
                 work_item.id
             )
             .into()),
@@ -1938,6 +2027,47 @@ impl Orchestrator {
                 _ => inspection.timestamp > trigger.timestamp,
             }
         }))
+    }
+
+    async fn activation_signals_already_covered(
+        &self,
+        session_id: &str,
+        activation: &ThreadActivationRecord,
+        dispatched_event: &Event,
+    ) -> Result<bool, DynError> {
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Activation Signal coverage 需要持久化 SessionStore")?;
+        let signals = session_store
+            .list_activation_signals(&activation.id)
+            .await?;
+        if signals.is_empty() {
+            return self
+                .tool_output_already_covered(session_id, dispatched_event)
+                .await;
+        }
+        for signal in signals {
+            let event = if signal.event_id == dispatched_event.id {
+                dispatched_event.clone()
+            } else {
+                self.context_engine
+                    .find_event(&activation.context_id, &signal.event_id)
+                    .await?
+                    .ok_or_else(|| {
+                        format!(
+                            "Activation '{}' 领取的 Signal Event '{}' 不存在",
+                            activation.id, signal.event_id
+                        )
+                    })?
+            };
+            if event.event_type != TYPE_TOOL_OUTPUT
+                || !self.tool_output_already_covered(session_id, &event).await?
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Rebuild the standard Function Calling transcript for the active user
@@ -2274,13 +2404,13 @@ impl Orchestrator {
     }
 
     /// Resume a model decision that crossed the durable assistant-call boundary before the
-    /// owning Work Item reached a terminal state. Re-asking the model here could produce a new
+    /// owning Thread Activation reached a terminal state. Re-asking the model here could produce a new
     /// set of call IDs and repeat an external side effect, so recovery always reuses the exact
     /// persisted plan. `execute_tool_calls` also reuses any already durable output events.
     async fn resume_persisted_work_item(
         &self,
         session_id: &str,
-        work_item: &EvaluationWorkItemRecord,
+        work_item: &ThreadActivationRecord,
     ) -> Result<bool, DynError> {
         let assistant_event_id = format!("call_{}", work_item.id);
         let Some(assistant_call) = self
@@ -2292,7 +2422,7 @@ impl Orchestrator {
         };
         if assistant_call.topic != "chat/assistant_call" {
             return Err(format!(
-                "Work Item '{}' 的恢复边界 '{}' 不是 assistant_call",
+                "Thread Activation '{}' 的恢复边界 '{}' 不是 assistant_call",
                 work_item.id, assistant_event_id
             )
             .into());
@@ -2330,7 +2460,12 @@ impl Orchestrator {
         {
             let decision = classify_terminal_response(&response)
                 .map_err(|error| -> DynError { error.into() })?
-                .ok_or_else(|| format!("Work Item '{}' 的持久化终态响应不合法", work_item.id))?;
+                .ok_or_else(|| {
+                    format!(
+                        "Thread Activation '{}' 的持久化终态响应不合法",
+                        work_item.id
+                    )
+                })?;
             let parent = self
                 .parent_session_for(&work_item.context_id, session_id)
                 .await?;
@@ -2354,7 +2489,7 @@ impl Orchestrator {
 
         if response.tool_calls.is_empty() {
             return Err(format!(
-                "Work Item '{}' 的持久化 assistant_call 既非终态回复也没有工具调用",
+                "Thread Activation '{}' 的持久化 assistant_call 既非终态回复也没有工具调用",
                 work_item.id
             )
             .into());
@@ -2413,7 +2548,7 @@ impl Orchestrator {
     async fn run_attempt(
         &self,
         session_id: &str,
-        work_item: &EvaluationWorkItemRecord,
+        work_item: &ThreadActivationRecord,
     ) -> Result<(), DynError> {
         let attempt_id = work_item.id.clone();
         let persisted_assistant_call = self
@@ -2482,26 +2617,9 @@ impl Orchestrator {
                 work_thread = updated;
             }
         }
-        if work_thread.status == WorkThreadStatus::Waiting {
-            if let WorkThreadMutation::Updated(updated) = session_store
-                .update_work_thread(
-                    &work_thread.id,
-                    work_thread.revision,
-                    None,
-                    Some(WorkThreadStatus::Active),
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .await?
-            {
-                work_thread = updated;
-            }
-        }
-        self.evaluation_routes.insert(
+        self.activation_routes.insert(
             attempt_id.clone(),
-            EvaluationRoute {
+            ActivationRoute {
                 work_thread_id: work_thread.id.clone(),
                 work_item_id: work_item.id.clone(),
                 root_turn_id: work_item.root_turn_id.clone(),
@@ -2540,7 +2658,7 @@ impl Orchestrator {
         let context_id = work_item.context_id.clone();
         let mut context = self
             .context_engine
-            .build_context_encoding_for_work_item(
+            .build_context_encoding_for_activation(
                 &context_id,
                 work_item,
                 &transcript.delivered_output_ids,
@@ -2548,7 +2666,7 @@ impl Orchestrator {
             .await?;
         self.record_work_item_context_snapshot(work_item, context.state.version)
             .await?;
-        if let Some(mut route) = self.evaluation_routes.get_mut(&attempt_id) {
+        if let Some(mut route) = self.activation_routes.get_mut(&attempt_id) {
             route.context_snapshot_version = Some(context.state.version);
         }
         let context_tx_receipt = self.context_tx_receipt(&context).await?;
@@ -2972,7 +3090,7 @@ impl Orchestrator {
             ),
             ("reason".to_string(), json!(reason)),
         ];
-        self.append_evaluation_route(attempt_id, &mut payload);
+        self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
                 format!(
@@ -3004,7 +3122,7 @@ impl Orchestrator {
                 json!(MAX_RESPONSE_PROTOCOL_RETRIES + 1),
             ),
         ];
-        self.append_evaluation_route(attempt_id, &mut payload);
+        self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
                 format!(
@@ -3060,7 +3178,7 @@ impl Orchestrator {
                 json!(decision.disposition()),
             ),
         ];
-        self.append_evaluation_route(attempt_id, &mut payload);
+        self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
                 format!("call_{attempt_id}"),
@@ -3096,7 +3214,7 @@ impl Orchestrator {
             payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
         }
         if self
-            .evaluation_route(attempt_id)
+            .activation_route(attempt_id)
             .is_some_and(|route| route.thread_kind == "delivery")
         {
             let deferred = self.pending_delivery_threads(session_id).await?;
@@ -3104,8 +3222,8 @@ impl Orchestrator {
                 payload.push(("defer_covers".to_string(), json!(deferred)));
             }
         }
-        self.append_evaluation_route(attempt_id, &mut payload);
-        self.append_objective_evaluation_route(attempt_id, &mut payload);
+        self.append_activation_route(attempt_id, &mut payload);
+        self.append_objective_activation_route(attempt_id, &mut payload);
         let event = Event::new(
             format!("no_reply_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
             "Agent-Morphz".to_string(),
@@ -3140,7 +3258,7 @@ impl Orchestrator {
             payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
         }
         if self
-            .evaluation_route(attempt_id)
+            .activation_route(attempt_id)
             .is_some_and(|route| route.thread_kind == "delivery")
         {
             let covers = self.delivery_batch_threads(session_id).await?;
@@ -3148,8 +3266,8 @@ impl Orchestrator {
                 payload.push(("covers".to_string(), json!(covers)));
             }
         }
-        self.append_evaluation_route(attempt_id, &mut payload);
-        self.append_objective_evaluation_route(attempt_id, &mut payload);
+        self.append_activation_route(attempt_id, &mut payload);
+        self.append_objective_activation_route(attempt_id, &mut payload);
         let event = Event::new(
             format!("reply_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
             "Agent-Morphz".to_string(),
@@ -3173,7 +3291,7 @@ impl Orchestrator {
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let route = self
-            .evaluation_route(attempt_id)
+            .activation_route(attempt_id)
             .ok_or_else(|| format!("Work result '{}' 缺少 Evaluation route", attempt_id))?;
         let result_event_id = format!(
             "thread_result_{}_{}",
@@ -3190,8 +3308,8 @@ impl Orchestrator {
             ),
             ("text".to_string(), json!(content)),
         ];
-        self.append_evaluation_route(attempt_id, &mut payload);
-        self.append_objective_evaluation_route(attempt_id, &mut payload);
+        self.append_activation_route(attempt_id, &mut payload);
+        self.append_objective_activation_route(attempt_id, &mut payload);
         let result_event = Event::new(
             result_event_id.clone(),
             "Agent-Morphz".to_string(),
@@ -3271,7 +3389,7 @@ impl Orchestrator {
         attempt_id: &str,
         event: &Event,
     ) -> Result<bool, DynError> {
-        let Some(route) = self.evaluation_route(attempt_id) else {
+        let Some(route) = self.activation_route(attempt_id) else {
             self.bus.publish(event.clone()).await?;
             return Ok(true);
         };
@@ -3280,19 +3398,19 @@ impl Orchestrator {
             .session_store()
             .ok_or("Evaluation outcome 需要持久化 SessionStore")?;
         match session_store
-            .commit_evaluation_outcome(&route.work_item_id, event)
+            .commit_activation_outcome(&route.work_item_id, event)
             .await?
         {
-            EvaluationOutcomeCommit::Committed => {
+            ActivationOutcomeCommit::Committed => {
                 self.bus.dispatch_persisted(event.clone()).await?;
                 Ok(true)
             }
-            EvaluationOutcomeCommit::Existing { event_id } => {
+            ActivationOutcomeCommit::Existing { event_id } => {
                 tracing::warn!(
                     work_item_id = %route.work_item_id,
                     duplicate_event_id = %event.id,
                     committed_event_id = %event_id,
-                    "抑制同一 Evaluation Work Item 的重复终态输出"
+                    "抑制同一 Thread Activation 的重复终态输出"
                 );
                 Ok(false)
             }
@@ -3308,38 +3426,17 @@ impl Orchestrator {
         model_disposition: &str,
     ) -> Result<(), DynError> {
         let route = self
-            .evaluation_route(attempt_id)
+            .activation_route(attempt_id)
             .ok_or_else(|| format!("Evaluation '{}' 缺少 Work Thread route", attempt_id))?;
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Work Thread 等待状态需要持久化 SessionStore")?;
-        for _ in 0..3 {
-            let Some(current) = session_store.get_work_thread(&route.work_thread_id).await? else {
-                return Err(format!("Work Thread '{}' 不存在", route.work_thread_id).into());
-            };
-            if current.status.is_terminal() || current.status == WorkThreadStatus::Waiting {
-                break;
-            }
-            match session_store
-                .update_work_thread(
-                    &current.id,
-                    current.revision,
-                    None,
-                    Some(WorkThreadStatus::Waiting),
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .await?
-            {
-                WorkThreadMutation::Updated(_) => break,
-                WorkThreadMutation::Conflict { .. } => continue,
-                WorkThreadMutation::NotFound => {
-                    return Err(format!("Work Thread '{}' 在等待提交时消失", current.id).into());
-                }
-            }
+            .ok_or("Thread phase 投影需要持久化 SessionStore")?;
+        let Some(current) = session_store.get_work_thread(&route.work_thread_id).await? else {
+            return Err(format!("Work Thread '{}' 不存在", route.work_thread_id).into());
+        };
+        if current.lifecycle.is_terminal() {
+            return Ok(());
         }
         let context_id = self.context_id_for_session(session_id)?;
         let mut payload = vec![
@@ -3353,7 +3450,7 @@ impl Orchestrator {
             ("pending_schedules".to_string(), json!(pending_schedules)),
             ("model_disposition".to_string(), json!(model_disposition)),
         ];
-        self.append_evaluation_route(attempt_id, &mut payload);
+        self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
                 format!(
@@ -3369,7 +3466,7 @@ impl Orchestrator {
         Ok(())
     }
 
-    fn append_objective_evaluation_route(
+    fn append_objective_activation_route(
         &self,
         attempt_id: &str,
         payload: &mut Vec<(String, serde_json::Value)>,
@@ -3430,7 +3527,7 @@ impl Orchestrator {
             ("attempt_id".to_string(), json!(attempt_id)),
             ("text".to_string(), json!(content)),
         ];
-        self.append_evaluation_route(attempt_id, &mut payload);
+        self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
                 format!("progress_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
@@ -3466,7 +3563,7 @@ impl Orchestrator {
             ("stage".to_string(), json!(stage)),
             ("error".to_string(), json!(error_text)),
         ];
-        self.append_evaluation_route(attempt_id, &mut payload);
+        self.append_activation_route(attempt_id, &mut payload);
         self.bus
             .publish(Event::new(
                 format!(
@@ -3520,7 +3617,7 @@ impl Orchestrator {
                 json!(self.orchestrator_config.model_attempt_timeout_secs.max(1)),
             ),
         ];
-        self.append_evaluation_route(attempt_id, &mut payload);
+        self.append_activation_route(attempt_id, &mut payload);
         let event = Event::new(
             format!(
                 "model_attempt_started_{}",
@@ -3547,8 +3644,8 @@ impl Orchestrator {
         options: ToolExecutionOptions,
     ) -> Result<ToolExecutionOutcome, DynError> {
         let context_id = self.context_id_for_session(session_id)?;
-        let evaluation_route = self.evaluation_route(attempt_id);
-        let read_guard_key = evaluation_route
+        let activation_route = self.activation_route(attempt_id);
+        let read_guard_key = activation_route
             .as_ref()
             .map(|route| route.root_turn_id.clone())
             .unwrap_or_else(|| session_id.to_string());
@@ -3772,7 +3869,7 @@ impl Orchestrator {
             ),
         ];
         if options.record_assistant_call {
-            self.append_evaluation_route(attempt_id, &mut assistant_call_payload);
+            self.append_activation_route(attempt_id, &mut assistant_call_payload);
             self.bus
                 .publish(Event::new(
                     format!("call_{}", attempt_id),
@@ -3803,7 +3900,7 @@ impl Orchestrator {
                 .is_none()
         };
         if record_selection {
-            self.append_evaluation_route(attempt_id, &mut selected_payload);
+            self.append_activation_route(attempt_id, &mut selected_payload);
             self.bus
                 .publish(Event::new(
                     selected_event_id,
@@ -3864,7 +3961,7 @@ impl Orchestrator {
                 ("phase".to_string(), json!(phase)),
                 ("text".to_string(), json!(output)),
             ];
-            self.append_evaluation_route(attempt_id, &mut payload);
+            self.append_activation_route(attempt_id, &mut payload);
             outputs.push((
                 Event::new(
                     output_id,
@@ -3925,7 +4022,7 @@ impl Orchestrator {
                         ("read_guard_status".to_string(), json!("already-covered")),
                         ("text".to_string(), json!(output)),
                     ];
-                    self.append_evaluation_route(attempt_id, &mut payload);
+                    self.append_activation_route(attempt_id, &mut payload);
                     outputs.push((
                         Event::new(
                             output_id,
@@ -3943,9 +4040,9 @@ impl Orchestrator {
             let session_id = session_id.to_string();
             let context_id = context_id.clone();
             let attempt_id = attempt_id.to_string();
-            let evaluation_route = evaluation_route.clone();
+            let activation_route = activation_route.clone();
             let tool_causal_route =
-                evaluation_route
+                activation_route
                     .as_ref()
                     .map(|route| crate::tool::ToolCausalRoute {
                         work_thread_id: route.work_thread_id.clone(),
@@ -4027,7 +4124,7 @@ impl Orchestrator {
                                                 ]
                                                 .into_iter()
                                                 .collect::<serde_json::Map<_, _>>();
-                                                if let Some(route) = evaluation_route {
+                                                if let Some(route) = activation_route {
                                                     payload.insert(
                                                         "work_item_id".to_string(),
                                                         json!(route.work_item_id),
@@ -4100,7 +4197,7 @@ impl Orchestrator {
                     ),
                     ("text".to_string(), json!(error)),
                 ];
-                self.append_evaluation_route(attempt_id, &mut payload);
+                self.append_activation_route(attempt_id, &mut payload);
                 outputs.push((
                     Event::new(
                         output_id,
@@ -4122,7 +4219,7 @@ impl Orchestrator {
                         .and_then(|value| value.as_str())
                         .map(ToOwned::to_owned)
                     {
-                        self.stamp_objective_evaluation_route(&attempt_id, &mut output.payload);
+                        self.stamp_objective_activation_route(&attempt_id, &mut output.payload);
                     }
                     outputs.push((output, false));
                 }
@@ -4212,7 +4309,7 @@ impl Orchestrator {
             ),
             ("wake".to_string(), json!(context.wake)),
         ];
-        self.append_evaluation_route(attempt_id, &mut payload);
+        self.append_activation_route(attempt_id, &mut payload);
         let event = Event::new(
             format!("context_{}", Utc::now().timestamp_nanos_opt().unwrap_or(0)),
             "System-ContextKernel".to_string(),
@@ -4227,25 +4324,25 @@ impl Orchestrator {
         });
     }
 
-    fn evaluation_route(&self, attempt_id: &str) -> Option<EvaluationRoute> {
-        self.evaluation_routes
+    fn activation_route(&self, attempt_id: &str) -> Option<ActivationRoute> {
+        self.activation_routes
             .get(attempt_id)
             .map(|route| route.clone())
             .or_else(|| {
                 attempt_id
                     .split_once("_response_retry_")
                     .and_then(|(base, _)| {
-                        self.evaluation_routes.get(base).map(|route| route.clone())
+                        self.activation_routes.get(base).map(|route| route.clone())
                     })
             })
     }
 
-    fn append_evaluation_route(
+    fn append_activation_route(
         &self,
         attempt_id: &str,
         payload: &mut Vec<(String, serde_json::Value)>,
     ) {
-        let Some(route) = self.evaluation_route(attempt_id) else {
+        let Some(route) = self.activation_route(attempt_id) else {
             return;
         };
         payload.extend([
@@ -4280,7 +4377,7 @@ impl Orchestrator {
         }
     }
 
-    fn stamp_objective_evaluation_route(
+    fn stamp_objective_activation_route(
         &self,
         attempt_id: &str,
         payload: &mut serde_json::Map<String, serde_json::Value>,
@@ -4434,7 +4531,7 @@ impl Orchestrator {
 }
 
 fn interrupted_dialogue_on_restart(
-    work_item: &EvaluationWorkItemRecord,
+    work_item: &ThreadActivationRecord,
     events: &HashMap<String, Event>,
 ) -> bool {
     let Some(root) = events.get(&work_item.root_turn_id) else {

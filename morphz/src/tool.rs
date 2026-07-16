@@ -326,7 +326,7 @@ impl ThreadScheduler {
         }
         // A crash may happen after the schedule occurrence and its wake Event
         // commit atomically but before in-process dispatch. Re-dispatch is safe:
-        // trigger_event_id is unique and Work Item claiming is idempotent.
+        // trigger_event_id is unique and Thread Activation claiming is idempotent.
         for event in self
             .events
             .query(QueryFilter {
@@ -344,7 +344,7 @@ impl ThreadScheduler {
                     .sessions
                     .get_work_thread_by_root(root)
                     .await?
-                    .is_some_and(|thread| thread.status.is_terminal()),
+                    .is_some_and(|thread| thread.lifecycle.is_terminal()),
                 None => true,
             };
             if !terminal {
@@ -407,10 +407,10 @@ impl ThreadScheduler {
             let state = self.sessions.get_work_thread(dependency_id).await?;
             let status = state
                 .as_ref()
-                .map(|thread| thread.status.as_str())
+                .map(|thread| thread.lifecycle.as_str())
                 .unwrap_or("missing");
             dependency_states.insert(dependency_id.clone(), serde_json::json!(status));
-            dependencies_ready &= state.is_some_and(|thread| thread.status.is_terminal());
+            dependencies_ready &= state.is_some_and(|thread| thread.lifecycle.is_terminal());
         }
         if !dependencies_ready {
             self.armed_revisions.remove(&current.id);
@@ -3948,7 +3948,7 @@ mod tests {
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
         NewAgent, NewCognitiveContext, NewScheduledIntent, NewSession, SessionMountKind,
-        SessionStore, WorkThreadStatus,
+        SessionStore, ThreadLifecycle,
     };
     use crate::permission::PermissionMode;
     #[cfg(target_os = "macos")]
@@ -4272,7 +4272,7 @@ mod tests {
                 &dependency.id,
                 dependency.revision,
                 None,
-                Some(WorkThreadStatus::Completed),
+                Some(ThreadLifecycle::Completed),
                 Some("依赖结果"),
                 Some("dependency-result"),
                 None,

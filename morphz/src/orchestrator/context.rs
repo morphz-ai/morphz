@@ -4,9 +4,10 @@ use crate::event::{
     TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use crate::memory::{
-    DeliveryStatus, EvaluationWorkItemRecord, EventStore, ObjectiveRecord, ObjectiveStore,
-    QueryFilter, ScheduledIntentRecord, ScheduledIntentStatus, SessionAttentionState,
-    SessionAttentionUpdate, SessionRecord, SessionStatus, SessionStore, WorkThreadRecord,
+    DeliveryStatus, EventStore, ObjectiveRecord, ObjectiveStore, QueryFilter,
+    ScheduledIntentRecord, ScheduledIntentStatus, SessionAttentionState, SessionAttentionUpdate,
+    SessionRecord, SessionStatus, SessionStore, ThreadActivationRecord, ThreadPhase,
+    ThreadSignalRecord, ThreadSignalStatus, WorkThreadRecord,
 };
 use crate::orchestrator::context_contract::{
     render_context_tx_epistemic_guidance, ContractClause, EPISTEMIC_CONTRACT,
@@ -25,7 +26,7 @@ use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 19;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 20;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 
 struct ContextOperationSpec {
@@ -367,8 +368,8 @@ pub struct WakeSignal {
 /// The causal responsibility of one model request. This is deliberately
 /// separate from the shared Mind and from other in-flight work.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EvaluationFocus {
-    pub work_item_id: String,
+pub struct ActivationFocus {
+    pub activation_id: String,
     pub session_id: String,
     pub root_turn_id: String,
     pub thread_kind: String,
@@ -377,17 +378,28 @@ pub struct EvaluationFocus {
     pub trigger_event_id: String,
     pub trigger_kind: String,
     pub trigger_preview: String,
-    /// Only an explicit Runtime route attaches an Evaluation to an Objective.
+    /// The exact deterministic Signal batch atomically claimed by this
+    /// Activation. The first entry is the primary trigger; later entries are
+    /// concurrent mailbox facts that belong to the same causal Thread.
+    pub signal_batch: Vec<ActivationSignalFocus>,
+    /// Only an explicit Runtime route attaches an Activation to an Objective.
     /// Sharing a Session with an Objective does not create this binding.
     pub objective_id: Option<String>,
     pub objective_evaluation_id: Option<String>,
 }
 
-/// Read-only status of another concurrent Evaluation. It is context for honest
-/// progress reporting, never an instruction for the current Evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ConcurrentEvaluationView {
-    pub work_item_id: String,
+pub struct ActivationSignalFocus {
+    pub event_id: String,
+    pub kind: String,
+    pub sequence: u64,
+}
+
+/// Read-only status of another concurrent Activation. It is context for honest
+/// progress reporting, never an instruction for the current Activation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConcurrentActivationView {
+    pub activation_id: String,
     pub session_id: String,
     pub root_turn_id: String,
     pub thread_kind: String,
@@ -421,7 +433,7 @@ pub struct ProjectedSession {
     pub session: SessionRecord,
     pub projection: SessionProjection,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub active_work_item_ids: Vec<String>,
+    pub active_activation_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub active_objective_ids: Vec<String>,
 }
@@ -458,11 +470,13 @@ pub struct ContextView {
     /// Prompt size does not scale with the total Session registry.
     pub sessions: Vec<ProjectedSession>,
     pub session_working_set: SessionWorkingSetView,
-    pub active_work_items: Vec<EvaluationWorkItemRecord>,
+    pub active_activations: Vec<ThreadActivationRecord>,
     pub work_threads: Vec<WorkThreadRecord>,
+    pub thread_signals: Vec<ThreadSignalRecord>,
+    pub thread_phases: BTreeMap<String, ThreadPhase>,
     pub scheduled_intents: Vec<ScheduledIntentRecord>,
-    pub evaluation: Option<EvaluationFocus>,
-    pub concurrent_evaluations: Vec<ConcurrentEvaluationView>,
+    pub activation: Option<ActivationFocus>,
+    pub concurrent_activations: Vec<ConcurrentActivationView>,
     pub background_tasks: Vec<BackgroundTaskView>,
     pub objectives: Vec<ObjectiveRecord>,
     pub state: MindState,
@@ -483,7 +497,7 @@ fn select_session_working_set(
     evaluation_started_at: chrono::DateTime<Utc>,
     config: &crate::config::SessionWorkingSetConfig,
     objectives: &[ObjectiveRecord],
-    work_items: &[EvaluationWorkItemRecord],
+    work_items: &[ThreadActivationRecord],
 ) -> (Vec<ProjectedSession>, SessionWorkingSetView) {
     let ready = ready_session_ids.iter().cloned().collect::<HashSet<_>>();
     let window_seconds = i64::try_from(config.active_window.as_secs()).unwrap_or(i64::MAX);
@@ -547,7 +561,7 @@ fn select_session_working_set(
     let mut projected = candidates
         .into_iter()
         .map(|session| ProjectedSession {
-            active_work_item_ids: work_by_session.remove(&session.id).unwrap_or_default(),
+            active_activation_ids: work_by_session.remove(&session.id).unwrap_or_default(),
             active_objective_ids: objectives_by_session
                 .remove(&session.id)
                 .unwrap_or_default(),
@@ -559,17 +573,17 @@ fn select_session_working_set(
         if full_ids.contains(&session.id) {
             continue;
         }
-        let active_work_item_ids = work_by_session.remove(&session.id).unwrap_or_default();
+        let active_activation_ids = work_by_session.remove(&session.id).unwrap_or_default();
         let active_objective_ids = objectives_by_session
             .remove(&session.id)
             .unwrap_or_default();
-        if active_work_item_ids.is_empty() && active_objective_ids.is_empty() {
+        if active_activation_ids.is_empty() && active_objective_ids.is_empty() {
             continue;
         }
         projected.push(ProjectedSession {
             session: session.clone(),
             projection: SessionProjection::MetadataOnly,
-            active_work_item_ids,
+            active_activation_ids,
             active_objective_ids,
         });
     }
@@ -754,8 +768,8 @@ impl ContextEngine {
             .into_iter()
             .map(|session| (session.id.clone(), session))
             .collect::<HashMap<_, _>>();
-        let active_work_items = store
-            .list_context_evaluation_work_items(context_id, false)
+        let active_activations = store
+            .list_context_thread_activations(context_id, false)
             .await?;
         let active_objectives = match &self.objective_store {
             Some(store) => store.list_context_objectives(context_id, false).await?,
@@ -781,7 +795,7 @@ impl ContextEngine {
                         )
                         .into());
                     }
-                    if active_work_items
+                    if active_activations
                         .iter()
                         .any(|item| item.session_id == session_id && !item.status.is_terminal())
                     {
@@ -1004,10 +1018,10 @@ impl ContextEngine {
         .await
     }
 
-    pub async fn build_context_encoding_for_work_item(
+    pub async fn build_context_encoding_for_activation(
         &self,
         context_id: &str,
-        work_item: &EvaluationWorkItemRecord,
+        work_item: &ThreadActivationRecord,
         excluded_observation_ids: &HashSet<String>,
     ) -> Result<ContextView, DynError> {
         self.build_context_encoding_for_session(
@@ -1024,7 +1038,7 @@ impl ContextEngine {
         context_id: &str,
         active_session_id: &str,
         excluded_observation_ids: &HashSet<String>,
-        evaluation_work_item: Option<&EvaluationWorkItemRecord>,
+        activation_record: Option<&ThreadActivationRecord>,
     ) -> Result<ContextView, DynError> {
         let events = self.context_events(context_id).await?;
         let references = ContextReferences::from_events(&events);
@@ -1035,15 +1049,15 @@ impl ContextEngine {
             Some(store) => store.list_context_objectives(context_id, false).await?,
             None => Vec::new(),
         };
-        let active_work_items = match &self.session_store {
+        let active_activations = match &self.session_store {
             Some(store) => {
                 store
-                    .list_context_evaluation_work_items(context_id, false)
+                    .list_context_thread_activations(context_id, false)
                     .await?
             }
             None => Vec::new(),
         };
-        let (work_threads, scheduled_intents) = match &self.session_store {
+        let (work_threads, scheduled_intents, thread_signals) = match &self.session_store {
             Some(store) => {
                 let all_threads = store.list_context_work_threads(context_id, true).await?;
                 let context_thread_ids = all_threads
@@ -1059,7 +1073,7 @@ impl ContextEngine {
                 let mut projected = all_threads
                     .iter()
                     .filter(|thread| {
-                        !thread.status.is_terminal()
+                        !thread.lifecycle.is_terminal()
                             || matches!(
                                 thread.delivery_status,
                                 DeliveryStatus::Pending | DeliveryStatus::Deferred
@@ -1070,7 +1084,7 @@ impl ContextEngine {
                 let mut recent_terminal = all_threads
                     .into_iter()
                     .filter(|thread| {
-                        thread.status.is_terminal()
+                        thread.lifecycle.is_terminal()
                             && !matches!(
                                 thread.delivery_status,
                                 DeliveryStatus::Pending | DeliveryStatus::Deferred
@@ -1081,16 +1095,24 @@ impl ContextEngine {
                     .collect::<Vec<_>>();
                 recent_terminal.reverse();
                 projected.extend(recent_terminal);
-                (projected, scheduled)
+                let pending_signals = store
+                    .list_context_thread_signals(context_id, Some(ThreadSignalStatus::Pending))
+                    .await?;
+                (projected, scheduled, pending_signals)
             }
-            None => (Vec::new(), Vec::new()),
+            None => (Vec::new(), Vec::new(), Vec::new()),
         };
-        let evaluation = evaluation_work_item.map(|work_item| evaluation_focus(work_item, &events));
-        let concurrent_evaluations = active_work_items
+        let activation_signals = match (&self.session_store, activation_record) {
+            (Some(store), Some(work_item)) => store.list_activation_signals(&work_item.id).await?,
+            _ => Vec::new(),
+        };
+        let activation = activation_record
+            .map(|work_item| activation_focus(work_item, &activation_signals, &events));
+        let concurrent_activations = active_activations
             .iter()
             .filter(|item| !item.status.is_terminal())
-            .filter(|item| evaluation_work_item.is_none_or(|current| current.id != item.id))
-            .map(|item| concurrent_evaluation_view(item, &events))
+            .filter(|item| activation_record.is_none_or(|current| current.id != item.id))
+            .map(|item| concurrent_activation_view(item, &events))
             .collect::<Vec<_>>();
         let now = Utc::now();
         let background_tasks = get_tasks_map()
@@ -1113,6 +1135,21 @@ impl ContextEngine {
                 }
             })
             .collect::<Vec<_>>();
+        let thread_phases = work_threads
+            .iter()
+            .map(|thread| {
+                (
+                    thread.id.clone(),
+                    derive_thread_phase(
+                        thread,
+                        &active_activations,
+                        &thread_signals,
+                        &scheduled_intents,
+                        &background_tasks,
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
         let current_session_ids = [active_session_id.to_string()];
         let (mut sessions, mut session_working_set) = select_session_working_set(
             &registry_sessions,
@@ -1120,7 +1157,7 @@ impl ContextEngine {
             Utc::now(),
             &self.config.session_working_set,
             &objectives,
-            &active_work_items,
+            &active_activations,
         );
         let parent_session_id = registry_sessions
             .iter()
@@ -1146,7 +1183,7 @@ impl ContextEngine {
             .iter()
             .filter(|frame| !state.retired.contains(&frame.id))
             .collect::<Vec<_>>();
-        let causal_frontiers = evaluation_work_item
+        let causal_frontiers = activation_record
             .into_iter()
             .map(|work_item| {
                 let root_sequence = events
@@ -1244,7 +1281,7 @@ impl ContextEngine {
             .filter(|event| event_session(event) == Some(active_session_id))
             .cloned()
             .collect::<Vec<_>>();
-        let causal_events = evaluation_work_item.map(|work_item| {
+        let causal_events = activation_record.map(|work_item| {
             session_events
                 .iter()
                 .filter(|event| {
@@ -1259,7 +1296,7 @@ impl ContextEngine {
                 .cloned()
                 .collect::<Vec<_>>()
         });
-        let wake = evaluation_work_item
+        let wake = activation_record
             .and_then(|work_item| {
                 session_events
                     .iter()
@@ -1277,11 +1314,12 @@ impl ContextEngine {
             parent_session_id: parent_session_id.as_deref(),
             sessions: &sessions,
             session_working_set: &session_working_set,
-            active_work_items: &active_work_items,
+            active_activations: &active_activations,
             work_threads: &work_threads,
+            thread_signals: &thread_signals,
             scheduled_intents: &scheduled_intents,
-            evaluation: evaluation.as_ref(),
-            concurrent_evaluations: &concurrent_evaluations,
+            activation: activation.as_ref(),
+            concurrent_activations: &concurrent_activations,
             background_tasks: &background_tasks,
             objectives: &objectives,
             state: &state,
@@ -1299,11 +1337,13 @@ impl ContextEngine {
             parent_session_id,
             sessions,
             session_working_set,
-            active_work_items,
+            active_activations,
             work_threads,
+            thread_signals,
+            thread_phases,
             scheduled_intents,
-            evaluation,
-            concurrent_evaluations,
+            activation,
+            concurrent_activations,
             background_tasks,
             objectives,
             state,
@@ -1346,11 +1386,12 @@ impl ContextEngine {
             parent_session_id: view.parent_session_id.as_deref(),
             sessions: &view.sessions,
             session_working_set: &view.session_working_set,
-            active_work_items: &view.active_work_items,
+            active_activations: &view.active_activations,
             work_threads: &view.work_threads,
+            thread_signals: &view.thread_signals,
             scheduled_intents: &view.scheduled_intents,
-            evaluation: view.evaluation.as_ref(),
-            concurrent_evaluations: &view.concurrent_evaluations,
+            activation: view.activation.as_ref(),
+            concurrent_activations: &view.concurrent_activations,
             background_tasks: &view.background_tasks,
             objectives: &view.objectives,
             state: &view.state,
@@ -2358,11 +2399,12 @@ struct ContextRenderInput<'a> {
     parent_session_id: Option<&'a str>,
     sessions: &'a [ProjectedSession],
     session_working_set: &'a SessionWorkingSetView,
-    active_work_items: &'a [EvaluationWorkItemRecord],
+    active_activations: &'a [ThreadActivationRecord],
     work_threads: &'a [WorkThreadRecord],
+    thread_signals: &'a [ThreadSignalRecord],
     scheduled_intents: &'a [ScheduledIntentRecord],
-    evaluation: Option<&'a EvaluationFocus>,
-    concurrent_evaluations: &'a [ConcurrentEvaluationView],
+    activation: Option<&'a ActivationFocus>,
+    concurrent_activations: &'a [ConcurrentActivationView],
     background_tasks: &'a [BackgroundTaskView],
     objectives: &'a [ObjectiveRecord],
     state: &'a MindState,
@@ -2373,12 +2415,12 @@ struct ContextRenderInput<'a> {
     references: &'a ContextReferences,
 }
 
-fn render_current_evaluation(
-    evaluation: &EvaluationFocus,
+fn render_current_activation(
+    evaluation: &ActivationFocus,
     references: &ContextReferences,
 ) -> SExpr {
     let mut fields = vec![
-        pair("id", atom(&evaluation.work_item_id)),
+        pair("id", atom(&evaluation.activation_id)),
         pair("session", atom(&evaluation.session_id)),
         list(
             "root-turn",
@@ -2399,6 +2441,23 @@ fn render_current_evaluation(
                 pair("input", atom(&evaluation.trigger_preview)),
             ],
         ),
+        list(
+            "signal-batch",
+            evaluation
+                .signal_batch
+                .iter()
+                .map(|signal| {
+                    list(
+                        "signal",
+                        vec![
+                            pair("event", atom(references.display(&signal.event_id))),
+                            pair("kind", atom(&signal.kind)),
+                            pair("sequence", atom(signal.sequence.to_string())),
+                        ],
+                    )
+                })
+                .collect(),
+        ),
     ];
     if let Some(objective_id) = &evaluation.objective_id {
         let mut binding = vec![pair("id", atom(objective_id))];
@@ -2416,14 +2475,14 @@ fn render_current_evaluation(
         ),
         pair(
             "shared-state-boundary",
-            atom("Mind、Objective、其他 Session 与 concurrent-evaluations 是可读取的共享背景，不会自动变成本次任务；除非 root-turn 明确要求，不得接管、重复或继续它们的动作"),
+            atom("Mind、Objective、其他 Session 与 concurrent-activations 是可读取的共享背景，不会自动变成本次任务；除非 root-turn 明确要求，不得接管、重复或继续它们的动作"),
         ),
         pair(
             "progress-query",
-            atom("若 root-turn 询问另一分支的进度，只根据 concurrent-evaluations 与 background-tasks 的物理状态回答；不得为推进被询问分支而重复调用其工具"),
+            atom("若 root-turn 询问另一分支的进度，只根据 concurrent-activations 与 background-tasks 的物理状态回答；不得为推进被询问分支而重复调用其工具"),
         ),
     ]);
-    list("current-evaluation", fields)
+    list("current-activation", fields)
 }
 
 /// The final form is repeated after Inbox on purpose. Kernel already carries
@@ -2431,8 +2490,9 @@ fn render_current_evaluation(
 /// routing field. The VM should treat this final `evaluate` form as its single
 /// execution entry point; all preceding forms are state.
 fn render_evaluation_directive(
-    evaluation: &EvaluationFocus,
+    evaluation: &ActivationFocus,
     objectives: &[ObjectiveRecord],
+    references: &ContextReferences,
 ) -> SExpr {
     let mode = if evaluation.objective_id.is_some() {
         "objective-evaluation"
@@ -2467,7 +2527,7 @@ fn render_evaluation_directive(
             list("objective", fields)
         })
         .collect::<Vec<_>>();
-    let thread_kind = evaluation_thread_kind(evaluation);
+    let thread_kind = activation_thread_kind(evaluation);
     let thread = if thread_kind == "objective" {
         list(
             "thread",
@@ -2511,7 +2571,23 @@ fn render_evaluation_directive(
         )
     };
     let mut fields = vec![
-            pair("work-item", atom(&evaluation.work_item_id)),
+            list(
+                "activation",
+                vec![
+                    pair("id", atom(&evaluation.activation_id)),
+                    list(
+                        "caused-by",
+                        vec![list(
+                            "signal-batch",
+                            evaluation
+                                .signal_batch
+                                .iter()
+                                .map(|signal| atom(references.display(&signal.event_id)))
+                                .collect(),
+                        )],
+                    ),
+                ],
+            ),
             thread,
             pair("mode", atom(mode)),
             pair(
@@ -2547,17 +2623,17 @@ fn render_evaluation_directive(
     list("evaluate", fields)
 }
 
-fn render_concurrent_evaluations(
-    evaluations: &[ConcurrentEvaluationView],
+fn render_concurrent_activations(
+    evaluations: &[ConcurrentActivationView],
     references: &ContextReferences,
 ) -> SExpr {
     list(
-        "concurrent-evaluations",
+        "concurrent-activations",
         evaluations
             .iter()
             .map(|evaluation| {
                 let mut fields = vec![
-                    pair("id", atom(&evaluation.work_item_id)),
+                    pair("id", atom(&evaluation.activation_id)),
                     pair("session", atom(&evaluation.session_id)),
                     pair(
                         "root-turn",
@@ -2574,7 +2650,7 @@ fn render_concurrent_evaluations(
                         evaluation.pending_tools.iter().map(atom).collect(),
                     ));
                 }
-                list("evaluation", fields)
+                list("activation", fields)
             })
             .collect(),
     )
@@ -2611,7 +2687,10 @@ fn render_background_tasks(tasks: &[BackgroundTaskView], references: &ContextRef
 
 fn render_thread_scheduler(
     threads: &[WorkThreadRecord],
+    activations: &[ThreadActivationRecord],
+    signals: &[ThreadSignalRecord],
     scheduled: &[ScheduledIntentRecord],
+    background_tasks: &[BackgroundTaskView],
 ) -> SExpr {
     let thread_entries = threads
         .iter()
@@ -2621,7 +2700,20 @@ fn render_thread_scheduler(
                 pair("root-turn", atom(&thread.root_turn_id)),
                 pair("session", atom(&thread.session_id)),
                 pair("kind", atom(thread.kind.as_str())),
-                pair("status", atom(thread.status.as_str())),
+                pair("lifecycle", atom(thread.lifecycle.as_str())),
+                pair(
+                    "phase",
+                    atom(
+                        derive_thread_phase(
+                            thread,
+                            activations,
+                            signals,
+                            scheduled,
+                            background_tasks,
+                        )
+                        .as_str(),
+                    ),
+                ),
                 pair("revision", atom(thread.revision.to_string())),
                 pair("executor", atom(&thread.executor_kind)),
                 pair("delivery", atom(thread.delivery_status.as_str())),
@@ -2674,6 +2766,43 @@ fn render_thread_scheduler(
             list("queue", scheduled_entries),
         ],
     )
+}
+
+fn derive_thread_phase(
+    thread: &WorkThreadRecord,
+    activations: &[ThreadActivationRecord],
+    signals: &[ThreadSignalRecord],
+    scheduled: &[ScheduledIntentRecord],
+    background_tasks: &[BackgroundTaskView],
+) -> ThreadPhase {
+    if thread.lifecycle.is_terminal() {
+        return ThreadPhase::Idle;
+    }
+    if activations.iter().any(|activation| {
+        activation.root_turn_id == thread.root_turn_id
+            && activation.status == crate::memory::ThreadActivationStatus::Running
+    }) {
+        return ThreadPhase::Running;
+    }
+    if signals
+        .iter()
+        .any(|signal| signal.thread_id == thread.id && signal.status == ThreadSignalStatus::Pending)
+        || activations.iter().any(|activation| {
+            activation.root_turn_id == thread.root_turn_id
+                && activation.status == crate::memory::ThreadActivationStatus::Queued
+        })
+    {
+        return ThreadPhase::Runnable;
+    }
+    if scheduled.iter().any(|intent| {
+        intent.thread_id == thread.id && intent.status == ScheduledIntentStatus::Queued
+    }) || background_tasks.iter().any(|task| {
+        task.root_turn_id.as_deref() == Some(thread.root_turn_id.as_str())
+            && !matches!(task.status.as_str(), "completed" | "failed" | "cancelled")
+    }) {
+        return ThreadPhase::Waiting;
+    }
+    ThreadPhase::Idle
 }
 
 fn render_wake(wake: &WakeSignal, references: &ContextReferences) -> SExpr {
@@ -2826,11 +2955,12 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         parent_session_id,
         sessions,
         session_working_set,
-        active_work_items,
+        active_activations,
         work_threads,
+        thread_signals,
         scheduled_intents,
-        evaluation,
-        concurrent_evaluations,
+        activation,
+        concurrent_activations,
         background_tasks,
         objectives,
         state,
@@ -2846,13 +2976,13 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         kernel.push(pair("parent-session", atom(parent)));
     }
     kernel.push(pair("version", atom(state.version.to_string())));
-    if let Some(evaluation) = evaluation {
-        kernel.push(render_current_evaluation(evaluation, references));
+    if let Some(evaluation) = activation {
+        kernel.push(render_current_activation(evaluation, references));
     }
     kernel.push(pair(
-        "in-flight-evaluations",
+        "in-flight-activations",
         atom(
-            active_work_items
+            active_activations
                 .iter()
                 .filter(|item| !item.status.is_terminal())
                 .count()
@@ -2860,11 +2990,17 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         ),
     ));
     if !work_threads.is_empty() || !scheduled_intents.is_empty() {
-        kernel.push(render_thread_scheduler(work_threads, scheduled_intents));
+        kernel.push(render_thread_scheduler(
+            work_threads,
+            active_activations,
+            thread_signals,
+            scheduled_intents,
+            background_tasks,
+        ));
     }
-    if !concurrent_evaluations.is_empty() {
-        kernel.push(render_concurrent_evaluations(
-            concurrent_evaluations,
+    if !concurrent_activations.is_empty() {
+        kernel.push(render_concurrent_activations(
+            concurrent_activations,
             references,
         ));
     }
@@ -2992,10 +3128,10 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                 if let Some(reason) = &session.attention_reason {
                     fields.push(pair("attention-reason", atom(reason)));
                 }
-                if !entry.active_work_item_ids.is_empty() {
+                if !entry.active_activation_ids.is_empty() {
                     fields.push(list(
-                        "active-work-items",
-                        entry.active_work_item_ids.iter().map(atom).collect(),
+                        "active-activations",
+                        entry.active_activation_ids.iter().map(atom).collect(),
                     ));
                 }
                 if !entry.active_objective_ids.is_empty() {
@@ -3199,8 +3335,9 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
     // directory changes less often than wake/budget, and Inbox is highest
     // churn. Concurrent Session evaluations of the same Context therefore
     // reuse the protocol + Mind prefix whenever they observe the same version.
-    let directive = evaluation
-        .map(|evaluation| render_evaluation_directive(evaluation, objectives).to_string());
+    let directive = activation.map(|evaluation| {
+        render_evaluation_directive(evaluation, objectives, references).to_string()
+    });
     match directive {
         Some(directive) => format!(
             "{} {} {} {} {} {})",
@@ -3336,7 +3473,7 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "current",
-                        atom("Context 最后的 evaluate 是本次模型请求唯一的执行入口；kernel.current-evaluation 提供同一事实的详细机器状态"),
+                        atom("Context 最后的 evaluate 是本次模型请求唯一的执行入口；kernel.current-activation 提供同一事实的详细机器状态"),
                     ),
                     pair(
                         "thread-model",
@@ -3352,15 +3489,15 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "concurrent",
-                        atom("kernel.concurrent-evaluations 是同一 Context 中其他 work/objective thread 的只读运行状态，不是当前 dialogue thread 的待办列表"),
+                        atom("kernel.concurrent-activations 是同一 Context 中其他 execution/objective thread 的只读运行状态，不是当前 dialogue thread 的待办列表"),
                     ),
                     pair(
                         "pending-tool",
-                        atom("pending-tools 表示其他分支已经发起且尚未收到结果的工具调用；不得从本次 Evaluation 重复发起"),
+                        atom("pending-tools 表示其他分支已经发起且尚未收到结果的工具调用；不得从本次 Activation 重复发起"),
                     ),
                     pair(
                         "progress",
-                        atom("进度询问应直接依据 Work Item、pending-tools 与 background-tasks 的物理状态作答；未知就明确说未知，不得虚构结果"),
+                        atom("进度询问应直接依据 Thread、Activation、pending-tools 与 background-tasks 的物理状态作答；未知就明确说未知，不得虚构结果"),
                     ),
                     pair(
                         "objective-binding",
@@ -3373,11 +3510,11 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair(
                         "identity",
-                        atom("Agent 可同时运行多个 Evaluation；Session 只是 IO 路由和局部连续性边界"),
+                        atom("Agent 可同时运行多个 Thread Activation；Session 只是 IO 路由和局部连续性边界"),
                     ),
                     pair(
                         "ordering",
-                        atom("Ledger seq 表示物理写入顺序；root-turn/work-item/caused-by 表示计算与工具因果链"),
+                        atom("Ledger seq 表示物理写入顺序；thread/activation/caused-by 表示计算与工具因果链"),
                     ),
                     pair(
                         "tool-wait",
@@ -3466,7 +3603,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "evaluation",
-                        atom("一次 Evaluation 只是 Objective 的一个执行切片；普通文本或 no_reply 只结束本次 Evaluation，不表示长期 Objective 已完成"),
+                        atom("一次 Thread Activation 只是 Objective 的一个执行切片；普通文本或 no_reply 只结束本次 Activation，不表示长期 Objective 已完成"),
                     ),
                     pair(
                         "completion",
@@ -3474,7 +3611,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "continuation",
-                        atom("active 且 wait=none 时，ObjectiveSupervisor 会在当前 Evaluation 终态后自动开启下一次 Evaluation；软检查点、Context 压力或单次错误都不能冒充完成"),
+                        atom("active 且 wait=none 时，ObjectiveSupervisor 会在当前 Activation 终态后产生下一次 Signal；软检查点、Context 压力或单次错误都不能冒充完成"),
                     ),
                     pair(
                         "waiting",
@@ -3507,7 +3644,7 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "current-thread",
-                        atom("直接物理工具调用继承 kernel.current-evaluation 的 Thread；任意数量工具结果都回到同一 mailbox，不创建新 Thread"),
+                        atom("直接物理工具调用继承 kernel.current-activation 的 Thread；任意数量工具结果都回到同一 mailbox，不创建新 Thread"),
                     ),
                     pair(
                         "enqueue",
@@ -3574,7 +3711,7 @@ fn render_protocol() -> SExpr {
                     list(
                         "no-reply",
                         vec![
-                            pair("when", atom("确认当前 Evaluation 无需向 active Session 发送任何消息")),
+                            pair("when", atom("确认当前 Activation 无需向 active Session 发送任何消息")),
                             pair("tool", atom("no_reply")),
                             pair("exclusive", atom("no_reply 必须独占响应，无参数且不携带正文")),
                             pair("scope", atom("Dialogue Thread 中结束本次求值；有活动后台任务的 Work Thread 中仅 yield 到 waiting；不完成 Objective，不取消后台任务")),
@@ -3634,7 +3771,7 @@ fn render_protocol() -> SExpr {
                         vec![
                             pair(
                                 "when",
-                                atom("current-evaluation.thread.kind=delivery；一个或多个 Work Thread 已完成并等待面向 Session 交付"),
+                                atom("current-activation.thread.kind=delivery；一个或多个 Execution Thread 已完成并等待面向 Session 交付"),
                             ),
                             pair(
                                 "input",
@@ -3657,7 +3794,7 @@ fn render_protocol() -> SExpr {
                 vec![
                     pair("current", atom("无工具的普通文本只回复 kernel.active-session")),
                     pair("other-session-tool", atom("send_message {session_id,content}")),
-                    pair("other-session", atom("send_message 只向同一 Agent 的其他 Session 主动投递，不结束当前 Evaluation，不触发目标 Session 求值")),
+                    pair("other-session", atom("send_message 只向同一 Agent 的其他 Session 主动投递，不结束当前 Activation，不触发目标 Session 求值")),
                     pair("current-session-guard", atom("不得用 send_message 回复 active Session；Runtime 会拒绝")),
                     pair("context-boundary", atom("context_tx 只修改共享 Mind，不能向用户发送消息")),
                 ],
@@ -4185,7 +4322,7 @@ fn context_wide_observation_allowed(event: &Event) -> bool {
             == Some(true)
 }
 
-fn event_belongs_to_work_item(event: &Event, work_item: &EvaluationWorkItemRecord) -> bool {
+fn event_belongs_to_work_item(event: &Event, work_item: &ThreadActivationRecord) -> bool {
     event.id == work_item.root_turn_id
         || event.id == work_item.trigger_event_id
         || event
@@ -4207,7 +4344,11 @@ fn bounded_event_preview(event: Option<&Event>, max_chars: usize) -> String {
     )
 }
 
-fn evaluation_focus(work_item: &EvaluationWorkItemRecord, events: &[Event]) -> EvaluationFocus {
+fn activation_focus(
+    work_item: &ThreadActivationRecord,
+    signals: &[ThreadSignalRecord],
+    events: &[Event],
+) -> ActivationFocus {
     let root = events
         .iter()
         .find(|event| event.id == work_item.root_turn_id);
@@ -4247,8 +4388,8 @@ fn evaluation_focus(work_item: &EvaluationWorkItemRecord, events: &[Event]) -> E
     } else {
         "work"
     };
-    EvaluationFocus {
-        work_item_id: work_item.id.clone(),
+    ActivationFocus {
+        activation_id: work_item.id.clone(),
         session_id: work_item.session_id.clone(),
         root_turn_id: work_item.root_turn_id.clone(),
         thread_kind: thread_kind.to_string(),
@@ -4261,12 +4402,20 @@ fn evaluation_focus(work_item: &EvaluationWorkItemRecord, events: &[Event]) -> E
         } else {
             bounded_event_preview(trigger, 800)
         },
+        signal_batch: signals
+            .iter()
+            .map(|signal| ActivationSignalFocus {
+                event_id: signal.event_id.clone(),
+                kind: signal.kind.clone(),
+                sequence: signal.sequence,
+            })
+            .collect(),
         objective_id,
         objective_evaluation_id,
     }
 }
 
-fn evaluation_thread_kind(evaluation: &EvaluationFocus) -> &'static str {
+fn activation_thread_kind(evaluation: &ActivationFocus) -> &'static str {
     match evaluation.thread_kind.as_str() {
         "objective" => "objective",
         "work" => "work",
@@ -4310,7 +4459,7 @@ fn causal_root_has_physical_tool_plan(root_turn_id: &str, events: &[Event]) -> b
     })
 }
 
-fn pending_tool_names(work_item: &EvaluationWorkItemRecord, events: &[Event]) -> Vec<String> {
+fn pending_tool_names(work_item: &ThreadActivationRecord, events: &[Event]) -> Vec<String> {
     let delivered = events
         .iter()
         .filter(|event| event.event_type == TYPE_TOOL_OUTPUT)
@@ -4350,15 +4499,15 @@ fn pending_tool_names(work_item: &EvaluationWorkItemRecord, events: &[Event]) ->
     pending
 }
 
-fn concurrent_evaluation_view(
-    work_item: &EvaluationWorkItemRecord,
+fn concurrent_activation_view(
+    work_item: &ThreadActivationRecord,
     events: &[Event],
-) -> ConcurrentEvaluationView {
+) -> ConcurrentActivationView {
     let root = events
         .iter()
         .find(|event| event.id == work_item.root_turn_id);
-    let focus = evaluation_focus(work_item, events);
-    let thread_kind = evaluation_thread_kind(&focus).to_string();
+    let focus = activation_focus(work_item, &[], events);
+    let thread_kind = activation_thread_kind(&focus).to_string();
     let thread_id = match thread_kind.as_str() {
         "dialogue" => work_item.session_id.clone(),
         "objective" => focus
@@ -4367,8 +4516,8 @@ fn concurrent_evaluation_view(
             .unwrap_or_else(|| work_item.root_turn_id.clone()),
         _ => work_item.root_turn_id.clone(),
     };
-    ConcurrentEvaluationView {
-        work_item_id: work_item.id.clone(),
+    ConcurrentActivationView {
+        activation_id: work_item.id.clone(),
         session_id: work_item.session_id.clone(),
         root_turn_id: work_item.root_turn_id.clone(),
         thread_kind,
@@ -4381,7 +4530,7 @@ fn concurrent_evaluation_view(
 
 fn event_visible_at_causal_frontier(
     event: &Event,
-    work_item: &EvaluationWorkItemRecord,
+    work_item: &ThreadActivationRecord,
     root_sequence: u64,
 ) -> bool {
     if event.id == work_item.root_turn_id || event.id == work_item.trigger_event_id {
@@ -4997,8 +5146,8 @@ mod tests {
             visible_in_inbox: true,
         };
         let references = ContextReferences::default();
-        let evaluation = EvaluationFocus {
-            work_item_id: "work-current".to_string(),
+        let evaluation = ActivationFocus {
+            activation_id: "work-current".to_string(),
             session_id: "s1".to_string(),
             root_turn_id: "user:1".to_string(),
             thread_kind: "dialogue".to_string(),
@@ -5007,16 +5156,21 @@ mod tests {
             trigger_event_id: "user:1".to_string(),
             trigger_kind: "chat/user_message".to_string(),
             trigger_preview: "先回答我".to_string(),
+            signal_batch: vec![ActivationSignalFocus {
+                event_id: "user:1".to_string(),
+                kind: "chat/user_message".to_string(),
+                sequence: 7,
+            }],
             objective_id: None,
             objective_evaluation_id: None,
         };
-        let concurrent_evaluations = vec![ConcurrentEvaluationView {
-            work_item_id: "work-existing".to_string(),
+        let concurrent_activations = vec![ConcurrentActivationView {
+            activation_id: "work-existing".to_string(),
             session_id: "s1".to_string(),
             root_turn_id: "user:old".to_string(),
             thread_kind: "work".to_string(),
             thread_id: "user:old".to_string(),
-            status: "waiting_tool".to_string(),
+            status: "running".to_string(),
             root_preview: "运行长任务".to_string(),
             pending_tools: vec!["exec".to_string()],
         }];
@@ -5035,11 +5189,12 @@ mod tests {
             parent_session_id: None,
             sessions: &[],
             session_working_set: &working_set,
-            active_work_items: &[],
+            active_activations: &[],
             work_threads: &[],
+            thread_signals: &[],
             scheduled_intents: &[],
-            evaluation: Some(&evaluation),
-            concurrent_evaluations: &concurrent_evaluations,
+            activation: Some(&evaluation),
+            concurrent_activations: &concurrent_activations,
             background_tasks: &[],
             objectives: &[],
             state: &state,
@@ -5063,14 +5218,21 @@ mod tests {
             Some(&SExpr::Atom("user-message".to_string()))
         );
         assert_eq!(
-            parsed.get_path(&["kernel", "current-evaluation", "root-turn", "input"]),
+            parsed.get_path(&["kernel", "current-activation", "root-turn", "input"]),
             Some(&SExpr::Atom("先回答我".to_string()))
         );
         assert!(rendered.contains("只推进 root-turn 表达的任务"));
+        assert!(rendered.contains(
+            "(signal-batch (signal (event user:1) (kind chat/user_message) (sequence 7)))"
+        ));
+        assert!(
+            rendered.contains("(activation (id work-current) (caused-by (signal-batch user:1)))")
+        );
+        assert!(!rendered.contains("current-evaluation"));
         assert!(rendered.contains("(pending-tools exec)"));
         assert!(rendered.contains("(thread-kind work)"));
         assert!(rendered.contains("(thread-id user:old)"));
-        assert!(rendered.contains("其他 work/objective thread 的只读运行状态"));
+        assert!(rendered.contains("其他 execution/objective thread 的只读运行状态"));
         assert!(rendered.contains("(evaluate"));
         assert!(rendered.contains("(thread (kind dialogue) (id s1) (turn user:1))"));
         assert!(rendered.contains("(objective-binding none)"));
@@ -5110,11 +5272,12 @@ mod tests {
             parent_session_id: None,
             sessions: &[],
             session_working_set: &working_set,
-            active_work_items: &[],
+            active_activations: &[],
             work_threads: &[],
+            thread_signals: &[],
             scheduled_intents: &[],
-            evaluation: Some(&evaluation),
-            concurrent_evaluations: &concurrent_evaluations,
+            activation: Some(&evaluation),
+            concurrent_activations: &concurrent_activations,
             background_tasks: &[],
             objectives: &[],
             state: &state,
@@ -5131,8 +5294,8 @@ mod tests {
 
     #[test]
     fn final_dialogue_directive_keeps_objective_visible_but_read_only() {
-        let evaluation = EvaluationFocus {
-            work_item_id: "work-dialogue".to_string(),
+        let evaluation = ActivationFocus {
+            activation_id: "work-dialogue".to_string(),
             session_id: "session-a".to_string(),
             root_turn_id: "message-new".to_string(),
             thread_kind: "dialogue".to_string(),
@@ -5141,6 +5304,7 @@ mod tests {
             trigger_event_id: "message-new".to_string(),
             trigger_kind: "chat/user_message".to_string(),
             trigger_preview: "人呢？".to_string(),
+            signal_batch: Vec::new(),
             objective_id: None,
             objective_evaluation_id: None,
         };
@@ -5168,7 +5332,9 @@ mod tests {
             updated_at: now,
         }];
 
-        let rendered = render_evaluation_directive(&evaluation, &objectives).to_string();
+        let rendered =
+            render_evaluation_directive(&evaluation, &objectives, &ContextReferences::default())
+                .to_string();
         assert!(rendered.contains("(thread (kind dialogue)"));
         assert!(rendered.contains("(objective-binding none)"));
         assert!(rendered.contains("(status active)"));

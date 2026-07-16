@@ -306,8 +306,8 @@ impl Server {
                 get(handle_get_context_working_set),
             )
             .route(
-                "/api/contexts/:context_id/work-items",
-                get(handle_get_context_work_items),
+                "/api/contexts/:context_id/activations",
+                get(handle_get_context_activations),
             )
             .route(
                 "/api/contexts/:context_id/background-tasks",
@@ -872,7 +872,7 @@ async fn handle_get_context_working_set(
             "active_session_id": active_session_id,
             "working_set": context.session_working_set,
             "session_directory": context.sessions,
-            "active_work_items": context.active_work_items,
+            "active_activations": context.active_activations,
             "pressure": context.pressure,
             "context_version": context.state.version,
         }))
@@ -881,7 +881,7 @@ async fn handle_get_context_working_set(
     }
 }
 
-async fn handle_get_context_work_items(
+async fn handle_get_context_activations(
     State(state): State<Arc<AppState>>,
     Path(context_id): Path<String>,
     headers: HeaderMap,
@@ -895,14 +895,10 @@ async fn handle_get_context_work_items(
         Ok(None) => return error_response(StatusCode::NOT_FOUND, "Context 不存在"),
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
-    match state
-        .runtime
-        .active_evaluation_work_items(&context_id)
-        .await
-    {
-        Ok(work_items) => Json(json!({
+    match state.runtime.active_thread_activations(&context_id).await {
+        Ok(activations) => Json(json!({
             "context_id": context_id,
-            "work_items": work_items,
+            "activations": activations,
         }))
         .into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
@@ -1720,7 +1716,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn context_observability_endpoints_expose_working_set_and_work_items() {
+    async fn context_observability_endpoints_expose_working_set_and_activations() {
         let (state, _) = test_state().await;
         let create = handle_create_session(
             State(Arc::clone(&state)),
@@ -1762,7 +1758,7 @@ mod tests {
         assert!(working_set_json.get("working_set").is_some());
         assert!(working_set_json.get("session_directory").is_some());
 
-        let work_items = handle_get_context_work_items(
+        let activations = handle_get_context_activations(
             State(Arc::clone(&state)),
             Path("context-test".to_string()),
             HeaderMap::new(),
@@ -1770,12 +1766,13 @@ mod tests {
         )
         .await
         .into_response();
-        assert_eq!(work_items.status(), StatusCode::OK);
-        let work_items_body = axum::body::to_bytes(work_items.into_body(), usize::MAX)
+        assert_eq!(activations.status(), StatusCode::OK);
+        let activations_body = axum::body::to_bytes(activations.into_body(), usize::MAX)
             .await
             .unwrap();
-        let work_items_json: serde_json::Value = serde_json::from_slice(&work_items_body).unwrap();
-        assert!(work_items_json["work_items"].is_array());
+        let activations_json: serde_json::Value =
+            serde_json::from_slice(&activations_body).unwrap();
+        assert!(activations_json["activations"].is_array());
 
         let background_tasks = handle_get_context_background_tasks(
             State(Arc::clone(&state)),

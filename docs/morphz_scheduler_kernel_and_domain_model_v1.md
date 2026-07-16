@@ -899,9 +899,9 @@ maintenance
 |---|---|---|
 | Session Dialogue Gate | `DialogueLane` | 已提供同 Session 首次求值顺序，但尚无独立持久 Lane 记录 |
 | 每条 User Message 的 `WorkThreadRecord(kind=dialogue)` | `DialogueTurn Thread` | 当前按 `root_turn_id` 创建有限因果边界，方向与新决策一致 |
-| `WorkThreadRecord` | `ThreadRecord` | 已具备稳定 `root_turn_id` 和 Delivery 信息；状态需拆为 lifecycle 与 derived phase |
-| `EvaluationWorkItemRecord` | `ThreadActivationRecord` | 当前仍混有 waiting 状态，后续应收口 |
-| Event + `trigger_event_id` | `ThreadSignal` | 当前以 Ledger Event 兼任 mailbox trigger |
+| `WorkThreadRecord` | `ThreadRecord` | 已具备稳定 `root_turn_id`、权威 lifecycle、derived phase 和 Delivery 信息；类型与物理表名尚待迁移 |
+| `ThreadActivationRecord` | `ThreadActivationRecord` | 领域类型与状态已经收口，SQLite 物理表已迁移为 `thread_activations` |
+| `ThreadSignalRecord` + Event | `ThreadSignal` | Event 保存不可变事实，Signal 保存 mailbox 消费状态 |
 | `ScheduledIntentRecord` | `ScheduleRecord` | 当前将 rule、intent 和 occurrence 混在一起 |
 | `BackgroundTask` | `ExecutionJob` | 当前主要驻留进程内，需持久化 |
 | Tool Call | `Action` | 已有标准 Function Calling 表达 |
@@ -914,7 +914,9 @@ maintenance
 
 - Session Dialogue Gate 已具备 Dialogue Lane 的顺序语义；
 - Work/Execution Thread mailbox single-flight；
-- Work Item claim、lease 和恢复；
+- Activation claim、lease 和恢复；
+- Signal batch 的有界、确定顺序原子领取与 acknowledge；
+- Thread lifecycle 与 derived phase 分离；
 - 有限 Thread 的唯一终态 Outcome；
 - `schedule_tx` 的原子提交；
 - Work completion 与用户 Delivery 分离；
@@ -923,12 +925,10 @@ maintenance
 当前需要收口的部分：
 
 - ThreadScheduler、ObjectiveSupervisor、BackgroundTask timer 各自维护唤醒；
-- Thread、WorkItem、Objective、Delegation、Schedule、BackgroundTask 存在重复状态投影；
-- Thread 当前把 lifecycle 和 scheduler phase 合并在同一个 status 中；
-- 缺少显式 `activation_signals`，一个 Activation 领取的 Signal 集合仍依赖事件链推断；
+- Thread、Objective、Delegation、Schedule、BackgroundTask 仍存在部分重复状态投影；
+- Event 提交与 Signal 物化尚未对全部生产者统一为同一个事务；
 - 后台 Job 主要是进程内状态；
 - 依赖满足仍采用周期轮询；
-- 缺少统一 durable Signal queue；
 - 缺少 Schedule cancel/reschedule/pause/resume；
 - 缺少父子 Thread、Wait Reason、Priority 等明确关系；
 - 调度公平性主要只有全局模型并发限制；
@@ -947,7 +947,7 @@ maintenance
 | `WorkThreadKind::Work` | `ThreadKind::Execution` | 执行线程 |
 | `WorkThreadStatus` | `ThreadLifecycle` + derived `ThreadPhase` | 生命周期与调度阶段 |
 | `EvaluationWorkItemRecord` | `ThreadActivationRecord` | 线程激活记录 |
-| `EvaluationWorkItemStatus` | `ActivationStatus` | 激活状态 |
+| `EvaluationWorkItemStatus` | `ThreadActivationStatus` | 激活状态 |
 | `EvaluationOutcomeCommit` | `ActivationOutcomeCommit` 或直接并入 Thread Outcome 事务 | 激活结果提交 |
 | `ScheduledIntentRecord` | `ScheduleRecord` | 调度记录 |
 | `BackgroundTask` | `ExecutionJob` | 执行作业 |
@@ -1048,3 +1048,28 @@ Delivery 是结果路由
 > 所有“为什么继续执行”都归一为 Thread Signal；每个 Activation 原子领取一个确定、有界的 Signal 批次；所有“模型开始处理”都归一为 Thread Activation；所有“现实世界动作”都归一为 Execution Job；所有长期语义认知仍由 Agent 在 Context Mind 中自主维护。
 
 在这一结构下，模型负责理解、计划、调度选择和语义判断，Runtime 负责因果、时序、并发、持久化、安全和恢复。两者共同构成 Morphz 的 Cognitive Scheduler。
+
+## 18. 实现进度
+
+### 2026-07-16：Phase 1 第一条完整纵切
+
+已经实现：
+
+- 新增持久 `thread_signals` 与 `activation_signals`；
+- 同一 Thread 的 pending Signal 按 sequence、ID 确定性排序，并在一个 SQLite 事务中有界批量领取；
+- queued/running Activation 对同一 Thread 实行 single-flight；并发 claim 只能产生一个 Activation；
+- Activation 终态提交会在同一事务中 acknowledge 本批 Signal；之后到达或超出批次上限的 Signal 留给下一次 Activation；
+- Runtime 启动时重新派发已经持久化但尚未领取的 pending Signal；
+- `EvaluationWorkItem` 的 Rust 领域类型、Store API、Context Encoding 与 Dashboard API 已收口为 `ThreadActivation`；SQLite 旧表会原位迁移为 `thread_activations`；
+- Activation 状态已收口为 `queued | running | succeeded | failed | cancelled`；旧 `waiting_tool / waiting_external` 数据迁移为已结束的 Activation；
+- Thread 的权威 `lifecycle` 与派生 `phase` 已分离；Dashboard 与 Context Encoding 从 Signal、Activation、Schedule 和后台执行事实推导 phase；
+- Context protocol v20 明确暴露 `current-activation`、确定性的 `signal-batch` 与 `concurrent-activations`。
+
+尚未宣称完成：
+
+- 当前 Event 先跨过 Ledger 持久化边界，Orchestrator 随后才物化 Thread Signal；“状态变更 + Signal”尚未对所有生产者统一为一个数据库事务。已持久化 Signal 可以恢复，但 Event 已提交而 Signal 尚未生成的极窄崩溃窗口仍需由 durable outbox/dispatcher 收口；
+- Schedule、Objective、Delegation 和后台任务仍各自拥有部分唤醒路径，尚未全部改为统一 Signal producer；
+- `work_threads`、`evaluation_outcomes` 等少量 SQLite 物理名称仍待后续迁移为最终领域名称；
+- 通用 Wait Condition、统一 Timer Engine 和持久 Execution Job 属于 Phase 2/3，不在本次纵切范围内。
+
+因此，本阶段证明了 Signal → Activation → Context Encoding → 终态 acknowledge 的内核闭环，但不把尚未统一的生产者事务边界误报为完成。

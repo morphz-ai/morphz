@@ -7,9 +7,9 @@ use morphz::llm::{
 };
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    DelegationStatus, EvaluationWorkItemMutation, EvaluationWorkItemStatus, EventStore, NewAgent,
-    NewCognitiveContext, NewEvaluationWorkItem, NewSession, NewWorkThread, QueryFilter,
-    SessionMountKind, SessionStore, WorkThreadKind, WorkThreadStatus,
+    DelegationStatus, EventStore, NewAgent, NewCognitiveContext, NewSession, NewThreadActivation,
+    NewWorkThread, QueryFilter, SessionMountKind, SessionStore, ThreadActivationMutation,
+    ThreadActivationStatus, ThreadLifecycle, WorkThreadKind,
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
@@ -647,7 +647,7 @@ async fn duplicate_routed_event_creates_one_work_item_and_one_reply() {
     assert_eq!(client.messages_seen().len(), 1);
     assert_eq!(
         store
-            .list_context_evaluation_work_items(session_id, true)
+            .list_context_thread_activations(session_id, true)
             .await
             .unwrap()
             .len(),
@@ -725,7 +725,7 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
             .sequence
             .unwrap();
         let work_item = store
-            .ensure_evaluation_work_item(NewEvaluationWorkItem {
+            .ensure_thread_activation(NewThreadActivation {
                 id: format!("recovery-work-{index}"),
                 agent_id: "recovery-agent".to_string(),
                 context_id: "recovery-context".to_string(),
@@ -733,7 +733,7 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
                 trigger_event_id: event.id.clone(),
                 trigger_sequence: sequence,
                 trigger_kind: event.topic,
-                parent_work_item_id: None,
+                parent_activation_id: None,
                 root_turn_id: event.id,
             })
             .await
@@ -741,34 +741,34 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
         if index == 1 {
             assert!(matches!(
                 store
-                    .update_evaluation_work_item(
+                    .update_thread_activation(
                         &work_item.id,
                         work_item.revision,
-                        EvaluationWorkItemStatus::Running,
+                        ThreadActivationStatus::Running,
                         Some("dead-runtime"),
                         Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
                         None,
                     )
                     .await
                     .unwrap(),
-                EvaluationWorkItemMutation::Updated(_)
+                ThreadActivationMutation::Updated(_)
             ));
         }
         #[cfg(unix)]
         if index == 2 {
             assert!(matches!(
                 store
-                    .update_evaluation_work_item(
+                    .update_thread_activation(
                         &work_item.id,
                         work_item.revision,
-                        EvaluationWorkItemStatus::Running,
+                        ThreadActivationStatus::Running,
                         Some("runtime:2147483647"),
                         Some(chrono::Utc::now() + chrono::Duration::hours(1)),
                         None,
                     )
                     .await
                     .unwrap(),
-                EvaluationWorkItemMutation::Updated(_)
+                ThreadActivationMutation::Updated(_)
             ));
         }
     }
@@ -810,7 +810,7 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
         .sequence
         .unwrap();
     let orphan_work_item = store
-        .ensure_evaluation_work_item(NewEvaluationWorkItem {
+        .ensure_thread_activation(NewThreadActivation {
             id: "recovery-orphan-work".to_string(),
             agent_id: "recovery-agent".to_string(),
             context_id: "recovery-context".to_string(),
@@ -818,16 +818,16 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
             trigger_event_id: orphan_root.id.clone(),
             trigger_sequence: orphan_sequence,
             trigger_kind: orphan_root.topic.clone(),
-            parent_work_item_id: None,
+            parent_activation_id: None,
             root_turn_id: orphan_root.id.clone(),
         })
         .await
         .unwrap();
     store
-        .update_evaluation_work_item(
+        .update_thread_activation(
             &orphan_work_item.id,
             orphan_work_item.revision,
-            EvaluationWorkItemStatus::Completed,
+            ThreadActivationStatus::Succeeded,
             None,
             None,
             None,
@@ -877,7 +877,7 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(orphan_thread.status, WorkThreadStatus::Cancelled);
+    assert_eq!(orphan_thread.lifecycle, ThreadLifecycle::Cancelled);
     assert!(orphan_thread
         .result_text
         .as_deref()
@@ -891,14 +891,14 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
     );
     assert!(client.messages_seen().is_empty());
     let work_items = store
-        .list_context_evaluation_work_items("recovery-context", true)
+        .list_context_thread_activations("recovery-context", true)
         .await
         .unwrap();
     assert_eq!(work_items.len(), recovery_sessions.len() + 1);
     assert_eq!(
         work_items
             .iter()
-            .filter(|item| item.status == EvaluationWorkItemStatus::Cancelled)
+            .filter(|item| item.status == ThreadActivationStatus::Cancelled)
             .count(),
         recovery_sessions.len()
     );
@@ -978,7 +978,7 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         .and_then(|event| event.sequence)
         .unwrap();
     let work_item = store
-        .ensure_evaluation_work_item(NewEvaluationWorkItem {
+        .ensure_thread_activation(NewThreadActivation {
             id: "plan-recovery-work".to_string(),
             agent_id: "plan-recovery-agent".to_string(),
             context_id: "plan-recovery-context".to_string(),
@@ -986,16 +986,16 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
             trigger_event_id: trigger.id.clone(),
             trigger_sequence,
             trigger_kind: trigger.topic.clone(),
-            parent_work_item_id: None,
+            parent_activation_id: None,
             root_turn_id: root.id.clone(),
         })
         .await
         .unwrap();
     let running = match store
-        .update_evaluation_work_item(
+        .update_thread_activation(
             &work_item.id,
             work_item.revision,
-            EvaluationWorkItemStatus::Running,
+            ThreadActivationStatus::Running,
             Some("dead-runtime"),
             Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
             Some(7),
@@ -1003,8 +1003,8 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         .await
         .unwrap()
     {
-        EvaluationWorkItemMutation::Updated(work_item) => work_item,
-        other => panic!("unexpected Work Item mutation: {other:?}"),
+        ThreadActivationMutation::Updated(work_item) => work_item,
+        other => panic!("unexpected Thread Activation mutation: {other:?}"),
     };
     let persisted_call = json!([{
         "id": "persisted-route-probe",
@@ -1047,10 +1047,10 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         ))
         .await
         .unwrap();
-    // Reproduce the production failure: the Work Item's original Tool Output
+    // Reproduce the production failure: the Thread Activation's original Tool Output
     // has already appeared in a later Context snapshot. Recovery must still
     // resume the durable assistant plan instead of treating the stale wake as
-    // a successfully completed Work Item.
+    // a successfully completed Thread Activation.
     store
         .append(Event::new(
             "plan-recovery-covered-context".to_string(),
@@ -3394,7 +3394,7 @@ async fn same_session_dialogue_turns_are_serialized() {
         "one Session has one ordered dialogue thread"
     );
     let work_items = store
-        .list_context_evaluation_work_items("serialized-session", true)
+        .list_context_thread_activations("serialized-session", true)
         .await
         .unwrap();
     assert_eq!(work_items.len(), 2);
@@ -3638,7 +3638,7 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
             messages.iter().any(|message| {
                 message.role == "user"
                     && message.content.contains("message-b while tool runs")
-                    && message.content.contains("(current-evaluation")
+                    && message.content.contains("(current-activation")
             })
         })
         .expect("message B must receive its own responsibility-scoped Context Encoding");
@@ -3909,7 +3909,7 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
     assert!(inspections.len() >= calls);
     assert!(inspections.len() <= 5);
     let work_items = store
-        .list_context_evaluation_work_items("coalesced-session", true)
+        .list_context_thread_activations("coalesced-session", true)
         .await
         .unwrap()
         .len();

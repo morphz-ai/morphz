@@ -354,7 +354,7 @@ impl UiState {
             view.pressure.active_frames,
             view.session_working_set.full_session_ids.len(),
             view.session_working_set.metadata_only_session_ids.len(),
-            view.active_work_items.len(),
+            view.active_activations.len(),
             active_objectives
         );
         self.context_view = Some(view.clone());
@@ -759,7 +759,7 @@ impl UiState {
         let evaluations = self
             .context_view
             .as_ref()
-            .map(|view| view.active_work_items.len())
+            .map(|view| view.active_activations.len())
             .unwrap_or_default();
         let objectives = self
             .objectives
@@ -965,10 +965,10 @@ impl UiState {
         let work_items = self
             .context_view
             .as_ref()
-            .map(|view| view.active_work_items.as_slice())
+            .map(|view| view.active_activations.as_slice())
             .unwrap_or_default();
         lines.push(section_title(
-            "EVALUATIONS",
+            "ACTIVATIONS",
             work_items.len(),
             self.theme.text_secondary,
             self.theme.text_muted,
@@ -1383,13 +1383,13 @@ impl UiState {
         let Some(view) = self.context_view.as_ref() else {
             return vec![empty_state_line("Context 正在加载", self.theme.text_muted)];
         };
-        if view.active_work_items.is_empty() {
+        if view.active_activations.is_empty() {
             return vec![empty_state_line(
                 "没有活跃的模型求值",
                 self.theme.text_muted,
             )];
         }
-        view.active_work_items
+        view.active_activations
             .iter()
             .flat_map(|item| {
                 vec![
@@ -1620,7 +1620,7 @@ impl UiState {
         self.render_metric_card(
             frame,
             metrics[0],
-            "EVALUATIONS",
+            "ACTIVATIONS",
             evaluations.to_string(),
             "模型求值中".to_string(),
             self.theme.tool,
@@ -1665,7 +1665,7 @@ impl UiState {
         self.render_section_panel(
             frame,
             left[0],
-            "EVALUATIONS",
+            "ACTIVATIONS",
             evaluations,
             self.evaluation_panel_lines(),
             self.theme.tool,
@@ -3613,7 +3613,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(work_screen.contains("RUNTIME WORK"));
-        assert!(work_screen.contains("EVALUATIONS"));
+        assert!(work_screen.contains("ACTIVATIONS"));
         assert!(work_screen.contains("OBJECTIVES"));
         assert!(work_screen.contains("BACKGROUND TASKS"));
         assert!(work_screen.contains("DELEGATIONS"));

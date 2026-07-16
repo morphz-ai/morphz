@@ -12,6 +12,7 @@ import {
   MessageSquare,
   Palette,
   Play,
+  Radio,
   RefreshCw,
   Send,
   Square,
@@ -166,7 +167,7 @@ interface SessionWorkingSet {
   selection: string
 }
 
-interface EvaluationWorkItem {
+interface ThreadActivation {
   id: string
   revision: number
   context_id: string
@@ -200,7 +201,7 @@ interface ObjectiveRecord {
 interface ProjectedSession {
   session: SessionRecord
   projection: string
-  active_work_item_ids?: string[]
+  active_activation_ids?: string[]
   active_objective_ids?: string[]
 }
 
@@ -209,13 +210,25 @@ interface ContextViewResponse {
   active_session_id: string
   sessions: ProjectedSession[]
   session_working_set: SessionWorkingSet
-  active_work_items: EvaluationWorkItem[]
+  active_activations: ThreadActivation[]
   work_threads: WorkThreadRecord[]
+  thread_signals: ThreadSignalRecord[]
+  thread_phases: Record<string, 'idle' | 'runnable' | 'running' | 'waiting'>
   scheduled_intents: ScheduledIntentRecord[]
   objectives: ObjectiveRecord[]
   state: MindState
   observations: ContextObservation[]
   pressure: ContextPressure
+}
+
+interface ThreadSignalRecord {
+  id: string
+  thread_id: string
+  event_id: string
+  sequence: number
+  kind: string
+  status: 'pending' | 'claimed' | 'acknowledged'
+  created_at: string
 }
 
 interface WorkThreadRecord {
@@ -224,7 +237,7 @@ interface WorkThreadRecord {
   session_id: string
   root_turn_id: string
   kind: string
-  status: string
+  lifecycle: string
   executor_kind: string
   executor_id?: string
   result_text?: string
@@ -401,8 +414,8 @@ function summarizeToolCall(name: string, rawArguments: string): ToolCallSummary 
   }
 }
 
-function summarizeEvaluation(
-  item: EvaluationWorkItem,
+function summarizeActivation(
+  item: ThreadActivation,
   events: MorphzEvent[],
   toolTimeline: ToolTimelineItem[],
 ) {
@@ -454,7 +467,11 @@ function statusLabel(value: string) {
     cancelled: '取消',
     failed: '失败',
     queued: '排队',
+    runnable: '可运行',
     running: '执行中',
+    waiting: '等待中',
+    idle: '空闲',
+    open: '开放',
     success: '完成',
     guarded: '已处理',
     timeout: '超时',
@@ -562,7 +579,7 @@ export default function App() {
     if (sessionLoadInFlight.current) {
       // Never lose the last WebSocket-driven refresh. Without this queue, a
       // terminal event arriving while a previous snapshot was loading could
-      // leave a completed Evaluation rendered as running until the next poll.
+      // leave a completed Activation rendered as running until the next poll.
       sessionLoadQueued.current = { sessionId, contextId }
       return
     }
@@ -754,19 +771,22 @@ export default function App() {
   const runningObjectives = activeObjectives.filter(item => item.status === 'active')
   const blockedObjectives = activeObjectives.filter(item => item.status === 'blocked')
   const pausedObjectives = activeObjectives.filter(item => item.status === 'paused')
-  const workItems = contextView?.active_work_items ?? []
+  const workItems = contextView?.active_activations ?? []
   const workThreads = contextView?.work_threads ?? []
+  const threadSignals = contextView?.thread_signals ?? []
+  const threadPhases = contextView?.thread_phases ?? {}
   const scheduledIntents = contextView?.scheduled_intents ?? []
-  const liveWorkThreads = workThreads.filter(item => !terminalTaskStatuses.has(item.status))
+  const liveWorkThreads = workThreads.filter(item => !terminalTaskStatuses.has(item.lifecycle))
   const runningWorkItems = workItems.filter(item => item.status === 'queued' || item.status === 'running')
   const liveBackgroundTasks = backgroundTasks.filter(item => !terminalTaskStatuses.has(item.status))
   const contextDelegations = delegations.filter(item => item.parent_context_id === selectedContextId)
   const liveDelegations = contextDelegations.filter(item => !terminalTaskStatuses.has(item.status))
   const runningDelegations = liveDelegations.filter(item => item.status === 'queued' || item.status === 'running')
-  const activeWorkCount = liveWorkThreads.length
-  const waitingCount = liveWorkThreads.filter(item => item.status === 'waiting').length
-    + scheduledIntents.length
-    + workItems.filter(item => item.status.startsWith('waiting')).length
+  const activeWorkCount = liveWorkThreads.filter(item => {
+    const phase = threadPhases[item.id]
+    return phase === 'running' || phase === 'runnable'
+  }).length
+  const waitingCount = liveWorkThreads.filter(item => threadPhases[item.id] === 'waiting').length
     + runningObjectives.filter(item => Boolean(item.wait_condition)).length
   const selectedFrame = contextView?.state.frames.find(frame => frame.id === selectedFrameId)
   const retired = new Set(contextView?.state.retired ?? [])
@@ -911,9 +931,9 @@ export default function App() {
     }
   }
 
-  const leadingEvaluation = runningWorkItems[0]
-  const evaluationSummary = leadingEvaluation
-    ? summarizeEvaluation(leadingEvaluation, events, toolTimeline).title
+  const leadingActivation = runningWorkItems[0]
+  const activationSummary = leadingActivation
+    ? summarizeActivation(leadingActivation, events, toolTimeline).title
     : ''
   const taskStrip = liveBackgroundTasks[0]
     ? { state: 'running', label: '正在执行', summary: liveBackgroundTasks[0].command }
@@ -927,11 +947,11 @@ export default function App() {
               ? { state: 'paused', label: '目标暂停', summary: pausedObjectives[0].stated_objective }
               : runningObjectives[0]
                 ? { state: 'active', label: 'Objective 自动执行', summary: runningObjectives[0].stated_objective }
-                : leadingEvaluation
+                : leadingActivation
                   ? {
                       state: 'running',
-                      label: leadingEvaluation.status === 'queued' ? '等待模型' : '模型响应中',
-                      summary: evaluationSummary,
+                      label: leadingActivation.status === 'queued' ? '等待模型' : '模型响应中',
+                      summary: activationSummary,
                     }
                   : { state: 'idle', label: '空闲', summary: '当前没有进行中的工作' }
   const latestTurnEvent = !turnPending || pendingTurnSince === null ? undefined : [...events]
@@ -1088,8 +1108,8 @@ export default function App() {
               <div className="work-metrics">
                 <div><CircleDot size={17} /><span><small>ACTIVE</small><strong>{activeWorkCount}</strong></span></div>
                 <div><Clock3 size={17} /><span><small>WAITING</small><strong>{waitingCount}</strong></span></div>
+                <div><Radio size={17} /><span><small>PENDING SIGNALS</small><strong>{threadSignals.length}</strong></span></div>
                 <div><Layers3 size={17} /><span><small>OBJECTIVES</small><strong>{activeObjectives.length}</strong></span></div>
-                <div><GitBranch size={17} /><span><small>DELEGATIONS</small><strong>{liveDelegations.length}</strong></span></div>
               </div>
 
               <section className="objective-board">
@@ -1137,8 +1157,8 @@ export default function App() {
                     <header>WORK THREADS</header>
                     {liveWorkThreads.map(thread => (
                       <article className="scheduler-row" key={thread.id}>
-                        <span className={`status-pill ${thread.status}`}>{statusLabel(thread.status)}</span>
-                        <div><strong>{thread.kind} thread</strong><small>{shortId(thread.id, 28)} · Session {shortId(thread.session_id, 18)}</small></div>
+                        <span className={`status-pill ${threadPhases[thread.id] ?? 'idle'}`}>{statusLabel(threadPhases[thread.id] ?? 'idle')}</span>
+                        <div><strong>{thread.kind} thread</strong><small>{shortId(thread.id, 28)} · {thread.lifecycle} · Session {shortId(thread.session_id, 18)}</small></div>
                         <em>r{thread.revision}</em>
                       </article>
                     ))}
@@ -1154,6 +1174,17 @@ export default function App() {
                       </article>
                     ))}
                     {scheduledIntents.length === 0 && <div className="small-empty">没有排队或定时意图</div>}
+                  </div>
+                  <div className="scheduler-lane">
+                    <header>PENDING SIGNALS</header>
+                    {threadSignals.map(signal => (
+                      <article className="scheduler-row signal" key={signal.id}>
+                        <Radio size={14} />
+                        <div><strong>{signal.kind}</strong><small>Thread {shortId(signal.thread_id, 20)} · Event {shortId(signal.event_id, 20)}</small></div>
+                        <em>#{signal.sequence}</em>
+                      </article>
+                    ))}
+                    {threadSignals.length === 0 && <div className="small-empty">没有待领取 Signal</div>}
                   </div>
                 </div>
               </section>
@@ -1199,9 +1230,9 @@ export default function App() {
 
               <div className="work-columns">
                 <div className="work-column">
-                  <header><span>EVALUATIONS</span><b>{workItems.length}</b></header>
+                  <header><span>THREAD ACTIVATIONS</span><b>{workItems.length}</b></header>
                   {workItems.map(item => {
-                    const summary = summarizeEvaluation(item, events, toolTimeline)
+                    const summary = summarizeActivation(item, events, toolTimeline)
                     return (
                       <article className="work-card compact" key={item.id}>
                         <div className="card-line"><span className={`status-pill ${item.status}`}>{statusLabel(item.status)}</span><time>{formatAgo(item.updated_at)}</time></div>
@@ -1216,7 +1247,7 @@ export default function App() {
                       </article>
                     )
                   })}
-                  {workItems.length === 0 && <div className="small-empty">没有活跃求值</div>}
+                  {workItems.length === 0 && <div className="small-empty">没有活跃 Activation</div>}
                 </div>
 
                 <div className="work-column">

@@ -1253,7 +1253,7 @@ async fn show_context(
                 session.attention_state == morphz::memory::SessionAttentionState::Retired
             })
             .count();
-        let work_items = runtime.active_evaluation_work_items(id).await?;
+        let activations = runtime.active_thread_activations(id).await?;
         let active_session = sessions.iter().max_by(|left, right| {
             left.last_activity_at
                 .cmp(&right.last_activity_at)
@@ -1262,7 +1262,7 @@ async fn show_context(
         if let Some(active_session) = active_session {
             let view = runtime.context_encoding(id, &active_session.id).await?;
             println!(
-                "{}  [{}]  mind_version={}  sessions={} retired={} full={} metadata={} work_items={} pressure={}/{}tok  agent={}  {}",
+                "{}  [{}]  mind_version={}  sessions={} retired={} full={} metadata={} activations={} pressure={}/{}tok  agent={}  {}",
                 record.id,
                 record.status.as_str(),
                 version,
@@ -1270,7 +1270,7 @@ async fn show_context(
                 retired,
                 view.session_working_set.full_session_ids.len(),
                 view.session_working_set.metadata_only_session_ids.len(),
-                work_items.len(),
+                activations.len(),
                 view.pressure.level,
                 view.pressure.estimated_tokens,
                 record.agent_id,
@@ -1278,11 +1278,11 @@ async fn show_context(
             );
         } else {
             println!(
-                "{}  [{}]  mind_version={}  sessions=0 retired=0 work_items={}  agent={}  {}",
+                "{}  [{}]  mind_version={}  sessions=0 retired=0 activations={}  agent={}  {}",
                 record.id,
                 record.status.as_str(),
                 version,
-                work_items.len(),
+                activations.len(),
                 record.agent_id,
                 record.title
             );

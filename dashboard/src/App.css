@@ -244,7 +244,7 @@ kbd { font-family: var(--mono); font-size: 10px; font-weight: 500; }
 .scheduler-board > header span { color: var(--accent); font-size: 9px; font-weight: 700; letter-spacing: .1em; }
 .scheduler-board > header b { padding: 2px 5px; border-radius: 4px; background: var(--accent-soft); color: var(--accent-strong); font-size: 8px; }
 .scheduler-board > header small { color: var(--faint); font-size: 8px; }
-.scheduler-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.scheduler-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .scheduler-lane { min-width: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
 .scheduler-lane > header { padding: 9px 12px; border-bottom: 1px solid var(--line); color: var(--faint); font-family: var(--mono); font-size: 8px; letter-spacing: .1em; }
 .scheduler-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; min-height: 52px; padding: 9px 12px; }
@@ -309,7 +309,7 @@ kbd { font-family: var(--mono); font-size: 10px; font-weight: 500; }
 .card-line time { color: var(--faint); font-family: var(--mono); font-size: 8px; }
 .status-pill { padding: 3px 6px; border-radius: 4px; background: rgba(119,122,137,.12); color: var(--muted); font-family: var(--mono); font-size: 8px; }
 .status-pill.active, .status-pill.running, .status-pill.starting { background: rgba(87,217,148,.1); color: var(--green); }
-.status-pill.blocked, .status-pill.waiting_tool, .status-pill.waiting_external, .status-pill.queued, .status-pill.paused { background: rgba(227,179,84,.1); color: var(--yellow); }
+.status-pill.blocked, .status-pill.waiting, .status-pill.waiting_tool, .status-pill.waiting_external, .status-pill.queued, .status-pill.runnable, .status-pill.paused { background: rgba(227,179,84,.1); color: var(--yellow); }
 .status-pill.failed, .status-pill.cancelled, .status-pill.killed { background: rgba(239,124,131,.1); color: var(--red); }
 .work-card h2 { gap: 8px; margin: 12px 0 8px; color: var(--text); font-size: 12px; font-weight: 600; line-height: 1.55; }
 .work-card p { margin: 0 0 11px; color: var(--muted); font-size: 10px; line-height: 1.6; }

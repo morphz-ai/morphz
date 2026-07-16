@@ -278,8 +278,8 @@ impl Tool for ObjectiveCreateTool {
             "context_id": created.context_id,
             "coordinator_session_id": created.coordinator_session_id,
             "parent_objective_id": created.parent_objective_id,
-            "evaluation_adoption": if adopted.is_some() { "current-evaluation" } else { "queued-behind-current-objective" },
-            "guidance": "Objective 已持久化。不要重复创建；继续当前工作。普通文本或 no_reply 只结束当前 Evaluation，Objective 未完成时 Supervisor 会自动续跑。"
+            "activation_adoption": if adopted.is_some() { "current-activation" } else { "queued-behind-current-objective" },
+            "guidance": "Objective 已持久化。不要重复创建；继续当前工作。普通文本或 no_reply 只结束当前 Activation，Objective 未完成时 Supervisor 会自动续跑。"
         }))?)
     }
 }

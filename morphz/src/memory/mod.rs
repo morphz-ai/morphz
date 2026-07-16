@@ -159,36 +159,32 @@ pub struct SessionAttentionUpdate {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum EvaluationWorkItemStatus {
+pub enum ThreadActivationStatus {
     Queued,
     Running,
-    WaitingTool,
-    WaitingExternal,
-    Completed,
+    Succeeded,
     Cancelled,
     Failed,
 }
 
-impl EvaluationWorkItemStatus {
+impl ThreadActivationStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Queued => "queued",
             Self::Running => "running",
-            Self::WaitingTool => "waiting_tool",
-            Self::WaitingExternal => "waiting_external",
-            Self::Completed => "completed",
+            Self::Succeeded => "succeeded",
             Self::Cancelled => "cancelled",
             Self::Failed => "failed",
         }
     }
 
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Cancelled | Self::Failed)
+        matches!(self, Self::Succeeded | Self::Cancelled | Self::Failed)
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EvaluationWorkItemRecord {
+pub struct ThreadActivationRecord {
     pub id: String,
     pub revision: u64,
     pub agent_id: String,
@@ -197,10 +193,10 @@ pub struct EvaluationWorkItemRecord {
     pub trigger_event_id: String,
     pub trigger_sequence: u64,
     pub trigger_kind: String,
-    pub parent_work_item_id: Option<String>,
+    pub parent_activation_id: Option<String>,
     pub root_turn_id: String,
     pub context_snapshot_version: Option<u64>,
-    pub status: EvaluationWorkItemStatus,
+    pub status: ThreadActivationStatus,
     pub claimed_by: Option<String>,
     pub lease_expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
@@ -208,7 +204,7 @@ pub struct EvaluationWorkItemRecord {
 }
 
 #[derive(Debug, Clone)]
-pub struct NewEvaluationWorkItem {
+pub struct NewThreadActivation {
     pub id: String,
     pub agent_id: String,
     pub context_id: String,
@@ -216,21 +212,73 @@ pub struct NewEvaluationWorkItem {
     pub trigger_event_id: String,
     pub trigger_sequence: u64,
     pub trigger_kind: String,
-    pub parent_work_item_id: Option<String>,
+    pub parent_activation_id: Option<String>,
     pub root_turn_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EvaluationWorkItemMutation {
-    Updated(EvaluationWorkItemRecord),
-    Conflict { current: EvaluationWorkItemRecord },
+pub enum ThreadActivationMutation {
+    Updated(ThreadActivationRecord),
+    Conflict { current: ThreadActivationRecord },
     NotFound,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EvaluationOutcomeCommit {
+pub enum ActivationOutcomeCommit {
     Committed,
     Existing { event_id: String },
+}
+
+/// Durable mailbox fact addressed to one causal Thread. The immutable Event
+/// remains the physical/audit fact; this record owns only scheduler delivery
+/// and consumption state.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadSignalStatus {
+    Pending,
+    Claimed,
+    Acknowledged,
+}
+
+impl ThreadSignalStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Claimed => "claimed",
+            Self::Acknowledged => "acknowledged",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThreadSignalRecord {
+    pub id: String,
+    pub thread_id: String,
+    pub event_id: String,
+    pub sequence: u64,
+    pub kind: String,
+    pub parent_activation_id: Option<String>,
+    pub status: ThreadSignalStatus,
+    pub created_at: DateTime<Utc>,
+    pub claimed_at: Option<DateTime<Utc>>,
+    pub acknowledged_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewThreadSignal {
+    pub id: String,
+    pub thread_id: String,
+    pub event_id: String,
+    pub sequence: u64,
+    pub kind: String,
+    pub parent_activation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivationSignalRecord {
+    pub activation_id: String,
+    pub signal_id: String,
+    pub ordinal: u64,
 }
 
 /// Durable causal lane owned by one Agent. A Work Thread survives all model
@@ -261,19 +309,17 @@ impl WorkThreadKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkThreadStatus {
-    Active,
-    Waiting,
+pub enum ThreadLifecycle {
+    Open,
     Completed,
     Failed,
     Cancelled,
 }
 
-impl WorkThreadStatus {
+impl ThreadLifecycle {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Active => "active",
-            Self::Waiting => "waiting",
+            Self::Open => "open",
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
@@ -282,6 +328,27 @@ impl WorkThreadStatus {
 
     pub fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+/// Scheduler phase is a projection, never authoritative Thread state.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadPhase {
+    Idle,
+    Runnable,
+    Running,
+    Waiting,
+}
+
+impl ThreadPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Runnable => "runnable",
+            Self::Running => "running",
+            Self::Waiting => "waiting",
+        }
     }
 }
 
@@ -314,7 +381,7 @@ pub struct WorkThreadRecord {
     pub session_id: String,
     pub root_turn_id: String,
     pub kind: WorkThreadKind,
-    pub status: WorkThreadStatus,
+    pub lifecycle: ThreadLifecycle,
     pub executor_kind: String,
     pub executor_id: Option<String>,
     pub result_text: Option<String>,
@@ -692,35 +759,58 @@ pub trait SessionStore: Send + Sync {
         event: &crate::event::Event,
         attention_updates: &[SessionAttentionUpdate],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-    async fn ensure_evaluation_work_item(
+    /// Atomically persists a scheduler Signal and, when this Thread has no
+    /// queued/running Activation, claims the oldest bounded pending batch into
+    /// one new Activation. `None` means the Signal is safely pending behind an
+    /// Activation that already owns the Thread.
+    async fn claim_thread_signal_batch(
         &self,
-        work_item: NewEvaluationWorkItem,
-    ) -> Result<EvaluationWorkItemRecord, Box<dyn std::error::Error + Send + Sync>>;
-    async fn get_evaluation_work_item(
+        signal: NewThreadSignal,
+        activation: NewThreadActivation,
+        max_signals: usize,
+    ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_context_thread_signals(
+        &self,
+        context_id: &str,
+        status: Option<ThreadSignalStatus>,
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_activation_signals(
+        &self,
+        activation_id: &str,
+    ) -> Result<Vec<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn next_pending_thread_signal(
+        &self,
+        thread_id: &str,
+    ) -> Result<Option<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn ensure_thread_activation(
+        &self,
+        work_item: NewThreadActivation,
+    ) -> Result<ThreadActivationRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_thread_activation(
         &self,
         id: &str,
-    ) -> Result<Option<EvaluationWorkItemRecord>, Box<dyn std::error::Error + Send + Sync>>;
-    async fn list_context_evaluation_work_items(
+    ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_context_thread_activations(
         &self,
         context_id: &str,
         include_terminal: bool,
-    ) -> Result<Vec<EvaluationWorkItemRecord>, Box<dyn std::error::Error + Send + Sync>>;
-    async fn update_evaluation_work_item(
+    ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn update_thread_activation(
         &self,
         id: &str,
         expected_revision: u64,
-        status: EvaluationWorkItemStatus,
+        status: ThreadActivationStatus,
         claimed_by: Option<&str>,
         lease_expires_at: Option<DateTime<Utc>>,
         context_snapshot_version: Option<u64>,
-    ) -> Result<EvaluationWorkItemMutation, Box<dyn std::error::Error + Send + Sync>>;
-    /// Claim the one terminal outcome for an Evaluation Work Item and append
+    ) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Claim the one terminal outcome for a Thread Activation and append
     /// it in the same SQLite transaction.
-    async fn commit_evaluation_outcome(
+    async fn commit_activation_outcome(
         &self,
         work_item_id: &str,
         event: &crate::event::Event,
-    ) -> Result<EvaluationOutcomeCommit, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<ActivationOutcomeCommit, Box<dyn std::error::Error + Send + Sync>>;
     async fn ensure_work_thread(
         &self,
         thread: NewWorkThread,
@@ -744,7 +834,7 @@ pub trait SessionStore: Send + Sync {
         id: &str,
         expected_revision: u64,
         kind: Option<WorkThreadKind>,
-        status: Option<WorkThreadStatus>,
+        lifecycle: Option<ThreadLifecycle>,
         result_text: Option<&str>,
         result_event_id: Option<&str>,
         delivery_status: Option<DeliveryStatus>,

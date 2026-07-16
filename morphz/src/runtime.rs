@@ -9,10 +9,10 @@ use crate::llm::{Client, ReasoningEffort};
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, DelegationRecord, DelegationStatus,
-    EvaluationWorkItemRecord, EventStore, MessageClaim, NewAgent, NewCognitiveContext,
-    NewDelegation, NewObjective, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, QueryFilter, SessionRecord, SessionStore,
-    SessionUpdate,
+    EventStore, MessageClaim, NewAgent, NewCognitiveContext, NewDelegation, NewObjective,
+    NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, SessionRecord, SessionStore, SessionUpdate,
+    ThreadActivationRecord,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -865,13 +865,13 @@ impl MorphzRuntime {
             .ok_or_else(|| format!("Session '{}' 不存在", session_id).into())
     }
 
-    pub async fn active_evaluation_work_items(
+    pub async fn active_thread_activations(
         &self,
         context_id: &str,
-    ) -> Result<Vec<EvaluationWorkItemRecord>, RuntimeError> {
+    ) -> Result<Vec<ThreadActivationRecord>, RuntimeError> {
         self.inner
             .store
-            .list_context_evaluation_work_items(context_id, false)
+            .list_context_thread_activations(context_id, false)
             .await
     }
 
