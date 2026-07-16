@@ -52,6 +52,7 @@ Morphz 应当明确区分四个平面。
 核心对象：
 
 - `Session`：一个外部对象与 Agent 之间的消息路由或连接；
+- `DialogueLane`：一个 Session 内长期存在的对话排序通道；
 - `Identity`：Session 的所有者或访问主体；
 - `Delivery`：把完成结果投递给一个或多个目标 Session。
 
@@ -79,7 +80,7 @@ Session 不是 Context，也不是任务。大量 Session 可以挂载在同一�
 - `Action`：模型请求 Runtime 执行的结构化动作；
 - `ExecutionJob`：Runtime 对 Action 的物理执行实例；
 - `Executor`：执行 Job 或 Thread 的主体，例如 self、Sub Agent、远程 Worker 或人；
-- `Outcome`：Thread 的唯一终态结果。
+- `Outcome`：有限 Thread 的唯一终态结果。
 
 四个平面可以共享事件和 ID，但不能互相替代。特别需要保持两个边界：
 
@@ -119,7 +120,33 @@ Session 表示外部消息的来源和回复目的地。它负责：
 
 Session 不拥有 Agent 的全部认知；Session 挂载到 Context 后，才获得在该认知环境中与 Agent 交互的能力。
 
-### 3.4 Thread / Causal Thread
+### 3.4 Dialogue Lane
+
+推荐名称：`DialogueLane`。
+
+中文：对话通道、对话执行通道。
+
+每个 Session 拥有一条长期存在的 Dialogue Lane。它负责保证连续用户消息的摄取顺序、对话并发策略和当前 Turn 的路由，但它不是一项有限任务，也不拥有 Thread Outcome。
+
+每一条用户输入在 Dialogue Lane 中创建一个有限的 `DialogueTurn` Thread：
+
+```text
+Session
+└── DialogueLane                  长期存在，无任务终态
+    ├── DialogueTurn Thread A     有一次明确回复或 no_reply 终态
+    ├── DialogueTurn Thread B
+    └── DialogueTurn Thread C
+        └── Execution Thread W    从 Turn C 派生的物理工作
+```
+
+这项区分解决两个容易混淆的语义：
+
+- 用户与 Agent 的对话通道可以长期存在，不应在每次回复后进入 completed；
+- 每次用户输入仍然需要有限因果边界、唯一处理结果和幂等恢复身份。
+
+Dialogue Lane 可以允许用户在旧 Execution Thread 工作期间继续创建新的 Dialogue Turn，但同一 Lane 中多个普通 Dialogue Turn 的首次求值必须服从明确的顺序策略。当前 Runtime 的 Session Dialogue Gate 是 Dialogue Lane 的早期物理实现。
+
+### 3.5 Thread / Causal Thread
 
 推荐公开名称：`Thread`。
 
@@ -129,13 +156,13 @@ Session 不拥有 Agent 的全部认知；Session 挂载到 Context 后，才获
 
 Thread 是一条具有稳定身份和因果边界的逻辑执行流。它可以跨越多次模型请求、工具调用、等待、Runtime 重启和结果交付。
 
-不再建议把总称叫 `WorkThread`，原因是 Dialogue、Delivery 和 Objective 推进同样属于 Thread；`Work Thread` 还容易与操作系统 Worker Thread 混淆。
+不再建议把总称叫 `WorkThread`，原因是 Dialogue Turn、Delivery 和 Objective 推进同样属于 Thread；`Work Thread` 还容易与操作系统 Worker Thread 混淆。
 
 推荐的 Thread 类型：
 
 ```text
 Thread
-├── Dialogue       对话线程
+├── DialogueTurn   一次有限的对话轮次
 ├── Execution      执行线程
 ├── Objective      目标推进线程
 └── Delivery       交付线程
@@ -143,14 +170,14 @@ Thread
 
 其中：
 
-- `Dialogue Thread`：处理一个 Session 的连续用户对话；
+- `DialogueTurn Thread`：处理 Dialogue Lane 中一次用户输入，终态是一次明确回复或 `no_reply`；
 - `Execution Thread`：承载需要物理工具、依赖或长时间运行的工作；
 - `Objective Thread`：承载一次 Objective 的实际推进求值，Objective 本身仍是独立的长期控制对象；
 - `Delivery Thread`：汇总已经完成但尚未交付的结果，决定回复或延迟交付。
 
 Delegation 不必成为独立 Thread 类型。它更适合表达“某条 Thread 由另一个 Executor 执行”的关系。
 
-### 3.5 Thread Signal
+### 3.6 Thread Signal
 
 推荐名称：`ThreadSignal`。
 
@@ -201,7 +228,7 @@ pending | claimed | acknowledged | cancelled
 
 Signal 必须是持久的、幂等的，并且只能被投递给正确的 Thread。
 
-### 3.6 Thread Activation
+### 3.7 Thread Activation
 
 推荐名称：`ThreadActivation`。
 
@@ -241,7 +268,34 @@ queued | running | succeeded | failed | cancelled
 
 等待状态不应长期属于 Activation。Activation 可以以“使 Thread 进入等待”的结果结束，但进入 Waiting 的主体是 Thread。
 
-### 3.7 Model Attempt
+#### 3.7.1 Signal 批量领取语义
+
+v1 固定采用“一个 Activation 原子领取同一 Thread 当前可见的一批 Signal”，而不是一个 Signal 必然产生一次模型调用。
+
+具体规则：
+
+1. Scheduler 按 `available_at`、Ledger sequence 和 Signal ID 形成确定性顺序；
+2. 在一个事务中领取当前已经 pending 的 Signal，创建一个 Activation，并写入 `activation_signals` 关联；
+3. 单次领取有明确上限，超过上限的 Signal 保留给后续 Activation；
+4. 事务提交之后新到达的 Signal 不加入正在运行的 Activation，而是留在 mailbox 中等待下一次激活；
+5. 同一 Thread 同时只能存在一个 running Activation；
+6. Signal ID 在 `activation_signals` 中唯一，保证一个 Signal 不能被两个 Activation 成功消费；
+7. Activation 成功提交处理结果后，所领取 Signal 才进入 acknowledged；Activation 租约失效时应恢复或重新 claim 同一个 Activation，并保留原有 `activation_signals` 关系，不能另建 Activation 静默重复消费 Signal。
+
+推荐关联表：
+
+```text
+activation_signals
+├── activation_id
+├── signal_id              UNIQUE
+├── ordinal
+├── claimed_at
+└── acknowledged_at
+```
+
+批量领取能够让并行工具几乎同时返回时只产生一次后续模型求值，同时保留运行期间新事实进入下一次 Activation 的清晰边界。
+
+### 3.8 Model Attempt
 
 推荐名称：`ModelAttempt`。
 
@@ -263,7 +317,7 @@ ThreadActivation 1 ── N ModelAttempt
 
 不能使用一次 HTTP 请求的 ID 作为 Thread 的稳定身份。
 
-### 3.8 Action
+### 3.9 Action
 
 推荐名称：`Action`。
 
@@ -280,7 +334,7 @@ Action 是模型在一次求值中表达的结构化行为意图，例如：
 
 Action 只表示“模型要求 Runtime 做什么”，不表示该动作已经成功发生。Runtime 必须验证它的参数、权限、状态转换和因果路由。
 
-### 3.9 Execution Job
+### 3.10 Execution Job
 
 推荐名称：`ExecutionJob`。
 
@@ -311,7 +365,7 @@ lost
 
 Job 终态会原子地产生对应的 `ThreadSignal`，但不能直接伪造 Thread 已经完成。
 
-### 3.10 Executor 与 Delegation
+### 3.11 Executor 与 Delegation
 
 推荐名称：`Executor` 与 `Delegation`。
 
@@ -331,7 +385,7 @@ Delegation 表示把一条 Thread、一个子 Objective 或一个 Job 的执行�
 
 Delegation 应当保留自己的委托关系、上下文范围、深度限制和结果路由，但不应成为与 Scheduler 平行的另一套任务系统。它最终仍通过 Job、Signal、Activation 和 Outcome 接入统一内核。
 
-### 3.11 Schedule
+### 3.12 Schedule
 
 推荐顶层名称：`Schedule`。
 
@@ -369,7 +423,7 @@ active | paused | completed | cancelled
 create | reschedule | pause | resume | cancel | inspect
 ```
 
-### 3.12 Objective
+### 3.13 Objective
 
 推荐名称：`Objective`。
 
@@ -384,13 +438,13 @@ Objective 是 Runtime 承诺持续提供推进机会的长期控制对象。它�
 
 Objective 不应拥有另一套独立 Scheduler。Objective Supervisor 是一种调度策略：它根据 Objective 状态和 Wait Condition，向对应 Thread 生成 Signal。
 
-### 3.13 Outcome 与 Delivery
+### 3.14 Outcome 与 Delivery
 
 推荐名称：`ThreadOutcome` 与 `Delivery`。
 
 中文：线程终态结果、结果交付。
 
-同一个 Thread 只能产生一个权威 Outcome：
+同一个有限 Thread 只能产生一个权威 Outcome。长期存在的 Dialogue Lane 不属于 Thread，因此不受这个终态约束：
 
 ```text
 completed | failed | cancelled
@@ -447,11 +501,12 @@ Session / Tool / Timer / External World
 
 ```text
 User Message
-→ Dialogue Thread Signal
-→ Dialogue Activation
+→ Session Dialogue Lane
+→ create DialogueTurn Thread + user_message Signal
+→ DialogueTurn Activation
 → Model Attempt
 → ordinary assistant text
-→ Dialogue Turn delivered
+→ DialogueTurn Outcome delivered
 ```
 
 没有工具调用时，不创建 Execution Thread，也不创建 Execution Job。
@@ -459,14 +514,15 @@ User Message
 ### 5.2 工具运行期间继续对话
 
 ```text
-Dialogue Activation A
+DialogueTurn Activation A
 → model requests physical action
 → create/fork Execution Thread W
 → create Execution Job J
-→ Dialogue lane becomes available
+→ Dialogue Lane becomes available
 
 User Message B
-→ Dialogue Activation B
+→ create DialogueTurn B
+→ DialogueTurn Activation B
 → reply B without waiting for J
 
 Job J exits
@@ -515,22 +571,45 @@ Objective Supervisor 不直接运行任务。它读取 Objective 的 Runtime 控
 
 统一调度设计必须明确“谁拥有哪种状态”。
 
-### 6.1 Thread 状态
+### 6.1 Dialogue Lane 状态
 
-推荐状态：
+Dialogue Lane 是长期路由和顺序控制对象，推荐只保留：
 
 ```text
-runnable | running | waiting | completed | failed | cancelled
+active | paused | archived
 ```
 
+它没有任务 Outcome。某次用户消息是否已经处理完成，由对应 DialogueTurn Thread 的 Outcome 表达。
+
+### 6.2 Thread 生命周期与调度阶段
+
+Thread 必须把长期生命周期和瞬时调度阶段分成两个维度。
+
+权威生命周期 `lifecycle`：
+
+```text
+open | completed | failed | cancelled
+```
+
+- `open`：Thread 仍然可以接收 Signal 并继续推进；
+- `completed/failed/cancelled`：有限 Thread 的唯一终态。
+
+调度阶段 `phase`：
+
+```text
+idle | runnable | running | waiting
+```
+
+- `idle`：Thread 为 open，但当前没有可运行 Signal、active Activation 或明确等待；正常实现中应短暂存在，长期 idle 需要检查是否为孤儿；
 - `runnable`：存在尚未消费的 Signal；
 - `running`：存在活跃 Activation；
 - `waiting`：没有可运行 Signal，但存在明确 Wait Condition、Job、依赖或 Schedule；
-- `completed/failed/cancelled`：终态，不再接受普通执行 Signal。
 
-Thread 是“当前是否仍有工作生命”的权威状态所有者。
+`lifecycle` 是持久化权威事实。`phase` 应由 Signal、Activation、Job、Schedule 和 Wait Condition 推导，或者只保存为可以重建和校验的缓存投影，不能成为第二个独立事实源。
 
-### 6.2 Activation 状态
+因此，UI 中的“正在执行”不能只读取 Thread 最近一次写入的 phase；它必须至少能由 active Activation 或 running Job 证明。Thread lifecycle 和 phase 的分离与 Objective lifecycle、wait condition 的分离遵循同一控制论原则。
+
+### 6.3 Activation 状态
 
 ```text
 queued | running | succeeded | failed | cancelled
@@ -549,21 +628,22 @@ thread_outcome
 no_reply
 ```
 
-### 6.3 Job 状态
+### 6.4 Job 状态
 
 Execution Job 是现实执行状态的权威来源。进程是否退出、网络调用是否完成、审批是否通过，都不能由 Thread 或 Mind 猜测。
 
-### 6.4 Objective 状态
+### 6.5 Objective 状态
 
 Objective 拥有长期控制生命周期和资源预算，但不重复拥有 Execution Job 状态。
 
-### 6.5 UI 投影原则
+### 6.6 UI 投影原则
 
 Dashboard 不应通过最近一次 Event 文本猜测“正在执行”。状态必须从权威对象派生：
 
 ```text
 Objective
 └── Thread
+    ├── lifecycle / derived phase
     ├── active Activation
     ├── active/waiting Job
     ├── pending Signal
@@ -571,11 +651,11 @@ Objective
     └── Outcome / Delivery
 ```
 
-如果多个投影不一致，Runtime 应记录 invariant violation，而不是在 UI 中任选一个状态显示。
+如果多个投影不一致，Runtime 应记录 invariant violation，而不是在 UI 中任选一个状态显示。缓存 phase 与权威实体不一致时，优先重新推导 phase。
 
 ## 7. Wait Condition
 
-等待是 Thread 的控制状态。推荐统一建模：
+等待条件是 Thread `phase=waiting` 的权威依据之一。推荐统一建模：
 
 ```text
 WaitCondition
@@ -622,7 +702,7 @@ WaitCondition
 - 验证模型调度请求是否合法；
 - 原子持久化 Thread、Signal、Activation、Job、Schedule 和 Outcome；
 - 保证同一 Thread 的 Activation single-flight；
-- 保证一个 Thread 只有一个权威终态；
+- 保证一个有限 Thread 只有一个权威终态；
 - 保证 Job Result 只投递给正确 Thread；
 - 执行定时、依赖、审批、取消和恢复；
 - 提供并发限制、公平性、优先级和背压；
@@ -646,28 +726,35 @@ Scheduler Kernel 至少应维护以下不变量：
 1. 每个 Model Attempt 只属于一个 Thread Activation。
 2. 每个 Activation 只属于一个 Thread。
 3. 同一个 Thread 同一时刻最多有一个运行中的 Activation。
-4. 一个 Signal 最多被成功消费一次；重复投递必须幂等。
-5. Tool/Job Result 只能进入其因果 Thread 的 mailbox。
-6. 新用户消息不得继承旧 Execution Thread 的 Function Calling transcript。
-7. 同一 Session 的 Dialogue 消息按明确的顺序策略求值。
-8. 不同 Session 可以并行；Dialogue 与 Execution Thread 也可以并行。
-9. 一个 Thread 只能提交一个权威 Outcome。
-10. Thread Outcome 与用户 Delivery 必须分离。
-11. Schedule 到期只产生 Signal，不直接宣称任务成功。
-12. Objective 的等待、暂停和阻塞必须能够区分。
-13. Runtime 状态转换和由此产生的 Signal 必须原子提交。
-14. 重启恢复不得重复执行已确认的外部副作用。
-15. 没有 Signal、Job、Schedule、Wait Condition 或 active Activation 的非终态 Thread 是孤儿状态，必须被检测。
-16. UI 展示状态必须来自权威控制记录，不能来自陈旧日志文案。
+4. 一个 Activation 原子领取一个有界、确定顺序的 Signal 批次。
+5. 一个 Signal 最多关联到一个成功领取它的 Activation；重复投递必须幂等。
+6. Activation 领取事务之后到达的 Signal 必须留给下一次 Activation。
+7. Tool/Job Result 只能进入其因果 Thread 的 mailbox。
+8. 新用户消息不得继承旧 Execution Thread 的 Function Calling transcript。
+9. 每个 Session 拥有一条长期 Dialogue Lane；每条用户输入创建独立的有限 DialogueTurn Thread。
+10. 同一 Dialogue Lane 的普通用户消息按明确的顺序策略首次求值。
+11. 不同 Session 可以并行；DialogueTurn 与 Execution Thread 也可以并行。
+12. 每个有限 Thread 只能提交一个权威 Outcome；Dialogue Lane 不拥有任务 Outcome。
+13. Thread lifecycle 是权威事实；phase 必须可以从 Signal、Activation、Job 和 Wait Condition 重新推导。
+14. Thread Outcome 与用户 Delivery 必须分离。
+15. Schedule 到期只产生 Signal，不直接宣称任务成功。
+16. Objective 的等待、暂停和阻塞必须能够区分。
+17. Runtime 状态转换和由此产生的 Signal 必须原子提交。
+18. 重启恢复不得重复执行已确认的外部副作用。
+19. `lifecycle=open` 且长期没有 Signal、Job、Schedule、Wait Condition 或 active Activation 的 Thread 是孤儿状态，必须被检测。
+20. UI 展示状态必须来自权威控制记录，不能来自陈旧日志文案或未经验证的 phase 缓存。
 
 ## 10. 持久化调度内核
 
 目标持久模型建议至少包含：
 
 ```text
+dialogue_lanes
 threads
 thread_signals
 thread_activations
+activation_signals
+thread_wait_conditions
 model_attempts                 optional audit projection
 execution_jobs
 schedules
@@ -686,7 +773,8 @@ events                         immutable ledger
 ```text
 claim pending signals
 + create activation
-+ thread runnable → running
++ insert activation_signals in deterministic order
++ derive thread phase runnable → running
 ```
 
 必须在同一事务完成。
@@ -695,8 +783,9 @@ claim pending signals
 
 ```text
 activation → succeeded
-+ thread → waiting
++ thread lifecycle remains open
 + create job / wait condition / schedule
++ derive thread phase → waiting
 ```
 
 必须在同一事务完成。
@@ -715,7 +804,7 @@ job → succeeded/failed
 
 ```text
 activation → succeeded
-+ thread → completed/failed/cancelled
++ thread lifecycle → completed/failed/cancelled
 + insert unique thread outcome
 + create delivery inbox entry
 + trigger dependent signals
@@ -732,9 +821,11 @@ commit state + signal
         ↓
 dispatcher claims pending signal
         ↓
+atomically materialize activation + activation_signals
+        ↓
 in-process fast path dispatch
         ↓
-acknowledge after activation materialized
+acknowledge signals after activation outcome commits
 ```
 
 这样，进程在“数据库提交成功、内存派发尚未发生”之间崩溃时，不需要每个模块分别实现特殊恢复扫描。
@@ -781,12 +872,13 @@ maintenance
   (thread
     (id thread-42)
     (kind execution)
-    (status running)
+    (lifecycle open)
+    (phase running)
     (origin-turn message-17))
   (activation
     (id activation-9)
     (caused-by
-      (signal tool-result-8)))
+      (signal-batch tool-result-8 tool-result-9)))
   (signals
     (signal
       (kind tool-result)
@@ -797,7 +889,7 @@ maintenance
   (instruction "解释本轮 Signal，并决定回复、动作、等待、调度或终结 Thread。"))
 ```
 
-普通 Dialogue Activation 可以看到其他 Thread 和 Objective 的只读摘要，用于诚实回答状态问题，但不得因此接管或推进未绑定的 Thread。
+普通 DialogueTurn Activation 可以看到其他 Thread 和 Objective 的只读摘要，用于诚实回答状态问题，但不得因此接管或推进未绑定的 Thread。
 
 ## 13. 当前实现映射
 
@@ -805,7 +897,9 @@ maintenance
 
 | 当前实现 | 目标领域对象 | 说明 |
 |---|---|---|
-| `WorkThreadRecord` | `ThreadRecord` | 已具备稳定 `root_turn_id`、状态和 Delivery 信息 |
+| Session Dialogue Gate | `DialogueLane` | 已提供同 Session 首次求值顺序，但尚无独立持久 Lane 记录 |
+| 每条 User Message 的 `WorkThreadRecord(kind=dialogue)` | `DialogueTurn Thread` | 当前按 `root_turn_id` 创建有限因果边界，方向与新决策一致 |
+| `WorkThreadRecord` | `ThreadRecord` | 已具备稳定 `root_turn_id` 和 Delivery 信息；状态需拆为 lifecycle 与 derived phase |
 | `EvaluationWorkItemRecord` | `ThreadActivationRecord` | 当前仍混有 waiting 状态，后续应收口 |
 | Event + `trigger_event_id` | `ThreadSignal` | 当前以 Ledger Event 兼任 mailbox trigger |
 | `ScheduledIntentRecord` | `ScheduleRecord` | 当前将 rule、intent 和 occurrence 混在一起 |
@@ -818,10 +912,10 @@ maintenance
 
 当前已经正确的部分：
 
-- Session Dialogue Gate；
+- Session Dialogue Gate 已具备 Dialogue Lane 的顺序语义；
 - Work/Execution Thread mailbox single-flight；
 - Work Item claim、lease 和恢复；
-- Thread 唯一终态 Outcome；
+- 有限 Thread 的唯一终态 Outcome；
 - `schedule_tx` 的原子提交；
 - Work completion 与用户 Delivery 分离；
 - 不同 Session、Dialogue 和 Execution 工作并发。
@@ -830,6 +924,8 @@ maintenance
 
 - ThreadScheduler、ObjectiveSupervisor、BackgroundTask timer 各自维护唤醒；
 - Thread、WorkItem、Objective、Delegation、Schedule、BackgroundTask 存在重复状态投影；
+- Thread 当前把 lifecycle 和 scheduler phase 合并在同一个 status 中；
+- 缺少显式 `activation_signals`，一个 Activation 领取的 Signal 集合仍依赖事件链推断；
 - 后台 Job 主要是进程内状态；
 - 依赖满足仍采用周期轮询；
 - 缺少统一 durable Signal queue；
@@ -844,9 +940,12 @@ maintenance
 
 | 旧名称 | 推荐名称 | 中文 |
 |---|---|---|
+| Session Dialogue Gate | `DialogueLane` 的执行约束 | 对话通道 |
 | `WorkThreadRecord` | `ThreadRecord` | 线程记录 |
 | `WorkThreadKind` | `ThreadKind` | 线程类型 |
+| `WorkThreadKind::Dialogue` | `ThreadKind::DialogueTurn` | 有限对话轮次 |
 | `WorkThreadKind::Work` | `ThreadKind::Execution` | 执行线程 |
+| `WorkThreadStatus` | `ThreadLifecycle` + derived `ThreadPhase` | 生命周期与调度阶段 |
 | `EvaluationWorkItemRecord` | `ThreadActivationRecord` | 线程激活记录 |
 | `EvaluationWorkItemStatus` | `ActivationStatus` | 激活状态 |
 | `EvaluationOutcomeCommit` | `ActivationOutcomeCommit` 或直接并入 Thread Outcome 事务 | 激活结果提交 |
@@ -865,6 +964,7 @@ maintenance
 ### Phase 0：文档和不变量
 
 - 本文成为 Scheduler Kernel 的领域语言基线；
+- 固定 Dialogue Lane、Thread lifecycle/phase 和 Signal batch 三项 v1 语义；
 - 为现有实体补充状态所有权和跨实体不变量测试；
 - Dashboard 明确区分 Objective、Thread、Activation、Job 和 Signal；
 - 不再增加新的平行“Task”状态机。
@@ -872,8 +972,10 @@ maintenance
 ### Phase 1：Thread Signal 与统一事务边界
 
 - 新增持久 `thread_signals`；
+- 新增 `activation_signals`，原子记录每次 Activation 领取的有界 Signal 批次；
 - 把 Event 事实与 mailbox 消费状态分离；
 - 状态变更和 Signal 创建使用同一事务；
+- 把 Thread lifecycle 与可推导 phase 分离；
 - 统一 crash recovery 和 durable dispatch；
 - `EvaluationWorkItem` 语义收口并重命名为 `ThreadActivation`。
 
@@ -910,14 +1012,13 @@ maintenance
 
 以下问题应通过实现和测试继续验证，不应过早固定：
 
-1. 一次 Activation 应消费一个 Signal，还是允许原子批量消费同一 Thread 的多个 Signal；
-2. `WaitCondition` v1 是否只支持单一条件，还是直接支持 `any/all`；
-3. Execution Thread 是否需要显式 `parent_thread_id`，还是通过 causal relation 表表达；
-4. Delivery Thread 的合并窗口和最大等待时间；
-5. 模型能够在多大程度上可靠选择优先级、串行和并行；
-6. Objective 与 Objective Thread 是一对一，还是允许一次 Objective 同时拥有多个推进 Thread；
-7. 周期 Schedule 的每次 occurrence 应创建新 Thread，还是向长期 Thread 投递新 Signal；
-8. Context pressure 下，哪些 dormant Thread 和 Signal 摘要应进入 Context Encoding。
+1. `WaitCondition` v1 是否只支持单一条件，还是直接支持 `any/all`；
+2. Execution Thread 是否需要显式 `parent_thread_id`，还是通过 causal relation 表表达；
+3. Delivery Thread 的合并窗口和最大等待时间；
+4. 模型能够在多大程度上可靠选择优先级、串行和并行；
+5. Objective 与 Objective Thread 是一对一，还是允许一次 Objective 同时拥有多个推进 Thread；
+6. 周期 Schedule 的每次 occurrence 应创建新 Thread，还是向长期 Thread 投递新 Signal；
+7. Context pressure 下，哪些 dormant Thread 和 Signal 摘要应进入 Context Encoding。
 
 这些属于策略和可扩展性问题，不影响统一内核的基本成立。
 
@@ -928,7 +1029,9 @@ Morphz 的核心不再是一个不断重复“模型响应—工具调用—模�
 ```text
 Context 是认知环境
 Session 是交互连接
-Thread 是持久因果执行流
+Dialogue Lane 是 Session 中长期存在的对话排序通道
+DialogueTurn Thread 是一次有限用户输入的因果边界
+Thread 是有限、可等待、可恢复的持久因果执行流
 Signal 是可消费的现实事实
 Activation 是一次 Thread 求值运行
 Model Attempt 是一次模型请求
@@ -942,6 +1045,6 @@ Delivery 是结果路由
 
 最重要的统一原则是：
 
-> 所有“为什么继续执行”都归一为 Thread Signal；所有“模型开始处理”都归一为 Thread Activation；所有“现实世界动作”都归一为 Execution Job；所有长期语义认知仍由 Agent 在 Context Mind 中自主维护。
+> 所有“为什么继续执行”都归一为 Thread Signal；每个 Activation 原子领取一个确定、有界的 Signal 批次；所有“模型开始处理”都归一为 Thread Activation；所有“现实世界动作”都归一为 Execution Job；所有长期语义认知仍由 Agent 在 Context Mind 中自主维护。
 
 在这一结构下，模型负责理解、计划、调度选择和语义判断，Runtime 负责因果、时序、并发、持久化、安全和恢复。两者共同构成 Morphz 的 Cognitive Scheduler。
