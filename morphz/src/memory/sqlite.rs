@@ -7,9 +7,10 @@ use crate::memory::{
     NewThreadActivation, NewThreadSignal, NewWorkThread, ObjectiveMutation, ObjectiveRecord,
     ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, ScheduledIntentRecord,
     ScheduledIntentStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
-    SessionRecord, SessionStatus, SessionStore, SessionUpdate, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadLifecycle, ThreadSignalRecord,
-    ThreadSignalStatus, WorkThreadKind, WorkThreadMutation, WorkThreadRecord,
+    SessionRecord, SessionStatus, SessionStore, SessionUpdate, SignalOutboxRecord,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadLifecycle, ThreadSignalRecord, ThreadSignalStatus, WorkThreadKind, WorkThreadMutation,
+    WorkThreadRecord,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -106,6 +107,18 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic);
         CREATE INDEX IF NOT EXISTS idx_events_session_time ON events(session_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_events_context_time ON events(context_id, timestamp);
+
+        CREATE TABLE IF NOT EXISTS signal_outbox (
+            event_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'materialized', 'discarded')),
+            signal_id TEXT,
+            created_at TEXT NOT NULL,
+            resolved_at TEXT,
+            FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE,
+            FOREIGN KEY(signal_id) REFERENCES thread_signals(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_signal_outbox_status_created
+            ON signal_outbox(status, created_at, event_id);
 
         CREATE TABLE IF NOT EXISTS agents (
             id TEXT PRIMARY KEY,
@@ -771,6 +784,26 @@ fn objective_from_row(
     })
 }
 
+fn signal_outbox_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<SignalOutboxRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(SignalOutboxRecord {
+        event_id: row.get("event_id"),
+        status: match row.get::<String, _>("status").as_str() {
+            "pending" => SignalOutboxStatus::Pending,
+            "materialized" => SignalOutboxStatus::Materialized,
+            "discarded" => SignalOutboxStatus::Discarded,
+            value => return Err(format!("未知 Signal Outbox 状态: {value}").into()),
+        },
+        signal_id: row.get("signal_id"),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        resolved_at: row
+            .get::<Option<String>, _>("resolved_at")
+            .as_deref()
+            .map(parse_time),
+    })
+}
+
 async fn append_event_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     event: &Event,
@@ -796,6 +829,89 @@ async fn append_event_in_transaction(
     .bind(context_id)
     .bind(session_id)
     .bind(payload)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn append_event_idempotent_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event: &Event,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let payload = serde_json::to_string(&event.payload)?;
+    let timestamp = event
+        .timestamp
+        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let session_id = event.payload.get("session_id").and_then(JsonValue::as_str);
+    let context_id = event
+        .payload
+        .get("context_id")
+        .and_then(JsonValue::as_str)
+        .or(session_id);
+    let inserted = sqlx::query(
+        "INSERT OR IGNORE INTO events (id, timestamp, actor, type, topic, context_id, session_id, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&event.id)
+    .bind(&timestamp)
+    .bind(&event.actor)
+    .bind(&event.event_type)
+    .bind(&event.topic)
+    .bind(context_id)
+    .bind(session_id)
+    .bind(&payload)
+    .execute(&mut **tx)
+    .await?;
+    if inserted.rows_affected() == 1 {
+        return Ok(());
+    }
+    let existing = sqlx::query(
+        "SELECT timestamp, actor, type, topic, context_id, session_id, payload FROM events WHERE id = ?",
+    )
+    .bind(&event.id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let same = existing.get::<String, _>("timestamp") == timestamp
+        && existing.get::<String, _>("actor") == event.actor
+        && existing.get::<String, _>("type") == event.event_type
+        && existing.get::<String, _>("topic") == event.topic
+        && existing.get::<Option<String>, _>("context_id").as_deref() == context_id
+        && existing.get::<Option<String>, _>("session_id").as_deref() == session_id
+        && existing.get::<String, _>("payload") == payload;
+    if !same {
+        return Err(format!("Event ID '{}' 已被不同内容占用", event.id).into());
+    }
+    Ok(())
+}
+
+async fn append_signal_outbox_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event: &Event,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if event
+        .payload
+        .get("session_id")
+        .and_then(JsonValue::as_str)
+        .is_none()
+        || event
+            .payload
+            .get("context_id")
+            .and_then(JsonValue::as_str)
+            .is_none()
+    {
+        return Err(format!(
+            "Signal Outbox Event '{}' 缺少 context_id/session_id 路由",
+            event.id
+        )
+        .into());
+    }
+    let created_at = event
+        .timestamp
+        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    sqlx::query(
+        "INSERT OR IGNORE INTO signal_outbox (event_id, status, created_at) VALUES (?, 'pending', ?)",
+    )
+    .bind(&event.id)
+    .bind(created_at)
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -1375,6 +1491,33 @@ impl SessionStore for SqliteStore {
             return Err(format!("Event '{}' 已路由到不同 Thread Signal", signal.event_id).into());
         }
 
+        if let Some(outbox) = sqlx::query("SELECT * FROM signal_outbox WHERE event_id = ?")
+            .bind(&stored_signal.event_id)
+            .fetch_optional(&mut *tx)
+            .await?
+        {
+            let outbox = signal_outbox_from_row(&outbox)?;
+            if outbox.status == SignalOutboxStatus::Materialized
+                && outbox.signal_id.as_deref() != Some(stored_signal.id.as_str())
+            {
+                return Err(format!(
+                    "Signal Outbox Event '{}' 已物化为不同 Signal",
+                    stored_signal.event_id
+                )
+                .into());
+            }
+            sqlx::query(
+                r#"UPDATE signal_outbox
+                   SET status = 'materialized', signal_id = ?, resolved_at = ?
+                   WHERE event_id = ? AND status = 'pending'"#,
+            )
+            .bind(&stored_signal.id)
+            .bind(&now)
+            .bind(&stored_signal.event_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
         if let Some(row) = sqlx::query(
             r#"SELECT ew.* FROM activation_signals links
                JOIN thread_activations ew ON ew.id = links.activation_id
@@ -1520,6 +1663,47 @@ impl SessionStore for SqliteStore {
         }
         tx.commit().await?;
         self.get_thread_activation(&activation.id).await
+    }
+
+    async fn list_signal_outbox(
+        &self,
+        status: SignalOutboxStatus,
+        limit: usize,
+    ) -> Result<Vec<SignalOutboxRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit =
+            i64::try_from(limit).map_err(|_| "Signal Outbox 查询上限超出 SQLite INTEGER 范围")?;
+        let rows = sqlx::query(
+            r#"SELECT outbox.* FROM signal_outbox outbox
+               JOIN events ON events.id = outbox.event_id
+               WHERE outbox.status = ?
+               ORDER BY events.rowid, outbox.event_id
+               LIMIT ?"#,
+        )
+        .bind(status.as_str())
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(signal_outbox_from_row).collect()
+    }
+
+    async fn discard_signal_outbox(
+        &self,
+        event_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE signal_outbox
+               SET status = 'discarded', resolved_at = ?
+               WHERE event_id = ? AND status = 'pending'"#,
+        )
+        .bind(now)
+        .bind(event_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     async fn list_context_thread_signals(
@@ -2252,6 +2436,7 @@ impl SessionStore for SqliteStore {
             return Ok(None);
         }
         append_event_in_transaction(&mut tx, event).await?;
+        append_signal_outbox_in_transaction(&mut tx, event).await?;
         tx.commit().await?;
         self.get_scheduled_intent(id).await
     }
@@ -2345,6 +2530,7 @@ impl SessionStore for SqliteStore {
                 .bind(payload)
                 .execute(&mut *tx)
                 .await?;
+            append_signal_outbox_in_transaction(&mut tx, event).await?;
             sqlx::query("UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?")
                 .bind(&timestamp)
                 .bind(&timestamp)
@@ -2519,6 +2705,63 @@ impl SessionStore for SqliteStore {
             return Ok(None);
         }
         self.get_delegation(id).await
+    }
+
+    async fn commit_delegation_result(
+        &self,
+        id: &str,
+        event: &Event,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let mut tx = self.pool.begin().await?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        // The first statement must be a write. Starting with SELECT creates a deferred read
+        // snapshot which cannot always be upgraded while the child Activation is committing its
+        // terminal outcome, yielding SQLITE_BUSY instead of honoring busy_timeout.
+        let updated = sqlx::query(
+            r#"UPDATE delegations
+               SET status = 'completed', result_event_id = ?, updated_at = ?
+               WHERE id = ? AND status IN ('queued', 'running')"#,
+        )
+        .bind(&event.id)
+        .bind(&now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            let exists =
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM delegations WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&mut *tx)
+                    .await?
+                    > 0;
+            tx.commit().await?;
+            return if exists {
+                Ok(false)
+            } else {
+                Err(format!("Delegation '{id}' 不存在").into())
+            };
+        }
+        let row = sqlx::query(
+            "SELECT id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at FROM delegations WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let delegation = delegation_from_row(&row);
+        let event_context_id = event.payload.get("context_id").and_then(JsonValue::as_str);
+        let event_session_id = event.payload.get("session_id").and_then(JsonValue::as_str);
+        if event_context_id != Some(delegation.parent_context_id.as_str())
+            || event_session_id != Some(delegation.parent_session_id.as_str())
+        {
+            tx.rollback().await?;
+            return Err(
+                format!("Delegation '{id}' 结果 Event 路由到错误的父 Context/Session").into(),
+            );
+        }
+        append_event_idempotent_in_transaction(&mut tx, event).await?;
+        append_signal_outbox_in_transaction(&mut tx, event).await?;
+        tx.commit().await?;
+        Ok(true)
     }
 }
 
@@ -2822,6 +3065,85 @@ impl ObjectiveStore for SqliteStore {
         })
     }
 
+    async fn claim_objective_evaluation_with_signal(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+        event: &Event,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if evaluation_id.trim().is_empty() {
+            return Err("Objective Evaluation ID 不能为空".into());
+        }
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if current.revision != expected_revision
+            || current.status != ObjectiveStatus::Active
+            || current.wait_condition.is_some()
+            || current
+                .evaluation_lease_expires_at
+                .is_some_and(|expires_at| expires_at > Utc::now())
+        {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        let event_context_id = event.payload.get("context_id").and_then(JsonValue::as_str);
+        let event_session_id = event.payload.get("session_id").and_then(JsonValue::as_str);
+        let event_objective_id = event
+            .payload
+            .get("objective_id")
+            .and_then(JsonValue::as_str);
+        let event_evaluation_id = event
+            .payload
+            .get("objective_evaluation_id")
+            .and_then(JsonValue::as_str);
+        if event_context_id != Some(current.context_id.as_str())
+            || event_session_id != Some(current.coordinator_session_id.as_str())
+            || event_objective_id != Some(id)
+            || event_evaluation_id != Some(evaluation_id)
+        {
+            return Err(format!("Objective '{id}' continuation Event 路由不一致").into());
+        }
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Objective revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let lease_expires_at = lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        let updated = sqlx::query(
+            r#"UPDATE objectives
+               SET active_evaluation_id = ?, evaluation_lease_expires_at = ?,
+                   continuation_sequence = continuation_sequence + 1,
+                   revision = revision + 1, updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'active'
+                 AND wait_condition_json IS NULL
+                 AND (active_evaluation_id IS NULL OR evaluation_lease_expires_at <= ?)"#,
+        )
+        .bind(evaluation_id)
+        .bind(lease_expires_at)
+        .bind(&now)
+        .bind(id)
+        .bind(expected_revision)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(match self.get_objective(id).await? {
+                Some(current) => ObjectiveMutation::Conflict { current },
+                None => ObjectiveMutation::NotFound,
+            });
+        }
+        append_event_idempotent_in_transaction(&mut tx, event).await?;
+        append_signal_outbox_in_transaction(&mut tx, event).await?;
+        tx.commit().await?;
+        Ok(ObjectiveMutation::Updated(
+            self.get_objective(id)
+                .await?
+                .ok_or("Objective Evaluation + Signal 提交后无法读取")?,
+        ))
+    }
+
     async fn finish_objective_evaluation(
         &self,
         id: &str,
@@ -2913,51 +3235,20 @@ fn parse_time(s: &str) -> DateTime<Utc> {
 #[async_trait::async_trait]
 impl EventStore for SqliteStore {
     async fn append(&self, ev: Event) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let payload_str = serde_json::to_string(&ev.payload)?;
-        let time_str = ev
-            .timestamp
-            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        let session_id = ev
-            .payload
-            .get("session_id")
-            .and_then(|value| value.as_str());
-        let context_id = ev
-            .payload
-            .get("context_id")
-            .and_then(|value| value.as_str())
-            .or(session_id);
+        let mut tx = self.pool.begin().await?;
+        append_event_idempotent_in_transaction(&mut tx, &ev).await?;
+        tx.commit().await?;
+        Ok(())
+    }
 
-        let result = sqlx::query("INSERT OR IGNORE INTO events (id, timestamp, actor, type, topic, context_id, session_id, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-            .bind(&ev.id)
-            .bind(&time_str)
-            .bind(&ev.actor)
-            .bind(&ev.event_type)
-            .bind(&ev.topic)
-            .bind(context_id)
-            .bind(session_id)
-            .bind(&payload_str)
-            .execute(&self.pool)
-            .await?;
-
-        if result.rows_affected() == 0 {
-            let existing = sqlx::query(
-                "SELECT timestamp, actor, type, topic, context_id, session_id, payload FROM events WHERE id = ?",
-            )
-            .bind(&ev.id)
-            .fetch_one(&self.pool)
-            .await?;
-            let same = existing.get::<String, _>("timestamp") == time_str
-                && existing.get::<String, _>("actor") == ev.actor
-                && existing.get::<String, _>("type") == ev.event_type
-                && existing.get::<String, _>("topic") == ev.topic
-                && existing.get::<Option<String>, _>("context_id").as_deref() == context_id
-                && existing.get::<Option<String>, _>("session_id").as_deref() == session_id
-                && existing.get::<String, _>("payload") == payload_str;
-            if !same {
-                return Err(format!("Event ID '{}' 已被不同内容占用", ev.id).into());
-            }
-        }
-
+    async fn append_with_signal_outbox(
+        &self,
+        ev: Event,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut tx = self.pool.begin().await?;
+        append_event_idempotent_in_transaction(&mut tx, &ev).await?;
+        append_signal_outbox_in_transaction(&mut tx, &ev).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -3258,6 +3549,208 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn signal_outbox_survives_the_event_to_signal_crash_window() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let store = Arc::new(SqliteStore::new(path).await.unwrap());
+        store
+            .create_context(NewCognitiveContext {
+                id: "outbox-context".to_string(),
+                agent_id: "outbox-agent".to_string(),
+                title: "Outbox Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "outbox-session".to_string(),
+                agent_id: "outbox-agent".to_string(),
+                context_id: "outbox-context".to_string(),
+                parent_session_id: None,
+                title: "Outbox Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let event = Event::new(
+            "outbox-event".to_string(),
+            "fixture".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            [
+                (
+                    "context_id".to_string(),
+                    serde_json::json!("outbox-context"),
+                ),
+                (
+                    "session_id".to_string(),
+                    serde_json::json!("outbox-session"),
+                ),
+                (
+                    "client_message_id".to_string(),
+                    serde_json::json!("outbox-client-message"),
+                ),
+                ("text".to_string(), serde_json::json!("continue")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(
+            store
+                .claim_message("outbox-session", "outbox-client-message", &event)
+                .await
+                .unwrap(),
+            MessageClaim::Accepted
+        );
+        let pending = store
+            .list_signal_outbox(SignalOutboxStatus::Pending, 16)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].event_id, event.id);
+
+        // Simulate a process crash after the user Event transaction committed
+        // but before EventBus could invoke the Orchestrator.
+        store.pool.close().await;
+        drop(store);
+        let store = Arc::new(SqliteStore::new(path).await.unwrap());
+        assert_eq!(
+            store
+                .list_signal_outbox(SignalOutboxStatus::Pending, 16)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let stored_event = store
+            .query(QueryFilter {
+                event_id: Some(event.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let sequence = stored_event.sequence.unwrap();
+        let thread = store
+            .ensure_work_thread(NewWorkThread {
+                id: "outbox-thread".to_string(),
+                agent_id: "outbox-agent".to_string(),
+                context_id: "outbox-context".to_string(),
+                session_id: "outbox-session".to_string(),
+                root_turn_id: event.id.clone(),
+                kind: WorkThreadKind::Dialogue,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+            })
+            .await
+            .unwrap();
+        let activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: "outbox-signal".to_string(),
+                    thread_id: thread.id,
+                    event_id: event.id.clone(),
+                    sequence,
+                    kind: event.topic.clone(),
+                    parent_activation_id: None,
+                },
+                NewThreadActivation {
+                    id: "outbox-activation".to_string(),
+                    agent_id: "outbox-agent".to_string(),
+                    context_id: "outbox-context".to_string(),
+                    session_id: "outbox-session".to_string(),
+                    trigger_event_id: event.id.clone(),
+                    trigger_sequence: sequence,
+                    trigger_kind: event.topic.clone(),
+                    parent_activation_id: None,
+                    root_turn_id: event.id.clone(),
+                },
+                32,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(activation.id, "outbox-activation");
+        assert!(store
+            .list_signal_outbox(SignalOutboxStatus::Pending, 16)
+            .await
+            .unwrap()
+            .is_empty());
+        let materialized = store
+            .list_signal_outbox(SignalOutboxStatus::Materialized, 16)
+            .await
+            .unwrap();
+        assert_eq!(materialized.len(), 1);
+        assert_eq!(materialized[0].signal_id.as_deref(), Some("outbox-signal"));
+
+        // Re-appending the same routed Event cannot reopen the handoff.
+        store
+            .append_with_signal_outbox(event.clone())
+            .await
+            .unwrap();
+        assert!(store
+            .list_signal_outbox(SignalOutboxStatus::Pending, 16)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn signal_outbox_rejects_unroutable_events_atomically() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let event = Event::new(
+            "unroutable-outbox-event".to_string(),
+            "fixture".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::new(),
+        );
+        assert!(store
+            .append_with_signal_outbox(event.clone())
+            .await
+            .is_err());
+        assert!(store
+            .query(QueryFilter {
+                event_id: Some(event.id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+
+        let discarded = Event::new(
+            "discarded-outbox-event".to_string(),
+            "fixture".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            [
+                ("context_id".to_string(), serde_json::json!("context")),
+                ("session_id".to_string(), serde_json::json!("session")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        store
+            .append_with_signal_outbox(discarded.clone())
+            .await
+            .unwrap();
+        assert!(store.discard_signal_outbox(&discarded.id).await.unwrap());
+        assert!(!store.discard_signal_outbox(&discarded.id).await.unwrap());
+        assert_eq!(
+            store
+                .list_signal_outbox(SignalOutboxStatus::Discarded, 16)
+                .await
+                .unwrap()[0]
+                .event_id,
+            discarded.id
+        );
+    }
+
+    #[tokio::test]
     async fn thread_signals_are_claimed_in_one_bounded_ordered_activation_batch() {
         let tmp_file = NamedTempFile::new().unwrap();
         let store = Arc::new(
@@ -3440,7 +3933,7 @@ mod tests {
 
         for event_id in ["signal-event-4", "signal-event-5"] {
             store
-                .append(Event::new(
+                .append_with_signal_outbox(Event::new(
                     event_id.to_string(),
                     "fixture".to_string(),
                     crate::event::TYPE_TOOL_OUTPUT.to_string(),
@@ -3540,6 +4033,19 @@ mod tests {
             .filter(Option::is_some)
             .count();
         assert_eq!(claimed_count, 1, "Thread Activation 必须 single-flight");
+        assert!(store
+            .list_signal_outbox(SignalOutboxStatus::Pending, 16)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .list_signal_outbox(SignalOutboxStatus::Materialized, 16)
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
     }
 
     #[tokio::test]
@@ -3899,16 +4405,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(delegation.status, DelegationStatus::Queued);
-        let completed = store
-            .update_delegation_status(
-                "delegation-1",
-                DelegationStatus::Completed,
-                Some("result-event"),
-            )
+        let misrouted_result = Event::new(
+            "misrouted-result-event".to_string(),
+            "sub-agent".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            [
+                ("context_id".to_string(), serde_json::json!("context-child")),
+                ("session_id".to_string(), serde_json::json!("session-child")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert!(store
+            .commit_delegation_result("delegation-1", &misrouted_result)
+            .await
+            .is_err());
+        assert_eq!(
+            store
+                .get_delegation("delegation-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            DelegationStatus::Queued
+        );
+        assert!(store
+            .query(QueryFilter {
+                event_id: Some(misrouted_result.id),
+                ..Default::default()
+            })
             .await
             .unwrap()
-            .unwrap();
+            .is_empty());
+        let result_event = Event::new(
+            "result-event".to_string(),
+            "sub-agent".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            [
+                ("context_id".to_string(), serde_json::json!("context-root")),
+                ("session_id".to_string(), serde_json::json!("session-root")),
+                (
+                    "delegation_id".to_string(),
+                    serde_json::json!("delegation-1"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert!(store
+            .commit_delegation_result("delegation-1", &result_event)
+            .await
+            .unwrap());
+        assert!(!store
+            .commit_delegation_result("delegation-1", &result_event)
+            .await
+            .unwrap());
+        let completed = store.get_delegation("delegation-1").await.unwrap().unwrap();
         assert_eq!(completed.result_event_id.as_deref(), Some("result-event"));
+        assert!(store
+            .list_signal_outbox(SignalOutboxStatus::Pending, 16)
+            .await
+            .unwrap()
+            .iter()
+            .any(|entry| entry.event_id == "result-event"));
 
         let mounts =
             sqlx::query("SELECT session_id, mount_kind FROM session_mounts ORDER BY session_id")
@@ -3944,6 +4505,125 @@ mod tests {
                 .status,
             DelegationStatus::Completed
         );
+    }
+
+    #[tokio::test]
+    async fn objective_claim_and_continuation_outbox_commit_atomically() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "objective-outbox-agent".to_string(),
+                    title: "Objective Outbox Agent".to_string(),
+                    root_context_id: "objective-outbox-context".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "objective-outbox-context".to_string(),
+                    agent_id: "objective-outbox-agent".to_string(),
+                    title: "Objective Outbox Context".to_string(),
+                },
+                NewSession {
+                    id: "objective-outbox-session".to_string(),
+                    agent_id: "objective-outbox-agent".to_string(),
+                    context_id: "objective-outbox-context".to_string(),
+                    parent_session_id: None,
+                    title: "Objective Outbox Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .create_objective(NewObjective {
+                id: "objective-outbox".to_string(),
+                agent_id: "objective-outbox-agent".to_string(),
+                context_id: "objective-outbox-context".to_string(),
+                coordinator_session_id: "objective-outbox-session".to_string(),
+                delivery_session_id: "objective-outbox-session".to_string(),
+                parent_objective_id: None,
+                source_event_id: "objective-outbox-source".to_string(),
+                stated_objective: "prove atomic continuation".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let event = |event_id: &str, evaluation_id: &str| {
+            Event::new(
+                event_id.to_string(),
+                "objective-supervisor".to_string(),
+                crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                [
+                    (
+                        "context_id".to_string(),
+                        serde_json::json!("objective-outbox-context"),
+                    ),
+                    (
+                        "session_id".to_string(),
+                        serde_json::json!("objective-outbox-session"),
+                    ),
+                    (
+                        "objective_id".to_string(),
+                        serde_json::json!("objective-outbox"),
+                    ),
+                    (
+                        "objective_evaluation_id".to_string(),
+                        serde_json::json!(evaluation_id),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        };
+        let continuation = event("objective-continuation-event", "objective-evaluation");
+        let claimed = store
+            .claim_objective_evaluation_with_signal(
+                "objective-outbox",
+                1,
+                "objective-evaluation",
+                Utc::now() + chrono::Duration::minutes(1),
+                &continuation,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            claimed,
+            ObjectiveMutation::Updated(ObjectiveRecord { revision: 2, .. })
+        ));
+        assert_eq!(
+            store
+                .list_signal_outbox(SignalOutboxStatus::Pending, 16)
+                .await
+                .unwrap()[0]
+                .event_id,
+            continuation.id
+        );
+
+        let stale = event("stale-objective-continuation", "stale-evaluation");
+        assert!(matches!(
+            store
+                .claim_objective_evaluation_with_signal(
+                    "objective-outbox",
+                    1,
+                    "stale-evaluation",
+                    Utc::now() + chrono::Duration::minutes(1),
+                    &stale,
+                )
+                .await
+                .unwrap(),
+            ObjectiveMutation::Conflict { .. }
+        ));
+        assert!(store
+            .query(QueryFilter {
+                event_id: Some(stale.id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

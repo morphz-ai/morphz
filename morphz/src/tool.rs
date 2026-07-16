@@ -348,6 +348,7 @@ impl ThreadScheduler {
                 None => true,
             };
             if !terminal {
+                self.events.append_with_signal_outbox(event.clone()).await?;
                 self.bus.dispatch_persisted(event).await?;
             }
         }

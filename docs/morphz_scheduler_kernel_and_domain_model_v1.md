@@ -902,6 +902,7 @@ maintenance
 | `WorkThreadRecord` | `ThreadRecord` | 已具备稳定 `root_turn_id`、权威 lifecycle、derived phase 和 Delivery 信息；类型与物理表名尚待迁移 |
 | `ThreadActivationRecord` | `ThreadActivationRecord` | 领域类型与状态已经收口，SQLite 物理表已迁移为 `thread_activations` |
 | `ThreadSignalRecord` + Event | `ThreadSignal` | Event 保存不可变事实，Signal 保存 mailbox 消费状态 |
+| `signal_outbox` | Durable Signal Outbox | Event 与投递意图同事务提交；dispatcher 幂等物化 Signal |
 | `ScheduledIntentRecord` | `ScheduleRecord` | 当前将 rule、intent 和 occurrence 混在一起 |
 | `BackgroundTask` | `ExecutionJob` | 当前主要驻留进程内，需持久化 |
 | Tool Call | `Action` | 已有标准 Function Calling 表达 |
@@ -916,6 +917,8 @@ maintenance
 - Work/Execution Thread mailbox single-flight；
 - Activation claim、lease 和恢复；
 - Signal batch 的有界、确定顺序原子领取与 acknowledge；
+- Event + Signal Outbox 原子提交、后台重试与启动恢复；
+- User Message、Schedule occurrence、Objective continuation、Delegation result 和工具唤醒已接入统一 Outbox producer 边界；
 - Thread lifecycle 与 derived phase 分离；
 - 有限 Thread 的唯一终态 Outcome；
 - `schedule_tx` 的原子提交；
@@ -926,7 +929,6 @@ maintenance
 
 - ThreadScheduler、ObjectiveSupervisor、BackgroundTask timer 各自维护唤醒；
 - Thread、Objective、Delegation、Schedule、BackgroundTask 仍存在部分重复状态投影；
-- Event 提交与 Signal 物化尚未对全部生产者统一为同一个事务；
 - 后台 Job 主要是进程内状态；
 - 依赖满足仍采用周期轮询；
 - 缺少 Schedule cancel/reschedule/pause/resume；
@@ -1065,7 +1067,7 @@ Delivery 是结果路由
 - Thread 的权威 `lifecycle` 与派生 `phase` 已分离；Dashboard 与 Context Encoding 从 Signal、Activation、Schedule 和后台执行事实推导 phase；
 - Context protocol v20 明确暴露 `current-activation`、确定性的 `signal-batch` 与 `concurrent-activations`。
 
-尚未宣称完成：
+第一条纵切当时尚未完成：
 
 - 当前 Event 先跨过 Ledger 持久化边界，Orchestrator 随后才物化 Thread Signal；“状态变更 + Signal”尚未对所有生产者统一为一个数据库事务。已持久化 Signal 可以恢复，但 Event 已提交而 Signal 尚未生成的极窄崩溃窗口仍需由 durable outbox/dispatcher 收口；
 - Schedule、Objective、Delegation 和后台任务仍各自拥有部分唤醒路径，尚未全部改为统一 Signal producer；
@@ -1073,3 +1075,27 @@ Delivery 是结果路由
 - 通用 Wait Condition、统一 Timer Engine 和持久 Execution Job 属于 Phase 2/3，不在本次纵切范围内。
 
 因此，本阶段证明了 Signal → Activation → Context Encoding → 终态 acknowledge 的内核闭环，但不把尚未统一的生产者事务边界误报为完成。
+
+### 2026-07-16：Phase 1 durable outbox 收口
+
+已经实现：
+
+- 新增持久 `signal_outbox`。所有需要触发 Scheduler 的 Event 都把 Ledger 事实与 Outbox 投递意图放在同一个 SQLite 事务提交；
+- Outbox 明确区分 `pending | materialized | discarded`。`pending` Event 在成功创建对应 `ThreadSignal` 之前不会消失；取消 Session 的迟到信号会显式进入 `discarded`，不会形成永久重试；
+- `claim_thread_signal_batch` 在创建 Signal/Activation 的同一事务中把 Outbox 标记为 `materialized` 并绑定唯一 `signal_id`；重复 dispatch、并发 worker 和重复 Event append 都不能重新打开或重复消费这次投递；
+- Runtime 启动时扫描 pending Outbox，运行期间也由弱引用后台 dispatcher 周期重试。进程在“Event 已提交、EventBus 尚未派发”窗口崩溃后，重启仍能恢复；
+- User Message 的幂等 claim 事务现在同时写入 Outbox。客户端在提交后、publish 前断线或 Runtime 崩溃，不再丢失求值；
+- Schedule occurrence 的状态推进、due Event 和 Outbox 在同一事务提交；
+- Objective 的 evaluation lease、continuation Event 和 Outbox 在同一事务提交；过期 revision 不会留下孤立 Event；
+- Delegation 的完成状态、result Event 和父 Thread Outbox 在同一事务提交；并发完成只能有一个提交者；
+- EventBus 的可靠订阅边界只为真正会进入 `chat/*` 求值的 User/Tool Event 创建 Outbox；同一批工具中明确不唤醒模型的中间结果仍只进入 Ledger，不会制造额外 Activation；
+- 对旧版已经落盘、后来才被选为 wake 的 Event，会先幂等补齐 Outbox，再执行 `dispatch_persisted`。
+
+验证边界：
+
+- 故障注入测试模拟了 User Event 与 Outbox 已提交、EventBus 尚未调用便进程退出；重新打开数据库后能够恢复为唯一 Signal/Activation；
+- 原子回滚测试证明缺少路由的 Outbox Event 不会留下半条 Ledger 记录；
+- Objective CAS 冲突不会留下 continuation Event/Outbox；Delegation 重复完成不会产生第二个 result Event；
+- Signal batch、Activation single-flight、Schedule restart、Objective restart 与普通 Runtime 回归继续通过。
+
+Phase 1 至此完成。仍然保留的独立 timer/sleep、依赖轮询和进程内 BackgroundTask 状态，分别属于 Phase 2 的统一 Wait/Timer Engine 与 Phase 3 的持久 Execution Job，不再被误认为 Event → Signal 可靠性缺口。

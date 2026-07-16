@@ -274,6 +274,36 @@ pub struct NewThreadSignal {
     pub parent_activation_id: Option<String>,
 }
 
+/// Durable handoff between the immutable Ledger and the Scheduler mailbox.
+/// `pending` means the Event is committed but has not yet been materialized as
+/// a Thread Signal. `materialized` means `signal_id` is the durable successor.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalOutboxStatus {
+    Pending,
+    Materialized,
+    Discarded,
+}
+
+impl SignalOutboxStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Materialized => "materialized",
+            Self::Discarded => "discarded",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignalOutboxRecord {
+    pub event_id: String,
+    pub status: SignalOutboxStatus,
+    pub signal_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub resolved_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActivationSignalRecord {
     pub activation_id: String,
@@ -661,6 +691,12 @@ pub trait EventStore: Send + Sync {
         &self,
         ev: crate::event::Event,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically append an immutable Event and its scheduler-delivery intent.
+    /// Repeating the same Event is idempotent; conflicting content is rejected.
+    async fn append_with_signal_outbox(
+        &self,
+        ev: crate::event::Event,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     async fn query(
         &self,
         filter: QueryFilter,
@@ -769,6 +805,15 @@ pub trait SessionStore: Send + Sync {
         activation: NewThreadActivation,
         max_signals: usize,
     ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_signal_outbox(
+        &self,
+        status: SignalOutboxStatus,
+        limit: usize,
+    ) -> Result<Vec<SignalOutboxRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn discard_signal_outbox(
+        &self,
+        event_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
     async fn list_context_thread_signals(
         &self,
         context_id: &str,
@@ -911,6 +956,13 @@ pub trait SessionStore: Send + Sync {
         status: DelegationStatus,
         result_event_id: Option<&str>,
     ) -> Result<Option<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically complete one Delegation and enqueue the result Event for its
+    /// parent Thread. `false` means another worker already completed it.
+    async fn commit_delegation_result(
+        &self,
+        id: &str,
+        event: &crate::event::Event,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Persistent Objective control plane. Implementations enforce lifecycle and
@@ -953,6 +1005,16 @@ pub trait ObjectiveStore: Send + Sync {
         expected_revision: u64,
         evaluation_id: &str,
         lease_expires_at: DateTime<Utc>,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically claim an Objective evaluation lease and enqueue the
+    /// continuation Event that will activate its coordinator Thread.
+    async fn claim_objective_evaluation_with_signal(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+        event: &crate::event::Event,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// 记录一次已准备提交给模型的完整 Prompt 成本。该记账不改变
     /// Objective 的语义 revision，并以 Evaluation ID 防止串账。

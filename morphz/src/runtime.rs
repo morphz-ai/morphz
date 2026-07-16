@@ -1607,6 +1607,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_restart_dispatches_a_committed_but_unpublished_message() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let tool_policy = RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: true,
+        };
+
+        // Simulate process A: commit the physical user input and its Outbox record, then crash
+        // before EventBus publication. The Runtime is deliberately never started here.
+        let crashed_runtime = MorphzRuntime::builder(config.clone(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(tool_policy)
+            .build()
+            .await
+            .unwrap();
+        crashed_runtime
+            .ensure_agent(NewAgent {
+                id: crashed_runtime.identity().agent_id.clone(),
+                title: "Outbox recovery agent".to_string(),
+                root_context_id: crashed_runtime.identity().context_id.clone(),
+            })
+            .await
+            .unwrap();
+        crashed_runtime
+            .ensure_context(NewCognitiveContext {
+                id: crashed_runtime.identity().context_id.clone(),
+                agent_id: crashed_runtime.identity().agent_id.clone(),
+                title: "Outbox recovery context".to_string(),
+            })
+            .await
+            .unwrap();
+        crashed_runtime
+            .ensure_session(NewSession {
+                id: "session-runtime-outbox-recovery".to_string(),
+                agent_id: crashed_runtime.identity().agent_id.clone(),
+                context_id: crashed_runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Outbox recovery session".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let event = Event::new(
+            "event-runtime-outbox-recovery".to_string(),
+            "User-Test".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            [
+                (
+                    "context_id".to_string(),
+                    json!(crashed_runtime.identity().context_id),
+                ),
+                (
+                    "session_id".to_string(),
+                    json!("session-runtime-outbox-recovery"),
+                ),
+                (
+                    "client_message_id".to_string(),
+                    json!("client-runtime-outbox-recovery"),
+                ),
+                ("text".to_string(), json!("recover this message")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert_eq!(
+            crashed_runtime
+                .inner
+                .store
+                .claim_message(
+                    "session-runtime-outbox-recovery",
+                    "client-runtime-outbox-recovery",
+                    &event,
+                )
+                .await
+                .unwrap(),
+            MessageClaim::Accepted
+        );
+        assert_eq!(
+            crashed_runtime
+                .inner
+                .store
+                .list_signal_outbox(crate::memory::SignalOutboxStatus::Pending, 10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(crashed_runtime);
+
+        // Simulate process B: startup recovery must materialize the pending Outbox record into
+        // one Signal/Activation and complete the ordinary reply path without another user input.
+        let recovered_runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(tool_policy)
+            .build()
+            .await
+            .unwrap();
+        let mut replies = recovered_runtime.subscribe("chat/reply", 8);
+        recovered_runtime.start().await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload.get("text").and_then(|value| value.as_str()),
+            Some("runtime-ok")
+        );
+        let outbox = recovered_runtime
+            .inner
+            .store
+            .list_signal_outbox(crate::memory::SignalOutboxStatus::Materialized, 10)
+            .await
+            .unwrap();
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].event_id, "event-runtime-outbox-recovery");
+        assert!(outbox[0].signal_id.is_some());
+    }
+
+    #[tokio::test]
     async fn objective_supervisor_continues_without_fake_user_message_and_stops_after_commit() {
         let database = NamedTempFile::new().unwrap();
         let mut config = AppConfig::default();

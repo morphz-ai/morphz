@@ -1163,13 +1163,42 @@ impl ObjectiveSupervisor {
             return Ok(());
         }
         let lease_expires_at = Utc::now() + self.lease_duration;
+        let claimed_revision = objective.revision.saturating_add(1);
+        let continuation = format!(
+            "(objective-continuation (id {}) (revision {}) (evaluation {}) (reason active-no-wait) (instruction \"Continue the stated objective autonomously. Audit remaining requirements against current evidence. If complete, call objective_update before the final reply; if waiting, record a precise wait condition; otherwise make new progress.\"))",
+            objective.id, claimed_revision, evaluation_id
+        );
+        let continuation_event = Event::new(
+            format!("objective_continue_{evaluation_id}"),
+            "Runtime-ObjectiveSupervisor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![
+                ("context_id".to_string(), json!(objective.context_id)),
+                (
+                    "session_id".to_string(),
+                    json!(objective.coordinator_session_id),
+                ),
+                ("objective_id".to_string(), json!(objective.id)),
+                ("objective_revision".to_string(), json!(claimed_revision)),
+                ("objective_evaluation_id".to_string(), json!(evaluation_id)),
+                ("runtime_force_evaluation".to_string(), json!(true)),
+                ("tool_name".to_string(), json!("objective_supervisor")),
+                ("tool_status".to_string(), json!("success")),
+                ("wake_source".to_string(), json!("active-no-wait")),
+                ("text".to_string(), json!(continuation)),
+            ]
+            .into_iter()
+            .collect(),
+        );
         let claimed = self
             .store
-            .claim_objective_evaluation(
+            .claim_objective_evaluation_with_signal(
                 &objective.id,
                 objective.revision,
                 &evaluation_id,
                 lease_expires_at,
+                &continuation_event,
             )
             .await?;
         let ObjectiveMutation::Updated(claimed) = claimed else {
@@ -1189,46 +1218,7 @@ impl ObjectiveSupervisor {
         self.schedule_lease_expiry(claimed.id.clone(), lease_expires_at);
         self.publish_state_event("evaluation_started", &claimed, None)
             .await?;
-        let continuation = format!(
-            "(objective-continuation (id {}) (revision {}) (evaluation {}) (reason active-no-wait) (instruction \"Continue the stated objective autonomously. Audit remaining requirements against current evidence. If complete, call objective_update before the final reply; if waiting, record a precise wait condition; otherwise make new progress.\"))",
-            claimed.id, claimed.revision, evaluation_id
-        );
-        let publish = self
-            .bus
-            .publish(Event::new(
-                format!("objective_continue_{evaluation_id}"),
-                "Runtime-ObjectiveSupervisor".to_string(),
-                TYPE_TOOL_OUTPUT.to_string(),
-                "chat/tool_output".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(claimed.context_id)),
-                    (
-                        "session_id".to_string(),
-                        json!(claimed.coordinator_session_id),
-                    ),
-                    ("objective_id".to_string(), json!(claimed.id)),
-                    ("objective_revision".to_string(), json!(claimed.revision)),
-                    ("objective_evaluation_id".to_string(), json!(evaluation_id)),
-                    ("runtime_force_evaluation".to_string(), json!(true)),
-                    ("tool_name".to_string(), json!("objective_supervisor")),
-                    ("tool_status".to_string(), json!("success")),
-                    ("wake_source".to_string(), json!("active-no-wait")),
-                    ("text".to_string(), json!(continuation)),
-                ]
-                .into_iter()
-                .collect(),
-            ))
-            .await;
-        if let Err(error) = publish {
-            self.lease_wakeups.remove(&claimed.id);
-            let _ = self
-                .store
-                .finish_objective_evaluation(&claimed.id, &evaluation_id, 0, 0)
-                .await;
-            self.evaluations
-                .unbind(&claimed.coordinator_session_id, &evaluation_id);
-            return Err(error);
-        }
+        self.bus.dispatch_persisted(continuation_event).await?;
         Ok(())
     }
 

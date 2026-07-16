@@ -5,8 +5,9 @@ use crate::memory::{
     ActivationOutcomeCommit, DelegationStatus, DeliveryStatus, EventStore, NewCognitiveContext,
     NewDelegation, NewSession, NewThreadActivation, NewThreadSignal, NewWorkThread, QueryFilter,
     ScheduledIntentStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
-    SessionStatus, SessionStore, SessionUpdate, ThreadActivationMutation, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadLifecycle, WorkThreadKind, WorkThreadMutation,
+    SessionStatus, SessionStore, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadLifecycle, WorkThreadKind,
+    WorkThreadMutation,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{ContextEngine, ContextView};
@@ -25,6 +26,8 @@ use tokio::sync::{watch, Mutex, Notify};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 const MAX_ACTIVATION_SIGNAL_BATCH: usize = 32;
+const SIGNAL_OUTBOX_DISPATCH_BATCH: usize = 128;
+const SIGNAL_OUTBOX_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 const AGENT_OWNED_CONTEXT_PROMPT_BASE: &str = r#"你是 Morphz，一个能够管理自身工作 Context 的 AI Agent。
 
@@ -672,7 +675,11 @@ impl Orchestrator {
                     if !persist_full_context_inspect {
                         compact_context_inspect_for_persistence(&mut event);
                     }
-                    store.append(event).await?;
+                    if event_needs_signal_outbox(&event) {
+                        store.append_with_signal_outbox(event).await?;
+                    } else {
+                        store.append(event).await?;
+                    }
                     Ok(())
                 })
             }),
@@ -697,10 +704,66 @@ impl Orchestrator {
         );
 
         self.recover_thread_activations().await?;
+        self.dispatch_pending_signal_outbox().await?;
         self.recover_pending_thread_signals().await?;
         self.recover_delegations().await?;
         self.reconcile_orphaned_work_threads().await?;
+        self.start_signal_outbox_dispatcher();
         Ok(())
+    }
+
+    fn start_signal_outbox_dispatcher(self: &Arc<Self>) {
+        let orchestrator = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(SIGNAL_OUTBOX_POLL_INTERVAL).await;
+                let Some(orchestrator) = orchestrator.upgrade() else {
+                    break;
+                };
+                if let Err(error) = orchestrator.dispatch_pending_signal_outbox().await {
+                    tracing::error!(%error, "Signal Outbox 后台派发失败；保留 pending 等待重试");
+                }
+            }
+        });
+    }
+
+    async fn dispatch_pending_signal_outbox(&self) -> Result<usize, DynError> {
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Signal Outbox dispatcher 需要持久化 SessionStore")?;
+        let pending = session_store
+            .list_signal_outbox(SignalOutboxStatus::Pending, SIGNAL_OUTBOX_DISPATCH_BATCH)
+            .await?;
+        let mut dispatched = 0usize;
+        for entry in pending {
+            let Some(event) = self
+                .store
+                .query(QueryFilter {
+                    event_id: Some(entry.event_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .find(|event| event.id == entry.event_id)
+            else {
+                return Err(format!(
+                    "Signal Outbox Event '{}' 在 Ledger 中不存在",
+                    entry.event_id
+                )
+                .into());
+            };
+            if !event_needs_signal_outbox(&event) {
+                return Err(format!(
+                    "Signal Outbox Event '{}' 不是可路由的 chat Signal",
+                    event.id
+                )
+                .into());
+            }
+            self.bus.dispatch_persisted(event).await?;
+            dispatched = dispatched.saturating_add(1);
+        }
+        Ok(dispatched)
     }
 
     async fn recover_pending_thread_signals(&self) -> Result<(), DynError> {
@@ -1403,58 +1466,59 @@ impl Orchestrator {
             .and_then(|value| value.as_str())
             .unwrap_or_default()
             .to_string();
-        session_store
-            .update_delegation_status(&delegation.id, DelegationStatus::Completed, Some(&event.id))
-            .await?;
-        self.bus
-            .publish(Event::new(
-                format!(
-                    "delegation_result_{}_{}",
-                    delegation.id,
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        let result_event = Event::new(
+            format!(
+                "delegation_result_{}_{}",
+                delegation.id,
+                Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            ),
+            format!("Sub-Agent-{}", delegation.child_session_id),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            vec![
+                (
+                    "context_id".to_string(),
+                    json!(delegation.parent_context_id),
                 ),
-                format!("Sub-Agent-{}", delegation.child_session_id),
-                TYPE_TOOL_OUTPUT.to_string(),
-                "chat/tool_output".to_string(),
-                vec![
-                    (
-                        "context_id".to_string(),
-                        json!(delegation.parent_context_id),
-                    ),
-                    (
-                        "session_id".to_string(),
-                        json!(delegation.parent_session_id),
-                    ),
-                    ("delegation_id".to_string(), json!(delegation.id)),
-                    (
-                        "subagent_context_id".to_string(),
-                        json!(delegation.child_context_id),
-                    ),
-                    (
-                        "subagent_session_id".to_string(),
-                        json!(delegation.child_session_id),
-                    ),
-                    ("source_event_id".to_string(), json!(event.id)),
-                    ("tool_name".to_string(), json!("delegate")),
-                    ("tool_status".to_string(), json!("success")),
-                    ("output_empty".to_string(), json!(result.trim().is_empty())),
-                    (
-                        "text".to_string(),
-                        json!(json!({
-                            "delegation_id": delegation.id,
-                            "status": "completed",
-                            "subagent_session_id": delegation.child_session_id,
-                            "result_event_id": event.id,
-                            "result": result,
-                            "guidance": "验证 Sub Agent 结果后再回复用户或用 context_tx 整合共享 Mind。"
-                        })
-                        .to_string()),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ))
-            .await?;
+                (
+                    "session_id".to_string(),
+                    json!(delegation.parent_session_id),
+                ),
+                ("delegation_id".to_string(), json!(delegation.id)),
+                (
+                    "subagent_context_id".to_string(),
+                    json!(delegation.child_context_id),
+                ),
+                (
+                    "subagent_session_id".to_string(),
+                    json!(delegation.child_session_id),
+                ),
+                ("source_event_id".to_string(), json!(event.id)),
+                ("tool_name".to_string(), json!("delegate")),
+                ("tool_status".to_string(), json!("success")),
+                ("output_empty".to_string(), json!(result.trim().is_empty())),
+                (
+                    "text".to_string(),
+                    json!(json!({
+                        "delegation_id": delegation.id,
+                        "status": "completed",
+                        "subagent_session_id": delegation.child_session_id,
+                        "result_event_id": event.id,
+                        "result": result,
+                        "guidance": "验证 Sub Agent 结果后再回复用户或用 context_tx 整合共享 Mind。"
+                    })
+                    .to_string()),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        if session_store
+            .commit_delegation_result(&delegation.id, &result_event)
+            .await?
+        {
+            self.bus.dispatch_persisted(result_event).await?;
+        }
         Ok(true)
     }
 
@@ -1474,6 +1538,9 @@ impl Orchestrator {
                 // completions never resume it on their own.
                 self.cancelled_at.remove(&session_id);
             } else {
+                if let Some(store) = self.context_engine.session_store() {
+                    store.discard_signal_outbox(&event.id).await?;
+                }
                 tracing::info!(
                     session_id,
                     event_id = %event.id,
@@ -4255,6 +4322,7 @@ impl Orchestrator {
         for (index, (output, already_persisted)) in outputs.into_iter().enumerate() {
             if wake_index == Some(index) {
                 if already_persisted {
+                    self.store.append_with_signal_outbox(output.clone()).await?;
                     self.bus.dispatch_persisted(output).await?;
                 } else {
                     self.bus.publish(output).await?;
@@ -4763,6 +4831,24 @@ fn required_payload_str<'a>(event: &'a Event, key: &str) -> Result<&'a str, DynE
         .ok_or_else(|| format!("事件 '{}' 缺少字符串字段 '{}'", event.id, key).into())
 }
 
+fn event_needs_signal_outbox(event: &Event) -> bool {
+    event.topic.starts_with("chat/")
+        && matches!(
+            event.event_type.as_str(),
+            TYPE_USER_MESSAGE | TYPE_TOOL_OUTPUT
+        )
+        && event
+            .payload
+            .get("context_id")
+            .and_then(|value| value.as_str())
+            .is_some()
+        && event
+            .payload
+            .get("session_id")
+            .and_then(|value| value.as_str())
+            .is_some()
+}
+
 fn should_force_final_for_maintenance(
     phase: &str,
     pressure: &str,
@@ -4870,12 +4956,50 @@ mod tests {
 
     use super::{
         baseline_system_prompt, classify_terminal_response, cognitive_sexpr_vm_system_prompt,
-        compact_context_inspect_for_persistence, compose_system_prompt, extend_exec_output_facts,
-        render_system_contract, semantic_sexpr_vm_system_prompt,
+        compact_context_inspect_for_persistence, compose_system_prompt, event_needs_signal_outbox,
+        extend_exec_output_facts, render_system_contract, semantic_sexpr_vm_system_prompt,
         should_force_final_for_maintenance, tool_call_activity_preview, ReadTurnGuard,
         SystemPromptMode, TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
-    use crate::event::Event;
+    use crate::event::{Event, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
+
+    #[test]
+    fn signal_outbox_is_reserved_for_routable_scheduler_inputs() {
+        let routed_payload = serde_json::Map::from_iter([
+            ("context_id".to_string(), json!("context-1")),
+            ("session_id".to_string(), json!("session-1")),
+        ]);
+        for (event_type, topic) in [
+            (TYPE_USER_MESSAGE, "chat/user_message"),
+            (TYPE_TOOL_OUTPUT, "chat/tool_output"),
+        ] {
+            assert!(event_needs_signal_outbox(&Event::new(
+                format!("{event_type}-routed"),
+                "fixture".to_string(),
+                event_type.to_string(),
+                topic.to_string(),
+                routed_payload.clone(),
+            )));
+        }
+
+        let missing_session = Event::new(
+            "missing-session".to_string(),
+            "fixture".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::Map::from_iter([("context_id".to_string(), json!("context-1"))]),
+        );
+        assert!(!event_needs_signal_outbox(&missing_session));
+
+        let audit_event = Event::new(
+            "audit-only".to_string(),
+            "fixture".to_string(),
+            "proposal".to_string(),
+            "chat/context_inspect".to_string(),
+            routed_payload,
+        );
+        assert!(!event_needs_signal_outbox(&audit_event));
+    }
 
     #[test]
     fn system_prompt_has_a_deterministic_generated_contract_prefix() {
