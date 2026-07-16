@@ -3,7 +3,7 @@ use morphz::approval::ApprovalDecision;
 use morphz::cli::{morphz_command_line_parser, Invocation};
 use morphz::config;
 use morphz::event::Event;
-use morphz::llm::{Client, Message, Response, ToolDefinition};
+use morphz::llm::{Client, Message, ReasoningEffort, Response, ToolDefinition};
 use morphz::memory::{
     NewAgent, NewCognitiveContext, NewObjective, NewSession, ObjectiveMutation, ObjectiveStatus,
     SessionMountKind, SessionRecord, SessionStatus,
@@ -27,6 +27,7 @@ USAGE:
   morphz [OPTIONS] [PROMPT...]
   morphz exec [OPTIONS] PROMPT...
   morphz serve [OPTIONS]
+  morphz dashboard [OPTIONS]
   morphz <context|session|agent|objective|job|config> <COMMAND> [ARGS...]
 
 SESSION SEMANTICS:
@@ -37,6 +38,7 @@ CORE COMMANDS:
   exec PROMPT...                 Run one prompt and print the final reply
   resume [ID] [PROMPT...]        Reattach ID, or the most recently active Session when omitted
   serve                          Start the HTTP/WebSocket server
+  dashboard                      Start Dashboard with a temporary Token and open a browser
   setup                          Configure a model Provider interactively
   provider list|test             Inspect and verify model Providers
   model list|use                 Discover or select models
@@ -57,6 +59,7 @@ GLOBAL OPTIONS:
   -C, --cwd=DIR                  Change working directory before loading config
       --config-file=FILE         Load an explicit trusted config file
   -m, --model=MODEL              Override the configured model
+      --reasoning-effort=LEVEL   default | low | medium | high
       --agent=ID                 Select an Agent
       --context=ID               Select or mount a Cognitive Context
       --session=ID               Reattach an existing Session
@@ -69,6 +72,7 @@ GLOBAL OPTIONS:
       --token-budget=N           Optional Objective token budget
       --reason=TEXT              Auditable lifecycle-control reason
       --log-level=LEVEL          Override the tracing filter
+      --theme=THEME              system | mono | iris | cyan | coral | no-color
       --tui                      Force the fullscreen terminal UI
       --plain                    Use the classic line-oriented terminal
   -h, --help                     Print help
@@ -77,6 +81,71 @@ GLOBAL OPTIONS:
 Use `--` to force every remaining argv token to be prompt text.
 Options that take values support --name=value; this form also removes command/value ambiguity.
 "#;
+
+const SERVE_HELP: &str = r#"Morphz Dashboard Server
+
+USAGE:
+  morphz serve [OPTIONS]
+
+DESCRIPTION:
+  Start the HTTP/WebSocket Runtime service and serve the embedded Dashboard.
+  The Dashboard is available at the server root path `/`; no external web
+  directory, Node.js process, or static-file server is required.
+
+OPTIONS:
+      --bind=ADDR                Listen address, for example 127.0.0.1:8080
+      --reasoning-effort=LEVEL   default | low | medium | high
+      --config-file=FILE         Load an explicit trusted config file
+  -p, --profile=NAME             Load a named configuration Profile
+      --log-level=LEVEL          Override the tracing filter
+  -h, --help                     Print this help
+
+NETWORK SAFETY:
+  Loopback addresses may run without Dashboard authentication. Binding to a
+  non-loopback address such as 0.0.0.0 requires MORPHZ_DASHBOARD_TOKEN; the
+  same token authenticates HTTP API requests and WebSocket connections.
+
+EXAMPLES:
+  morphz serve
+  morphz serve --bind=127.0.0.1:9090
+  MORPHZ_DASHBOARD_TOKEN=replace-with-a-secret \
+    morphz serve --bind=0.0.0.0:8080
+"#;
+
+const DASHBOARD_HELP: &str = r#"Morphz Dashboard
+
+USAGE:
+  morphz dashboard [OPTIONS]
+
+DESCRIPTION:
+  Generate a cryptographically random Token for this process, start the
+  embedded Dashboard server, and open it in the operating system's default
+  browser. The generated Token is not written to configuration or storage.
+
+OPTIONS:
+      --bind=ADDR                Listen address, for example 127.0.0.1:8080
+      --reasoning-effort=LEVEL   default | low | medium | high
+      --config-file=FILE         Load an explicit trusted config file
+  -p, --profile=NAME             Load a named configuration Profile
+      --log-level=LEVEL          Override the tracing filter
+  -h, --help                     Print this help
+
+EXAMPLES:
+  morphz dashboard
+  morphz dashboard --bind=0.0.0.0:8080
+
+When ADDR is 0.0.0.0 or [::], the local browser is opened through the
+corresponding loopback address while the server remains reachable on every
+network interface. Remote clients need the generated Token URL.
+"#;
+
+fn help_for(invocation: &Invocation) -> &'static str {
+    match invocation.command_path() {
+        [command] if command == "serve" => SERVE_HELP,
+        [command] if command == "dashboard" => DASHBOARD_HELP,
+        _ => HELP,
+    }
+}
 
 fn init_logging(log_level: Option<&str>, tui_mode: bool) -> Result<(), AppError> {
     let filter = match log_level {
@@ -117,7 +186,7 @@ async fn main() -> Result<(), AppError> {
     init_logging(option_value(&invocation, "log-level"), tui_mode)?;
 
     if invocation.has_option("help") || invocation.command_path() == ["help"] {
-        print!("{HELP}");
+        print!("{}", help_for(&invocation));
         return Ok(());
     }
     if invocation.has_option("version") || invocation.command_path() == ["version"] {
@@ -440,6 +509,8 @@ fn display_config_value(key: &str, value: &toml::Value) -> String {
 
 fn mark_environment_config_sources(resolved: &mut config::ResolvedConfig) {
     for (variable, key) in [
+        ("MORPHZ_LLM_MODEL", "llm.model"),
+        ("MORPHZ_LLM_PROVIDER", "llm.provider"),
         ("MORPHZ_WORKSPACE_ROOT", "permissions.workspace_root"),
         ("MORPHZ_ARTIFACT_DIR", "background_task.artifact_dir"),
         ("MORPHZ_EXEC_NETWORK", "permissions.network"),
@@ -461,6 +532,7 @@ fn mark_environment_config_sources(resolved: &mut config::ResolvedConfig) {
             "llm.request_timeout_secs",
         ),
         ("MORPHZ_LLM_MAX_OUTPUT_TOKENS", "llm.max_output_tokens"),
+        ("MORPHZ_LLM_REASONING_EFFORT", "llm.reasoning_effort"),
     ] {
         if std::env::var_os(variable).is_some() {
             resolved.mark_source(key, format!("environment:{variable}"));
@@ -471,9 +543,11 @@ fn mark_environment_config_sources(resolved: &mut config::ResolvedConfig) {
 fn mark_cli_config_sources(invocation: &Invocation, resolved: &mut config::ResolvedConfig) {
     for (option, key) in [
         ("model", "llm.model"),
+        ("reasoning-effort", "llm.reasoning_effort"),
         ("bind", "server.bind"),
         ("sandbox", "permissions.sandbox_mode"),
         ("approval", "permissions.approval_policy"),
+        ("theme", "tui.theme"),
         ("network", "permissions.network"),
         ("add-dir", "permissions.read_roots/write_roots"),
     ] {
@@ -513,8 +587,21 @@ fn apply_cli_config(
         }
         app_config.llm.model = model.to_string();
     }
+    if let Some(effort) = option_value(invocation, "reasoning-effort") {
+        app_config.llm.reasoning_effort = match effort.trim().to_ascii_lowercase().as_str() {
+            "default" | "auto" => None,
+            value => Some(ReasoningEffort::parse(value).ok_or_else(|| {
+                format!("未知推理深度 '{effort}'；可用 default、low、medium、high")
+            })?),
+        };
+    }
     if let Some(bind) = option_value(invocation, "bind") {
         app_config.server.bind = bind.to_string();
+    }
+    if let Some(theme) = option_value(invocation, "theme") {
+        app_config.tui.theme = config::TuiTheme::parse(theme).ok_or_else(|| {
+            format!("未知 TUI 主题 '{theme}'；可用 system、mono、iris、cyan、coral、no-color")
+        })?;
     }
     if let Some(sandbox) = option_value(invocation, "sandbox") {
         make_permissions_custom(app_config);
@@ -583,6 +670,7 @@ fn command_needs_llm(invocation: &Invocation) -> bool {
         "" | "exec"
             | "resume"
             | "serve"
+            | "dashboard"
             | "session resume"
             | "objective create"
             | "objective resume"
@@ -679,6 +767,28 @@ async fn dispatch_runtime_command(
             ));
             server.start(&app_config.server.bind).await?;
             tracing::info!(bind = %app_config.server.bind, "Morphz Server 已启动");
+            shutdown_signal().await;
+            Ok(())
+        }
+        "dashboard" => {
+            let token = generate_dashboard_token()?;
+            let browser_url = dashboard_browser_url(&app_config.server.bind, &token)?;
+            let server = Arc::new(Server::new_with_capacity(
+                runtime,
+                ServerDefaults {
+                    agent_id: default_agent_id,
+                    context_id: default_context_id,
+                },
+                app_config.server.broadcast_capacity,
+            ));
+            server
+                .start_with_dashboard_token(&app_config.server.bind, Some(token))
+                .await?;
+            println!("Dashboard: {browser_url}");
+            if let Err(error) = open_dashboard_browser(&browser_url) {
+                tracing::warn!(%error, "无法自动打开默认浏览器；请手动访问上面的 Dashboard 地址");
+            }
+            tracing::info!(bind = %app_config.server.bind, "Morphz Dashboard 已启动");
             shutdown_signal().await;
             Ok(())
         }
@@ -2472,6 +2582,63 @@ fn trim_line_ending(line: &str) -> &str {
 }
 
 /// 等待 Ctrl+C 或 SIGTERM 信号
+fn generate_dashboard_token() -> Result<String, AppError> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(|error| format!("操作系统随机数生成失败: {error}"))?;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut token = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        token.push(HEX[usize::from(byte >> 4)] as char);
+        token.push(HEX[usize::from(byte & 0x0f)] as char);
+    }
+    Ok(token)
+}
+
+fn dashboard_browser_url(bind: &str, token: &str) -> Result<String, AppError> {
+    let address: std::net::SocketAddr = bind.parse()?;
+    let host = match address.ip() {
+        std::net::IpAddr::V4(ip) if ip.is_unspecified() => "127.0.0.1".to_string(),
+        std::net::IpAddr::V4(ip) => ip.to_string(),
+        std::net::IpAddr::V6(ip) if ip.is_unspecified() => "[::1]".to_string(),
+        std::net::IpAddr::V6(ip) => format!("[{ip}]"),
+    };
+    Ok(format!("http://{host}:{}/#token={token}", address.port()))
+}
+
+fn open_dashboard_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        command.arg(url);
+        command
+    };
+
+    #[cfg(target_os = "linux")]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "start", ""]).arg(url);
+        command
+    };
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    return Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "当前平台没有默认浏览器启动适配器",
+    ));
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    {
+        command.spawn().map(|_| ())
+    }
+}
+
 async fn shutdown_signal() {
     use tokio::signal;
 
@@ -2502,16 +2669,17 @@ async fn shutdown_signal() {
 mod tests {
     use super::{
         apply_cli_config, command_needs_llm, console_message_from_event, create_session_command,
-        format_tool_call_activity, parse_terminal_approval_input, read_console_input,
-        resolve_resumed_session, select_or_create_console_session,
-        should_run_first_time_setup_with_terminal, should_use_tui_with_terminal,
-        wait_for_session_reply, ConsoleInput, ConsoleMessageKind, OfflineClient,
+        dashboard_browser_url, format_tool_call_activity, generate_dashboard_token, help_for,
+        parse_terminal_approval_input, read_console_input, resolve_resumed_session,
+        select_or_create_console_session, should_run_first_time_setup_with_terminal,
+        should_use_tui_with_terminal, wait_for_session_reply, ConsoleInput, ConsoleMessageKind,
+        OfflineClient,
     };
     use morphz::approval::ApprovalDecision;
     use morphz::cli::morphz_command_line_parser;
-    use morphz::config::AppConfig;
+    use morphz::config::{AppConfig, TuiTheme};
     use morphz::event::Event;
-    use morphz::llm::Client;
+    use morphz::llm::{Client, ReasoningEffort};
     use morphz::permission::{ApprovalPolicy, PermissionMode, ReviewerKind, SandboxMode};
     use morphz::runtime::{MorphzRuntime, RuntimeIdentity};
     use std::io::Cursor;
@@ -2734,6 +2902,42 @@ mod tests {
     }
 
     #[test]
+    fn cli_theme_override_uses_the_same_strict_theme_names() {
+        let invocation = morphz_command_line_parser()
+            .parse(["--theme=cyan"])
+            .unwrap();
+        let mut config = AppConfig::default();
+        apply_cli_config(&invocation, &mut config).unwrap();
+        assert_eq!(config.tui.theme, TuiTheme::Cyan);
+
+        let invalid = morphz_command_line_parser()
+            .parse(["--theme=ultraviolet"])
+            .unwrap();
+        assert!(apply_cli_config(&invalid, &mut config).is_err());
+    }
+
+    #[test]
+    fn cli_reasoning_effort_is_explicit_and_can_return_to_provider_default() {
+        let high = morphz_command_line_parser()
+            .parse(["--reasoning-effort=high"])
+            .unwrap();
+        let mut config = AppConfig::default();
+        apply_cli_config(&high, &mut config).unwrap();
+        assert_eq!(config.llm.reasoning_effort, Some(ReasoningEffort::High));
+
+        let provider_default = morphz_command_line_parser()
+            .parse(["--reasoning-effort=default"])
+            .unwrap();
+        apply_cli_config(&provider_default, &mut config).unwrap();
+        assert_eq!(config.llm.reasoning_effort, None);
+
+        let invalid = morphz_command_line_parser()
+            .parse(["--reasoning-effort=maximum"])
+            .unwrap();
+        assert!(apply_cli_config(&invalid, &mut config).is_err());
+    }
+
+    #[test]
     fn terminal_approval_requires_an_explicit_answer() {
         assert!(matches!(parse_terminal_approval_input("\n"), Ok(None)));
         assert!(matches!(
@@ -2748,6 +2952,43 @@ mod tests {
     }
 
     #[test]
+    fn serve_help_describes_binding_dashboard_and_non_loopback_authentication() {
+        let invocation = morphz_command_line_parser()
+            .parse(["serve", "--help"])
+            .unwrap();
+        let help = help_for(&invocation);
+        assert!(help.contains("morphz serve [OPTIONS]"));
+        assert!(help.contains("--bind=ADDR"));
+        assert!(help.contains("MORPHZ_DASHBOARD_TOKEN"));
+        assert!(help.contains("0.0.0.0:8080"));
+        assert!(!help.contains("CORE COMMANDS:"));
+    }
+
+    #[test]
+    fn dashboard_command_uses_ephemeral_random_token_and_loopback_browser_url() {
+        let first = generate_dashboard_token().unwrap();
+        let second = generate_dashboard_token().unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+        assert_eq!(
+            dashboard_browser_url("0.0.0.0:8080", &first).unwrap(),
+            format!("http://127.0.0.1:8080/#token={first}")
+        );
+        assert_eq!(
+            dashboard_browser_url("[::]:9090", &first).unwrap(),
+            format!("http://[::1]:9090/#token={first}")
+        );
+
+        let invocation = morphz_command_line_parser()
+            .parse(["dashboard", "--help"])
+            .unwrap();
+        let help = help_for(&invocation);
+        assert!(help.contains("cryptographically random Token"));
+        assert!(help.contains("morphz dashboard --bind=0.0.0.0:8080"));
+    }
+
+    #[test]
     fn only_evaluation_commands_require_an_llm_client() {
         let parser = morphz_command_line_parser();
         assert!(command_needs_llm(&parser.parse(["hello"]).unwrap()));
@@ -2755,6 +2996,7 @@ mod tests {
             &parser.parse(["session", "resume", "s1"]).unwrap()
         ));
         assert!(command_needs_llm(&parser.parse(["resume"]).unwrap()));
+        assert!(command_needs_llm(&parser.parse(["dashboard"]).unwrap()));
         assert!(!command_needs_llm(
             &parser.parse(["session", "list"]).unwrap()
         ));

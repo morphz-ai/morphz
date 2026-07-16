@@ -37,7 +37,7 @@ v1 必须同时建立以下语义：
 
 - Event Ledger 的全局稳定 sequence；
 - `session_id/context_id` 路由；
-- 每个 Session 独立的 Mutex 和 active counter；
+- 每个 Session 的 Dialogue Thread 顺序锁和 active counter；
 - Context 级 `context_tx` 单写锁与 `base-version` 检查；
 - 标准 Tool Call / Tool Result 身份；
 - 后台任务、`wait_task` 定时唤醒、`kill_task` 和终态事件；
@@ -49,7 +49,7 @@ v1 必须同时建立以下语义：
 
 #### 同一 Session 被整个 Attempt 锁住（已解除）
 
-旧实现的 `process_routed_event` 在持有 Session Mutex 时调用完整 `run_attempt`。当前普通求值已删除该跨 Attempt 锁，改为持久 Work Item claim/lease/CAS；Context 写仍只在事务提交阶段短暂串行化。
+旧实现的 `process_routed_event` 在持有 Session Mutex 时调用完整 `run_attempt`。Protocol v18 将其细化为 Dialogue/Work/Objective Thread：同一 Session 的用户消息首次模型决策按 Dialogue Thread 有序执行，一旦模型选择工具便在物理执行前释放锁；工具结果沿 Work Thread 独立推进。Context 写仍只在事务提交阶段短暂串行化。
 
 #### 因果 Transcript 仍以 Session/Turn 聚合（已解除）
 

@@ -24,6 +24,7 @@ toml = "0.8"
 sha2 = "0.10"
 walkdir = "2.5"
 glob = "0.3"
+getrandom = "0.3"
 keyring = "4.1.4"
 zeroize = "1.8"
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm_0_29", "macros", "unstable-rendered-line-info"] }

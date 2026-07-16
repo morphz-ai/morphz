@@ -433,6 +433,9 @@ impl Tool for ObjectiveUpdateTool {
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
             .map_err(|_| "objective_update 缺少 Runtime 注入的当前 Context")?;
+        let attempt_id = CURRENT_ATTEMPT_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "objective_update 缺少 Runtime 注入的当前 Evaluation")?;
         let reason = args.reason.trim();
         if reason.is_empty() {
             return Err("objective_update.reason 不能为空".into());
@@ -449,6 +452,20 @@ impl Tool for ObjectiveUpdateTool {
             return Err(format!(
                 "当前 Session/Context 无权修改 Objective '{}'",
                 args.objective_id
+            )
+            .into());
+        }
+        let active = self
+            .supervisor
+            .evaluations
+            .get_for_work_item(&attempt_id)
+            .ok_or(
+                "当前 Evaluation 不属于任何 Objective；不能接管共享 Context 中的其他 Objective",
+            )?;
+        if active.objective_id != objective.id {
+            return Err(format!(
+                "当前 Evaluation 只拥有 Objective '{}'，不能修改 '{}'",
+                active.objective_id, objective.id
             )
             .into());
         }

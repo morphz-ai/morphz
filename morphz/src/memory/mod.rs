@@ -233,6 +233,163 @@ pub enum EvaluationOutcomeCommit {
     Existing { event_id: String },
 }
 
+/// Durable causal lane owned by one Agent. A Work Thread survives all model
+/// attempts and tool wakeups produced while completing the same root turn.
+/// Attempts are replaceable execution records; this is the stable scheduling
+/// and delivery identity.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkThreadKind {
+    Dialogue,
+    Work,
+    Objective,
+    Delegation,
+    Delivery,
+}
+
+impl WorkThreadKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dialogue => "dialogue",
+            Self::Work => "work",
+            Self::Objective => "objective",
+            Self::Delegation => "delegation",
+            Self::Delivery => "delivery",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkThreadStatus {
+    Active,
+    Waiting,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl WorkThreadStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Waiting => "waiting",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryStatus {
+    None,
+    Pending,
+    Deferred,
+    Delivered,
+}
+
+impl DeliveryStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Pending => "pending",
+            Self::Deferred => "deferred",
+            Self::Delivered => "delivered",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkThreadRecord {
+    pub id: String,
+    pub revision: u64,
+    pub agent_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub root_turn_id: String,
+    pub kind: WorkThreadKind,
+    pub status: WorkThreadStatus,
+    pub executor_kind: String,
+    pub executor_id: Option<String>,
+    pub result_text: Option<String>,
+    pub result_event_id: Option<String>,
+    pub delivery_status: DeliveryStatus,
+    pub delivery_event_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewWorkThread {
+    pub id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub root_turn_id: String,
+    pub kind: WorkThreadKind,
+    pub executor_kind: String,
+    pub executor_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkThreadMutation {
+    Updated(WorkThreadRecord),
+    Conflict { current: WorkThreadRecord },
+    NotFound,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduledIntentStatus {
+    Queued,
+    Dispatched,
+    Completed,
+    Cancelled,
+}
+
+impl ScheduledIntentStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Dispatched => "dispatched",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScheduledIntentRecord {
+    pub id: String,
+    pub revision: u64,
+    pub thread_id: String,
+    pub source_turn_id: String,
+    pub intent: String,
+    pub status: ScheduledIntentStatus,
+    pub not_before: Option<DateTime<Utc>>,
+    pub interval_seconds: Option<u64>,
+    pub dependency_thread_ids: Vec<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewScheduledIntent {
+    pub id: String,
+    pub thread_id: String,
+    pub source_turn_id: String,
+    pub intent: String,
+    pub not_before: Option<DateTime<Utc>>,
+    pub interval_seconds: Option<u64>,
+    pub dependency_thread_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DelegationStatus {
@@ -409,15 +566,25 @@ pub enum MessageClaim {
 
 #[derive(Default, Debug, Clone)]
 pub struct QueryFilter {
+    pub event_id: Option<String>,
+    pub sequence: Option<u64>,
     pub context_id: Option<String>,
     pub session_id: Option<String>,
+    /// Only return events physically appended after this sequence (SQLite rowid).
+    pub after_sequence: Option<u64>,
     pub start_time: Option<DateTime<Utc>>,
     pub end_time: Option<DateTime<Utc>>,
     pub actors: Vec<String>,
     pub types: Vec<String>,
-    pub topic: Option<String>,        // 支持精准或前缀通配符过滤
+    pub topic: Option<String>, // 支持精准或前缀通配符过滤
+    /// Topics which must never be materialized by this query. Exact topics and
+    /// `prefix/*` patterns are supported, matching `topic` semantics.
+    pub excluded_topics: Vec<String>,
     pub search_query: Option<String>, // 全文检索关键词
     pub top_k: Option<usize>,         // 返回的最相关事件数量限制
+    /// Return the newest N events, while preserving chronological order in the
+    /// returned vector. This keeps tail reads bounded inside SQLite.
+    pub latest_k: Option<usize>,
 }
 
 // EventStore 定义事件历史物理存储的接口
@@ -554,6 +721,79 @@ pub trait SessionStore: Send + Sync {
         work_item_id: &str,
         event: &crate::event::Event,
     ) -> Result<EvaluationOutcomeCommit, Box<dyn std::error::Error + Send + Sync>>;
+    async fn ensure_work_thread(
+        &self,
+        thread: NewWorkThread,
+    ) -> Result<WorkThreadRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_work_thread(
+        &self,
+        id: &str,
+    ) -> Result<Option<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_work_thread_by_root(
+        &self,
+        root_turn_id: &str,
+    ) -> Result<Option<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_context_work_threads(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    #[allow(clippy::too_many_arguments)]
+    async fn update_work_thread(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        kind: Option<WorkThreadKind>,
+        status: Option<WorkThreadStatus>,
+        result_text: Option<&str>,
+        result_event_id: Option<&str>,
+        delivery_status: Option<DeliveryStatus>,
+        delivery_event_id: Option<&str>,
+    ) -> Result<WorkThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn ensure_scheduled_intent(
+        &self,
+        intent: NewScheduledIntent,
+    ) -> Result<ScheduledIntentRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_scheduled_intent(
+        &self,
+        id: &str,
+    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically creates any new Work Threads and their queued intents.
+    /// Validation happens before commit, so a failed multi-operation
+    /// schedule_tx never leaves a partially-created scheduling plan.
+    async fn commit_schedule_transaction(
+        &self,
+        threads: &[NewWorkThread],
+        intents: &[NewScheduledIntent],
+    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_scheduled_intents(
+        &self,
+        thread_id: Option<&str>,
+        status: Option<ScheduledIntentStatus>,
+    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn claim_scheduled_intent(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        next_not_before: Option<DateTime<Utc>>,
+    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically advances a due schedule occurrence and appends the wake Event.
+    /// The caller must use EventBus::dispatch_persisted after commit.
+    async fn commit_scheduled_dispatch(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        next_not_before: Option<DateTime<Utc>>,
+        event: &crate::event::Event,
+    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically append one user-visible delivery and mark every covered
+    /// completion delivered. A completion can therefore never be delivered by
+    /// two concurrent Delivery evaluations.
+    async fn commit_thread_delivery(
+        &self,
+        thread_ids: &[String],
+        event: &crate::event::Event,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
     async fn claim_message(
         &self,
         session_id: &str,

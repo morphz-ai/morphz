@@ -1,8 +1,11 @@
 use crate::approval::{ApprovalAction, ApprovalProvider, CapabilityDelta, DenyAllApprovalProvider};
 use crate::config::BackgroundTaskConfig;
-use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_FILE_CHANGE};
+use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT};
 use crate::llm::ToolDefinition;
-use crate::memory::{SessionStatus, SessionStore};
+use crate::memory::{
+    EventStore, NewScheduledIntent, NewWorkThread, QueryFilter, ScheduledIntentRecord,
+    ScheduledIntentStatus, SessionStatus, SessionStore, WorkThreadKind,
+};
 use crate::permission::{
     ApprovalContext, FilesystemAccess, PermissionBroker, PermissionConfig, PermissionProfile,
     SandboxMode, ShellEnvironmentPolicy,
@@ -23,6 +26,10 @@ use std::sync::{Arc, OnceLock, RwLock};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use walkdir::WalkDir;
 
+const MAX_SCHEDULE_OPERATIONS: usize = 32;
+const MAX_SCHEDULE_INTENT_CHARS: usize = 1_000_000;
+const DEPENDENCY_RECHECK_SECS: u64 = 2;
+
 tokio::task_local! {
     pub static CURRENT_SESSION_ID: String;
     pub static CURRENT_CONTEXT_ID: String;
@@ -32,6 +39,7 @@ tokio::task_local! {
 
 #[derive(Debug, Clone)]
 pub struct ToolCausalRoute {
+    pub work_thread_id: String,
     pub work_item_id: String,
     pub root_turn_id: String,
     pub trigger_event_id: String,
@@ -45,6 +53,10 @@ fn extend_causal_route(
     let Some(route) = route else {
         return;
     };
+    payload.insert(
+        "work_thread_id".to_string(),
+        serde_json::json!(route.work_thread_id),
+    );
     payload.insert(
         "work_item_id".to_string(),
         serde_json::json!(route.work_item_id),
@@ -280,6 +292,544 @@ impl Tool for SendMessageTool {
     }
 }
 
+/// Durable timer and dependency dispatcher for schedule_tx. Timers are only
+/// wake sources: when they become due they append one directed observation to
+/// the target Thread mailbox. They never run model logic themselves.
+pub struct ThreadScheduler {
+    bus: Arc<InMemoryEventBus>,
+    sessions: Arc<dyn SessionStore>,
+    events: Arc<dyn EventStore>,
+    armed_revisions: DashMap<String, u64>,
+}
+
+impl ThreadScheduler {
+    pub fn new(
+        bus: Arc<InMemoryEventBus>,
+        sessions: Arc<dyn SessionStore>,
+        events: Arc<dyn EventStore>,
+    ) -> Self {
+        Self {
+            bus,
+            sessions,
+            events,
+            armed_revisions: DashMap::new(),
+        }
+    }
+
+    pub async fn recover(self: &Arc<Self>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for intent in self
+            .sessions
+            .list_scheduled_intents(None, Some(ScheduledIntentStatus::Queued))
+            .await?
+        {
+            self.arm(intent);
+        }
+        // A crash may happen after the schedule occurrence and its wake Event
+        // commit atomically but before in-process dispatch. Re-dispatch is safe:
+        // trigger_event_id is unique and Work Item claiming is idempotent.
+        for event in self
+            .events
+            .query(QueryFilter {
+                topic: Some("chat/schedule_due".to_string()),
+                ..Default::default()
+            })
+            .await?
+        {
+            let root_turn_id = event
+                .payload
+                .get("root_turn_id")
+                .and_then(|value| value.as_str());
+            let terminal = match root_turn_id {
+                Some(root) => self
+                    .sessions
+                    .get_work_thread_by_root(root)
+                    .await?
+                    .is_some_and(|thread| thread.status.is_terminal()),
+                None => true,
+            };
+            if !terminal {
+                self.bus.dispatch_persisted(event).await?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn arm(self: &Arc<Self>, intent: ScheduledIntentRecord) {
+        let already_armed = self
+            .armed_revisions
+            .get(&intent.id)
+            .is_some_and(|revision| *revision == intent.revision);
+        if already_armed {
+            return;
+        }
+        self.armed_revisions
+            .insert(intent.id.clone(), intent.revision);
+        let scheduler = Arc::clone(self);
+        tokio::spawn(async move {
+            let due_at = intent.not_before.unwrap_or_else(chrono::Utc::now);
+            let delay = (due_at - chrono::Utc::now()).to_std().unwrap_or_default();
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            if let Err(error) = scheduler.dispatch(intent).await {
+                tracing::error!(?error, "Scheduled Intent dispatch 失败");
+            }
+        });
+    }
+
+    async fn dispatch(
+        self: Arc<Self>,
+        expected: ScheduledIntentRecord,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(current) = self.sessions.get_scheduled_intent(&expected.id).await? else {
+            self.armed_revisions.remove(&expected.id);
+            return Ok(());
+        };
+        if current.status != ScheduledIntentStatus::Queued || current.revision != expected.revision
+        {
+            self.armed_revisions.remove(&expected.id);
+            if current.status == ScheduledIntentStatus::Queued {
+                self.arm(current);
+            }
+            return Ok(());
+        }
+        if let Some(not_before) = current.not_before {
+            if not_before > chrono::Utc::now() {
+                self.armed_revisions.remove(&current.id);
+                self.arm(current);
+                return Ok(());
+            }
+        }
+
+        let mut dependency_states = serde_json::Map::new();
+        let mut dependencies_ready = true;
+        for dependency_id in &current.dependency_thread_ids {
+            let state = self.sessions.get_work_thread(dependency_id).await?;
+            let status = state
+                .as_ref()
+                .map(|thread| thread.status.as_str())
+                .unwrap_or("missing");
+            dependency_states.insert(dependency_id.clone(), serde_json::json!(status));
+            dependencies_ready &= state.is_some_and(|thread| thread.status.is_terminal());
+        }
+        if !dependencies_ready {
+            self.armed_revisions.remove(&current.id);
+            let scheduler = Arc::clone(&self);
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(DEPENDENCY_RECHECK_SECS)).await;
+                scheduler.arm(current);
+            });
+            return Ok(());
+        }
+
+        let occurrence_revision = current.revision;
+        let next_not_before = current.interval_seconds.map(|seconds| {
+            chrono::Utc::now()
+                + chrono::Duration::seconds(i64::try_from(seconds).unwrap_or(i64::MAX))
+        });
+        let owner = self
+            .sessions
+            .get_work_thread(&current.thread_id)
+            .await?
+            .ok_or_else(|| format!("Scheduled Intent '{}' 的目标 Thread 不存在", current.id))?;
+        let root_turn_id = if current.interval_seconds.is_some() {
+            scheduled_occurrence_root(&current.id, occurrence_revision)
+        } else {
+            owner.root_turn_id.clone()
+        };
+        let event_id = format!("schedule_due_{}_r{}", current.id, occurrence_revision);
+        let payload = serde_json::Map::from_iter([
+            ("agent_id".to_string(), serde_json::json!(owner.agent_id)),
+            (
+                "context_id".to_string(),
+                serde_json::json!(owner.context_id),
+            ),
+            (
+                "session_id".to_string(),
+                serde_json::json!(owner.session_id),
+            ),
+            ("root_turn_id".to_string(), serde_json::json!(root_turn_id)),
+            (
+                "scheduled_intent_id".to_string(),
+                serde_json::json!(current.id),
+            ),
+            (
+                "scheduled_thread_id".to_string(),
+                serde_json::json!(current.thread_id),
+            ),
+            (
+                "source_turn_id".to_string(),
+                serde_json::json!(current.source_turn_id),
+            ),
+            ("intent".to_string(), serde_json::json!(current.intent)),
+            (
+                "occurrence_revision".to_string(),
+                serde_json::json!(occurrence_revision),
+            ),
+            (
+                "dependency_states".to_string(),
+                serde_json::Value::Object(dependency_states),
+            ),
+            (
+                "interval_seconds".to_string(),
+                serde_json::json!(current.interval_seconds),
+            ),
+            (
+                "text".to_string(),
+                serde_json::json!(format!("SCHEDULE_DUE: {}\n{}", current.id, current.intent)),
+            ),
+        ]);
+        let event = Event::new(
+            event_id,
+            "Runtime-Scheduler".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/schedule_due".to_string(),
+            payload,
+        );
+        let Some(claimed) = self
+            .sessions
+            .commit_scheduled_dispatch(&current.id, current.revision, next_not_before, &event)
+            .await?
+        else {
+            self.armed_revisions.remove(&current.id);
+            return Ok(());
+        };
+        self.armed_revisions.remove(&current.id);
+        self.bus.dispatch_persisted(event).await?;
+        if claimed.status == ScheduledIntentStatus::Queued {
+            self.arm(claimed);
+        }
+        Ok(())
+    }
+}
+
+pub struct ScheduleTxTool {
+    scheduler: Arc<ThreadScheduler>,
+    sessions: Arc<dyn SessionStore>,
+}
+
+impl ScheduleTxTool {
+    pub fn new(scheduler: Arc<ThreadScheduler>, sessions: Arc<dyn SessionStore>) -> Self {
+        Self {
+            scheduler,
+            sessions,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScheduleTxArgs {
+    operations: Vec<ScheduleOperation>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+enum ScheduleOperation {
+    Enqueue {
+        #[serde(default)]
+        thread_id: Option<String>,
+        intent: String,
+        #[serde(default)]
+        not_before: Option<String>,
+        #[serde(default)]
+        delay_seconds: Option<u64>,
+        #[serde(default)]
+        after: Vec<String>,
+    },
+    Spawn {
+        #[serde(default)]
+        client_id: Option<String>,
+        intent: String,
+        #[serde(default)]
+        not_before: Option<String>,
+        #[serde(default)]
+        delay_seconds: Option<u64>,
+        #[serde(default)]
+        every_seconds: Option<u64>,
+        #[serde(default)]
+        after: Vec<String>,
+    },
+}
+
+#[async_trait::async_trait]
+impl Tool for ScheduleTxTool {
+    fn name(&self) -> &str {
+        "schedule_tx"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "原子提交 Thread 调度计划。enqueue 把意图串行加入现有 Work Thread；spawn 创建可并行的新 Work Thread。not_before 或 delay_seconds 可设置一次性定时，spawn 的 every_seconds 可创建周期调度；after 指定依赖 Thread，只有依赖进入终态后才唤醒。定时到期只是向目标 Thread mailbox 投递 observation，不会绕过 Thread 再开执行分支。schedule_tx 必须是本次响应中唯一的工具调用。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "operations": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": MAX_SCHEDULE_OPERATIONS,
+                        "description": "按数组顺序原子提交的调度操作",
+                        "items": {
+                            "oneOf": [
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": {"const": "enqueue"},
+                                        "thread_id": {"type": "string", "description": "目标 Thread ID；省略时为当前 Thread"},
+                                        "intent": {"type": "string", "description": "Thread 被唤醒后需要执行的自然语言意图"},
+                                        "not_before": {"type": "string", "description": "RFC 3339 绝对时间"},
+                                        "delay_seconds": {"type": "integer", "minimum": 0},
+                                        "after": {"type": "array", "items": {"type": "string"}, "description": "依赖 Thread ID，或同一事务中 spawn 的 $client_id"}
+                                    },
+                                    "required": ["op", "intent"],
+                                    "additionalProperties": false
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": {"const": "spawn"},
+                                        "client_id": {"type": "string", "description": "本事务局部名称，可被后续 after 用 $client_id 引用"},
+                                        "intent": {"type": "string"},
+                                        "not_before": {"type": "string", "description": "RFC 3339 绝对时间"},
+                                        "delay_seconds": {"type": "integer", "minimum": 0},
+                                        "every_seconds": {"type": "integer", "minimum": 1, "description": "固定间隔周期；每次到期生成独立 occurrence Thread"},
+                                        "after": {"type": "array", "items": {"type": "string"}}
+                                    },
+                                    "required": ["op", "intent"],
+                                    "additionalProperties": false
+                                }
+                            ]
+                        }
+                    }
+                },
+                "required": ["operations"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(
+        &self,
+        arguments: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let args: ScheduleTxArgs = serde_json::from_str(arguments)?;
+        if args.operations.is_empty() || args.operations.len() > MAX_SCHEDULE_OPERATIONS {
+            return Err(
+                format!("schedule_tx.operations 数量必须在 1..={MAX_SCHEDULE_OPERATIONS}").into(),
+            );
+        }
+        let session_id = CURRENT_SESSION_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "schedule_tx 缺少当前 Session 路由")?;
+        let context_id = CURRENT_CONTEXT_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "schedule_tx 缺少当前 Context 路由")?;
+        let attempt_id = CURRENT_ATTEMPT_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "schedule_tx 缺少当前 Evaluation 路由")?;
+        let route = CURRENT_CAUSAL_ROUTE
+            .try_with(Clone::clone)
+            .ok()
+            .flatten()
+            .ok_or("schedule_tx 缺少当前 Work Thread 路由")?;
+        let session = self
+            .sessions
+            .get_session(&session_id)
+            .await?
+            .ok_or("schedule_tx 当前 Session 不存在")?;
+        if session.context_id != context_id {
+            return Err("schedule_tx Session 与 Context 路由不一致".into());
+        }
+        let current_thread = self
+            .sessions
+            .get_work_thread(&route.work_thread_id)
+            .await?
+            .ok_or("schedule_tx 当前 Work Thread 不存在")?;
+
+        let mut threads = Vec::new();
+        let mut prepared = Vec::new();
+        let mut local_refs = HashMap::<String, String>::new();
+        for (index, operation) in args.operations.iter().enumerate() {
+            if let ScheduleOperation::Spawn { client_id, .. } = operation {
+                let seed = format!(
+                    "{attempt_id}\0{index}\0{}",
+                    client_id.as_deref().unwrap_or("")
+                );
+                let digest = sha256_hex(seed.as_bytes());
+                let thread_id = format!("thread_{}", &digest[..24]);
+                let root_turn_id = format!("scheduled_root_{}", &digest[..24]);
+                if let Some(client_id) = client_id {
+                    if client_id.trim().is_empty() || local_refs.contains_key(client_id) {
+                        return Err("schedule_tx.spawn.client_id 必须非空且在事务内唯一".into());
+                    }
+                    local_refs.insert(client_id.clone(), thread_id.clone());
+                }
+                threads.push(NewWorkThread {
+                    id: thread_id.clone(),
+                    agent_id: session.agent_id.clone(),
+                    context_id: context_id.clone(),
+                    session_id: session_id.clone(),
+                    root_turn_id,
+                    kind: WorkThreadKind::Work,
+                    executor_kind: "self".to_string(),
+                    executor_id: None,
+                });
+                prepared.push(thread_id);
+            } else {
+                prepared.push(String::new());
+            }
+        }
+
+        let mut intents = Vec::with_capacity(args.operations.len());
+        for (index, operation) in args.operations.into_iter().enumerate() {
+            let (target_thread_id, intent, not_before, delay_seconds, interval_seconds, after) =
+                match operation {
+                    ScheduleOperation::Enqueue {
+                        thread_id,
+                        intent,
+                        not_before,
+                        delay_seconds,
+                        after,
+                    } => (
+                        thread_id.unwrap_or_else(|| route.work_thread_id.clone()),
+                        intent,
+                        not_before,
+                        delay_seconds,
+                        None,
+                        after,
+                    ),
+                    ScheduleOperation::Spawn {
+                        intent,
+                        not_before,
+                        delay_seconds,
+                        every_seconds,
+                        after,
+                        ..
+                    } => (
+                        prepared[index].clone(),
+                        intent,
+                        not_before,
+                        delay_seconds,
+                        every_seconds,
+                        after,
+                    ),
+                };
+            validate_schedule_intent(&intent)?;
+            if not_before.is_some() && delay_seconds.is_some() {
+                return Err("not_before 与 delay_seconds 只能提供一个".into());
+            }
+            let waits_for_future = not_before.is_some()
+                || delay_seconds.is_some_and(|seconds| seconds > 0)
+                || !after.is_empty();
+            if target_thread_id == route.work_thread_id
+                && current_thread.kind == WorkThreadKind::Dialogue
+                && waits_for_future
+            {
+                return Err("Dialogue Thread 不能挂起等待未来时间或依赖；请使用 spawn 创建独立 Work Thread，再向当前 Session 回复调度结果".into());
+            }
+            let not_before = schedule_due_at(not_before.as_deref(), delay_seconds)?;
+            let mut dependencies = Vec::with_capacity(after.len());
+            for dependency in after {
+                let resolved = dependency
+                    .strip_prefix('$')
+                    .and_then(|name| local_refs.get(name))
+                    .cloned()
+                    .unwrap_or(dependency);
+                if resolved == target_thread_id {
+                    return Err("Thread 不能依赖自己".into());
+                }
+                dependencies.push(resolved);
+            }
+            let digest = sha256_hex(
+                format!("{attempt_id}\0{index}\0{target_thread_id}\0{intent}").as_bytes(),
+            );
+            intents.push(NewScheduledIntent {
+                id: format!("schedule_{}", &digest[..24]),
+                thread_id: target_thread_id,
+                source_turn_id: route.root_turn_id.clone(),
+                intent,
+                not_before,
+                interval_seconds,
+                dependency_thread_ids: dependencies,
+            });
+        }
+        for intent in &intents {
+            for dependency_id in &intent.dependency_thread_ids {
+                let newly_created = threads.iter().any(|thread| thread.id == *dependency_id);
+                if !newly_created
+                    && self
+                        .sessions
+                        .get_work_thread(dependency_id)
+                        .await?
+                        .is_none()
+                {
+                    return Err(format!("依赖 Thread '{dependency_id}' 不存在").into());
+                }
+            }
+        }
+        let mut records = self
+            .sessions
+            .commit_schedule_transaction(&threads, &intents)
+            .await?;
+        for record in &mut records {
+            let continues_current_thread = record.thread_id == route.work_thread_id
+                && record.not_before.is_none()
+                && record.interval_seconds.is_none()
+                && record.dependency_thread_ids.is_empty();
+            if continues_current_thread {
+                if let Some(dispatched) = self
+                    .sessions
+                    .claim_scheduled_intent(&record.id, record.revision, None)
+                    .await?
+                {
+                    *record = dispatched;
+                }
+            } else {
+                self.scheduler.arm(record.clone());
+            }
+        }
+        Ok(serde_json::json!({
+            "status": "committed",
+            "operations": records,
+            "created_thread_ids": threads.iter().map(|thread| &thread.id).collect::<Vec<_>>(),
+            "guidance": "调度计划已原子持久化。到期或依赖满足时，Runtime 会把 intent 作为 observation 投递到目标 Thread mailbox；当前 Evaluation 尚未结束。"
+        })
+        .to_string())
+    }
+}
+
+fn validate_schedule_intent(intent: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if intent.trim().is_empty() {
+        return Err("schedule_tx intent 不能为空".into());
+    }
+    if intent.chars().count() > MAX_SCHEDULE_INTENT_CHARS {
+        return Err(format!("schedule_tx intent 超过 {MAX_SCHEDULE_INTENT_CHARS} 字符").into());
+    }
+    Ok(())
+}
+
+fn schedule_due_at(
+    not_before: Option<&str>,
+    delay_seconds: Option<u64>,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(value) = not_before {
+        return Ok(Some(
+            chrono::DateTime::parse_from_rfc3339(value)
+                .map_err(|error| format!("not_before 不是合法 RFC 3339 时间: {error}"))?
+                .with_timezone(&chrono::Utc),
+        ));
+    }
+    Ok(delay_seconds.map(|seconds| {
+        chrono::Utc::now() + chrono::Duration::seconds(i64::try_from(seconds).unwrap_or(i64::MAX))
+    }))
+}
+
+fn scheduled_occurrence_root(intent_id: &str, revision: u64) -> String {
+    let digest = sha256_hex(format!("{intent_id}\0{revision}").as_bytes());
+    format!("scheduled_occurrence_{}", &digest[..24])
+}
+
 // ==========================================
 // 工业级后台长任务托管机制
 // ==========================================
@@ -297,6 +847,17 @@ pub enum BackgroundTaskStatus {
 impl BackgroundTaskStatus {
     pub(crate) fn is_terminal(self) -> bool {
         matches!(self, Self::Succeeded | Self::Failed | Self::Killed)
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::KillRequested => "kill_requested",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Killed => "killed",
+        }
     }
 }
 
@@ -348,7 +909,7 @@ fn prune_background_task_history() {
     }
 }
 
-fn background_task_snapshot(task: &BackgroundTask) -> serde_json::Value {
+pub(crate) fn background_task_snapshot(task: &BackgroundTask) -> serde_json::Value {
     let now = chrono::Utc::now();
     serde_json::json!({
         "task_id": task.id,
@@ -382,6 +943,23 @@ pub(crate) fn active_background_task_count(session_id: &str, context_id: &str) -
     get_tasks_map()
         .iter()
         .filter(|task| task.session_id == session_id && task.context_id == context_id)
+        .filter(|task| !task.status.is_terminal())
+        .count()
+}
+
+pub(crate) fn active_background_task_count_for_root(
+    session_id: &str,
+    context_id: &str,
+    root_turn_id: &str,
+) -> usize {
+    get_tasks_map()
+        .iter()
+        .filter(|task| task.session_id == session_id && task.context_id == context_id)
+        .filter(|task| {
+            task.causal_route
+                .as_ref()
+                .is_some_and(|route| route.root_turn_id == root_turn_id)
+        })
         .filter(|task| !task.status.is_terminal())
         .count()
 }
@@ -3369,7 +3947,8 @@ mod tests {
     use crate::approval::{ApprovalDecision, ApprovalRequest};
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        NewAgent, NewCognitiveContext, NewSession, SessionMountKind, SessionStore,
+        NewAgent, NewCognitiveContext, NewScheduledIntent, NewSession, SessionMountKind,
+        SessionStore, WorkThreadStatus,
     };
     use crate::permission::PermissionMode;
     #[cfg(target_os = "macos")]
@@ -3463,6 +4042,308 @@ mod tests {
         assert_eq!(event.payload["context_id"], "context-b");
         assert_eq!(event.payload["source_session_id"], "session-a");
         assert_eq!(event.payload["text"], "background task finished");
+    }
+
+    #[tokio::test]
+    async fn schedule_tx_persists_and_dispatches_a_timed_spawn_once() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        store
+            .ensure_agent(NewAgent {
+                id: "agent-scheduler".to_string(),
+                title: "Scheduler Agent".to_string(),
+                root_context_id: "context-scheduler".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: "context-scheduler".to_string(),
+                agent_id: "agent-scheduler".to_string(),
+                title: "Scheduler Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_session(NewSession {
+                id: "session-scheduler".to_string(),
+                agent_id: "agent-scheduler".to_string(),
+                context_id: "context-scheduler".to_string(),
+                parent_session_id: None,
+                title: "Scheduler Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_work_thread(NewWorkThread {
+                id: "thread-current".to_string(),
+                agent_id: "agent-scheduler".to_string(),
+                context_id: "context-scheduler".to_string(),
+                session_id: "session-scheduler".to_string(),
+                root_turn_id: "root-current".to_string(),
+                kind: WorkThreadKind::Dialogue,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+            })
+            .await
+            .unwrap();
+
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        bus.subscribe(
+            "chat/schedule_due".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let sessions = Arc::clone(&store) as Arc<dyn SessionStore>;
+        let scheduler = Arc::new(ThreadScheduler::new(
+            Arc::clone(&bus),
+            Arc::clone(&sessions),
+            Arc::clone(&store) as Arc<dyn EventStore>,
+        ));
+        let tool = ScheduleTxTool::new(Arc::clone(&scheduler), sessions);
+        let due_at = (chrono::Utc::now() + chrono::Duration::milliseconds(40)).to_rfc3339();
+        let arguments = serde_json::json!({
+            "operations": [{
+                "op": "spawn",
+                "client_id": "reminder",
+                "intent": "检查长期任务状态并根据真实结果继续",
+                "not_before": due_at
+            }]
+        })
+        .to_string();
+        let route = Some(ToolCausalRoute {
+            work_thread_id: "thread-current".to_string(),
+            work_item_id: "work-current".to_string(),
+            root_turn_id: "root-current".to_string(),
+            trigger_event_id: "user-current".to_string(),
+            trigger_sequence: 7,
+        });
+        let output = CURRENT_SESSION_ID
+            .scope(
+                "session-scheduler".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-scheduler".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "attempt-scheduler".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(route, tool.execute(&arguments)),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let receipt: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(receipt["status"], "committed");
+        assert_eq!(receipt["created_thread_ids"].as_array().unwrap().len(), 1);
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.event_type, TYPE_TOOL_OUTPUT);
+        assert_eq!(
+            event.payload["intent"],
+            "检查长期任务状态并根据真实结果继续"
+        );
+        assert_eq!(event.payload["session_id"], "session-scheduler");
+        let records = store.list_scheduled_intents(None, None).await.unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].status, ScheduledIntentStatus::Dispatched);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(80), receiver.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    async fn scheduler_store_with_threads(
+        database: &NamedTempFile,
+        thread_ids: &[(&str, &str)],
+    ) -> Arc<SqliteStore> {
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        store
+            .ensure_agent(NewAgent {
+                id: "agent-scheduler-test".to_string(),
+                title: "Scheduler Test Agent".to_string(),
+                root_context_id: "context-scheduler-test".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: "context-scheduler-test".to_string(),
+                agent_id: "agent-scheduler-test".to_string(),
+                title: "Scheduler Test Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_session(NewSession {
+                id: "session-scheduler-test".to_string(),
+                agent_id: "agent-scheduler-test".to_string(),
+                context_id: "context-scheduler-test".to_string(),
+                parent_session_id: None,
+                title: "Scheduler Test Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        for (thread_id, root_turn_id) in thread_ids {
+            store
+                .ensure_work_thread(NewWorkThread {
+                    id: (*thread_id).to_string(),
+                    agent_id: "agent-scheduler-test".to_string(),
+                    context_id: "context-scheduler-test".to_string(),
+                    session_id: "session-scheduler-test".to_string(),
+                    root_turn_id: (*root_turn_id).to_string(),
+                    kind: WorkThreadKind::Work,
+                    executor_kind: "self".to_string(),
+                    executor_id: None,
+                })
+                .await
+                .unwrap();
+        }
+        store
+    }
+
+    #[tokio::test]
+    async fn scheduler_waits_for_dependency_terminal_state_before_dispatch() {
+        let database = NamedTempFile::new().unwrap();
+        let store = scheduler_store_with_threads(
+            &database,
+            &[
+                ("thread-dependency", "root-dependency"),
+                ("thread-dependent", "root-dependent"),
+            ],
+        )
+        .await;
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        bus.subscribe(
+            "chat/schedule_due".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let scheduler = Arc::new(ThreadScheduler::new(
+            Arc::clone(&bus),
+            Arc::clone(&store) as Arc<dyn SessionStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+        ));
+        let intent = store
+            .ensure_scheduled_intent(NewScheduledIntent {
+                id: "schedule-dependent".to_string(),
+                thread_id: "thread-dependent".to_string(),
+                source_turn_id: "root-dependent".to_string(),
+                intent: "依赖结束后再执行".to_string(),
+                not_before: None,
+                interval_seconds: None,
+                dependency_thread_ids: vec!["thread-dependency".to_string()],
+            })
+            .await
+            .unwrap();
+        scheduler.arm(intent);
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), receiver.recv())
+                .await
+                .is_err(),
+            "依赖未结束时不应投递"
+        );
+        let dependency = store
+            .get_work_thread("thread-dependency")
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .update_work_thread(
+                &dependency.id,
+                dependency.revision,
+                None,
+                Some(WorkThreadStatus::Completed),
+                Some("依赖结果"),
+                Some("dependency-result"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(3), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.payload["intent"], "依赖结束后再执行");
+        assert_eq!(
+            event.payload["dependency_states"]["thread-dependency"],
+            "completed"
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduler_recover_rearms_queued_intent_after_restart() {
+        let database = NamedTempFile::new().unwrap();
+        let store = scheduler_store_with_threads(
+            &database,
+            &[("thread-after-restart", "root-after-restart")],
+        )
+        .await;
+        store
+            .ensure_scheduled_intent(NewScheduledIntent {
+                id: "schedule-after-restart".to_string(),
+                thread_id: "thread-after-restart".to_string(),
+                source_turn_id: "root-after-restart".to_string(),
+                intent: "重启后继续执行".to_string(),
+                not_before: Some(chrono::Utc::now() + chrono::Duration::milliseconds(40)),
+                interval_seconds: None,
+                dependency_thread_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        bus.subscribe(
+            "chat/schedule_due".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let restarted_scheduler = Arc::new(ThreadScheduler::new(
+            Arc::clone(&bus),
+            Arc::clone(&store) as Arc<dyn SessionStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+        ));
+        restarted_scheduler.recover().await.unwrap();
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event.payload["scheduled_intent_id"],
+            "schedule-after-restart"
+        );
+        assert_eq!(event.payload["intent"], "重启后继续执行");
+        let recovered = store
+            .get_scheduled_intent("schedule-after-restart")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.status, ScheduledIntentStatus::Dispatched);
     }
 
     #[async_trait::async_trait]
@@ -4445,6 +5326,7 @@ mod tests {
         );
         let tool = exec_tool_for_tests(Arc::clone(&bus));
         let route = ToolCausalRoute {
+            work_thread_id: "thread-causal-background".to_string(),
             work_item_id: "work-causal-background".to_string(),
             root_turn_id: "root-causal-background".to_string(),
             trigger_event_id: "trigger-causal-background".to_string(),

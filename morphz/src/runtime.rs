@@ -5,7 +5,7 @@ use crate::approval::{
 use crate::config::AppConfig;
 use crate::context_tools::{ContextTxTool, RecallTool};
 use crate::event::{Event, InMemoryEventBus, TYPE_USER_MESSAGE};
-use crate::llm::Client;
+use crate::llm::{Client, ReasoningEffort};
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, DelegationRecord, DelegationStatus,
@@ -22,8 +22,8 @@ use crate::orchestrator::orchestrator::Orchestrator;
 use crate::permission::{PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode};
 use crate::tool::{
     DelegateTool, EditFileTool, ExecuteCommandTool, KillTaskTool, ListFilesTool, ListSkillsTool,
-    ListTasksTool, ReadFileTool, Registry, SearchTool, SendMessageTool, TaskStatusTool,
-    WaitTaskTool, WriteFileTool,
+    ListTasksTool, ReadFileTool, Registry, ScheduleTxTool, SearchTool, SendMessageTool,
+    TaskStatusTool, ThreadScheduler, WaitTaskTool, WriteFileTool,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -180,15 +180,22 @@ impl MorphzRuntimeBuilder {
             std::time::Duration::from_secs(objective_lease_secs),
         ));
         let registry = Arc::new(Registry::new());
-        register_default_tools(
-            &registry,
-            &context_engine,
-            &objective_supervisor,
-            &permissions,
-            &bus,
-            &self.config,
-            self.tool_policy,
-        );
+        let thread_scheduler = Arc::new(ThreadScheduler::new(
+            Arc::clone(&bus),
+            Arc::clone(&store) as Arc<dyn SessionStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+        ));
+        register_default_tools(DefaultToolDependencies {
+            registry: &registry,
+            context_engine: &context_engine,
+            objective_supervisor: &objective_supervisor,
+            permissions: &permissions,
+            bus: &bus,
+            thread_scheduler: &thread_scheduler,
+            config: &self.config,
+            policy: self.tool_policy,
+        });
+        let runtime_client = Arc::clone(&self.client);
         let orchestrator = Arc::new(
             Orchestrator::new_with_context_engine_and_objectives_and_supervisor(
                 Arc::clone(&bus),
@@ -206,11 +213,13 @@ impl MorphzRuntimeBuilder {
                 config: self.config,
                 identity: self.identity,
                 database_path,
+                client: runtime_client,
                 bus,
                 store,
                 registry,
                 orchestrator,
                 objective_supervisor,
+                thread_scheduler,
                 human_approval_hub,
                 started: AtomicBool::new(false),
                 start_lock: tokio::sync::Mutex::new(()),
@@ -219,15 +228,28 @@ impl MorphzRuntimeBuilder {
     }
 }
 
-fn register_default_tools(
-    registry: &Arc<Registry>,
-    context_engine: &Arc<ContextEngine>,
-    objective_supervisor: &Arc<ObjectiveSupervisor>,
-    permissions: &Arc<PermissionBroker>,
-    bus: &Arc<InMemoryEventBus>,
-    config: &AppConfig,
+struct DefaultToolDependencies<'a> {
+    registry: &'a Arc<Registry>,
+    context_engine: &'a Arc<ContextEngine>,
+    objective_supervisor: &'a Arc<ObjectiveSupervisor>,
+    permissions: &'a Arc<PermissionBroker>,
+    bus: &'a Arc<InMemoryEventBus>,
+    thread_scheduler: &'a Arc<ThreadScheduler>,
+    config: &'a AppConfig,
     policy: RuntimeToolPolicy,
-) {
+}
+
+fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
+    let DefaultToolDependencies {
+        registry,
+        context_engine,
+        objective_supervisor,
+        permissions,
+        bus,
+        thread_scheduler,
+        config,
+        policy,
+    } = dependencies;
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(context_engine))));
     registry.register(Arc::new(ObjectiveCreateTool::new(
         Arc::clone(objective_supervisor),
@@ -239,6 +261,12 @@ fn register_default_tools(
     )));
     registry.register(Arc::new(SendMessageTool::new(
         Arc::clone(bus),
+        context_engine
+            .session_store()
+            .expect("Runtime ContextEngine 必须配置 SessionStore"),
+    )));
+    registry.register(Arc::new(ScheduleTxTool::new(
+        Arc::clone(thread_scheduler),
         context_engine
             .session_store()
             .expect("Runtime ContextEngine 必须配置 SessionStore"),
@@ -287,11 +315,13 @@ struct RuntimeInner {
     config: AppConfig,
     identity: RuntimeIdentity,
     database_path: String,
+    client: Arc<dyn Client>,
     bus: Arc<InMemoryEventBus>,
     store: Arc<SqliteStore>,
     registry: Arc<Registry>,
     orchestrator: Arc<Orchestrator>,
     objective_supervisor: Arc<ObjectiveSupervisor>,
+    thread_scheduler: Arc<ThreadScheduler>,
     human_approval_hub: HumanApprovalHub,
     started: AtomicBool,
     start_lock: tokio::sync::Mutex<()>,
@@ -343,6 +373,7 @@ impl MorphzRuntime {
         }
         Arc::clone(&self.inner.orchestrator).start().await?;
         Arc::clone(&self.inner.objective_supervisor).start().await?;
+        self.inner.thread_scheduler.recover().await?;
         self.inner.started.store(true, Ordering::Release);
         Ok(())
     }
@@ -357,6 +388,22 @@ impl MorphzRuntime {
 
     pub fn database_path(&self) -> &str {
         &self.inner.database_path
+    }
+
+    /// Process-local model reasoning override used by subsequent evaluations.
+    /// This is deliberately not persisted when changed through Dashboard.
+    pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.inner.client.reasoning_effort()
+    }
+
+    pub fn set_reasoning_effort(
+        &self,
+        effort: Option<ReasoningEffort>,
+    ) -> Result<(), RuntimeError> {
+        self.inner
+            .client
+            .set_reasoning_effort(effort)
+            .map_err(Into::into)
     }
 
     pub fn tool_names(&self) -> Vec<String> {

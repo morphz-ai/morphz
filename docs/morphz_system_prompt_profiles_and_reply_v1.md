@@ -71,7 +71,10 @@ MORPHZ_SYSTEM_PROMPT_MODE=agent_owned_context
 (reply content)
 ```
 
-`reply` 把 content 作为无工具普通 assistant 文本返回当前 active Session。明确静默时使用 Runtime 的 `no_reply` 工具。
+`reply` 把 content 作为无工具普通 assistant 文本返回当前 active Session。`(reply content)`
+只是过程定义中的语义记法，不是模型响应的输出格式：对它求值时必须直接输出 content
+本身，不能把 `(reply ...)` 包装或代码围栏发送给 Session。明确静默时使用 Runtime 的
+`no_reply` 工具。
 
 `process` 属于声明层：它定义可复用的命名过程、参数、局部作用域和返回值，不作为第七个基础算子。
 

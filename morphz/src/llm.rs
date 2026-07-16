@@ -1,6 +1,36 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+/// Cross-provider reasoning depth supported by every first-class Morphz
+/// protocol adapter. `None` is intentionally represented by `Option`: when
+/// unset, Morphz omits the native field and preserves the model's own default.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+}
+
+impl ReasoningEffort {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
     pub role: String,
@@ -124,6 +154,18 @@ pub struct ToolCallRepr {
 
 #[async_trait::async_trait]
 pub trait Client: Send + Sync {
+    /// Current process-local reasoning override. `None` means provider/model
+    /// default and therefore emits no protocol-specific request field.
+    fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        None
+    }
+
+    /// Change the reasoning override for subsequent requests. Implementations
+    /// without a controllable native protocol should return a clear error.
+    fn set_reasoning_effort(&self, _effort: Option<ReasoningEffort>) -> Result<(), String> {
+        Err("当前模型客户端不支持动态调整推理深度".to_string())
+    }
+
     /// 在 completion 之前本地计量完整 Prompt。实现不得为核心求值增加远程请求。
     async fn count_prompt_tokens(
         &self,

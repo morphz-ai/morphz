@@ -5,17 +5,21 @@
 //! facts such as user messages, tool receipts and terminal responses enter the transcript.
 
 use crate::approval::ApprovalDecision;
+use crate::config::TuiTheme;
 use crate::event::Event as RuntimeEvent;
 use crate::llm::ModelStreamEvent;
-use crate::memory::{ObjectiveRecord, ObjectiveStatus, ObjectiveWaitCondition};
+use crate::memory::{
+    DelegationRecord, DelegationStatus, ObjectiveRecord, ObjectiveStatus, ObjectiveWaitCondition,
+};
 use crate::orchestrator::context::ContextView;
 use crate::runtime::{MorphzRuntime, SessionHandle};
+use crate::tool::{get_tasks_map, BackgroundTaskStatus};
 use chrono::Utc;
 use crossterm::cursor::Show;
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
-    MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent,
+    KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -36,18 +40,77 @@ use unicode_width::UnicodeWidthChar;
 
 type TuiError = Box<dyn std::error::Error + Send + Sync>;
 
-const BG: Color = Color::Rgb(13, 17, 23);
-const SURFACE: Color = Color::Rgb(22, 27, 34);
-const SURFACE_RAISED: Color = Color::Rgb(28, 33, 42);
-const BORDER: Color = Color::Rgb(48, 54, 61);
-const TEXT: Color = Color::Rgb(230, 237, 243);
-const MUTED: Color = Color::Rgb(139, 148, 158);
-const ACCENT: Color = Color::Rgb(121, 160, 247);
-const USER: Color = Color::Rgb(187, 154, 247);
-const TOOL: Color = Color::Rgb(86, 211, 214);
-const SUCCESS: Color = Color::Rgb(63, 185, 80);
-const WARNING: Color = Color::Rgb(210, 153, 34);
-const ERROR: Color = Color::Rgb(248, 81, 73);
+/// Semantic colors for the terminal UI. Components consume roles instead of
+/// choosing their own accents, which keeps the interface coherent as it grows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Theme {
+    border_subtle: Color,
+    border_strong: Color,
+    text_primary: Color,
+    text_secondary: Color,
+    text_muted: Color,
+    brand: Color,
+    focus: Color,
+    user: Color,
+    tool: Color,
+    success: Color,
+    warning: Color,
+    error: Color,
+}
+
+impl Theme {
+    fn from_kind(kind: TuiTheme) -> Self {
+        let base = Self {
+            // Named ANSI colors are resolved by the user's terminal theme.
+            // Morphz deliberately never paints a background.
+            border_subtle: Color::DarkGray,
+            border_strong: Color::Gray,
+            text_primary: Color::Reset,
+            text_secondary: Color::Reset,
+            text_muted: Color::DarkGray,
+            brand: Color::Reset,
+            focus: Color::Reset,
+            user: Color::Reset,
+            tool: Color::Cyan,
+            success: Color::Green,
+            warning: Color::Yellow,
+            error: Color::Red,
+        };
+        match kind {
+            // "system" intentionally resolves to the conservative terminal-
+            // native mono palette. It remains stable across light/dark themes.
+            TuiTheme::System | TuiTheme::Mono => base,
+            TuiTheme::Iris => Self {
+                brand: Color::LightMagenta,
+                focus: Color::Magenta,
+                user: Color::LightMagenta,
+                ..base
+            },
+            TuiTheme::Cyan => Self {
+                brand: Color::LightCyan,
+                focus: Color::Cyan,
+                user: Color::LightCyan,
+                ..base
+            },
+            TuiTheme::Coral => Self {
+                brand: Color::LightRed,
+                focus: Color::Red,
+                user: Color::LightRed,
+                ..base
+            },
+            TuiTheme::NoColor => Self {
+                border_subtle: Color::Reset,
+                border_strong: Color::Reset,
+                text_muted: Color::Reset,
+                tool: Color::Reset,
+                success: Color::Reset,
+                warning: Color::Reset,
+                error: Color::Reset,
+                ..base
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EntryKind {
@@ -57,6 +120,13 @@ enum EntryKind {
     Tool,
     System,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UiView {
+    Conversation,
+    Work,
+    Mind,
 }
 
 #[derive(Debug, Clone)]
@@ -150,7 +220,10 @@ struct PendingApproval {
 
 #[derive(Debug)]
 struct UiState {
+    agent_id: String,
+    context_id: String,
     session_id: String,
+    session_title: Option<String>,
     model: String,
     entries: Vec<TranscriptEntry>,
     composer: Composer,
@@ -159,6 +232,10 @@ struct UiState {
     status: String,
     context_status: String,
     objectives: Vec<ObjectiveRecord>,
+    context_view: Option<ContextView>,
+    delegations: Vec<DelegationRecord>,
+    active_view: UiView,
+    view_scroll: u16,
     busy: bool,
     follow_tail: bool,
     scroll: u16,
@@ -168,12 +245,23 @@ struct UiState {
     show_tool_details: bool,
     show_objectives: bool,
     objective_scroll: u16,
+    theme_kind: TuiTheme,
+    theme: Theme,
 }
 
 impl UiState {
     fn new(runtime: &MorphzRuntime, session: &SessionHandle) -> Self {
+        let configured_theme = runtime.config().tui.theme;
+        let theme_kind = if std::env::var_os("NO_COLOR").is_some() {
+            TuiTheme::NoColor
+        } else {
+            configured_theme
+        };
         Self {
+            agent_id: runtime.identity().agent_id.clone(),
+            context_id: runtime.identity().context_id.clone(),
             session_id: session.id().to_string(),
+            session_title: None,
             model: runtime.config().llm.model.clone(),
             entries: Vec::new(),
             composer: Composer::new(),
@@ -182,6 +270,10 @@ impl UiState {
             status: "ready".to_string(),
             context_status: "Context loading".to_string(),
             objectives: Vec::new(),
+            context_view: None,
+            delegations: Vec::new(),
+            active_view: UiView::Conversation,
+            view_scroll: 0,
             busy: false,
             follow_tail: true,
             scroll: 0,
@@ -191,7 +283,19 @@ impl UiState {
             show_tool_details: false,
             show_objectives: false,
             objective_scroll: 0,
+            theme_kind,
+            theme: Theme::from_kind(theme_kind),
         }
+    }
+
+    fn set_theme(&mut self, theme_kind: TuiTheme) {
+        self.theme_kind = theme_kind;
+        self.theme = Theme::from_kind(theme_kind);
+    }
+
+    fn set_active_view(&mut self, active_view: UiView) {
+        self.active_view = active_view;
+        self.view_scroll = 0;
     }
 
     fn push(&mut self, kind: EntryKind, body: impl Into<String>) {
@@ -235,6 +339,7 @@ impl UiState {
     }
 
     fn update_context(&mut self, view: &ContextView) {
+        self.context_id.clone_from(&view.context_id);
         self.objectives = view.objectives.clone();
         let active_objectives = view
             .objectives
@@ -242,16 +347,17 @@ impl UiState {
             .filter(|objective| objective.status == ObjectiveStatus::Active)
             .count();
         self.context_status = format!(
-            "{} · {}/{} tok · {} frame · {} session + {} meta · {} work · {} objective",
+            "{} · {}/{} · {} frames · {}+{} sessions · {} work · {} goals",
             view.pressure.level,
-            view.pressure.estimated_tokens,
-            view.pressure.hard_limit,
+            compact_count(view.pressure.estimated_tokens),
+            compact_count(view.pressure.hard_limit),
             view.pressure.active_frames,
             view.session_working_set.full_session_ids.len(),
             view.session_working_set.metadata_only_session_ids.len(),
             view.active_work_items.len(),
             active_objectives
         );
+        self.context_view = Some(view.clone());
     }
 
     fn finish_live_progress(&mut self) {
@@ -420,22 +526,34 @@ impl UiState {
 
     fn render(&mut self, frame: &mut Frame<'_>) {
         let size = frame.area();
-        frame.render_widget(Block::default().style(Style::default().bg(BG)), size);
+        frame.render_widget(Block::default(), size);
         let input_lines = self.composer.text().split('\n').count().clamp(1, 5) as u16;
+        let compact = size.width < 88 || size.height < 18;
+        let header_height = if compact { 3 } else { 4 };
+        let status_height = if compact { 1 } else { 3 };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),
-                Constraint::Length(1),
-                Constraint::Min(5),
-                Constraint::Length(input_lines + 2),
+                Constraint::Length(header_height),
+                Constraint::Length(status_height),
+                Constraint::Min(4),
+                Constraint::Length(input_lines + 3),
                 Constraint::Length(1),
             ])
             .split(size);
 
         self.render_header(frame, chunks[0]);
-        self.render_objective_summary(frame, chunks[1]);
-        self.render_transcript(frame, chunks[2]);
+        if self.active_view == UiView::Conversation {
+            self.render_work_status(frame, chunks[1]);
+            self.render_transcript(frame, chunks[2]);
+        } else {
+            self.render_chat_status(frame, chunks[1]);
+            match self.active_view {
+                UiView::Work => self.render_work_view(frame, chunks[2]),
+                UiView::Mind => self.render_mind_view(frame, chunks[2]),
+                UiView::Conversation => unreachable!(),
+            }
+        }
         self.render_composer(frame, chunks[3]);
         self.render_footer(frame, chunks[4]);
         if self.show_help {
@@ -464,133 +582,1455 @@ impl UiState {
             .or_else(|| self.objectives.first())
     }
 
-    fn render_objective_summary(&self, frame: &mut Frame<'_>, area: Rect) {
-        let line = if let Some(objective) = self.primary_objective() {
-            let extra = self.objectives.len().saturating_sub(1);
-            let suffix = if extra == 0 {
-                "Ctrl+O 展开".to_string()
-            } else {
-                format!("+{extra}  ·  Ctrl+O 展开")
-            };
-            Line::from(vec![
-                Span::styled(
-                    format!(" {} ", objective_status_marker(objective.status)),
-                    Style::default().fg(objective_status_color(objective.status)),
-                ),
-                Span::styled("OBJECTIVE  ", Style::default().fg(MUTED)),
-                Span::styled(
-                    objective.status.as_str().to_uppercase(),
-                    Style::default()
-                        .fg(objective_status_color(objective.status))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("  ·  ", Style::default().fg(BORDER)),
-                Span::styled(
-                    truncate(&objective.stated_objective.replace('\n', " "), 110),
-                    Style::default().fg(TEXT),
-                ),
-                Span::styled(format!("  ·  {suffix} "), Style::default().fg(MUTED)),
-            ])
-        } else {
-            Line::from(vec![
-                Span::styled(" ○ ", Style::default().fg(MUTED)),
-                Span::styled("OBJECTIVE  none", Style::default().fg(MUTED)),
-                Span::styled("  ·  Ctrl+O 查看 ", Style::default().fg(BORDER)),
-            ])
-        };
-        frame.render_widget(Paragraph::new(line).style(Style::default().bg(BG)), area);
-    }
-
     fn render_header(&self, frame: &mut Frame<'_>, area: Rect) {
         let spinner = ["◐", "◓", "◑", "◒"][self.spinner % 4];
         let activity = if self.busy { spinner } else { "●" };
-        let activity_color = if self.busy { WARNING } else { SUCCESS };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(BORDER))
-            .style(Style::default().bg(SURFACE));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let chunks = Layout::default()
+        let activity_color = if self.busy {
+            self.theme.warning
+        } else {
+            self.theme.success
+        };
+        if area.width < 88 {
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(vec![
+                        Span::styled("◆ ", Style::default().fg(self.theme.brand)),
+                        Span::styled(
+                            "Morphz",
+                            Style::default()
+                                .fg(self.theme.brand)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled("   ", Style::default()),
+                        Span::styled(activity, Style::default().fg(activity_color)),
+                        Span::styled(
+                            format!("  {}", self.status),
+                            Style::default().fg(self.theme.text_secondary),
+                        ),
+                    ]),
+                    self.render_legacy_identity_line(),
+                ])
+                .block(Block::default().padding(ratatui::widgets::Padding::horizontal(2))),
+                area,
+            );
+            return;
+        }
+        let inner = inset_rect(area, if area.width >= 100 { 4 } else { 2 }, 0);
+        let columns = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+            .constraints([
+                Constraint::Percentage(20),
+                Constraint::Percentage(27),
+                Constraint::Percentage(27),
+                Constraint::Percentage(26),
+            ])
             .split(inner);
-        let left = Line::from(vec![
-            Span::styled(
-                " ◆ MORPHZ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("   "),
-            Span::styled(activity, Style::default().fg(activity_color)),
-            Span::styled(format!("  {}", self.status), Style::default().fg(TEXT)),
-        ]);
-        frame.render_widget(Paragraph::new(left), chunks[0]);
-        let right = Line::from(vec![
-            Span::styled(short_id(&self.session_id), Style::default().fg(MUTED)),
-            Span::styled("  ·  ", Style::default().fg(BORDER)),
-            Span::styled(&self.model, Style::default().fg(MUTED)),
-            Span::raw(" "),
-        ]);
-        frame.render_widget(Paragraph::new(right).alignment(Alignment::Right), chunks[1]);
+        let session_label = self
+            .session_title
+            .as_deref()
+            .filter(|title| !title.trim().is_empty())
+            .map(|title| format!("{} · {}", truncate(title, 28), short_id(&self.session_id)))
+            .unwrap_or_else(|| short_id(&self.session_id));
+        let brand = vec![
+            Line::from(vec![
+                Span::styled("◆ ", Style::default().fg(self.theme.brand)),
+                Span::styled(
+                    "Morphz",
+                    Style::default()
+                        .fg(self.theme.brand)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("   ", Style::default()),
+                Span::styled(activity, Style::default().fg(activity_color)),
+                Span::styled(
+                    format!("  {}", self.status),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled("agent/", Style::default().fg(self.theme.text_muted)),
+                Span::styled(
+                    short_id(&self.agent_id),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(brand), columns[0]);
+
+        let context = vec![
+            Line::from(Span::styled(
+                "CONTEXT",
+                Style::default().fg(self.theme.text_muted),
+            )),
+            Line::from(vec![
+                Span::styled(
+                    short_id(&self.context_id),
+                    Style::default()
+                        .fg(self.theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  shared", Style::default().fg(self.theme.focus)),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(context), columns[1]);
+
+        let session = vec![
+            Line::from(Span::styled(
+                "SESSION",
+                Style::default().fg(self.theme.text_muted),
+            )),
+            Line::from(vec![
+                Span::styled(
+                    session_label,
+                    Style::default()
+                        .fg(self.theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  active", Style::default().fg(self.theme.success)),
+            ]),
+        ];
+        frame.render_widget(Paragraph::new(session), columns[2]);
+
+        let (frames, version, pressure, tokens, hard_limit) = self
+            .context_view
+            .as_ref()
+            .map(|view| {
+                (
+                    view.state.frames.len(),
+                    view.state.version,
+                    view.pressure.level.as_str(),
+                    view.pressure.estimated_tokens,
+                    view.pressure.hard_limit,
+                )
+            })
+            .unwrap_or((0, 0, "loading", 0, 0));
+        let runtime = vec![
+            Line::from(vec![
+                Span::styled("MIND  ", Style::default().fg(self.theme.focus)),
+                Span::styled(
+                    format!("{frames} frames"),
+                    Style::default()
+                        .fg(self.theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  r{version} · {pressure}"),
+                    Style::default().fg(pressure_color(pressure, &self.theme)),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    format!("{} / {}", compact_count(tokens), compact_count(hard_limit)),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+                Span::styled("  ·  ", Style::default().fg(self.theme.border_subtle)),
+                Span::styled(&self.model, Style::default().fg(self.theme.text_muted)),
+            ]),
+        ];
+        frame.render_widget(
+            Paragraph::new(runtime).alignment(Alignment::Right),
+            columns[3],
+        );
     }
 
-    fn transcript_lines(&self) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        for entry in &self.entries {
-            if entry.kind == EntryKind::Tool {
-                append_tool_lines(
-                    &mut lines,
-                    &entry.body,
-                    entry.detail.as_deref(),
-                    self.show_tool_details,
-                );
-                lines.push(Line::from(""));
-                continue;
-            }
-            let (label, color) = entry_style(entry.kind);
+    fn render_legacy_identity_line(&self) -> Line<'static> {
+        Line::from(vec![
+            Span::styled("AGENT ", Style::default().fg(self.theme.text_muted)),
+            Span::styled(
+                short_id(&self.agent_id),
+                Style::default().fg(self.theme.text_secondary),
+            ),
+            Span::styled("  │  ", Style::default().fg(self.theme.border_strong)),
+            Span::styled("CONTEXT ", Style::default().fg(self.theme.text_muted)),
+            Span::styled(
+                short_id(&self.context_id),
+                Style::default().fg(self.theme.text_secondary),
+            ),
+            Span::styled("  │  ", Style::default().fg(self.theme.border_strong)),
+            Span::styled("SESSION ", Style::default().fg(self.theme.text_muted)),
+            Span::styled(
+                short_id(&self.session_id),
+                Style::default().fg(self.theme.text_primary),
+            ),
+        ])
+    }
+
+    fn runtime_work_counts(&self) -> (usize, usize, usize, usize) {
+        let evaluations = self
+            .context_view
+            .as_ref()
+            .map(|view| view.active_work_items.len())
+            .unwrap_or_default();
+        let objectives = self
+            .objectives
+            .iter()
+            .filter(|objective| !objective.status.is_terminal())
+            .count();
+        let background = get_tasks_map()
+            .iter()
+            .filter(|task| task.context_id == self.context_id && !task.status.is_terminal())
+            .count();
+        let delegations = self
+            .delegations
+            .iter()
+            .filter(|job| {
+                job.parent_context_id == self.context_id
+                    && matches!(
+                        job.status,
+                        DelegationStatus::Queued | DelegationStatus::Running
+                    )
+            })
+            .count();
+        (evaluations, objectives, background, delegations)
+    }
+
+    fn render_work_status(&self, frame: &mut Frame<'_>, area: Rect) {
+        let (evaluations, objectives, background, delegations) = self.runtime_work_counts();
+        let total = evaluations + objectives + background + delegations;
+        let marker = if total == 0 { "○" } else { "◒" };
+        let marker_color = if total == 0 {
+            self.theme.text_muted
+        } else {
+            self.theme.success
+        };
+        let current = self
+            .primary_objective()
+            .map(|objective| {
+                format!(
+                    "Objective · {}",
+                    truncate(&objective.stated_objective.replace('\n', " "), 60)
+                )
+            })
+            .or_else(|| {
+                self.live_tools
+                    .values()
+                    .next()
+                    .map(|tool| tool_title(&tool.name).to_string())
+            })
+            .unwrap_or_else(|| {
+                if self.busy {
+                    self.status.clone()
+                } else {
+                    "idle".to_string()
+                }
+            });
+        if area.height < 3 {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        " WORK  ",
+                        Style::default()
+                            .fg(self.theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(format!("{marker} "), Style::default().fg(marker_color)),
+                    Span::styled(current, Style::default().fg(self.theme.text_secondary)),
+                    Span::styled("  ·  Ctrl+W", Style::default().fg(self.theme.text_muted)),
+                ])),
+                area,
+            );
+            return;
+        }
+        let strip = Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_style(Style::default().fg(self.theme.border_subtle));
+        let inner = inset_rect(strip.inner(area), if area.width >= 100 { 4 } else { 2 }, 0);
+        frame.render_widget(strip, area);
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(55),
+                Constraint::Percentage(32),
+                Constraint::Percentage(13),
+            ])
+            .split(inner);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "WORK  ",
+                    Style::default()
+                        .fg(self.theme.focus)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("{marker} "), Style::default().fg(marker_color)),
+                Span::styled(current, Style::default().fg(self.theme.text_primary)),
+            ])),
+            columns[0],
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("{evaluations}"),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+                Span::styled(" eval  ·  ", Style::default().fg(self.theme.text_muted)),
+                Span::styled(
+                    format!("{objectives}"),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+                Span::styled(" goals  ·  ", Style::default().fg(self.theme.text_muted)),
+                Span::styled(
+                    format!("{} tasks", background + delegations),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+            ]))
+            .alignment(Alignment::Right),
+            columns[1],
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("工作台 ", Style::default().fg(self.theme.focus)),
+                Span::styled("Ctrl W", Style::default().fg(self.theme.text_secondary)),
+            ]))
+            .alignment(Alignment::Right),
+            columns[2],
+        );
+    }
+
+    fn render_chat_status(&self, frame: &mut Frame<'_>, area: Rect) {
+        if area.height < 3 {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        " CHAT  ",
+                        Style::default()
+                            .fg(self.theme.user)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("session/{}", short_id(&self.session_id)),
+                        Style::default().fg(self.theme.text_secondary),
+                    ),
+                    Span::styled("  ·  Esc", Style::default().fg(self.theme.text_muted)),
+                ])),
+                area,
+            );
+            return;
+        }
+        let strip = Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_style(Style::default().fg(self.theme.border_subtle));
+        let inner = inset_rect(strip.inner(area), if area.width >= 100 { 4 } else { 2 }, 0);
+        frame.render_widget(strip, area);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "CHAT  ",
+                    Style::default()
+                        .fg(self.theme.user)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("session/{}", short_id(&self.session_id)),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+                Span::styled(
+                    "  ·  对话输入仍然可用",
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ])),
+            inner,
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("返回对话 ", Style::default().fg(self.theme.user)),
+                Span::styled("Esc", Style::default().fg(self.theme.text_secondary)),
+            ]))
+            .alignment(Alignment::Right),
+            inner,
+        );
+    }
+
+    fn work_lines(&self) -> Vec<Line<'static>> {
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(
+                    "RUNTIME WORK",
+                    Style::default()
+                        .fg(self.theme.brand)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  ·  context/{}", short_id(&self.context_id)),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ]),
+            Line::from(Span::styled(
+                "只显示 Runtime 可验证的 Objective、Evaluation、后台物理任务与 Delegation。",
+                Style::default().fg(self.theme.text_muted),
+            )),
+            Line::from(""),
+        ];
+
+        let work_items = self
+            .context_view
+            .as_ref()
+            .map(|view| view.active_work_items.as_slice())
+            .unwrap_or_default();
+        lines.push(section_title(
+            "EVALUATIONS",
+            work_items.len(),
+            self.theme.text_secondary,
+            self.theme.text_muted,
+        ));
+        for item in work_items {
+            lines.push(Line::from(vec![
+                Span::styled("  ◇ ", Style::default().fg(self.theme.tool)),
+                Span::styled(
+                    item.status.as_str().to_uppercase(),
+                    Style::default()
+                        .fg(work_status_color(item.status.as_str(), &self.theme))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "  {}  ·  session/{}  ·  {}",
+                        short_id(&item.id),
+                        short_id(&item.session_id),
+                        item.trigger_kind
+                    ),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ]));
+        }
+        if work_items.is_empty() {
+            lines.push(empty_state_line(
+                "没有活跃的模型求值",
+                self.theme.text_muted,
+            ));
+        }
+        lines.push(Line::from(""));
+
+        let objectives = self
+            .objectives
+            .iter()
+            .filter(|objective| !objective.status.is_terminal())
+            .collect::<Vec<_>>();
+        lines.push(section_title(
+            "OBJECTIVES",
+            objectives.len(),
+            self.theme.text_secondary,
+            self.theme.text_muted,
+        ));
+        for objective in objectives {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {} ", objective_status_marker(objective.status)),
+                    Style::default().fg(objective_status_color(objective.status, &self.theme)),
+                ),
+                Span::styled(
+                    objective.status.as_str().to_uppercase(),
+                    Style::default()
+                        .fg(objective_status_color(objective.status, &self.theme))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "  {}  ·  rev {}",
+                        short_id(&objective.id),
+                        objective.revision
+                    ),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ]));
             lines.push(Line::from(Span::styled(
-                label,
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
+                format!(
+                    "     {}",
+                    truncate(&objective.stated_objective.replace('\n', " "), 180)
+                ),
+                Style::default().fg(self.theme.text_primary),
             )));
-            for line in entry.body.lines() {
+            if let Some(wait) = objective.wait_condition.as_ref() {
                 lines.push(Line::from(Span::styled(
-                    format!("   {line}"),
-                    Style::default().fg(TEXT),
+                    format!("     wait: {}", format_objective_wait(wait)),
+                    Style::default().fg(self.theme.text_muted),
+                )));
+            }
+        }
+        if self
+            .objectives
+            .iter()
+            .all(|objective| objective.status.is_terminal())
+        {
+            lines.push(empty_state_line(
+                "没有非终态 Objective",
+                self.theme.text_muted,
+            ));
+        }
+        lines.push(Line::from(""));
+
+        let tasks = get_tasks_map();
+        let background = tasks
+            .iter()
+            .filter(|task| task.context_id == self.context_id && !task.status.is_terminal())
+            .collect::<Vec<_>>();
+        lines.push(section_title(
+            "BACKGROUND TASKS",
+            background.len(),
+            self.theme.text_secondary,
+            self.theme.text_muted,
+        ));
+        for task in background {
+            lines.push(Line::from(vec![
+                Span::styled("  ◒ ", Style::default().fg(self.theme.warning)),
+                Span::styled(
+                    background_status_str(task.status).to_uppercase(),
+                    Style::default()
+                        .fg(work_status_color(
+                            background_status_str(task.status),
+                            &self.theme,
+                        ))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "  {}  ·  session/{}  ·  {}s",
+                        short_id(&task.id),
+                        short_id(&task.session_id),
+                        (Utc::now() - task.started_at).num_seconds().max(0)
+                    ),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("     {}", truncate(&task.cmd_str.replace('\n', " "), 180)),
+                Style::default().fg(self.theme.text_primary),
+            )));
+        }
+        if !get_tasks_map()
+            .iter()
+            .any(|task| task.context_id == self.context_id && !task.status.is_terminal())
+        {
+            lines.push(empty_state_line(
+                "没有运行中的后台物理任务",
+                self.theme.text_muted,
+            ));
+        }
+        lines.push(Line::from(""));
+
+        let delegations = self
+            .delegations
+            .iter()
+            .filter(|job| {
+                job.parent_context_id == self.context_id
+                    && matches!(
+                        job.status,
+                        DelegationStatus::Queued | DelegationStatus::Running
+                    )
+            })
+            .collect::<Vec<_>>();
+        lines.push(section_title(
+            "DELEGATIONS",
+            delegations.len(),
+            self.theme.text_secondary,
+            self.theme.text_muted,
+        ));
+        for job in delegations {
+            lines.push(Line::from(vec![
+                Span::styled("  ◇ ", Style::default().fg(self.theme.tool)),
+                Span::styled(
+                    job.status.as_str().to_uppercase(),
+                    Style::default()
+                        .fg(work_status_color(job.status.as_str(), &self.theme))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "  {}  ·  child/{}",
+                        short_id(&job.id),
+                        short_id(&job.child_session_id)
+                    ),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("     {}", truncate(&job.task.replace('\n', " "), 180)),
+                Style::default().fg(self.theme.text_primary),
+            )));
+        }
+        if self
+            .delegations
+            .iter()
+            .filter(|job| job.parent_context_id == self.context_id)
+            .all(|job| {
+                !matches!(
+                    job.status,
+                    DelegationStatus::Queued | DelegationStatus::Running
+                )
+            })
+        {
+            lines.push(empty_state_line(
+                "没有活跃的 Sub Agent Delegation",
+                self.theme.text_muted,
+            ));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Mind 中的自由 Frame 只在认知视图呈现；它们不会被 Runtime 猜测成任务。",
+            Style::default().fg(self.theme.text_muted),
+        )));
+        lines
+    }
+
+    fn mind_lines(&self) -> Vec<Line<'static>> {
+        let Some(view) = self.context_view.as_ref() else {
+            return vec![empty_state_line(
+                "MIND · Context 认知结构正在加载",
+                self.theme.text_muted,
+            )];
+        };
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(
+                    "SELF-MAINTAINED MIND",
+                    Style::default()
+                        .fg(self.theme.brand)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "  ·  context/{}  ·  revision {}",
+                        short_id(&view.context_id),
+                        view.state.version
+                    ),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ]),
+            Line::from(Span::styled(
+                format!(
+                    "{} tokens / {} hard limit · pressure {} · {} full + {} metadata sessions",
+                    compact_count(view.pressure.estimated_tokens),
+                    compact_count(view.pressure.hard_limit),
+                    view.pressure.level,
+                    view.session_working_set.full_session_ids.len(),
+                    view.session_working_set.metadata_only_session_ids.len()
+                ),
+                Style::default().fg(self.theme.text_muted),
+            )),
+            Line::from(""),
+            section_title(
+                "FRAMES",
+                view.state.frames.len(),
+                self.theme.text_secondary,
+                self.theme.text_muted,
+            ),
+        ];
+        for frame in &view.state.frames {
+            let protected = if view.state.protected.contains(&frame.id) {
+                " · protected"
+            } else {
+                ""
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  ◇ ", Style::default().fg(self.theme.focus)),
+                Span::styled(
+                    frame.id.clone(),
+                    Style::default()
+                        .fg(self.theme.text_secondary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "  ·  rev {}  ·  updated v{}  ·  {} source(s){protected}",
+                        frame.revision,
+                        frame.updated_version,
+                        frame.sources.len()
+                    ),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ]));
+            for body_line in truncate(&frame.body, 420).lines() {
+                lines.push(Line::from(Span::styled(
+                    format!("     {body_line}"),
+                    Style::default().fg(self.theme.text_primary),
                 )));
             }
             lines.push(Line::from(""));
         }
-        if !self.live_text.trim().is_empty() {
+        if view.state.frames.is_empty() {
+            lines.push(empty_state_line(
+                "Mind 尚未形成 Frame",
+                self.theme.text_muted,
+            ));
+            lines.push(Line::from(""));
+        }
+
+        lines.push(section_title(
+            "RELATIONS",
+            view.state.relations.len(),
+            self.theme.text_secondary,
+            self.theme.text_muted,
+        ));
+        for relation in &view.state.relations {
             lines.push(Line::from(Span::styled(
-                "◆ MORPHZ · LIVE",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                format!(
+                    "  {}  —{}→  {}  ·  v{}",
+                    relation.subject, relation.relation, relation.object, relation.created_version
+                ),
+                Style::default().fg(self.theme.text_secondary),
             )));
-            for line in self.live_text.lines() {
-                lines.push(Line::from(format!("  {line}")));
+        }
+        if view.state.relations.is_empty() {
+            lines.push(empty_state_line("没有显式关系", self.theme.text_muted));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "RETIRED {}  ·  PROTECTED {}  ·  CHECKPOINTS {}  ·  Ctrl+M / Esc 返回对话",
+                view.state.retired.len(),
+                view.state.protected.len(),
+                view.state.checkpoints.len()
+            ),
+            Style::default().fg(self.theme.text_muted),
+        )));
+        lines
+    }
+
+    fn render_view_lines(&mut self, frame: &mut Frame<'_>, area: Rect, lines: Vec<Line<'static>>) {
+        let inner = inset_rect(area, (area.width / 14).clamp(3, 14), 1);
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+        let visual_lines = paragraph.line_count(inner.width);
+        let max_scroll = visual_lines
+            .saturating_sub(inner.height as usize)
+            .min(u16::MAX as usize) as u16;
+        self.view_scroll = self.view_scroll.min(max_scroll);
+        frame.render_widget(paragraph.scroll((self.view_scroll, 0)), inner);
+    }
+
+    fn render_metric_card(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        label: &str,
+        value: String,
+        detail: String,
+        accent: Color,
+    ) {
+        let content = if area.height >= 3 {
+            vec![
+                Line::from(Span::styled(
+                    label.to_string(),
+                    Style::default().fg(self.theme.text_muted),
+                )),
+                Line::from(vec![
+                    Span::styled(
+                        value,
+                        Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("  {detail}"),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                ]),
+            ]
+        } else {
+            vec![Line::from(vec![
+                Span::styled(
+                    value,
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  {detail}"),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ])]
+        };
+        frame.render_widget(
+            Paragraph::new(content).block(
+                Block::default()
+                    .borders(Borders::LEFT)
+                    .border_style(Style::default().fg(accent))
+                    .padding(ratatui::widgets::Padding::horizontal(1)),
+            ),
+            area,
+        );
+    }
+
+    fn render_section_panel(
+        &self,
+        frame: &mut Frame<'_>,
+        area: Rect,
+        title: &str,
+        count: usize,
+        lines: Vec<Line<'static>>,
+        accent: Color,
+    ) {
+        let title = Line::from(vec![
+            Span::styled(
+                format!(" {title} "),
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{count} "),
+                Style::default().fg(self.theme.text_muted),
+            ),
+        ]);
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(
+                    Block::default()
+                        .title(title)
+                        .borders(Borders::TOP)
+                        .border_style(Style::default().fg(self.theme.border_subtle))
+                        .padding(ratatui::widgets::Padding::horizontal(1)),
+                )
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+    }
+
+    fn evaluation_panel_lines(&self) -> Vec<Line<'static>> {
+        let Some(view) = self.context_view.as_ref() else {
+            return vec![empty_state_line("Context 正在加载", self.theme.text_muted)];
+        };
+        if view.active_work_items.is_empty() {
+            return vec![empty_state_line(
+                "没有活跃的模型求值",
+                self.theme.text_muted,
+            )];
+        }
+        view.active_work_items
+            .iter()
+            .flat_map(|item| {
+                vec![
+                    Line::from(vec![
+                        Span::styled("◒ ", Style::default().fg(self.theme.tool)),
+                        Span::styled(
+                            item.status.as_str().to_uppercase(),
+                            Style::default()
+                                .fg(work_status_color(item.status.as_str(), &self.theme))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("  {}", short_id(&item.id)),
+                            Style::default().fg(self.theme.text_muted),
+                        ),
+                    ]),
+                    Line::from(Span::styled(
+                        format!(
+                            "  session/{} · {}",
+                            short_id(&item.session_id),
+                            item.trigger_kind
+                        ),
+                        Style::default().fg(self.theme.text_muted),
+                    )),
+                ]
+            })
+            .collect()
+    }
+
+    fn objective_panel_lines(&self) -> Vec<Line<'static>> {
+        let objectives = self
+            .objectives
+            .iter()
+            .filter(|objective| !objective.status.is_terminal())
+            .collect::<Vec<_>>();
+        if objectives.is_empty() {
+            return vec![empty_state_line(
+                "没有非终态 Objective",
+                self.theme.text_muted,
+            )];
+        }
+        objectives
+            .into_iter()
+            .flat_map(|objective| {
+                let mut lines = vec![
+                    Line::from(vec![
+                        Span::styled(
+                            format!("{} ", objective_status_marker(objective.status)),
+                            Style::default()
+                                .fg(objective_status_color(objective.status, &self.theme)),
+                        ),
+                        Span::styled(
+                            objective.status.as_str().to_uppercase(),
+                            Style::default()
+                                .fg(objective_status_color(objective.status, &self.theme))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("  {} · r{}", short_id(&objective.id), objective.revision),
+                            Style::default().fg(self.theme.text_muted),
+                        ),
+                    ]),
+                    Line::from(Span::styled(
+                        format!(
+                            "  {}",
+                            truncate(&objective.stated_objective.replace('\n', " "), 120)
+                        ),
+                        Style::default().fg(self.theme.text_primary),
+                    )),
+                ];
+                if let Some(wait) = objective.wait_condition.as_ref() {
+                    lines.push(Line::from(Span::styled(
+                        format!("  waiting · {}", format_objective_wait(wait)),
+                        Style::default().fg(self.theme.warning),
+                    )));
+                }
+                lines
+            })
+            .collect()
+    }
+
+    fn background_panel_lines(&self) -> Vec<Line<'static>> {
+        let tasks = get_tasks_map();
+        let tasks = tasks
+            .iter()
+            .filter(|task| task.context_id == self.context_id && !task.status.is_terminal())
+            .map(|task| {
+                (
+                    task.id.clone(),
+                    task.session_id.clone(),
+                    task.cmd_str.clone(),
+                    task.status,
+                    task.started_at,
+                )
+            })
+            .collect::<Vec<_>>();
+        if tasks.is_empty() {
+            return vec![empty_state_line(
+                "没有运行中的后台物理任务",
+                self.theme.text_muted,
+            )];
+        }
+        tasks
+            .into_iter()
+            .flat_map(|(id, session_id, command, status, started_at)| {
+                vec![
+                    Line::from(vec![
+                        Span::styled("◒ ", Style::default().fg(self.theme.warning)),
+                        Span::styled(
+                            background_status_str(status).to_uppercase(),
+                            Style::default()
+                                .fg(work_status_color(
+                                    background_status_str(status),
+                                    &self.theme,
+                                ))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(
+                                "  {} · {}s",
+                                short_id(&id),
+                                (Utc::now() - started_at).num_seconds().max(0)
+                            ),
+                            Style::default().fg(self.theme.text_muted),
+                        ),
+                    ]),
+                    Line::from(Span::styled(
+                        format!("  {}", truncate(&command.replace('\n', " "), 120)),
+                        Style::default().fg(self.theme.text_primary),
+                    )),
+                    Line::from(Span::styled(
+                        format!("  session/{}", short_id(&session_id)),
+                        Style::default().fg(self.theme.text_muted),
+                    )),
+                ]
+            })
+            .collect()
+    }
+
+    fn delegation_panel_lines(&self) -> Vec<Line<'static>> {
+        let jobs = self
+            .delegations
+            .iter()
+            .filter(|job| {
+                job.parent_context_id == self.context_id
+                    && matches!(
+                        job.status,
+                        DelegationStatus::Queued | DelegationStatus::Running
+                    )
+            })
+            .collect::<Vec<_>>();
+        if jobs.is_empty() {
+            return vec![empty_state_line(
+                "没有活跃的 Sub Agent Delegation",
+                self.theme.text_muted,
+            )];
+        }
+        jobs.into_iter()
+            .flat_map(|job| {
+                vec![
+                    Line::from(vec![
+                        Span::styled("◇ ", Style::default().fg(self.theme.tool)),
+                        Span::styled(
+                            job.status.as_str().to_uppercase(),
+                            Style::default()
+                                .fg(work_status_color(job.status.as_str(), &self.theme))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("  {}", short_id(&job.id)),
+                            Style::default().fg(self.theme.text_muted),
+                        ),
+                    ]),
+                    Line::from(Span::styled(
+                        format!("  {}", truncate(&job.task.replace('\n', " "), 120)),
+                        Style::default().fg(self.theme.text_primary),
+                    )),
+                    Line::from(Span::styled(
+                        format!("  child/{}", short_id(&job.child_session_id)),
+                        Style::default().fg(self.theme.text_muted),
+                    )),
+                ]
+            })
+            .collect()
+    }
+
+    fn render_work_view(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        if area.width < 94 || area.height < 16 {
+            let lines = self.work_lines();
+            self.render_view_lines(frame, area, lines);
+            return;
+        }
+
+        let inner = inset_rect(area, (area.width / 18).clamp(3, 10), 0);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2),
+                Constraint::Length(3),
+                Constraint::Min(8),
+            ])
+            .split(inner);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "RUNTIME WORK  ",
+                    Style::default()
+                        .fg(self.theme.focus)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "可验证的执行事实 · 自由 Frame 不会被猜测成任务",
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ])),
+            rows[0],
+        );
+        let metrics = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+            ])
+            .split(rows[1]);
+        let (evaluations, objectives, background, delegations) = self.runtime_work_counts();
+        self.render_metric_card(
+            frame,
+            metrics[0],
+            "EVALUATIONS",
+            evaluations.to_string(),
+            "模型求值中".to_string(),
+            self.theme.tool,
+        );
+        self.render_metric_card(
+            frame,
+            metrics[1],
+            "OBJECTIVES",
+            objectives.to_string(),
+            "非终态目标".to_string(),
+            self.theme.warning,
+        );
+        self.render_metric_card(
+            frame,
+            metrics[2],
+            "BACKGROUND",
+            background.to_string(),
+            "物理任务".to_string(),
+            self.theme.success,
+        );
+        self.render_metric_card(
+            frame,
+            metrics[3],
+            "DELEGATIONS",
+            delegations.to_string(),
+            "Sub Agent".to_string(),
+            self.theme.focus,
+        );
+
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(rows[2]);
+        let left = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(columns[0]);
+        let right = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(columns[1]);
+        self.render_section_panel(
+            frame,
+            left[0],
+            "EVALUATIONS",
+            evaluations,
+            self.evaluation_panel_lines(),
+            self.theme.tool,
+        );
+        self.render_section_panel(
+            frame,
+            left[1],
+            "OBJECTIVES",
+            objectives,
+            self.objective_panel_lines(),
+            self.theme.warning,
+        );
+        self.render_section_panel(
+            frame,
+            right[0],
+            "BACKGROUND TASKS",
+            background,
+            self.background_panel_lines(),
+            self.theme.success,
+        );
+        self.render_section_panel(
+            frame,
+            right[1],
+            "DELEGATIONS",
+            delegations,
+            self.delegation_panel_lines(),
+            self.theme.focus,
+        );
+    }
+
+    fn render_mind_view(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        if area.width < 94 || area.height < 16 {
+            let lines = self.mind_lines();
+            self.render_view_lines(frame, area, lines);
+            return;
+        }
+        let Some(view) = self.context_view.as_ref() else {
+            self.render_view_lines(
+                frame,
+                area,
+                vec![empty_state_line(
+                    "MIND · Context 认知结构正在加载",
+                    self.theme.text_muted,
+                )],
+            );
+            return;
+        };
+
+        let inner = inset_rect(area, (area.width / 18).clamp(3, 10), 0);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2),
+                Constraint::Length(3),
+                Constraint::Min(8),
+            ])
+            .split(inner);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "SELF-MAINTAINED MIND  ",
+                    Style::default()
+                        .fg(self.theme.focus)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "context/{} · revision {}",
+                        short_id(&view.context_id),
+                        view.state.version
+                    ),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ])),
+            rows[0],
+        );
+        let metrics = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+            ])
+            .split(rows[1]);
+        self.render_metric_card(
+            frame,
+            metrics[0],
+            "ACTIVE FRAMES",
+            view.state.frames.len().to_string(),
+            "当前求值可用".to_string(),
+            self.theme.focus,
+        );
+        self.render_metric_card(
+            frame,
+            metrics[1],
+            "RETIRED",
+            view.state.retired.len().to_string(),
+            "可按需 recall".to_string(),
+            self.theme.text_secondary,
+        );
+        self.render_metric_card(
+            frame,
+            metrics[2],
+            "PRESSURE",
+            view.pressure.level.to_uppercase(),
+            format!(
+                "{} / {}",
+                compact_count(view.pressure.estimated_tokens),
+                compact_count(view.pressure.hard_limit)
+            ),
+            pressure_color(&view.pressure.level, &self.theme),
+        );
+        self.render_metric_card(
+            frame,
+            metrics[3],
+            "SESSIONS",
+            view.session_working_set.full_session_ids.len().to_string(),
+            format!(
+                "+{} metadata",
+                view.session_working_set.metadata_only_session_ids.len()
+            ),
+            self.theme.user,
+        );
+
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
+            .split(rows[2]);
+        let frame_lines = if view.state.frames.is_empty() {
+            vec![empty_state_line(
+                "Mind 尚未形成 Frame",
+                self.theme.text_muted,
+            )]
+        } else {
+            view.state
+                .frames
+                .iter()
+                .flat_map(|context_frame| {
+                    let protection = if view.state.protected.contains(&context_frame.id) {
+                        " · protected"
+                    } else {
+                        ""
+                    };
+                    let mut lines = vec![Line::from(vec![
+                        Span::styled("◇ ", Style::default().fg(self.theme.focus)),
+                        Span::styled(
+                            context_frame.id.clone(),
+                            Style::default()
+                                .fg(self.theme.text_secondary)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(
+                                "  r{} · updated v{}{protection}",
+                                context_frame.revision, context_frame.updated_version
+                            ),
+                            Style::default().fg(self.theme.text_muted),
+                        ),
+                    ])];
+                    for body_line in truncate(&context_frame.body, 280).lines() {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {body_line}"),
+                            Style::default().fg(self.theme.text_primary),
+                        )));
+                    }
+                    lines.push(Line::from(Span::styled(
+                        format!("  {} source(s)", context_frame.sources.len()),
+                        Style::default().fg(self.theme.text_muted),
+                    )));
+                    lines.push(Line::from(""));
+                    lines
+                })
+                .collect()
+        };
+        self.render_section_panel(
+            frame,
+            body[0],
+            "FRAME LIBRARY",
+            view.state.frames.len(),
+            frame_lines,
+            self.theme.focus,
+        );
+
+        let mut inspector = vec![
+            Line::from(vec![
+                Span::styled("ENCODING  ", Style::default().fg(self.theme.text_muted)),
+                Span::styled(
+                    view.pressure.level.to_uppercase(),
+                    Style::default()
+                        .fg(pressure_color(&view.pressure.level, &self.theme))
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]),
+            Line::from(Span::styled(
+                pressure_bar(view.pressure.estimated_tokens, view.pressure.hard_limit, 22),
+                Style::default().fg(pressure_color(&view.pressure.level, &self.theme)),
+            )),
+            Line::from(Span::styled(
+                format!(
+                    "{} / {} · {}",
+                    compact_count(view.pressure.estimated_tokens),
+                    compact_count(view.pressure.hard_limit),
+                    view.pressure.token_accuracy
+                ),
+                Style::default().fg(self.theme.text_muted),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "CURRENT SESSION  ",
+                    Style::default().fg(self.theme.text_muted),
+                ),
+                Span::styled(
+                    short_id(&view.active_session_id),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+            ]),
+            Line::from(Span::styled(
+                format!(
+                    "{} full · {} metadata · max {}",
+                    view.session_working_set.full_session_ids.len(),
+                    view.session_working_set.metadata_only_session_ids.len(),
+                    view.session_working_set.max_sessions
+                ),
+                Style::default().fg(self.theme.text_muted),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!(
+                    "PROTECTED {} · CHECKPOINTS {}",
+                    view.state.protected.len(),
+                    view.state.checkpoints.len()
+                ),
+                Style::default().fg(self.theme.text_secondary),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("RELATIONS {}", view.state.relations.len()),
+                Style::default().fg(self.theme.text_muted),
+            )),
+        ];
+        for relation in view.state.relations.iter().take(8) {
+            inspector.push(Line::from(Span::styled(
+                format!(
+                    "{} —{}→ {}",
+                    relation.subject, relation.relation, relation.object
+                ),
+                Style::default().fg(self.theme.text_secondary),
+            )));
+        }
+        self.render_section_panel(
+            frame,
+            body[1],
+            "CONTEXT INSPECTOR",
+            view.state.relations.len(),
+            inspector,
+            self.theme.text_secondary,
+        );
+    }
+
+    fn transcript_lines(&self) -> Vec<Line<'static>> {
+        const ROLE_WIDTH: usize = 14;
+        let mut lines = Vec::new();
+        for entry in &self.entries {
+            if entry.kind == EntryKind::Tool {
+                for (index, body_line) in entry.body.lines().enumerate() {
+                    lines.push(Line::from(vec![
+                        Span::styled("  │  ", Style::default().fg(self.theme.focus)),
+                        Span::styled(
+                            body_line.to_string(),
+                            Style::default().fg(if index == 0 {
+                                self.theme.tool
+                            } else {
+                                self.theme.text_muted
+                            }),
+                        ),
+                    ]));
+                }
+                if self.show_tool_details {
+                    if let Some(detail) = entry.detail.as_deref() {
+                        for detail_line in truncate(detail, 1_600).lines() {
+                            lines.push(Line::from(vec![
+                                Span::styled("  │  ", Style::default().fg(self.theme.focus)),
+                                Span::styled(
+                                    detail_line.to_string(),
+                                    Style::default().fg(self.theme.text_muted),
+                                ),
+                            ]));
+                        }
+                    }
+                }
+                lines.push(Line::from(""));
+                continue;
+            }
+            let (label, color) = entry_style(entry.kind, &self.theme);
+            for (index, body_line) in entry.body.lines().enumerate() {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        if index == 0 {
+                            format!("{label:<ROLE_WIDTH$}")
+                        } else {
+                            " ".repeat(ROLE_WIDTH)
+                        },
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        body_line.to_string(),
+                        Style::default().fg(self.theme.text_primary),
+                    ),
+                ]));
+            }
+            lines.push(Line::from(""));
+        }
+        if !self.live_text.trim().is_empty() {
+            for (index, body_line) in self.live_text.lines().enumerate() {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        if index == 0 {
+                            format!("{:<ROLE_WIDTH$}", "Morphz")
+                        } else {
+                            " ".repeat(ROLE_WIDTH)
+                        },
+                        Style::default()
+                            .fg(self.theme.brand)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        body_line.to_string(),
+                        Style::default().fg(self.theme.text_primary),
+                    ),
+                ]));
             }
             lines.push(Line::from(""));
         }
         for tool in self.live_tools.values() {
             let activity = summarize_tool_call(&tool.name, &tool.arguments, None);
             let marker = if tool.completed { "✓" } else { "◇" };
-            lines.push(Line::from(Span::styled(
-                format!("{marker} {}", activity.title),
-                Style::default()
-                    .fg(if tool.completed { SUCCESS } else { TOOL })
-                    .add_modifier(Modifier::BOLD),
-            )));
+            lines.push(Line::from(vec![
+                Span::styled("  │  ", Style::default().fg(self.theme.focus)),
+                Span::styled(
+                    format!("{marker} {}", activity.title),
+                    Style::default()
+                        .fg(if tool.completed {
+                            self.theme.success
+                        } else {
+                            self.theme.tool
+                        })
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
             if !activity.target.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    format!("   {}", activity.target),
-                    Style::default().fg(TEXT),
-                )));
+                lines.push(Line::from(vec![
+                    Span::styled("  │  ", Style::default().fg(self.theme.focus)),
+                    Span::styled(activity.target, Style::default().fg(self.theme.text_muted)),
+                ]));
             }
             if self.show_tool_details && !tool.arguments.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    format!("   {}", truncate(&pretty_json(&tool.arguments), 800)),
-                    Style::default().fg(MUTED),
-                )));
+                lines.push(Line::from(vec![
+                    Span::styled("  │  ", Style::default().fg(self.theme.focus)),
+                    Span::styled(
+                        truncate(&pretty_json(&tool.arguments), 800),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                ]));
             }
             lines.push(Line::from(""));
         }
@@ -599,19 +2039,36 @@ impl UiState {
 
     fn render_transcript(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let lines = self.transcript_lines();
-        let block = Block::default()
-            .style(Style::default().bg(BG))
-            .padding(ratatui::widgets::Padding::horizontal(2));
-        let inner = block.inner(area);
-        let paragraph = Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false });
+        let horizontal_margin = (area.width / 14).clamp(3, 14);
+        let inner = inset_rect(area, horizontal_margin, 0);
+        let heading_height = if inner.height >= 6 { 2 } else { 1 };
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(heading_height), Constraint::Min(1)])
+            .split(inner);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("SESSION  ·  ", Style::default().fg(self.theme.text_muted)),
+                Span::styled(
+                    short_id(&self.session_id),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+            ])),
+            rows[0],
+        );
+        frame.render_widget(
+            Paragraph::new("对话与执行互不阻塞")
+                .style(Style::default().fg(self.theme.success))
+                .alignment(Alignment::Right),
+            rows[0],
+        );
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
         // Use Ratatui's own word-wrapping implementation. Dividing the display
         // width by the viewport width undercounts lines whenever wrapping leaves
         // unused cells at a word boundary (especially in mixed CJK/Markdown
         // text), which can leave the newest transcript entry behind the composer.
-        let visual_lines = paragraph.line_count(inner.width);
-        let viewport = inner.height as usize;
+        let visual_lines = paragraph.line_count(rows[1].width);
+        let viewport = rows[1].height as usize;
         let max_scroll = visual_lines.saturating_sub(viewport).min(u16::MAX as usize) as u16;
         if self.follow_tail {
             self.scroll = max_scroll;
@@ -619,23 +2076,23 @@ impl UiState {
             self.scroll = self.scroll.min(max_scroll);
         }
         let paragraph = paragraph.scroll((self.scroll, 0));
-        frame.render_widget(paragraph, area);
+        frame.render_widget(paragraph, rows[1]);
     }
 
     fn render_composer(&self, frame: &mut Frame<'_>, area: Rect) {
-        let title = if self.busy {
-            " INPUT · Agent 正在工作，仍可追加消息 "
-        } else {
-            " INPUT "
-        };
         let text = self.composer.text();
         let content = if text.is_empty() {
             vec![Line::from(vec![
                 Span::styled(
                     "› ",
-                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(self.theme.focus)
+                        .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("输入消息，Enter 发送…", Style::default().fg(MUTED)),
+                Span::styled(
+                    "输入消息，Enter 发送…",
+                    Style::default().fg(self.theme.text_muted),
+                ),
             ])]
         } else {
             text.split('\n')
@@ -644,58 +2101,95 @@ impl UiState {
                     Line::from(vec![
                         Span::styled(
                             if index == 0 { "› " } else { "  " },
-                            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(self.theme.focus)
+                                .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(line.to_string(), Style::default().fg(TEXT)),
+                        Span::styled(
+                            line.to_string(),
+                            Style::default().fg(self.theme.text_primary),
+                        ),
                     ])
                 })
                 .collect::<Vec<_>>()
         };
-        let input = Paragraph::new(content)
-            .style(Style::default().bg(SURFACE_RAISED))
-            .block(
-                Block::default()
-                    .title(Span::styled(title, Style::default().fg(ACCENT)))
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(ACCENT))
-                    .padding(ratatui::widgets::Padding::horizontal(1)),
-            );
-        frame.render_widget(input, area);
+        let rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(3)])
+            .split(area);
+        let horizontal_margin = (area.width / 14).clamp(3, 14);
+        let status_area = inset_rect(rows[0], horizontal_margin, 0);
+        let status = if self.busy {
+            "Agent 正在工作，仍可追加消息"
+        } else {
+            "ready"
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    if self.busy { "●  " } else { "○  " },
+                    Style::default().fg(if self.busy {
+                        self.theme.success
+                    } else {
+                        self.theme.text_muted
+                    }),
+                ),
+                Span::styled(status, Style::default().fg(self.theme.text_muted)),
+            ])),
+            status_area,
+        );
+        frame.render_widget(
+            Paragraph::new(format!("当前 Session · {}", short_id(&self.session_id)))
+                .style(Style::default().fg(self.theme.text_muted))
+                .alignment(Alignment::Right),
+            status_area,
+        );
+        let separator = Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .border_style(Style::default().fg(self.theme.border_subtle));
+        let inner = inset_rect(separator.inner(rows[1]), horizontal_margin, 0);
+        frame.render_widget(separator, rows[1]);
+        frame.render_widget(Paragraph::new(content), inner);
         if self.pending_approval.is_none() && !self.show_help && !self.show_objectives {
             let (row, column) = self.composer.row_col();
-            let x = area
+            let x = inner
                 .x
-                .saturating_add(4)
+                .saturating_add(2)
                 .saturating_add(column as u16)
-                .min(area.right().saturating_sub(2));
-            let y = area
+                .min(inner.right().saturating_sub(1));
+            let y = inner
                 .y
-                .saturating_add(1)
                 .saturating_add(row as u16)
-                .min(area.bottom().saturating_sub(2));
+                .min(inner.bottom().saturating_sub(1));
             frame.set_cursor_position((x, y));
         }
     }
 
     fn render_footer(&self, frame: &mut Frame<'_>, area: Rect) {
-        let detail = if self.show_tool_details {
-            "details on"
+        let tool_hint = if self.show_tool_details {
+            " · Ctrl+T details on"
         } else {
-            "details off"
+            ""
+        };
+        let objective_hint = if self.objectives.is_empty() {
+            ""
+        } else {
+            " · Ctrl+O goals"
         };
         let left = format!(
-            " Enter 发送  ·  Shift+Enter / Ctrl+J 换行  ·  Ctrl+O 目标  ·  Ctrl+T 工具详情 {detail}  ·  F1 帮助 "
+            " Enter 发送  ·  Ctrl+J 换行  ·  Ctrl+W 工作  ·  Ctrl+M 认知{objective_hint}{tool_hint}  ·  Ctrl+D 退出  ·  F1 帮助"
         );
-        let right = format!("{} ", self.context_status);
-        let width = area.width as usize;
-        let padding = width.saturating_sub(left.chars().count() + right.chars().count());
-        let line = Line::from(vec![
-            Span::styled(left, Style::default().fg(MUTED)),
-            Span::raw(" ".repeat(padding)),
-            Span::styled(right, Style::default().fg(MUTED)),
-        ]);
-        frame.render_widget(Paragraph::new(line).style(Style::default().bg(BG)), area);
+        let style = Style::default().fg(self.theme.text_muted);
+        frame.render_widget(
+            Paragraph::new(left)
+                .style(style)
+                .block(
+                    Block::default().padding(ratatui::widgets::Padding::horizontal(
+                        (area.width / 14).clamp(3, 14),
+                    )),
+                ),
+            area,
+        );
     }
 
     fn render_help(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -705,25 +2199,29 @@ impl UiState {
             Line::from("  Enter                 Send"),
             Line::from("  Shift+Enter           Insert newline (enhanced terminals)"),
             Line::from("  Ctrl+J                Insert newline (portable fallback)"),
+            Line::from("  Ctrl+W                Toggle Runtime Work view"),
+            Line::from("  Ctrl+M                Toggle Mind / Frame view"),
+            Line::from("  Esc                   Return to Conversation view"),
             Line::from("  Ctrl+O                Expand/collapse Objectives"),
             Line::from("  Ctrl+T                Toggle raw tool details"),
             Line::from("  Ctrl+C                Cancel active evaluation; quit when idle"),
+            Line::from("  Ctrl+D                Exit Morphz"),
             Line::from("  PageUp/PageDown       Scroll transcript"),
             Line::from(""),
             Line::from("Commands"),
-            Line::from("  /ctx   /objectives   /jobs   /cancel   /clear   /quit"),
+            Line::from("  /ctx   /objectives   /jobs   /theme   /cancel   /clear   /quit"),
             Line::from(""),
             Line::from("Press Esc or F1 to close."),
         ])
         .block(
             Block::default()
-                .title(" Morphz help ")
+                .title(" Keyboard shortcuts ")
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(ACCENT))
+                .border_style(Style::default().fg(self.theme.focus))
                 .padding(ratatui::widgets::Padding::uniform(1)),
         )
-        .style(Style::default().bg(SURFACE_RAISED).fg(TEXT));
+        .style(Style::default().fg(self.theme.text_primary));
         frame.render_widget(help, area);
     }
 
@@ -731,19 +2229,21 @@ impl UiState {
         frame.render_widget(Clear, area);
         let mut lines = vec![Line::from(vec![
             Span::styled(
-                "OBJECTIVES",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                "Objectives",
+                Style::default()
+                    .fg(self.theme.brand)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("  {} non-terminal", self.objectives.len()),
-                Style::default().fg(MUTED),
+                Style::default().fg(self.theme.text_muted),
             ),
         ])];
         lines.push(Line::from(""));
         if self.objectives.is_empty() {
             lines.push(Line::from(Span::styled(
                 "当前 Context 没有进行中、暂停或阻塞的 Objective。",
-                Style::default().fg(MUTED),
+                Style::default().fg(self.theme.text_muted),
             )));
         } else {
             for objective in ordered_objectives(&self.objectives, &self.session_id) {
@@ -752,31 +2252,31 @@ impl UiState {
                     Span::styled(
                         format!("{} ", objective_status_marker(objective.status)),
                         Style::default()
-                            .fg(objective_status_color(objective.status))
+                            .fg(objective_status_color(objective.status, &self.theme))
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         status.to_uppercase(),
                         Style::default()
-                            .fg(objective_status_color(objective.status))
+                            .fg(objective_status_color(objective.status, &self.theme))
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         format!("  {}", short_id(&objective.id)),
-                        Style::default().fg(MUTED),
+                        Style::default().fg(self.theme.text_muted),
                     ),
                 ]));
                 for statement_line in objective.stated_objective.lines() {
                     lines.push(Line::from(Span::styled(
                         format!("   {statement_line}"),
-                        Style::default().fg(TEXT),
+                        Style::default().fg(self.theme.text_primary),
                     )));
                 }
                 if let Some(reason) = objective.status_reason.as_deref() {
                     for reason_line in reason.lines() {
                         lines.push(Line::from(vec![
-                            Span::styled("   原因  ", Style::default().fg(MUTED)),
-                            Span::styled(reason_line, Style::default().fg(TEXT)),
+                            Span::styled("   原因  ", Style::default().fg(self.theme.text_muted)),
+                            Span::styled(reason_line, Style::default().fg(self.theme.text_primary)),
                         ]));
                     }
                 }
@@ -804,12 +2304,12 @@ impl UiState {
                 }
                 lines.push(Line::from(Span::styled(
                     format!("   {}", facts.join("  ·  ")),
-                    Style::default().fg(MUTED),
+                    Style::default().fg(self.theme.text_muted),
                 )));
                 if let Some(parent) = objective.parent_objective_id.as_deref() {
                     lines.push(Line::from(Span::styled(
                         format!("   child of {}", short_id(parent)),
-                        Style::default().fg(MUTED),
+                        Style::default().fg(self.theme.text_muted),
                     )));
                 }
                 lines.push(Line::from(""));
@@ -817,7 +2317,7 @@ impl UiState {
         }
         lines.push(Line::from(Span::styled(
             "Ctrl+O / Esc 收起  ·  PageUp / PageDown 滚动",
-            Style::default().fg(MUTED),
+            Style::default().fg(self.theme.text_muted),
         )));
         let panel = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
@@ -827,10 +2327,10 @@ impl UiState {
                     .title(" Context Objectives ")
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(ACCENT))
+                    .border_style(Style::default().fg(self.theme.focus))
                     .padding(ratatui::widgets::Padding::uniform(1)),
             )
-            .style(Style::default().bg(SURFACE_RAISED).fg(TEXT));
+            .style(Style::default().fg(self.theme.text_primary));
         frame.render_widget(panel, area);
     }
 
@@ -847,10 +2347,10 @@ impl UiState {
                     .title(" Permission approval ")
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(WARNING))
+                    .border_style(Style::default().fg(self.theme.warning))
                     .padding(ratatui::widgets::Padding::uniform(1)),
             )
-            .style(Style::default().bg(SURFACE_RAISED).fg(TEXT));
+            .style(Style::default().fg(self.theme.text_primary));
         frame.render_widget(dialog, area);
     }
 }
@@ -873,19 +2373,11 @@ impl TerminalSession {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         let keyboard_enhancement_enabled = supports_keyboard_enhancement().unwrap_or(false);
-        execute!(
-            stdout,
-            EnterAlternateScreen,
-            EnableBracketedPaste,
-            EnableMouseCapture
-        )?;
+        execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
         if keyboard_enhancement_enabled {
             execute!(
                 stdout,
-                PushKeyboardEnhancementFlags(
-                    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                )
+                PushKeyboardEnhancementFlags(keyboard_enhancement_flags())
             )?;
         }
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
@@ -897,6 +2389,13 @@ impl TerminalSession {
     }
 }
 
+fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
+    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+}
+
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
@@ -906,7 +2405,6 @@ impl Drop for TerminalSession {
         let _ = execute!(
             self.terminal.backend_mut(),
             Show,
-            DisableMouseCapture,
             DisableBracketedPaste,
             LeaveAlternateScreen
         );
@@ -914,7 +2412,7 @@ impl Drop for TerminalSession {
     }
 }
 
-/// Runs the fullscreen frontend. Streamed assistant text is transient until the
+/// Runs the full-screen terminal frontend. Streamed assistant text is transient until the
 /// Runtime commits the corresponding `chat/reply` terminal fact.
 pub async fn run(
     runtime: MorphzRuntime,
@@ -922,6 +2420,10 @@ pub async fn run(
     initial_prompt: Option<String>,
 ) -> Result<(), TuiError> {
     let mut state = UiState::new(&runtime, &session);
+    if let Ok(Some(record)) = session.record().await {
+        state.context_id = record.context_id;
+        state.session_title = Some(record.title);
+    }
     if let Ok(history) = session.events(None).await {
         let start = history.len().saturating_sub(80);
         for event in &history[start..] {
@@ -930,6 +2432,9 @@ pub async fn run(
     }
     if let Ok(view) = session.inspect_context_view().await {
         state.update_context(&view);
+    }
+    if let Ok(delegations) = runtime.list_delegations().await {
+        state.delegations = delegations;
     }
 
     let mut runtime_events = runtime.subscribe("*", 2_048);
@@ -988,24 +2493,6 @@ pub async fn run(
                         }
                     }
                     Event::Paste(text) => state.composer.insert_str(&text),
-                    Event::Mouse(mouse) => match mouse.kind {
-                        MouseEventKind::ScrollUp => {
-                            if state.show_objectives {
-                                state.objective_scroll = state.objective_scroll.saturating_sub(4);
-                            } else {
-                                state.follow_tail = false;
-                                state.scroll = state.scroll.saturating_sub(4);
-                            }
-                        }
-                        MouseEventKind::ScrollDown => {
-                            if state.show_objectives {
-                                state.objective_scroll = state.objective_scroll.saturating_add(4);
-                            } else {
-                                state.scroll = state.scroll.saturating_add(4);
-                            }
-                        }
-                        _ => {}
-                    },
                     _ => {}
                 }
             }
@@ -1031,6 +2518,9 @@ pub async fn run(
                 if refresh {
                     if let Ok(view) = session.inspect_context_view().await {
                         state.update_context(&view);
+                    }
+                    if let Ok(delegations) = runtime.list_delegations().await {
+                        state.delegations = delegations;
                     }
                 }
             }
@@ -1061,7 +2551,40 @@ async fn handle_command(
     state: &mut UiState,
     input: &str,
 ) -> Result<bool, TuiError> {
-    match input.trim() {
+    let command = input.trim();
+    if command == "/theme" {
+        state.push(
+            EntryKind::System,
+            format!(
+                "当前主题：{}。可用：system、mono、iris、cyan、coral、no-color。",
+                state.theme_kind.as_str()
+            ),
+        );
+        return Ok(true);
+    }
+    if let Some(value) = command.strip_prefix("/theme ") {
+        match TuiTheme::parse(value) {
+            Some(theme_kind) => {
+                state.set_theme(theme_kind);
+                state.push(
+                    EntryKind::System,
+                    format!(
+                        "已切换到 {} 主题；本次 TUI 会话立即生效。",
+                        theme_kind.as_str()
+                    ),
+                );
+            }
+            None => state.push(
+                EntryKind::Error,
+                format!(
+                    "未知主题 '{}'；可用 system、mono、iris、cyan、coral、no-color。",
+                    value.trim()
+                ),
+            ),
+        }
+        return Ok(true);
+    }
+    match command {
         "/help" => {
             state.show_help = true;
             Ok(true)
@@ -1124,6 +2647,9 @@ async fn handle_command(
 }
 
 fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
+        return UiAction::Quit;
+    }
     if state.pending_approval.is_some() {
         return match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => UiAction::Approve(true),
@@ -1160,6 +2686,28 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
         } else {
             UiAction::Quit
         };
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('w') {
+        let next = if state.active_view == UiView::Work {
+            UiView::Conversation
+        } else {
+            UiView::Work
+        };
+        state.set_active_view(next);
+        return UiAction::None;
+    }
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('m') {
+        let next = if state.active_view == UiView::Mind {
+            UiView::Conversation
+        } else {
+            UiView::Mind
+        };
+        state.set_active_view(next);
+        return UiAction::None;
+    }
+    if key.code == KeyCode::Esc && state.active_view != UiView::Conversation {
+        state.set_active_view(UiView::Conversation);
+        return UiAction::None;
     }
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('t') {
         state.show_tool_details = !state.show_tool_details;
@@ -1202,6 +2750,12 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
         }
         KeyCode::Home => state.composer.cursor = 0,
         KeyCode::End => state.composer.cursor = state.composer.chars.len(),
+        KeyCode::PageUp if state.active_view != UiView::Conversation => {
+            state.view_scroll = state.view_scroll.saturating_sub(8)
+        }
+        KeyCode::PageDown if state.active_view != UiView::Conversation => {
+            state.view_scroll = state.view_scroll.saturating_add(8)
+        }
         KeyCode::PageUp => {
             state.follow_tail = false;
             state.scroll = state.scroll.saturating_sub(8);
@@ -1212,14 +2766,81 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
     UiAction::None
 }
 
-fn entry_style(kind: EntryKind) -> (&'static str, Color) {
+fn entry_style(kind: EntryKind, theme: &Theme) -> (&'static str, Color) {
     match kind {
-        EntryKind::User => ("YOU", USER),
-        EntryKind::Assistant => ("MORPHZ", SUCCESS),
-        EntryKind::Progress => ("AGENT · PROGRESS", ACCENT),
-        EntryKind::Tool => ("TOOL", WARNING),
-        EntryKind::System => ("SYSTEM", MUTED),
-        EntryKind::Error => ("ERROR", ERROR),
+        EntryKind::User => ("You", theme.user),
+        EntryKind::Assistant => ("Morphz", theme.brand),
+        EntryKind::Progress => ("Morphz · working", theme.brand),
+        EntryKind::Tool => ("Tool", theme.tool),
+        EntryKind::System => ("System", theme.text_muted),
+        EntryKind::Error => ("Error", theme.error),
+    }
+}
+
+fn section_title(
+    title: &'static str,
+    count: usize,
+    title_color: Color,
+    count_color: Color,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            title,
+            Style::default()
+                .fg(title_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("  {count}"), Style::default().fg(count_color)),
+    ])
+}
+
+fn empty_state_line(message: impl Into<String>, color: Color) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  — {}", message.into()),
+        Style::default().fg(color),
+    ))
+}
+
+fn work_status_color(status: &str, theme: &Theme) -> Color {
+    match status {
+        "running" | "active" | "succeeded" | "completed" => theme.success,
+        "queued" | "waiting_tool" | "waiting_external" | "starting" | "kill_requested" => {
+            theme.warning
+        }
+        "failed" | "killed" | "cancelled" => theme.error,
+        _ => theme.text_secondary,
+    }
+}
+
+fn pressure_color(level: &str, theme: &Theme) -> Color {
+    match level {
+        "critical" | "hard" | "overflow" => theme.error,
+        "warning" | "soft" => theme.warning,
+        _ => theme.success,
+    }
+}
+
+fn pressure_bar(used: usize, limit: usize, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let ratio = if limit == 0 {
+        0.0
+    } else {
+        (used as f64 / limit as f64).clamp(0.0, 1.0)
+    };
+    let filled = (ratio * width as f64).round() as usize;
+    format!("{}{}", "━".repeat(filled), "─".repeat(width - filled))
+}
+
+fn background_status_str(status: BackgroundTaskStatus) -> &'static str {
+    match status {
+        BackgroundTaskStatus::Starting => "starting",
+        BackgroundTaskStatus::Running => "running",
+        BackgroundTaskStatus::KillRequested => "kill_requested",
+        BackgroundTaskStatus::Succeeded => "succeeded",
+        BackgroundTaskStatus::Failed => "failed",
+        BackgroundTaskStatus::Killed => "killed",
     }
 }
 
@@ -1265,15 +2886,41 @@ fn objective_status_marker(status: ObjectiveStatus) -> &'static str {
     }
 }
 
-fn objective_status_color(status: ObjectiveStatus) -> Color {
+fn objective_status_color(status: ObjectiveStatus, theme: &Theme) -> Color {
     match status {
-        ObjectiveStatus::Active => SUCCESS,
-        ObjectiveStatus::Paused => WARNING,
-        ObjectiveStatus::Blocked => WARNING,
-        ObjectiveStatus::Completed => SUCCESS,
-        ObjectiveStatus::Cancelled => MUTED,
-        ObjectiveStatus::Failed => ERROR,
+        ObjectiveStatus::Active => theme.success,
+        ObjectiveStatus::Paused => theme.warning,
+        ObjectiveStatus::Blocked => theme.warning,
+        ObjectiveStatus::Completed => theme.success,
+        ObjectiveStatus::Cancelled => theme.text_muted,
+        ObjectiveStatus::Failed => theme.error,
     }
+}
+
+fn compact_count(value: usize) -> String {
+    if value >= 1_000_000 {
+        let tenths = value / 100_000;
+        if tenths.is_multiple_of(10) {
+            format!("{}m", tenths / 10)
+        } else {
+            format!("{}.{}m", tenths / 10, tenths % 10)
+        }
+    } else if value >= 1_000 {
+        format!("{}k", (value + 500) / 1_000)
+    } else {
+        value.to_string()
+    }
+}
+
+fn inset_rect(area: Rect, horizontal: u16, vertical: u16) -> Rect {
+    let horizontal = horizontal.min(area.width / 2);
+    let vertical = vertical.min(area.height / 2);
+    Rect::new(
+        area.x.saturating_add(horizontal),
+        area.y.saturating_add(vertical),
+        area.width.saturating_sub(horizontal.saturating_mul(2)),
+        area.height.saturating_sub(vertical.saturating_mul(2)),
+    )
 }
 
 fn format_objective_wait(wait: &ObjectiveWaitCondition) -> String {
@@ -1579,46 +3226,6 @@ fn short_call_id(id: &str) -> String {
     format!("…{suffix}")
 }
 
-fn append_tool_lines(
-    lines: &mut Vec<Line<'static>>,
-    compact: &str,
-    detail: Option<&str>,
-    expanded: bool,
-) {
-    for line in compact.lines() {
-        let trimmed = line.trim_start();
-        let color = if trimmed.starts_with('✓') {
-            SUCCESS
-        } else if trimmed.starts_with('!') {
-            ERROR
-        } else if trimmed.starts_with('◇') {
-            TOOL
-        } else {
-            TEXT
-        };
-        let style = if matches!(trimmed.chars().next(), Some('✓' | '!' | '◇')) {
-            Style::default().fg(color).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(color)
-        };
-        lines.push(Line::from(Span::styled(format!("  {line}"), style)));
-    }
-    if expanded {
-        if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
-            lines.push(Line::from(Span::styled(
-                "    ─ details",
-                Style::default().fg(BORDER),
-            )));
-            for line in detail.lines() {
-                lines.push(Line::from(Span::styled(
-                    format!("    {line}"),
-                    Style::default().fg(MUTED),
-                )));
-            }
-        }
-    }
-}
-
 fn pretty_json(value: &str) -> String {
     serde_json::from_str::<Value>(value)
         .ok()
@@ -1676,7 +3283,10 @@ mod tests {
 
     fn test_state(composer: Composer) -> UiState {
         UiState {
+            agent_id: "agent-default".to_string(),
+            context_id: "context-default".to_string(),
             session_id: "s".to_string(),
+            session_title: Some("main".to_string()),
             model: "m".to_string(),
             entries: Vec::new(),
             composer,
@@ -1685,6 +3295,10 @@ mod tests {
             status: "ready".to_string(),
             context_status: "normal".to_string(),
             objectives: Vec::new(),
+            context_view: None,
+            delegations: Vec::new(),
+            active_view: UiView::Conversation,
+            view_scroll: 0,
             busy: false,
             follow_tail: true,
             scroll: 0,
@@ -1694,6 +3308,8 @@ mod tests {
             show_tool_details: false,
             show_objectives: false,
             objective_scroll: 0,
+            theme_kind: TuiTheme::Mono,
+            theme: Theme::from_kind(TuiTheme::Mono),
         }
     }
 
@@ -1738,6 +3354,15 @@ mod tests {
     }
 
     #[test]
+    fn compact_count_keeps_context_chrome_readable() {
+        assert_eq!(compact_count(999), "999");
+        assert_eq!(compact_count(1_000), "1k");
+        assert_eq!(compact_count(202_473), "202k");
+        assert_eq!(compact_count(1_000_000), "1m");
+        assert_eq!(compact_count(1_250_000), "1.2m");
+    }
+
+    #[test]
     fn enter_submits_and_shift_enter_inserts_newline() {
         let mut composer = Composer::new();
         composer.insert_str("hello");
@@ -1763,6 +3388,31 @@ mod tests {
             UiAction::None
         ));
         assert_eq!(state.composer.text(), "\n\n");
+    }
+
+    #[test]
+    fn enhanced_keyboard_protocol_preserves_modified_enter() {
+        let flags = keyboard_enhancement_flags();
+        assert!(flags.contains(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES));
+        assert!(flags.contains(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES));
+        assert!(flags.contains(KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS));
+        assert!(flags.contains(KeyboardEnhancementFlags::REPORT_EVENT_TYPES));
+    }
+
+    #[test]
+    fn ctrl_d_quits_from_normal_busy_and_modal_states() {
+        let ctrl_d = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL);
+
+        let mut normal = test_state(Composer::new());
+        assert!(matches!(key_action(&mut normal, ctrl_d), UiAction::Quit));
+
+        let mut busy = test_state(Composer::new());
+        busy.busy = true;
+        assert!(matches!(key_action(&mut busy, ctrl_d), UiAction::Quit));
+
+        let mut modal = test_state(Composer::new());
+        modal.show_help = true;
+        assert!(matches!(key_action(&mut modal, ctrl_d), UiAction::Quit));
     }
 
     #[test]
@@ -1853,13 +3503,140 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(screen.contains("MORPHZ"));
+        assert!(screen.contains("Morphz"));
+        assert!(screen.contains("SESSION"));
+        assert!(screen.contains("WORK"));
         assert!(screen.contains("Run command"));
         assert!(screen.contains("cargo test"));
-        assert!(screen.contains("OBJECTIVE"));
+        assert!(screen.contains("Objective"));
         assert!(screen.contains("Win TankWar and keep improving strategy"));
         assert!(!screen.contains("requested_permissions"));
         assert!(terminal.backend().cursor_visible());
+    }
+
+    #[test]
+    #[ignore = "manual Ratatui visual snapshot"]
+    fn print_modern_shell_snapshot() {
+        let mut state = test_state(Composer::new());
+        state.set_theme(TuiTheme::Iris);
+        state.objectives.push(test_objective());
+        state.push(
+            EntryKind::User,
+            "请检查当前 Provider 的流式响应是否符合契约，并补上缺失的异常场景测试。",
+        );
+        state.push(
+            EntryKind::Assistant,
+            "我会先对照三套适配器的事件边界，再运行已有契约测试。工作已经启动，你可以继续给我消息。",
+        );
+        state.push_tool("◇ Run command\n   cargo test --workspace", "");
+        let width = 160usize;
+        let mut terminal = Terminal::new(TestBackend::new(width as u16, 40)).unwrap();
+        terminal.draw(|frame| state.render(frame)).unwrap();
+        for row in terminal.backend().buffer().content().chunks(width) {
+            println!(
+                "{}",
+                row.iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+                    .trim_end()
+            );
+        }
+    }
+
+    #[test]
+    fn empty_state_hides_objective_chrome_and_inherits_terminal_background() {
+        let mut state = test_state(Composer::new());
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|frame| state.render(frame)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let screen = buffer
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let compact_screen = screen
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(screen.contains("Morphz"));
+        assert!(compact_screen.contains("输入消息"));
+        assert!(!screen.contains("OBJECTIVE"));
+        assert!(!screen.contains("Objective  none"));
+        assert!(buffer
+            .content()
+            .iter()
+            .any(|cell| cell.fg == state.theme.brand));
+        assert!(buffer
+            .content()
+            .iter()
+            .any(|cell| cell.fg == state.theme.focus));
+        assert!(buffer.content().iter().all(|cell| cell.bg == Color::Reset));
+    }
+
+    #[test]
+    fn themes_change_semantic_accents_without_owning_the_background() {
+        let mono = Theme::from_kind(TuiTheme::Mono);
+        let iris = Theme::from_kind(TuiTheme::Iris);
+        let cyan = Theme::from_kind(TuiTheme::Cyan);
+        let coral = Theme::from_kind(TuiTheme::Coral);
+        let no_color = Theme::from_kind(TuiTheme::NoColor);
+
+        assert_eq!(mono.brand, Color::Reset);
+        assert_eq!(iris.brand, Color::LightMagenta);
+        assert_eq!(cyan.brand, Color::LightCyan);
+        assert_eq!(coral.brand, Color::LightRed);
+        assert_eq!(no_color.brand, Color::Reset);
+        assert_eq!(no_color.success, Color::Reset);
+    }
+
+    #[test]
+    fn ctrl_w_and_ctrl_m_switch_full_views_while_escape_returns_to_chat() {
+        let mut state = test_state(Composer::new());
+        assert_eq!(state.active_view, UiView::Conversation);
+
+        assert!(matches!(
+            key_action(
+                &mut state,
+                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)
+            ),
+            UiAction::None
+        ));
+        assert_eq!(state.active_view, UiView::Work);
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| state.render(frame)).unwrap();
+        let work_screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(work_screen.contains("RUNTIME WORK"));
+        assert!(work_screen.contains("EVALUATIONS"));
+        assert!(work_screen.contains("OBJECTIVES"));
+        assert!(work_screen.contains("BACKGROUND TASKS"));
+        assert!(work_screen.contains("DELEGATIONS"));
+        assert!(work_screen.contains("CHAT"));
+        assert!(terminal.backend().cursor_visible());
+
+        key_action(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.active_view, UiView::Mind);
+        terminal.draw(|frame| state.render(frame)).unwrap();
+        let mind_screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(mind_screen.contains("MIND"));
+
+        key_action(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(state.active_view, UiView::Conversation);
     }
 
     #[test]

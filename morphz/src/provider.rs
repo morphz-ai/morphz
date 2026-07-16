@@ -3,7 +3,7 @@ use crate::config::{
 };
 use crate::llm::{
     Client, Message, ModelStreamEvent, ModelStreamSender, PromptTokenAccuracy, PromptTokenCount,
-    Response, ToolCallRepr, ToolDefinition,
+    ReasoningEffort, Response, ToolCallRepr, ToolDefinition,
 };
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 type ProviderError = Box<dyn std::error::Error + Send + Sync>;
@@ -181,6 +181,7 @@ pub struct ProtocolClient {
     max_retries: u32,
     initial_backoff_secs: u64,
     max_output_tokens: Option<u32>,
+    reasoning_effort: RwLock<Option<ReasoningEffort>>,
 }
 
 impl ProtocolClient {
@@ -219,6 +220,7 @@ impl ProtocolClient {
             max_retries: llm.max_retries.max(1),
             initial_backoff_secs: llm.initial_backoff_secs,
             max_output_tokens: llm.max_output_tokens,
+            reasoning_effort: RwLock::new(llm.reasoning_effort),
         })
     }
 
@@ -256,6 +258,10 @@ impl ProtocolClient {
             self.protocol,
             &self.model,
             self.max_output_tokens,
+            self.reasoning_effort
+                .read()
+                .map(|effort| *effort)
+                .unwrap_or(None),
             messages,
             tools,
         )
@@ -565,6 +571,21 @@ pub async fn probe_provider(
 
 #[async_trait::async_trait]
 impl Client for ProtocolClient {
+    fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.reasoning_effort
+            .read()
+            .map(|effort| *effort)
+            .unwrap_or(None)
+    }
+
+    fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>) -> Result<(), String> {
+        *self
+            .reasoning_effort
+            .write()
+            .map_err(|_| "推理深度配置锁已损坏".to_string())? = effort;
+        Ok(())
+    }
+
     async fn count_prompt_tokens(
         &self,
         _scope: &str,
@@ -1061,32 +1082,43 @@ fn build_request(
     protocol: ModelProtocol,
     model: &str,
     max_output_tokens: Option<u32>,
+    reasoning_effort: Option<ReasoningEffort>,
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Value {
     match protocol {
         ModelProtocol::OpenaiChat => {
-            build_openai_chat_request(model, max_output_tokens, messages, tools)
+            build_openai_chat_request(model, max_output_tokens, reasoning_effort, messages, tools)
         }
-        ModelProtocol::OpenaiResponses => {
-            build_openai_responses_request(model, max_output_tokens, messages, tools)
-        }
+        ModelProtocol::OpenaiResponses => build_openai_responses_request(
+            model,
+            max_output_tokens,
+            reasoning_effort,
+            messages,
+            tools,
+        ),
         ModelProtocol::AnthropicMessages => {
-            build_anthropic_request(model, max_output_tokens, messages, tools)
+            build_anthropic_request(model, max_output_tokens, reasoning_effort, messages, tools)
         }
-        ModelProtocol::GeminiContent => build_gemini_request(max_output_tokens, messages, tools),
+        ModelProtocol::GeminiContent => {
+            build_gemini_request(max_output_tokens, reasoning_effort, messages, tools)
+        }
     }
 }
 
 fn build_openai_chat_request(
     model: &str,
     max_output_tokens: Option<u32>,
+    reasoning_effort: Option<ReasoningEffort>,
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Value {
     let mut request = json!({"model": model, "messages": messages});
     if let Some(max_tokens) = max_output_tokens {
         request["max_completion_tokens"] = json!(max_tokens);
+    }
+    if let Some(effort) = reasoning_effort {
+        request["reasoning_effort"] = json!(effort.as_str());
     }
     if !tools.is_empty() {
         request["tools"] = Value::Array(
@@ -1111,6 +1143,7 @@ fn build_openai_chat_request(
 fn build_openai_responses_request(
     model: &str,
     max_output_tokens: Option<u32>,
+    reasoning_effort: Option<ReasoningEffort>,
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Value {
@@ -1140,6 +1173,9 @@ fn build_openai_responses_request(
     if let Some(max_tokens) = max_output_tokens {
         request["max_output_tokens"] = json!(max_tokens);
     }
+    if let Some(effort) = reasoning_effort {
+        request["reasoning"] = json!({"effort": effort.as_str()});
+    }
     if !tools.is_empty() {
         request["tools"] = Value::Array(
             tools
@@ -1162,6 +1198,7 @@ fn build_openai_responses_request(
 fn build_anthropic_request(
     model: &str,
     max_output_tokens: Option<u32>,
+    reasoning_effort: Option<ReasoningEffort>,
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Value {
@@ -1225,6 +1262,9 @@ fn build_anthropic_request(
     if !system.is_empty() {
         request["system"] = json!(system);
     }
+    if let Some(effort) = reasoning_effort {
+        request["output_config"] = json!({"effort": effort.as_str()});
+    }
     if !tools.is_empty() {
         request["tools"] = Value::Array(
             tools
@@ -1244,6 +1284,7 @@ fn build_anthropic_request(
 
 fn build_gemini_request(
     max_output_tokens: Option<u32>,
+    reasoning_effort: Option<ReasoningEffort>,
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Value {
@@ -1304,8 +1345,15 @@ fn build_gemini_request(
     if !system.is_empty() {
         request["systemInstruction"] = json!({"parts": [{"text": system}]});
     }
-    if let Some(max_tokens) = max_output_tokens {
-        request["generationConfig"] = json!({"maxOutputTokens": max_tokens});
+    if max_output_tokens.is_some() || reasoning_effort.is_some() {
+        let mut generation_config = json!({});
+        if let Some(max_tokens) = max_output_tokens {
+            generation_config["maxOutputTokens"] = json!(max_tokens);
+        }
+        if let Some(effort) = reasoning_effort {
+            generation_config["thinkingConfig"] = json!({"thinkingLevel": effort.as_str()});
+        }
+        request["generationConfig"] = generation_config;
     }
     if !tools.is_empty() {
         request["tools"] = json!([{
@@ -1634,6 +1682,7 @@ mod tests {
             ModelProtocol::OpenaiResponses,
             "m",
             Some(100),
+            None,
             &messages,
             &tools,
         );
@@ -1644,6 +1693,7 @@ mod tests {
             ModelProtocol::AnthropicMessages,
             "m",
             Some(100),
+            None,
             &messages,
             &tools,
         );
@@ -1657,6 +1707,7 @@ mod tests {
             ModelProtocol::GeminiContent,
             "m",
             Some(100),
+            None,
             &messages,
             &tools,
         );
@@ -1668,6 +1719,65 @@ mod tests {
             gemini["contents"][1]["parts"][0]["functionResponse"]["name"],
             "read_file"
         );
+    }
+
+    #[test]
+    fn reasoning_effort_maps_to_each_native_protocol_without_model_name_inference() {
+        let messages = messages();
+        let tools = tools();
+        let chat = build_request(
+            ModelProtocol::OpenaiChat,
+            "model",
+            None,
+            Some(ReasoningEffort::High),
+            &messages,
+            &tools,
+        );
+        assert_eq!(chat["reasoning_effort"], "high");
+
+        let responses = build_request(
+            ModelProtocol::OpenaiResponses,
+            "gemini-through-a-proxy",
+            None,
+            Some(ReasoningEffort::High),
+            &messages,
+            &tools,
+        );
+        assert_eq!(responses["reasoning"]["effort"], "high");
+        assert!(responses.get("reasoning_effort").is_none());
+
+        let anthropic = build_request(
+            ModelProtocol::AnthropicMessages,
+            "model",
+            None,
+            Some(ReasoningEffort::Medium),
+            &messages,
+            &tools,
+        );
+        assert_eq!(anthropic["output_config"]["effort"], "medium");
+
+        let gemini = build_request(
+            ModelProtocol::GeminiContent,
+            "model",
+            None,
+            Some(ReasoningEffort::Low),
+            &messages,
+            &tools,
+        );
+        assert_eq!(
+            gemini["generationConfig"]["thinkingConfig"]["thinkingLevel"],
+            "low"
+        );
+
+        let provider_default = build_request(
+            ModelProtocol::OpenaiResponses,
+            "model",
+            None,
+            None,
+            &messages,
+            &tools,
+        );
+        assert!(provider_default.get("reasoning").is_none());
     }
 
     #[test]

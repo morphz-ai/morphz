@@ -1,18 +1,20 @@
 use crate::approval::ApprovalDecision;
 use crate::event::Event;
+use crate::llm::ReasoningEffort;
 use crate::memory::{
-    DelegationStatus, NewAgent, NewCognitiveContext, NewSession, QueryFilter, SessionMountKind,
-    SessionStatus, SessionUpdate,
+    DelegationStatus, NewAgent, NewCognitiveContext, NewSession, ObjectiveMutation,
+    ObjectiveStatus, QueryFilter, SessionMountKind, SessionStatus, SessionUpdate,
 };
 use crate::runtime::MorphzRuntime;
 use axum::{
+    body::Body,
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
     http::{header, HeaderMap, Method, StatusCode},
-    response::IntoResponse,
-    routing::{get, post},
+    response::{IntoResponse, Response},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde_json::json;
@@ -21,6 +23,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
+
+const DASHBOARD_INDEX: &[u8] = include_bytes!("../../dashboard/dist/index.html");
+const DASHBOARD_APP_JS: &[u8] = include_bytes!("../../dashboard/dist/assets/app.js");
+const DASHBOARD_APP_CSS: &[u8] = include_bytes!("../../dashboard/dist/assets/app.css");
+const DASHBOARD_FAVICON: &[u8] = include_bytes!("../../dashboard/dist/favicon.svg");
+const DASHBOARD_ICONS: &[u8] = include_bytes!("../../dashboard/dist/icons.svg");
 
 pub struct Server {
     runtime: MorphzRuntime,
@@ -127,6 +135,17 @@ struct DecideApprovalRequest {
     rationale: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct UpdateInferenceRequest {
+    reasoning_effort: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ResumeObjectiveRequest {
+    expected_revision: u64,
+    reason: Option<String>,
+}
+
 #[derive(Default, serde::Deserialize)]
 struct EventQuery {
     token: Option<String>,
@@ -159,6 +178,17 @@ impl Server {
     pub async fn start(
         &self,
         addr_str: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let auth_token = std::env::var("MORPHZ_DASHBOARD_TOKEN")
+            .ok()
+            .filter(|token| !token.trim().is_empty());
+        self.start_with_dashboard_token(addr_str, auth_token).await
+    }
+
+    pub async fn start_with_dashboard_token(
+        &self,
+        addr_str: &str,
+        auth_token: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let broadcast_tx_clone = self.broadcast_tx.clone();
         let runtime = self.runtime.clone();
@@ -233,9 +263,7 @@ impl Server {
         let state = Arc::new(AppState {
             runtime: self.runtime.clone(),
             broadcast_tx: self.broadcast_tx.clone(),
-            auth_token: std::env::var("MORPHZ_DASHBOARD_TOKEN")
-                .ok()
-                .filter(|token| !token.trim().is_empty()),
+            auth_token: auth_token.filter(|token| !token.trim().is_empty()),
             default_agent_id: self.default_agent_id.clone(),
             default_context_id: self.default_context_id.clone(),
         });
@@ -247,12 +275,24 @@ impl Server {
                 Method::GET,
                 Method::POST,
                 Method::PATCH,
+                Method::PUT,
+                Method::DELETE,
                 Method::OPTIONS,
             ])
             .allow_headers(vec![header::CONTENT_TYPE, header::AUTHORIZATION]);
 
         let app = Router::new()
+            .route("/", get(handle_dashboard_index))
+            .route("/assets/app.js", get(handle_dashboard_app_js))
+            .route("/assets/app.css", get(handle_dashboard_app_css))
+            .route("/favicon.svg", get(handle_dashboard_favicon))
+            .route("/icons.svg", get(handle_dashboard_icons))
             .route("/health", get(|| async { StatusCode::OK }))
+            .route("/api/status", get(handle_status))
+            .route(
+                "/api/runtime/inference",
+                get(handle_get_inference).put(handle_update_inference),
+            )
             .route(
                 "/api/agents",
                 get(handle_list_agents).post(handle_create_agent),
@@ -268,6 +308,10 @@ impl Server {
             .route(
                 "/api/contexts/:context_id/work-items",
                 get(handle_get_context_work_items),
+            )
+            .route(
+                "/api/contexts/:context_id/background-tasks",
+                get(handle_get_context_background_tasks),
             )
             .route(
                 "/api/sessions",
@@ -299,6 +343,14 @@ impl Server {
             )
             .route("/api/delegations", get(handle_list_delegations))
             .route(
+                "/api/objectives/:objective_id/resume",
+                post(handle_resume_objective),
+            )
+            .route(
+                "/api/objectives/:objective_id",
+                delete(handle_delete_objective),
+            )
+            .route(
                 "/api/delegations/:delegation_id",
                 get(handle_get_delegation),
             )
@@ -328,6 +380,104 @@ impl Server {
         });
 
         Ok(())
+    }
+}
+
+fn embedded_asset(content_type: &'static str, body: &'static [u8]) -> Response {
+    Response::builder()
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from(body))
+        .expect("embedded Dashboard response must be valid")
+}
+
+async fn handle_dashboard_index() -> Response {
+    embedded_asset("text/html; charset=utf-8", DASHBOARD_INDEX)
+}
+
+async fn handle_dashboard_app_js() -> Response {
+    embedded_asset("text/javascript; charset=utf-8", DASHBOARD_APP_JS)
+}
+
+async fn handle_dashboard_app_css() -> Response {
+    embedded_asset("text/css; charset=utf-8", DASHBOARD_APP_CSS)
+}
+
+async fn handle_dashboard_favicon() -> Response {
+    embedded_asset("image/svg+xml", DASHBOARD_FAVICON)
+}
+
+async fn handle_dashboard_icons() -> Response {
+    embedded_asset("image/svg+xml", DASHBOARD_ICONS)
+}
+
+async fn handle_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    Json(json!({
+        "agent_id": state.default_agent_id,
+        "context_id": state.default_context_id,
+        "model": state.runtime.config().llm.model,
+        "provider": state.runtime.config().llm.provider,
+        "reasoning_effort": state.runtime.reasoning_effort().map(ReasoningEffort::as_str),
+        "tool_count": state.runtime.tool_names().len(),
+    }))
+    .into_response()
+}
+
+async fn handle_get_inference(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    Json(json!({
+        "reasoning_effort": state.runtime.reasoning_effort().map(ReasoningEffort::as_str),
+    }))
+    .into_response()
+}
+
+async fn handle_update_inference(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<UpdateInferenceRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let effort = match request
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.eq_ignore_ascii_case("default"))
+    {
+        Some(value) => match ReasoningEffort::parse(value) {
+            Some(effort) => Some(effort),
+            None => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    "reasoning_effort 只支持 default、low、medium、high",
+                )
+            }
+        },
+        None => None,
+    };
+    match state.runtime.set_reasoning_effort(effort) {
+        Ok(()) => Json(json!({
+            "reasoning_effort": effort.map(ReasoningEffort::as_str),
+            "scope": "subsequent_requests",
+            "persistent": false,
+        }))
+        .into_response(),
+        Err(error) => error_response(StatusCode::NOT_IMPLEMENTED, error.to_string()),
     }
 }
 
@@ -759,6 +909,28 @@ async fn handle_get_context_work_items(
     }
 }
 
+async fn handle_get_context_background_tasks(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.runtime.get_context(&context_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Context 不存在"),
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+    let tasks = crate::tool::get_tasks_map()
+        .iter()
+        .filter(|task| task.context_id == context_id)
+        .map(|task| crate::tool::background_task_snapshot(&task))
+        .collect::<Vec<_>>();
+    Json(json!({ "context_id": context_id, "tasks": tasks })).into_response()
+}
+
 async fn handle_create_context(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -1038,23 +1210,24 @@ async fn handle_get_session_events(
         Ok(Some(_)) => {}
     }
     let limit = query.limit.unwrap_or(100).clamp(1, 1_000);
-    match state
-        .runtime
-        .query_events(QueryFilter {
+    let filter = if let Some(after_sequence) = query.after_sequence {
+        QueryFilter {
             session_id: Some(session_id),
+            after_sequence: Some(after_sequence),
+            top_k: Some(limit),
+            excluded_topics: vec!["chat/context_inspect".to_string()],
             ..QueryFilter::default()
-        })
-        .await
-    {
-        Ok(mut events) => {
-            if let Some(after) = query.after_sequence {
-                events.retain(|event| event.sequence.is_some_and(|sequence| sequence > after));
-                events.truncate(limit);
-            } else if events.len() > limit {
-                events.drain(..events.len() - limit);
-            }
-            Json(json!({ "events": events })).into_response()
         }
+    } else {
+        QueryFilter {
+            session_id: Some(session_id),
+            latest_k: Some(limit),
+            excluded_topics: vec!["chat/context_inspect".to_string()],
+            ..QueryFilter::default()
+        }
+    };
+    match state.runtime.query_events(filter).await {
+        Ok(events) => Json(json!({ "events": events })).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
@@ -1134,6 +1307,109 @@ async fn handle_list_delegations(
     }
     match state.runtime.list_delegations().await {
         Ok(delegations) => Json(json!({ "delegations": delegations })).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_resume_objective(
+    State(state): State<Arc<AppState>>,
+    Path(objective_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<ResumeObjectiveRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let objective = match state.runtime.get_objective(&objective_id).await {
+        Ok(Some(objective)) => objective,
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Objective 不存在"),
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    if !matches!(
+        objective.status,
+        ObjectiveStatus::Blocked | ObjectiveStatus::Paused
+    ) {
+        return error_response(
+            StatusCode::CONFLICT,
+            format!(
+                "Objective 当前状态为 '{}'，只有 blocked/paused 可以显式恢复",
+                objective.status.as_str()
+            ),
+        );
+    }
+    let reason = request
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("用户通过 Dashboard 显式恢复 Objective");
+    match state
+        .runtime
+        .resume_objective(&objective_id, request.expected_revision, reason)
+        .await
+    {
+        Ok(ObjectiveMutation::Updated(updated)) => Json(json!({
+            "resumed": true,
+            "objective": updated,
+        }))
+        .into_response(),
+        Ok(ObjectiveMutation::Conflict { current }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Objective revision 冲突，请刷新后重试",
+                "current": current,
+            })),
+        )
+            .into_response(),
+        Ok(ObjectiveMutation::NotFound) => {
+            error_response(StatusCode::NOT_FOUND, "Objective 不存在")
+        }
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+/// Remove an Objective from the live control plane without erasing its audit
+/// history. Internally this is the `cancelled` terminal transition: it stops
+/// the current evaluation and prevents the Supervisor from continuing it.
+async fn handle_delete_objective(
+    State(state): State<Arc<AppState>>,
+    Path(objective_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<ResumeObjectiveRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let reason = request
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("用户通过 Dashboard 删除 Objective");
+    match state
+        .runtime
+        .cancel_objective(&objective_id, request.expected_revision, reason)
+        .await
+    {
+        Ok(ObjectiveMutation::Updated(updated)) => Json(json!({
+            "deleted": true,
+            "objective_id": updated.id,
+            "terminal_status": updated.status,
+        }))
+        .into_response(),
+        Ok(ObjectiveMutation::Conflict { current }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Objective revision 冲突，请刷新后重试",
+                "current": current,
+            })),
+        )
+            .into_response(),
+        Ok(ObjectiveMutation::NotFound) => {
+            error_response(StatusCode::NOT_FOUND, "Objective 不存在")
+        }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
@@ -1273,14 +1549,26 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: 
 mod tests {
     use super::*;
     use crate::config::AppConfig;
-    use crate::llm::{Client, Message, Response, ToolDefinition};
+    use crate::llm::{Client, Message, ReasoningEffort, Response, ToolDefinition};
     use crate::runtime::{RuntimeIdentity, RuntimeToolPolicy};
     use tempfile::NamedTempFile;
 
-    struct ReplyClient;
+    #[derive(Default)]
+    struct ReplyClient {
+        reasoning_effort: std::sync::RwLock<Option<ReasoningEffort>>,
+    }
 
     #[async_trait::async_trait]
     impl Client for ReplyClient {
+        fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+            self.reasoning_effort.read().map(|value| *value).unwrap()
+        }
+
+        fn set_reasoning_effort(&self, effort: Option<ReasoningEffort>) -> Result<(), String> {
+            *self.reasoning_effort.write().unwrap() = effort;
+            Ok(())
+        }
+
         async fn create_completion(
             &self,
             _messages: Vec<Message>,
@@ -1297,19 +1585,20 @@ mod tests {
         let tmp = NamedTempFile::new().unwrap();
         let path = tmp.path().to_path_buf();
         drop(tmp);
-        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
-            .database_path(path.to_str().unwrap())
-            .identity(RuntimeIdentity {
-                agent_id: "agent-test".to_string(),
-                context_id: "context-test".to_string(),
-            })
-            .tool_policy(RuntimeToolPolicy {
-                context_only: true,
-                coding_eval: false,
-            })
-            .build()
-            .await
-            .unwrap();
+        let runtime =
+            MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient::default()))
+                .database_path(path.to_str().unwrap())
+                .identity(RuntimeIdentity {
+                    agent_id: "agent-test".to_string(),
+                    context_id: "context-test".to_string(),
+                })
+                .tool_policy(RuntimeToolPolicy {
+                    context_only: true,
+                    coding_eval: false,
+                })
+                .build()
+                .await
+                .unwrap();
         runtime.start().await.unwrap();
         let (broadcast_tx, _) = broadcast::channel(32);
         (
@@ -1330,6 +1619,18 @@ mod tests {
     }
 
     #[test]
+    fn embedded_dashboard_assets_form_a_self_contained_entrypoint() {
+        let index = std::str::from_utf8(DASHBOARD_INDEX).unwrap();
+        assert!(index.contains("/assets/app.js"));
+        assert!(index.contains("/assets/app.css"));
+        assert!(!DASHBOARD_APP_JS.is_empty());
+        assert!(!DASHBOARD_APP_CSS.is_empty());
+        assert!(std::str::from_utf8(DASHBOARD_FAVICON)
+            .unwrap()
+            .contains("<svg"));
+    }
+
+    #[test]
     fn dashboard_auth_requires_matching_bearer_or_query_token() {
         let mut headers = HeaderMap::new();
         headers.insert(header::AUTHORIZATION, "Bearer correct".parse().unwrap());
@@ -1344,6 +1645,25 @@ mod tests {
             &HeaderMap::new(),
             Some("wrong")
         ));
+    }
+
+    #[tokio::test]
+    async fn dashboard_reasoning_control_changes_only_subsequent_runtime_requests() {
+        let (state, runtime) = test_state().await;
+        let response = handle_update_inference(
+            State(state),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateInferenceRequest {
+                reasoning_effort: Some("high".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(runtime.reasoning_effort(), Some(ReasoningEffort::High));
+        assert_eq!(runtime.config().llm.reasoning_effort, None);
     }
 
     #[tokio::test]
@@ -1456,6 +1776,37 @@ mod tests {
             .unwrap();
         let work_items_json: serde_json::Value = serde_json::from_slice(&work_items_body).unwrap();
         assert!(work_items_json["work_items"].is_array());
+
+        let background_tasks = handle_get_context_background_tasks(
+            State(Arc::clone(&state)),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(background_tasks.status(), StatusCode::OK);
+        let background_tasks_body = axum::body::to_bytes(background_tasks.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let background_tasks_json: serde_json::Value =
+            serde_json::from_slice(&background_tasks_body).unwrap();
+        assert!(background_tasks_json["tasks"].is_array());
+
+        let status = handle_status(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(status.status(), StatusCode::OK);
+        let status_body = axum::body::to_bytes(status.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let status_json: serde_json::Value = serde_json::from_slice(&status_body).unwrap();
+        assert_eq!(status_json["agent_id"], json!("agent-test"));
+        assert_eq!(status_json["model"], json!("gpt-4o-mini"));
     }
 
     #[tokio::test]

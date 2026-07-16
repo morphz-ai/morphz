@@ -1,3 +1,4 @@
+use crate::llm::ReasoningEffort;
 use crate::permission::{PermissionConfig, PermissionMode};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -380,6 +381,8 @@ pub struct LlmConfig {
     pub request_timeout_secs: u64,
     /// 单次 completion 最大输出 Token；None 表示由模型服务决定默认值
     pub max_output_tokens: Option<u32>,
+    /// 模型原生推理深度；None 表示不发送控制字段，保留模型默认行为。
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl Default for LlmConfig {
@@ -391,6 +394,7 @@ impl Default for LlmConfig {
             initial_backoff_secs: 1,
             request_timeout_secs: 120,
             max_output_tokens: None,
+            reasoning_effort: None,
         }
     }
 }
@@ -478,6 +482,60 @@ impl Default for BackgroundTaskConfig {
     }
 }
 
+/// Terminal presentation preferences. Themes only choose foreground colors;
+/// Morphz never paints a background, so the user's terminal remains in charge
+/// of light/dark appearance.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TuiTheme {
+    System,
+    Mono,
+    #[default]
+    Iris,
+    Cyan,
+    Coral,
+    NoColor,
+}
+
+impl TuiTheme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Mono => "mono",
+            Self::Iris => "iris",
+            Self::Cyan => "cyan",
+            Self::Coral => "coral",
+            Self::NoColor => "no-color",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "system" | "auto" => Some(Self::System),
+            "mono" | "monochrome" => Some(Self::Mono),
+            "iris" | "purple" => Some(Self::Iris),
+            "cyan" => Some(Self::Cyan),
+            "coral" => Some(Self::Coral),
+            "no-color" | "none" => Some(Self::NoColor),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TuiConfig {
+    pub theme: TuiTheme,
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            theme: TuiTheme::Iris,
+        }
+    }
+}
+
 /// 工业化全局配置（聚合所有子配置）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -490,6 +548,7 @@ pub struct AppConfig {
     pub credentials: BTreeMap<String, CredentialConfig>,
     pub permissions: PermissionConfig,
     pub background_task: BackgroundTaskConfig,
+    pub tui: TuiConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1130,8 +1189,24 @@ fn record_source_history(histories: &mut BTreeMap<String, Vec<String>>, key: &st
 }
 
 impl AppConfig {
-    /// 应用只影响物理运行边界的环境覆盖，便于为单次评测启动独立 Sandbox。
+    /// Apply host-owned environment overrides after all durable configuration
+    /// layers. These are process-local operator choices and therefore outrank
+    /// project preferences without mutating any configuration file.
     pub fn apply_runtime_env_overrides(&mut self) -> Result<(), String> {
+        if let Ok(model) = std::env::var("MORPHZ_LLM_MODEL") {
+            let model = model.trim();
+            if model.is_empty() {
+                return Err("MORPHZ_LLM_MODEL 不能为空".to_string());
+            }
+            self.llm.model = model.to_string();
+        }
+        if let Ok(provider) = std::env::var("MORPHZ_LLM_PROVIDER") {
+            let provider = provider.trim();
+            if provider.is_empty() {
+                return Err("MORPHZ_LLM_PROVIDER 不能为空".to_string());
+            }
+            self.llm.provider = Some(provider.to_string());
+        }
         if let Ok(root) = std::env::var("MORPHZ_WORKSPACE_ROOT") {
             if !root.trim().is_empty() {
                 self.permissions.workspace_root = root;
@@ -1210,6 +1285,21 @@ impl AppConfig {
             "MORPHZ_LLM_MAX_OUTPUT_TOKENS",
             &mut self.llm.max_output_tokens,
         )?;
+        if let Ok(value) = std::env::var("MORPHZ_LLM_REASONING_EFFORT") {
+            let value = value.trim();
+            self.llm.reasoning_effort = if value.eq_ignore_ascii_case("default")
+                || value.eq_ignore_ascii_case("auto")
+                || value.is_empty()
+            {
+                None
+            } else {
+                Some(ReasoningEffort::parse(value).ok_or_else(|| {
+                    format!(
+                        "MORPHZ_LLM_REASONING_EFFORT 只支持 default、low、medium、high: {value}"
+                    )
+                })?)
+            };
+        }
         if let Ok(value) = std::env::var("MORPHZ_SESSION_ACTIVE_WINDOW") {
             self.orchestrator.session_working_set.active_window = parse_human_duration(&value)
                 .map_err(|error| {
@@ -1596,10 +1686,19 @@ mod tests {
         assert_eq!(cfg.llm.max_retries, 5);
         assert_eq!(cfg.llm.request_timeout_secs, 120);
         assert_eq!(cfg.llm.max_output_tokens, None);
+        assert_eq!(cfg.llm.reasoning_effort, None);
         assert_eq!(cfg.orchestrator.reply_wait_notice_secs, 120);
         assert_eq!(cfg.orchestrator.attempt_soft_checkpoint_interval, 90);
         assert_eq!(cfg.permissions.mode, PermissionMode::AutoReview);
         assert_eq!(cfg.background_task.timeout_notify_secs, 300);
+        assert_eq!(cfg.tui.theme, TuiTheme::Iris);
+    }
+
+    #[test]
+    fn tui_theme_is_strictly_parsed_from_config() {
+        let config = toml::from_str::<AppConfig>("[tui]\ntheme='coral'\n").unwrap();
+        assert_eq!(config.tui.theme, TuiTheme::Coral);
+        assert!(toml::from_str::<AppConfig>("[tui]\ntheme='unknown'\n").is_err());
     }
 
     #[test]
@@ -1649,12 +1748,20 @@ mod tests {
         writeln!(tmp_file, "request_timeout_secs = 7").unwrap();
         writeln!(tmp_file, "max_retries = 1").unwrap();
         writeln!(tmp_file, "max_output_tokens = 131072").unwrap();
+        writeln!(tmp_file, "reasoning_effort = 'high'").unwrap();
 
         let cfg = toml::from_str::<AppConfig>(&std::fs::read_to_string(tmp_file.path()).unwrap())
             .unwrap();
         assert_eq!(cfg.llm.request_timeout_secs, 7);
         assert_eq!(cfg.llm.max_retries, 1);
         assert_eq!(cfg.llm.max_output_tokens, Some(131_072));
+        assert_eq!(cfg.llm.reasoning_effort, Some(ReasoningEffort::High));
         assert_eq!(cfg.llm.model, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn reasoning_effort_rejects_non_portable_native_levels() {
+        assert!(toml::from_str::<AppConfig>("[llm]\nreasoning_effort='xhigh'\n").is_err());
+        assert!(toml::from_str::<AppConfig>("[llm]\nreasoning_effort='max'\n").is_err());
     }
 }

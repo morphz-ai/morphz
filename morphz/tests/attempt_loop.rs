@@ -8,12 +8,13 @@ use morphz::llm::{
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     DelegationStatus, EvaluationWorkItemMutation, EvaluationWorkItemStatus, EventStore, NewAgent,
-    NewCognitiveContext, NewEvaluationWorkItem, NewSession, QueryFilter, SessionMountKind,
-    SessionStore,
+    NewCognitiveContext, NewEvaluationWorkItem, NewSession, NewWorkThread, QueryFilter,
+    SessionMountKind, SessionStore, WorkThreadKind, WorkThreadStatus,
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
 use morphz::permission::PermissionConfig;
+use morphz::sexpr::{parse, SExpr};
 use morphz::tool::{
     get_tasks_map, BackgroundTask, BackgroundTaskStatus, DelegateTool, EditFileTool, ReadFileTool,
     Registry, Tool, WriteFileTool,
@@ -30,6 +31,7 @@ struct MockClient {
     tools_seen: Mutex<Vec<Vec<String>>>,
     messages_seen: Mutex<Vec<Vec<Message>>>,
     prompt_token_count: Mutex<Option<usize>>,
+    delivery_calls: AtomicUsize,
 }
 
 struct ConcurrencyProbeClient {
@@ -62,6 +64,11 @@ struct RoutingProbeTool {
     delay_ms: u64,
 }
 
+struct DelayedContextTxTool {
+    started: Arc<AtomicUsize>,
+    delay_ms: u64,
+}
+
 fn text_reply_response(content: impl Into<String>) -> Response {
     Response {
         content: content.into(),
@@ -78,6 +85,56 @@ fn no_reply_response() -> Response {
             func_name: "no_reply".to_string(),
             arguments: json!({}).to_string(),
         }],
+    }
+}
+
+fn pending_delivery_response(messages: &[Message]) -> Option<Response> {
+    let encoded = messages
+        .iter()
+        .find(|message| {
+            message.role == "user" && message.content.contains("(mode completion-delivery)")
+        })?
+        .content
+        .as_str();
+    let expression = parse(&encoded[encoded.find('(')?..]).ok()?;
+    let mut results = Vec::new();
+    collect_pending_thread_results(&expression, &mut results);
+    Some(text_reply_response(if results.is_empty() {
+        "完成结果已由另一个交付求值处理".to_string()
+    } else {
+        results.join("\n")
+    }))
+}
+
+fn collect_pending_thread_results(expression: &SExpr, results: &mut Vec<String>) {
+    let SExpr::List(items) = expression else {
+        return;
+    };
+    if items.first() == Some(&SExpr::Atom("thread".to_string())) {
+        let mut delivery = None;
+        let mut result = None;
+        for item in items.iter().skip(1) {
+            let SExpr::List(pair) = item else {
+                continue;
+            };
+            match pair.as_slice() {
+                [SExpr::Atom(key), SExpr::Atom(value)] if key == "delivery" => {
+                    delivery = Some(value.as_str())
+                }
+                [SExpr::Atom(key), SExpr::Atom(value)] if key == "result" => {
+                    result = Some(value.clone())
+                }
+                _ => {}
+            }
+        }
+        if matches!(delivery, Some("pending" | "deferred")) {
+            if let Some(result) = result {
+                results.push(result);
+            }
+        }
+    }
+    for item in items {
+        collect_pending_thread_results(item, results);
     }
 }
 
@@ -132,6 +189,34 @@ impl Tool for RoutingProbeTool {
             "probe:{}",
             value["value"].as_str().unwrap_or_default()
         ))
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for DelayedContextTxTool {
+    fn name(&self) -> &str {
+        "context_tx"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "Delayed context maintenance test tool".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": { "transaction": { "type": "string" } },
+                "required": ["transaction"]
+            }),
+        }
+    }
+
+    async fn execute(
+        &self,
+        _arguments: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        self.started.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(tokio::time::Duration::from_millis(self.delay_ms)).await;
+        Ok(json!({ "status": "committed", "after_version": 1 }).to_string())
     }
 }
 
@@ -192,6 +277,9 @@ impl Client for BudgetProbeClient {
         _messages: Vec<Message>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(response) = pending_delivery_response(&_messages) {
+            return Ok(response);
+        }
         let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         self.tool_counts
             .lock()
@@ -216,14 +304,17 @@ impl Client for BudgetProbeClient {
 impl Client for ConcurrencyProbeClient {
     async fn create_completion(
         &self,
-        _messages: Vec<Message>,
+        messages: Vec<Message>,
         _tools: Vec<ToolDefinition>,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(response) = pending_delivery_response(&messages) {
+            return Ok(response);
+        }
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.max_active.fetch_max(active, Ordering::SeqCst);
         // Keep the probe open long enough for the second independently routed
         // Session to enter even under a fully loaded test runner.
-        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
         self.active.fetch_sub(1, Ordering::SeqCst);
         let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         Ok(text_reply_response(format!("reply-{call}")))
@@ -237,6 +328,7 @@ impl MockClient {
             tools_seen: Mutex::new(Vec::new()),
             messages_seen: Mutex::new(Vec::new()),
             prompt_token_count: Mutex::new(None),
+            delivery_calls: AtomicUsize::new(0),
         }
     }
 
@@ -250,6 +342,10 @@ impl MockClient {
 
     fn set_prompt_token_count(&self, tokens: usize) {
         *self.prompt_token_count.lock().unwrap() = Some(tokens);
+    }
+
+    fn delivery_calls(&self) -> usize {
+        self.delivery_calls.load(Ordering::SeqCst)
     }
 }
 
@@ -280,6 +376,10 @@ impl Client for MockClient {
         messages: Vec<Message>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(response) = pending_delivery_response(&messages) {
+            self.delivery_calls.fetch_add(1, Ordering::SeqCst);
+            return Ok(response);
+        }
         let tool_names = tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>();
         self.tools_seen
             .lock()
@@ -556,7 +656,7 @@ async fn duplicate_routed_event_creates_one_work_item_and_one_reply() {
 }
 
 #[tokio::test]
-async fn runtime_start_recovers_queued_and_expired_running_work_items() {
+async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("work-item-recovery.db");
     let bus = Arc::new(InMemoryEventBus::new());
@@ -584,21 +684,23 @@ async fn runtime_start_recovers_queued_and_expired_running_work_items() {
         )
         .await
         .unwrap();
-    store
-        .create_session(NewSession {
-            id: "recovery-expired".to_string(),
-            agent_id: "recovery-agent".to_string(),
-            context_id: "recovery-context".to_string(),
-            parent_session_id: None,
-            title: "Expired".to_string(),
-            mount_kind: SessionMountKind::ExistingContext,
-        })
-        .await
-        .unwrap();
-    for (index, session_id) in ["recovery-queued", "recovery-expired"]
-        .into_iter()
-        .enumerate()
-    {
+    let mut recovery_sessions = vec!["recovery-queued", "recovery-expired"];
+    #[cfg(unix)]
+    recovery_sessions.push("recovery-dead-claimant");
+    for session_id in recovery_sessions.iter().skip(1) {
+        store
+            .create_session(NewSession {
+                id: (*session_id).to_string(),
+                agent_id: "recovery-agent".to_string(),
+                context_id: "recovery-context".to_string(),
+                parent_session_id: None,
+                title: (*session_id).to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+    }
+    for (index, session_id) in recovery_sessions.iter().copied().enumerate() {
         let event = Event::new(
             format!("recovery-trigger-{index}"),
             "Test-User".to_string(),
@@ -652,12 +754,101 @@ async fn runtime_start_recovers_queued_and_expired_running_work_items() {
                 EvaluationWorkItemMutation::Updated(_)
             ));
         }
+        #[cfg(unix)]
+        if index == 2 {
+            assert!(matches!(
+                store
+                    .update_evaluation_work_item(
+                        &work_item.id,
+                        work_item.revision,
+                        EvaluationWorkItemStatus::Running,
+                        Some("runtime:2147483647"),
+                        Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                        None,
+                    )
+                    .await
+                    .unwrap(),
+                EvaluationWorkItemMutation::Updated(_)
+            ));
+        }
     }
 
-    let client = Arc::new(MockClient::new(vec![
-        text_reply_response("recovered-one"),
-        text_reply_response("recovered-two"),
-    ]));
+    let orphan_session_id = "recovery-orphan";
+    store
+        .create_session(NewSession {
+            id: orphan_session_id.to_string(),
+            agent_id: "recovery-agent".to_string(),
+            context_id: "recovery-context".to_string(),
+            parent_session_id: None,
+            title: "Orphan".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .unwrap();
+    let orphan_root = Event::new(
+        "recovery-orphan-root".to_string(),
+        "Test-User".to_string(),
+        TYPE_USER_MESSAGE.to_string(),
+        "chat/user_message".to_string(),
+        vec![
+            ("context_id".to_string(), json!("recovery-context")),
+            ("session_id".to_string(), json!(orphan_session_id)),
+            ("text".to_string(), json!("legacy orphan")),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    store.append(orphan_root.clone()).await.unwrap();
+    let orphan_sequence = store
+        .query(QueryFilter {
+            event_id: Some(orphan_root.id.clone()),
+            session_id: Some(orphan_session_id.to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()[0]
+        .sequence
+        .unwrap();
+    let orphan_work_item = store
+        .ensure_evaluation_work_item(NewEvaluationWorkItem {
+            id: "recovery-orphan-work".to_string(),
+            agent_id: "recovery-agent".to_string(),
+            context_id: "recovery-context".to_string(),
+            session_id: orphan_session_id.to_string(),
+            trigger_event_id: orphan_root.id.clone(),
+            trigger_sequence: orphan_sequence,
+            trigger_kind: orphan_root.topic.clone(),
+            parent_work_item_id: None,
+            root_turn_id: orphan_root.id.clone(),
+        })
+        .await
+        .unwrap();
+    store
+        .update_evaluation_work_item(
+            &orphan_work_item.id,
+            orphan_work_item.revision,
+            EvaluationWorkItemStatus::Completed,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    store
+        .ensure_work_thread(NewWorkThread {
+            id: "recovery-orphan-thread".to_string(),
+            agent_id: "recovery-agent".to_string(),
+            context_id: "recovery-context".to_string(),
+            session_id: orphan_session_id.to_string(),
+            root_turn_id: orphan_root.id,
+            kind: WorkThreadKind::Work,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+        })
+        .await
+        .unwrap();
+
+    let client = Arc::new(MockClient::new(Vec::new()));
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
@@ -673,19 +864,44 @@ async fn runtime_start_recovers_queued_and_expired_running_work_items() {
     ));
     orchestrator.start().await.unwrap();
 
+    for session_id in &recovery_sessions {
+        assert_eq!(
+            wait_for_topic(&store, "chat/cancelled", session_id)
+                .await
+                .len(),
+            1
+        );
+    }
+    let orphan_thread = store
+        .get_work_thread("recovery-orphan-thread")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(orphan_thread.status, WorkThreadStatus::Cancelled);
+    assert!(orphan_thread
+        .result_text
+        .as_deref()
+        .unwrap_or_default()
+        .contains("遗留孤儿状态"));
     assert_eq!(
-        wait_for_topic(&store, "chat/reply", "recovery-queued")
+        wait_for_topic(&store, "runtime/thread_reconciled", orphan_session_id)
             .await
             .len(),
         1
     );
+    assert!(client.messages_seen().is_empty());
+    let work_items = store
+        .list_context_evaluation_work_items("recovery-context", true)
+        .await
+        .unwrap();
+    assert_eq!(work_items.len(), recovery_sessions.len() + 1);
     assert_eq!(
-        wait_for_topic(&store, "chat/reply", "recovery-expired")
-            .await
-            .len(),
-        1
+        work_items
+            .iter()
+            .filter(|item| item.status == EvaluationWorkItemStatus::Cancelled)
+            .count(),
+        recovery_sessions.len()
     );
-    assert_eq!(client.messages_seen().len(), 2);
 }
 
 #[tokio::test]
@@ -717,8 +933,8 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         )
         .await
         .unwrap();
-    let trigger = Event::new(
-        "plan-recovery-trigger".to_string(),
+    let root = Event::new(
+        "plan-recovery-root".to_string(),
         "Test-User".to_string(),
         TYPE_USER_MESSAGE.to_string(),
         "chat/user_message".to_string(),
@@ -730,15 +946,36 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         .into_iter()
         .collect(),
     );
+    store.append(root.clone()).await.unwrap();
+    let trigger = Event::new(
+        "plan-recovery-trigger".to_string(),
+        "System-Executor".to_string(),
+        TYPE_TOOL_OUTPUT.to_string(),
+        "chat/tool_output".to_string(),
+        vec![
+            ("context_id".to_string(), json!("plan-recovery-context")),
+            ("session_id".to_string(), json!("plan-recovery-session")),
+            ("attempt_id".to_string(), json!("prior-work")),
+            ("tool_call_id".to_string(), json!("prior-call")),
+            ("tool_name".to_string(), json!("route_probe")),
+            ("root_turn_id".to_string(), json!(root.id)),
+            ("text".to_string(), json!("prior tool result")),
+        ]
+        .into_iter()
+        .collect(),
+    );
     store.append(trigger.clone()).await.unwrap();
     let trigger_sequence = store
         .query(QueryFilter {
+            event_id: Some(trigger.id.clone()),
             session_id: Some("plan-recovery-session".to_string()),
             ..Default::default()
         })
         .await
-        .unwrap()[0]
-        .sequence
+        .unwrap()
+        .into_iter()
+        .find(|event| event.id == trigger.id)
+        .and_then(|event| event.sequence)
         .unwrap();
     let work_item = store
         .ensure_evaluation_work_item(NewEvaluationWorkItem {
@@ -750,7 +987,7 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
             trigger_sequence,
             trigger_kind: trigger.topic.clone(),
             parent_work_item_id: None,
-            root_turn_id: trigger.id.clone(),
+            root_turn_id: root.id.clone(),
         })
         .await
         .unwrap();
@@ -804,6 +1041,30 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
                     json!(running.trigger_sequence),
                 ),
                 ("context_snapshot_version".to_string(), json!(7)),
+            ]
+            .into_iter()
+            .collect(),
+        ))
+        .await
+        .unwrap();
+    // Reproduce the production failure: the Work Item's original Tool Output
+    // has already appeared in a later Context snapshot. Recovery must still
+    // resume the durable assistant plan instead of treating the stale wake as
+    // a successfully completed Work Item.
+    store
+        .append(Event::new(
+            "plan-recovery-covered-context".to_string(),
+            "Runtime-Orchestrator".to_string(),
+            "proposal".to_string(),
+            "chat/context_inspect".to_string(),
+            vec![
+                ("context_id".to_string(), json!(running.context_id)),
+                ("session_id".to_string(), json!(running.session_id)),
+                ("root_turn_id".to_string(), json!(running.root_turn_id)),
+                (
+                    "text".to_string(),
+                    json!(format!("covered {}", running.root_turn_id)),
+                ),
             ]
             .into_iter()
             .collect(),
@@ -2241,8 +2502,8 @@ async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
         .await
         .unwrap();
     assert_eq!(context.state.version, 1);
-    assert_eq!(context.turn_budget.attempt, 4);
-    assert_eq!(context.turn_budget.phase, "soft-checkpoint");
+    assert_eq!(context.turn_budget.attempt, 5);
+    assert_eq!(context.turn_budget.phase, "work");
     assert_eq!(context.turn_budget.context_transactions_used, 2);
     assert!(!context.turn_budget.context_tx_available);
     assert!(context
@@ -2366,7 +2627,7 @@ async fn test_turn_soft_checkpoint_preserves_tools_and_continues() {
     let tool_outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
 
     assert_eq!(replies.len(), 1);
-    assert_eq!(assistant_calls.len(), 4);
+    assert_eq!(assistant_calls.len(), 5);
     assert_eq!(tool_outputs.len(), 3);
     assert_eq!(client.calls.load(Ordering::SeqCst), 4);
     assert_eq!(client.tool_counts.lock().unwrap().as_slice(), &[2, 2, 2, 2]);
@@ -2470,7 +2731,7 @@ async fn test_soft_checkpoint_allows_context_maintenance_without_forcing_final_r
     assert!(tools_seen[3].contains(&"no_reply".to_string()));
 
     let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
-    assert_eq!(assistant_calls.len(), 4);
+    assert_eq!(assistant_calls.len(), 5);
     assert_eq!(
         assistant_calls[2]
             .payload
@@ -2483,7 +2744,7 @@ async fn test_soft_checkpoint_allows_context_maintenance_without_forcing_final_r
         .await
         .unwrap();
     assert_eq!(context.state.version, 1);
-    assert_eq!(context.turn_budget.phase, "work");
+    assert_eq!(context.turn_budget.phase, "soft-checkpoint");
     assert!(context.state.frames[0].body.contains("completed"));
     assert!(context.state.frames[0].body.contains("tests-passed"));
 }
@@ -2562,7 +2823,7 @@ async fn test_failed_context_tx_at_soft_checkpoint_does_not_force_final_reply() 
         .await
         .unwrap();
     assert_eq!(context.state.version, 0);
-    assert_eq!(context.turn_budget.phase, "soft-checkpoint");
+    assert_eq!(context.turn_budget.phase, "work");
 }
 
 #[tokio::test]
@@ -3081,7 +3342,7 @@ async fn delegation_depth_limit_rejects_recursive_spawn_before_creating_child() 
 }
 
 #[tokio::test]
-async fn test_same_session_work_items_can_evaluate_concurrently() {
+async fn same_session_dialogue_turns_are_serialized() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("single-writer.db");
     let bus = Arc::new(InMemoryEventBus::new());
@@ -3127,7 +3388,11 @@ async fn test_same_session_work_items_can_evaluate_concurrently() {
     }
 
     assert_eq!(client.calls.load(Ordering::SeqCst), 2);
-    assert_eq!(client.max_active.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        client.max_active.load(Ordering::SeqCst),
+        1,
+        "one Session has one ordered dialogue thread"
+    );
     let work_items = store
         .list_context_evaluation_work_items("serialized-session", true)
         .await
@@ -3156,6 +3421,76 @@ async fn test_same_session_work_items_can_evaluate_concurrently() {
                 .get("wake")
                 .and_then(|wake| wake.get("event_id"))
                 .and_then(|value| value.as_str())
+    }));
+}
+
+#[tokio::test]
+async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("context-maintenance-dialogue.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(MockClient::new(vec![
+        Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                id: "dialogue-context-tx".to_string(),
+                r#type: "function".to_string(),
+                func_name: "context_tx".to_string(),
+                arguments: json!({
+                    "transaction": "(context-tx (base-version 0) (create greeting-state (status current)))"
+                })
+                .to_string(),
+            }],
+        },
+        text_reply_response("first-after-maintenance"),
+        text_reply_response("second-reply"),
+    ]));
+    let started = Arc::new(AtomicUsize::new(0));
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(DelayedContextTxTool {
+        started: Arc::clone(&started),
+        delay_ms: 400,
+    }));
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&client) as Arc<dyn Client>,
+        registry,
+        config,
+        engine,
+    ));
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, "context-maintenance-dialogue", "first").await;
+    for _ in 0..80 {
+        if started.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(started.load(Ordering::SeqCst), 1);
+    publish_user(&bus, "context-maintenance-dialogue", "second").await;
+
+    let replies =
+        wait_for_topic_count(&store, "chat/reply", "context-maintenance-dialogue", 2).await;
+    assert_eq!(
+        replies[0].payload.get("text"),
+        Some(&json!("first-after-maintenance"))
+    );
+    assert_eq!(replies[1].payload.get("text"), Some(&json!("second-reply")));
+    assert!(replies.iter().all(|reply| {
+        reply
+            .payload
+            .get("thread_kind")
+            .and_then(|value| value.as_str())
+            == Some("dialogue")
     }));
 }
 
@@ -3215,6 +3550,27 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
         .iter()
         .find(|event| event.payload.get("text") == Some(&json!("message-b-reply")))
         .expect("message B must receive its own reply");
+    assert_eq!(
+        message_b_reply.payload.get("thread_kind"),
+        Some(&json!("dialogue"))
+    );
+    let tool_reply = replies
+        .iter()
+        .find(|event| event.payload.get("text") == Some(&json!("tool-a-finished")))
+        .expect("tool A must complete on its work thread");
+    assert_eq!(
+        tool_reply.payload.get("thread_kind"),
+        Some(&json!("delivery"))
+    );
+    assert_eq!(
+        tool_reply
+            .payload
+            .get("covers")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(client.delivery_calls(), 1);
     let tool_output = store
         .query(QueryFilter {
             session_id: Some("same-session-tool".to_string()),
@@ -3274,6 +3630,46 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
             .get("root_turn_id")
             .and_then(|value| value.as_str())
     );
+
+    let message_b_request = client
+        .messages_seen()
+        .into_iter()
+        .find(|messages| {
+            messages.iter().any(|message| {
+                message.role == "user"
+                    && message.content.contains("message-b while tool runs")
+                    && message.content.contains("(current-evaluation")
+            })
+        })
+        .expect("message B must receive its own responsibility-scoped Context Encoding");
+    let message_b_encoding = message_b_request
+        .iter()
+        .find(|message| message.role == "user")
+        .unwrap();
+    assert!(message_b_encoding.content.contains("message-a starts tool"));
+    assert!(message_b_encoding
+        .content
+        .contains("(pending-tools route_probe)"));
+    assert!(message_b_encoding
+        .content
+        .contains("不得接管、重复或继续它们的动作"));
+    assert!(message_b_encoding.content.contains("(evaluate"));
+    assert!(message_b_encoding
+        .content
+        .contains("(thread (kind dialogue) (id same-session-tool)"));
+    assert!(message_b_encoding
+        .content
+        .contains("(root-input \"message-b while tool runs\")"));
+    assert!(message_b_encoding
+        .content
+        .contains("(objective-binding none)"));
+    assert!(
+        message_b_encoding.content.rfind("(evaluate").unwrap()
+            > message_b_encoding.content.rfind("(inbox").unwrap()
+    );
+    assert!(!message_b_request
+        .iter()
+        .any(|message| message.role == "tool"));
 }
 
 #[tokio::test]
@@ -3361,6 +3757,11 @@ async fn concurrent_session_inspect_cannot_suppress_another_root_turns_tool_wake
         .find(|message| message.role == "user")
         .expect("root A continuation must include Context Encoding");
     assert!(root_a_encoding.content.contains("root A"));
+    assert!(root_a_encoding.content.contains("(evaluate"));
+    assert!(root_a_encoding.content.contains("(thread (kind work)"));
+    assert!(root_a_encoding
+        .content
+        .contains("(parent-dialogue causal-wake-session)"));
     assert!(
         !root_a_encoding.content.contains("root B"),
         "a newer concurrent user turn must not leak into an older WorkItem's Inbox"
@@ -3500,21 +3901,88 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
     let calls = client.calls.load(Ordering::SeqCst);
     assert!((2..=3).contains(&calls));
     assert!(client.max_active.load(Ordering::SeqCst) >= 2);
-    let inspections = store
+    // Context Inspect is committed before the model call finishes and increments
+    // `calls`, so a third in-flight wake may already be visible here even when
+    // the completion counter still reads two.
+    let inspections =
+        wait_for_topic_count(&store, "chat/context_inspect", "coalesced-session", calls).await;
+    assert!(inspections.len() >= calls);
+    assert!(inspections.len() <= 5);
+    let work_items = store
+        .list_context_evaluation_work_items("coalesced-session", true)
+        .await
+        .unwrap()
+        .len();
+    assert!((4..=5).contains(&work_items));
+}
+
+#[tokio::test]
+async fn tool_wakeups_for_one_root_are_single_flight_and_commit_one_reply() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("same-root-single-flight.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(ConcurrencyProbeClient {
+        active: AtomicUsize::new(0),
+        max_active: AtomicUsize::new(0),
+        calls: AtomicUsize::new(0),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+        Arc::clone(&bus),
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    ));
+    orchestrator.start().await.unwrap();
+
+    let publish = |id: &'static str| {
+        let bus = Arc::clone(&bus);
+        async move {
+            bus.publish(Event::new(
+                id.to_string(),
+                "Test-Tool".to_string(),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                vec![
+                    ("context_id".to_string(), json!("same-root-session")),
+                    ("session_id".to_string(), json!("same-root-session")),
+                    ("root_turn_id".to_string(), json!("stable-root")),
+                    ("tool_name".to_string(), json!("test")),
+                    ("text".to_string(), json!(id)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await
+            .unwrap();
+        }
+    };
+    tokio::join!(publish("same-root-output-a"), publish("same-root-output-b"));
+
+    wait_for_topic(&store, "chat/reply", "same-root-session").await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(650)).await;
+    let replies = store
         .query(QueryFilter {
-            session_id: Some("coalesced-session".to_string()),
-            topic: Some("chat/context_inspect".to_string()),
+            session_id: Some("same-root-session".to_string()),
+            topic: Some("chat/reply".to_string()),
             ..Default::default()
         })
         .await
         .unwrap();
-    assert_eq!(inspections.len(), calls);
+    assert_eq!(replies.len(), 1);
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(client.max_active.load(Ordering::SeqCst), 1);
+    assert_eq!(replies[0].payload["thread_kind"], "delivery");
     assert_eq!(
-        store
-            .list_context_evaluation_work_items("coalesced-session", true)
-            .await
-            .unwrap()
-            .len(),
-        3
+        replies[0].payload["covers"].as_array().map(Vec::len),
+        Some(1)
     );
 }

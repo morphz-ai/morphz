@@ -4,4 +4,28 @@ import react from '@vitejs/plugin-react'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
+  server: {
+    host: '0.0.0.0',
+    proxy: {
+      '/api': 'http://127.0.0.1:8080',
+      '/health': 'http://127.0.0.1:8080',
+      '/ws': {
+        target: 'ws://127.0.0.1:8080',
+        ws: true,
+      },
+    },
+  },
+  build: {
+    cssCodeSplit: false,
+    rollupOptions: {
+      output: {
+        entryFileNames: 'assets/app.js',
+        chunkFileNames: 'assets/[name].js',
+        assetFileNames: (assetInfo) => {
+          if (assetInfo.name?.endsWith('.css')) return 'assets/app.css'
+          return 'assets/[name][extname]'
+        },
+      },
+    },
+  },
 })

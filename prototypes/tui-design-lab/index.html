@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Morphz TUI 视觉与信息架构实验台"
+    />
+    <title>Morphz · Terminal UI Lab</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="lab-shell">
+      <header class="lab-header">
+        <div class="lab-title-group">
+          <span class="lab-mark" aria-hidden="true">M</span>
+          <div>
+            <div class="eyebrow">MORPHZ DESIGN LAB · 01</div>
+            <h1>Terminal UI 实验台</h1>
+          </div>
+        </div>
+        <p class="lab-intro">
+          先确定视觉原则与信息层级，再映射回 Ratatui。预览中的底色只模拟用户终端，Morphz 组件本身不占用背景色。
+        </p>
+        <button class="ghost-button" id="reset-design" type="button">恢复推荐值</button>
+      </header>
+
+      <main class="lab-main">
+        <aside class="control-rail" aria-label="设计选项">
+          <div class="rail-heading">
+            <span>设计参数</span>
+            <span class="live-badge"><i></i> LIVE</span>
+          </div>
+
+          <section class="control-group" aria-labelledby="theme-label">
+            <h2 id="theme-label">终端环境</h2>
+            <div class="segmented" data-control="theme">
+              <button type="button" data-value="dark" aria-pressed="true">暗色</button>
+              <button type="button" data-value="light" aria-pressed="false">亮色</button>
+              <button type="button" data-value="system" aria-pressed="false">跟随系统</button>
+            </div>
+          </section>
+
+          <section class="control-group" aria-labelledby="accent-label">
+            <h2 id="accent-label">强调色</h2>
+            <div class="swatches" data-control="accent">
+              <button class="swatch is-selected" type="button" data-value="iris" aria-pressed="true">
+                <i class="swatch-color iris"></i><span>鸢尾紫</span>
+              </button>
+              <button class="swatch" type="button" data-value="cyan" aria-pressed="false">
+                <i class="swatch-color cyan"></i><span>电光青</span>
+              </button>
+              <button class="swatch" type="button" data-value="coral" aria-pressed="false">
+                <i class="swatch-color coral"></i><span>暖珊瑚</span>
+              </button>
+              <button class="swatch" type="button" data-value="mono" aria-pressed="false">
+                <i class="swatch-color mono"></i><span>纯单色</span>
+              </button>
+            </div>
+          </section>
+
+          <section class="control-group" aria-labelledby="density-label">
+            <h2 id="density-label">信息密度</h2>
+            <div class="segmented" data-control="density">
+              <button type="button" data-value="airy" aria-pressed="false">舒展</button>
+              <button type="button" data-value="balanced" aria-pressed="true">平衡</button>
+              <button type="button" data-value="compact" aria-pressed="false">紧凑</button>
+            </div>
+          </section>
+
+          <section class="control-group" aria-labelledby="tools-label">
+            <h2 id="tools-label">工作步骤细节</h2>
+            <div class="segmented" data-control="tools">
+              <button type="button" data-value="minimal" aria-pressed="false">极简</button>
+              <button type="button" data-value="summary" aria-pressed="true">摘要</button>
+              <button type="button" data-value="expanded" aria-pressed="false">展开</button>
+            </div>
+            <p class="control-hint">工具只出现在工作台，不再进入对话消息流。</p>
+          </section>
+
+          <section class="control-group" aria-labelledby="width-label">
+            <h2 id="width-label">预览宽度</h2>
+            <div class="segmented" data-control="viewport">
+              <button type="button" data-value="focus" aria-pressed="false">聚焦</button>
+              <button type="button" data-value="standard" aria-pressed="true">标准</button>
+              <button type="button" data-value="full" aria-pressed="false">全屏</button>
+            </div>
+          </section>
+
+          <section class="control-group" aria-labelledby="active-view-label">
+            <h2 id="active-view-label">主视图</h2>
+            <div class="segmented" data-control="activeView">
+              <button type="button" data-value="conversation" aria-pressed="true">对话</button>
+              <button type="button" data-value="tasks" aria-pressed="false">任务</button>
+              <button type="button" data-value="mind" aria-pressed="false">认知</button>
+            </div>
+            <p class="control-hint">Ctrl+W 切换任务，Ctrl+M 查看认知。</p>
+          </section>
+
+          <section class="control-group toggles" aria-label="可见区域">
+            <label class="toggle-row">
+              <span><strong>工作状态条</strong><small>始终显示当前执行位置</small></span>
+              <input id="workstrip-toggle" type="checkbox" checked />
+              <i aria-hidden="true"></i>
+            </label>
+            <label class="toggle-row">
+              <span><strong>底部快捷键</strong><small>只保留高频操作</small></span>
+              <input id="shortcuts-toggle" type="checkbox" checked />
+              <i aria-hidden="true"></i>
+            </label>
+          </section>
+
+          <section class="decision-card">
+            <div class="decision-label">当前方案</div>
+            <strong id="decision-title">透明 · 鸢尾紫 · 平衡</strong>
+            <p id="decision-copy">默认只显示工作状态条，Ctrl+W 临时展开任务工作台。</p>
+          </section>
+        </aside>
+
+        <section class="preview-stage" aria-label="Morphz TUI 预览">
+          <div class="preview-meta">
+            <div>
+              <span class="preview-kicker">INTERACTIVE PREVIEW</span>
+              <strong>agent/default · context-default · session/main</strong>
+            </div>
+            <div class="terminal-legend">
+              <span><i class="legend-dot success"></i>终端原生底色</span>
+              <span><i class="legend-dot accent"></i>仅前景强调</span>
+            </div>
+          </div>
+
+          <div
+            class="terminal-preview"
+            id="terminal-preview"
+            data-theme="dark"
+            data-resolved-theme="dark"
+            data-accent="iris"
+            data-density="balanced"
+            data-tools="summary"
+            data-viewport="standard"
+            data-active-view="conversation"
+          >
+            <div class="terminal-window">
+              <header class="terminal-header">
+                <div class="brand-lockup">
+                  <span class="brand-glyph" aria-hidden="true">◆</span>
+                  <span><strong>Morphz</strong><small>agent/default</small></span>
+                </div>
+
+                <div class="identity-trail">
+                  <button class="identity-chip context-chip" id="context-chip" type="button">
+                    <small>CONTEXT</small>
+                    <strong id="current-context-name">context-default</strong>
+                    <span id="current-context-policy">shared · r184</span>
+                  </button>
+                  <span class="identity-separator">/</span>
+                  <div class="session-selector-wrap">
+                    <button class="identity-chip session-chip" id="session-selector" type="button" aria-expanded="false">
+                      <small>SESSION</small>
+                      <strong id="current-session-name">main</strong>
+                      <span id="current-session-policy">private record</span>
+                      <i>⌄</i>
+                    </button>
+                    <div class="session-popover" id="session-popover" hidden>
+                      <header>
+                        <div><span>VISIBLE SESSIONS</span><strong>当前身份可访问</strong></div>
+                        <span class="viewer-label">viewer/shafreeck</span>
+                      </header>
+                      <div class="session-list">
+                        <button class="session-option is-current" type="button" data-session-name="main" data-session-policy="private record" data-context-name="context-default" data-context-policy="shared · r184">
+                          <span class="session-presence active"></span>
+                          <span><strong>main</strong><small>当前对话 · private record</small></span>
+                          <em>ACTIVE</em>
+                        </button>
+                        <button class="session-option" type="button" data-session-name="design-lab" data-session-policy="shared mind" data-context-name="context-default" data-context-policy="shared · r184">
+                          <span class="session-presence resident"></span>
+                          <span><strong>design-lab</strong><small>12m 前活跃 · shared mind</small></span>
+                          <em>RESIDENT</em>
+                        </button>
+                        <button class="session-option" type="button" data-session-name="tank-war" data-session-policy="shared mind" data-context-name="context-default" data-context-policy="shared · r184">
+                          <span class="session-presence swapped"></span>
+                          <span><strong>tank-war</strong><small>2h 前活跃 · 可恢复</small></span>
+                          <em>SWAPPED</em>
+                        </button>
+                        <button class="session-option" type="button" data-session-name="private-lab" data-session-policy="isolated context" data-context-name="context-private-lab" data-context-policy="isolated · r12">
+                          <span class="session-presence isolated"></span>
+                          <span><strong>private-lab</strong><small>独立认知 · 不贡献当前 Mind</small></span>
+                          <em>ISOLATED</em>
+                        </button>
+                      </div>
+                      <footer>仅显示 viewer/shafreeck 有权读取的 Session</footer>
+                    </div>
+                  </div>
+                  <span class="viewer-chip" title="身份由外部服务提供">● shafreeck</span>
+                </div>
+
+                <div class="header-side">
+                  <button class="mind-status-chip" id="mind-status-chip" type="button">
+                    <span>MIND</span><strong>37 frames</strong><i>normal</i><kbd>Ctrl M</kbd>
+                  </button>
+                  <div class="runtime-meta">
+                    <span>194k / 256k</span>
+                    <span>gemini-3-flash-agent</span>
+                  </div>
+                </div>
+              </header>
+
+              <button class="work-status-strip" id="work-status-strip" type="button" aria-expanded="false">
+                <span class="work-status-label">WORK</span>
+                <span class="work-status-primary">
+                  <i class="work-status-pulse"></i>
+                  <strong>正在执行</strong>
+                  <span>Provider 流式响应契约</span>
+                </span>
+                <span class="work-status-step"><em>当前步骤</em> cargo test --workspace</span>
+                <span class="work-status-counts"><b id="status-running-count">1</b> 求值中 · <b id="status-waiting-count">1</b> 等待事件</span>
+                <span class="work-status-action"><span id="work-status-action-label">任务视图</span> <kbd>Ctrl W</kbd></span>
+              </button>
+
+              <div class="terminal-content">
+                <div class="conversation" id="conversation">
+                  <div class="conversation-heading">
+                    <span id="conversation-session-label">SESSION · main</span>
+                    <span>对话与执行互不阻塞</span>
+                  </div>
+
+                  <article class="message message-user">
+                    <div class="message-role">You <time>12:08</time></div>
+                    <div class="message-body">
+                      请检查当前 Provider 的流式响应是否符合契约，并补上缺失的异常场景测试。
+                    </div>
+                  </article>
+
+                  <article class="message message-agent">
+                    <div class="message-role">Morphz <time>12:08</time></div>
+                    <div class="message-body prose">
+                      <p>我会先对照三套适配器的事件边界，再运行已有契约测试。工作已经启动，你可以继续给我消息。</p>
+                    </div>
+                  </article>
+
+                  <div class="conversation-separator">
+                    <span>Agent 在后台持续执行 · 2m 14s</span>
+                  </div>
+
+                  <article class="message message-user">
+                    <div class="message-role">You <time>12:10</time></div>
+                    <div class="message-body">
+                      测试完成以后，再根据结果生成一份 Provider 兼容性报告。
+                    </div>
+                  </article>
+
+                  <article class="message message-agent">
+                    <div class="message-role">Morphz <time>12:10</time></div>
+                    <div class="message-body prose">
+                      <p>这个工作需要跨求值等待，我会把它登记为可恢复的 Objective；只有 Runtime 确认创建后，它才会出现在工作台。</p>
+                    </div>
+                  </article>
+
+                  <div class="conversation-note">
+                    <span>◇</span>
+                    <p>工具调用持续在工作视图推进，不会进入或冲走对话消息；普通 Frame 不会被伪装成任务。</p>
+                  </div>
+                </div>
+
+                <aside class="workbench" id="workbench" aria-label="Runtime 工作台">
+                  <header class="workbench-header">
+                    <div>
+                      <span class="terminal-eyebrow">WORKSPACE</span>
+                      <h2>Runtime 工作台</h2>
+                    </div>
+                    <div class="workbench-actions">
+                      <button class="workbench-close" id="workbench-close" type="button" aria-label="返回对话视图">×</button>
+                    </div>
+                  </header>
+
+                  <div class="scope-switch" role="group" aria-label="工作台范围">
+                    <button type="button" data-scope="session" aria-pressed="true">当前 Session</button>
+                    <button type="button" data-scope="context" aria-pressed="false">整个 Context</button>
+                  </div>
+
+                  <div class="workbench-scroll">
+                    <section class="work-section">
+                      <div class="work-section-title">
+                        <span>可观测执行</span>
+                        <b id="running-count">1</b>
+                      </div>
+
+                      <article class="task-card active-task">
+                        <header class="task-card-header">
+                          <i class="task-state running"></i>
+                          <div>
+                            <strong>Objective · Provider 流式响应契约</strong>
+                            <span>objective/8f21 · rev 4 · evaluation running · 2m 14s</span>
+                          </div>
+                          <span class="parallel-badge">RUNTIME FACT</span>
+                        </header>
+
+                        <div class="task-now">
+                          <span class="task-now-label">CURRENT EVALUATION</span>
+                          <strong>回归验证修改未影响主循环</strong>
+                          <code>cargo test --workspace</code>
+                        </div>
+
+                        <div class="tool-sequence" aria-label="当前任务的工具步骤">
+                          <button class="tool-row is-success" type="button" aria-expanded="false">
+                            <span class="tool-rail" aria-hidden="true"></span>
+                            <span class="tool-icon">✓</span>
+                            <span class="tool-main">
+                              <span class="tool-title"><strong>read</strong><code>morphz/src/llm.rs</code></span>
+                              <span class="tool-summary">读取流式事件归一化实现</span>
+                            </span>
+                            <span class="tool-result">286 lines</span>
+                            <span class="tool-duration">18ms</span>
+                            <span class="tool-chevron">›</span>
+                            <span class="tool-details">
+                              <span class="detail-label">ARGUMENTS</span>
+                              <code>{ "path": "morphz/src/llm.rs", "offset": 420, "limit": 286 }</code>
+                              <span class="detail-label">RESULT</span>
+                              <span>已读取 286 行，发现 finish_reason 与 tool delta 位于同一归一化分支。</span>
+                            </span>
+                          </button>
+
+                          <button class="tool-row is-success" type="button" aria-expanded="false">
+                            <span class="tool-rail" aria-hidden="true"></span>
+                            <span class="tool-icon">✓</span>
+                            <span class="tool-main">
+                              <span class="tool-title"><strong>exec</strong><code>cargo test -p morphz provider_stream</code></span>
+                              <span class="tool-summary">执行 Provider 契约测试</span>
+                            </span>
+                            <span class="tool-result success-text">12 passed</span>
+                            <span class="tool-duration">2.4s</span>
+                            <span class="tool-chevron">›</span>
+                            <span class="tool-details">
+                              <span class="detail-label">OUTPUT</span>
+                              <span class="output-line ok">test result: ok. 12 passed; 0 failed</span>
+                            </span>
+                          </button>
+
+                          <button class="tool-row is-running" type="button" aria-expanded="true">
+                            <span class="tool-rail" aria-hidden="true"></span>
+                            <span class="tool-icon spinner">◒</span>
+                            <span class="tool-main">
+                              <span class="tool-title"><strong>exec</strong><code>cargo test --workspace</code></span>
+                              <span class="tool-summary">运行完整回归</span>
+                            </span>
+                            <span class="tool-result">running</span>
+                            <span class="tool-duration">8.7s</span>
+                            <span class="tool-chevron">›</span>
+                            <span class="tool-details">
+                              <span class="detail-label">LIVE OUTPUT</span>
+                              <span class="output-line">Compiling morphz v0.1.0</span>
+                              <span class="output-line active">Running unittests src/lib.rs <i></i></span>
+                            </span>
+                          </button>
+                        </div>
+                      </article>
+
+                      <article class="task-card context-only" data-context-task hidden>
+                        <header class="task-card-header">
+                          <i class="task-state running secondary"></i>
+                          <div>
+                            <strong>后台物理任务 · 坦克策略批处理</strong>
+                            <span>tool-task/a92e · session/tank-war · running 18m</span>
+                          </div>
+                          <span class="parallel-badge">PARALLEL</span>
+                        </header>
+                        <div class="task-now compact-now">
+                          <span class="task-now-label">NOW</span>
+                          <code>python run_batch_v28.py</code>
+                        </div>
+                      </article>
+                    </section>
+
+                    <section class="work-section">
+                      <div class="work-section-title">
+                        <span>已登记的等待条件</span>
+                        <b id="waiting-count">1</b>
+                      </div>
+                      <article class="queue-item">
+                        <span class="queue-order">01</span>
+                        <div>
+                          <strong>Objective · 生成 Provider 兼容性报告</strong>
+                          <span>objective/a17c · wait: event objective/completed / objective/8f21</span>
+                        </div>
+                        <span class="queue-state blocked">WAIT CONDITION</span>
+                      </article>
+                      <p class="work-evidence-note">这里只展示 Objective、当前 Evaluation、后台物理任务与 Delegation。Mind 中自由形成的 Frame 不会被 Runtime 猜测为任务。</p>
+                    </section>
+
+                    <section class="work-section completed-section">
+                      <button class="completed-toggle" id="completed-toggle" type="button" aria-expanded="false">
+                        <span>最近完成的 Objective</span><b>2</b><i>›</i>
+                      </button>
+                      <div class="completed-list" id="completed-list">
+                        <span>✓ 建立协议无关事件模型 <time>11:52</time></span>
+                        <span>✓ 覆盖文本与工具参数增量 <time>12:01</time></span>
+                      </div>
+                    </section>
+                  </div>
+                </aside>
+
+                <section class="mind-view" id="mind-view" aria-label="认知视图">
+                  <header class="mind-view-header">
+                    <div>
+                      <span class="terminal-eyebrow">SELF-MAINTAINED MIND · REVISION 184</span>
+                      <h2>Context 认知结构</h2>
+                      <p>共享认知可以跨 Session 复用；原始会话仍受当前 viewer 的访问范围约束。</p>
+                    </div>
+                    <button class="mind-view-close" id="mind-view-close" type="button">返回对话 ×</button>
+                  </header>
+
+                  <div class="mind-metrics">
+                    <div><span>ACTIVE FRAMES</span><strong>37</strong><small>当前求值可用</small></div>
+                    <div><span>RETIRED</span><strong>4</strong><small>可按需 recall</small></div>
+                    <div><span>PRESSURE</span><strong class="metric-good">NORMAL</strong><small>194k / 256k</small></div>
+                    <div><span>VISIBLE SESSIONS</span><strong>4</strong><small>viewer/shafreeck</small></div>
+                  </div>
+
+                  <div class="mind-layout">
+                    <section class="frame-library">
+                      <div class="mind-section-heading">
+                        <span>活跃 Frame</span>
+                        <div><button class="is-active" type="button">最近召回</button><button type="button">最近修订</button></div>
+                      </div>
+
+                      <article class="frame-card featured-frame">
+                        <header>
+                          <div><span class="frame-kind">PRACTICE</span><strong>coding_execution_discipline</strong></div>
+                          <span class="frame-strength">0.92</span>
+                        </header>
+                        <p>修改代码前先确认事实；完成后执行与风险相称的验证，并区分实现结果与推断。</p>
+                        <div class="frame-relations">
+                          <span>revised r179</span><span>recalled 14×</span><span>cross-session</span>
+                        </div>
+                        <footer><span>来源：共享认知 · 原始 Session 受限</span><time>3m 前召回</time></footer>
+                      </article>
+
+                      <article class="frame-card">
+                        <header>
+                          <div><span class="frame-kind preference">PREFERENCE</span><strong>interface_preference</strong></div>
+                          <span class="frame-strength">0.84</span>
+                        </header>
+                        <p>偏好终端原生背景、极简信息层级，以及对话、任务和认知相互独立的主视图。</p>
+                        <div class="frame-relations">
+                          <span>revises ui_preference_r173</span><span>session/main</span>
+                        </div>
+                        <footer><span>来源：当前可见 Session</span><time>12m 前修订</time></footer>
+                      </article>
+
+                      <article class="frame-card">
+                        <header>
+                          <div><span class="frame-kind fact">MODEL</span><strong>shared_context_model</strong></div>
+                          <span class="frame-strength">0.88</span>
+                        </header>
+                        <p>Context 是共享认知，Session 是受身份约束的交互连接；共享认知不等于共享原始会话。</p>
+                        <div class="frame-relations">
+                          <span>derived-from 3 frames</span><span>recalled 7×</span>
+                        </div>
+                        <footer><span>来源：Agent 自主归纳</span><time>18m 前派生</time></footer>
+                      </article>
+                    </section>
+
+                    <aside class="mind-inspector">
+                      <section>
+                        <div class="mind-section-heading"><span>Context Encoding</span><b>HEALTHY</b></div>
+                        <dl class="encoding-stats">
+                          <div><dt>稳定前缀</dt><dd>71%</dd></div>
+                          <div><dt>当前 Session</dt><dd>main</dd></div>
+                          <div><dt>在场 Session</dt><dd>3 visible</dd></div>
+                          <div><dt>最近维护</dt><dd>r184</dd></div>
+                        </dl>
+                        <div class="pressure-track"><i style="width: 76%"></i></div>
+                        <p class="inspector-note">当前没有压缩压力。Agent 将在 warning 后再考虑 retire 或摘要。</p>
+                      </section>
+
+                      <section>
+                        <div class="mind-section-heading"><span>最近认知事务</span><b>CONTEXT_TX</b></div>
+                        <ol class="mind-timeline">
+                          <li><i class="revise">R</i><div><strong>revise interface_preference</strong><span>增加双视图限定条件 · r184</span></div></li>
+                          <li><i class="derive">D</i><div><strong>derive shared_context_model</strong><span>从 3 个设计 Frame 归纳 · r183</span></div></li>
+                          <li><i class="retire">×</i><div><strong>retire obsolete_ui_layout</strong><span>已由新设计取代 · r182</span></div></li>
+                        </ol>
+                      </section>
+
+                      <section class="visibility-note">
+                        <span>IDENTITY-SCOPED VIEW</span>
+                        <p>这里只显示当前身份可查看的 Session 来源。受限来源会保留认知贡献，但不会暴露用户或原始对话。</p>
+                      </section>
+                    </aside>
+                  </div>
+                </section>
+              </div>
+
+              <button class="chat-status-strip" id="chat-status-strip" type="button">
+                <span class="chat-status-label">CHAT</span>
+                <span class="chat-status-session" id="chat-status-session">session/main</span>
+                <span class="chat-status-preview"><strong>Morphz</strong> 已经记下，测试完成后会自动生成兼容性报告。</span>
+                <span class="chat-status-unread">1 unread</span>
+                <span class="chat-status-action">对话 <kbd>Esc</kbd></span>
+              </button>
+
+              <footer class="composer-area">
+                <div class="composer-status">
+                  <span class="composer-pulse"></span>
+                  <span>Agent 正在工作，仍可追加消息</span>
+                  <span class="composer-hint">当前 Session · 等待任务 2</span>
+                </div>
+                <label class="composer" for="message-input">
+                  <span class="prompt-glyph">›</span>
+                  <textarea id="message-input" rows="1" placeholder="输入消息…"></textarea>
+                  <span class="send-hint">Enter ↵</span>
+                </label>
+                <div class="shortcut-bar" id="shortcut-bar">
+                  <span><kbd>Enter</kbd> 发送</span>
+                  <span><kbd>Shift Enter</kbd> 换行</span>
+                  <span><kbd>Ctrl W</kbd> 切换视图</span>
+                  <span><kbd>Ctrl M</kbd> 认知</span>
+                  <span><kbd>Ctrl 1/2</kbd> 范围</span>
+                  <span><kbd>Esc</kbd> 返回对话</span>
+                  <span class="shortcut-spacer"></span>
+                  <span><kbd>?</kbd> 帮助</span>
+                  <span><kbd>Ctrl D</kbd> 退出</span>
+                </div>
+              </footer>
+            </div>
+            <div class="key-toast" id="key-toast" role="status" aria-live="polite"></div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

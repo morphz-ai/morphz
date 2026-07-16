@@ -62,13 +62,13 @@ SQLite 包含：
 
 当前单进程并发边界如下：
 
-- 同一 Session：不同用户回合拥有独立 Evaluation Work Item，可以在旧工具仍运行时并发求值；
+- 同一 Session：用户消息属于一条有序 Dialogue Thread；首次模型决策串行，但旧回合一旦派生 Work Thread，后续对话可与其工具执行并发；
 - 不同 Session：可以并发调用模型，即使它们属于同一 Context；
 - 读取 Context：多个求值可以并发读取同一个已提交版本；
 - 修改 Mind：`context_tx` 使用 Context 级互斥锁串行提交；
 - 并发事务：提交时检查 `base-version`。先提交者成功，基于旧版本的后提交者收到版本冲突，不会覆盖新状态。
 
-模型思考、物理工具执行和等待不持有 Session/Context 排他锁。每个 Work Item 固定 `root_turn_id` 和根事件的 Ledger sequence：同根后续工具事件可见，更晚到达的其他用户回合不会倒灌进旧 Work Item；终态以 `work_item_id` 唯一提交。锁只覆盖共享 Mind 的事务提交临界区。
+Dialogue Thread 锁只覆盖同一 Session 用户消息的首次模型决策，并在执行工具前释放；物理工具执行和等待不持有该锁。每个 Work Thread 固定 `root_turn_id` 和根事件的 Ledger sequence：同根后续工具事件可见，更晚到达的其他用户回合不会倒灌进旧 Work Item；终态以 `work_item_id` 唯一提交。共享 Mind 的修改仍只在事务提交临界区加 Context 锁。完整模型见 [`morphz_session_thread_model_v1.md`](./morphz_session_thread_model_v1.md)。
 
 每个模型请求只编译一个 active Session。多个 Session 即使共享同一个 Context，也各自发起独立且可并行的模型请求；它们共享已提交 Mind，但不会要求模型在一个响应里拆分多个回复。普通无工具文本投递给 active Session；跨 Session 主动消息使用 `send_message`。
 

@@ -4,15 +4,16 @@ use crate::event::{
     TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use crate::memory::{
-    EvaluationWorkItemRecord, EventStore, ObjectiveRecord, ObjectiveStore, QueryFilter,
-    SessionAttentionState, SessionAttentionUpdate, SessionRecord, SessionStatus, SessionStore,
+    DeliveryStatus, EvaluationWorkItemRecord, EventStore, ObjectiveRecord, ObjectiveStore,
+    QueryFilter, ScheduledIntentRecord, ScheduledIntentStatus, SessionAttentionState,
+    SessionAttentionUpdate, SessionRecord, SessionStatus, SessionStore, WorkThreadRecord,
 };
 use crate::orchestrator::context_contract::{
     render_context_tx_epistemic_guidance, ContractClause, EPISTEMIC_CONTRACT,
     EPISTEMIC_CONTRACT_NAME, REALITY_CONTRACT, REALITY_CONTRACT_NAME,
 };
 use crate::sexpr::{parse, SExpr};
-use crate::tool::active_background_task_count;
+use crate::tool::{active_background_task_count, get_tasks_map};
 use chrono::Utc;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -24,7 +25,7 @@ use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 16;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 19;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 
 struct ContextOperationSpec {
@@ -363,6 +364,51 @@ pub struct WakeSignal {
     pub visible_in_inbox: bool,
 }
 
+/// The causal responsibility of one model request. This is deliberately
+/// separate from the shared Mind and from other in-flight work.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EvaluationFocus {
+    pub work_item_id: String,
+    pub session_id: String,
+    pub root_turn_id: String,
+    pub thread_kind: String,
+    pub root_kind: String,
+    pub root_preview: String,
+    pub trigger_event_id: String,
+    pub trigger_kind: String,
+    pub trigger_preview: String,
+    /// Only an explicit Runtime route attaches an Evaluation to an Objective.
+    /// Sharing a Session with an Objective does not create this binding.
+    pub objective_id: Option<String>,
+    pub objective_evaluation_id: Option<String>,
+}
+
+/// Read-only status of another concurrent Evaluation. It is context for honest
+/// progress reporting, never an instruction for the current Evaluation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConcurrentEvaluationView {
+    pub work_item_id: String,
+    pub session_id: String,
+    pub root_turn_id: String,
+    pub thread_kind: String,
+    pub thread_id: String,
+    pub status: String,
+    pub root_preview: String,
+    pub pending_tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BackgroundTaskView {
+    pub task_id: String,
+    pub session_id: String,
+    pub root_turn_id: Option<String>,
+    pub status: String,
+    pub command_preview: String,
+    pub elapsed_secs: i64,
+    pub last_output_age_secs: i64,
+    pub next_wakeup_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SessionProjection {
@@ -413,6 +459,11 @@ pub struct ContextView {
     pub sessions: Vec<ProjectedSession>,
     pub session_working_set: SessionWorkingSetView,
     pub active_work_items: Vec<EvaluationWorkItemRecord>,
+    pub work_threads: Vec<WorkThreadRecord>,
+    pub scheduled_intents: Vec<ScheduledIntentRecord>,
+    pub evaluation: Option<EvaluationFocus>,
+    pub concurrent_evaluations: Vec<ConcurrentEvaluationView>,
+    pub background_tasks: Vec<BackgroundTaskView>,
     pub objectives: Vec<ObjectiveRecord>,
     pub state: MindState,
     pub observations: Vec<ContextObservation>,
@@ -420,6 +471,10 @@ pub struct ContextView {
     pub turn_budget: TurnBudget,
     pub wake: WakeSignal,
     pub sexpr: String,
+    /// Cached while this view is alive so pressure re-rendering does not reload
+    /// and deserialize the whole Ledger a second time.
+    #[serde(skip)]
+    references: ContextReferences,
 }
 
 fn select_session_working_set(
@@ -988,6 +1043,76 @@ impl ContextEngine {
             }
             None => Vec::new(),
         };
+        let (work_threads, scheduled_intents) = match &self.session_store {
+            Some(store) => {
+                let all_threads = store.list_context_work_threads(context_id, true).await?;
+                let context_thread_ids = all_threads
+                    .iter()
+                    .map(|thread| thread.id.as_str())
+                    .collect::<HashSet<_>>();
+                let scheduled = store
+                    .list_scheduled_intents(None, Some(ScheduledIntentStatus::Queued))
+                    .await?
+                    .into_iter()
+                    .filter(|intent| context_thread_ids.contains(intent.thread_id.as_str()))
+                    .collect::<Vec<_>>();
+                let mut projected = all_threads
+                    .iter()
+                    .filter(|thread| {
+                        !thread.status.is_terminal()
+                            || matches!(
+                                thread.delivery_status,
+                                DeliveryStatus::Pending | DeliveryStatus::Deferred
+                            )
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let mut recent_terminal = all_threads
+                    .into_iter()
+                    .filter(|thread| {
+                        thread.status.is_terminal()
+                            && !matches!(
+                                thread.delivery_status,
+                                DeliveryStatus::Pending | DeliveryStatus::Deferred
+                            )
+                    })
+                    .rev()
+                    .take(20)
+                    .collect::<Vec<_>>();
+                recent_terminal.reverse();
+                projected.extend(recent_terminal);
+                (projected, scheduled)
+            }
+            None => (Vec::new(), Vec::new()),
+        };
+        let evaluation = evaluation_work_item.map(|work_item| evaluation_focus(work_item, &events));
+        let concurrent_evaluations = active_work_items
+            .iter()
+            .filter(|item| !item.status.is_terminal())
+            .filter(|item| evaluation_work_item.is_none_or(|current| current.id != item.id))
+            .map(|item| concurrent_evaluation_view(item, &events))
+            .collect::<Vec<_>>();
+        let now = Utc::now();
+        let background_tasks = get_tasks_map()
+            .iter()
+            .filter(|task| task.context_id == context_id && !task.status.is_terminal())
+            .map(|task| {
+                let (command_preview, _) = preview_text(&task.cmd_str, 320);
+                BackgroundTaskView {
+                    task_id: task.id.clone(),
+                    session_id: task.session_id.clone(),
+                    root_turn_id: task
+                        .causal_route
+                        .as_ref()
+                        .map(|route| route.root_turn_id.clone()),
+                    status: task.status.as_str().to_string(),
+                    command_preview,
+                    elapsed_secs: (now - task.started_at).num_seconds().max(0),
+                    last_output_age_secs: (now - task.last_output_at).num_seconds().max(0),
+                    next_wakeup_at: task.next_wakeup_at.map(|time| time.to_rfc3339()),
+                }
+            })
+            .collect::<Vec<_>>();
         let current_session_ids = [active_session_id.to_string()];
         let (mut sessions, mut session_working_set) = select_session_working_set(
             &registry_sessions,
@@ -1153,6 +1278,11 @@ impl ContextEngine {
             sessions: &sessions,
             session_working_set: &session_working_set,
             active_work_items: &active_work_items,
+            work_threads: &work_threads,
+            scheduled_intents: &scheduled_intents,
+            evaluation: evaluation.as_ref(),
+            concurrent_evaluations: &concurrent_evaluations,
+            background_tasks: &background_tasks,
             objectives: &objectives,
             state: &state,
             observations: &observations,
@@ -1170,6 +1300,11 @@ impl ContextEngine {
             sessions,
             session_working_set,
             active_work_items,
+            work_threads,
+            scheduled_intents,
+            evaluation,
+            concurrent_evaluations,
+            background_tasks,
             objectives,
             state,
             observations,
@@ -1177,6 +1312,7 @@ impl ContextEngine {
             turn_budget,
             wake,
             sexpr,
+            references,
         })
     }
 
@@ -1187,8 +1323,6 @@ impl ContextEngine {
         view: &mut ContextView,
         count: &crate::llm::PromptTokenCount,
     ) -> Result<(), DynError> {
-        let events = self.context_events(&view.context_id).await?;
-        let references = ContextReferences::from_events(&events);
         let active_frames = view
             .state
             .frames
@@ -1213,13 +1347,18 @@ impl ContextEngine {
             sessions: &view.sessions,
             session_working_set: &view.session_working_set,
             active_work_items: &view.active_work_items,
+            work_threads: &view.work_threads,
+            scheduled_intents: &view.scheduled_intents,
+            evaluation: view.evaluation.as_ref(),
+            concurrent_evaluations: &view.concurrent_evaluations,
+            background_tasks: &view.background_tasks,
             objectives: &view.objectives,
             state: &view.state,
             observations: &view.observations,
             pressure: &view.pressure,
             turn_budget: &view.turn_budget,
             wake: &view.wake,
-            references: &references,
+            references: &view.references,
         });
         Ok(())
     }
@@ -1229,10 +1368,31 @@ impl ContextEngine {
         context_id: &str,
         event_id: &str,
     ) -> Result<Option<Event>, DynError> {
-        let events = self.context_events(context_id).await?;
-        let references = ContextReferences::from_events(&events);
-        let canonical_id = references.resolve(event_id)?;
-        Ok(events.into_iter().find(|event| event.id == canonical_id))
+        let by_reference = event_id.strip_prefix(EVENT_REFERENCE_PREFIX);
+        let filter = match by_reference {
+            Some(sequence) => QueryFilter {
+                context_id: Some(context_id.to_string()),
+                sequence: Some(sequence.parse::<u64>().map_err(|_| {
+                    format!("Context 短引用 '{event_id}' 不是有效的 Ledger sequence")
+                })?),
+                top_k: Some(1),
+                ..Default::default()
+            },
+            None => QueryFilter {
+                event_id: Some(event_id.to_string()),
+                context_id: Some(context_id.to_string()),
+                top_k: Some(1),
+                ..Default::default()
+            },
+        };
+        let event = self.store.query(filter).await?.into_iter().next();
+        if by_reference.is_some() && event.as_ref().is_some_and(|event| !is_observation(event)) {
+            return Err(format!(
+                "Context 短引用 '{event_id}' 不指向可见 observation；不能猜测控制面事件"
+            )
+            .into());
+        }
+        Ok(event)
     }
 
     pub fn event_reference(&self, event: &Event) -> String {
@@ -1269,6 +1429,7 @@ impl ContextEngine {
             .query(QueryFilter {
                 context_id: Some(context_id.to_string()),
                 search_query: Some(query.to_string()),
+                excluded_topics: vec!["chat/context_inspect".to_string()],
                 ..Default::default()
             })
             .await?;
@@ -1288,6 +1449,10 @@ impl ContextEngine {
             .query(QueryFilter {
                 context_id: Some(context_id.to_string()),
                 topic: Some("chat/*".to_string()),
+                // Context inspection is a diagnostic artifact containing a
+                // rendered snapshot, not cognitive input. Loading it here used
+                // to recursively materialize hundreds of historical prompts.
+                excluded_topics: vec!["chat/context_inspect".to_string()],
                 ..Default::default()
             })
             .await?;
@@ -2194,6 +2359,11 @@ struct ContextRenderInput<'a> {
     sessions: &'a [ProjectedSession],
     session_working_set: &'a SessionWorkingSetView,
     active_work_items: &'a [EvaluationWorkItemRecord],
+    work_threads: &'a [WorkThreadRecord],
+    scheduled_intents: &'a [ScheduledIntentRecord],
+    evaluation: Option<&'a EvaluationFocus>,
+    concurrent_evaluations: &'a [ConcurrentEvaluationView],
+    background_tasks: &'a [BackgroundTaskView],
     objectives: &'a [ObjectiveRecord],
     state: &'a MindState,
     observations: &'a [ContextObservation],
@@ -2201,6 +2371,309 @@ struct ContextRenderInput<'a> {
     turn_budget: &'a TurnBudget,
     wake: &'a WakeSignal,
     references: &'a ContextReferences,
+}
+
+fn render_current_evaluation(
+    evaluation: &EvaluationFocus,
+    references: &ContextReferences,
+) -> SExpr {
+    let mut fields = vec![
+        pair("id", atom(&evaluation.work_item_id)),
+        pair("session", atom(&evaluation.session_id)),
+        list(
+            "root-turn",
+            vec![
+                pair("event", atom(references.display(&evaluation.root_turn_id))),
+                pair("kind", atom(&evaluation.root_kind)),
+                pair("input", atom(&evaluation.root_preview)),
+            ],
+        ),
+        list(
+            "trigger",
+            vec![
+                pair(
+                    "event",
+                    atom(references.display(&evaluation.trigger_event_id)),
+                ),
+                pair("kind", atom(&evaluation.trigger_kind)),
+                pair("input", atom(&evaluation.trigger_preview)),
+            ],
+        ),
+    ];
+    if let Some(objective_id) = &evaluation.objective_id {
+        let mut binding = vec![pair("id", atom(objective_id))];
+        if let Some(evaluation_id) = &evaluation.objective_evaluation_id {
+            binding.push(pair("evaluation", atom(evaluation_id)));
+        }
+        fields.push(list("objective-binding", binding));
+    } else {
+        fields.push(pair("objective-binding", atom("none")));
+    }
+    fields.extend([
+        pair(
+            "responsibility",
+            atom("本次模型请求只推进 root-turn 表达的任务，并只为这条因果链选择工具动作或提交终态输出"),
+        ),
+        pair(
+            "shared-state-boundary",
+            atom("Mind、Objective、其他 Session 与 concurrent-evaluations 是可读取的共享背景，不会自动变成本次任务；除非 root-turn 明确要求，不得接管、重复或继续它们的动作"),
+        ),
+        pair(
+            "progress-query",
+            atom("若 root-turn 询问另一分支的进度，只根据 concurrent-evaluations 与 background-tasks 的物理状态回答；不得为推进被询问分支而重复调用其工具"),
+        ),
+    ]);
+    list("current-evaluation", fields)
+}
+
+/// The final form is repeated after Inbox on purpose. Kernel already carries
+/// the same facts, but a very large Encoding can weaken attention to an early
+/// routing field. The VM should treat this final `evaluate` form as its single
+/// execution entry point; all preceding forms are state.
+fn render_evaluation_directive(
+    evaluation: &EvaluationFocus,
+    objectives: &[ObjectiveRecord],
+) -> SExpr {
+    let mode = if evaluation.objective_id.is_some() {
+        "objective-evaluation"
+    } else if evaluation.thread_kind == "delivery" {
+        "completion-delivery"
+    } else if evaluation.root_kind == "chat/user_message" {
+        "user-request"
+    } else {
+        "runtime-continuation"
+    };
+    let objective_context = objectives
+        .iter()
+        .filter(|objective| objective.coordinator_session_id == evaluation.session_id)
+        .map(|objective| {
+            let role = if evaluation.objective_id.as_deref() == Some(objective.id.as_str()) {
+                "bound"
+            } else {
+                "background-read-only"
+            };
+            let mut fields = vec![
+                pair("id", atom(&objective.id)),
+                pair("status", atom(objective.status.as_str())),
+                pair("role", atom(role)),
+                pair("goal", atom(&objective.stated_objective)),
+            ];
+            if let Some(active_evaluation_id) = &objective.active_evaluation_id {
+                fields.push(pair("active-evaluation", atom(active_evaluation_id)));
+            }
+            if let Some(reason) = &objective.status_reason {
+                fields.push(pair("status-reason", atom(reason)));
+            }
+            list("objective", fields)
+        })
+        .collect::<Vec<_>>();
+    let thread_kind = evaluation_thread_kind(evaluation);
+    let thread = if thread_kind == "objective" {
+        list(
+            "thread",
+            vec![
+                pair("kind", atom("objective")),
+                pair(
+                    "id",
+                    atom(evaluation.objective_id.as_deref().unwrap_or("unknown")),
+                ),
+                pair("session", atom(&evaluation.session_id)),
+                pair("causal-root", atom(&evaluation.root_turn_id)),
+            ],
+        )
+    } else if thread_kind == "dialogue" {
+        list(
+            "thread",
+            vec![
+                pair("kind", atom("dialogue")),
+                pair("id", atom(&evaluation.session_id)),
+                pair("turn", atom(&evaluation.root_turn_id)),
+            ],
+        )
+    } else if thread_kind == "delivery" {
+        list(
+            "thread",
+            vec![
+                pair("kind", atom("delivery")),
+                pair("id", atom(&evaluation.root_turn_id)),
+                pair("session", atom(&evaluation.session_id)),
+            ],
+        )
+    } else {
+        list(
+            "thread",
+            vec![
+                pair("kind", atom("work")),
+                pair("id", atom(&evaluation.root_turn_id)),
+                pair("parent-dialogue", atom(&evaluation.session_id)),
+                pair("origin-turn", atom(&evaluation.root_turn_id)),
+            ],
+        )
+    };
+    let mut fields = vec![
+            pair("work-item", atom(&evaluation.work_item_id)),
+            thread,
+            pair("mode", atom(mode)),
+            pair(
+                "objective-binding",
+                atom(evaluation.objective_id.as_deref().unwrap_or("none")),
+            ),
+            pair("root-kind", atom(&evaluation.root_kind)),
+            pair("root-input", atom(&evaluation.root_preview)),
+            pair(
+                "instruction",
+                atom(if thread_kind == "delivery" {
+                    "这是完成交付求值。读取 kernel.thread-scheduler 中 delivery=pending 的 Work Thread 结果及最新并发状态；可把多个 pending 结果合并为一条普通文本。不要调用物理工具，不要重复 delivery=delivered 的结果；确实无需通知时独占调用 no_reply"
+                } else {
+                    "现在只求值 root-input。dialogue thread 处理当前对话；工具结果只延续其所属 work thread。共享 Mind、历史、其他 thread 与未绑定的 Objective 只提供背景，不得取代 root-input 成为行动目标"
+                }),
+            ),
+            pair(
+                "tool-gate",
+                atom(if thread_kind == "delivery" {
+                    "delivery thread 只做结果编排与交付，不得调用物理工具；普通文本会原子覆盖本次可见的 pending completion"
+                } else {
+                    "仅当完成 root-input 确实需要尚不存在的新外部结果时调用工具；可由当前 Encoding 直接回答时必须立即返回普通文本，不得为未绑定 Objective 调用工具"
+                }),
+            ),
+            pair(
+                "terminal",
+                atom("每个 user-request 都必须独立产生面向当前 Session 的普通文本回复，除非语义上确实应静默并显式调用 no_reply"),
+            ),
+        ];
+    if !objective_context.is_empty() {
+        fields.push(list("objective-context", objective_context));
+    }
+    list("evaluate", fields)
+}
+
+fn render_concurrent_evaluations(
+    evaluations: &[ConcurrentEvaluationView],
+    references: &ContextReferences,
+) -> SExpr {
+    list(
+        "concurrent-evaluations",
+        evaluations
+            .iter()
+            .map(|evaluation| {
+                let mut fields = vec![
+                    pair("id", atom(&evaluation.work_item_id)),
+                    pair("session", atom(&evaluation.session_id)),
+                    pair(
+                        "root-turn",
+                        atom(references.display(&evaluation.root_turn_id)),
+                    ),
+                    pair("thread-kind", atom(&evaluation.thread_kind)),
+                    pair("thread-id", atom(&evaluation.thread_id)),
+                    pair("status", atom(&evaluation.status)),
+                    pair("root-input", atom(&evaluation.root_preview)),
+                ];
+                if !evaluation.pending_tools.is_empty() {
+                    fields.push(list(
+                        "pending-tools",
+                        evaluation.pending_tools.iter().map(atom).collect(),
+                    ));
+                }
+                list("evaluation", fields)
+            })
+            .collect(),
+    )
+}
+
+fn render_background_tasks(tasks: &[BackgroundTaskView], references: &ContextReferences) -> SExpr {
+    list(
+        "background-tasks",
+        tasks
+            .iter()
+            .map(|task| {
+                let mut fields = vec![
+                    pair("id", atom(&task.task_id)),
+                    pair("session", atom(&task.session_id)),
+                    pair("status", atom(&task.status)),
+                    pair("command", atom(&task.command_preview)),
+                    pair("elapsed-seconds", atom(task.elapsed_secs.to_string())),
+                    pair(
+                        "last-output-age-seconds",
+                        atom(task.last_output_age_secs.to_string()),
+                    ),
+                ];
+                if let Some(root_turn_id) = &task.root_turn_id {
+                    fields.push(pair("root-turn", atom(references.display(root_turn_id))));
+                }
+                if let Some(next_wakeup_at) = &task.next_wakeup_at {
+                    fields.push(pair("next-wakeup-at", atom(next_wakeup_at)));
+                }
+                list("task", fields)
+            })
+            .collect(),
+    )
+}
+
+fn render_thread_scheduler(
+    threads: &[WorkThreadRecord],
+    scheduled: &[ScheduledIntentRecord],
+) -> SExpr {
+    let thread_entries = threads
+        .iter()
+        .map(|thread| {
+            let mut fields = vec![
+                pair("id", atom(&thread.id)),
+                pair("root-turn", atom(&thread.root_turn_id)),
+                pair("session", atom(&thread.session_id)),
+                pair("kind", atom(thread.kind.as_str())),
+                pair("status", atom(thread.status.as_str())),
+                pair("revision", atom(thread.revision.to_string())),
+                pair("executor", atom(&thread.executor_kind)),
+                pair("delivery", atom(thread.delivery_status.as_str())),
+            ];
+            if let Some(executor_id) = &thread.executor_id {
+                fields.push(pair("executor-id", atom(executor_id)));
+            }
+            if let Some(result) = &thread.result_text {
+                let (preview, truncated) = preview_text(result, 640);
+                fields.push(pair("result", atom(&preview)));
+                if truncated {
+                    fields.push(pair("result-truncated", atom("true")));
+                }
+            }
+            list("thread", fields)
+        })
+        .collect::<Vec<_>>();
+    let scheduled_entries = scheduled
+        .iter()
+        .map(|intent| {
+            let (intent_preview, truncated) = preview_text(&intent.intent, 640);
+            let mut fields = vec![
+                pair("id", atom(&intent.id)),
+                pair("thread", atom(&intent.thread_id)),
+                pair("status", atom(intent.status.as_str())),
+                pair("intent", atom(&intent_preview)),
+            ];
+            if truncated {
+                fields.push(pair("intent-truncated", atom("true")));
+            }
+            if let Some(not_before) = intent.not_before {
+                fields.push(pair("not-before", atom(not_before.to_rfc3339())));
+            }
+            if let Some(interval_seconds) = intent.interval_seconds {
+                fields.push(pair("every-seconds", atom(interval_seconds.to_string())));
+            }
+            if !intent.dependency_thread_ids.is_empty() {
+                fields.push(list(
+                    "after",
+                    intent.dependency_thread_ids.iter().map(atom).collect(),
+                ));
+            }
+            list("scheduled", fields)
+        })
+        .collect::<Vec<_>>();
+    list(
+        "thread-scheduler",
+        vec![
+            list("threads", thread_entries),
+            list("queue", scheduled_entries),
+        ],
+    )
 }
 
 fn render_wake(wake: &WakeSignal, references: &ContextReferences) -> SExpr {
@@ -2354,6 +2827,11 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         sessions,
         session_working_set,
         active_work_items,
+        work_threads,
+        scheduled_intents,
+        evaluation,
+        concurrent_evaluations,
+        background_tasks,
         objectives,
         state,
         observations,
@@ -2368,6 +2846,9 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         kernel.push(pair("parent-session", atom(parent)));
     }
     kernel.push(pair("version", atom(state.version.to_string())));
+    if let Some(evaluation) = evaluation {
+        kernel.push(render_current_evaluation(evaluation, references));
+    }
     kernel.push(pair(
         "in-flight-evaluations",
         atom(
@@ -2378,6 +2859,18 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                 .to_string(),
         ),
     ));
+    if !work_threads.is_empty() || !scheduled_intents.is_empty() {
+        kernel.push(render_thread_scheduler(work_threads, scheduled_intents));
+    }
+    if !concurrent_evaluations.is_empty() {
+        kernel.push(render_concurrent_evaluations(
+            concurrent_evaluations,
+            references,
+        ));
+    }
+    if !background_tasks.is_empty() {
+        kernel.push(render_background_tasks(background_tasks, references));
+    }
     if !objectives.is_empty() {
         kernel.push(render_objectives(objectives));
     }
@@ -2706,14 +3199,27 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
     // directory changes less often than wake/budget, and Inbox is highest
     // churn. Concurrent Session evaluations of the same Context therefore
     // reuse the protocol + Mind prefix whenever they observe the same version.
-    format!(
-        "{} {} {} {} {})",
-        stable_context_prefix(),
-        SExpr::List(mind),
-        session_directory,
-        SExpr::List(kernel),
-        SExpr::List(inbox)
-    )
+    let directive = evaluation
+        .map(|evaluation| render_evaluation_directive(evaluation, objectives).to_string());
+    match directive {
+        Some(directive) => format!(
+            "{} {} {} {} {} {})",
+            stable_context_prefix(),
+            SExpr::List(mind),
+            session_directory,
+            SExpr::List(kernel),
+            SExpr::List(inbox),
+            directive,
+        ),
+        None => format!(
+            "{} {} {} {} {})",
+            stable_context_prefix(),
+            SExpr::List(mind),
+            session_directory,
+            SExpr::List(kernel),
+            SExpr::List(inbox)
+        ),
+    }
 }
 
 fn stable_context_prefix() -> &'static str {
@@ -2823,6 +3329,43 @@ fn render_protocol() -> SExpr {
                     pair("shared-evidence", atom("inbox observation 按 session 标记来源，但均属于当前 Context，可跨 Session 推理与复用")),
                     pair("reply-routing", atom("无工具普通 assistant 文本与可见 progress 必须对应 kernel.active-session；其他 Session 使用 send_message")),
                     pair("write-serialization", atom("context_tx 修改共享 Mind；Runtime 按 Context 串行提交并执行 version 检查")),
+                ],
+            ),
+            list(
+                "evaluation-responsibility-contract",
+                vec![
+                    pair(
+                        "current",
+                        atom("Context 最后的 evaluate 是本次模型请求唯一的执行入口；kernel.current-evaluation 提供同一事实的详细机器状态"),
+                    ),
+                    pair(
+                        "thread-model",
+                        atom("Session 内的 dialogue thread 承载连续人机对话；从某个对话 turn 发起并由工具结果延续的工作属于独立 work thread；Objective 使用可跨多个 work thread 的 objective thread"),
+                    ),
+                    pair(
+                        "root-turn",
+                        atom("root-turn 是一个 work thread 的稳定因果根，或 dialogue thread 中当前 turn 的事件；它不是整个 Session 的对话历史"),
+                    ),
+                    pair(
+                        "trigger",
+                        atom("trigger 是唤醒本次求值的最新事件；用户消息进入 dialogue thread，工具结果只延续其所属 work thread，不会把其他 thread 合并进来"),
+                    ),
+                    pair(
+                        "concurrent",
+                        atom("kernel.concurrent-evaluations 是同一 Context 中其他 work/objective thread 的只读运行状态，不是当前 dialogue thread 的待办列表"),
+                    ),
+                    pair(
+                        "pending-tool",
+                        atom("pending-tools 表示其他分支已经发起且尚未收到结果的工具调用；不得从本次 Evaluation 重复发起"),
+                    ),
+                    pair(
+                        "progress",
+                        atom("进度询问应直接依据 Work Item、pending-tools 与 background-tasks 的物理状态作答；未知就明确说未知，不得虚构结果"),
+                    ),
+                    pair(
+                        "objective-binding",
+                        atom("evaluate.objective-binding=none 时，Objective 状态只用于理解背景和回答进度，不得推进 Objective 或为它调用工具；只有显式 bound 的 objective thread 才能推进目标"),
+                    ),
                 ],
             ),
             list(
@@ -2956,6 +3499,51 @@ fn render_protocol() -> SExpr {
                 ],
             ),
             list(
+                "thread-scheduler-contract",
+                vec![
+                    pair(
+                        "authority",
+                        atom("Runtime 提供持久化、单飞、顺序、依赖和定时机制；Agent 负责判断串行、并行、依赖与何时交付"),
+                    ),
+                    pair(
+                        "current-thread",
+                        atom("直接物理工具调用继承 kernel.current-evaluation 的 Thread；任意数量工具结果都回到同一 mailbox，不创建新 Thread"),
+                    ),
+                    pair(
+                        "enqueue",
+                        atom("schedule_tx enqueue 把 intent 串行加入 thread_id；省略 thread_id 时延续当前 Thread"),
+                    ),
+                    pair(
+                        "spawn",
+                        atom("schedule_tx spawn 创建可与当前工作并行的独立 Work Thread；client_id 可被同一事务的 after 以 $client_id 引用"),
+                    ),
+                    pair(
+                        "dependency",
+                        atom("after 中所有 Thread 进入终态后才投递 intent；依赖状态作为物理 observation 返回，由 Agent 判断成功、失败或取消的后续语义"),
+                    ),
+                    pair(
+                        "timer",
+                        atom("not_before 使用 RFC3339 绝对时间；delay_seconds 使用相对延迟；spawn.every_seconds 创建固定间隔 occurrence Thread"),
+                    ),
+                    pair(
+                        "timer-semantics",
+                        atom("到期只向目标 Thread mailbox 投递 schedule_due observation；不会直接执行工具、生成结论或绕开唯一终态"),
+                    ),
+                    pair(
+                        "exclusive",
+                        atom("一次响应只能调用一个 schedule_tx，不能同时调用物理工具、context_tx 或其他控制工具"),
+                    ),
+                    pair(
+                        "completion-inbox",
+                        atom("Work Thread 的终态文本先成为 delivery=pending 的完成结果；Runtime 启动 Delivery Thread，使模型看到当前 Session 的全部 pending 结果和并发状态后再决定合并或分别交付"),
+                    ),
+                    pair(
+                        "delivery",
+                        atom("Delivery Thread 只能返回普通文本，或独占调用 no_reply 暂缓本批结果；普通文本会原子标记本次可见 pending/deferred 结果为 delivered，重复唤醒不会再次交付"),
+                    ),
+                ],
+            ),
+            list(
                 "response-contract",
                 vec![
                     list(
@@ -2989,7 +3577,7 @@ fn render_protocol() -> SExpr {
                             pair("when", atom("确认当前 Evaluation 无需向 active Session 发送任何消息")),
                             pair("tool", atom("no_reply")),
                             pair("exclusive", atom("no_reply 必须独占响应，无参数且不携带正文")),
-                            pair("scope", atom("只结束当前 Evaluation；不完成 Objective，不取消后台任务")),
+                            pair("scope", atom("Dialogue Thread 中结束本次求值；有活动后台任务的 Work Thread 中仅 yield 到 waiting；不完成 Objective，不取消后台任务")),
                         ],
                     ),
                     list(
@@ -3020,6 +3608,45 @@ fn render_protocol() -> SExpr {
                             pair(
                                 "after-commit",
                                 atom("Runtime 必定再次调用；非 critical 时冷却 context_tx，必须返回普通文本、调用 no_reply 或执行 act"),
+                            ),
+                        ],
+                    ),
+                    list(
+                        "schedule",
+                        vec![
+                            pair(
+                                "when",
+                                atom("需要显式决定串行、并行、依赖或定时执行"),
+                            ),
+                            pair("tool", atom("schedule_tx")),
+                            pair(
+                                "exclusive",
+                                atom("schedule_tx 必须是响应中唯一的一次工具调用"),
+                            ),
+                            pair(
+                                "after-commit",
+                                atom("Runtime 返回持久化调度回执并再次调用模型；再向 active Session 说明安排"),
+                            ),
+                        ],
+                    ),
+                    list(
+                        "deliver-completions",
+                        vec![
+                            pair(
+                                "when",
+                                atom("current-evaluation.thread.kind=delivery；一个或多个 Work Thread 已完成并等待面向 Session 交付"),
+                            ),
+                            pair(
+                                "input",
+                                atom("读取 kernel.thread-scheduler 中 delivery=pending/deferred 的 result，并结合当前 Session 与其他并发 Thread 的物理状态"),
+                            ),
+                            pair(
+                                "form",
+                                atom("返回一条可合并多个完成结果的普通 assistant 文本；不得调用物理工具"),
+                            ),
+                            pair(
+                                "defer",
+                                atom("确实暂不应通知时独占调用 no_reply，结果保留为 deferred，可由后续完成事件再次编排"),
                             ),
                         ],
                     ),
@@ -3558,6 +4185,200 @@ fn context_wide_observation_allowed(event: &Event) -> bool {
             == Some(true)
 }
 
+fn event_belongs_to_work_item(event: &Event, work_item: &EvaluationWorkItemRecord) -> bool {
+    event.id == work_item.root_turn_id
+        || event.id == work_item.trigger_event_id
+        || event
+            .payload
+            .get("work_item_id")
+            .and_then(|value| value.as_str())
+            == Some(work_item.id.as_str())
+        || event
+            .payload
+            .get("root_turn_id")
+            .and_then(|value| value.as_str())
+            == Some(work_item.root_turn_id.as_str())
+}
+
+fn bounded_event_preview(event: Option<&Event>, max_chars: usize) -> String {
+    event.map_or_else(
+        || "[event unavailable]".to_string(),
+        |event| preview_text(&event_text(event), max_chars).0,
+    )
+}
+
+fn evaluation_focus(work_item: &EvaluationWorkItemRecord, events: &[Event]) -> EvaluationFocus {
+    let root = events
+        .iter()
+        .find(|event| event.id == work_item.root_turn_id);
+    let trigger = events
+        .iter()
+        .find(|event| event.id == work_item.trigger_event_id);
+    let effective_root = root.or(trigger);
+    let objective_id = root
+        .and_then(|event| event.payload.get("objective_id"))
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            trigger
+                .and_then(|event| event.payload.get("objective_id"))
+                .and_then(|value| value.as_str())
+        })
+        .map(ToOwned::to_owned);
+    let objective_evaluation_id = root
+        .and_then(|event| event.payload.get("objective_evaluation_id"))
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            trigger
+                .and_then(|event| event.payload.get("objective_evaluation_id"))
+                .and_then(|value| value.as_str())
+        })
+        .map(ToOwned::to_owned);
+    let root_kind = effective_root
+        .map(|event| event.topic.clone())
+        .unwrap_or_else(|| work_item.trigger_kind.clone());
+    let thread_kind = if objective_id.is_some() {
+        "objective"
+    } else if root_kind == "chat/thread_completion_ready" {
+        "delivery"
+    } else if root_kind == "chat/user_message"
+        && !causal_root_has_physical_tool_plan(&work_item.root_turn_id, events)
+    {
+        "dialogue"
+    } else {
+        "work"
+    };
+    EvaluationFocus {
+        work_item_id: work_item.id.clone(),
+        session_id: work_item.session_id.clone(),
+        root_turn_id: work_item.root_turn_id.clone(),
+        thread_kind: thread_kind.to_string(),
+        root_kind,
+        root_preview: bounded_event_preview(effective_root, 1_200),
+        trigger_event_id: work_item.trigger_event_id.clone(),
+        trigger_kind: work_item.trigger_kind.clone(),
+        trigger_preview: if trigger.is_some_and(|event| event.event_type == TYPE_TOOL_OUTPUT) {
+            "[result delivered through the standard function-call transcript]".to_string()
+        } else {
+            bounded_event_preview(trigger, 800)
+        },
+        objective_id,
+        objective_evaluation_id,
+    }
+}
+
+fn evaluation_thread_kind(evaluation: &EvaluationFocus) -> &'static str {
+    match evaluation.thread_kind.as_str() {
+        "objective" => "objective",
+        "work" => "work",
+        "delivery" => "delivery",
+        _ => "dialogue",
+    }
+}
+
+fn causal_root_has_physical_tool_plan(root_turn_id: &str, events: &[Event]) -> bool {
+    events.iter().any(|event| {
+        if event
+            .payload
+            .get("root_turn_id")
+            .and_then(|value| value.as_str())
+            != Some(root_turn_id)
+        {
+            return false;
+        }
+        let calls = if event.topic == "chat/assistant_call" {
+            event.payload.get("tool_calls")
+        } else if event.topic == "runtime/tool_calls_selected" {
+            event.payload.get("calls")
+        } else {
+            None
+        };
+        calls
+            .and_then(|value| value.as_array())
+            .is_some_and(|calls| {
+                calls.iter().any(|call| {
+                    let name = call
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .or_else(|| {
+                            call.get("function")
+                                .and_then(|value| value.get("name"))
+                                .and_then(|value| value.as_str())
+                        });
+                    name.is_some_and(|name| name != "context_tx" && name != "no_reply")
+                })
+            })
+    })
+}
+
+fn pending_tool_names(work_item: &EvaluationWorkItemRecord, events: &[Event]) -> Vec<String> {
+    let delivered = events
+        .iter()
+        .filter(|event| event.event_type == TYPE_TOOL_OUTPUT)
+        .filter(|event| event_belongs_to_work_item(event, work_item))
+        .filter_map(|event| {
+            event
+                .payload
+                .get("tool_call_id")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        })
+        .collect::<HashSet<_>>();
+    let mut pending = Vec::new();
+    for event in events
+        .iter()
+        .filter(|event| event.topic == "chat/assistant_call")
+        .filter(|event| event_belongs_to_work_item(event, work_item))
+    {
+        let Some(calls) = event
+            .payload
+            .get("transcript_tool_calls")
+            .or_else(|| event.payload.get("tool_calls"))
+        else {
+            continue;
+        };
+        let Ok(calls) = serde_json::from_value::<Vec<crate::llm::ToolCall>>(calls.clone()) else {
+            continue;
+        };
+        for call in calls {
+            if !delivered.contains(&call.id) {
+                pending.push(call.function.name);
+            }
+        }
+    }
+    pending.sort();
+    pending.dedup();
+    pending
+}
+
+fn concurrent_evaluation_view(
+    work_item: &EvaluationWorkItemRecord,
+    events: &[Event],
+) -> ConcurrentEvaluationView {
+    let root = events
+        .iter()
+        .find(|event| event.id == work_item.root_turn_id);
+    let focus = evaluation_focus(work_item, events);
+    let thread_kind = evaluation_thread_kind(&focus).to_string();
+    let thread_id = match thread_kind.as_str() {
+        "dialogue" => work_item.session_id.clone(),
+        "objective" => focus
+            .objective_id
+            .clone()
+            .unwrap_or_else(|| work_item.root_turn_id.clone()),
+        _ => work_item.root_turn_id.clone(),
+    };
+    ConcurrentEvaluationView {
+        work_item_id: work_item.id.clone(),
+        session_id: work_item.session_id.clone(),
+        root_turn_id: work_item.root_turn_id.clone(),
+        thread_kind,
+        thread_id,
+        status: work_item.status.as_str().to_string(),
+        root_preview: bounded_event_preview(root, 500),
+        pending_tools: pending_tool_names(work_item, events),
+    }
+}
+
 fn event_visible_at_causal_frontier(
     event: &Event,
     work_item: &EvaluationWorkItemRecord,
@@ -3802,7 +4623,7 @@ mod tests {
     use super::*;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        NewAgent, NewCognitiveContext, NewSession, SessionMountKind, SessionStore,
+        NewAgent, NewCognitiveContext, NewSession, ObjectiveStatus, SessionMountKind, SessionStore,
     };
     use tempfile::TempDir;
 
@@ -4176,6 +4997,29 @@ mod tests {
             visible_in_inbox: true,
         };
         let references = ContextReferences::default();
+        let evaluation = EvaluationFocus {
+            work_item_id: "work-current".to_string(),
+            session_id: "s1".to_string(),
+            root_turn_id: "user:1".to_string(),
+            thread_kind: "dialogue".to_string(),
+            root_kind: "chat/user_message".to_string(),
+            root_preview: "先回答我".to_string(),
+            trigger_event_id: "user:1".to_string(),
+            trigger_kind: "chat/user_message".to_string(),
+            trigger_preview: "先回答我".to_string(),
+            objective_id: None,
+            objective_evaluation_id: None,
+        };
+        let concurrent_evaluations = vec![ConcurrentEvaluationView {
+            work_item_id: "work-existing".to_string(),
+            session_id: "s1".to_string(),
+            root_turn_id: "user:old".to_string(),
+            thread_kind: "work".to_string(),
+            thread_id: "user:old".to_string(),
+            status: "waiting_tool".to_string(),
+            root_preview: "运行长任务".to_string(),
+            pending_tools: vec!["exec".to_string()],
+        }];
         let working_set = SessionWorkingSetView {
             active_window_secs: 86_400,
             max_sessions: 50,
@@ -4192,6 +5036,11 @@ mod tests {
             sessions: &[],
             session_working_set: &working_set,
             active_work_items: &[],
+            work_threads: &[],
+            scheduled_intents: &[],
+            evaluation: Some(&evaluation),
+            concurrent_evaluations: &concurrent_evaluations,
+            background_tasks: &[],
             objectives: &[],
             state: &state,
             observations: &[],
@@ -4213,6 +5062,20 @@ mod tests {
             parsed.get_path(&["kernel", "wake", "cause"]),
             Some(&SExpr::Atom("user-message".to_string()))
         );
+        assert_eq!(
+            parsed.get_path(&["kernel", "current-evaluation", "root-turn", "input"]),
+            Some(&SExpr::Atom("先回答我".to_string()))
+        );
+        assert!(rendered.contains("只推进 root-turn 表达的任务"));
+        assert!(rendered.contains("(pending-tools exec)"));
+        assert!(rendered.contains("(thread-kind work)"));
+        assert!(rendered.contains("(thread-id user:old)"));
+        assert!(rendered.contains("其他 work/objective thread 的只读运行状态"));
+        assert!(rendered.contains("(evaluate"));
+        assert!(rendered.contains("(thread (kind dialogue) (id s1) (turn user:1))"));
+        assert!(rendered.contains("(objective-binding none)"));
+        assert!(rendered.contains("(root-input 先回答我)"));
+        assert!(rendered.rfind("(evaluate").unwrap() > rendered.rfind("(inbox").unwrap());
         assert!(rendered.contains("(response-contract"));
         assert!(rendered.contains("(reality-contract"));
         assert!(rendered.contains("(name reality-contract-v1)"));
@@ -4248,6 +5111,11 @@ mod tests {
             sessions: &[],
             session_working_set: &working_set,
             active_work_items: &[],
+            work_threads: &[],
+            scheduled_intents: &[],
+            evaluation: Some(&evaluation),
+            concurrent_evaluations: &concurrent_evaluations,
+            background_tasks: &[],
             objectives: &[],
             state: &state,
             observations: &[],
@@ -4259,6 +5127,53 @@ mod tests {
         assert_ne!(rendered, changed);
         assert!(changed.starts_with(stable_context_prefix()));
         assert!(changed[shared_mind_offset..].starts_with(" (mind"));
+    }
+
+    #[test]
+    fn final_dialogue_directive_keeps_objective_visible_but_read_only() {
+        let evaluation = EvaluationFocus {
+            work_item_id: "work-dialogue".to_string(),
+            session_id: "session-a".to_string(),
+            root_turn_id: "message-new".to_string(),
+            thread_kind: "dialogue".to_string(),
+            root_kind: "chat/user_message".to_string(),
+            root_preview: "人呢？".to_string(),
+            trigger_event_id: "message-new".to_string(),
+            trigger_kind: "chat/user_message".to_string(),
+            trigger_preview: "人呢？".to_string(),
+            objective_id: None,
+            objective_evaluation_id: None,
+        };
+        let now = Utc::now();
+        let objectives = vec![ObjectiveRecord {
+            id: "objective-background".to_string(),
+            agent_id: "agent-a".to_string(),
+            context_id: "context-a".to_string(),
+            coordinator_session_id: "session-a".to_string(),
+            delivery_session_id: "session-a".to_string(),
+            parent_objective_id: None,
+            source_event_id: "objective-source".to_string(),
+            stated_objective: "继续后台编码任务".to_string(),
+            revision: 3,
+            status: ObjectiveStatus::Active,
+            status_reason: Some("等待后台工具".to_string()),
+            wait_condition: None,
+            active_evaluation_id: Some("objective-evaluation".to_string()),
+            evaluation_lease_expires_at: None,
+            continuation_sequence: 2,
+            token_budget: None,
+            tokens_used: 100,
+            time_used_seconds: 12,
+            created_at: now,
+            updated_at: now,
+        }];
+
+        let rendered = render_evaluation_directive(&evaluation, &objectives).to_string();
+        assert!(rendered.contains("(thread (kind dialogue)"));
+        assert!(rendered.contains("(objective-binding none)"));
+        assert!(rendered.contains("(status active)"));
+        assert!(rendered.contains("(role background-read-only)"));
+        assert!(rendered.contains("(goal 继续后台编码任务)"));
     }
 
     #[test]

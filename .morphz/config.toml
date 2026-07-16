@@ -1,6 +1,0 @@
-# Project-owned, non-sensitive Morphz preferences.
-# Provider endpoints, credentials, permissions and server bind addresses belong
-# to the host-owned Morphz configuration and are rejected in this file.
-
-[llm]
-model = "gemini-3-flash-agent"

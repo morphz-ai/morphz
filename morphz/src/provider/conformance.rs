@@ -66,7 +66,7 @@ fn decode_sse_chunks(payload: &[u8], split_at: usize) -> Vec<String> {
 
 #[test]
 fn openai_chat_uses_the_current_completion_budget_field() {
-    let request = build_openai_chat_request("gpt-test", Some(4096), &prompt(), &[]);
+    let request = build_openai_chat_request("gpt-test", Some(4096), None, &prompt(), &[]);
 
     assert_eq!(request["max_completion_tokens"], 4096);
     assert!(request.get("max_tokens").is_none());
@@ -220,6 +220,7 @@ fn gemini_parallel_calls_preserve_native_ids_in_both_directions() {
         tool_calls: None,
     };
     let request = build_gemini_request(
+        None,
         None,
         &[
             assistant,

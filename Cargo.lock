@@ -2225,6 +2225,7 @@ dependencies = [
  "crossterm",
  "dashmap",
  "futures-util",
+ "getrandom 0.3.4",
  "glob",
  "keyring",
  "nix",

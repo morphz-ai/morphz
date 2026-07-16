@@ -2,12 +2,14 @@ use crate::config::MemoryConfig;
 use crate::event::Event;
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, DelegationRecord, DelegationStatus,
-    EvaluationOutcomeCommit, EvaluationWorkItemMutation, EvaluationWorkItemRecord,
+    DeliveryStatus, EvaluationOutcomeCommit, EvaluationWorkItemMutation, EvaluationWorkItemRecord,
     EvaluationWorkItemStatus, EventStore, MessageClaim, NewAgent, NewCognitiveContext,
-    NewDelegation, NewEvaluationWorkItem, NewObjective, NewSession, ObjectiveMutation,
-    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
+    NewDelegation, NewEvaluationWorkItem, NewObjective, NewScheduledIntent, NewSession,
+    NewWorkThread, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, ScheduledIntentRecord, ScheduledIntentStatus,
     SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionRecord, SessionStatus,
-    SessionStore, SessionUpdate,
+    SessionStore, SessionUpdate, WorkThreadKind, WorkThreadMutation, WorkThreadRecord,
+    WorkThreadStatus,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -216,6 +218,60 @@ impl SqliteStore {
             FOREIGN KEY(work_item_id) REFERENCES evaluation_work_items(id) ON DELETE CASCADE,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS work_threads (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            agent_id TEXT NOT NULL,
+            context_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            root_turn_id TEXT NOT NULL UNIQUE,
+            kind TEXT NOT NULL CHECK(kind IN ('dialogue', 'work', 'objective', 'delegation', 'delivery')),
+            status TEXT NOT NULL CHECK(status IN ('active', 'waiting', 'completed', 'failed', 'cancelled')),
+            executor_kind TEXT NOT NULL,
+            executor_id TEXT,
+            result_text TEXT,
+            result_event_id TEXT,
+            delivery_status TEXT NOT NULL DEFAULT 'none' CHECK(delivery_status IN ('none', 'pending', 'deferred', 'delivered')),
+            delivery_event_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_work_threads_context_status
+            ON work_threads(context_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_work_threads_session_delivery
+            ON work_threads(session_id, delivery_status, updated_at);
+
+        CREATE TABLE IF NOT EXISTS scheduled_intents (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            thread_id TEXT NOT NULL,
+            source_turn_id TEXT NOT NULL,
+            intent TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('queued', 'dispatched', 'completed', 'cancelled')),
+            not_before TEXT,
+            interval_seconds INTEGER CHECK(interval_seconds IS NULL OR interval_seconds > 0),
+            dependency_thread_ids_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(thread_id) REFERENCES work_threads(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_scheduled_intents_due
+            ON scheduled_intents(status, not_before, created_at);
+
+        CREATE TABLE IF NOT EXISTS work_thread_outcomes (
+            thread_id TEXT PRIMARY KEY,
+            root_turn_id TEXT NOT NULL UNIQUE,
+            work_item_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            disposition TEXT NOT NULL,
+            event_id TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(thread_id) REFERENCES work_threads(id) ON DELETE CASCADE,
+            FOREIGN KEY(work_item_id) REFERENCES evaluation_work_items(id) ON DELETE CASCADE,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
@@ -319,6 +375,56 @@ fn parse_evaluation_work_item_status(
         "cancelled" => Ok(EvaluationWorkItemStatus::Cancelled),
         "failed" => Ok(EvaluationWorkItemStatus::Failed),
         other => Err(format!("未知 Evaluation Work Item 状态：'{other}'").into()),
+    }
+}
+
+fn parse_work_thread_kind(
+    value: &str,
+) -> Result<WorkThreadKind, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "dialogue" => Ok(WorkThreadKind::Dialogue),
+        "work" => Ok(WorkThreadKind::Work),
+        "objective" => Ok(WorkThreadKind::Objective),
+        "delegation" => Ok(WorkThreadKind::Delegation),
+        "delivery" => Ok(WorkThreadKind::Delivery),
+        other => Err(format!("未知 Work Thread kind：'{other}'").into()),
+    }
+}
+
+fn parse_work_thread_status(
+    value: &str,
+) -> Result<WorkThreadStatus, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "active" => Ok(WorkThreadStatus::Active),
+        "waiting" => Ok(WorkThreadStatus::Waiting),
+        "completed" => Ok(WorkThreadStatus::Completed),
+        "failed" => Ok(WorkThreadStatus::Failed),
+        "cancelled" => Ok(WorkThreadStatus::Cancelled),
+        other => Err(format!("未知 Work Thread status：'{other}'").into()),
+    }
+}
+
+fn parse_delivery_status(
+    value: &str,
+) -> Result<DeliveryStatus, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "none" => Ok(DeliveryStatus::None),
+        "pending" => Ok(DeliveryStatus::Pending),
+        "deferred" => Ok(DeliveryStatus::Deferred),
+        "delivered" => Ok(DeliveryStatus::Delivered),
+        other => Err(format!("未知 Work Thread delivery status：'{other}'").into()),
+    }
+}
+
+fn parse_scheduled_intent_status(
+    value: &str,
+) -> Result<ScheduledIntentStatus, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "queued" => Ok(ScheduledIntentStatus::Queued),
+        "dispatched" => Ok(ScheduledIntentStatus::Dispatched),
+        "completed" => Ok(ScheduledIntentStatus::Completed),
+        "cancelled" => Ok(ScheduledIntentStatus::Cancelled),
+        other => Err(format!("未知 Scheduled Intent status：'{other}'").into()),
     }
 }
 
@@ -437,6 +543,51 @@ fn evaluation_work_item_from_row(
         lease_expires_at: row
             .get::<Option<String>, _>("lease_expires_at")
             .map(|value| parse_time(&value)),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
+}
+
+fn work_thread_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<WorkThreadRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(WorkThreadRecord {
+        id: row.get("id"),
+        revision: sqlite_u64(row, "revision")?,
+        agent_id: row.get("agent_id"),
+        context_id: row.get("context_id"),
+        session_id: row.get("session_id"),
+        root_turn_id: row.get("root_turn_id"),
+        kind: parse_work_thread_kind(&row.get::<String, _>("kind"))?,
+        status: parse_work_thread_status(&row.get::<String, _>("status"))?,
+        executor_kind: row.get("executor_kind"),
+        executor_id: row.get("executor_id"),
+        result_text: row.get("result_text"),
+        result_event_id: row.get("result_event_id"),
+        delivery_status: parse_delivery_status(&row.get::<String, _>("delivery_status"))?,
+        delivery_event_id: row.get("delivery_event_id"),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
+}
+
+fn scheduled_intent_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<ScheduledIntentRecord, Box<dyn std::error::Error + Send + Sync>> {
+    let dependency_thread_ids =
+        serde_json::from_str::<Vec<String>>(&row.get::<String, _>("dependency_thread_ids_json"))?;
+    Ok(ScheduledIntentRecord {
+        id: row.get("id"),
+        revision: sqlite_u64(row, "revision")?,
+        thread_id: row.get("thread_id"),
+        source_turn_id: row.get("source_turn_id"),
+        intent: row.get("intent"),
+        status: parse_scheduled_intent_status(&row.get::<String, _>("status"))?,
+        not_before: row
+            .get::<Option<String>, _>("not_before")
+            .map(|value| parse_time(&value)),
+        interval_seconds: sqlite_optional_u64(row, "interval_seconds")?,
+        dependency_thread_ids,
         created_at: parse_time(&row.get::<String, _>("created_at")),
         updated_at: parse_time(&row.get::<String, _>("updated_at")),
     })
@@ -763,7 +914,7 @@ impl SessionStore for SqliteStore {
         .bind(source_version)
         .bind(snapshot_hash)
         .bind(projection)
-        .bind(now)
+        .bind(&now)
         .bind(context_id)
         .execute(&self.pool)
         .await?;
@@ -1162,7 +1313,7 @@ impl SessionStore for SqliteStore {
         .bind(claimed_by)
         .bind(lease_expires_at)
         .bind(context_snapshot_version)
-        .bind(now)
+        .bind(&now)
         .bind(id)
         .bind(expected_revision)
         .execute(&self.pool)
@@ -1195,22 +1346,34 @@ impl SessionStore for SqliteStore {
             .get("disposition")
             .and_then(JsonValue::as_str)
             .unwrap_or("deliver");
+        let root_turn_id = event
+            .payload
+            .get("root_turn_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Evaluation outcome Event 缺少 root_turn_id")?;
+        let thread_id = event
+            .payload
+            .get("work_thread_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Evaluation outcome Event 缺少 work_thread_id")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
-            "INSERT INTO evaluation_outcomes (work_item_id, session_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(work_item_id) DO NOTHING",
+            "INSERT INTO work_thread_outcomes (thread_id, root_turn_id, work_item_id, session_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(root_turn_id) DO NOTHING",
         )
+        .bind(thread_id)
+        .bind(root_turn_id)
         .bind(work_item_id)
         .bind(session_id)
         .bind(disposition)
         .bind(&event.id)
-        .bind(now)
+        .bind(&now)
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 0 {
             let existing =
-                sqlx::query("SELECT event_id FROM evaluation_outcomes WHERE work_item_id = ?")
-                    .bind(work_item_id)
+                sqlx::query("SELECT event_id FROM work_thread_outcomes WHERE root_turn_id = ?")
+                    .bind(root_turn_id)
                     .fetch_one(&mut *tx)
                     .await?;
             tx.commit().await?;
@@ -1218,6 +1381,87 @@ impl SessionStore for SqliteStore {
                 event_id: existing.get("event_id"),
             });
         }
+        let result_text = event.payload.get("text").and_then(JsonValue::as_str);
+        let (delivery_status, delivery_event_id) = match event.topic.as_str() {
+            "chat/reply" => ("delivered", Some(event.id.as_str())),
+            "runtime/thread_result" => ("pending", None),
+            _ => ("none", None),
+        };
+        let terminal = sqlx::query(
+            r#"UPDATE work_threads
+               SET revision = revision + 1,
+                   status = 'completed',
+                   result_text = COALESCE(?, result_text),
+                   result_event_id = ?,
+                   delivery_status = ?,
+                   delivery_event_id = ?,
+                   updated_at = ?
+               WHERE id = ? AND root_turn_id = ? AND session_id = ?
+                 AND status NOT IN ('completed', 'failed', 'cancelled')"#,
+        )
+        .bind(result_text)
+        .bind(&event.id)
+        .bind(delivery_status)
+        .bind(delivery_event_id)
+        .bind(&now)
+        .bind(thread_id)
+        .bind(root_turn_id)
+        .bind(session_id)
+        .execute(&mut *tx)
+        .await?;
+        if terminal.rows_affected() != 1 {
+            return Err(format!(
+                "Evaluation outcome 无法原子提交 Work Thread '{}' 终态",
+                thread_id
+            )
+            .into());
+        }
+        if let Some(covers) = event.payload.get("covers").and_then(JsonValue::as_array) {
+            for thread_id in covers.iter().filter_map(JsonValue::as_str) {
+                let updated = sqlx::query(
+                    "UPDATE work_threads SET revision = revision + 1, delivery_status = 'delivered', delivery_event_id = ?, updated_at = ? WHERE id = ? AND session_id = ? AND delivery_status IN ('pending', 'deferred')",
+                )
+                .bind(&event.id)
+                .bind(&now)
+                .bind(thread_id)
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await?;
+                if updated.rows_affected() != 1 {
+                    return Err(format!(
+                        "Delivery outcome 无法覆盖 Thread '{}'：它不属于当前 Session、已被交付或不是 pending/deferred",
+                        thread_id
+                    )
+                    .into());
+                }
+            }
+        }
+        if let Some(covers) = event
+            .payload
+            .get("defer_covers")
+            .and_then(JsonValue::as_array)
+        {
+            for thread_id in covers.iter().filter_map(JsonValue::as_str) {
+                sqlx::query(
+                    "UPDATE work_threads SET revision = revision + 1, delivery_status = 'deferred', updated_at = ? WHERE id = ? AND session_id = ? AND delivery_status = 'pending'",
+                )
+                .bind(&now)
+                .bind(thread_id)
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+        sqlx::query(
+            "INSERT OR IGNORE INTO evaluation_outcomes (work_item_id, session_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(work_item_id)
+        .bind(session_id)
+        .bind(disposition)
+        .bind(&event.id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
         append_event_in_transaction(&mut tx, event).await?;
         let activity_at = event
             .timestamp
@@ -1230,6 +1474,420 @@ impl SessionStore for SqliteStore {
             .await?;
         tx.commit().await?;
         Ok(EvaluationOutcomeCommit::Committed)
+    }
+
+    async fn ensure_work_thread(
+        &self,
+        thread: NewWorkThread,
+    ) -> Result<WorkThreadRecord, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT OR IGNORE INTO work_threads
+               (id, revision, agent_id, context_id, session_id, root_turn_id,
+                kind, status, executor_kind, executor_id, delivery_status,
+                created_at, updated_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, 'active', ?, ?, 'none', ?, ?)"#,
+        )
+        .bind(&thread.id)
+        .bind(&thread.agent_id)
+        .bind(&thread.context_id)
+        .bind(&thread.session_id)
+        .bind(&thread.root_turn_id)
+        .bind(thread.kind.as_str())
+        .bind(&thread.executor_kind)
+        .bind(&thread.executor_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        let row = sqlx::query("SELECT * FROM work_threads WHERE root_turn_id = ?")
+            .bind(&thread.root_turn_id)
+            .fetch_one(&self.pool)
+            .await?;
+        let existing = work_thread_from_row(&row)?;
+        if existing.context_id != thread.context_id
+            || existing.session_id != thread.session_id
+            || existing.agent_id != thread.agent_id
+        {
+            return Err(format!(
+                "Root Turn '{}' 已被不同 Work Thread 占用",
+                thread.root_turn_id
+            )
+            .into());
+        }
+        Ok(existing)
+    }
+
+    async fn get_work_thread(
+        &self,
+        id: &str,
+    ) -> Result<Option<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM work_threads WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(work_thread_from_row)
+            .transpose()
+    }
+
+    async fn get_work_thread_by_root(
+        &self,
+        root_turn_id: &str,
+    ) -> Result<Option<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM work_threads WHERE root_turn_id = ?")
+            .bind(root_turn_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(work_thread_from_row)
+            .transpose()
+    }
+
+    async fn list_context_work_threads(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = if include_terminal {
+            sqlx::query("SELECT * FROM work_threads WHERE context_id = ? ORDER BY created_at, id")
+                .bind(context_id)
+                .fetch_all(&self.pool)
+                .await?
+        } else {
+            sqlx::query("SELECT * FROM work_threads WHERE context_id = ? AND status NOT IN ('completed', 'failed', 'cancelled') ORDER BY created_at, id")
+                .bind(context_id)
+                .fetch_all(&self.pool)
+                .await?
+        };
+        rows.iter().map(work_thread_from_row).collect()
+    }
+
+    async fn update_work_thread(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        kind: Option<WorkThreadKind>,
+        status: Option<WorkThreadStatus>,
+        result_text: Option<&str>,
+        result_event_id: Option<&str>,
+        delivery_status: Option<DeliveryStatus>,
+        delivery_event_id: Option<&str>,
+    ) -> Result<WorkThreadMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Work Thread revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE work_threads
+               SET revision = revision + 1,
+                   kind = COALESCE(?, kind),
+                   status = COALESCE(?, status),
+                   result_text = COALESCE(?, result_text),
+                   result_event_id = COALESCE(?, result_event_id),
+                   delivery_status = COALESCE(?, delivery_status),
+                   delivery_event_id = COALESCE(?, delivery_event_id),
+                   updated_at = ?
+               WHERE id = ? AND revision = ?"#,
+        )
+        .bind(kind.map(WorkThreadKind::as_str))
+        .bind(status.map(WorkThreadStatus::as_str))
+        .bind(result_text)
+        .bind(result_event_id)
+        .bind(delivery_status.map(DeliveryStatus::as_str))
+        .bind(delivery_event_id)
+        .bind(now)
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(WorkThreadMutation::Updated(
+                self.get_work_thread(id)
+                    .await?
+                    .ok_or("Work Thread 更新后无法读取")?,
+            ));
+        }
+        Ok(match self.get_work_thread(id).await? {
+            Some(current) => WorkThreadMutation::Conflict { current },
+            None => WorkThreadMutation::NotFound,
+        })
+    }
+
+    async fn ensure_scheduled_intent(
+        &self,
+        intent: NewScheduledIntent,
+    ) -> Result<ScheduledIntentRecord, Box<dyn std::error::Error + Send + Sync>> {
+        let interval_seconds = intent
+            .interval_seconds
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| "Scheduled Intent interval 超出 SQLite INTEGER 范围")?;
+        let not_before = intent
+            .not_before
+            .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let dependencies = serde_json::to_string(&intent.dependency_thread_ids)?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT OR IGNORE INTO scheduled_intents
+               (id, revision, thread_id, source_turn_id, intent, status,
+                not_before, interval_seconds, dependency_thread_ids_json,
+                created_at, updated_at)
+               VALUES (?, 1, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)"#,
+        )
+        .bind(&intent.id)
+        .bind(&intent.thread_id)
+        .bind(&intent.source_turn_id)
+        .bind(&intent.intent)
+        .bind(not_before)
+        .bind(interval_seconds)
+        .bind(dependencies)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        let row = sqlx::query("SELECT * FROM scheduled_intents WHERE id = ?")
+            .bind(&intent.id)
+            .fetch_one(&self.pool)
+            .await?;
+        scheduled_intent_from_row(&row)
+    }
+
+    async fn get_scheduled_intent(
+        &self,
+        id: &str,
+    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM scheduled_intents WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(scheduled_intent_from_row)
+            .transpose()
+    }
+
+    async fn commit_schedule_transaction(
+        &self,
+        threads: &[NewWorkThread],
+        intents: &[NewScheduledIntent],
+    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        for thread in threads {
+            sqlx::query(
+                r#"INSERT OR IGNORE INTO work_threads
+                   (id, revision, agent_id, context_id, session_id, root_turn_id,
+                    kind, status, executor_kind, executor_id, delivery_status,
+                    created_at, updated_at)
+                   VALUES (?, 1, ?, ?, ?, ?, ?, 'waiting', ?, ?, 'none', ?, ?)"#,
+            )
+            .bind(&thread.id)
+            .bind(&thread.agent_id)
+            .bind(&thread.context_id)
+            .bind(&thread.session_id)
+            .bind(&thread.root_turn_id)
+            .bind(thread.kind.as_str())
+            .bind(&thread.executor_kind)
+            .bind(&thread.executor_id)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        for intent in intents {
+            let target = sqlx::query("SELECT status FROM work_threads WHERE id = ?")
+                .bind(&intent.thread_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| format!("Scheduled Intent '{}' 的目标 Thread 不存在", intent.id))?;
+            let target_status: String = target.get("status");
+            if matches!(target_status.as_str(), "failed" | "cancelled") {
+                return Err(format!(
+                    "Scheduled Intent '{}' 不能写入状态为 '{}' 的 Thread",
+                    intent.id, target_status
+                )
+                .into());
+            }
+            let interval_seconds = intent
+                .interval_seconds
+                .map(i64::try_from)
+                .transpose()
+                .map_err(|_| "Scheduled Intent interval 超出 SQLite INTEGER 范围")?;
+            let not_before = intent
+                .not_before
+                .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+            let dependencies = serde_json::to_string(&intent.dependency_thread_ids)?;
+            sqlx::query(
+                r#"INSERT INTO scheduled_intents
+                   (id, revision, thread_id, source_turn_id, intent, status,
+                    not_before, interval_seconds, dependency_thread_ids_json,
+                    created_at, updated_at)
+                   VALUES (?, 1, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO NOTHING"#,
+            )
+            .bind(&intent.id)
+            .bind(&intent.thread_id)
+            .bind(&intent.source_turn_id)
+            .bind(&intent.intent)
+            .bind(not_before)
+            .bind(interval_seconds)
+            .bind(dependencies)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        let mut records = Vec::with_capacity(intents.len());
+        for intent in intents {
+            records.push(
+                self.get_scheduled_intent(&intent.id)
+                    .await?
+                    .ok_or_else(|| format!("Scheduled Intent '{}' 提交后不存在", intent.id))?,
+            );
+        }
+        Ok(records)
+    }
+
+    async fn list_scheduled_intents(
+        &self,
+        thread_id: Option<&str>,
+        status: Option<ScheduledIntentStatus>,
+    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = match (thread_id, status) {
+            (Some(thread_id), Some(status)) => {
+                sqlx::query("SELECT * FROM scheduled_intents WHERE thread_id = ? AND status = ? ORDER BY COALESCE(not_before, created_at), id")
+                    .bind(thread_id)
+                    .bind(status.as_str())
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            (Some(thread_id), None) => {
+                sqlx::query("SELECT * FROM scheduled_intents WHERE thread_id = ? ORDER BY COALESCE(not_before, created_at), id")
+                    .bind(thread_id)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            (None, Some(status)) => {
+                sqlx::query("SELECT * FROM scheduled_intents WHERE status = ? ORDER BY COALESCE(not_before, created_at), id")
+                    .bind(status.as_str())
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            (None, None) => {
+                sqlx::query("SELECT * FROM scheduled_intents ORDER BY COALESCE(not_before, created_at), id")
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+        };
+        rows.iter().map(scheduled_intent_from_row).collect()
+    }
+
+    async fn claim_scheduled_intent(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        next_not_before: Option<DateTime<Utc>>,
+    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Scheduled Intent revision 超出 SQLite INTEGER 范围")?;
+        let next_not_before =
+            next_not_before.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let next_status = if next_not_before.is_some() {
+            ScheduledIntentStatus::Queued
+        } else {
+            ScheduledIntentStatus::Dispatched
+        };
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            "UPDATE scheduled_intents SET revision = revision + 1, status = ?, not_before = COALESCE(?, not_before), updated_at = ? WHERE id = ? AND revision = ? AND status = 'queued'",
+        )
+        .bind(next_status.as_str())
+        .bind(next_not_before)
+        .bind(now)
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 0 {
+            return Ok(None);
+        }
+        let row = sqlx::query("SELECT * FROM scheduled_intents WHERE id = ?")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(Some(scheduled_intent_from_row(&row)?))
+    }
+
+    async fn commit_scheduled_dispatch(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        next_not_before: Option<DateTime<Utc>>,
+        event: &Event,
+    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Scheduled Intent revision 超出 SQLite INTEGER 范围")?;
+        let next_not_before =
+            next_not_before.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let next_status = if next_not_before.is_some() {
+            ScheduledIntentStatus::Queued
+        } else {
+            ScheduledIntentStatus::Dispatched
+        };
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        let result = sqlx::query(
+            "UPDATE scheduled_intents SET revision = revision + 1, status = ?, not_before = COALESCE(?, not_before), updated_at = ? WHERE id = ? AND revision = ? AND status = 'queued'",
+        )
+        .bind(next_status.as_str())
+        .bind(next_not_before)
+        .bind(&now)
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+        append_event_in_transaction(&mut tx, event).await?;
+        tx.commit().await?;
+        self.get_scheduled_intent(id).await
+    }
+
+    async fn commit_thread_delivery(
+        &self,
+        thread_ids: &[String],
+        event: &Event,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        if thread_ids.is_empty() {
+            return Err("Thread delivery 至少覆盖一个 thread_id".into());
+        }
+        let session_id = event
+            .payload
+            .get("session_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Thread delivery Event 缺少 session_id")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        for thread_id in thread_ids {
+            let result = sqlx::query(
+                "UPDATE work_threads SET revision = revision + 1, delivery_status = 'delivered', delivery_event_id = ?, updated_at = ? WHERE id = ? AND session_id = ? AND delivery_status IN ('pending', 'deferred')",
+            )
+            .bind(&event.id)
+            .bind(&now)
+            .bind(thread_id)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+            if result.rows_affected() != 1 {
+                tx.rollback().await?;
+                return Ok(false);
+            }
+        }
+        append_event_in_transaction(&mut tx, event).await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     async fn claim_message(
@@ -1910,6 +2568,16 @@ impl EventStore for SqliteStore {
             "SELECT rowid AS event_sequence, id, timestamp, actor, type, topic, payload FROM events WHERE 1=1",
         );
 
+        if let Some(event_id) = filter.event_id {
+            builder.push(" AND id = ");
+            builder.push_bind(event_id);
+        }
+
+        if let Some(sequence) = filter.sequence {
+            builder.push(" AND rowid = ");
+            builder.push_bind(i64::try_from(sequence).unwrap_or(i64::MAX));
+        }
+
         if let Some(context_id) = filter.context_id {
             builder.push(" AND context_id = ");
             builder.push_bind(context_id);
@@ -1918,6 +2586,11 @@ impl EventStore for SqliteStore {
         if let Some(session_id) = filter.session_id {
             builder.push(" AND session_id = ");
             builder.push_bind(session_id);
+        }
+
+        if let Some(after_sequence) = filter.after_sequence {
+            builder.push(" AND rowid > ");
+            builder.push_bind(i64::try_from(after_sequence).unwrap_or(i64::MAX));
         }
 
         if let Some(st) = filter.start_time {
@@ -1960,6 +2633,19 @@ impl EventStore for SqliteStore {
             }
         }
 
+        for topic in filter.excluded_topics {
+            if topic == "*" {
+                builder.push(" AND 0=1");
+            } else if topic.ends_with("/*") {
+                let prefix = &topic[..topic.len() - 2];
+                builder.push(" AND topic NOT LIKE ");
+                builder.push_bind(format!("{}/%", prefix));
+            } else {
+                builder.push(" AND topic != ");
+                builder.push_bind(topic);
+            }
+        }
+
         if let Some(search_query) = filter.search_query {
             builder.push(" AND (payload LIKE ");
             builder.push_bind(format!("%{}%", search_query));
@@ -1968,10 +2654,16 @@ impl EventStore for SqliteStore {
             builder.push(")");
         }
 
-        // 强制按时间戳升序排序，并在时间戳相同时按 rowid 物理插入顺序升序
-        builder.push(" ORDER BY timestamp ASC, rowid ASC");
+        let latest_k = filter.latest_k;
+        if latest_k.is_some() {
+            // Limit the tail in SQLite, then restore chronological order below.
+            builder.push(" ORDER BY timestamp DESC, rowid DESC");
+        } else {
+            // 强制按时间戳升序排序，并在时间戳相同时按 rowid 物理插入顺序升序
+            builder.push(" ORDER BY timestamp ASC, rowid ASC");
+        }
 
-        if let Some(top_k) = filter.top_k {
+        if let Some(top_k) = latest_k.or(filter.top_k) {
             builder.push(" LIMIT ");
             builder.push_bind(top_k as i64);
         }
@@ -2001,6 +2693,10 @@ impl EventStore for SqliteStore {
                 topic,
                 payload,
             });
+        }
+
+        if latest_k.is_some() {
+            events.reverse();
         }
 
         Ok(events)
@@ -2057,6 +2753,84 @@ mod tests {
             .await
             .unwrap();
         assert!(other_session.is_empty());
+    }
+
+    #[tokio::test]
+    async fn event_queries_bound_tail_incremental_reads_and_exclusions_in_sql() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let base = Utc::now();
+        for (index, topic) in [
+            "chat/user_message",
+            "chat/context_inspect",
+            "chat/tool_output",
+            "chat/reply",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut event = Event::new(
+                format!("bounded-{index}"),
+                "fixture".to_string(),
+                "fixture".to_string(),
+                topic.to_string(),
+                [(
+                    "session_id".to_string(),
+                    serde_json::json!("bounded-session"),
+                )]
+                .into_iter()
+                .collect(),
+            );
+            event.timestamp = base + chrono::Duration::seconds(index as i64);
+            store.append(event).await.unwrap();
+        }
+
+        let cognitive = store
+            .query(QueryFilter {
+                session_id: Some("bounded-session".to_string()),
+                topic: Some("chat/*".to_string()),
+                excluded_topics: vec!["chat/context_inspect".to_string()],
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            cognitive
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["bounded-0", "bounded-2", "bounded-3"]
+        );
+
+        let tail = store
+            .query(QueryFilter {
+                session_id: Some("bounded-session".to_string()),
+                latest_k: Some(2),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            tail.iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["bounded-2", "bounded-3"]
+        );
+
+        let second_sequence = cognitive[1].sequence.unwrap();
+        let incremental = store
+            .query(QueryFilter {
+                session_id: Some("bounded-session".to_string()),
+                after_sequence: Some(second_sequence),
+                top_k: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(incremental.len(), 1);
+        assert_eq!(incremental[0].id, "bounded-3");
     }
 
     #[tokio::test]

@@ -58,7 +58,10 @@ pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
     (operator reply
       (form (reply content))
       (description
-        "把 content 作为无工具调用的最终回复；没有待执行过程时结束本轮求值。"))))"#;
+        "(reply content) 是过程定义中的语义记法，不是模型响应的输出格式，也不是工具。
+         对它求值时，直接把 content 本身作为无工具调用的普通 assistant 文本返回；
+         绝不能把 (reply ...) 的括号、算子名或代码围栏发送给 Session。
+         没有待执行过程时结束本轮求值。"))))"#;
 
 pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
   (identity
@@ -107,7 +110,8 @@ pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
     (operator reply
       (form (reply content))
       (description
-        "把 content 作为无工具调用的普通 assistant 文本返回给当前 active Session。
-         这是 S 表达式过程中的语义算子，不是 Function Calling 工具；只在没有待执行
-         工具或维护过程时结束当前 Evaluation。若明确无需发送消息，独占调用 Runtime
-         提供的 no_reply 工具；空响应不表示完成。"))))"#;
+        "(reply content) 是过程定义中的语义记法，不是模型响应的输出格式，也不是工具。
+         对它求值时，直接把 content 本身作为无工具调用的普通 assistant 文本返回给当前
+         active Session；绝不能把 (reply ...) 的括号、算子名或代码围栏发送给 Session。
+         只在没有待执行工具或维护过程时结束当前 Evaluation。若明确无需发送消息，独占
+         调用 Runtime 提供的 no_reply 工具；空响应不表示完成。"))))"#;

@@ -3,6 +3,8 @@ main
 target/
 executor/target/
 dist/
+!dashboard/dist/
+!dashboard/dist/**
 
 # Database files
 *.db
