@@ -1028,6 +1028,14 @@ pub trait SessionStore: Send + Sync {
         thread_id: Option<&str>,
         status: Option<ScheduledIntentStatus>,
     ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Advance every queued schedule which names `dependency_thread_id` in
+    /// the persistent reverse dependency index. The revision bump fences any
+    /// timer generation that may already be claimed while the dependency
+    /// crosses its terminal boundary.
+    async fn wake_scheduled_intents_for_dependency(
+        &self,
+        dependency_thread_id: &str,
+    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn claim_scheduled_intent(
         &self,
         id: &str,

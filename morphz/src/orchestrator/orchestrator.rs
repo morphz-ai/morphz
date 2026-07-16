@@ -3,18 +3,21 @@ use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_TOOL_OUTPUT, T
 use crate::llm::{Client, Message, PromptTokenCount};
 use crate::memory::{
     ActivationOutcomeCommit, DelegationStatus, DeliveryStatus, EventStore, NewCognitiveContext,
-    NewDelegation, NewSession, NewThreadActivation, NewThreadSignal, NewWorkThread, QueryFilter,
-    ScheduledIntentStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
-    SessionStatus, SessionStore, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadLifecycle, WorkThreadKind,
-    WorkThreadMutation,
+    NewDelegation, NewRuntimeTimer, NewSession, NewThreadActivation, NewThreadSignal,
+    NewWorkThread, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ScheduledIntentStatus,
+    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionStore,
+    SessionUpdate, SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadLifecycle, WorkThreadKind, WorkThreadMutation,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{ContextEngine, ContextView};
 use crate::orchestrator::context_contract::{render_system_contract, render_system_contract_sexpr};
 use crate::sexpr::SExpr;
 use crate::sexpr_vm_contract::ANNOTATED_RESPONSE_KERNEL;
-use crate::tool::{active_background_task_count, active_background_task_count_for_root, Registry};
+use crate::timer::{TimerDisposition, TimerEngine};
+use crate::tool::{
+    active_background_task_count, active_background_task_count_for_root, Registry, ThreadScheduler,
+};
 use chrono::Utc;
 use dashmap::DashMap;
 use serde_json::json;
@@ -558,6 +561,8 @@ pub struct Orchestrator {
     delegation_start_lock: Mutex<()>,
     objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
     objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
+    timer_engine: Option<Arc<TimerEngine>>,
+    thread_scheduler: Option<Arc<ThreadScheduler>>,
 }
 
 impl Orchestrator {
@@ -619,6 +624,8 @@ impl Orchestrator {
             context_engine,
             objective_evaluations,
             None,
+            None,
+            None,
         )
     }
 
@@ -632,6 +639,8 @@ impl Orchestrator {
         context_engine: Arc<ContextEngine>,
         objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
         objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
+        timer_engine: Option<Arc<TimerEngine>>,
+        thread_scheduler: Option<Arc<ThreadScheduler>>,
     ) -> Self {
         let concurrency_semaphore = Arc::new(tokio::sync::Semaphore::new(
             orchestrator_config.concurrency_limit.max(1),
@@ -657,7 +666,111 @@ impl Orchestrator {
             delegation_start_lock: Mutex::new(()),
             objective_evaluations,
             objective_supervisor,
+            timer_engine,
+            thread_scheduler,
         }
+    }
+
+    pub fn register_timer_handlers(self: &Arc<Self>) -> Result<(), DynError> {
+        let Some(timers) = &self.timer_engine else {
+            return Ok(());
+        };
+        let orchestrator = Arc::downgrade(self);
+        timers.register_handler(RuntimeTimerKind::ActivationLease, move |timer| {
+            let orchestrator = orchestrator.clone();
+            async move {
+                let Some(orchestrator) = orchestrator.upgrade() else {
+                    return Ok(TimerDisposition::Complete);
+                };
+                orchestrator.dispatch_activation_lease(timer).await
+            }
+        })
+    }
+
+    async fn arm_activation_lease(
+        &self,
+        activation: &ThreadActivationRecord,
+    ) -> Result<(), DynError> {
+        let Some(timers) = &self.timer_engine else {
+            return Ok(());
+        };
+        if activation.status != ThreadActivationStatus::Running {
+            return Ok(());
+        }
+        timers
+            .schedule(NewRuntimeTimer {
+                id: activation_lease_timer_id(&activation.id),
+                generation: activation.revision,
+                kind: RuntimeTimerKind::ActivationLease,
+                owner_id: activation.id.clone(),
+                due_at: activation.lease_expires_at.unwrap_or_else(Utc::now),
+                payload: json!({
+                    "activation_id": activation.id,
+                    "revision": activation.revision,
+                    "claimed_by": activation.claimed_by,
+                    "trigger_event_id": activation.trigger_event_id,
+                }),
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn cancel_activation_lease(&self, activation_id: &str) -> Result<(), DynError> {
+        if let Some(timers) = &self.timer_engine {
+            timers
+                .cancel(&activation_lease_timer_id(activation_id))
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn dispatch_activation_lease(
+        self: Arc<Self>,
+        timer: RuntimeTimerRecord,
+    ) -> Result<TimerDisposition, DynError> {
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Activation lease 需要持久化 SessionStore")?;
+        let Some(current) = session_store.get_thread_activation(&timer.owner_id).await? else {
+            return Ok(TimerDisposition::Complete);
+        };
+        if current.status != ThreadActivationStatus::Running {
+            return Ok(TimerDisposition::Complete);
+        }
+        if current.revision != timer.generation {
+            self.arm_activation_lease(&current).await?;
+            return Ok(TimerDisposition::Complete);
+        }
+        if let Some(expires_at) = current.lease_expires_at {
+            if expires_at > Utc::now() {
+                return Ok(TimerDisposition::Reschedule {
+                    due_at: expires_at,
+                    reason: Some("Thread Activation lease 尚未到期".to_string()),
+                });
+            }
+        }
+        let Some(trigger) = self
+            .store
+            .query(QueryFilter {
+                event_id: Some(current.trigger_event_id.clone()),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .find(|event| event.id == current.trigger_event_id)
+        else {
+            return Err(format!(
+                "Activation '{}' 的 Trigger Event '{}' 不存在",
+                current.id, current.trigger_event_id
+            )
+            .into());
+        };
+        // Dispatch is idempotent at Thread Activation claim. The claimant CAS
+        // advances the revision and arms the next lease generation before any
+        // model work can be stranded again.
+        self.bus.dispatch_persisted(trigger).await?;
+        Ok(TimerDisposition::Complete)
     }
 
     pub fn objective_evaluations(&self) -> Arc<ObjectiveEvaluationRegistry> {
@@ -810,7 +923,6 @@ impl Orchestrator {
         let Some(session_store) = self.context_engine.session_store() else {
             return Ok(());
         };
-        let now = Utc::now();
         for context in session_store.list_contexts(false).await? {
             let mut interrupted_dialogue_roots = HashSet::new();
             let work_items = session_store
@@ -941,6 +1053,7 @@ impl Orchestrator {
                                 .await?
                             {
                                 ThreadActivationMutation::Updated(_) => {
+                                    self.cancel_activation_lease(&work_item.id).await?;
                                     self.bus.dispatch_persisted(trigger).await?;
                                 }
                                 ThreadActivationMutation::Conflict { .. }
@@ -948,21 +1061,7 @@ impl Orchestrator {
                             }
                             continue;
                         }
-                        let delay = work_item
-                            .lease_expires_at
-                            .filter(|expires_at| *expires_at > now)
-                            .and_then(|expires_at| (expires_at - now).to_std().ok());
-                        if let Some(delay) = delay {
-                            let bus = Arc::clone(&self.bus);
-                            tokio::spawn(async move {
-                                tokio::time::sleep(delay).await;
-                                if let Err(error) = bus.dispatch_persisted(trigger).await {
-                                    tracing::error!(%error, "Thread Activation lease 到期后重新派发失败");
-                                }
-                            });
-                        } else {
-                            self.bus.dispatch_persisted(trigger).await?;
-                        }
+                        self.arm_activation_lease(&work_item).await?;
                     }
                     ThreadActivationStatus::Succeeded
                     | ThreadActivationStatus::Cancelled
@@ -1028,6 +1127,9 @@ impl Orchestrator {
                     .await?
                 {
                     WorkThreadMutation::Updated(_) => {
+                        if let Some(scheduler) = &self.thread_scheduler {
+                            scheduler.dependency_completed(&thread.id).await?;
+                        }
                         tracing::warn!(
                             thread_id = %thread.id,
                             root_turn_id = %thread.root_turn_id,
@@ -1942,7 +2044,10 @@ impl Orchestrator {
             )
             .await?
         {
-            ThreadActivationMutation::Updated(claimed) => Ok(Some(claimed)),
+            ThreadActivationMutation::Updated(claimed) => {
+                self.arm_activation_lease(&claimed).await?;
+                Ok(Some(claimed))
+            }
             ThreadActivationMutation::Conflict { .. } => Ok(None),
             ThreadActivationMutation::NotFound => {
                 Err(format!("Thread Activation '{}' 在 claim 时消失", work_item.id).into())
@@ -1963,9 +2068,10 @@ impl Orchestrator {
             return Err(format!("Thread Activation '{}' 在结束时消失", work_item.id).into());
         };
         if current.status.is_terminal() {
+            self.cancel_activation_lease(&current.id).await?;
             return Ok(current);
         }
-        match session_store
+        let updated = match session_store
             .update_thread_activation(
                 &current.id,
                 current.revision,
@@ -1976,21 +2082,25 @@ impl Orchestrator {
             )
             .await?
         {
-            ThreadActivationMutation::Updated(updated) => Ok(updated),
+            ThreadActivationMutation::Updated(updated) => updated,
             ThreadActivationMutation::Conflict { current } if current.status.is_terminal() => {
-                Ok(current)
+                current
             }
-            ThreadActivationMutation::Conflict { current } => Err(format!(
-                "Thread Activation '{}' 终态提交冲突：当前 revision={} status={}",
-                current.id,
-                current.revision,
-                current.status.as_str()
-            )
-            .into()),
+            ThreadActivationMutation::Conflict { current } => {
+                return Err(format!(
+                    "Thread Activation '{}' 终态提交冲突：当前 revision={} status={}",
+                    current.id,
+                    current.revision,
+                    current.status.as_str()
+                )
+                .into())
+            }
             ThreadActivationMutation::NotFound => {
-                Err(format!("Thread Activation '{}' 在结束时消失", work_item.id).into())
+                return Err(format!("Thread Activation '{}' 在结束时消失", work_item.id).into());
             }
-        }
+        };
+        self.cancel_activation_lease(&updated.id).await?;
+        Ok(updated)
     }
 
     async fn record_work_item_context_snapshot(
@@ -2020,7 +2130,10 @@ impl Orchestrator {
             )
             .await?
         {
-            ThreadActivationMutation::Updated(_) => Ok(()),
+            ThreadActivationMutation::Updated(updated) => {
+                self.arm_activation_lease(&updated).await?;
+                Ok(())
+            }
             ThreadActivationMutation::Conflict { current }
                 if current.context_snapshot_version == Some(context_version) =>
             {
@@ -3470,6 +3583,20 @@ impl Orchestrator {
         {
             ActivationOutcomeCommit::Committed => {
                 self.bus.dispatch_persisted(event.clone()).await?;
+                if let Some(scheduler) = &self.thread_scheduler {
+                    if let Err(error) = scheduler.dependency_completed(&route.work_thread_id).await
+                    {
+                        // The terminal Work Thread and outcome are already
+                        // durable. Startup recovery re-arms every queued
+                        // schedule, so dependency notification failure must
+                        // not suppress the user-visible terminal outcome.
+                        tracing::error!(
+                            thread_id = %route.work_thread_id,
+                            %error,
+                            "Work Thread 已终止，但依赖 Schedule 即时唤醒失败；等待恢复路径重放"
+                        );
+                    }
+                }
                 Ok(true)
             }
             ActivationOutcomeCommit::Existing { event_id } => {
@@ -4656,6 +4783,10 @@ fn event_contains_physical_tool_plan(event: &Event) -> bool {
 /// A persisted lease is meaningful only while its owning Runtime is alive.
 /// Unknown/non-local claimant formats deliberately return false so recovery
 /// falls back to the normal lease timeout instead of stealing work.
+fn activation_lease_timer_id(activation_id: &str) -> String {
+    format!("activation-lease:{activation_id}")
+}
+
 fn runtime_claimant_is_definitely_dead(claimed_by: Option<&str>) -> bool {
     let Some(raw_pid) = claimed_by.and_then(|value| value.strip_prefix("runtime:")) else {
         return false;

@@ -367,6 +367,16 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_scheduled_intents_due
             ON scheduled_intents(status, not_before, created_at);
 
+        CREATE TABLE IF NOT EXISTS scheduled_intent_dependencies (
+            scheduled_intent_id TEXT NOT NULL,
+            dependency_thread_id TEXT NOT NULL,
+            PRIMARY KEY(scheduled_intent_id, dependency_thread_id),
+            FOREIGN KEY(scheduled_intent_id) REFERENCES scheduled_intents(id) ON DELETE CASCADE,
+            FOREIGN KEY(dependency_thread_id) REFERENCES work_threads(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_scheduled_intent_dependencies_thread
+            ON scheduled_intent_dependencies(dependency_thread_id, scheduled_intent_id);
+
         CREATE TABLE IF NOT EXISTS work_thread_outcomes (
             thread_id TEXT PRIMARY KEY,
             root_turn_id TEXT NOT NULL UNIQUE,
@@ -382,6 +392,29 @@ impl SqliteStore {
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
+        // Backfill databases created before the reverse dependency index was
+        // introduced. JSON remains on the owner row as the public record; the
+        // index only makes terminal dependency wakes deterministic and cheap.
+        let dependency_rows =
+            sqlx::query("SELECT id, dependency_thread_ids_json FROM scheduled_intents")
+                .fetch_all(&pool)
+                .await?;
+        let mut dependency_tx = pool.begin().await?;
+        for row in dependency_rows {
+            let scheduled_intent_id: String = row.get("id");
+            let encoded: String = row.get("dependency_thread_ids_json");
+            let dependency_ids: Vec<String> = serde_json::from_str(&encoded)?;
+            for dependency_thread_id in dependency_ids {
+                sqlx::query(
+                    "INSERT OR IGNORE INTO scheduled_intent_dependencies (scheduled_intent_id, dependency_thread_id) VALUES (?, ?)",
+                )
+                .bind(&scheduled_intent_id)
+                .bind(dependency_thread_id)
+                .execute(&mut *dependency_tx)
+                .await?;
+            }
+        }
+        dependency_tx.commit().await?;
         // v1 Scheduler Kernel no longer persists `waiting` as Thread state.
         // Existing rows are a one-way data migration to lifecycle=open; phase
         // is derived from Signal, Activation, Schedule and Job facts.
@@ -2276,6 +2309,7 @@ impl SessionStore for SqliteStore {
             .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
         let dependencies = serde_json::to_string(&intent.dependency_thread_ids)?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"INSERT OR IGNORE INTO scheduled_intents
                (id, revision, thread_id, source_turn_id, intent, status,
@@ -2289,11 +2323,29 @@ impl SessionStore for SqliteStore {
         .bind(&intent.intent)
         .bind(not_before)
         .bind(interval_seconds)
-        .bind(dependencies)
+        .bind(&dependencies)
         .bind(&now)
         .bind(&now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        for dependency_thread_id in &intent.dependency_thread_ids {
+            sqlx::query(
+                r#"INSERT OR IGNORE INTO scheduled_intent_dependencies
+                   (scheduled_intent_id, dependency_thread_id)
+                   SELECT ?, ?
+                   WHERE EXISTS (
+                     SELECT 1 FROM scheduled_intents
+                     WHERE id = ? AND dependency_thread_ids_json = ?
+                   )"#,
+            )
+            .bind(&intent.id)
+            .bind(dependency_thread_id)
+            .bind(&intent.id)
+            .bind(&dependencies)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
         let row = sqlx::query("SELECT * FROM scheduled_intents WHERE id = ?")
             .bind(&intent.id)
             .fetch_one(&self.pool)
@@ -2379,11 +2431,28 @@ impl SessionStore for SqliteStore {
             .bind(&intent.intent)
             .bind(not_before)
             .bind(interval_seconds)
-            .bind(dependencies)
+            .bind(&dependencies)
             .bind(&now)
             .bind(&now)
             .execute(&mut *tx)
             .await?;
+            for dependency_thread_id in &intent.dependency_thread_ids {
+                sqlx::query(
+                    r#"INSERT OR IGNORE INTO scheduled_intent_dependencies
+                       (scheduled_intent_id, dependency_thread_id)
+                       SELECT ?, ?
+                       WHERE EXISTS (
+                         SELECT 1 FROM scheduled_intents
+                         WHERE id = ? AND dependency_thread_ids_json = ?
+                       )"#,
+                )
+                .bind(&intent.id)
+                .bind(dependency_thread_id)
+                .bind(&intent.id)
+                .bind(&dependencies)
+                .execute(&mut *tx)
+                .await?;
+            }
         }
         tx.commit().await?;
         let mut records = Vec::with_capacity(intents.len());
@@ -2429,6 +2498,38 @@ impl SessionStore for SqliteStore {
             }
         };
         rows.iter().map(scheduled_intent_from_row).collect()
+    }
+
+    async fn wake_scheduled_intents_for_dependency(
+        &self,
+        dependency_thread_id: &str,
+    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        // One write statement avoids the deferred-transaction read/write
+        // upgrade race (`SQLITE_BUSY`) when multiple workers observe the same
+        // terminal dependency concurrently. Each successful statement owns a
+        // distinct revision generation; Timer/owner fencing suppresses all
+        // but the newest occurrence.
+        let rows = sqlx::query(
+            r#"UPDATE scheduled_intents
+               SET revision = revision + 1, updated_at = ?
+               WHERE status = 'queued' AND id IN (
+                 SELECT scheduled_intent_id
+                 FROM scheduled_intent_dependencies
+                 WHERE dependency_thread_id = ?
+               )
+               RETURNING *"#,
+        )
+        .bind(now)
+        .bind(dependency_thread_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut records = rows
+            .iter()
+            .map(scheduled_intent_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        records.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(records)
     }
 
     async fn claim_scheduled_intent(

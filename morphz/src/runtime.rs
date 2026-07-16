@@ -22,9 +22,9 @@ use crate::orchestrator::orchestrator::Orchestrator;
 use crate::permission::{PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode};
 use crate::timer::TimerEngine;
 use crate::tool::{
-    DelegateTool, EditFileTool, ExecuteCommandTool, KillTaskTool, ListFilesTool, ListSkillsTool,
-    ListTasksTool, ReadFileTool, Registry, ScheduleTxTool, SearchTool, SendMessageTool,
-    TaskStatusTool, ThreadScheduler, WaitTaskTool, WriteFileTool,
+    BackgroundTaskScheduler, DelegateTool, EditFileTool, ExecuteCommandTool, KillTaskTool,
+    ListFilesTool, ListSkillsTool, ListTasksTool, ReadFileTool, Registry, ScheduleTxTool,
+    SearchTool, SendMessageTool, TaskStatusTool, ThreadScheduler, WaitTaskTool, WriteFileTool,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -191,6 +191,12 @@ impl MorphzRuntimeBuilder {
             Arc::clone(&timer_engine),
         ));
         thread_scheduler.register_timer_handler()?;
+        let background_scheduler = Arc::new(BackgroundTaskScheduler::new(
+            Arc::clone(&bus),
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            Arc::clone(&timer_engine),
+        ));
+        background_scheduler.register_timer_handler()?;
         register_default_tools(DefaultToolDependencies {
             registry: &registry,
             context_engine: &context_engine,
@@ -198,6 +204,7 @@ impl MorphzRuntimeBuilder {
             permissions: &permissions,
             bus: &bus,
             thread_scheduler: &thread_scheduler,
+            background_scheduler: &background_scheduler,
             config: &self.config,
             policy: self.tool_policy,
         });
@@ -212,8 +219,11 @@ impl MorphzRuntimeBuilder {
                 Arc::clone(&context_engine),
                 objective_evaluations,
                 Some(Arc::clone(&objective_supervisor)),
+                Some(Arc::clone(&timer_engine)),
+                Some(Arc::clone(&thread_scheduler)),
             ),
         );
+        orchestrator.register_timer_handlers()?;
         Ok(MorphzRuntime {
             inner: Arc::new(RuntimeInner {
                 config: self.config,
@@ -226,6 +236,7 @@ impl MorphzRuntimeBuilder {
                 orchestrator,
                 objective_supervisor,
                 thread_scheduler,
+                _background_scheduler: background_scheduler,
                 timer_engine,
                 human_approval_hub,
                 started: AtomicBool::new(false),
@@ -242,6 +253,7 @@ struct DefaultToolDependencies<'a> {
     permissions: &'a Arc<PermissionBroker>,
     bus: &'a Arc<InMemoryEventBus>,
     thread_scheduler: &'a Arc<ThreadScheduler>,
+    background_scheduler: &'a Arc<BackgroundTaskScheduler>,
     config: &'a AppConfig,
     policy: RuntimeToolPolicy,
 }
@@ -254,6 +266,7 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         permissions,
         bus,
         thread_scheduler,
+        background_scheduler,
         config,
         policy,
     } = dependencies;
@@ -299,19 +312,24 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         permissions,
     ))));
     registry.register(Arc::new(RecallTool::new(Arc::clone(context_engine))));
-    registry.register(Arc::new(ExecuteCommandTool::new_with_permissions(
-        Arc::clone(bus),
-        Arc::new(config.background_task.clone()),
-        Arc::clone(permissions),
-        config.orchestrator.tool_timeout_secs,
-    )));
+    registry.register(Arc::new(
+        ExecuteCommandTool::new_with_permissions_and_scheduler(
+            Arc::clone(bus),
+            Arc::new(config.background_task.clone()),
+            Arc::clone(permissions),
+            config.orchestrator.tool_timeout_secs,
+            Some(Arc::clone(background_scheduler)),
+        ),
+    ));
     registry.register(Arc::new(ListTasksTool));
     registry.register(Arc::new(TaskStatusTool));
     registry.register(Arc::new(WaitTaskTool::new(
-        Arc::clone(bus),
+        Arc::clone(background_scheduler),
         config.background_task.timeout_notify_secs,
     )));
-    registry.register(Arc::new(KillTaskTool));
+    registry.register(Arc::new(KillTaskTool::new(Arc::clone(
+        background_scheduler,
+    ))));
     if !policy.coding_eval {
         registry.register(Arc::new(DelegateTool::new(Arc::clone(bus))));
         registry.register(Arc::new(ListSkillsTool));
@@ -329,6 +347,7 @@ struct RuntimeInner {
     orchestrator: Arc<Orchestrator>,
     objective_supervisor: Arc<ObjectiveSupervisor>,
     thread_scheduler: Arc<ThreadScheduler>,
+    _background_scheduler: Arc<BackgroundTaskScheduler>,
     timer_engine: Arc<TimerEngine>,
     human_approval_hub: HumanApprovalHub,
     started: AtomicBool,
@@ -1129,6 +1148,11 @@ mod tests {
 
     struct ReplyClient;
 
+    struct BlockingReplyClient {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
     fn text_response(content: impl Into<String>) -> Response {
         Response {
             content: content.into(),
@@ -1156,6 +1180,19 @@ mod tests {
             _tools: Vec<ToolDefinition>,
         ) -> Result<Response, RuntimeError> {
             Ok(text_response("runtime-ok"))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for BlockingReplyClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(text_response("lease-complete"))
         }
     }
 
@@ -1613,6 +1650,317 @@ mod tests {
             "session-runtime"
         );
         assert!(session.inspect_context().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn activation_claim_uses_persistent_lease_timer_and_terminal_commit_cancels_it() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let runtime = MorphzRuntime::builder(
+            config,
+            Arc::new(BlockingReplyClient {
+                entered: Arc::clone(&entered),
+                release: Arc::clone(&release),
+            }),
+        )
+        .database_path(database.path().to_string_lossy())
+        .tool_policy(RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: true,
+        })
+        .build()
+        .await
+        .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-activation-lease".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Activation lease".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        session
+            .send(
+                "hold activation",
+                "User-Test",
+                Some("client-activation-lease".to_string()),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+            .await
+            .unwrap();
+        let activation = runtime
+            .inner
+            .store
+            .list_context_thread_activations(runtime.identity().context_id.as_str(), false)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|activation| activation.session_id == "session-activation-lease")
+            .expect("running activation must exist");
+        assert_eq!(
+            activation.status,
+            crate::memory::ThreadActivationStatus::Running
+        );
+        let timer_id = format!("activation-lease:{}", activation.id);
+        let timer = runtime
+            .inner
+            .store
+            .get_runtime_timer(&timer_id)
+            .await
+            .unwrap()
+            .expect("claim must persist activation lease timer");
+        assert_eq!(timer.kind, crate::memory::RuntimeTimerKind::ActivationLease);
+        assert_eq!(timer.generation, activation.revision);
+        assert_eq!(timer.status, crate::memory::RuntimeTimerStatus::Pending);
+
+        release.notify_one();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(2), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "lease-complete");
+        let timer = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let timer = runtime
+                    .inner
+                    .store
+                    .get_runtime_timer(&timer_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if timer.status == crate::memory::RuntimeTimerStatus::Cancelled {
+                    break timer;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(timer.status, crate::memory::RuntimeTimerStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn expired_activation_lease_recovers_after_restart_without_process_local_sleep() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let policy = RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: true,
+        };
+        let crashed = MorphzRuntime::builder(config.clone(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(policy)
+            .build()
+            .await
+            .unwrap();
+        crashed
+            .ensure_agent(NewAgent {
+                id: crashed.identity().agent_id.clone(),
+                title: "Activation recovery agent".to_string(),
+                root_context_id: crashed.identity().context_id.clone(),
+            })
+            .await
+            .unwrap();
+        crashed
+            .ensure_context(NewCognitiveContext {
+                id: crashed.identity().context_id.clone(),
+                agent_id: crashed.identity().agent_id.clone(),
+                title: "Activation recovery context".to_string(),
+            })
+            .await
+            .unwrap();
+        crashed
+            .ensure_session(NewSession {
+                id: "session-activation-recovery".to_string(),
+                agent_id: crashed.identity().agent_id.clone(),
+                context_id: crashed.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Activation recovery".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let trigger = Event::new(
+            "event-activation-recovery".to_string(),
+            "System-Test".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            [
+                (
+                    "context_id".to_string(),
+                    json!(crashed.identity().context_id),
+                ),
+                (
+                    "session_id".to_string(),
+                    json!("session-activation-recovery"),
+                ),
+                ("tool_name".to_string(), json!("recovery_fixture")),
+                ("text".to_string(), json!("resume persisted work")),
+                (
+                    "root_turn_id".to_string(),
+                    json!("root-activation-recovery"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        crashed.inner.store.append(trigger.clone()).await.unwrap();
+        let trigger_sequence = crashed
+            .inner
+            .store
+            .query(QueryFilter {
+                event_id: Some(trigger.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        crashed
+            .inner
+            .store
+            .ensure_work_thread(crate::memory::NewWorkThread {
+                id: "thread-activation-recovery".to_string(),
+                agent_id: crashed.identity().agent_id.clone(),
+                context_id: crashed.identity().context_id.clone(),
+                session_id: "session-activation-recovery".to_string(),
+                root_turn_id: "root-activation-recovery".to_string(),
+                kind: crate::memory::WorkThreadKind::Work,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+            })
+            .await
+            .unwrap();
+        let activation = crashed
+            .inner
+            .store
+            .claim_thread_signal_batch(
+                crate::memory::NewThreadSignal {
+                    id: "signal-activation-recovery".to_string(),
+                    thread_id: "thread-activation-recovery".to_string(),
+                    event_id: trigger.id.clone(),
+                    sequence: trigger_sequence,
+                    kind: trigger.topic.clone(),
+                    parent_activation_id: None,
+                },
+                crate::memory::NewThreadActivation {
+                    id: "activation-recovery".to_string(),
+                    agent_id: crashed.identity().agent_id.clone(),
+                    context_id: crashed.identity().context_id.clone(),
+                    session_id: "session-activation-recovery".to_string(),
+                    trigger_event_id: trigger.id.clone(),
+                    trigger_sequence,
+                    trigger_kind: trigger.topic.clone(),
+                    parent_activation_id: None,
+                    root_turn_id: "root-activation-recovery".to_string(),
+                },
+                32,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let running = match crashed
+            .inner
+            .store
+            .update_thread_activation(
+                &activation.id,
+                activation.revision,
+                crate::memory::ThreadActivationStatus::Running,
+                Some(&format!("runtime:{}", std::process::id())),
+                Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            crate::memory::ThreadActivationMutation::Updated(running) => running,
+            other => panic!("unexpected activation mutation: {other:?}"),
+        };
+        crashed
+            .inner
+            .timer_engine
+            .schedule(crate::memory::NewRuntimeTimer {
+                id: format!("activation-lease:{}", running.id),
+                generation: running.revision,
+                kind: crate::memory::RuntimeTimerKind::ActivationLease,
+                owner_id: running.id.clone(),
+                due_at: running.lease_expires_at.unwrap(),
+                payload: json!({
+                    "activation_id": running.id,
+                    "revision": running.revision,
+                    "trigger_event_id": running.trigger_event_id,
+                }),
+            })
+            .await
+            .unwrap();
+        drop(crashed);
+
+        let recovered = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(policy)
+            .build()
+            .await
+            .unwrap();
+        let mut replies = recovered.subscribe("chat/reply", 4);
+        recovered.start().await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "runtime-ok");
+        let activation = recovered
+            .inner
+            .store
+            .get_thread_activation("activation-recovery")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(activation.status.is_terminal());
+        let lease_timer_id = format!("activation-lease:{}", activation.id);
+        let lease_timer = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let timer = recovered
+                    .inner
+                    .store
+                    .get_runtime_timer(&lease_timer_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if matches!(
+                    timer.status,
+                    crate::memory::RuntimeTimerStatus::Fired
+                        | crate::memory::RuntimeTimerStatus::Cancelled
+                ) {
+                    break timer;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            lease_timer.status,
+            crate::memory::RuntimeTimerStatus::Fired | crate::memory::RuntimeTimerStatus::Cancelled
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), replies.recv())
+                .await
+                .is_err(),
+            "过期 Activation lease 在重启恢复后只能产生一次终态回复"
+        );
     }
 
     #[tokio::test]

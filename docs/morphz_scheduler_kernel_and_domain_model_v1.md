@@ -1,8 +1,8 @@
 # Morphz Scheduler Kernel 与领域命名模型 v1
 
-> 状态：设计共识，待分阶段收口实现
+> 状态：设计与实现基线；Phase 0–2 已完成，Phase 3–5 为后续路线
 >
-> 日期：2026-07-16
+> 日期：2026-07-17
 >
 > 适用范围：Runtime 调度、Session 并发、工具执行、Objective、Delegation、定时任务与结果交付
 >
@@ -922,15 +922,15 @@ maintenance
 - Thread lifecycle 与 derived phase 分离；
 - 有限 Thread 的唯一终态 Outcome；
 - `schedule_tx` 的原子提交；
+- Schedule、Objective、Background wake 与 Activation lease 共用持久 Timer Engine；
+- Schedule dependency 由持久反向索引事件驱动唤醒，不再固定间隔轮询；
 - Work completion 与用户 Delivery 分离；
 - 不同 Session、Dialogue 和 Execution 工作并发。
 
-当前需要收口的部分：
+Phase 3 以后需要继续收口的部分：
 
-- ThreadScheduler、ObjectiveSupervisor、BackgroundTask timer 各自维护唤醒；
 - Thread、Objective、Delegation、Schedule、BackgroundTask 仍存在部分重复状态投影；
 - 后台 Job 主要是进程内状态；
-- 依赖满足仍采用周期轮询；
 - 缺少 Schedule cancel/reschedule/pause/resume；
 - 缺少父子 Thread、Wait Reason、Priority 等明确关系；
 - 调度公平性主要只有全局模型并发限制；
@@ -983,10 +983,10 @@ maintenance
 
 ### Phase 2：统一 Wait 与 Timer Engine
 
-- 引入通用 `WaitCondition`；
-- Objective Timer、Schedule Timer、Background Wait 共用 dispatcher；
-- 依赖完成改为事件驱动反向索引；
-- 移除每个 timer 一个 Tokio sleep 和固定间隔依赖轮询。
+- **已完成。** Wait 的物理语义统一为“持久条件/owner 状态 + Timer 或精确 Event”，不强迫不同领域共享一个会混淆所有权的巨大枚举；
+- Objective Timer、Schedule Timer、Background Wait 与 Activation lease 共用 dispatcher；
+- 依赖完成使用持久事件驱动反向索引；
+- 已移除这些生产者各自的 Tokio sleep 和固定间隔依赖轮询。
 
 ### Phase 3：Execution Job 持久化
 
@@ -1112,7 +1112,7 @@ Phase 1 至此完成。仍然保留的独立 timer/sleep、依赖轮询和进程
 - Schedule occurrence 仍通过 Phase 1 建立的 Event + Signal Outbox 原子边界投递，因此 Timer 触发不会绕过 Thread Signal 内核；
 - 增加 generation fencing、重复领取、过期租约恢复、Engine 单次触发、Schedule 依赖等待和重启恢复测试。
 
-当前边界：
+当时边界（已由 Phase 2.3/2.4 收口）：
 
 - 这是 Phase 2 的第一条纵切，不代表 Phase 2 已完成；
 - Schedule 的 Thread dependency 暂时仍以 Timer Engine 中的延迟重检表达，已经移除“每个依赖一个 Tokio sleep”，但尚未改为 `dependency_completed` 反向索引驱动；
@@ -1131,8 +1131,44 @@ Phase 1 至此完成。仍然保留的独立 timer/sleep、依赖轮询和进程
 - Timer wait 到期仍发布 `objective/wait_satisfied` 审计事实，随后由 Supervisor 创建新的 Objective 推进机会；evaluation lease 到期仍通过 Objective CAS 释放陈旧本地绑定并只恢复一次；
 - 既有计时等待重启、过期 lease 重启、事件等待、并发 Session 路由和 Supervisor 连续推进测试继续通过；测试新增对持久 wait/lease Timer generation、状态及取消语义的直接断言。
 
-当前边界：
+当时边界（已由 Phase 2.3/2.4 收口）：
 
 - Objective 的 Timer 型等待和 evaluation lease 已进入统一物理时钟队列；ToolTask、Delegation、Permission、UserInput、ExternalEvent 与 ResourceAvailable 等等待本来就是事件驱动，继续由精确 Event 匹配处理；
 - Background wake、Activation lease 和 Schedule dependency 反向索引仍是 Phase 2 的剩余纵切；
 - `WaitCondition` 的公共领域接口将在 Background/Activation 接入后统一命名，当前不改变已经稳定的 Objective 公共协议。
+
+### 2026-07-17：Phase 2.3 Background wake 与 Activation lease 纵切
+
+已经实现：
+
+- `BackgroundTaskScheduler` 注册 `BackgroundWake` handler；`exec` 的默认检查点、`wait_task` 的用户指定检查点以及任务终态取消都通过持久 `runtime_timers` 表达，不再为每次等待创建独立 sleep；
+- Background wake 使用 task `wake_generation` 做 fencing。重排等待会生成更高 generation，旧 claim 不能覆盖新检查点；到期 Event 先以 Event + Signal Outbox 原子提交，再执行进程内投递；
+- 当前 `BackgroundTask` 的物理进程所有权仍属于 Phase 3 的进程内 `ExecutionJob`。因此 Runtime 重启后如果 owner 已不存在，遗留 Timer 会被审计为已消费，但不会伪造“任务已完成”或虚假的工具输出；
+- `ThreadActivation` 每次进入 `running` 都注册 `activation-lease:<activation-id>`，以 Activation revision 为 generation；snapshot 推进会续约新 generation，唯一终态提交会取消未 claim 的 lease；
+- Activation lease 到期时 handler 重新读取权威 Activation 状态和 revision。陈旧代立即结束；有效过期 lease 重新投递已持久化的原始 trigger，由 Activation claim CAS 保证只恢复一次；
+- Runtime 启动恢复会为仍由活跃 claimant 持有的 Activation 补齐/重挂 lease Timer；过期 lease 立即进入统一 Timer Engine，而不是创建进程内延时任务。
+
+验证边界：
+
+- 测试直接断言 Background wait 的持久 kind、generation、payload、重复重排与到期唤醒；
+- orphan Background timer 的重启测试证明 Runtime 不会在物理进程已经丢失时编造结果；
+- Activation 测试覆盖 claim 时持久化、正常终态取消、过期 lease 重启恢复和“只产生一次终态回复”。
+
+### 2026-07-17：Phase 2.4 Schedule dependency 反向索引与 Phase 2 收口
+
+已经实现：
+
+- 新增 `scheduled_intent_dependencies(scheduled_intent_id, dependency_thread_id)` 持久反向索引；Schedule 创建与更新会在同一数据库事务内维护索引，旧数据在数据库启动时幂等回填；
+- Thread 进入终态后，Orchestrator 通过 `dependency_completed(thread_id)` 一次定位所有仍为 queued 的依赖 Schedule。SQLite 使用单条 `UPDATE … RETURNING` 原子推进各 owner revision，避免并发通知时的 deferred-transaction upgrade 竞争；
+- 每个被唤醒的 Schedule 使用新 revision 注册新 Timer generation。此前因依赖未满足而触发的旧 generation 直接进入 `fired`，不再在两秒后或其他固定间隔重新检查；
+- Runtime 启动时会把 queued Schedule 引用的已终态 dependency 重新通过反向索引回放，关闭“依赖终态已经提交、进程内通知尚未发送便崩溃”的窗口；
+- Schedule 到期仍重新读取所有 dependency 的权威 Thread lifecycle。反向索引只负责精准唤醒，不替代最终条件判断。
+
+验证边界：
+
+- 未满足依赖的 Timer 明确进入 `fired` 且不产生 Event，证明固定轮询已消失；
+- 依赖终态通知会推进 owner revision 并投递一次；
+- 两个并发终态通知即使分别产生新 generation，最终也只能提交一个 Schedule occurrence；
+- 故障注入覆盖“依赖终态提交后、通知前崩溃”，重启 recovery 能补偿唤醒并保持单次投递。
+
+Phase 2 至此完成。统一的物理时钟、lease、generation fencing、事件条件唤醒和启动恢复已经形成 Scheduler Kernel 的共同机制。仍然进程内的后台执行主体属于 Phase 3 `ExecutionJob` 持久化，不再被误判为 Timer Engine 的缺口。

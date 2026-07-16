@@ -996,7 +996,10 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
             &work_item.id,
             work_item.revision,
             ThreadActivationStatus::Running,
-            Some("dead-runtime"),
+            // Runtime claimant IDs are structured as `runtime:<pid>`; use a
+            // valid but impossible local PID so this direct-Orchestrator
+            // recovery fixture exercises the definitely-dead claimant path.
+            Some("runtime:2147483647"),
             Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
             Some(7),
         )

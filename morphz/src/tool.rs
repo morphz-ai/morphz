@@ -30,7 +30,6 @@ use walkdir::WalkDir;
 
 const MAX_SCHEDULE_OPERATIONS: usize = 32;
 const MAX_SCHEDULE_INTENT_CHARS: usize = 1_000_000;
-const DEPENDENCY_RECHECK_SECS: u64 = 2;
 
 tokio::task_local! {
     pub static CURRENT_SESSION_ID: String;
@@ -294,6 +293,160 @@ impl Tool for SendMessageTool {
     }
 }
 
+/// Persistent clock adapter for process-local background Shell tasks. The
+/// task process itself remains owned by the current Runtime process until the
+/// ExecutionJob persistence phase; only its requested wake checkpoint is a
+/// durable timer. After restart an orphaned wake safely completes because no
+/// matching live task exists, while any already-persisted Signal Outbox entry
+/// is still recovered by the Orchestrator.
+pub struct BackgroundTaskScheduler {
+    bus: Arc<InMemoryEventBus>,
+    events: Arc<dyn EventStore>,
+    timers: Arc<TimerEngine>,
+}
+
+impl BackgroundTaskScheduler {
+    pub fn new(
+        bus: Arc<InMemoryEventBus>,
+        events: Arc<dyn EventStore>,
+        timers: Arc<TimerEngine>,
+    ) -> Self {
+        Self {
+            bus,
+            events,
+            timers,
+        }
+    }
+
+    pub fn register_timer_handler(
+        self: &Arc<Self>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let scheduler = Arc::downgrade(self);
+        self.timers
+            .register_handler(RuntimeTimerKind::BackgroundWake, move |timer| {
+                let scheduler = scheduler.clone();
+                async move {
+                    let Some(scheduler) = scheduler.upgrade() else {
+                        return Ok(TimerDisposition::Complete);
+                    };
+                    scheduler.dispatch_timer(timer).await
+                }
+            })
+    }
+
+    async fn schedule(
+        &self,
+        task_id: &str,
+        wait_secs: u64,
+        wake_source: &str,
+    ) -> Result<chrono::DateTime<chrono::Utc>, String> {
+        if !(1..=MAX_TASK_WAIT_SECS).contains(&wait_secs) {
+            return Err(format!("wait_secs 必须在 1 到 {MAX_TASK_WAIT_SECS} 秒之间"));
+        }
+        let (generation, wakeup_at) = {
+            let tasks = get_tasks_map();
+            let mut task = tasks
+                .get_mut(task_id)
+                .ok_or_else(|| format!("未找到后台任务 '{task_id}'，它可能已被历史保留策略清理"))?;
+            if task.status.is_terminal() {
+                return Err(format!("后台任务 '{task_id}' 已经结束，无需继续等待"));
+            }
+            task.wake_generation = task.wake_generation.wrapping_add(1);
+            let generation = task.wake_generation;
+            let wakeup_at = chrono::Utc::now()
+                + chrono::Duration::seconds(i64::try_from(wait_secs).unwrap_or(i64::MAX));
+            task.next_wakeup_at = Some(wakeup_at);
+            (generation, wakeup_at)
+        };
+        if let Err(error) = self
+            .timers
+            .schedule(NewRuntimeTimer {
+                id: background_wake_timer_id(task_id),
+                generation,
+                kind: RuntimeTimerKind::BackgroundWake,
+                owner_id: task_id.to_string(),
+                due_at: wakeup_at,
+                payload: serde_json::json!({
+                    "task_id": task_id,
+                    "generation": generation,
+                    "wait_secs": wait_secs,
+                    "wake_source": wake_source,
+                }),
+            })
+            .await
+        {
+            if let Some(mut task) = get_tasks_map().get_mut(task_id) {
+                if task.wake_generation == generation {
+                    task.next_wakeup_at = None;
+                }
+            }
+            return Err(format!("持久化后台任务唤醒失败: {error}"));
+        }
+        Ok(wakeup_at)
+    }
+
+    pub async fn cancel(&self, task_id: &str) {
+        if let Err(error) = self.timers.cancel(&background_wake_timer_id(task_id)).await {
+            tracing::warn!(task_id, %error, "取消后台任务唤醒 Timer 失败");
+        }
+    }
+
+    async fn dispatch_timer(
+        self: Arc<Self>,
+        timer: RuntimeTimerRecord,
+    ) -> Result<TimerDisposition, Box<dyn std::error::Error + Send + Sync>> {
+        let generation = timer
+            .payload
+            .get("generation")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(timer.generation);
+        let wait_secs = timer
+            .payload
+            .get("wait_secs")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default();
+        let wake_source = timer
+            .payload
+            .get("wake_source")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("runtime");
+        let payload = {
+            let tasks = get_tasks_map();
+            let Some(mut task) = tasks.get_mut(&timer.owner_id) else {
+                return Ok(TimerDisposition::Complete);
+            };
+            if task.status.is_terminal() || task.wake_generation != generation {
+                return Ok(TimerDisposition::Complete);
+            }
+            if task
+                .next_wakeup_at
+                .is_some_and(|due| due > chrono::Utc::now())
+            {
+                return Ok(TimerDisposition::Reschedule {
+                    due_at: task.next_wakeup_at.expect("checked Some"),
+                    reason: Some("后台任务检查点尚未到期".to_string()),
+                });
+            }
+            task.next_wakeup_at = None;
+            background_wait_elapsed_payload(&task, wait_secs, wake_source)
+        };
+        let event = Event::new(
+            format!("task_wait_elapsed_{}_g{}", timer.owner_id, generation),
+            "System-TaskMonitor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            payload,
+        );
+        self.events.append_with_signal_outbox(event.clone()).await?;
+        self.bus.dispatch_persisted(event).await?;
+        Ok(TimerDisposition::Complete)
+    }
+}
+
+fn background_wake_timer_id(task_id: &str) -> String {
+    format!("background-wake:{task_id}")
+}
+
 /// Durable timer and dependency dispatcher for schedule_tx. Timers are only
 /// wake sources: when they become due they append one directed observation to
 /// the target Thread mailbox. They never run model logic themselves.
@@ -336,6 +489,33 @@ impl ThreadScheduler {
     }
 
     pub async fn recover(self: &Arc<Self>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let queued = self
+            .sessions
+            .list_scheduled_intents(None, Some(ScheduledIntentStatus::Queued))
+            .await?;
+        // Close the crash window between a dependency Thread's terminal
+        // commit and its in-process notification. Replaying terminal
+        // dependency IDs through the persistent reverse index advances owner
+        // revisions, so a previously-fired blocked generation can be armed
+        // again without fixed polling.
+        let mut replayed_dependencies = BTreeSet::new();
+        for dependency_id in queued
+            .iter()
+            .flat_map(|intent| intent.dependency_thread_ids.iter())
+        {
+            if replayed_dependencies.contains(dependency_id) {
+                continue;
+            }
+            if self
+                .sessions
+                .get_work_thread(dependency_id)
+                .await?
+                .is_some_and(|thread| thread.lifecycle.is_terminal())
+            {
+                replayed_dependencies.insert(dependency_id.clone());
+                self.dependency_completed(dependency_id).await?;
+            }
+        }
         for intent in self
             .sessions
             .list_scheduled_intents(None, Some(ScheduledIntentStatus::Queued))
@@ -394,6 +574,24 @@ impl ThreadScheduler {
             .await
     }
 
+    /// Event-driven dependency wake. The store uses a persistent reverse index
+    /// and advances each matching owner revision before a new timer generation
+    /// is armed, so an already-claimed stale timer cannot win the race.
+    pub async fn dependency_completed(
+        &self,
+        dependency_thread_id: &str,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        let intents = self
+            .sessions
+            .wake_scheduled_intents_for_dependency(dependency_thread_id)
+            .await?;
+        let count = intents.len();
+        for intent in intents {
+            self.arm(intent).await?;
+        }
+        Ok(count)
+    }
+
     async fn dispatch_timer(
         self: Arc<Self>,
         timer: RuntimeTimerRecord,
@@ -428,13 +626,10 @@ impl ThreadScheduler {
             dependencies_ready &= state.is_some_and(|thread| thread.lifecycle.is_terminal());
         }
         if !dependencies_ready {
-            return Ok(TimerDisposition::Reschedule {
-                due_at: chrono::Utc::now()
-                    + chrono::Duration::seconds(
-                        i64::try_from(DEPENDENCY_RECHECK_SECS).unwrap_or(i64::MAX),
-                    ),
-                reason: Some("等待依赖 Thread 进入终态".to_string()),
-            });
+            // The persistent reverse dependency index will arm a newer owner
+            // generation when any missing dependency becomes terminal. This
+            // generation is finished instead of polling every few seconds.
+            return Ok(TimerDisposition::Complete);
         }
 
         let occurrence_revision = current.revision;
@@ -983,109 +1178,59 @@ pub(crate) fn active_background_task_count_for_root(
 
 const MAX_TASK_WAIT_SECS: u64 = 365 * 24 * 60 * 60;
 
-fn schedule_background_task_wakeup(
-    bus: Arc<crate::event::InMemoryEventBus>,
-    task_id: &str,
+fn background_wait_elapsed_payload(
+    task: &BackgroundTask,
     wait_secs: u64,
-    wake_source: &'static str,
-) -> Result<chrono::DateTime<chrono::Utc>, String> {
-    if !(1..=MAX_TASK_WAIT_SECS).contains(&wait_secs) {
-        return Err(format!("wait_secs 必须在 1 到 {MAX_TASK_WAIT_SECS} 秒之间"));
-    }
-
-    let task_id = task_id.to_string();
-    let (generation, wakeup_at) = {
-        let tasks = get_tasks_map();
-        let mut task = tasks
-            .get_mut(&task_id)
-            .ok_or_else(|| format!("未找到后台任务 '{task_id}'，它可能已被历史保留策略清理"))?;
-        if task.status.is_terminal() {
-            return Err(format!("后台任务 '{task_id}' 已经结束，无需继续等待"));
-        }
-        task.wake_generation = task.wake_generation.wrapping_add(1);
-        let generation = task.wake_generation;
-        let wakeup_at = chrono::Utc::now()
-            + chrono::Duration::seconds(i64::try_from(wait_secs).unwrap_or(i64::MAX));
-        task.next_wakeup_at = Some(wakeup_at);
-        (generation, wakeup_at)
+    wake_source: &str,
+) -> serde_json::Map<String, serde_json::Value> {
+    let elapsed_secs = (chrono::Utc::now() - task.started_at).num_seconds().max(0);
+    let output_tail = if task.output_tail.is_empty() {
+        "（任务尚未产生输出）".to_string()
+    } else {
+        task.output_tail.clone()
     };
-
-    tokio::spawn(async move {
-        tokio::time::sleep(tokio::time::Duration::from_secs(wait_secs)).await;
-        let payload = {
-            let tasks = get_tasks_map();
-            let Some(mut task) = tasks.get_mut(&task_id) else {
-                return;
-            };
-            if task.status.is_terminal() || task.wake_generation != generation {
-                return;
-            }
-            task.next_wakeup_at = None;
-            let elapsed_secs = (chrono::Utc::now() - task.started_at).num_seconds().max(0);
-            let output_tail = if task.output_tail.is_empty() {
-                "（任务尚未产生输出）".to_string()
-            } else {
-                task.output_tail.clone()
-            };
-            let mut payload = serde_json::Map::new();
-            payload.insert("context_id".to_string(), serde_json::json!(task.context_id));
-            payload.insert("session_id".to_string(), serde_json::json!(task.session_id));
-            payload.insert("tool_name".to_string(), serde_json::json!("wait_task"));
-            payload.insert("task_id".to_string(), serde_json::json!(task.id));
-            payload.insert(
-                "event".to_string(),
-                serde_json::json!("background_task_wait_elapsed"),
-            );
-            payload.insert("wake_source".to_string(), serde_json::json!(wake_source));
-            payload.insert("wait_secs".to_string(), serde_json::json!(wait_secs));
-            payload.insert("elapsed_secs".to_string(), serde_json::json!(elapsed_secs));
-            payload.insert("task_status".to_string(), serde_json::json!(task.status));
-            payload.insert(
-                "last_output_age_secs".to_string(),
-                serde_json::json!((chrono::Utc::now() - task.last_output_at)
-                    .num_seconds()
-                    .max(0)),
-            );
-            payload.insert(
-                "output_bytes".to_string(),
-                serde_json::json!(task.output_bytes),
-            );
-            payload.insert(
-                "artifact_path".to_string(),
-                serde_json::json!(task.artifact_path),
-            );
-            payload.insert(
-                "effective_boundary".to_string(),
-                serde_json::json!({
-                    "network_enabled": task.effective_network,
-                    "secret_env": task.secret_env,
-                    "sandbox_backend": task.sandbox_backend,
-                    "sandbox_status": task.sandbox_status,
-                }),
-            );
-            payload.insert("text".to_string(), serde_json::json!(format!(
-                "为后台任务 {} 安排的 {} 秒等待已经结束；任务仍在运行，Runtime 没有终止它。\n--- 最近输出 ---\n{}\n\n请自行决定：继续等待时调用 wait_task 并设置新的 wait_secs；不应继续时调用 kill_task。",
-                task.id, wait_secs, output_tail
-            )));
-            extend_causal_route(&mut payload, task.causal_route.as_ref());
-            payload
-        };
-
-        let event = Event::new(
-            format!(
-                "task_wait_elapsed_{}_{}",
-                task_id,
-                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
-            ),
-            "System-TaskMonitor".to_string(),
-            crate::event::TYPE_TOOL_OUTPUT.to_string(),
-            "chat/tool_output".to_string(),
-            payload,
-        );
-        let _ = bus.publish(event).await;
-    });
-
-    Ok(wakeup_at)
+    let mut payload = serde_json::Map::new();
+    payload.insert("context_id".to_string(), serde_json::json!(task.context_id));
+    payload.insert("session_id".to_string(), serde_json::json!(task.session_id));
+    payload.insert("tool_name".to_string(), serde_json::json!("wait_task"));
+    payload.insert("task_id".to_string(), serde_json::json!(task.id));
+    payload.insert(
+        "event".to_string(),
+        serde_json::json!("background_task_wait_elapsed"),
+    );
+    payload.insert("wake_source".to_string(), serde_json::json!(wake_source));
+    payload.insert("wait_secs".to_string(), serde_json::json!(wait_secs));
+    payload.insert("elapsed_secs".to_string(), serde_json::json!(elapsed_secs));
+    payload.insert("task_status".to_string(), serde_json::json!(task.status));
+    payload.insert(
+        "last_output_age_secs".to_string(),
+        serde_json::json!((chrono::Utc::now() - task.last_output_at)
+            .num_seconds()
+            .max(0)),
+    );
+    payload.insert(
+        "output_bytes".to_string(),
+        serde_json::json!(task.output_bytes),
+    );
+    payload.insert(
+        "artifact_path".to_string(),
+        serde_json::json!(task.artifact_path),
+    );
+    payload.insert(
+        "effective_boundary".to_string(),
+        serde_json::json!({
+            "network_enabled": task.effective_network,
+            "secret_env": task.secret_env,
+            "sandbox_backend": task.sandbox_backend,
+            "sandbox_status": task.sandbox_status,
+        }),
+    );
+    payload.insert("text".to_string(), serde_json::json!(format!(
+        "为后台任务 {} 安排的 {} 秒等待已经结束；任务仍在运行，Runtime 没有终止它。\n--- 最近输出 ---\n{}\n\n请自行决定：继续等待时调用 wait_task 并设置新的 wait_secs；不应继续时调用 kill_task。",
+        task.id, wait_secs, output_tail
+    )));
+    extend_causal_route(&mut payload, task.causal_route.as_ref());
+    payload
 }
 
 // 共享的实时输出管道缓冲
@@ -2518,6 +2663,7 @@ impl Tool for SearchTool {
 pub struct ExecuteCommandTool {
     bus: Arc<crate::event::InMemoryEventBus>,
     background_config: Arc<BackgroundTaskConfig>,
+    background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
     permissions: Arc<PermissionBroker>,
     sandbox: NativeSandbox,
     max_sync_wait: tokio::time::Duration,
@@ -2580,6 +2726,22 @@ impl ExecuteCommandTool {
         permissions: Arc<PermissionBroker>,
         tool_timeout_secs: u64,
     ) -> Self {
+        Self::new_with_permissions_and_scheduler(
+            bus,
+            background_config,
+            permissions,
+            tool_timeout_secs,
+            None,
+        )
+    }
+
+    pub fn new_with_permissions_and_scheduler(
+        bus: Arc<crate::event::InMemoryEventBus>,
+        background_config: Arc<BackgroundTaskConfig>,
+        permissions: Arc<PermissionBroker>,
+        tool_timeout_secs: u64,
+        background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
+    ) -> Self {
         let max_sync_wait_ms = tool_timeout_secs
             .saturating_mul(1000)
             .saturating_sub(250)
@@ -2587,6 +2749,7 @@ impl ExecuteCommandTool {
         Self {
             bus,
             background_config,
+            background_scheduler,
             permissions,
             sandbox: NativeSandbox::for_current_platform(),
             max_sync_wait: tokio::time::Duration::from_millis(max_sync_wait_ms),
@@ -3214,12 +3377,15 @@ impl Tool for ExecuteCommandTool {
                 // 后台任务达到默认检查点时只唤醒 LLM，不自动 kill。Agent 后续可以通过
                 // wait_task(wait_secs=...) 覆盖下一次唤醒时间，或调用 kill_task。
                 if self.background_config.timeout_notify_enabled {
-                    let _ = schedule_background_task_wakeup(
-                        Arc::clone(&self.bus),
-                        &task_id,
-                        self.background_config.timeout_notify_secs.max(1),
-                        "runtime_default",
-                    );
+                    if let Some(scheduler) = &self.background_scheduler {
+                        let _ = scheduler
+                            .schedule(
+                                &task_id,
+                                self.background_config.timeout_notify_secs.max(1),
+                                "runtime_default",
+                            )
+                            .await;
+                    }
                 }
 
                 // 启动一个后台协程，在进程最终退出时清理 map 并发送完成事件通知大模型
@@ -3228,6 +3394,7 @@ impl Tool for ExecuteCommandTool {
                 let session_id_cleanup = session_id.clone();
                 let context_id_cleanup = context_id.clone();
                 let buffer_cleanup = Arc::clone(&buffer);
+                let background_scheduler_cleanup = self.background_scheduler.clone();
                 tokio::spawn(async move {
                     let wait_res = child.wait().await;
                     let residual_cleanup = terminate_residual_process_group(pid);
@@ -3259,6 +3426,9 @@ impl Tool for ExecuteCommandTool {
                         task.ended_at = Some(chrono::Utc::now());
                         task.wake_generation = task.wake_generation.wrapping_add(1);
                         task.next_wakeup_at = None;
+                    }
+                    if let Some(scheduler) = &background_scheduler_cleanup {
+                        scheduler.cancel(&task_id_cleanup).await;
                     }
                     let effective_boundary = tasks_cleanup.get(&task_id_cleanup).map(|task| {
                         serde_json::json!({
@@ -3351,16 +3521,33 @@ impl Tool for ExecuteCommandTool {
 pub struct ListTasksTool;
 pub struct TaskStatusTool;
 pub struct WaitTaskTool {
-    bus: Arc<crate::event::InMemoryEventBus>,
+    background_scheduler: Arc<BackgroundTaskScheduler>,
     default_wait_secs: u64,
 }
-pub struct KillTaskTool;
+pub struct KillTaskTool {
+    background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
+}
 
 impl WaitTaskTool {
-    pub fn new(bus: Arc<crate::event::InMemoryEventBus>, default_wait_secs: u64) -> Self {
+    pub fn new(background_scheduler: Arc<BackgroundTaskScheduler>, default_wait_secs: u64) -> Self {
         Self {
-            bus,
+            background_scheduler,
             default_wait_secs: default_wait_secs.clamp(1, MAX_TASK_WAIT_SECS),
+        }
+    }
+}
+
+impl KillTaskTool {
+    pub fn new(background_scheduler: Arc<BackgroundTaskScheduler>) -> Self {
+        Self {
+            background_scheduler: Some(background_scheduler),
+        }
+    }
+
+    #[cfg(test)]
+    fn without_scheduler() -> Self {
+        Self {
+            background_scheduler: None,
         }
     }
 }
@@ -3547,12 +3734,11 @@ impl Tool for WaitTaskTool {
         }
 
         let wait_secs = args.wait_secs.unwrap_or(self.default_wait_secs);
-        let wakeup_at = match schedule_background_task_wakeup(
-            Arc::clone(&self.bus),
-            &args.task_id,
-            wait_secs,
-            "agent_requested",
-        ) {
+        let wakeup_at = match self
+            .background_scheduler
+            .schedule(&args.task_id, wait_secs, "agent_requested")
+            .await
+        {
             Ok(wakeup_at) => wakeup_at,
             Err(error) => {
                 if let Ok(task) = require_visible_task(&args.task_id) {
@@ -3639,6 +3825,9 @@ impl Tool for KillTaskTool {
             task.wake_generation = task.wake_generation.wrapping_add(1);
             task.next_wakeup_at = None;
             drop(task);
+            if let Some(scheduler) = &self.background_scheduler {
+                scheduler.cancel(&args.task_id).await;
+            }
             let pgid = nix::unistd::Pid::from_raw(-task_pgid); // 负数代表杀死整个进程组
             match nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGKILL) {
                 Ok(_) => Ok(serde_json::json!({
@@ -3995,6 +4184,26 @@ mod tests {
         scheduler
     }
 
+    async fn start_test_background_scheduler(
+        bus: Arc<InMemoryEventBus>,
+    ) -> (Arc<BackgroundTaskScheduler>, NamedTempFile) {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let scheduler = Arc::new(BackgroundTaskScheduler::new(
+            bus,
+            store as Arc<dyn EventStore>,
+            Arc::clone(&timers),
+        ));
+        scheduler.register_timer_handler().unwrap();
+        timers.start();
+        (scheduler, database)
+    }
+
     #[tokio::test]
     async fn send_message_routes_to_another_session_without_ending_current_evaluation() {
         let database = NamedTempFile::new().unwrap();
@@ -4287,6 +4496,21 @@ mod tests {
                 .is_err(),
             "依赖未结束时不应投递"
         );
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if store
+                    .get_runtime_timer("schedule:schedule-dependent")
+                    .await
+                    .unwrap()
+                    .is_some_and(|timer| timer.status == crate::memory::RuntimeTimerStatus::Fired)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
         let dependency = store
             .get_work_thread("thread-dependency")
             .await
@@ -4305,8 +4529,15 @@ mod tests {
             )
             .await
             .unwrap();
+        assert_eq!(
+            scheduler
+                .dependency_completed("thread-dependency")
+                .await
+                .unwrap(),
+            1
+        );
 
-        let event = tokio::time::timeout(std::time::Duration::from_secs(3), receiver.recv())
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
             .await
             .unwrap()
             .unwrap();
@@ -4314,6 +4545,169 @@ mod tests {
         assert_eq!(
             event.payload["dependency_states"]["thread-dependency"],
             "completed"
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduler_recovery_replays_terminal_dependency_after_notification_crash_window() {
+        let database = NamedTempFile::new().unwrap();
+        let store = scheduler_store_with_threads(
+            &database,
+            &[
+                ("thread-recovery-dependency", "root-recovery-dependency"),
+                ("thread-recovery-dependent", "root-recovery-dependent"),
+            ],
+        )
+        .await;
+        let first_bus = Arc::new(InMemoryEventBus::new());
+        let first_scheduler = start_test_scheduler(first_bus, Arc::clone(&store));
+        let intent = store
+            .ensure_scheduled_intent(NewScheduledIntent {
+                id: "schedule-recovery-dependent".to_string(),
+                thread_id: "thread-recovery-dependent".to_string(),
+                source_turn_id: "root-recovery-dependent".to_string(),
+                intent: "恢复后由依赖终态唤醒".to_string(),
+                not_before: None,
+                interval_seconds: None,
+                dependency_thread_ids: vec!["thread-recovery-dependency".to_string()],
+            })
+            .await
+            .unwrap();
+        first_scheduler.arm(intent).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if store
+                    .get_runtime_timer("schedule:schedule-recovery-dependent")
+                    .await
+                    .unwrap()
+                    .is_some_and(|timer| timer.status == crate::memory::RuntimeTimerStatus::Fired)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let dependency = store
+            .get_work_thread("thread-recovery-dependency")
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .update_work_thread(
+                &dependency.id,
+                dependency.revision,
+                None,
+                Some(ThreadLifecycle::Completed),
+                Some("dependency completed before crash"),
+                Some("dependency-recovery-result"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        // Simulate a crash before dependency_completed can run.
+        drop(first_scheduler);
+
+        let recovered_bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        recovered_bus.subscribe(
+            "chat/schedule_due".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let recovered = start_test_scheduler(recovered_bus, Arc::clone(&store));
+        recovered.recover().await.unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.payload["intent"], "恢复后由依赖终态唤醒");
+        assert_eq!(
+            event.payload["dependency_states"]["thread-recovery-dependency"],
+            "completed"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_dependency_notifications_deliver_one_schedule_occurrence() {
+        let database = NamedTempFile::new().unwrap();
+        let store = scheduler_store_with_threads(
+            &database,
+            &[
+                ("thread-fenced-dependency", "root-fenced-dependency"),
+                ("thread-fenced-dependent", "root-fenced-dependent"),
+            ],
+        )
+        .await;
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        bus.subscribe(
+            "chat/schedule_due".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let scheduler = start_test_scheduler(bus, Arc::clone(&store));
+        let intent = store
+            .ensure_scheduled_intent(NewScheduledIntent {
+                id: "schedule-fenced-dependent".to_string(),
+                thread_id: "thread-fenced-dependent".to_string(),
+                source_turn_id: "root-fenced-dependent".to_string(),
+                intent: "并发通知只投递一次".to_string(),
+                not_before: None,
+                interval_seconds: None,
+                dependency_thread_ids: vec!["thread-fenced-dependency".to_string()],
+            })
+            .await
+            .unwrap();
+        scheduler.arm(intent).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        let dependency = store
+            .get_work_thread("thread-fenced-dependency")
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .update_work_thread(
+                &dependency.id,
+                dependency.revision,
+                None,
+                Some(ThreadLifecycle::Completed),
+                Some("done"),
+                Some("fenced-dependency-result"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let first = Arc::clone(&scheduler);
+        let second = Arc::clone(&scheduler);
+        let (first_result, second_result) = tokio::join!(
+            async move { first.dependency_completed("thread-fenced-dependency").await },
+            async move {
+                second
+                    .dependency_completed("thread-fenced-dependency")
+                    .await
+            }
+        );
+        first_result.unwrap();
+        second_result.unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.payload["intent"], "并发通知只投递一次");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), receiver.recv())
+                .await
+                .is_err(),
+            "同一个 schedule occurrence 不应被并发依赖通知重复投递"
         );
     }
 
@@ -5235,7 +5629,7 @@ mod tests {
         assert_eq!(result["task_status"], "running", "{result}");
 
         let task_id = result["task_id"].as_str().unwrap();
-        KillTaskTool
+        KillTaskTool::without_scheduler()
             .execute(&serde_json::json!({ "task_id": task_id }).to_string())
             .await
             .unwrap();
@@ -5328,7 +5722,7 @@ mod tests {
         assert_eq!(result["task_status"], "running");
         let task_id = result["task_id"].as_str().unwrap();
         assert!(task_id.starts_with("task_"));
-        KillTaskTool
+        KillTaskTool::without_scheduler()
             .execute(&serde_json::json!({ "task_id": task_id }).to_string())
             .await
             .unwrap();
@@ -5424,7 +5818,9 @@ mod tests {
                 Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
             }),
         );
-        let wait_tool = WaitTaskTool::new(Arc::clone(&bus), 10);
+        let (background_scheduler, _database) =
+            start_test_background_scheduler(Arc::clone(&bus)).await;
+        let wait_tool = WaitTaskTool::new(background_scheduler, 10);
 
         for _ in 0..2 {
             let result: serde_json::Value = serde_json::from_str(
@@ -5462,10 +5858,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persisted_background_wake_orphan_is_absorbed_after_runtime_restart() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let task_id = format!(
+            "background-orphan-{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let timer_id = background_wake_timer_id(&task_id);
+        store
+            .upsert_runtime_timer(NewRuntimeTimer {
+                id: timer_id.clone(),
+                generation: 1,
+                kind: RuntimeTimerKind::BackgroundWake,
+                owner_id: task_id.clone(),
+                due_at: chrono::Utc::now(),
+                payload: serde_json::json!({
+                    "task_id": task_id,
+                    "generation": 1,
+                    "wait_secs": 1,
+                    "wake_source": "restart_fixture",
+                }),
+            })
+            .await
+            .unwrap();
+        let persisted = store.get_runtime_timer(&timer_id).await.unwrap().unwrap();
+        assert_eq!(persisted.kind, RuntimeTimerKind::BackgroundWake);
+        assert_eq!(persisted.generation, 1);
+        assert_eq!(persisted.payload["generation"], 1);
+        assert_eq!(persisted.status, crate::memory::RuntimeTimerStatus::Pending);
+
+        // ExecutionJob is not durable in this phase. A real process restart
+        // therefore loses the live process owner; its persisted checkpoint
+        // must be consumed without inventing a task result.
+        let recovered_bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        recovered_bus.subscribe(
+            "chat/tool_output".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let recovered_timers =
+            Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let recovered_scheduler = Arc::new(BackgroundTaskScheduler::new(
+            recovered_bus,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            Arc::clone(&recovered_timers),
+        ));
+        recovered_scheduler.register_timer_handler().unwrap();
+        recovered_timers.start();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if store
+                    .get_runtime_timer(&timer_id)
+                    .await
+                    .unwrap()
+                    .is_some_and(|timer| timer.status == crate::memory::RuntimeTimerStatus::Fired)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), receiver.recv())
+                .await
+                .is_err(),
+            "丢失物理进程所有权后不得伪造 background wake observation"
+        );
+    }
+
+    #[tokio::test]
     async fn test_kill_task_pgid_cleanup() {
         let bus = Arc::new(crate::event::InMemoryEventBus::new());
         let exec_tool = exec_tool_for_tests(Arc::clone(&bus));
-        let kill_tool = KillTaskTool;
+        let kill_tool = KillTaskTool::without_scheduler();
 
         let exec_args = serde_json::json!({
             "command": "sleep 100",
@@ -5505,7 +5980,9 @@ mod tests {
             .iter()
             .any(|task| task["task_id"] == task_id));
 
-        let wait_tool = WaitTaskTool::new(Arc::clone(&bus), 300);
+        let (background_scheduler, _database) =
+            start_test_background_scheduler(Arc::clone(&bus)).await;
+        let wait_tool = WaitTaskTool::new(background_scheduler, 300);
         let waiting: serde_json::Value = serde_json::from_str(
             &wait_tool
                 .execute(&serde_json::json!({ "task_id": task_id, "wait_secs": 30 }).to_string())
