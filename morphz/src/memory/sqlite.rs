@@ -3,14 +3,15 @@ use crate::event::Event;
 use crate::memory::{
     ActivationOutcomeCommit, AgentBootstrapRecord, AgentRecord, CognitiveContextRecord,
     DelegationRecord, DelegationStatus, DeliveryStatus, EventStore, MessageClaim, NewAgent,
-    NewCognitiveContext, NewDelegation, NewObjective, NewScheduledIntent, NewSession,
-    NewThreadActivation, NewThreadSignal, NewWorkThread, ObjectiveMutation, ObjectiveRecord,
-    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, ScheduledIntentRecord,
+    NewCognitiveContext, NewDelegation, NewObjective, NewRuntimeTimer, NewScheduledIntent,
+    NewSession, NewThreadActivation, NewThreadSignal, NewWorkThread, ObjectiveMutation,
+    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduledIntentRecord,
     ScheduledIntentStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
     SessionRecord, SessionStatus, SessionStore, SessionUpdate, SignalOutboxRecord,
     SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadLifecycle, ThreadSignalRecord, ThreadSignalStatus, WorkThreadKind, WorkThreadMutation,
-    WorkThreadRecord,
+    ThreadLifecycle, ThreadSignalRecord, ThreadSignalStatus, TimerStore, WorkThreadKind,
+    WorkThreadMutation, WorkThreadRecord,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -119,6 +120,26 @@ impl SqliteStore {
         );
         CREATE INDEX IF NOT EXISTS idx_signal_outbox_status_created
             ON signal_outbox(status, created_at, event_id);
+
+        CREATE TABLE IF NOT EXISTS runtime_timers (
+            id TEXT PRIMARY KEY,
+            generation INTEGER NOT NULL CHECK(generation >= 0),
+            kind TEXT NOT NULL CHECK(kind IN ('schedule', 'objective_wait', 'objective_lease', 'background_wake', 'activation_lease')),
+            owner_id TEXT NOT NULL,
+            due_at TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'claimed', 'fired', 'cancelled')),
+            payload_json TEXT NOT NULL,
+            claimed_by TEXT,
+            claim_expires_at TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            fired_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_runtime_timers_due
+            ON runtime_timers(status, due_at, claim_expires_at, id);
+        CREATE INDEX IF NOT EXISTS idx_runtime_timers_owner
+            ON runtime_timers(kind, owner_id, generation);
 
         CREATE TABLE IF NOT EXISTS agents (
             id TEXT PRIMARY KEY,
@@ -799,6 +820,49 @@ fn signal_outbox_from_row(
         created_at: parse_time(&row.get::<String, _>("created_at")),
         resolved_at: row
             .get::<Option<String>, _>("resolved_at")
+            .as_deref()
+            .map(parse_time),
+    })
+}
+
+fn runtime_timer_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<RuntimeTimerRecord, Box<dyn std::error::Error + Send + Sync>> {
+    let generation = u64::try_from(row.get::<i64, _>("generation"))
+        .map_err(|_| "Runtime Timer generation 不能为负数")?;
+    let kind = match row.get::<String, _>("kind").as_str() {
+        "schedule" => RuntimeTimerKind::Schedule,
+        "objective_wait" => RuntimeTimerKind::ObjectiveWait,
+        "objective_lease" => RuntimeTimerKind::ObjectiveLease,
+        "background_wake" => RuntimeTimerKind::BackgroundWake,
+        "activation_lease" => RuntimeTimerKind::ActivationLease,
+        value => return Err(format!("未知 Runtime Timer kind: {value}").into()),
+    };
+    let status = match row.get::<String, _>("status").as_str() {
+        "pending" => RuntimeTimerStatus::Pending,
+        "claimed" => RuntimeTimerStatus::Claimed,
+        "fired" => RuntimeTimerStatus::Fired,
+        "cancelled" => RuntimeTimerStatus::Cancelled,
+        value => return Err(format!("未知 Runtime Timer status: {value}").into()),
+    };
+    Ok(RuntimeTimerRecord {
+        id: row.get("id"),
+        generation,
+        kind,
+        owner_id: row.get("owner_id"),
+        due_at: parse_time(&row.get::<String, _>("due_at")),
+        status,
+        payload: serde_json::from_str(&row.get::<String, _>("payload_json"))?,
+        claimed_by: row.get("claimed_by"),
+        claim_expires_at: row
+            .get::<Option<String>, _>("claim_expires_at")
+            .as_deref()
+            .map(parse_time),
+        last_error: row.get("last_error"),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+        fired_at: row
+            .get::<Option<String>, _>("fired_at")
             .as_deref()
             .map(parse_time),
     })
@@ -3233,6 +3297,229 @@ fn parse_time(s: &str) -> DateTime<Utc> {
 }
 
 #[async_trait::async_trait]
+impl TimerStore for SqliteStore {
+    async fn upsert_runtime_timer(
+        &self,
+        timer: NewRuntimeTimer,
+    ) -> Result<RuntimeTimerRecord, Box<dyn std::error::Error + Send + Sync>> {
+        if timer.id.trim().is_empty() || timer.owner_id.trim().is_empty() {
+            return Err("Runtime Timer id/owner_id 不能为空".into());
+        }
+        let generation = i64::try_from(timer.generation)
+            .map_err(|_| "Runtime Timer generation 超出 SQLite INTEGER 范围")?;
+        let due_at = timer
+            .due_at
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let payload_json = serde_json::to_string(&timer.payload)?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT INTO runtime_timers
+               (id, generation, kind, owner_id, due_at, status, payload_json,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 generation = excluded.generation,
+                 kind = excluded.kind,
+                 owner_id = excluded.owner_id,
+                 due_at = excluded.due_at,
+                 status = 'pending',
+                 payload_json = excluded.payload_json,
+                 claimed_by = NULL,
+                 claim_expires_at = NULL,
+                 last_error = NULL,
+                 updated_at = excluded.updated_at,
+                 fired_at = NULL
+               WHERE excluded.generation > runtime_timers.generation
+                  OR (excluded.generation = runtime_timers.generation
+                      AND runtime_timers.status = 'cancelled')"#,
+        )
+        .bind(&timer.id)
+        .bind(generation)
+        .bind(timer.kind.as_str())
+        .bind(&timer.owner_id)
+        .bind(due_at)
+        .bind(payload_json)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.get_runtime_timer(&timer.id)
+            .await?
+            .ok_or_else(|| format!("Runtime Timer '{}' upsert 后不存在", timer.id).into())
+    }
+
+    async fn get_runtime_timer(
+        &self,
+        id: &str,
+    ) -> Result<Option<RuntimeTimerRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM runtime_timers WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(runtime_timer_from_row)
+            .transpose()
+    }
+
+    async fn list_runtime_timers(
+        &self,
+        status: Option<RuntimeTimerStatus>,
+    ) -> Result<Vec<RuntimeTimerRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = if let Some(status) = status {
+            sqlx::query("SELECT * FROM runtime_timers WHERE status = ? ORDER BY due_at, id")
+                .bind(status.as_str())
+                .fetch_all(&self.pool)
+                .await?
+        } else {
+            sqlx::query("SELECT * FROM runtime_timers ORDER BY due_at, id")
+                .fetch_all(&self.pool)
+                .await?
+        };
+        rows.iter().map(runtime_timer_from_row).collect()
+    }
+
+    async fn next_runtime_timer_due_at(
+        &self,
+    ) -> Result<Option<DateTime<Utc>>, Box<dyn std::error::Error + Send + Sync>> {
+        let due_at = sqlx::query_scalar::<_, Option<String>>(
+            r#"SELECT MIN(
+                   CASE WHEN status = 'pending' THEN due_at ELSE claim_expires_at END
+               )
+               FROM runtime_timers
+               WHERE status = 'pending'
+                  OR (status = 'claimed' AND claim_expires_at IS NOT NULL)"#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(due_at.as_deref().map(parse_time))
+    }
+
+    async fn claim_due_runtime_timers(
+        &self,
+        now: DateTime<Utc>,
+        claim_token: &str,
+        claim_expires_at: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<RuntimeTimerRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if claim_token.trim().is_empty() {
+            return Err("Runtime Timer claim token 不能为空".into());
+        }
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit)
+            .map_err(|_| "Runtime Timer claim limit 超出 SQLite INTEGER 范围")?;
+        let now = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let claim_expires_at = claim_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"UPDATE runtime_timers
+               SET status = 'claimed', claimed_by = ?, claim_expires_at = ?, updated_at = ?
+               WHERE id IN (
+                 SELECT id FROM runtime_timers
+                 WHERE (status = 'pending' AND due_at <= ?)
+                    OR (status = 'claimed' AND claim_expires_at <= ?)
+                 ORDER BY CASE WHEN status = 'pending' THEN due_at ELSE claim_expires_at END, id
+                 LIMIT ?
+               )
+               AND ((status = 'pending' AND due_at <= ?)
+                 OR (status = 'claimed' AND claim_expires_at <= ?))"#,
+        )
+        .bind(claim_token)
+        .bind(&claim_expires_at)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .bind(limit)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        let rows = sqlx::query(
+            "SELECT * FROM runtime_timers WHERE status = 'claimed' AND claimed_by = ? ORDER BY due_at, id",
+        )
+        .bind(claim_token)
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        rows.iter().map(runtime_timer_from_row).collect()
+    }
+
+    async fn complete_runtime_timer(
+        &self,
+        id: &str,
+        generation: u64,
+        claim_token: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let generation = i64::try_from(generation)
+            .map_err(|_| "Runtime Timer generation 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE runtime_timers
+               SET status = 'fired', claimed_by = NULL, claim_expires_at = NULL,
+                   last_error = NULL, updated_at = ?, fired_at = ?
+               WHERE id = ? AND generation = ? AND status = 'claimed' AND claimed_by = ?"#,
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .bind(generation)
+        .bind(claim_token)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn retry_runtime_timer(
+        &self,
+        id: &str,
+        generation: u64,
+        claim_token: &str,
+        due_at: DateTime<Utc>,
+        error: Option<&str>,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let generation = i64::try_from(generation)
+            .map_err(|_| "Runtime Timer generation 超出 SQLite INTEGER 范围")?;
+        let due_at = due_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let error = error.map(|value| value.chars().take(10_000).collect::<String>());
+        let result = sqlx::query(
+            r#"UPDATE runtime_timers
+               SET status = 'pending', due_at = ?, claimed_by = NULL,
+                   claim_expires_at = NULL, last_error = ?, updated_at = ?
+               WHERE id = ? AND generation = ? AND status = 'claimed' AND claimed_by = ?"#,
+        )
+        .bind(due_at)
+        .bind(error)
+        .bind(now)
+        .bind(id)
+        .bind(generation)
+        .bind(claim_token)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn cancel_runtime_timer(
+        &self,
+        id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE runtime_timers
+               SET status = 'cancelled', claimed_by = NULL, claim_expires_at = NULL,
+                   updated_at = ?
+               WHERE id = ? AND status IN ('pending', 'claimed')"#,
+        )
+        .bind(now)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+}
+
+#[async_trait::async_trait]
 impl EventStore for SqliteStore {
     async fn append(&self, ev: Event) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut tx = self.pool.begin().await?;
@@ -3402,6 +3689,130 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tempfile::NamedTempFile;
+
+    #[tokio::test]
+    async fn runtime_timer_claim_is_leased_and_generation_safe() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let now = Utc::now();
+        let created = store
+            .upsert_runtime_timer(NewRuntimeTimer {
+                id: "timer-generation-safe".to_string(),
+                generation: 1,
+                kind: RuntimeTimerKind::Schedule,
+                owner_id: "schedule-generation-safe".to_string(),
+                due_at: now - chrono::Duration::seconds(1),
+                payload: serde_json::json!({"revision": 1}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(created.status, RuntimeTimerStatus::Pending);
+
+        let first = store
+            .claim_due_runtime_timers(now, "claim-first", now + chrono::Duration::seconds(30), 8)
+            .await
+            .unwrap();
+        assert_eq!(first.len(), 1);
+        assert!(store
+            .claim_due_runtime_timers(now, "claim-second", now + chrono::Duration::seconds(30), 8,)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let advanced = store
+            .upsert_runtime_timer(NewRuntimeTimer {
+                id: "timer-generation-safe".to_string(),
+                generation: 2,
+                kind: RuntimeTimerKind::Schedule,
+                owner_id: "schedule-generation-safe".to_string(),
+                due_at: now,
+                payload: serde_json::json!({"revision": 2}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(advanced.generation, 2);
+        assert_eq!(advanced.status, RuntimeTimerStatus::Pending);
+        assert!(!store
+            .complete_runtime_timer("timer-generation-safe", 1, "claim-first")
+            .await
+            .unwrap());
+
+        let second = store
+            .claim_due_runtime_timers(now, "claim-second", now + chrono::Duration::seconds(30), 8)
+            .await
+            .unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].generation, 2);
+        assert!(!store
+            .retry_runtime_timer(
+                "timer-generation-safe",
+                2,
+                "wrong-claim",
+                now + chrono::Duration::minutes(1),
+                Some("must not win"),
+            )
+            .await
+            .unwrap());
+        assert!(store
+            .complete_runtime_timer("timer-generation-safe", 2, "claim-second")
+            .await
+            .unwrap());
+
+        let same_generation = store
+            .upsert_runtime_timer(NewRuntimeTimer {
+                id: "timer-generation-safe".to_string(),
+                generation: 2,
+                kind: RuntimeTimerKind::Schedule,
+                owner_id: "schedule-generation-safe".to_string(),
+                due_at: now,
+                payload: serde_json::json!({"revision": 2, "duplicate": true}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(same_generation.status, RuntimeTimerStatus::Fired);
+        assert!(!store
+            .cancel_runtime_timer("timer-generation-safe")
+            .await
+            .unwrap());
+
+        store
+            .upsert_runtime_timer(NewRuntimeTimer {
+                id: "timer-expired-lease".to_string(),
+                generation: 1,
+                kind: RuntimeTimerKind::Schedule,
+                owner_id: "schedule-expired-lease".to_string(),
+                due_at: now,
+                payload: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .claim_due_runtime_timers(
+                    now,
+                    "crashed-worker",
+                    now + chrono::Duration::seconds(1),
+                    8,
+                )
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let recovered = store
+            .claim_due_runtime_timers(
+                now + chrono::Duration::seconds(2),
+                "restarted-worker",
+                now + chrono::Duration::seconds(32),
+                8,
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].claimed_by.as_deref(), Some("restarted-worker"));
+    }
 
     #[tokio::test]
     async fn migrates_legacy_evaluation_work_items_into_thread_activations() {

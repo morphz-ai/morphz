@@ -304,6 +304,78 @@ pub struct SignalOutboxRecord {
     pub resolved_at: Option<DateTime<Utc>>,
 }
 
+/// Physical timer classes understood by the Runtime scheduler. The timer only
+/// owns when an owner should be revisited; semantic completion remains owned by
+/// the corresponding Schedule, Objective, Activation, or Execution Job.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeTimerKind {
+    Schedule,
+    ObjectiveWait,
+    ObjectiveLease,
+    BackgroundWake,
+    ActivationLease,
+}
+
+impl RuntimeTimerKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Schedule => "schedule",
+            Self::ObjectiveWait => "objective_wait",
+            Self::ObjectiveLease => "objective_lease",
+            Self::BackgroundWake => "background_wake",
+            Self::ActivationLease => "activation_lease",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeTimerStatus {
+    Pending,
+    Claimed,
+    Fired,
+    Cancelled,
+}
+
+impl RuntimeTimerStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Claimed => "claimed",
+            Self::Fired => "fired",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RuntimeTimerRecord {
+    pub id: String,
+    pub generation: u64,
+    pub kind: RuntimeTimerKind,
+    pub owner_id: String,
+    pub due_at: DateTime<Utc>,
+    pub status: RuntimeTimerStatus,
+    pub payload: serde_json::Value,
+    pub claimed_by: Option<String>,
+    pub claim_expires_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub fired_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewRuntimeTimer {
+    pub id: String,
+    pub generation: u64,
+    pub kind: RuntimeTimerKind,
+    pub owner_id: String,
+    pub due_at: DateTime<Utc>,
+    pub payload: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ActivationSignalRecord {
     pub activation_id: String,
@@ -701,6 +773,53 @@ pub trait EventStore: Send + Sync {
         &self,
         filter: QueryFilter,
     ) -> Result<Vec<crate::event::Event>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Persistent physical clock queue shared by every scheduler policy. Claiming
+/// is leased so multiple Runtime workers or crash recovery cannot fire one
+/// generation concurrently without a deterministic retry boundary.
+#[async_trait::async_trait]
+pub trait TimerStore: Send + Sync {
+    async fn upsert_runtime_timer(
+        &self,
+        timer: NewRuntimeTimer,
+    ) -> Result<RuntimeTimerRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_runtime_timer(
+        &self,
+        id: &str,
+    ) -> Result<Option<RuntimeTimerRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_runtime_timers(
+        &self,
+        status: Option<RuntimeTimerStatus>,
+    ) -> Result<Vec<RuntimeTimerRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn next_runtime_timer_due_at(
+        &self,
+    ) -> Result<Option<DateTime<Utc>>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn claim_due_runtime_timers(
+        &self,
+        now: DateTime<Utc>,
+        claim_token: &str,
+        claim_expires_at: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<RuntimeTimerRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn complete_runtime_timer(
+        &self,
+        id: &str,
+        generation: u64,
+        claim_token: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
+    async fn retry_runtime_timer(
+        &self,
+        id: &str,
+        generation: u64,
+        claim_token: &str,
+        due_at: DateTime<Utc>,
+        error: Option<&str>,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
+    async fn cancel_runtime_timer(
+        &self,
+        id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Persistent product-level Session directory. It deliberately owns routing and

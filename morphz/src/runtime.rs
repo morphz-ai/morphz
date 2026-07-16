@@ -12,7 +12,7 @@ use crate::memory::{
     EventStore, MessageClaim, NewAgent, NewCognitiveContext, NewDelegation, NewObjective,
     NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
     ObjectiveWaitCondition, QueryFilter, SessionRecord, SessionStore, SessionUpdate,
-    ThreadActivationRecord,
+    ThreadActivationRecord, TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -20,6 +20,7 @@ use crate::objective::{
 use crate::orchestrator::context::{ContextEngine, ContextView};
 use crate::orchestrator::orchestrator::Orchestrator;
 use crate::permission::{PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode};
+use crate::timer::TimerEngine;
 use crate::tool::{
     DelegateTool, EditFileTool, ExecuteCommandTool, KillTaskTool, ListFilesTool, ListSkillsTool,
     ListTasksTool, ReadFileTool, Registry, ScheduleTxTool, SearchTool, SendMessageTool,
@@ -180,11 +181,14 @@ impl MorphzRuntimeBuilder {
             std::time::Duration::from_secs(objective_lease_secs),
         ));
         let registry = Arc::new(Registry::new());
+        let timer_engine = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
         let thread_scheduler = Arc::new(ThreadScheduler::new(
             Arc::clone(&bus),
             Arc::clone(&store) as Arc<dyn SessionStore>,
             Arc::clone(&store) as Arc<dyn EventStore>,
+            Arc::clone(&timer_engine),
         ));
+        thread_scheduler.register_timer_handler()?;
         register_default_tools(DefaultToolDependencies {
             registry: &registry,
             context_engine: &context_engine,
@@ -220,6 +224,7 @@ impl MorphzRuntimeBuilder {
                 orchestrator,
                 objective_supervisor,
                 thread_scheduler,
+                timer_engine,
                 human_approval_hub,
                 started: AtomicBool::new(false),
                 start_lock: tokio::sync::Mutex::new(()),
@@ -322,6 +327,7 @@ struct RuntimeInner {
     orchestrator: Arc<Orchestrator>,
     objective_supervisor: Arc<ObjectiveSupervisor>,
     thread_scheduler: Arc<ThreadScheduler>,
+    timer_engine: Arc<TimerEngine>,
     human_approval_hub: HumanApprovalHub,
     started: AtomicBool,
     start_lock: tokio::sync::Mutex<()>,
@@ -374,6 +380,7 @@ impl MorphzRuntime {
         Arc::clone(&self.inner.orchestrator).start().await?;
         Arc::clone(&self.inner.objective_supervisor).start().await?;
         self.inner.thread_scheduler.recover().await?;
+        self.inner.timer_engine.start();
         self.inner.started.store(true, Ordering::Release);
         Ok(())
     }

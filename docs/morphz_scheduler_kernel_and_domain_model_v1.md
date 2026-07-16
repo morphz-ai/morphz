@@ -1099,3 +1099,22 @@ Delivery 是结果路由
 - Signal batch、Activation single-flight、Schedule restart、Objective restart 与普通 Runtime 回归继续通过。
 
 Phase 1 至此完成。仍然保留的独立 timer/sleep、依赖轮询和进程内 BackgroundTask 状态，分别属于 Phase 2 的统一 Wait/Timer Engine 与 Phase 3 的持久 Execution Job，不再被误认为 Event → Signal 可靠性缺口。
+
+### 2026-07-16：Phase 2.1 持久 Timer Engine 与 Schedule 纵切
+
+已经实现：
+
+- 新增持久 `runtime_timers`，统一表达物理时钟队列。Timer 只负责“何时重新检查 owner”，不拥有 Schedule、Objective 或 Job 的业务终态；
+- Timer 使用 `pending | claimed | fired | cancelled` 状态、有限 claim lease 和稳定 generation。多个 Runtime worker 不能在租约有效期内同时领取同一代 Timer；worker 崩溃后，租约到期可由新 worker 恢复；
+- Timer 的完成、重试和取消都校验 `id + generation + claim token`。handler 在处理旧 Timer 时即使推进了 owner 并写入新 generation，旧 worker 也不能把新 Timer 错误标为完成；
+- Runtime 只启动一个动态 Timer dispatcher，根据数据库中最早到期时间休眠，并由新 Timer 的 Notify 提前唤醒，不再为每个 Schedule 创建独立 Tokio task/sleep；
+- `Schedule` 已迁移为 Timer Engine 的首个语义 handler。一次性、周期性、依赖等待和重启恢复仍由 Schedule 解释，但到期排序、claim、重试和 crash recovery 已归一到 Timer Engine；
+- Schedule occurrence 仍通过 Phase 1 建立的 Event + Signal Outbox 原子边界投递，因此 Timer 触发不会绕过 Thread Signal 内核；
+- 增加 generation fencing、重复领取、过期租约恢复、Engine 单次触发、Schedule 依赖等待和重启恢复测试。
+
+当前边界：
+
+- 这是 Phase 2 的第一条纵切，不代表 Phase 2 已完成；
+- Schedule 的 Thread dependency 暂时仍以 Timer Engine 中的延迟重检表达，已经移除“每个依赖一个 Tokio sleep”，但尚未改为 `dependency_completed` 反向索引驱动；
+- Objective wait/lease、Background wake 和 Activation lease 尚未注册为 Timer Engine handler，仍保留现有唤醒实现；
+- 通用 `WaitCondition` 领域结构将在上述生产者进入同一引擎时一起收口，避免先造一个没有真实消费者的抽象层。

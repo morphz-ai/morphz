@@ -3,8 +3,9 @@ use crate::config::BackgroundTaskConfig;
 use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT};
 use crate::llm::ToolDefinition;
 use crate::memory::{
-    EventStore, NewScheduledIntent, NewWorkThread, QueryFilter, ScheduledIntentRecord,
-    ScheduledIntentStatus, SessionStatus, SessionStore, WorkThreadKind,
+    EventStore, NewRuntimeTimer, NewScheduledIntent, NewWorkThread, QueryFilter, RuntimeTimerKind,
+    RuntimeTimerRecord, ScheduledIntentRecord, ScheduledIntentStatus, SessionStatus, SessionStore,
+    WorkThreadKind,
 };
 use crate::permission::{
     ApprovalContext, FilesystemAccess, PermissionBroker, PermissionConfig, PermissionProfile,
@@ -13,6 +14,7 @@ use crate::permission::{
 use crate::sandbox::{
     EnforcementStatus, NativeSandbox, NetworkPolicy, SandboxPolicy, ShellRequest,
 };
+use crate::timer::{TimerDisposition, TimerEngine};
 use dashmap::DashMap;
 use glob::Pattern;
 use serde::{Deserialize, Serialize};
@@ -299,7 +301,7 @@ pub struct ThreadScheduler {
     bus: Arc<InMemoryEventBus>,
     sessions: Arc<dyn SessionStore>,
     events: Arc<dyn EventStore>,
-    armed_revisions: DashMap<String, u64>,
+    timers: Arc<TimerEngine>,
 }
 
 impl ThreadScheduler {
@@ -307,13 +309,30 @@ impl ThreadScheduler {
         bus: Arc<InMemoryEventBus>,
         sessions: Arc<dyn SessionStore>,
         events: Arc<dyn EventStore>,
+        timers: Arc<TimerEngine>,
     ) -> Self {
         Self {
             bus,
             sessions,
             events,
-            armed_revisions: DashMap::new(),
+            timers,
         }
+    }
+
+    pub fn register_timer_handler(
+        self: &Arc<Self>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let scheduler = Arc::downgrade(self);
+        self.timers
+            .register_handler(RuntimeTimerKind::Schedule, move |timer| {
+                let scheduler = scheduler.clone();
+                async move {
+                    let Some(scheduler) = scheduler.upgrade() else {
+                        return Ok(TimerDisposition::Complete);
+                    };
+                    scheduler.dispatch_timer(timer).await
+                }
+            })
     }
 
     pub async fn recover(self: &Arc<Self>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -322,7 +341,7 @@ impl ThreadScheduler {
             .list_scheduled_intents(None, Some(ScheduledIntentStatus::Queued))
             .await?
         {
-            self.arm(intent);
+            self.arm(intent).await?;
         }
         // A crash may happen after the schedule occurrence and its wake Event
         // commit atomically but before in-process dispatch. Re-dispatch is safe:
@@ -355,50 +374,45 @@ impl ThreadScheduler {
         Ok(())
     }
 
-    pub fn arm(self: &Arc<Self>, intent: ScheduledIntentRecord) {
-        let already_armed = self
-            .armed_revisions
-            .get(&intent.id)
-            .is_some_and(|revision| *revision == intent.revision);
-        if already_armed {
-            return;
-        }
-        self.armed_revisions
-            .insert(intent.id.clone(), intent.revision);
-        let scheduler = Arc::clone(self);
-        tokio::spawn(async move {
-            let due_at = intent.not_before.unwrap_or_else(chrono::Utc::now);
-            let delay = (due_at - chrono::Utc::now()).to_std().unwrap_or_default();
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
-            }
-            if let Err(error) = scheduler.dispatch(intent).await {
-                tracing::error!(?error, "Scheduled Intent dispatch 失败");
-            }
-        });
+    pub async fn arm(
+        &self,
+        intent: ScheduledIntentRecord,
+    ) -> Result<RuntimeTimerRecord, Box<dyn std::error::Error + Send + Sync>> {
+        let due_at = intent.not_before.unwrap_or_else(chrono::Utc::now);
+        self.timers
+            .schedule(NewRuntimeTimer {
+                id: schedule_timer_id(&intent.id),
+                generation: intent.revision,
+                kind: RuntimeTimerKind::Schedule,
+                owner_id: intent.id.clone(),
+                due_at,
+                payload: serde_json::json!({
+                    "scheduled_intent_id": intent.id,
+                    "revision": intent.revision,
+                }),
+            })
+            .await
     }
 
-    async fn dispatch(
+    async fn dispatch_timer(
         self: Arc<Self>,
-        expected: ScheduledIntentRecord,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let Some(current) = self.sessions.get_scheduled_intent(&expected.id).await? else {
-            self.armed_revisions.remove(&expected.id);
-            return Ok(());
+        timer: RuntimeTimerRecord,
+    ) -> Result<TimerDisposition, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(current) = self.sessions.get_scheduled_intent(&timer.owner_id).await? else {
+            return Ok(TimerDisposition::Complete);
         };
-        if current.status != ScheduledIntentStatus::Queued || current.revision != expected.revision
-        {
-            self.armed_revisions.remove(&expected.id);
+        if current.status != ScheduledIntentStatus::Queued || current.revision != timer.generation {
             if current.status == ScheduledIntentStatus::Queued {
-                self.arm(current);
+                self.arm(current).await?;
             }
-            return Ok(());
+            return Ok(TimerDisposition::Complete);
         }
         if let Some(not_before) = current.not_before {
             if not_before > chrono::Utc::now() {
-                self.armed_revisions.remove(&current.id);
-                self.arm(current);
-                return Ok(());
+                return Ok(TimerDisposition::Reschedule {
+                    due_at: not_before,
+                    reason: Some("Scheduled Intent 尚未到达 not_before".to_string()),
+                });
             }
         }
 
@@ -414,13 +428,13 @@ impl ThreadScheduler {
             dependencies_ready &= state.is_some_and(|thread| thread.lifecycle.is_terminal());
         }
         if !dependencies_ready {
-            self.armed_revisions.remove(&current.id);
-            let scheduler = Arc::clone(&self);
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(DEPENDENCY_RECHECK_SECS)).await;
-                scheduler.arm(current);
+            return Ok(TimerDisposition::Reschedule {
+                due_at: chrono::Utc::now()
+                    + chrono::Duration::seconds(
+                        i64::try_from(DEPENDENCY_RECHECK_SECS).unwrap_or(i64::MAX),
+                    ),
+                reason: Some("等待依赖 Thread 进入终态".to_string()),
             });
-            return Ok(());
         }
 
         let occurrence_revision = current.revision;
@@ -492,16 +506,18 @@ impl ThreadScheduler {
             .commit_scheduled_dispatch(&current.id, current.revision, next_not_before, &event)
             .await?
         else {
-            self.armed_revisions.remove(&current.id);
-            return Ok(());
+            return Ok(TimerDisposition::Complete);
         };
-        self.armed_revisions.remove(&current.id);
         self.bus.dispatch_persisted(event).await?;
         if claimed.status == ScheduledIntentStatus::Queued {
-            self.arm(claimed);
+            self.arm(claimed).await?;
         }
-        Ok(())
+        Ok(TimerDisposition::Complete)
     }
+}
+
+fn schedule_timer_id(scheduled_intent_id: &str) -> String {
+    format!("schedule:{scheduled_intent_id}")
 }
 
 pub struct ScheduleTxTool {
@@ -787,7 +803,7 @@ impl Tool for ScheduleTxTool {
                     *record = dispatched;
                 }
             } else {
-                self.scheduler.arm(record.clone());
+                self.scheduler.arm(record.clone()).await?;
             }
         }
         Ok(serde_json::json!({
@@ -3949,7 +3965,7 @@ mod tests {
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
         NewAgent, NewCognitiveContext, NewScheduledIntent, NewSession, SessionMountKind,
-        SessionStore, ThreadLifecycle,
+        SessionStore, ThreadLifecycle, TimerStore,
     };
     use crate::permission::PermissionMode;
     #[cfg(target_os = "macos")]
@@ -3962,6 +3978,22 @@ mod tests {
     static SECRET_ENV_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     struct ReplacementDefinitionTool;
+
+    fn start_test_scheduler(
+        bus: Arc<InMemoryEventBus>,
+        store: Arc<SqliteStore>,
+    ) -> Arc<ThreadScheduler> {
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let scheduler = Arc::new(ThreadScheduler::new(
+            bus,
+            Arc::clone(&store) as Arc<dyn SessionStore>,
+            store as Arc<dyn EventStore>,
+            Arc::clone(&timers),
+        ));
+        scheduler.register_timer_handler().unwrap();
+        timers.start();
+        scheduler
+    }
 
     #[tokio::test]
     async fn send_message_routes_to_another_session_without_ending_current_evaluation() {
@@ -4104,11 +4136,7 @@ mod tests {
             }),
         );
         let sessions = Arc::clone(&store) as Arc<dyn SessionStore>;
-        let scheduler = Arc::new(ThreadScheduler::new(
-            Arc::clone(&bus),
-            Arc::clone(&sessions),
-            Arc::clone(&store) as Arc<dyn EventStore>,
-        ));
+        let scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
         let tool = ScheduleTxTool::new(Arc::clone(&scheduler), sessions);
         let due_at = (chrono::Utc::now() + chrono::Duration::milliseconds(40)).to_rfc3339();
         let arguments = serde_json::json!({
@@ -4238,11 +4266,7 @@ mod tests {
                 Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
             }),
         );
-        let scheduler = Arc::new(ThreadScheduler::new(
-            Arc::clone(&bus),
-            Arc::clone(&store) as Arc<dyn SessionStore>,
-            Arc::clone(&store) as Arc<dyn EventStore>,
-        ));
+        let scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
         let intent = store
             .ensure_scheduled_intent(NewScheduledIntent {
                 id: "schedule-dependent".to_string(),
@@ -4255,7 +4279,7 @@ mod tests {
             })
             .await
             .unwrap();
-        scheduler.arm(intent);
+        scheduler.arm(intent).await.unwrap();
 
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(150), receiver.recv())
@@ -4323,11 +4347,7 @@ mod tests {
                 Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
             }),
         );
-        let restarted_scheduler = Arc::new(ThreadScheduler::new(
-            Arc::clone(&bus),
-            Arc::clone(&store) as Arc<dyn SessionStore>,
-            Arc::clone(&store) as Arc<dyn EventStore>,
-        ));
+        let restarted_scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
         restarted_scheduler.recover().await.unwrap();
 
         let event = tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())

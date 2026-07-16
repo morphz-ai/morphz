@@ -15,6 +15,7 @@ pub mod sandbox;
 pub mod setup;
 pub mod sexpr;
 pub mod sexpr_vm_contract;
+pub mod timer;
 pub mod tool;
 pub mod tui;
 pub mod web;
