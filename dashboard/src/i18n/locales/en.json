@@ -59,7 +59,7 @@
     "workLiveTitle": "Live model evaluations",
     "workLiveSubtitle": "Only running work evaluations; summaries never enter chat text",
     "workHistoryTitle": "Work reasoning summaries",
-    "workHistorySubtitle": "Recent summaries rebuilt from Runtime events"
+    "workHistorySubtitle": "Reasoning segments from one evaluation are shown as one continuous stream"
   },
   "model": {
     "unavailable": "model unavailable",
@@ -84,6 +84,7 @@
     "roleWork": "Work",
     "roleRuntime": "Runtime",
     "noText": "(no text)",
+    "historyHint": "Scroll up to load {{count}} earlier messages",
     "addToChat": "Add to chat",
     "removeQuote": "Remove quote",
     "commentPlaceholder": "Write a comment…",
@@ -190,6 +191,7 @@
       "exitCode": "Exit code {{code}}",
       "delivery": "Result delivery",
       "empty": "No scheduler Threads to display for this Context",
+      "historyLimited": "{{count}} older completed Threads are hidden to keep this view responsive",
       "diagnostics": "Unattached scheduler diagnostics"
     },
     "delegations": {
@@ -205,6 +207,7 @@
       "result": "RESULT · {{status}}",
       "noOutput": "(Tool produced no output)",
       "empty": "No tool call records for current Session",
+      "historyLimited": "{{count}} older tool calls are hidden to keep this view responsive",
       "ariaLabel": "Tool call timeline, scrollable within this area"
     }
   },

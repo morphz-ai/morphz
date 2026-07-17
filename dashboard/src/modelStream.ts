@@ -263,6 +263,82 @@ export function selectDurableReasoningSummaries(
   return [...byAttempt.values()].sort((left, right) => left.timestamp.localeCompare(right.timestamp))
 }
 
+/** Physical attempts which Runtime continued as one logical reasoning flow. */
+export function selectReasoningContinuationSummaries(
+  events: ReasoningSummaryEvent[],
+): DurableReasoningSummary[] {
+  const continuedAttempts = new Set<string>()
+  for (const event of events) {
+    if (event.topic !== 'runtime/response_protocol_error'
+      && event.topic !== 'runtime/reasoning_continuation') continue
+    const responseState = typeof event.payload.response_state === 'string'
+      ? event.payload.response_state
+      : ''
+    const reason = typeof event.payload.reason === 'string' ? event.payload.reason : ''
+    if (event.topic !== 'runtime/reasoning_continuation'
+      && responseState !== 'reasoning_only'
+      && reason !== '模型返回空响应') continue
+    const attemptId = typeof event.payload.attempt_id === 'string' ? event.payload.attempt_id : ''
+    if (attemptId) continuedAttempts.add(attemptId)
+  }
+  return selectDurableReasoningSummaries(events)
+    .filter(summary => continuedAttempts.has(summary.attemptId))
+}
+
+export function findReasoningSummaryChainForPayload(
+  summaries: DurableReasoningSummary[],
+  continuations: DurableReasoningSummary[],
+  payload: Record<string, unknown>,
+): DurableReasoningSummary[] {
+  let terminal = findReasoningSummaryForPayload(summaries, payload)
+  const activationId = typeof payload.activation_id === 'string'
+    ? payload.activation_id
+    : terminal?.activationId ?? ''
+  const chain = activationId
+    ? continuations.filter(summary => summary.activationId === activationId)
+    : []
+  // Legacy tool-call events predate model_attempt_id and identify only the
+  // logical Activation. When a continuation exists, its last physical
+  // attempt is the summary that produced the tool call.
+  if (activationId && typeof payload.model_attempt_id !== 'string' && chain.length > 0) {
+    terminal = summaries
+      .filter(summary => summary.activationId === activationId)
+      .sort((left, right) => right.timestamp.localeCompare(left.timestamp))[0]
+  }
+  if (terminal && !chain.some(summary => summary.attemptId === terminal.attemptId)) {
+    chain.push(terminal)
+  }
+  return chain.sort((left, right) => left.timestamp.localeCompare(right.timestamp))
+}
+
+export function liveReasoningSummaryText(
+  continuations: DurableReasoningSummary[],
+  attempt: LiveModelAttempt,
+): string {
+  const durablePrefix = continuations
+    .filter(summary => (
+      summary.activationId === attempt.activationId
+      && summary.attemptId !== attempt.attemptId
+    ))
+    .sort((left, right) => left.timestamp.localeCompare(right.timestamp))
+    .map(summary => summary.text)
+    .join('')
+  return durablePrefix + attempt.reasoningSummary
+}
+
+export function groupReasoningSummariesByActivation(
+  summaries: DurableReasoningSummary[],
+): DurableReasoningSummary[] {
+  const grouped = new Map<string, DurableReasoningSummary>()
+  for (const summary of [...summaries].sort((left, right) => left.timestamp.localeCompare(right.timestamp))) {
+    const previous = grouped.get(summary.activationId)
+    grouped.set(summary.activationId, previous
+      ? { ...summary, text: previous.text + summary.text }
+      : summary)
+  }
+  return [...grouped.values()].sort((left, right) => left.timestamp.localeCompare(right.timestamp))
+}
+
 export function findReasoningSummaryForPayload(
   summaries: DurableReasoningSummary[],
   payload: Record<string, unknown>,

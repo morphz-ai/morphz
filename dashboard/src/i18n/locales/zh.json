@@ -59,7 +59,7 @@
     "workLiveTitle": "实时模型求值",
     "workLiveSubtitle": "只展示正在运行的工作求值；摘要不会进入聊天正文",
     "workHistoryTitle": "工作推理摘要",
-    "workHistorySubtitle": "从 Runtime 事件恢复的近期摘要"
+    "workHistorySubtitle": "同一次求值的多段推理会连续合并显示"
   },
   "model": {
     "unavailable": "模型不可用",
@@ -84,6 +84,7 @@
     "roleWork": "工作",
     "roleRuntime": "Runtime",
     "noText": "（无文本）",
+    "historyHint": "向上滚动加载更早的 {{count}} 条消息",
     "addToChat": "添加到对话",
     "removeQuote": "删除引用",
     "commentPlaceholder": "写评论…",
@@ -191,6 +192,7 @@
       "exitCode": "退出码 {{code}}",
       "delivery": "结果交付",
       "empty": "当前 Context 没有可展示的调度线程",
+      "historyLimited": "为保持页面流畅，已隐藏更早的 {{count}} 条已结束线程",
       "diagnostics": "未挂接的调度诊断数据"
     },
     "delegations": {
@@ -206,6 +208,7 @@
       "result": "结果 · {{status}}",
       "noOutput": "（工具没有输出）",
       "empty": "当前会话还没有工具调用记录",
+      "historyLimited": "为保持页面流畅，已隐藏更早的 {{count}} 条工具调用",
       "ariaLabel": "工具调用时间线，可在区域内滚动"
     }
   },

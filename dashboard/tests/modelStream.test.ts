@@ -2,10 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   createLiveModelState,
+  findReasoningSummaryChainForPayload,
   findReasoningSummaryForPayload,
+  groupReasoningSummariesByActivation,
+  liveReasoningSummaryText,
   modelStreamReducer,
   readReasoningSummaryPreference,
   selectDurableReasoningSummaries,
+  selectReasoningContinuationSummaries,
   visibleLiveModelAttempts,
   type ModelStreamBatchItem,
 } from '../src/modelStream.ts'
@@ -185,6 +189,100 @@ test('durable summaries are rebuilt from runtime events without becoming reply t
   assert.equal(summaries.length, 1)
   assert.equal(summaries[0].text, 'durable summary')
   assert.equal(summaries[0].threadKind, 'execution')
+})
+
+test('reasoning-only physical attempts render as one continuous reasoning stream', () => {
+  const events = [
+    {
+      id: 'summary',
+      timestamp: '2026-07-17T00:00:00Z',
+      topic: 'runtime/model_reasoning_summary',
+      payload: {
+        attempt_id: 'attempt-a',
+        activation_id: 'dialogue-a',
+        thread_kind: 'dialogue_turn',
+        text: 'first segment ',
+        complete: false,
+      },
+    },
+    {
+      id: 'continuation',
+      timestamp: '2026-07-17T00:00:01Z',
+      topic: 'runtime/reasoning_continuation',
+      payload: {
+        attempt_id: 'attempt-a',
+        activation_id: 'dialogue-a',
+        response_state: 'reasoning_only',
+      },
+    },
+    {
+      id: 'summary-retry',
+      timestamp: '2026-07-17T00:00:02Z',
+      topic: 'runtime/model_reasoning_summary',
+      payload: {
+        attempt_id: 'attempt-b',
+        activation_id: 'dialogue-a',
+        thread_kind: 'dialogue_turn',
+        text: 'second segment ',
+        complete: false,
+      },
+    },
+    {
+      id: 'continuation-retry',
+      timestamp: '2026-07-17T00:00:03Z',
+      topic: 'runtime/reasoning_continuation',
+      payload: {
+        attempt_id: 'attempt-b',
+        activation_id: 'dialogue-a',
+        response_state: 'reasoning_only',
+      },
+    },
+    {
+      id: 'summary-terminal',
+      timestamp: '2026-07-17T00:00:04Z',
+      topic: 'runtime/model_reasoning_summary',
+      payload: {
+        attempt_id: 'attempt-c',
+        activation_id: 'dialogue-a',
+        thread_kind: 'dialogue_turn',
+        text: 'final thought',
+        complete: true,
+      },
+    },
+  ]
+  const summaries = selectDurableReasoningSummaries(events)
+  const continuations = selectReasoningContinuationSummaries(events)
+
+  let state = createLiveModelState('session-a')
+  state = modelStreamReducer(state, {
+    type: 'stream_batch',
+    sessionId: 'session-a',
+    nowMs: 5,
+    items: [
+      stream('attempt-c', 'dialogue-a', { kind: 'started' }),
+      stream('attempt-c', 'dialogue-a', { kind: 'reasoning_summary_delta', text: 'live tail' }),
+    ],
+  })
+
+  assert.equal(
+    liveReasoningSummaryText(continuations, state.attempts['attempt-c']),
+    'first segment second segment live tail',
+  )
+  assert.equal(
+    findReasoningSummaryChainForPayload(summaries, continuations, {
+      model_attempt_id: 'attempt-c',
+      activation_id: 'dialogue-a',
+    }).map(summary => summary.text).join(''),
+    'first segment second segment final thought',
+  )
+  assert.equal(
+    findReasoningSummaryChainForPayload(summaries, continuations, {
+      attempt_id: 'attempt-a',
+      activation_id: 'dialogue-a',
+    }).map(summary => summary.text).join(''),
+    'first segment second segment final thought',
+  )
+  assert.equal(groupReasoningSummariesByActivation(summaries)[0].text, 'first segment second segment final thought')
 })
 
 test('reasoning summary prefers an exact attempt over a newer activation fallback', () => {

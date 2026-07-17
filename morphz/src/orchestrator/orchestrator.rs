@@ -290,6 +290,8 @@ const MAX_RESPONSE_PROTOCOL_RETRIES: usize = 2;
 const TOOL_ARGUMENT_PREVIEW_CHARS: usize = 4_096;
 const EMPTY_RESPONSE_ERROR: &str = "既没有非空正文，也没有工具调用";
 const RESPONSE_PROTOCOL_ERROR: &str = "Response protocol error：当前 Evaluation 尚未产生合法终态。需要向当前 active Session 回复时，返回非空普通 assistant 文本且不调用工具；确认本次无需发送消息时，独占调用 no_reply。空响应、no_reply 与其他工具混用、或 no_reply 同时携带正文都是协议错误。";
+const REASONING_ONLY_RESPONSE_REASON: &str =
+    "模型只返回了推理摘要，未产生普通文本、工具调用或 no_reply";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContextTxReceipt {
     None,
@@ -304,6 +306,7 @@ struct ToolExecutionOptions {
     transcript_tool_calls: Option<Vec<crate::llm::ToolCall>>,
     allowed_tool_names: HashSet<String>,
     record_assistant_call: bool,
+    model_attempt_id: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -396,6 +399,47 @@ struct ModelReasoningSummaryAccumulator {
     text: String,
     complete: bool,
     persist_started: bool,
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    failure: Option<String>,
+}
+
+#[derive(Debug)]
+struct ModelCompletionError {
+    source: DynError,
+    reasoning_summary: String,
+}
+
+impl ModelCompletionError {
+    fn without_summary(source: DynError) -> Self {
+        Self {
+            source,
+            reasoning_summary: String::new(),
+        }
+    }
+
+    async fn with_summary(
+        source: DynError,
+        accumulator: &Arc<Mutex<ModelReasoningSummaryAccumulator>>,
+    ) -> Self {
+        Self {
+            source,
+            reasoning_summary: accumulator.lock().await.text.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for ModelCompletionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(formatter)
+    }
+}
+
+impl std::error::Error for ModelCompletionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
 }
 
 struct AdmittedThreadActivation {
@@ -681,7 +725,7 @@ async fn persist_model_reasoning_summary(
     accumulator: &Arc<Mutex<ModelReasoningSummaryAccumulator>>,
     force_incomplete: bool,
 ) -> Result<(), DynError> {
-    let (text, complete) = {
+    let (text, complete, prompt_tokens, completion_tokens, total_tokens, failure) = {
         let mut accumulator = accumulator.lock().await;
         if force_incomplete {
             accumulator.complete = false;
@@ -690,7 +734,14 @@ async fn persist_model_reasoning_summary(
             return Ok(());
         }
         accumulator.persist_started = true;
-        (accumulator.text.clone(), accumulator.complete)
+        (
+            accumulator.text.clone(),
+            accumulator.complete,
+            accumulator.prompt_tokens,
+            accumulator.completion_tokens,
+            accumulator.total_tokens,
+            accumulator.failure.clone(),
+        )
     };
 
     let mut payload = vec![
@@ -700,6 +751,18 @@ async fn persist_model_reasoning_summary(
         ("text".to_string(), json!(text)),
         ("complete".to_string(), json!(complete)),
     ];
+    if let Some(tokens) = prompt_tokens {
+        payload.push(("prompt_tokens".to_string(), json!(tokens)));
+    }
+    if let Some(tokens) = completion_tokens {
+        payload.push(("completion_tokens".to_string(), json!(tokens)));
+    }
+    if let Some(tokens) = total_tokens {
+        payload.push(("total_tokens".to_string(), json!(tokens)));
+    }
+    if let Some(failure) = failure {
+        payload.push(("failure".to_string(), json!(failure)));
+    }
     payload.extend_from_slice(route);
     let event = Event::new(
         format!("model_reasoning_summary_{attempt_id}"),
@@ -713,6 +776,24 @@ async fn persist_model_reasoning_summary(
         return Err(error);
     }
     Ok(())
+}
+
+fn reasoning_continuation_prompt(summaries: &[String]) -> String {
+    let reasoning = summaries
+        .iter()
+        .enumerate()
+        .map(|(index, summary)| {
+            format!(
+                "<reasoning_segment index=\"{}\">\n{}\n</reasoning_segment>",
+                index + 1,
+                summary
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "之前的物理模型请求只生成了推理摘要，没有生成可提交的正文或工具调用。下面是 Runtime 按顺序保存的全部推理进度；它们不是用户消息，也不是已发送给用户的 assistant 正文。请沿用这些进度继续完成你的推理，不要从头重复分析；推理完成后再产生一种合法终态：返回非空普通 assistant 文本且不调用工具，或执行所需工具调用，或在确实无需消息时独占调用 no_reply。\n\n<previous_reasoning>\n{reasoning}\n</previous_reasoning>"
+    )
 }
 
 impl Orchestrator {
@@ -2856,7 +2937,7 @@ impl Orchestrator {
         messages: Vec<Message>,
         tools: Vec<crate::llm::ToolDefinition>,
         prompt_measurement: Option<PromptTokenCount>,
-    ) -> Result<crate::llm::Response, DynError> {
+    ) -> Result<crate::llm::Response, ModelCompletionError> {
         let deadline = std::time::Duration::from_secs(
             self.orchestrator_config.model_attempt_timeout_secs.max(1),
         );
@@ -2870,14 +2951,22 @@ impl Orchestrator {
             match tokio::time::timeout_at(model_deadline, self.concurrency_semaphore.acquire())
                 .await
             {
-                Ok(permit) => permit?,
-                Err(error) => return Err(error.into()),
+                Ok(permit) => permit.map_err(|error| {
+                    ModelCompletionError::without_summary(Box::new(error) as DynError)
+                })?,
+                Err(error) => {
+                    return Err(ModelCompletionError::without_summary(
+                        Box::new(error) as DynError
+                    ))
+                }
             };
         let client = Arc::clone(&self.client);
         let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel();
         let stream_bus = Arc::clone(&self.bus);
         let stream_session_id = session_id.to_string();
-        let stream_context_id = self.context_id_for_session(session_id)?;
+        let stream_context_id = self
+            .context_id_for_session(session_id)
+            .map_err(|error| ModelCompletionError::without_summary(error))?;
         let stream_attempt_id = attempt_id.to_string();
         let mut stream_route = Vec::new();
         self.append_activation_route(attempt_id, &mut stream_route);
@@ -2912,6 +3001,16 @@ impl Orchestrator {
                             reasoning_summary_chars.saturating_add(text.chars().count());
                         forward_reasoning_summary.lock().await.text.push_str(text);
                     }
+                    crate::llm::ModelStreamEvent::Usage {
+                        prompt_tokens,
+                        completion_tokens,
+                        total_tokens,
+                    } => {
+                        let mut summary = forward_reasoning_summary.lock().await;
+                        summary.prompt_tokens = prompt_tokens.or(summary.prompt_tokens);
+                        summary.completion_tokens = completion_tokens.or(summary.completion_tokens);
+                        summary.total_tokens = total_tokens.or(summary.total_tokens);
+                    }
                     crate::llm::ModelStreamEvent::Completed => {
                         forward_reasoning_summary.lock().await.complete = true;
                         tracing::info!(
@@ -2925,6 +3024,9 @@ impl Orchestrator {
                             total_stream_ms = u64::try_from(stream_started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
                             "模型原生流已完成"
                         );
+                    }
+                    crate::llm::ModelStreamEvent::Failed { message } => {
+                        forward_reasoning_summary.lock().await.failure = Some(message.clone());
                     }
                     _ => {}
                 }
@@ -2988,8 +3090,15 @@ impl Orchestrator {
                         &reasoning_summary,
                         true,
                     )
-                    .await?;
-                    return Err(error.into());
+                    .await
+                    .map_err(|persist_error| {
+                        ModelCompletionError::without_summary(persist_error)
+                    })?;
+                    return Err(ModelCompletionError::with_summary(
+                        Box::new(error) as DynError,
+                        &reasoning_summary,
+                    )
+                    .await);
                 }
             }
         } else {
@@ -3013,6 +3122,9 @@ impl Orchestrator {
                             ))
                         });
                     let _ = model_tx.send(result);
+                })
+                .map_err(|error| {
+                    ModelCompletionError::without_summary(Box::new(error) as DynError)
                 })?;
             match tokio::time::timeout_at(model_deadline, model_rx).await {
                 Ok(Ok(result)) => result,
@@ -3029,16 +3141,31 @@ impl Orchestrator {
                         &reasoning_summary,
                         true,
                     )
-                    .await?;
-                    return Err(error.into());
+                    .await
+                    .map_err(|persist_error| {
+                        ModelCompletionError::without_summary(persist_error)
+                    })?;
+                    return Err(ModelCompletionError::with_summary(
+                        Box::new(error) as DynError,
+                        &reasoning_summary,
+                    )
+                    .await);
                 }
             }
         };
         let forward_result = stream_forwarder.await;
         match (result, forward_result) {
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error.into()),
-            (Ok(_), Ok(Err(error))) => Err(error),
+            (Err(error), _) => {
+                Err(ModelCompletionError::with_summary(error, &reasoning_summary).await)
+            }
+            (Ok(_), Err(error)) => Err(ModelCompletionError::with_summary(
+                Box::new(error) as DynError,
+                &reasoning_summary,
+            )
+            .await),
+            (Ok(_), Ok(Err(error))) => {
+                Err(ModelCompletionError::with_summary(error, &reasoning_summary).await)
+            }
             (Ok(response), Ok(Ok(()))) => Ok(response),
         }
     }
@@ -3235,6 +3362,11 @@ impl Orchestrator {
             .and_then(|value| {
                 serde_json::from_value::<Vec<crate::llm::ToolCall>>(value.clone()).ok()
             });
+        let model_attempt_id = assistant_call
+            .payload
+            .get("model_attempt_id")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned);
         let context_tx_allowed = assistant_call
             .payload
             .get("context_tx_rejection_status")
@@ -3261,6 +3393,7 @@ impl Orchestrator {
                 transcript_tool_calls,
                 allowed_tool_names,
                 record_assistant_call: false,
+                model_attempt_id,
             },
         )
         .await?;
@@ -3596,13 +3729,19 @@ impl Orchestrator {
             .map(|tool| tool.name.clone())
             .collect::<HashSet<_>>();
         self.record_context_inspect(session_id, &attempt_id, &context, &messages);
-        let mut protocol_messages = messages;
+        let base_protocol_messages = messages;
+        let mut protocol_messages = base_protocol_messages.clone();
         let mut protocol_errors = 0usize;
+        let mut model_request_index = 0usize;
+        let mut reasoning_continuations = 0usize;
+        let mut reasoning_history = Vec::new();
         let (response, terminal_decision, terminal_model_attempt_id) = loop {
-            let model_attempt_id = if protocol_errors == 0 {
+            let request_index = model_request_index;
+            model_request_index = model_request_index.saturating_add(1);
+            let model_attempt_id = if request_index == 0 {
                 attempt_id.clone()
             } else {
-                format!("{attempt_id}_response_retry_{protocol_errors}")
+                format!("{attempt_id}_response_retry_{request_index}")
             };
             self.record_model_attempt_started(
                 session_id,
@@ -3616,19 +3755,47 @@ impl Orchestrator {
                     &model_attempt_id,
                     protocol_messages.clone(),
                     tools.clone(),
-                    (protocol_errors == 0)
+                    (request_index == 0)
                         .then(|| prompt_measurement.clone())
                         .flatten(),
                 )
                 .await;
             let response = match completion {
                 Ok(response) => response,
+                Err(error) if !error.reasoning_summary.trim().is_empty() => {
+                    reasoning_continuations = reasoning_continuations.saturating_add(1);
+                    self.record_reasoning_continuation(
+                        session_id,
+                        &model_attempt_id,
+                        reasoning_continuations,
+                        error.reasoning_summary.chars().count(),
+                        &error.to_string(),
+                    )
+                    .await?;
+                    // This is a continuation, not a fresh protocol retry: the
+                    // next physical request receives the latest saved
+                    // reasoning progress. Keep the configured reasoning level
+                    // unchanged so the model can finish its reasoning on its
+                    // own terms. Replace older recovery prompts to avoid
+                    // repeatedly inflating Context across retries.
+                    reasoning_history.push(error.reasoning_summary);
+                    protocol_messages = base_protocol_messages.clone();
+                    protocol_messages.push(Message {
+                        role: "user".to_string(),
+                        content: reasoning_continuation_prompt(&reasoning_history),
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: None,
+                    });
+                    continue;
+                }
                 Err(error) if error.to_string().contains(EMPTY_RESPONSE_ERROR) => {
                     protocol_errors += 1;
                     self.record_response_protocol_error(
                         session_id,
                         &model_attempt_id,
                         protocol_errors,
+                        "empty",
                         "模型返回空响应",
                     )
                     .await?;
@@ -3656,7 +3823,7 @@ impl Orchestrator {
                             session_id,
                             &model_attempt_id,
                             "llm_completion",
-                            error.as_ref(),
+                            &error,
                             context.parent_session_id.as_deref(),
                         )
                         .await;
@@ -3680,6 +3847,7 @@ impl Orchestrator {
                         session_id,
                         &model_attempt_id,
                         protocol_errors,
+                        "invalid",
                         &reason,
                     )
                     .await?;
@@ -3812,6 +3980,7 @@ impl Orchestrator {
                         transcript_tool_calls: None,
                         allowed_tool_names,
                         record_assistant_call: true,
+                        model_attempt_id: Some(terminal_model_attempt_id.clone()),
                     },
                 )
                 .await;
@@ -3830,6 +3999,7 @@ impl Orchestrator {
         session_id: &str,
         attempt_id: &str,
         error_count: usize,
+        response_state: &str,
         reason: &str,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
@@ -3842,6 +4012,7 @@ impl Orchestrator {
                 "max_retries".to_string(),
                 json!(MAX_RESPONSE_PROTOCOL_RETRIES),
             ),
+            ("response_state".to_string(), json!(response_state)),
             ("reason".to_string(), json!(reason)),
         ];
         self.append_activation_route(attempt_id, &mut payload);
@@ -3854,6 +4025,41 @@ impl Orchestrator {
                 "Runtime-Orchestrator".to_string(),
                 "runtime_control".to_string(),
                 "runtime/response_protocol_error".to_string(),
+                payload.into_iter().collect(),
+            ))
+            .await?;
+        Ok(())
+    }
+
+    async fn record_reasoning_continuation(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        continuation_count: usize,
+        reasoning_chars: usize,
+        provider_error: &str,
+    ) -> Result<(), DynError> {
+        let context_id = self.context_id_for_session(session_id)?;
+        let mut payload = vec![
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("continuation_count".to_string(), json!(continuation_count)),
+            ("reasoning_chars".to_string(), json!(reasoning_chars)),
+            ("response_state".to_string(), json!("reasoning_only")),
+            ("reason".to_string(), json!(REASONING_ONLY_RESPONSE_REASON)),
+            ("provider_error".to_string(), json!(provider_error)),
+        ];
+        self.append_activation_route(attempt_id, &mut payload);
+        self.bus
+            .publish(Event::new(
+                format!(
+                    "reasoning_continuation_{}",
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
+                "Runtime-Orchestrator".to_string(),
+                "runtime_control".to_string(),
+                "runtime/reasoning_continuation".to_string(),
                 payload.into_iter().collect(),
             ))
             .await?;
@@ -5084,6 +5290,9 @@ impl Orchestrator {
                 json!(unavailable_call_names),
             ),
         ];
+        if let Some(model_attempt_id) = options.model_attempt_id.as_deref() {
+            assistant_call_payload.push(("model_attempt_id".to_string(), json!(model_attempt_id)));
+        }
         if options.record_assistant_call {
             self.append_activation_route(attempt_id, &mut assistant_call_payload);
             self.bus
@@ -5106,6 +5315,9 @@ impl Orchestrator {
             ("rejected_count".to_string(), json!(rejected_count)),
             ("rejection_status".to_string(), json!(rejection_status)),
         ];
+        if let Some(model_attempt_id) = options.model_attempt_id.as_deref() {
+            selected_payload.push(("model_attempt_id".to_string(), json!(model_attempt_id)));
+        }
         let selected_event_id = format!("tool_calls_selected_{attempt_id}");
         let record_selection = if options.record_assistant_call {
             true
@@ -7013,6 +7225,7 @@ mod tests {
             text: "partial provider summary".to_string(),
             complete: true,
             persist_started: false,
+            ..Default::default()
         }));
         let route = vec![
             ("activation_id".to_string(), json!("activation-1")),

@@ -3,7 +3,8 @@ use morphz::event::{
     Event, InMemoryEventBus, TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use morphz::llm::{
-    Client, Message, PromptTokenAccuracy, PromptTokenCount, Response, ToolCallRepr, ToolDefinition,
+    Client, Message, ModelStreamEvent, ModelStreamSender, PromptTokenAccuracy, PromptTokenCount,
+    Response, ToolCallRepr, ToolDefinition,
 };
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
@@ -68,6 +69,11 @@ impl Drop for CancellationDropProbe {
 
 struct CancellableClient {
     calls: AtomicUsize,
+}
+
+struct ReasoningContinuationClient {
+    calls: AtomicUsize,
+    messages_seen: Mutex<Vec<Vec<Message>>>,
 }
 
 struct EmptyOutputTool;
@@ -301,6 +307,57 @@ impl Client for CancellableClient {
             unreachable!("first attempt must be cancelled")
         }
         Ok(text_reply_response("resumed-after-cancel"))
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for ReasoningContinuationClient {
+    fn supports_async_cancellation(&self) -> bool {
+        true
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        unreachable!("reasoning continuation probe uses the streaming entrypoint")
+    }
+
+    async fn create_completion_measured_stream(
+        &self,
+        messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+        _measurement: Option<PromptTokenCount>,
+        stream: ModelStreamSender,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.messages_seen.lock().unwrap().push(messages);
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let _ = stream.send(ModelStreamEvent::Started);
+        if call < 3 {
+            let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
+                text: format!("reasoning segment {}", call + 1),
+            });
+            let _ = stream.send(ModelStreamEvent::Usage {
+                prompt_tokens: Some(100),
+                completion_tokens: Some(4_096),
+                total_tokens: Some(4_196),
+            });
+            let message = "OpenAI Chat 流因输出长度限制被截断".to_string();
+            let _ = stream.send(ModelStreamEvent::Failed {
+                message: message.clone(),
+            });
+            return Err(message.into());
+        }
+        let response = text_reply_response("continued into final text");
+        let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
+            text: "second reasoning segment".to_string(),
+        });
+        let _ = stream.send(ModelStreamEvent::TextDelta {
+            text: response.content.clone(),
+        });
+        let _ = stream.send(ModelStreamEvent::Completed);
+        Ok(response)
     }
 }
 
@@ -1206,6 +1263,84 @@ async fn test_plain_text_terminal_is_delivered_without_correction() {
     assert_eq!(replies[0].payload.get("text"), Some(&json!("I am done")));
     assert!(errors.is_empty());
     assert_eq!(client.messages_seen().len(), 1);
+}
+
+#[tokio::test]
+async fn test_reasoning_only_is_carried_forward_until_final_text() {
+    let session_id = "attempt_reasoning_continuation";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("reasoning-continuation.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(ReasoningContinuationClient {
+        calls: AtomicUsize::new(0),
+        messages_seen: Mutex::new(Vec::new()),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, session_id, "finish the whole reasoning").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    let continuations =
+        wait_for_topic_count(&store, "runtime/reasoning_continuation", session_id, 3).await;
+    let summaries =
+        wait_for_topic_count(&store, "runtime/model_reasoning_summary", session_id, 3).await;
+    let protocol_errors = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("runtime/response_protocol_error".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 4);
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0].payload.get("text"),
+        Some(&json!("continued into final text"))
+    );
+    assert_eq!(continuations.len(), 3);
+    assert!(continuations
+        .iter()
+        .all(|event| event.payload.get("response_state") == Some(&json!("reasoning_only"))));
+    assert!(protocol_errors.is_empty());
+
+    let requests = client.messages_seen.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    assert!(requests[1].iter().any(|message| {
+        message.role == "user"
+            && message.content.contains("<previous_reasoning>")
+            && message.content.contains("reasoning segment 1")
+    }));
+    assert!(requests[3].iter().any(|message| {
+        message.role == "user"
+            && message.content.contains("reasoning segment 1")
+            && message.content.contains("reasoning segment 2")
+            && message.content.contains("reasoning segment 3")
+    }));
+    let first_summary = summaries
+        .iter()
+        .find(|event| event.payload.get("text") == Some(&json!("reasoning segment 1")))
+        .expect("first reasoning segment should be durable");
+    assert_eq!(first_summary.payload.get("complete"), Some(&json!(false)));
+    assert_eq!(
+        first_summary.payload.get("completion_tokens"),
+        Some(&json!(4_096))
+    );
 }
 
 #[tokio::test]
@@ -2638,6 +2773,7 @@ async fn test_attempt_loop_parallel_tool_barrier_single_reply() {
     publish_user(&bus, session_id, "read three files").await;
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
     let tool_outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
+    let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
 
     assert_eq!(replies.len(), 1);
     assert_eq!(tool_outputs.len(), 3);
@@ -2651,6 +2787,14 @@ async fn test_attempt_loop_parallel_tool_barrier_single_reply() {
         vec!["system", "user", "assistant", "tool", "tool", "tool"]
     );
     assert_eq!(messages[1][2].tool_calls.as_ref().map(Vec::len), Some(3));
+    let tool_call_plan = assistant_calls
+        .iter()
+        .find(|event| event.payload.get("terminal_outcome") != Some(&json!(true)))
+        .expect("tool call plan should be durable");
+    assert_eq!(
+        tool_call_plan.payload.get("model_attempt_id"),
+        tool_call_plan.payload.get("attempt_id")
+    );
 }
 
 #[tokio::test]

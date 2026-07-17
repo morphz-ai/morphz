@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { memo, startTransition, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import type { RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import ReactMarkdown from 'react-markdown'
@@ -29,12 +30,15 @@ import {
 import './App.css'
 import {
   createLiveModelState,
-  findReasoningSummaryForPayload,
+  findReasoningSummaryChainForPayload,
+  groupReasoningSummariesByActivation,
   isModelStreamEvent,
+  liveReasoningSummaryText,
   modelStreamReducer,
   readReasoningSummaryPreference,
   reasoningSummaryStorageKey,
   selectDurableReasoningSummaries,
+  selectReasoningContinuationSummaries,
   visibleLiveModelAttempts,
   type ModelStreamBatchItem,
 } from './modelStream'
@@ -94,6 +98,11 @@ function initialShowReasoningSummary(): boolean {
   }
 }
 
+const MESSAGE_PAGE_SIZE = 100
+const MODEL_STREAM_RENDER_INTERVAL_MS = 50
+const WORK_HISTORY_THREAD_LIMIT = 60
+const TOOL_TIMELINE_RENDER_LIMIT = 100
+
 function MarkdownInline({ children }: { children: string }) {
   return (
     <ReactMarkdown
@@ -110,7 +119,20 @@ function MarkdownInline({ children }: { children: string }) {
   )
 }
 
-function ReasoningSummaryBlock({
+// Markdown rendering is the expensive part of a message row. Memoizing it by
+// text keeps every historical message from re-parsing on each stream delta.
+const MarkdownBody = memo(function MarkdownBody({ text }: { text: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkBreaks]}
+      components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> }}
+    >
+      {text}
+    </ReactMarkdown>
+  )
+})
+
+const ReasoningSummaryBlock = memo(function ReasoningSummaryBlock({
   summary,
   live,
   open,
@@ -142,17 +164,19 @@ function ReasoningSummaryBlock({
         <span>{title}</span>
         <small>{live ? liveLabel : persistedLabel}</small>
       </summary>
-      <div className="reasoning-summary-body">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkBreaks]}
-          components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> }}
-        >
-          {summary}
-        </ReactMarkdown>
-      </div>
+      {open && (
+        <div className="reasoning-summary-body">
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm, remarkBreaks]}
+            components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> }}
+          >
+            {summary}
+          </ReactMarkdown>
+        </div>
+      )}
     </details>
   )
-}
+})
 
 interface AgentRecord {
   id: string
@@ -229,6 +253,8 @@ interface QuoteItem {
   eventActor: string
   eventTime: string
   comment: string
+  badgeTop: number
+  badgeLeft: number
 }
 
 interface SelectionPopup {
@@ -238,6 +264,8 @@ interface SelectionPopup {
   eventId: string
   eventActor: string
   eventTime: string
+  relTop: number
+  relLeft: number
 }
 
 interface ContextFrame {
@@ -537,6 +565,7 @@ function eventKind(event: MorphzEvent) {
   }
   if (event.topic === 'chat/outbound_message') return 'agent'
   if (event.topic === 'chat/progress') return 'progress'
+  if (event.topic === 'chat/assistant_call' && event.payload.terminal_outcome !== true) return 'reasoning'
   if (event.topic === 'chat/cancelled') return 'system'
   return null
 }
@@ -710,6 +739,214 @@ function ThreadCausalCard({
   )
 }
 
+// Selection changes can fire many times while the pointer is moving. Keeping
+// the transient popup state here prevents text selection from re-rendering the
+// entire dashboard on every animation frame.
+const SelectionQuotePopup = memo(function SelectionQuotePopup({
+  label,
+  onAdd,
+}: {
+  label: string
+  onAdd: (popup: SelectionPopup) => void
+}) {
+  const [popup, setPopup] = useState<SelectionPopup | null>(null)
+
+  useEffect(() => {
+    let rafId: number | null = null
+    const checkSelection = () => {
+      rafId = null
+      const selection = window.getSelection()
+      if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+        setPopup(null)
+        return
+      }
+      const selectedText = selection.toString().trim()
+      if (!selectedText || selectedText.length < 2) {
+        setPopup(null)
+        return
+      }
+      let node: Node | null = selection.anchorNode
+      let messageBody: Element | null = null
+      while (node) {
+        if (node.nodeType === Node.ELEMENT_NODE && (node as Element).classList?.contains('message-body')) {
+          messageBody = node as Element
+          break
+        }
+        node = node.parentNode
+      }
+      if (!messageBody) {
+        setPopup(null)
+        return
+      }
+      const article = messageBody.closest('article')
+      if (!article) {
+        setPopup(null)
+        return
+      }
+      const range = selection.getRangeAt(0)
+      const rect = range.getBoundingClientRect()
+      const articleRect = article.getBoundingClientRect()
+      setPopup({
+        x: rect.left + rect.width / 2,
+        y: rect.top,
+        text: selectedText,
+        eventId: article.getAttribute('data-event-id') || '',
+        eventActor: article.getAttribute('data-event-actor') || '',
+        eventTime: article.getAttribute('data-event-time') || '',
+        relTop: rect.top - articleRect.top + rect.height / 2 - 9,
+        relLeft: rect.right - articleRect.left + 6,
+      })
+    }
+    const handleSelectionChange = () => {
+      if (rafId !== null) return
+      rafId = window.requestAnimationFrame(checkSelection)
+    }
+    document.addEventListener('selectionchange', handleSelectionChange)
+    return () => {
+      if (rafId !== null) window.cancelAnimationFrame(rafId)
+      document.removeEventListener('selectionchange', handleSelectionChange)
+    }
+  }, [])
+
+  if (!popup) return null
+  return (
+    <button
+      className="selection-popup"
+      style={{ left: popup.x, top: popup.y }}
+      type="button"
+      onClick={() => {
+        onAdd(popup)
+        setPopup(null)
+        window.getSelection()?.removeAllRanges()
+      }}
+    >
+      <MessageSquare size={13} />
+      <span>{label}</span>
+    </button>
+  )
+})
+
+// Keep draft input state below App. A keystroke should only reconcile the
+// composer, not the full event history and every dashboard view.
+const Composer = memo(function Composer({
+  inputRef,
+  selectedSessionId,
+  sending,
+  activeWorkCount,
+  quotes,
+  activeQuoteId,
+  t,
+  onActiveQuoteIdChange,
+  onRemoveQuote,
+  onUpdateQuoteComment,
+  onSend,
+  onCancel,
+}: {
+  inputRef: RefObject<HTMLTextAreaElement | null>
+  selectedSessionId: string
+  sending: boolean
+  activeWorkCount: number
+  quotes: QuoteItem[]
+  activeQuoteId: string
+  t: TFunction
+  onActiveQuoteIdChange: (quoteId: string) => void
+  onRemoveQuote: (quoteId: string) => void
+  onUpdateQuoteComment: (quoteId: string, comment: string) => void
+  onSend: (message: string) => Promise<boolean>
+  onCancel: () => void
+}) {
+  const [message, setMessage] = useState('')
+  const composingInput = useRef(false)
+
+  const submit = useCallback(async () => {
+    if (await onSend(message)) setMessage('')
+  }, [message, onSend])
+
+  return (
+    <div className="composer">
+      <span className="composer-prompt">›</span>
+      <div className="composer-input-area">
+        {quotes.length > 0 && (
+          <div className="quote-badges">
+            {quotes.map((quote, index) => (
+              <div className={`quote-badge ${activeQuoteId === quote.id ? 'active' : ''}`} key={quote.id}>
+                <button
+                  className="quote-badge-btn"
+                  type="button"
+                  onClick={() => onActiveQuoteIdChange(activeQuoteId === quote.id ? '' : quote.id)}
+                >
+                  <span className="quote-badge-num">{index + 1}</span>
+                  {quote.comment.trim() && <span className="quote-badge-dot" />}
+                </button>
+                <button
+                  className="quote-badge-x"
+                  type="button"
+                  title={t('conversation.removeQuote')}
+                  onClick={() => {
+                    onRemoveQuote(quote.id)
+                    if (activeQuoteId === quote.id) onActiveQuoteIdChange('')
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {activeQuoteId && (() => {
+          const activeQuote = quotes.find(quote => quote.id === activeQuoteId)
+          if (!activeQuote) return null
+          return (
+            <div className="quote-comment-area">
+              <div className="quote-comment-text">{activeQuote.text}</div>
+              <textarea
+                className="quote-comment-input"
+                placeholder={t('conversation.commentPlaceholder')}
+                rows={2}
+                value={activeQuote.comment}
+                onChange={event => onUpdateQuoteComment(activeQuote.id, event.target.value)}
+              />
+            </div>
+          )
+        })()}
+        <textarea
+          ref={inputRef}
+          aria-label={t('composer.inputAriaLabel')}
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          disabled={!selectedSessionId || sending}
+          onChange={event => setMessage(event.target.value)}
+          onCompositionStart={() => { composingInput.current = true }}
+          onCompositionEnd={() => { composingInput.current = false }}
+          onKeyDown={event => {
+            if (composingInput.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
+            if (event.key === 'Enter' && !event.shiftKey) {
+              event.preventDefault()
+              void submit()
+            }
+          }}
+          placeholder={selectedSessionId ? t('composer.placeholder') : t('composer.noSessionPlaceholder')}
+          rows={1}
+          value={message}
+        />
+      </div>
+      {activeWorkCount > 0 ? (
+        <button className="cancel-button" type="button" title={t('composer.cancelTitle')} onClick={onCancel}><Square size={14} /></button>
+      ) : null}
+      <button
+        className="send-button"
+        disabled={(!message.trim() && quotes.length === 0) || sending || !selectedSessionId}
+        type="button"
+        onClick={() => void submit()}
+      >
+        <Send size={15} /><span>{t('composer.send')}</span>
+      </button>
+    </div>
+  )
+})
+
 export default function App() {
   const { t, i18n } = useTranslation()
   const [view, setView] = useState<View>('conversation')
@@ -732,7 +969,6 @@ export default function App() {
   const [selectedFrameId, setSelectedFrameId] = useState('')
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
-  const [message, setMessage] = useState('')
   const [sending, setSending] = useState(false)
   const [changingReasoning, setChangingReasoning] = useState(false)
   const [resumingObjectiveId, setResumingObjectiveId] = useState('')
@@ -743,16 +979,19 @@ export default function App() {
   const [pendingTurn, setPendingTurn] = useState<PendingTurnState | null>(null)
   const [error, setError] = useState('')
   const [quotes, setQuotes] = useState<QuoteItem[]>([])
-  const [selectionPopup, setSelectionPopup] = useState<SelectionPopup | null>(null)
+  const [activeQuoteId, setActiveQuoteId] = useState('')
+  const [inlineCommentQuoteId, setInlineCommentQuoteId] = useState('')
   const conversationEnd = useRef<HTMLDivElement>(null)
   const composerInputRef = useRef<HTMLTextAreaElement>(null)
+  const [messageWindow, setMessageWindow] = useState({ sessionId: '', count: MESSAGE_PAGE_SIZE })
+  const loadingOlder = useRef(false)
+  const pendingScrollRestore = useRef<number | null>(null)
   const wasSending = useRef(false)
   const conversationPinnedToEnd = useRef(true)
   const lastProgrammaticScroll = useRef(0)
   const viewFrameRef = useRef<HTMLDivElement>(null)
   const toolTimelineList = useRef<HTMLDivElement>(null)
   const toolTimelinePinnedToEnd = useRef(true)
-  const composingInput = useRef(false)
   const sessionLoadInFlight = useRef(false)
   const sessionLoadQueued = useRef<{ sessionId: string, contextId: string } | null>(null)
   const loadSessionRef = useRef<(sessionId: string, contextId: string) => Promise<void>>(async () => {})
@@ -921,24 +1160,28 @@ export default function App() {
     let socket: WebSocket | undefined
     let reconnectTimer: number | undefined
     let refreshTimer: number | undefined
-    let streamFrame: number | undefined
+    let streamTimer: number | undefined
     let pendingStreamEvents: ModelStreamBatchItem[] = []
     let disposed = false
     const flushStreamEvents = () => {
-      streamFrame = undefined
+      streamTimer = undefined
       const batch = pendingStreamEvents
       pendingStreamEvents = []
       if (batch.length === 0 || disposed) return
-      dispatchModelStream({
-        type: 'stream_batch',
-        sessionId: selectedSessionId,
-        items: batch,
-        nowMs: Date.now(),
+      startTransition(() => {
+        dispatchModelStream({
+          type: 'stream_batch',
+          sessionId: selectedSessionId,
+          items: batch,
+          nowMs: Date.now(),
+        })
       })
     }
     const queueStreamEvent = (item: (typeof pendingStreamEvents)[number]) => {
       pendingStreamEvents.push(item)
-      if (streamFrame === undefined) streamFrame = window.requestAnimationFrame(flushStreamEvents)
+      if (streamTimer === undefined) {
+        streamTimer = window.setTimeout(flushStreamEvents, MODEL_STREAM_RENDER_INTERVAL_MS)
+      }
     }
     const connect = () => {
       if (disposed) return
@@ -978,6 +1221,7 @@ export default function App() {
             || event.topic === 'chat/runtime_error'
             || event.topic === 'chat/progress'
             || event.topic === 'runtime/thread_result'
+            || event.topic === 'runtime/reasoning_continuation'
             || event.topic === 'runtime/response_protocol_error'
             || event.topic === 'runtime/response_protocol_fused'
             || event.topic === 'runtime/tool_calls_selected'
@@ -1002,9 +1246,9 @@ export default function App() {
             pendingStreamEvents = pendingStreamEvents.filter(item => (
               item.attemptId !== causalId && item.activationId !== causalId
             ))
-            if (pendingStreamEvents.length === 0 && streamFrame !== undefined) {
-              window.cancelAnimationFrame(streamFrame)
-              streamFrame = undefined
+            if (pendingStreamEvents.length === 0 && streamTimer !== undefined) {
+              window.clearTimeout(streamTimer)
+              streamTimer = undefined
             }
             dispatchModelStream({
               type: 'resolve',
@@ -1026,8 +1270,8 @@ export default function App() {
         if (disposed) return
         setWsStatus('disconnected')
         pendingStreamEvents = []
-        if (streamFrame !== undefined) window.cancelAnimationFrame(streamFrame)
-        streamFrame = undefined
+        if (streamTimer !== undefined) window.clearTimeout(streamTimer)
+        streamTimer = undefined
         dispatchModelStream({ type: 'reset_session', sessionId: selectedSessionId })
         reconnectTimer = window.setTimeout(connect, 2500)
       }
@@ -1038,7 +1282,7 @@ export default function App() {
       disposed = true
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer)
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
-      if (streamFrame !== undefined) window.cancelAnimationFrame(streamFrame)
+      if (streamTimer !== undefined) window.clearTimeout(streamTimer)
       pendingStreamEvents = []
       socket?.close()
     }
@@ -1091,6 +1335,10 @@ export default function App() {
     () => selectDurableReasoningSummaries(sessionEvents),
     [sessionEvents],
   )
+  const reasoningContinuationSummaries = useMemo(
+    () => selectReasoningContinuationSummaries(sessionEvents),
+    [sessionEvents],
+  )
   const conversationEvents = useMemo(
     // runtime/model_stream is the transient draft; chat/progress is the
     // durable form of model text emitted before tool execution. The websocket
@@ -1099,6 +1347,30 @@ export default function App() {
     () => sessionEvents.filter(event => eventKind(event) !== null),
     [sessionEvents],
   )
+  const visibleCount = messageWindow.sessionId === selectedSessionId
+    ? messageWindow.count
+    : MESSAGE_PAGE_SIZE
+  // Windowing: only the newest MESSAGE_PAGE_SIZE messages are rendered;
+  // scrolling to the top pages older ones in without remounting the list.
+  const visibleEvents = useMemo(
+    () => conversationEvents.slice(-visibleCount),
+    [conversationEvents, visibleCount],
+  )
+  const hiddenEventCount = conversationEvents.length - visibleEvents.length
+  const visibleReasoningSummaries = useMemo(() => {
+    const byEventId = new Map<string, string>()
+    for (const event of visibleEvents) {
+      const kind = eventKind(event)
+      if (kind !== 'agent' && kind !== 'background' && kind !== 'reasoning') continue
+      const summary = findReasoningSummaryChainForPayload(
+        durableReasoningSummaries,
+        reasoningContinuationSummaries,
+        event.payload,
+      ).map(item => item.text).join('')
+      if (summary) byEventId.set(event.id, summary)
+    }
+    return byEventId
+  }, [durableReasoningSummaries, reasoningContinuationSummaries, visibleEvents])
   const streamingAttempts = useMemo(
     () => Object.values(liveModelAttempts)
       .filter(attempt => attempt.text.trim() || attempt.reasoningSummary.trim() || attempt.status === 'failed')
@@ -1120,7 +1392,9 @@ export default function App() {
     [liveModelAttempts],
   )
   const durableWorkReasoningSummaries = useMemo(
-    () => durableReasoningSummaries.filter(summary => summary.threadKind === 'work'),
+    () => groupReasoningSummariesByActivation(
+      durableReasoningSummaries.filter(summary => summary.threadKind === 'execution'),
+    ),
     [durableReasoningSummaries],
   )
   const turnSettlement = useMemo(
@@ -1179,7 +1453,27 @@ export default function App() {
   const runningObjectives = activeObjectives.filter(item => item.status === 'active')
   const blockedObjectives = activeObjectives.filter(item => item.status === 'blocked')
   const pausedObjectives = activeObjectives.filter(item => item.status === 'paused')
-  const schedulerThreads = schedulerSnapshot?.threads ?? []
+  const schedulerThreads = useMemo(
+    () => schedulerSnapshot?.threads ?? [],
+    [schedulerSnapshot],
+  )
+  const visibleSchedulerThreads = useMemo(() => {
+    const active = schedulerThreads.filter(snapshot => (
+      snapshot.phase !== 'idle' || snapshot.thread.lifecycle === 'open'
+    ))
+    const activeIds = new Set(active.map(snapshot => snapshot.thread.id))
+    const recentHistory = schedulerThreads
+      .filter(snapshot => !activeIds.has(snapshot.thread.id))
+      .sort((left, right) => right.thread.updated_at.localeCompare(left.thread.updated_at))
+      .slice(0, WORK_HISTORY_THREAD_LIMIT)
+    return [...active, ...recentHistory]
+  }, [schedulerThreads])
+  const hiddenSchedulerThreadCount = schedulerThreads.length - visibleSchedulerThreads.length
+  const visibleToolTimeline = useMemo(
+    () => toolTimeline.slice(-TOOL_TIMELINE_RENDER_LIMIT),
+    [toolTimeline],
+  )
+  const hiddenToolCallCount = toolTimeline.length - visibleToolTimeline.length
   const activations = schedulerThreads.flatMap(thread => thread.activations.map(item => item.activation))
   const threadSignals = schedulerThreads.flatMap(thread => [
     ...thread.pending_signals,
@@ -1213,6 +1507,22 @@ export default function App() {
     if (wasSending.current && !sending) composerInputRef.current?.focus()
     wasSending.current = sending
   }, [sending])
+
+  useEffect(() => {
+    loadingOlder.current = false
+    pendingScrollRestore.current = null
+  }, [selectedSessionId])
+
+  useEffect(() => {
+    // Older messages were prepended; keep the viewport anchored to the same
+    // message by shifting scrollTop down by the added height.
+    if (pendingScrollRestore.current === null) return
+    const container = viewFrameRef.current
+    const previousHeight = pendingScrollRestore.current
+    pendingScrollRestore.current = null
+    if (container) container.scrollTop += container.scrollHeight - previousHeight
+    loadingOlder.current = false
+  }, [visibleCount])
 
   useEffect(() => {
     if (view !== 'conversation') {
@@ -1282,56 +1592,7 @@ export default function App() {
     }
   }
 
-  // Selection detection for quote popup
-  useEffect(() => {
-    const handleSelectionChange = () => {
-      const selection = window.getSelection()
-      if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
-        setSelectionPopup(null)
-        return
-      }
-      const selectedText = selection.toString().trim()
-      if (!selectedText || selectedText.length < 2) {
-        setSelectionPopup(null)
-        return
-      }
-      let node: Node | null = selection.anchorNode
-      let messageBody: Element | null = null
-      while (node) {
-        if (node.nodeType === Node.ELEMENT_NODE && (node as Element).classList?.contains('message-body')) {
-          messageBody = node as Element
-          break
-        }
-        node = node.parentNode
-      }
-      if (!messageBody) {
-        setSelectionPopup(null)
-        return
-      }
-      const article = messageBody.closest('article')
-      if (!article) {
-        setSelectionPopup(null)
-        return
-      }
-      const eventId = article.getAttribute('data-event-id') || ''
-      const eventActor = article.getAttribute('data-event-actor') || ''
-      const eventTime = article.getAttribute('data-event-time') || ''
-      const range = selection.getRangeAt(0)
-      const rect = range.getBoundingClientRect()
-      setSelectionPopup({
-        x: rect.left + rect.width / 2,
-        y: rect.top,
-        text: selectedText,
-        eventId,
-        eventActor,
-        eventTime,
-      })
-    }
-    document.addEventListener('selectionchange', handleSelectionChange)
-    return () => document.removeEventListener('selectionchange', handleSelectionChange)
-  }, [])
-
-  const addQuote = (popup: SelectionPopup) => {
+  const addQuote = useCallback((popup: SelectionPopup) => {
     setQuotes(prev => [...prev, {
       id: `quote-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       text: popup.text,
@@ -1339,25 +1600,25 @@ export default function App() {
       eventActor: popup.eventActor,
       eventTime: popup.eventTime,
       comment: '',
+      badgeTop: popup.relTop,
+      badgeLeft: popup.relLeft,
     }])
-    setSelectionPopup(null)
-    window.getSelection()?.removeAllRanges()
     composerInputRef.current?.focus()
-  }
+  }, [])
 
-  const removeQuote = (quoteId: string) => {
+  const removeQuote = useCallback((quoteId: string) => {
     setQuotes(prev => prev.filter(q => q.id !== quoteId))
-  }
+  }, [])
 
-  const updateQuoteComment = (quoteId: string, comment: string) => {
+  const updateQuoteComment = useCallback((quoteId: string, comment: string) => {
     setQuotes(prev => prev.map(q => q.id === quoteId ? { ...q, comment } : q))
-  }
+  }, [])
 
-  const sendMessage = async () => {
+  const sendMessage = useCallback(async (draftMessage: string): Promise<boolean> => {
     const hasQuotes = quotes.length > 0
-    const text = message.trim()
-    if (!text && !hasQuotes) return
-    if (!selectedSessionId || sending) return
+    const text = draftMessage.trim()
+    if (!text && !hasQuotes) return false
+    if (!selectedSessionId || sending) return false
     const composedText = hasQuotes
       ? quotes.map((q, i) => {
           const block = `> [${i + 1}] ${q.text.replace(/\n/g, '\n> ')}\n> — ${q.eventActor}, ${q.eventTime}, ${q.eventId}`
@@ -1382,26 +1643,27 @@ export default function App() {
       setPendingTurn(current => current?.startedAt === startedAt
         ? { ...current, rootTurnId: receipt.event_id ?? null }
         : current)
-      setMessage('')
       setQuotes([])
       setError('')
       window.setTimeout(() => void loadSession(selectedSessionId, selectedContextId), 120)
+      return true
     } catch (reason) {
       setPendingTurn(current => current?.startedAt === startedAt ? null : current)
       setError(reason instanceof Error ? reason.message : String(reason))
+      return false
     } finally {
       setSending(false)
     }
-  }
+  }, [apiHeaders, loadSession, quotes, selectedContextId, selectedSessionId, sending, t])
 
-  const cancelCurrentSession = async () => {
+  const cancelCurrentSession = useCallback(async () => {
     if (!selectedSessionId) return
     const response = await fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(selectedSessionId)}/cancel`, {
       method: 'POST',
       headers: apiHeaders(),
     })
     if (!response.ok) setError(t('errors.cancelSession', { status: response.status }))
-  }
+  }, [apiHeaders, selectedSessionId, t])
 
   const changeReasoningEffort = async (value: string) => {
     if (changingReasoning) return
@@ -1750,10 +2012,20 @@ export default function App() {
             if (Date.now() - lastProgrammaticScroll.current < 120) return
             const container = event.currentTarget
             conversationPinnedToEnd.current = container.scrollHeight - container.scrollTop - container.clientHeight < 48
+            if (container.scrollTop < 80 && !loadingOlder.current && hiddenEventCount > 0) {
+              loadingOlder.current = true
+              pendingScrollRestore.current = container.scrollHeight
+              setMessageWindow(current => ({
+                sessionId: selectedSessionId,
+                count: Math.min(
+                  (current.sessionId === selectedSessionId ? current.count : MESSAGE_PAGE_SIZE) + MESSAGE_PAGE_SIZE,
+                  conversationEvents.length,
+                ),
+              }))
+            }
           }}
         >
-          {view === 'conversation' && (
-            <section className="conversation-view">
+          <section className="conversation-view" hidden={view !== 'conversation'}>
               <header className="section-heading"><span>{t('conversation.heading', { title: selectedSession?.title ?? shortId(selectedSessionId) })}</span></header>
               <div className="message-list">
                 {conversationEvents.length === 0 && conversationStreamingAttempts.length === 0 && (
@@ -1766,15 +2038,32 @@ export default function App() {
                     </button>
                   </div>
                 )}
-                {conversationEvents.map(event => {
+                {hiddenEventCount > 0 && (
+                  <div className="history-hint">{t('conversation.historyHint', { count: hiddenEventCount })}</div>
+                )}
+                {visibleEvents.map(event => {
                   const kind = eventKind(event) ?? 'system'
                   if (kind === 'progress') {
                     return <div className="progress-note" key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                   }
                   const threadKind = typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue_turn'
-                  const persistedReasoningSummary = kind === 'agent' || kind === 'background'
-                    ? findReasoningSummaryForPayload(durableReasoningSummaries, event.payload)
-                    : undefined
+                  const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
+                  if (kind === 'reasoning') {
+                    if (!persistedReasoningSummary) return null
+                    return (
+                      <article className="message-row agent persisted-reasoning" key={event.id}>
+                        <ReasoningSummaryBlock
+                          summary={persistedReasoningSummary}
+                          live={false}
+                          open={showReasoningSummary}
+                          onOpenChange={setShowReasoningSummary}
+                          title={t('reasoningSummary.title')}
+                          liveLabel={t('reasoningSummary.live')}
+                          persistedLabel={t('reasoningSummary.persisted')}
+                        />
+                      </article>
+                    )
+                  }
                   const role = kind === 'user'
                     ? t('conversation.roleYou')
                     : kind === 'agent'
@@ -1794,7 +2083,7 @@ export default function App() {
                       )}
                       {persistedReasoningSummary && (
                         <ReasoningSummaryBlock
-                          summary={persistedReasoningSummary.text}
+                          summary={persistedReasoningSummary}
                           live={false}
                           open={showReasoningSummary}
                           onOpenChange={setShowReasoningSummary}
@@ -1805,14 +2094,33 @@ export default function App() {
                       )}
                       <div className="message-body">
                         {typeof event.payload.text === 'string' && event.payload.text.trim()
-                          ? <ReactMarkdown
-                              remarkPlugins={[remarkGfm, remarkBreaks]}
-                              components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> }}
-                            >
-                              {event.payload.text}
-                            </ReactMarkdown>
+                          ? <MarkdownBody text={event.payload.text} />
                           : t('conversation.noText')}
                       </div>
+                      {quotes.map((q, qi) => q.eventId === event.id ? (
+                            <span key={q.id} style={{ position: 'absolute', top: q.badgeTop, left: q.badgeLeft, zIndex: 10 }}>
+                              <button
+                                className={`message-quote-badge ${inlineCommentQuoteId === q.id ? 'active' : ''}`}
+                                type="button"
+                                title={q.comment.trim() ? q.comment.trim() : t('conversation.commentPlaceholder')}
+                                onClick={() => setInlineCommentQuoteId(inlineCommentQuoteId === q.id ? '' : q.id)}
+                              >
+                                {qi + 1}
+                              </button>
+                              {inlineCommentQuoteId === q.id && (
+                                <span className="inline-comment-box">
+                                  <textarea
+                                    className="inline-comment-input"
+                                    placeholder={t('conversation.commentPlaceholder')}
+                                    rows={2}
+                                    value={q.comment}
+                                    onChange={e => updateQuoteComment(q.id, e.target.value)}
+                                    autoFocus
+                                  />
+                                </span>
+                              )}
+                            </span>
+                      ) : null)}
                       {!showRole && (
                         <div className="message-meta">
                           <time className="message-time">{formatTime(event.timestamp, i18n.language)}</time>
@@ -1832,7 +2140,7 @@ export default function App() {
                 {conversationStreamingAttempts.map(attempt => (
                   <article className="message-row agent streaming" key={`stream-${attempt.attemptId}`} aria-live="polite">
                     <ReasoningSummaryBlock
-                      summary={attempt.reasoningSummary}
+                      summary={liveReasoningSummaryText(reasoningContinuationSummaries, attempt)}
                       live
                       open={showReasoningSummary}
                       onOpenChange={setShowReasoningSummary}
@@ -1842,12 +2150,7 @@ export default function App() {
                     />
                     <div className="message-body">
                       {attempt.text.trim()
-                        ? <ReactMarkdown
-                            remarkPlugins={[remarkGfm, remarkBreaks]}
-                            components={{ a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a> }}
-                          >
-                            {attempt.text}
-                          </ReactMarkdown>
+                        ? <MarkdownBody text={attempt.text} />
                         : attempt.error ?? t('conversation.streaming')}
                       {attempt.status !== 'failed' && <span className="stream-caret" aria-hidden="true" />}
                     </div>
@@ -1868,8 +2171,7 @@ export default function App() {
                 )}
                 <div ref={conversationEnd} />
               </div>
-            </section>
-          )}
+          </section>
 
           {view === 'work' && (
             <section className="work-view">
@@ -1904,7 +2206,7 @@ export default function App() {
                           <small>{t('reasoningSummary.toolCalls', { count: attempt.toolCallCount })}</small>
                         </div>
                         <ReasoningSummaryBlock
-                          summary={attempt.reasoningSummary}
+                          summary={liveReasoningSummaryText(reasoningContinuationSummaries, attempt)}
                           live
                           open={showReasoningSummary}
                           onOpenChange={setShowReasoningSummary}
@@ -2035,7 +2337,10 @@ export default function App() {
               <section className="causal-board">
                 <header><span>{t('work.causal.title').toUpperCase()}</span><b>{schedulerThreads.length}</b><small>{t('work.causal.subtitle')}</small></header>
                 <div className="causal-thread-list">
-                  {schedulerThreads.map(snapshot => (
+                  {hiddenSchedulerThreadCount > 0 && (
+                    <div className="history-hint">{t('work.causal.historyLimited', { count: hiddenSchedulerThreadCount })}</div>
+                  )}
+                  {visibleSchedulerThreads.map(snapshot => (
                     <ThreadCausalCard
                       key={snapshot.thread.id}
                       snapshot={snapshot}
@@ -2047,7 +2352,7 @@ export default function App() {
                       onSchedule={(schedule, action) => void mutateSchedule(schedule, action)}
                     />
                   ))}
-                  {schedulerThreads.length === 0 && <div className="small-empty">{t('work.causal.empty')}</div>}
+                  {visibleSchedulerThreads.length === 0 && <div className="small-empty">{t('work.causal.empty')}</div>}
                 </div>
                 {schedulerSnapshot && (
                   schedulerSnapshot.orphan_activations.length > 0
@@ -2093,7 +2398,10 @@ export default function App() {
                     toolTimelinePinnedToEnd.current = list.scrollHeight - list.scrollTop - list.clientHeight < 48
                   }}
                 >
-                  {toolTimeline.map(call => {
+                  {hiddenToolCallCount > 0 && (
+                    <div className="history-hint">{t('work.toolTimeline.historyLimited', { count: hiddenToolCallCount })}</div>
+                  )}
+                  {visibleToolTimeline.map(call => {
                     const failed = ['error', 'timeout', 'rejected', 'failed'].includes(call.status)
                     const summary = summarizeToolCall(call.name, call.arguments, t)
                     return (
@@ -2196,74 +2504,24 @@ export default function App() {
               <span className="connection-status" title={t('nav.connection')}><i className={`status-dot ${wsStatus === 'connected' ? '' : wsStatus === 'connecting' ? 'connecting' : 'disconnected'}`} />{t(`connection.${wsStatus}`)}</span>
             </div>
           </div>
-          {quotes.length > 0 && (
-            <div className="quote-preview">
-              {quotes.map((q, i) => (
-                <div className="quote-item" key={q.id}>
-                  <div className="quote-header">
-                    <span className="quote-number">{i + 1}</span>
-                    <span className="quote-source">{q.eventActor} · {formatTime(q.eventTime, i18n.language)} · {q.eventId}</span>
-                    <button className="quote-delete" type="button" title={t('conversation.removeQuote')} onClick={() => removeQuote(q.id)}>
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                  <div className="quote-text">{q.text}</div>
-                  <textarea
-                    className="quote-comment"
-                    placeholder={t('conversation.commentPlaceholder')}
-                    rows={1}
-                    value={q.comment}
-                    onChange={e => updateQuoteComment(q.id, e.target.value)}
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="composer">
-            <span className="composer-prompt">›</span>
-            <textarea
-              ref={composerInputRef}
-              aria-label={t('composer.inputAriaLabel')}
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="off"
-              spellCheck={false}
-              disabled={!selectedSessionId || sending}
-              onChange={event => setMessage(event.target.value)}
-              onCompositionStart={() => { composingInput.current = true }}
-              onCompositionEnd={() => { composingInput.current = false }}
-              onKeyDown={event => {
-                if (composingInput.current || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) {
-                  return
-                }
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault()
-                  void sendMessage()
-                }
-              }}
-              placeholder={selectedSessionId ? t('composer.placeholder') : t('composer.noSessionPlaceholder')}
-              rows={1}
-              value={message}
-            />
-            {activeWorkCount > 0 ? (
-              <button className="cancel-button" type="button" title={t('composer.cancelTitle')} onClick={() => void cancelCurrentSession()}><Square size={14} /></button>
-            ) : null}
-            <button className="send-button" disabled={(!message.trim() && quotes.length === 0) || sending || !selectedSessionId} type="button" onClick={() => void sendMessage()}><Send size={15} /><span>{t('composer.send')}</span></button>
-          </div>
+          <Composer
+            inputRef={composerInputRef}
+            selectedSessionId={selectedSessionId}
+            sending={sending}
+            activeWorkCount={activeWorkCount}
+            quotes={quotes}
+            activeQuoteId={activeQuoteId}
+            t={t}
+            onActiveQuoteIdChange={setActiveQuoteId}
+            onRemoveQuote={removeQuote}
+            onUpdateQuoteComment={updateQuoteComment}
+            onSend={sendMessage}
+            onCancel={cancelCurrentSession}
+          />
           <div className="shortcut-row"><span>{t('composer.shortcuts.send')}</span><span>{t('composer.shortcuts.newline')}</span><span>{t('composer.shortcuts.tasks')}</span><span>{t('composer.shortcuts.mind')}</span><span>{t('composer.shortcuts.back')}</span></div>
           {error && <div className="error-banner">{error}</div>}
         </footer>
-        {selectionPopup && (
-          <button
-            className="selection-popup"
-            style={{ left: selectionPopup.x, top: selectionPopup.y }}
-            type="button"
-            onClick={() => addQuote(selectionPopup)}
-          >
-            <MessageSquare size={13} />
-            <span>{t('conversation.addToChat')}</span>
-          </button>
-        )}
+        <SelectionQuotePopup label={t('conversation.addToChat')} onAdd={addQuote} />
       </section>
     </main>
   )
