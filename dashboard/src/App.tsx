@@ -24,7 +24,6 @@ import {
   RefreshCw,
   Send,
   Square,
-  Terminal,
   Trash2,
 } from 'lucide-react'
 import './App.css'
@@ -39,6 +38,23 @@ import {
   visibleLiveModelAttempts,
   type ModelStreamBatchItem,
 } from './modelStream'
+import {
+  pendingHumanApprovals,
+  schedulerAttentionCount,
+  schedulerJobs,
+  schedulerSchedules,
+} from './scheduler/model'
+import type {
+  ApprovalRecord,
+  ScheduledIntentRecord,
+  SchedulerActivationSnapshot,
+  SchedulerJobSnapshot,
+  SchedulerSnapshot,
+  SchedulerThreadSnapshot,
+  ThreadActivationRecord,
+  ThreadSignalRecord,
+  WorkThreadRecord,
+} from './scheduler/types'
 
 const configuredHttpUrl = import.meta.env.VITE_MORPHZ_HTTP_URL as string | undefined
 const configuredWsUrl = import.meta.env.VITE_MORPHZ_WS_URL as string | undefined
@@ -254,20 +270,6 @@ interface SessionWorkingSet {
   selection: string
 }
 
-interface ThreadActivation {
-  id: string
-  revision: number
-  context_id: string
-  session_id: string
-  trigger_event_id: string
-  trigger_kind: string
-  parent_work_item_id?: string
-  root_turn_id: string
-  status: string
-  created_at: string
-  updated_at: string
-}
-
 interface ObjectiveRecord {
   id: string
   context_id: string
@@ -297,7 +299,7 @@ interface ContextViewResponse {
   active_session_id: string
   sessions: ProjectedSession[]
   session_working_set: SessionWorkingSet
-  active_activations: ThreadActivation[]
+  active_activations: ThreadActivationRecord[]
   work_threads: WorkThreadRecord[]
   thread_signals: ThreadSignalRecord[]
   thread_phases: Record<string, 'idle' | 'runnable' | 'running' | 'waiting'>
@@ -306,45 +308,6 @@ interface ContextViewResponse {
   state: MindState
   observations: ContextObservation[]
   pressure: ContextPressure
-}
-
-interface ThreadSignalRecord {
-  id: string
-  thread_id: string
-  event_id: string
-  sequence: number
-  kind: string
-  status: 'pending' | 'claimed' | 'acknowledged'
-  created_at: string
-}
-
-interface WorkThreadRecord {
-  id: string
-  revision: number
-  session_id: string
-  root_turn_id: string
-  kind: string
-  lifecycle: string
-  executor_kind: string
-  executor_id?: string
-  result_text?: string
-  delivery_status: string
-  created_at: string
-  updated_at: string
-}
-
-interface ScheduledIntentRecord {
-  id: string
-  revision: number
-  thread_id: string
-  source_turn_id: string
-  intent: string
-  status: string
-  not_before?: string
-  interval_seconds?: number
-  dependency_thread_ids: string[]
-  created_at: string
-  updated_at: string
 }
 
 interface DelegationRecord {
@@ -356,28 +319,6 @@ interface DelegationRecord {
   status: string
   created_at: string
   updated_at: string
-}
-
-interface BackgroundTask {
-  task_id: string
-  status: string
-  command: string
-  session_id: string
-  context_id: string
-  started_at: string
-  ended_at?: string
-  elapsed_secs: number
-  last_output_at: string
-  output_bytes: number
-  output_tail: string
-  exit_code?: number
-  sandbox_backend: string
-  sandbox_status: string
-  effective_boundary?: {
-    network_enabled: boolean
-    sandbox_backend: string
-    sandbox_status: string
-  }
 }
 
 interface ToolCallPreview {
@@ -509,7 +450,7 @@ function summarizeToolCall(name: string, rawArguments: string, t: TFunction): To
 }
 
 function summarizeActivation(
-  item: ThreadActivation,
+  item: ThreadActivationRecord,
   events: MorphzEvent[],
   toolTimeline: ToolTimelineItem[],
   t: TFunction,
@@ -565,6 +506,175 @@ function eventKind(event: MorphzEvent) {
   return null
 }
 
+function ExecutionJobRow({
+  snapshot,
+  t,
+  locale,
+  decidingApprovalId,
+  onApproval,
+}: {
+  snapshot: SchedulerJobSnapshot
+  t: TFunction
+  locale: string
+  decidingApprovalId: string
+  onApproval: (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => void
+}) {
+  const { job, approval, result } = snapshot
+  const summary = summarizeToolCall(job.tool_name, JSON.stringify(job.request), t)
+  const failed = job.status === 'failed' || job.status === 'lost'
+  return (
+    <details className={`causal-job ${failed ? 'failed' : job.status}`} open={job.status === 'running' || job.status === 'waiting_approval'}>
+      <summary>
+        <i>{job.status === 'running' ? <LoaderCircle size={13} /> : failed ? '!' : job.status === 'succeeded' ? '✓' : <CircleDot size={12} />}</i>
+        <span><strong>{summary.title}</strong><small>{summary.target}</small></span>
+        <code>{job.status} · {shortId(job.id, 18)}</code>
+        <time>{formatTime(job.updated_at, locale)}</time>
+        <ChevronDown size={13} />
+      </summary>
+      <div className="causal-job-detail">
+        <section><header>{t('work.causal.request')}</header><pre>{JSON.stringify(job.request, null, 2)}</pre></section>
+        <dl>
+          <div><dt>{t('work.causal.retrySafety')}</dt><dd>{job.retry_safety}</dd></div>
+          <div><dt>{t('work.causal.revision')}</dt><dd>r{job.revision}</dd></div>
+          {job.claimed_by && <div><dt>{t('work.causal.worker')}</dt><dd>{job.claimed_by}</dd></div>}
+        </dl>
+        {approval && (
+          <section className={`inline-approval ${approval.status}`}>
+            <header><span>{t('work.approvals.title')}</span><b>{statusLabel(approval.status, t)}</b></header>
+            <p>{approval.justification}</p>
+            <details><summary>{t('work.approvals.capability')}</summary><pre>{JSON.stringify({ action: approval.action, requested: approval.requested }, null, 2)}</pre></details>
+            {approval.risk_tags.length > 0 && <small>{approval.risk_tags.join(' · ')}</small>}
+            {approval.status === 'pending_human' && (
+              <div className="approval-actions">
+                <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => onApproval(approval, 'allow_once')}><Check size={13} /> {t('work.approvals.allowOnce')}</button>
+                <button disabled={decidingApprovalId === approval.id} className="danger" type="button" onClick={() => onApproval(approval, 'deny')}><Square size={12} /> {t('work.approvals.deny')}</button>
+              </div>
+            )}
+          </section>
+        )}
+        {result && (
+          <section className={`job-result ${result.status}`}>
+            <header>{t('work.causal.result')} · {statusLabel(result.status, t)}</header>
+            {result.error && <p>{result.error}</p>}
+            {result.exit_code !== undefined && <small>{t('work.causal.exitCode', { code: result.exit_code })}</small>}
+            {result.refs.length > 0 && <ul>{result.refs.map(ref => <li key={ref}><code>{ref}</code></li>)}</ul>}
+            {result.event_id && <code>{shortId(result.event_id, 30)}</code>}
+          </section>
+        )}
+      </div>
+    </details>
+  )
+}
+
+function ActivationGroup({
+  snapshot,
+  t,
+  locale,
+  decidingApprovalId,
+  onApproval,
+}: {
+  snapshot: SchedulerActivationSnapshot
+  t: TFunction
+  locale: string
+  decidingApprovalId: string
+  onApproval: (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => void
+}) {
+  return (
+    <section className="causal-activation">
+      <header>
+        <span className={`status-pill ${snapshot.activation.status}`}>{statusLabel(snapshot.activation.status, t)}</span>
+        <strong>{t('work.causal.activation')}</strong>
+        <code>{shortId(snapshot.activation.id, 22)}</code>
+        <small>{snapshot.activation.trigger_kind}</small>
+      </header>
+      {snapshot.signals.map(signal => (
+        <div className="causal-signal" key={signal.id}>
+          <Radio size={12} /><span>{signal.kind}</span><code>#{signal.sequence} · {shortId(signal.event_id, 18)}</code>
+        </div>
+      ))}
+      <div className="causal-jobs">
+        {snapshot.jobs.map(job => (
+          <ExecutionJobRow
+            key={job.job.id}
+            snapshot={job}
+            t={t}
+            locale={locale}
+            decidingApprovalId={decidingApprovalId}
+            onApproval={onApproval}
+          />
+        ))}
+        {snapshot.jobs.length === 0 && <div className="small-empty">{t('work.causal.noJobs')}</div>}
+      </div>
+    </section>
+  )
+}
+
+function ThreadCausalCard({
+  snapshot,
+  t,
+  locale,
+  decidingApprovalId,
+  mutatingScheduleId,
+  onApproval,
+  onSchedule,
+}: {
+  snapshot: SchedulerThreadSnapshot
+  t: TFunction
+  locale: string
+  decidingApprovalId: string
+  mutatingScheduleId: string
+  onApproval: (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => void
+  onSchedule: (schedule: ScheduledIntentRecord, action: 'pause' | 'resume' | 'reschedule' | 'cancel') => void
+}) {
+  const { thread } = snapshot
+  const active = snapshot.phase !== 'idle' || thread.lifecycle === 'open'
+  return (
+    <details className={`causal-thread ${snapshot.phase}`} open={active}>
+      <summary>
+        <span className={`status-pill ${snapshot.phase}`}>{statusLabel(snapshot.phase, t)}</span>
+        <div><strong>{thread.kind} thread</strong><small>{shortId(thread.id, 30)} · {t('header.session')} {shortId(thread.session_id, 18)}</small></div>
+        <span className="causal-counts">{snapshot.activations.length}A · {snapshot.activations.reduce((sum, item) => sum + item.jobs.length, 0)}J</span>
+        <em>{thread.delivery_status}</em>
+        <ChevronDown size={14} />
+      </summary>
+      <div className="causal-thread-body">
+        {snapshot.pending_signals.map(signal => (
+          <div className="causal-signal pending" key={signal.id}>
+            <Radio size={12} /><span>{signal.kind}</span><code>#{signal.sequence} · {shortId(signal.event_id, 20)}</code>
+          </div>
+        ))}
+        {snapshot.activations.map(activation => (
+          <ActivationGroup
+            key={activation.activation.id}
+            snapshot={activation}
+            t={t}
+            locale={locale}
+            decidingApprovalId={decidingApprovalId}
+            onApproval={onApproval}
+          />
+        ))}
+        {snapshot.schedules.map(schedule => (
+          <article className="inline-schedule" key={schedule.id}>
+            <Clock3 size={14} />
+            <div><strong>{schedule.intent}</strong><small>{schedule.not_before ? new Date(schedule.not_before).toLocaleString(locale) : t('work.scheduler.immediate')} · r{schedule.revision}</small></div>
+            <span className={`status-pill ${schedule.status}`}>{statusLabel(schedule.status, t)}</span>
+            <div className="schedule-actions">
+              {schedule.status === 'queued' && <button disabled={mutatingScheduleId === schedule.id} type="button" onClick={() => onSchedule(schedule, 'pause')}>{t('work.schedules.pause')}</button>}
+              {schedule.status === 'paused' && <button disabled={mutatingScheduleId === schedule.id} type="button" onClick={() => onSchedule(schedule, 'resume')}>{t('work.schedules.resume')}</button>}
+              {!['completed', 'cancelled', 'dispatched'].includes(schedule.status) && <button disabled={mutatingScheduleId === schedule.id} type="button" onClick={() => onSchedule(schedule, 'reschedule')}>{t('work.schedules.reschedule')}</button>}
+              {!['completed', 'cancelled'].includes(schedule.status) && <button disabled={mutatingScheduleId === schedule.id} className="danger" type="button" onClick={() => onSchedule(schedule, 'cancel')}>{t('work.schedules.cancel')}</button>}
+            </div>
+          </article>
+        ))}
+        <footer className={`delivery-state ${thread.delivery_status}`}>
+          <span>{t('work.causal.delivery')}</span><b>{statusLabel(thread.delivery_status, t)}</b>
+          {thread.result_text && <p>{thread.result_text}</p>}
+        </footer>
+      </div>
+    </details>
+  )
+}
+
 export default function App() {
   const { t, i18n } = useTranslation()
   const [view, setView] = useState<View>('conversation')
@@ -576,7 +686,7 @@ export default function App() {
   const [contexts, setContexts] = useState<ContextRecord[]>([])
   const [sessions, setSessions] = useState<SessionRecord[]>([])
   const [delegations, setDelegations] = useState<DelegationRecord[]>([])
-  const [backgroundTasks, setBackgroundTasks] = useState<BackgroundTask[]>([])
+  const [schedulerSnapshot, setSchedulerSnapshot] = useState<SchedulerSnapshot | null>(null)
   const [contextView, setContextView] = useState<ContextViewResponse | null>(null)
   const [events, setEvents] = useState<MorphzEvent[]>([])
   const [eventsSessionId, setEventsSessionId] = useState('')
@@ -592,6 +702,8 @@ export default function App() {
   const [changingReasoning, setChangingReasoning] = useState(false)
   const [resumingObjectiveId, setResumingObjectiveId] = useState('')
   const [deletingObjectiveId, setDeletingObjectiveId] = useState('')
+  const [decidingApprovalId, setDecidingApprovalId] = useState('')
+  const [mutatingScheduleId, setMutatingScheduleId] = useState('')
   const [copiedMessageId, setCopiedMessageId] = useState('')
   const [pendingTurnSince, setPendingTurnSince] = useState<number | null>(null)
   const [pendingRootTurnId, setPendingRootTurnId] = useState<string | null>(null)
@@ -665,10 +777,10 @@ export default function App() {
     }
     sessionLoadInFlight.current = true
     try {
-      const [eventsResponse, contextResponse, tasksResponse, delegationsResponse] = await Promise.all([
+      const [eventsResponse, contextResponse, schedulerResponse, delegationsResponse] = await Promise.all([
         fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(sessionId)}/events?limit=1000`, { headers: apiHeaders() }),
         fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(sessionId)}/context`, { headers: apiHeaders() }),
-        fetch(`${CORE_HTTP_URL}/api/contexts/${encodeURIComponent(contextId)}/background-tasks`, { headers: apiHeaders() }),
+        fetch(`${CORE_HTTP_URL}/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=true&limit=300`, { headers: apiHeaders() }),
         fetch(`${CORE_HTTP_URL}/api/delegations`, { headers: apiHeaders() }),
       ])
       const selectedScope = selectedScopeRef.current
@@ -685,6 +797,8 @@ export default function App() {
       }
       const nextContext = await contextResponse.json() as ContextViewResponse
       setContextView(nextContext)
+      if (!schedulerResponse.ok) throw new Error(t('errors.schedulerHttp', { status: schedulerResponse.status }))
+      setSchedulerSnapshot(await schedulerResponse.json() as SchedulerSnapshot)
       const activeWorkItems = new Set(nextContext.active_activations.map(item => item.id))
       const reconcileCutoffMs = Date.now() - 10_000
       // Keep drafts that are still actively streaming. Snapshot rows can lag
@@ -696,10 +810,6 @@ export default function App() {
         activeWorkItemIds: [...activeWorkItems],
         cutoffMs: reconcileCutoffMs,
       })
-      if (tasksResponse.ok) {
-        const result = await tasksResponse.json() as { tasks?: BackgroundTask[] }
-        setBackgroundTasks((result.tasks ?? []).sort((left, right) => right.started_at.localeCompare(left.started_at)))
-      }
       if (delegationsResponse.ok) {
         const result = await delegationsResponse.json() as { delegations?: DelegationRecord[] }
         setDelegations(result.delegations ?? [])
@@ -1026,23 +1136,32 @@ export default function App() {
   const runningObjectives = activeObjectives.filter(item => item.status === 'active')
   const blockedObjectives = activeObjectives.filter(item => item.status === 'blocked')
   const pausedObjectives = activeObjectives.filter(item => item.status === 'paused')
-  const workItems = contextView?.active_activations ?? []
-  const workThreads = contextView?.work_threads ?? []
-  const threadSignals = contextView?.thread_signals ?? []
-  const threadPhases = contextView?.thread_phases ?? {}
-  const scheduledIntents = contextView?.scheduled_intents ?? []
-  const liveWorkThreads = workThreads.filter(item => !terminalTaskStatuses.has(item.lifecycle))
+  const schedulerThreads = schedulerSnapshot?.threads ?? []
+  const workItems = schedulerThreads.flatMap(thread => thread.activations.map(item => item.activation))
+  const threadSignals = schedulerThreads.flatMap(thread => [
+    ...thread.pending_signals,
+    ...thread.activations.flatMap(activation => activation.signals),
+  ])
+  const scheduledIntents = schedulerSchedules(schedulerSnapshot)
+  const schedulerJobRows = schedulerJobs(schedulerSnapshot)
+  const pendingApprovals = pendingHumanApprovals(schedulerSnapshot)
+  const attentionCount = schedulerAttentionCount(schedulerSnapshot)
+  const failedSchedulerJobs = schedulerJobRows.filter(item => item.job.status === 'failed' || item.job.status === 'lost')
+  const failedDeliveries = schedulerThreads.filter(item => (
+    item.thread.lifecycle === 'completed'
+    && item.thread.delivery_status !== 'none'
+    && item.thread.delivery_status !== 'delivered'
+  ))
   const runningWorkItems = workItems.filter(item => item.status === 'queued' || item.status === 'running')
-  const liveBackgroundTasks = backgroundTasks.filter(item => !terminalTaskStatuses.has(item.status))
   const contextDelegations = delegations.filter(item => item.parent_context_id === selectedContextId)
   const liveDelegations = contextDelegations.filter(item => !terminalTaskStatuses.has(item.status))
   const runningDelegations = liveDelegations.filter(item => item.status === 'queued' || item.status === 'running')
-  const activeWorkCount = liveWorkThreads.filter(item => {
-    const phase = threadPhases[item.id]
-    return phase === 'running' || phase === 'runnable'
-  }).length
-  const waitingCount = liveWorkThreads.filter(item => threadPhases[item.id] === 'waiting').length
-    + runningObjectives.filter(item => Boolean(item.wait_condition)).length
+  const activeWorkCount = schedulerSnapshot
+    ? schedulerSnapshot.summary.running_activations + schedulerSnapshot.summary.queued_activations
+    : 0
+  const waitingCount = schedulerSnapshot
+    ? schedulerSnapshot.summary.waiting_approval_jobs + schedulerSnapshot.summary.active_schedules
+    : runningObjectives.filter(item => Boolean(item.wait_condition)).length
   const selectedFrame = contextView?.state.frames.find(frame => frame.id === selectedFrameId)
   const retired = new Set(contextView?.state.retired ?? [])
 
@@ -1233,13 +1352,120 @@ export default function App() {
     }
   }
 
+  const decideApproval = async (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => {
+    if (decision === 'deny' && !window.confirm(t('dialog.denyApproval'))) return
+    setDecidingApprovalId(approval.id)
+    try {
+      const response = await fetch(`${CORE_HTTP_URL}/api/approvals/${encodeURIComponent(approval.id)}`, {
+        method: 'POST',
+        headers: apiHeaders(true),
+        body: JSON.stringify({ decision, rationale: t(`reason.approval.${decision}`) }),
+      })
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({})) as { error?: string }
+        await loadSession(selectedSessionId, selectedContextId)
+        throw new Error(detail.error ?? t('errors.approvalDecision', { status: response.status }))
+      }
+      await loadSession(selectedSessionId, selectedContextId)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setDecidingApprovalId('')
+    }
+  }
+
+  const mutateSchedule = async (
+    schedule: ScheduledIntentRecord,
+    action: 'pause' | 'resume' | 'reschedule' | 'cancel',
+  ) => {
+    if (action === 'cancel' && !window.confirm(t('dialog.cancelSchedule'))) return
+    let notBefore: string | undefined
+    let intervalSeconds: number | undefined
+    if (action === 'reschedule') {
+      const requested = window.prompt(
+        t('dialog.rescheduleAt'),
+        schedule.not_before ?? new Date().toISOString(),
+      )
+      if (requested === null) return
+      const parsed = new Date(requested)
+      if (Number.isNaN(parsed.getTime())) {
+        setError(t('errors.invalidScheduleDate'))
+        return
+      }
+      notBefore = parsed.toISOString()
+      const interval = window.prompt(
+        t('dialog.rescheduleInterval'),
+        schedule.interval_seconds?.toString() ?? '',
+      )
+      if (interval === null) return
+      if (interval.trim()) {
+        intervalSeconds = Number(interval)
+        if (!Number.isInteger(intervalSeconds) || intervalSeconds <= 0) {
+          setError(t('errors.invalidScheduleInterval'))
+          return
+        }
+      }
+    }
+    setMutatingScheduleId(schedule.id)
+    try {
+      const response = await fetch(`${CORE_HTTP_URL}/api/schedules/${encodeURIComponent(schedule.id)}`, {
+        method: 'POST',
+        headers: apiHeaders(true),
+        body: JSON.stringify({
+          action,
+          expected_revision: schedule.revision,
+          not_before: notBefore,
+          interval_seconds: intervalSeconds,
+        }),
+      })
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({})) as { error?: string }
+        // Schedule mutations are revision fenced. Refresh the authoritative
+        // projection even on conflict so the next user action carries the
+        // winning revision instead of repeatedly submitting stale state.
+        await loadSession(selectedSessionId, selectedContextId)
+        throw new Error(detail.error ?? t('errors.scheduleMutation', { status: response.status }))
+      }
+      await loadSession(selectedSessionId, selectedContextId)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setMutatingScheduleId('')
+    }
+  }
+
   const leadingActivation = runningWorkItems[0]
   const activationSummary = leadingActivation
     ? summarizeActivation(leadingActivation, sessionEvents, toolTimeline, t).title
     : ''
-  const taskStrip = liveBackgroundTasks[0]
-    ? { state: 'running', label: t('composer.status.executing'), summary: liveBackgroundTasks[0].command }
-    : runningDelegations[0]
+  const primaryJob = schedulerJobRows.find(item => (
+    item.job.status === 'running'
+    || item.job.status === 'queued'
+    || item.job.status === 'waiting_approval'
+  ))
+  const primaryJobSummary = primaryJob
+    ? summarizeToolCall(primaryJob.job.tool_name, JSON.stringify(primaryJob.job.request), t)
+    : undefined
+  const failedDelivery = schedulerThreads.find(item => (
+    item.thread.lifecycle === 'completed'
+    && item.thread.delivery_status !== 'none'
+    && item.thread.delivery_status !== 'delivered'
+  ))
+  const taskStrip = pendingApprovals[0]
+    ? { state: 'waiting', label: t('composer.status.approvalRequired'), summary: pendingApprovals[0].justification }
+    : failedDelivery
+      ? { state: 'blocked', label: t('composer.status.deliveryFailed'), summary: failedDelivery.thread.result_text ?? failedDelivery.thread.id }
+      : primaryJob
+        ? {
+            state: primaryJob.job.status === 'waiting_approval' ? 'waiting' : 'running',
+            label: primaryJob.job.status === 'waiting_approval' ? t('composer.status.approvalRequired') : t('composer.status.executing'),
+            summary: primaryJobSummary ? `${primaryJobSummary.title} · ${primaryJobSummary.target}` : primaryJob.job.tool_name,
+          }
+        : schedulerSnapshot && schedulerSnapshot.admission.context_deferred > 0
+          ? { state: 'waiting', label: t('composer.status.backpressure'), summary: t('composer.status.deferredCount', { count: schedulerSnapshot.admission.context_deferred }) }
+          : runningDelegations[0]
         ? { state: 'running', label: t('composer.status.delegating'), summary: runningDelegations[0].task }
         : waitingCount > 0
           ? { state: 'waiting', label: t('composer.status.running'), summary: scheduledIntents[0]?.intent ?? runningObjectives.find(item => item.wait_condition)?.stated_objective ?? t('composer.status.waitingEvent') }
@@ -1593,6 +1819,39 @@ export default function App() {
                 </section>
               )}
 
+              {attentionCount > 0 && (
+                <section className="attention-board">
+                  <header><span>{t('work.attention.title').toUpperCase()}</span><b>{attentionCount}</b><small>{t('work.attention.subtitle')}</small></header>
+                  <div className="attention-list">
+                    {pendingApprovals.map(approval => (
+                      <article className="attention-card approval" key={approval.id}>
+                        <div><span className="status-pill pending_human">{t('work.approvals.needsYou')}</span><time>{formatAgo(approval.created_at, t)}</time></div>
+                        <h2>{approval.justification}</h2>
+                        {approval.risk_tags.length > 0 && <small>{approval.risk_tags.join(' · ')}</small>}
+                        <div className="approval-actions">
+                          <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => void decideApproval(approval, 'allow_once')}><Check size={13} /> {t('work.approvals.allowOnce')}</button>
+                          <button disabled={decidingApprovalId === approval.id} className="danger" type="button" onClick={() => void decideApproval(approval, 'deny')}><Square size={12} /> {t('work.approvals.deny')}</button>
+                        </div>
+                      </article>
+                    ))}
+                    {failedSchedulerJobs.map(snapshot => (
+                      <article className="attention-card failure" key={snapshot.job.id}>
+                        <div><span className="status-pill failed">{statusLabel(snapshot.job.status, t)}</span><time>{formatAgo(snapshot.job.updated_at, t)}</time></div>
+                        <h2>{snapshot.job.tool_name}</h2>
+                        <p>{snapshot.job.error ?? t('work.attention.jobFailed')}</p>
+                      </article>
+                    ))}
+                    {failedDeliveries.map(snapshot => (
+                      <article className="attention-card delivery" key={snapshot.thread.id}>
+                        <div><span className="status-pill deferred">{statusLabel(snapshot.thread.delivery_status, t)}</span><time>{formatAgo(snapshot.thread.updated_at, t)}</time></div>
+                        <h2>{t('work.attention.deliveryFailed')}</h2>
+                        <p>{snapshot.thread.result_text ?? shortId(snapshot.thread.id, 30)}</p>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+
               <section className="objective-board">
                 <header><span>{t('work.objectives.title').toUpperCase()}</span><b>{activeObjectives.length}</b><small>{t('work.objectives.confirm')}</small></header>
                 <div className="objective-grid">
@@ -1631,87 +1890,53 @@ export default function App() {
                 </div>
               </section>
 
-              <section className="scheduler-board">
-                <header><span>{t('work.scheduler.title').toUpperCase()}</span><b>{liveWorkThreads.length}</b><small>{t('work.scheduler.subtitle', { count: scheduledIntents.length })}</small></header>
-                <div className="scheduler-grid">
-                  <div className="scheduler-lane">
-                    <header>{t('work.scheduler.workThreads').toUpperCase()}</header>
-                    {liveWorkThreads.map(thread => (
-                      <article className="scheduler-row" key={thread.id}>
-                        <span className={`status-pill ${threadPhases[thread.id] ?? 'idle'}`}>{statusLabel(threadPhases[thread.id] ?? 'idle', t)}</span>
-                        <div><strong>{thread.kind} thread</strong><small>{shortId(thread.id, 28)} · {thread.lifecycle} · {t('header.session')} {shortId(thread.session_id, 18)}</small></div>
-                        <em>r{thread.revision}</em>
-                      </article>
-                    ))}
-                    {liveWorkThreads.length === 0 && <div className="small-empty">{t('work.scheduler.noWorkThreads')}</div>}
+              {schedulerSnapshot && (
+                <section className={`admission-board ${schedulerSnapshot.admission.context_deferred > 0 ? 'pressured' : ''}`}>
+                  <header><span>{t('work.admission.title').toUpperCase()}</span><b>{schedulerSnapshot.admission.context_in_flight}/{schedulerSnapshot.admission.total_slots}</b><small>{t('work.admission.subtitle')}</small></header>
+                  <div className="admission-line">
+                    <span>{t('work.admission.inFlight', { count: schedulerSnapshot.admission.context_in_flight })}</span>
+                    <span>{t('work.admission.loaded', { count: schedulerSnapshot.admission.context_loaded_queued })}</span>
+                    <span>{t('work.admission.durable', { count: schedulerSnapshot.admission.context_durable_queued })}</span>
+                    <span className={schedulerSnapshot.admission.context_deferred > 0 ? 'warning' : ''}>{t('work.admission.deferred', { count: schedulerSnapshot.admission.context_deferred })}</span>
+                    <span>{t('work.admission.reserved', { count: schedulerSnapshot.admission.dialogue_delivery_slots })}</span>
                   </div>
-                  <div className="scheduler-lane">
-                    <header>{t('work.scheduler.scheduledIntents').toUpperCase()}</header>
-                    {scheduledIntents.map(intent => (
-                      <article className="scheduler-row intent" key={intent.id}>
-                        <Clock3 size={14} />
-                        <div>
-                          <strong>{intent.intent}</strong>
-                          <small>
-                            {intent.not_before ? new Date(intent.not_before).toLocaleString(i18n.language) : t('work.scheduler.immediate')}
-                            {intent.interval_seconds ? t('work.scheduler.every', { seconds: intent.interval_seconds }) : ''}
-                            {intent.dependency_thread_ids.length ? t('work.scheduler.waitingThreads', { count: intent.dependency_thread_ids.length }) : ''}
-                          </small>
-                        </div>
-                        <em>{shortId(intent.thread_id, 16)}</em>
-                      </article>
-                    ))}
-                    {scheduledIntents.length === 0 && <div className="small-empty">{t('work.scheduler.noIntents')}</div>}
-                  </div>
-                  <div className="scheduler-lane">
-                    <header>{t('work.scheduler.pendingSignals').toUpperCase()}</header>
-                    {threadSignals.map(signal => (
-                      <article className="scheduler-row signal" key={signal.id}>
-                        <Radio size={14} />
-                        <div><strong>{signal.kind}</strong><small>{t('work.scheduler.workThreads')} {shortId(signal.thread_id, 20)} · Event {shortId(signal.event_id, 20)}</small></div>
-                        <em>#{signal.sequence}</em>
-                      </article>
-                    ))}
-                    {threadSignals.length === 0 && <div className="small-empty">{t('work.scheduler.noSignals')}</div>}
-                  </div>
-                </div>
-              </section>
+                </section>
+              )}
 
-              <div className="work-columns">
-                <div className="work-column">
-                  <header><span>{t('work.activations.title').toUpperCase()}</span><b>{workItems.length}</b></header>
-                  {workItems.map(item => {
-                    const summary = summarizeActivation(item, sessionEvents, toolTimeline, t)
-                    return (
-                      <article className="work-card compact" key={item.id}>
-                        <div className="card-line"><span className={`status-pill ${item.status}`}>{statusLabel(item.status, t)}</span><time>{formatAgo(item.updated_at, t)}</time></div>
-                        <h2 title={summary.title}>{summary.title}</h2>
-                        <div className={`thread-badge ${summary.threadKind}`}>
-                          <GitBranch size={12} />
-                          <strong>{t(`work.activations.${summary.threadKind}Thread`)}</strong>
-                          <span>{shortId(summary.threadId, 24)}</span>
-                          <small>{summary.threadDetail}</small>
-                        </div>
-                        <footer><span>{item.trigger_kind}</span><span>r{item.revision}</span><span>{shortId(item.id)}</span></footer>
-                      </article>
-                    )
-                  })}
-                  {workItems.length === 0 && <div className="small-empty">{t('work.activations.empty')}</div>}
-                </div>
-
-                <div className="work-column">
-                  <header><span>{t('work.backgroundTasks.title').toUpperCase()}</span><b>{backgroundTasks.length}</b></header>
-                  {backgroundTasks.slice(0, 20).map(task => (
-                    <article className="work-card task-card" key={task.task_id}>
-                      <div className="card-line"><span className={`status-pill ${task.status}`}>{statusLabel(task.status, t)}</span><time>{t('work.objectives.seconds', { seconds: task.elapsed_secs })}</time></div>
-                      <h2 title={task.command}><Terminal size={14} /> {task.command}</h2>
-                      {task.output_tail && <pre>{task.output_tail.slice(-700)}</pre>}
-                      <footer><span>{shortId(task.session_id)}</span><span>{t('work.backgroundTasks.bytes', { bytes: compactTokens(task.output_bytes) })}</span><span>{task.effective_boundary?.sandbox_backend ?? task.sandbox_backend}</span></footer>
-                    </article>
+              <section className="causal-board">
+                <header><span>{t('work.causal.title').toUpperCase()}</span><b>{schedulerThreads.length}</b><small>{t('work.causal.subtitle')}</small></header>
+                <div className="causal-thread-list">
+                  {schedulerThreads.map(snapshot => (
+                    <ThreadCausalCard
+                      key={snapshot.thread.id}
+                      snapshot={snapshot}
+                      t={t}
+                      locale={i18n.language}
+                      decidingApprovalId={decidingApprovalId}
+                      mutatingScheduleId={mutatingScheduleId}
+                      onApproval={(approval, decision) => void decideApproval(approval, decision)}
+                      onSchedule={(schedule, action) => void mutateSchedule(schedule, action)}
+                    />
                   ))}
-                  {backgroundTasks.length === 0 && <div className="small-empty">{t('work.backgroundTasks.empty')}</div>}
+                  {schedulerThreads.length === 0 && <div className="small-empty">{t('work.causal.empty')}</div>}
                 </div>
-              </div>
+                {schedulerSnapshot && (
+                  schedulerSnapshot.orphan_activations.length > 0
+                  || schedulerSnapshot.orphan_jobs.length > 0
+                  || schedulerSnapshot.orphan_signals.length > 0
+                  || schedulerSnapshot.orphan_approvals.length > 0
+                ) && (
+                  <details className="scheduler-diagnostics">
+                    <summary>{t('work.causal.diagnostics')} · {schedulerSnapshot.orphan_activations.length + schedulerSnapshot.orphan_jobs.length + schedulerSnapshot.orphan_signals.length + schedulerSnapshot.orphan_approvals.length}</summary>
+                    <pre>{JSON.stringify({
+                      activations: schedulerSnapshot.orphan_activations,
+                      jobs: schedulerSnapshot.orphan_jobs,
+                      signals: schedulerSnapshot.orphan_signals,
+                      approvals: schedulerSnapshot.orphan_approvals,
+                    }, null, 2)}</pre>
+                  </details>
+                )}
+              </section>
 
               <section className="delegation-board">
                 <header><span>{t('work.delegations.title').toUpperCase()}</span><b>{contextDelegations.length}</b><small>{t('work.delegations.subtitle')}</small></header>

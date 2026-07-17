@@ -47,6 +47,16 @@ impl AdmissionClass {
         self as u8
     }
 
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InteractiveControl => "interactive_control",
+            Self::Delivery => "delivery",
+            Self::Objective => "objective",
+            Self::ScheduledBackground => "scheduled_background",
+            Self::Maintenance => "maintenance",
+        }
+    }
+
     const fn from_rank(rank: u8) -> Self {
         match rank {
             0 => Self::InteractiveControl,

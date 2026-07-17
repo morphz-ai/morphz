@@ -137,10 +137,48 @@
       "objectiveThread": "objective thread",
       "workThread": "work thread"
     },
-    "backgroundTasks": {
-      "title": "Background Tasks",
-      "empty": "No background process records",
-      "bytes": "{{bytes}} bytes"
+    "attention": {
+      "title": "Needs Attention",
+      "subtitle": "Only user decisions and verified failures are promoted here",
+      "jobFailed": "Execution Job failed without a recorded error message",
+      "deliveryFailed": "Work completed, but its result has not been delivered"
+    },
+    "approvals": {
+      "title": "Capability Approval",
+      "needsYou": "Your decision is required",
+      "capability": "Inspect requested capability boundary",
+      "allowOnce": "Allow once",
+      "deny": "Deny"
+    },
+    "admission": {
+      "title": "Admission & Backpressure",
+      "subtitle": "SQLite owns durable backlog; the process window only explains physical scheduling",
+      "inFlight": "{{count}} in flight in this Context",
+      "loaded": "{{count}} loaded in queue",
+      "durable": "{{count}} durably queued",
+      "deferred": "{{count}} waiting outside window",
+      "reserved": "{{count}} dialogue/delivery slots reserved"
+    },
+    "schedules": {
+      "pause": "Pause",
+      "resume": "Resume",
+      "reschedule": "Reschedule",
+      "cancel": "Cancel"
+    },
+    "causal": {
+      "title": "Scheduler Causality",
+      "subtitle": "Thread → Signal → Activation → Execution Job → Approval → Result → Delivery",
+      "activation": "Evaluation Activation",
+      "noJobs": "This Activation produced no Execution Jobs",
+      "request": "Authoritative request",
+      "retrySafety": "Retry safety",
+      "revision": "Revision",
+      "worker": "Execution worker",
+      "result": "Physical result",
+      "exitCode": "Exit code {{code}}",
+      "delivery": "Result delivery",
+      "empty": "No scheduler Threads to display for this Context",
+      "diagnostics": "Unattached scheduler diagnostics"
     },
     "delegations": {
       "title": "Delegations",
@@ -208,6 +246,10 @@
       "waitingEvent": "Waiting for registered external event",
       "noWork": "No work in progress",
       "executing": "Executing",
+      "approvalRequired": "Approval required",
+      "deliveryFailed": "Result awaiting delivery",
+      "backpressure": "Scheduler backpressure",
+      "deferredCount": "{{count}} Activations are waiting in the durable queue",
       "delegating": "Delegating",
       "summary": "{{executing}} running · {{waiting}} waiting"
     },
@@ -248,7 +290,17 @@
     "critical": "critical",
     "resident": "resident",
     "retired": "retired",
-    "swapped": "swapped"
+    "swapped": "swapped",
+    "pending_human": "pending human approval",
+    "pending_auto": "auto review pending",
+    "waiting_approval": "waiting for approval",
+    "allowed": "allowed",
+    "denied": "denied",
+    "lost": "worker ownership lost",
+    "deferred": "delivery deferred",
+    "delivered": "delivered",
+    "none": "no delivery needed",
+    "dispatched": "dispatched"
   },
   "toolCall": {
     "read": "Read file",
@@ -307,21 +359,34 @@
   "errors": {
     "statusHttp": "Runtime status HTTP {{status}}",
     "contextHttp": "Context Encoding HTTP {{status}}",
+    "schedulerHttp": "Scheduler Snapshot HTTP {{status}}",
     "sendMessage": "Send message HTTP {{status}}",
     "cancelSession": "Cancel Session HTTP {{status}}",
     "reasoning": "Set reasoning depth HTTP {{status}}",
     "resumeObjective": "Resume Objective HTTP {{status}}",
     "deleteObjective": "Delete Objective HTTP {{status}}",
+    "approvalDecision": "Submit approval decision HTTP {{status}}",
+    "scheduleMutation": "Mutate Schedule HTTP {{status}}",
+    "invalidScheduleDate": "Enter a valid ISO timestamp or local date-time",
+    "invalidScheduleInterval": "Interval seconds must be a positive integer",
     "websocketParse": "WebSocket returned an unparseable event",
     "copyFailed": "Copy failed"
   },
   "reason": {
     "resumeByUser": "User explicitly resumed Objective via Dashboard",
-    "deleteByUser": "User deleted Objective via Dashboard"
+    "deleteByUser": "User deleted Objective via Dashboard",
+    "approval": {
+      "allow_once": "User allowed this capability request once via Dashboard",
+      "deny": "User denied the capability request via Dashboard"
+    }
   },
   "dialog": {
     "deleteObjectiveTitle": "Delete this Objective?",
-    "deleteObjectiveBody": "{{objective}}\n\nDeletion will stop automatic reruns immediately; audit history is retained."
+    "deleteObjectiveBody": "{{objective}}\n\nDeletion will stop automatic reruns immediately; audit history is retained.",
+    "denyApproval": "Denying prevents this Execution Job from using the requested capability. Continue?",
+    "cancelSchedule": "This Schedule will not fire again after cancellation. Continue?",
+    "rescheduleAt": "New trigger time (ISO or local date-time)",
+    "rescheduleInterval": "Interval in seconds; leave empty for one-shot"
   },
   "nav": {
     "tasks": "Open Tasks view (Ctrl+T)",

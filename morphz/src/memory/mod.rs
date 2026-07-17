@@ -507,6 +507,9 @@ pub struct ExecutionJobFilter {
     pub status: Option<ExecutionJobStatus>,
     /// When no exact status is selected, terminal rows are omitted by default.
     pub include_terminal: bool,
+    /// Read newest rows first so bounded observability/history queries do not
+    /// return the oldest records in a long-running Context.
+    pub newest_first: bool,
     pub limit: Option<usize>,
 }
 
@@ -1287,6 +1290,13 @@ pub trait ApprovalStore: Send + Sync {
         &self,
         filter: ApprovalFilter,
     ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Read Approval authorities through their Execution Job ownership. This
+    /// keeps Context observability bounded to one durable aggregate instead
+    /// of scanning global approvals or issuing one query per Job.
+    async fn list_context_approvals(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Atomically commits a revision-fenced allow/deny decision and its
     /// deterministic `runtime/approval_decision` Event. An exact retry of a
     /// committed decision returns `Existing` and repairs a missing Event; an
@@ -1623,6 +1633,13 @@ pub trait SessionStore: Send + Sync {
         &self,
         thread_id: Option<&str>,
         status: Option<ScheduledIntentStatus>,
+    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Context-scoped schedule projection used by observability surfaces.
+    /// The ownership join belongs in SQLite so one Context never scans every
+    /// other Agent's scheduled work.
+    async fn list_context_scheduled_intents(
+        &self,
+        context_id: &str,
     ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Advance every queued schedule which names `dependency_thread_id` in
     /// the persistent reverse dependency index. The revision bump fences any

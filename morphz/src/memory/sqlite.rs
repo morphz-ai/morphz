@@ -3450,6 +3450,25 @@ impl SessionStore for SqliteStore {
         rows.iter().map(scheduled_intent_from_row).collect()
     }
 
+    async fn list_context_scheduled_intents(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT scheduled_intents.*
+               FROM scheduled_intents
+               INNER JOIN work_threads
+                 ON work_threads.id = scheduled_intents.thread_id
+               WHERE work_threads.context_id = ?
+               ORDER BY COALESCE(scheduled_intents.not_before, scheduled_intents.created_at),
+                        scheduled_intents.id"#,
+        )
+        .bind(context_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(scheduled_intent_from_row).collect()
+    }
+
     async fn wake_scheduled_intents_for_dependency(
         &self,
         dependency_thread_id: &str,
@@ -4772,7 +4791,11 @@ impl ExecutionJobStore for SqliteStore {
         } else if !filter.include_terminal {
             query.push(" AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')");
         }
-        query.push(" ORDER BY created_at, id");
+        if filter.newest_first {
+            query.push(" ORDER BY created_at DESC, id DESC");
+        } else {
+            query.push(" ORDER BY created_at, id");
+        }
         if let Some(limit) = filter.limit {
             let limit = i64::try_from(limit)
                 .map_err(|_| "Execution Job 查询上限超出 SQLite INTEGER 范围")?;
@@ -5561,6 +5584,24 @@ impl ApprovalStore for SqliteStore {
             query.push(" LIMIT ").push_bind(limit);
         }
         let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(approval_from_row).collect()
+    }
+
+    async fn list_context_approvals(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT approval_requests.*
+               FROM approval_requests
+               INNER JOIN execution_jobs
+                 ON execution_jobs.id = approval_requests.job_id
+               WHERE execution_jobs.context_id = ?
+               ORDER BY approval_requests.created_at, approval_requests.id"#,
+        )
+        .bind(context_id)
+        .fetch_all(&self.pool)
+        .await?;
         rows.iter().map(approval_from_row).collect()
     }
 

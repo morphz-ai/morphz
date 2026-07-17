@@ -3,7 +3,8 @@ use crate::event::Event;
 use crate::llm::ReasoningEffort;
 use crate::memory::{
     DelegationStatus, NewAgent, NewCognitiveContext, NewSession, ObjectiveMutation,
-    ObjectiveStatus, QueryFilter, SessionMountKind, SessionStatus, SessionUpdate,
+    ObjectiveStatus, QueryFilter, ScheduledIntentMutation, SessionMountKind, SessionStatus,
+    SessionUpdate,
 };
 use crate::runtime::MorphzRuntime;
 use axum::{
@@ -136,6 +137,14 @@ struct DecideApprovalRequest {
 }
 
 #[derive(serde::Deserialize)]
+struct MutateScheduleRequest {
+    action: String,
+    expected_revision: u64,
+    not_before: Option<chrono::DateTime<chrono::Utc>>,
+    interval_seconds: Option<u64>,
+}
+
+#[derive(serde::Deserialize)]
 struct UpdateInferenceRequest {
     reasoning_effort: Option<String>,
 }
@@ -150,6 +159,14 @@ struct ResumeObjectiveRequest {
 struct EventQuery {
     token: Option<String>,
     after_sequence: Option<u64>,
+    limit: Option<usize>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct SchedulerSnapshotQuery {
+    token: Option<String>,
+    #[serde(default)]
+    include_terminal: bool,
     limit: Option<usize>,
 }
 
@@ -318,8 +335,8 @@ impl Server {
                 get(handle_get_context_activations),
             )
             .route(
-                "/api/contexts/:context_id/background-tasks",
-                get(handle_get_context_background_tasks),
+                "/api/contexts/:context_id/scheduler",
+                get(handle_get_scheduler_snapshot),
             )
             .route(
                 "/api/sessions",
@@ -368,6 +385,7 @@ impl Server {
             )
             .route("/api/approvals", get(handle_list_approvals))
             .route("/api/approvals/:approval_id", post(handle_decide_approval))
+            .route("/api/schedules/:schedule_id", post(handle_mutate_schedule))
             .route("/ws", get(handle_ws_upgrade))
             .layer(cors)
             .with_state(Arc::clone(&state));
@@ -913,26 +931,109 @@ async fn handle_get_context_activations(
     }
 }
 
-async fn handle_get_context_background_tasks(
+async fn handle_get_scheduler_snapshot(
     State(state): State<Arc<AppState>>,
     Path(context_id): Path<String>,
     headers: HeaderMap,
-    Query(query): Query<AuthQuery>,
+    Query(query): Query<SchedulerSnapshotQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state.runtime.get_context(&context_id).await {
-        Ok(Some(_)) => {}
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Context 不存在"),
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    match state
+        .runtime
+        .scheduler_snapshot(
+            &context_id,
+            query.include_terminal,
+            query.limit.unwrap_or(200),
+        )
+        .await
+    {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(error) if error.to_string().contains("不存在") => {
+            error_response(StatusCode::NOT_FOUND, error.to_string())
+        }
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
-    let tasks = crate::tool::get_tasks_map()
-        .iter()
-        .filter(|task| task.context_id == context_id)
-        .map(|task| crate::tool::background_task_snapshot(&task))
-        .collect::<Vec<_>>();
-    Json(json!({ "context_id": context_id, "tasks": tasks })).into_response()
+}
+
+async fn handle_mutate_schedule(
+    State(state): State<Arc<AppState>>,
+    Path(schedule_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<MutateScheduleRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let action = request.action.trim().to_ascii_lowercase();
+    let mutation = match action.as_str() {
+        "pause" => {
+            state
+                .runtime
+                .pause_schedule(&schedule_id, request.expected_revision)
+                .await
+        }
+        "resume" => {
+            state
+                .runtime
+                .resume_schedule(&schedule_id, request.expected_revision)
+                .await
+        }
+        "reschedule" => {
+            state
+                .runtime
+                .reschedule(
+                    &schedule_id,
+                    request.expected_revision,
+                    request.not_before,
+                    request.interval_seconds,
+                )
+                .await
+        }
+        "cancel" => {
+            state
+                .runtime
+                .cancel_schedule(&schedule_id, request.expected_revision)
+                .await
+        }
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "action 只支持 pause、resume、reschedule 或 cancel",
+            )
+        }
+    };
+    match mutation {
+        Ok(ScheduledIntentMutation::Updated(schedule)) => Json(json!({
+            "outcome": "updated",
+            "schedule": schedule,
+        }))
+        .into_response(),
+        Ok(ScheduledIntentMutation::Conflict { current }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Schedule revision 已被其他写者更新",
+                "outcome": "conflict",
+                "schedule": current,
+            })),
+        )
+            .into_response(),
+        Ok(ScheduledIntentMutation::Rejected { current, reason }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": reason,
+                "outcome": "rejected",
+                "schedule": current,
+            })),
+        )
+            .into_response(),
+        Ok(ScheduledIntentMutation::NotFound) => {
+            error_response(StatusCode::NOT_FOUND, "Schedule 不存在")
+        }
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
 }
 
 async fn handle_create_context(
@@ -2132,21 +2233,26 @@ mod tests {
             serde_json::from_slice(&activations_body).unwrap();
         assert!(activations_json["activations"].is_array());
 
-        let background_tasks = handle_get_context_background_tasks(
+        let scheduler = handle_get_scheduler_snapshot(
             State(Arc::clone(&state)),
             Path("context-test".to_string()),
             HeaderMap::new(),
-            Query(AuthQuery::default()),
+            Query(SchedulerSnapshotQuery {
+                token: None,
+                include_terminal: true,
+                limit: Some(100),
+            }),
         )
         .await
         .into_response();
-        assert_eq!(background_tasks.status(), StatusCode::OK);
-        let background_tasks_body = axum::body::to_bytes(background_tasks.into_body(), usize::MAX)
+        assert_eq!(scheduler.status(), StatusCode::OK);
+        let scheduler_body = axum::body::to_bytes(scheduler.into_body(), usize::MAX)
             .await
             .unwrap();
-        let background_tasks_json: serde_json::Value =
-            serde_json::from_slice(&background_tasks_body).unwrap();
-        assert!(background_tasks_json["tasks"].is_array());
+        let scheduler_json: serde_json::Value = serde_json::from_slice(&scheduler_body).unwrap();
+        assert_eq!(scheduler_json["context_id"], json!("context-test"));
+        assert!(scheduler_json["threads"].is_array());
+        assert!(scheduler_json["admission"].is_object());
 
         let status = handle_status(
             State(Arc::clone(&state)),
@@ -2162,6 +2268,89 @@ mod tests {
         let status_json: serde_json::Value = serde_json::from_slice(&status_body).unwrap();
         assert_eq!(status_json["agent_id"], json!("agent-test"));
         assert_eq!(status_json["model"], json!("gpt-4o-mini"));
+    }
+
+    #[tokio::test]
+    async fn schedule_control_endpoint_is_revision_fenced() {
+        use crate::memory::sqlite::SqliteStore;
+        use crate::memory::{NewScheduledIntent, NewWorkThread, SessionStore, WorkThreadKind};
+
+        let (state, runtime) = test_state().await;
+        runtime
+            .ensure_session(NewSession {
+                id: "api-schedule-session".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Schedule API".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let store = SqliteStore::new(runtime.database_path()).await.unwrap();
+        let thread = store
+            .ensure_work_thread(NewWorkThread {
+                id: "api-schedule-thread".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "api-schedule-session".to_string(),
+                root_turn_id: "api-schedule-turn".to_string(),
+                kind: WorkThreadKind::Work,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+            })
+            .await
+            .unwrap();
+        let schedule = store
+            .ensure_scheduled_intent(NewScheduledIntent {
+                id: "api-schedule".to_string(),
+                thread_id: thread.id,
+                source_turn_id: "api-schedule-turn".to_string(),
+                intent: "continue later".to_string(),
+                not_before: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                interval_seconds: None,
+                dependency_thread_ids: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        let paused = handle_mutate_schedule(
+            State(Arc::clone(&state)),
+            Path(schedule.id.clone()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(MutateScheduleRequest {
+                action: "pause".to_string(),
+                expected_revision: schedule.revision,
+                not_before: None,
+                interval_seconds: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(paused.status(), StatusCode::OK);
+
+        let stale = handle_mutate_schedule(
+            State(state),
+            Path(schedule.id),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(MutateScheduleRequest {
+                action: "pause".to_string(),
+                expected_revision: schedule.revision,
+                not_before: None,
+                interval_seconds: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(stale.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(stale.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["outcome"], "conflict");
+        assert_eq!(payload["schedule"]["status"], "paused");
     }
 
     #[tokio::test]

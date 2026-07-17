@@ -716,6 +716,12 @@ async fn persist_model_reasoning_summary(
 }
 
 impl Orchestrator {
+    pub fn activation_admission_snapshot(
+        &self,
+    ) -> crate::activation_admission::ActivationAdmissionSnapshot {
+        self.activation_admission.snapshot()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn assemble_with_scheduler_kernel(
         bus: Arc<InMemoryEventBus>,

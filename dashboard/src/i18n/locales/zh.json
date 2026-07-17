@@ -138,10 +138,48 @@
       "objectiveThread": "目标线程",
       "workThread": "工作线程"
     },
-    "backgroundTasks": {
-      "title": "后台任务",
-      "empty": "没有后台进程记录",
-      "bytes": "{{bytes}} bytes"
+    "attention": {
+      "title": "需要关注",
+      "subtitle": "只有需要用户决定或执行失败的事实才会提升到这里",
+      "jobFailed": "Execution Job 失败，但没有记录错误正文",
+      "deliveryFailed": "工作已完成，但结果尚未成功交付"
+    },
+    "approvals": {
+      "title": "能力审批",
+      "needsYou": "等待你的决定",
+      "capability": "查看申请的能力边界",
+      "allowOnce": "仅允许这一次",
+      "deny": "拒绝"
+    },
+    "admission": {
+      "title": "准入与背压",
+      "subtitle": "SQLite 是权威积压；进程窗口只解释当前物理调度",
+      "inFlight": "本 Context 执行中 {{count}}",
+      "loaded": "已载入队列 {{count}}",
+      "durable": "持久排队 {{count}}",
+      "deferred": "窗口外等待 {{count}}",
+      "reserved": "对话/交付预留槽 {{count}}"
+    },
+    "schedules": {
+      "pause": "暂停",
+      "resume": "恢复",
+      "reschedule": "重新定时",
+      "cancel": "取消"
+    },
+    "causal": {
+      "title": "调度因果链",
+      "subtitle": "Thread → Signal → Activation → Execution Job → Approval → Result → Delivery",
+      "activation": "求值激活",
+      "noJobs": "本次激活没有产生 Execution Job",
+      "request": "权威请求参数",
+      "retrySafety": "重试安全性",
+      "revision": "修订",
+      "worker": "执行 Worker",
+      "result": "物理执行结果",
+      "exitCode": "退出码 {{code}}",
+      "delivery": "结果交付",
+      "empty": "当前 Context 没有可展示的调度线程",
+      "diagnostics": "未挂接的调度诊断数据"
     },
     "delegations": {
       "title": "委派",
@@ -210,6 +248,10 @@
       "waitingEvent": "等待已登记的外部事件",
       "noWork": "当前没有进行中的工作",
       "executing": "正在执行",
+      "approvalRequired": "需要审批",
+      "deliveryFailed": "结果待交付",
+      "backpressure": "调度背压",
+      "deferredCount": "{{count}} 个 Activation 正在持久队列中等待载入",
       "delegating": "正在委派",
       "summary": "{{executing}} 执行 · {{waiting}} 等待"
     },
@@ -250,7 +292,17 @@
     "critical": "严重",
     "resident": "驻留",
     "retired": "已退役",
-    "swapped": "已换出"
+    "swapped": "已换出",
+    "pending_human": "等待人工审批",
+    "pending_auto": "自动审批中",
+    "waiting_approval": "等待审批",
+    "allowed": "已允许",
+    "denied": "已拒绝",
+    "lost": "执行权丢失",
+    "deferred": "待交付",
+    "delivered": "已交付",
+    "none": "无需交付",
+    "dispatched": "已派发"
   },
   "toolCall": {
     "read": "读取文件",
@@ -314,21 +366,34 @@
   "errors": {
     "statusHttp": "Runtime 状态 HTTP {{status}}",
     "contextHttp": "Context Encoding HTTP {{status}}",
+    "schedulerHttp": "Scheduler Snapshot HTTP {{status}}",
     "sendMessage": "发送消息 HTTP {{status}}",
     "cancelSession": "取消会话 HTTP {{status}}",
     "reasoning": "调整推理深度 HTTP {{status}}",
     "resumeObjective": "恢复目标 HTTP {{status}}",
     "deleteObjective": "删除目标 HTTP {{status}}",
+    "approvalDecision": "提交审批决定 HTTP {{status}}",
+    "scheduleMutation": "修改 Schedule HTTP {{status}}",
+    "invalidScheduleDate": "请输入有效的 ISO 时间或本地日期时间",
+    "invalidScheduleInterval": "周期秒数必须是正整数",
     "websocketParse": "WebSocket 返回了无法解析的事件",
     "copyFailed": "复制失败"
   },
   "reason": {
     "resumeByUser": "用户通过 Dashboard 显式恢复 Objective",
-    "deleteByUser": "用户通过 Dashboard 删除 Objective"
+    "deleteByUser": "用户通过 Dashboard 删除 Objective",
+    "approval": {
+      "allow_once": "用户通过 Dashboard 仅批准这一次能力申请",
+      "deny": "用户通过 Dashboard 拒绝能力申请"
+    }
   },
   "dialog": {
     "deleteObjectiveTitle": "删除这个目标？",
-    "deleteObjectiveBody": "{{objective}}\n\n删除会立即停止它的自动续跑；审计历史仍会保留。"
+    "deleteObjectiveBody": "{{objective}}\n\n删除会立即停止它的自动续跑；审计历史仍会保留。",
+    "denyApproval": "拒绝后该 Execution Job 将无法使用申请的能力。确定拒绝？",
+    "cancelSchedule": "取消后这个 Schedule 不会再触发。确定取消？",
+    "rescheduleAt": "新的触发时间（ISO 或本地日期时间）",
+    "rescheduleInterval": "周期秒数；留空表示单次执行"
   },
   "nav": {
     "tasks": "打开任务视图 (Ctrl+T)",

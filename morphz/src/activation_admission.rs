@@ -25,6 +25,23 @@ pub struct ActivationAdmissionLimits {
     pub aging_promotion_interval_ms: u64,
 }
 
+/// Read-only process-local projection of the physical admission window.
+/// Durable Activation rows remain authoritative; these IDs only explain which
+/// subset this Runtime currently has loaded or owns.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Eq, PartialEq)]
+pub struct ActivationAdmissionSnapshot {
+    pub total_slots: usize,
+    pub dialogue_delivery_slots: usize,
+    pub max_queued: usize,
+    pub dialogue_delivery_queue_slots: usize,
+    pub aging_promotion_interval_ms: u64,
+    pub queued_activation_ids: Vec<String>,
+    pub in_flight_activation_ids: Vec<String>,
+    pub waiter_count: usize,
+    pub queued_by_class: std::collections::BTreeMap<String, usize>,
+    pub in_flight_by_class: std::collections::BTreeMap<String, usize>,
+}
+
 impl ActivationAdmissionLimits {
     fn normalized(self) -> Self {
         let total_slots = self.total_slots.max(1);
@@ -208,6 +225,45 @@ impl ActivationAdmissionController {
 
     pub fn in_flight_len(&self) -> usize {
         self.lock_state().in_flight.len()
+    }
+
+    pub fn snapshot(&self) -> ActivationAdmissionSnapshot {
+        let limits = self.inner.limits;
+        let state = self.lock_state();
+        let mut queued_activation_ids = state
+            .queue
+            .iter()
+            .map(|entry| entry.key.id.clone())
+            .collect::<Vec<_>>();
+        let mut in_flight_activation_ids = state.in_flight.keys().cloned().collect::<Vec<_>>();
+        queued_activation_ids.sort();
+        in_flight_activation_ids.sort();
+
+        let mut queued_by_class = std::collections::BTreeMap::new();
+        for entry in state.queue.iter() {
+            *queued_by_class
+                .entry(entry.key.class.as_str().to_string())
+                .or_insert(0) += 1;
+        }
+        let mut in_flight_by_class = std::collections::BTreeMap::new();
+        for class in state.in_flight.values() {
+            *in_flight_by_class
+                .entry(class.as_str().to_string())
+                .or_insert(0) += 1;
+        }
+
+        ActivationAdmissionSnapshot {
+            total_slots: limits.total_slots,
+            dialogue_delivery_slots: limits.dialogue_delivery_slots,
+            max_queued: limits.max_queued,
+            dialogue_delivery_queue_slots: limits.dialogue_delivery_queue_slots,
+            aging_promotion_interval_ms: limits.aging_promotion_interval_ms,
+            queued_activation_ids,
+            in_flight_activation_ids,
+            waiter_count: state.waiters.len(),
+            queued_by_class,
+            in_flight_by_class,
+        }
     }
 
     /// Whether this process currently owns the physical execution permit for
@@ -705,5 +761,47 @@ mod tests {
             .unwrap()
             .unwrap();
         drop(new);
+    }
+
+    #[tokio::test]
+    async fn snapshot_explains_the_loaded_window_without_changing_it() {
+        let controller = ActivationAdmissionController::new(limits(2));
+        let permit = controller
+            .acquire(key(
+                "dialogue-running",
+                "session-dialogue",
+                AdmissionClass::InteractiveControl,
+                1,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            controller
+                .restore_queued(key(
+                    "objective-queued",
+                    "session-work",
+                    AdmissionClass::Objective,
+                    2,
+                ))
+                .unwrap(),
+            RestoreQueuedOutcome::Restored
+        );
+
+        let before_queue = controller.queued_len();
+        let snapshot = controller.snapshot();
+        assert_eq!(snapshot.total_slots, 2);
+        assert_eq!(
+            snapshot.in_flight_activation_ids,
+            ["dialogue-running".to_string()]
+        );
+        assert_eq!(
+            snapshot.queued_activation_ids,
+            ["objective-queued".to_string()]
+        );
+        assert_eq!(snapshot.in_flight_by_class["interactive_control"], 1);
+        assert_eq!(snapshot.queued_by_class["objective"], 1);
+        assert_eq!(controller.queued_len(), before_queue);
+
+        drop(permit);
     }
 }
