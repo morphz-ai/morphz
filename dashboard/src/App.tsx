@@ -44,6 +44,7 @@ import {
   schedulerJobs,
   schedulerSchedules,
 } from './scheduler/model'
+import { findTurnSettlement } from './turnSettlement'
 import type {
   ApprovalRecord,
   ScheduledIntentRecord,
@@ -207,6 +208,11 @@ interface MorphzEvent {
   type: string
   topic: string
   payload: EventPayload
+}
+
+interface PendingTurnState {
+  startedAt: number
+  rootTurnId: string | null
 }
 
 interface ContextFrame {
@@ -705,8 +711,7 @@ export default function App() {
   const [decidingApprovalId, setDecidingApprovalId] = useState('')
   const [mutatingScheduleId, setMutatingScheduleId] = useState('')
   const [copiedMessageId, setCopiedMessageId] = useState('')
-  const [pendingTurnSince, setPendingTurnSince] = useState<number | null>(null)
-  const [pendingRootTurnId, setPendingRootTurnId] = useState<string | null>(null)
+  const [pendingTurn, setPendingTurn] = useState<PendingTurnState | null>(null)
   const [error, setError] = useState('')
   const conversationEnd = useRef<HTMLDivElement>(null)
   const composerInputRef = useRef<HTMLTextAreaElement>(null)
@@ -1087,14 +1092,21 @@ export default function App() {
     () => durableReasoningSummaries.filter(summary => summary.threadKind === 'work'),
     [durableReasoningSummaries],
   )
-  const turnPending = pendingTurnSince !== null && !sessionEvents.some(event => {
-    if (!['chat/reply', 'chat/no_reply', 'chat/cancelled', 'runtime/response_protocol_fused'].includes(event.topic)) return false
-    if (pendingRootTurnId !== null) {
-      return event.payload.root_turn_id === pendingRootTurnId
-    }
-    const timestamp = new Date(event.timestamp).getTime()
-    return Number.isFinite(timestamp) && timestamp >= pendingTurnSince - 1000
-  })
+  const turnSettlement = useMemo(
+    () => findTurnSettlement(sessionEvents, pendingTurn?.rootTurnId ?? null),
+    [pendingTurn?.rootTurnId, sessionEvents],
+  )
+  const turnPending = pendingTurn !== null && turnSettlement === undefined
+
+  useEffect(() => {
+    const settledRoot = pendingTurn?.rootTurnId
+    if (!settledRoot || !turnSettlement) return
+    const timer = window.setTimeout(() => {
+      setPendingTurn(current => current?.rootTurnId === settledRoot ? null : current)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [pendingTurn?.rootTurnId, turnSettlement])
+
   const toolTimeline = useMemo(() => {
     const calls = new Map<string, ToolTimelineItem>()
     for (const event of sessionEvents) {
@@ -1218,6 +1230,9 @@ export default function App() {
   }, [toolTimeline.length, view])
 
   const chooseSession = (session: SessionRecord) => {
+    if (session.id !== selectedSessionId) {
+      setPendingTurn(null)
+    }
     setSelectedAgentId(session.agent_id)
     setSelectedContextId(session.context_id)
     setSelectedSessionId(session.id)
@@ -1240,8 +1255,8 @@ export default function App() {
     const text = message.trim()
     if (!text || !selectedSessionId || sending) return
     setSending(true)
-    setPendingTurnSince(Date.now())
-    setPendingRootTurnId(null)
+    const startedAt = Date.now()
+    setPendingTurn({ startedAt, rootTurnId: null })
     conversationPinnedToEnd.current = true
     try {
       const response = await fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`, {
@@ -1254,13 +1269,14 @@ export default function App() {
       })
       if (!response.ok) throw new Error(t('errors.sendMessage', { status: response.status }))
       const receipt = await response.json() as { event_id?: string }
-      setPendingRootTurnId(receipt.event_id ?? null)
+      setPendingTurn(current => current?.startedAt === startedAt
+        ? { ...current, rootTurnId: receipt.event_id ?? null }
+        : current)
       setMessage('')
       setError('')
       window.setTimeout(() => void loadSession(selectedSessionId, selectedContextId), 120)
     } catch (reason) {
-      setPendingTurnSince(null)
-      setPendingRootTurnId(null)
+      setPendingTurn(current => current?.startedAt === startedAt ? null : current)
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setSending(false)
@@ -1482,11 +1498,11 @@ export default function App() {
                       summary: activationSummary,
                     }
                   : { state: 'idle', label: t('composer.status.idle'), summary: t('composer.status.noWork') }
-  const latestTurnEvent = !turnPending || pendingTurnSince === null ? undefined : [...sessionEvents]
+  const latestTurnEvent = !turnPending || pendingTurn === null ? undefined : [...sessionEvents]
     .reverse()
-    .find(event => pendingRootTurnId !== null
-      ? event.payload.root_turn_id === pendingRootTurnId || event.id === pendingRootTurnId
-      : new Date(event.timestamp).getTime() >= pendingTurnSince - 1000)
+    .find(event => pendingTurn.rootTurnId !== null
+      ? event.payload.root_turn_id === pendingTurn.rootTurnId || event.id === pendingTurn.rootTurnId
+      : new Date(event.timestamp).getTime() >= pendingTurn.startedAt - 1000)
   const turnStatus = useMemo(() => {
     if (!latestTurnEvent) return t('turnStatus.waiting')
     if (latestTurnEvent.topic === 'runtime/tool_calls_selected') {
