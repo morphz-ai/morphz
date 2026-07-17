@@ -1,9 +1,10 @@
 use crate::event::Event;
 use crate::llm::ToolDefinition;
+use crate::memory::ExecutionRetrySafety;
 use crate::orchestrator::context::{
     context_tx_parameter_description, context_tx_tool_description, ContextEngine,
 };
-use crate::tool::{Tool, CURRENT_CONTEXT_ID, CURRENT_SESSION_ID};
+use crate::tool::{Tool, ToolExecutionClass, CURRENT_CONTEXT_ID, CURRENT_SESSION_ID};
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -27,6 +28,10 @@ struct ContextTxArgs {
 impl Tool for ContextTxTool {
     fn name(&self) -> &str {
         "context_tx"
+    }
+
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
     }
 
     fn definition(&self) -> ToolDefinition {
@@ -96,6 +101,10 @@ struct RecallArgs {
 impl Tool for RecallTool {
     fn name(&self) -> &str {
         "recall"
+    }
+
+    fn retry_safety(&self) -> ExecutionRetrySafety {
+        ExecutionRetrySafety::Idempotent
     }
 
     fn definition(&self) -> ToolDefinition {

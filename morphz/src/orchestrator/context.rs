@@ -1041,6 +1041,21 @@ impl ContextEngine {
         activation_record: Option<&ThreadActivationRecord>,
     ) -> Result<ContextView, DynError> {
         let events = self.context_events(context_id).await?;
+        let delivery_snapshot_ids = activation_record
+            .filter(|activation| activation.trigger_kind == "chat/thread_completion_ready")
+            .and_then(|activation| {
+                events
+                    .iter()
+                    .find(|event| event.id == activation.trigger_event_id)
+            })
+            .and_then(|event| event.payload.get("completed_thread_ids"))
+            .and_then(serde_json::Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<HashSet<_>>()
+            });
         let references = ContextReferences::from_events(&events);
         let state = load_mind_from_events(&events)?;
         let metadata = observation_metadata(&events, &state);
@@ -1073,11 +1088,16 @@ impl ContextEngine {
                 let mut projected = all_threads
                     .iter()
                     .filter(|thread| {
-                        !thread.lifecycle.is_terminal()
-                            || matches!(
-                                thread.delivery_status,
-                                DeliveryStatus::Pending | DeliveryStatus::Deferred
-                            )
+                        if matches!(
+                            thread.delivery_status,
+                            DeliveryStatus::Pending | DeliveryStatus::Deferred
+                        ) {
+                            delivery_snapshot_ids
+                                .as_ref()
+                                .is_none_or(|ids| ids.contains(&thread.id))
+                        } else {
+                            !thread.lifecycle.is_terminal()
+                        }
                     })
                     .cloned()
                     .collect::<Vec<_>>();
@@ -2599,7 +2619,7 @@ fn render_evaluation_directive(
             pair(
                 "instruction",
                 atom(if thread_kind == "delivery" {
-                    "这是完成交付求值。读取 kernel.thread-scheduler 中 delivery=pending 的 Work Thread 结果及最新并发状态；可把多个 pending 结果合并为一条普通文本。不要调用物理工具，不要重复 delivery=delivered 的结果；确实无需通知时独占调用 no_reply"
+                    "这是完成交付求值。只读取本次 completion snapshot 在 kernel.thread-scheduler 中呈现的 delivery=pending/deferred 结果，并结合最新并发状态；可把本批结果合并为一条普通文本。本次求值开始后新完成的结果属于下一批。不要调用物理工具，不要重复 delivery=delivered 的结果；确实无需通知时独占调用 no_reply"
                 } else {
                     "现在只求值 root-input。dialogue thread 处理当前对话；工具结果只延续其所属 work thread。共享 Mind、历史、其他 thread 与未绑定的 Objective 只提供背景，不得取代 root-input 成为行动目标"
                 }),
@@ -3667,6 +3687,18 @@ fn render_protocol() -> SExpr {
                         atom("到期只向目标 Thread mailbox 投递 schedule_due observation；不会直接执行工具、生成结论或绕开唯一终态"),
                     ),
                     pair(
+                        "inspect",
+                        atom("schedule_tx inspect 返回持久化调度的当前状态、时间和 revision；控制前必须先观测最新事实"),
+                    ),
+                    pair(
+                        "control",
+                        atom("pause/resume/reschedule/cancel 是带 expected_revision 的 CAS 控制；冲突时重新 inspect 并基于新状态决策，不得盲目重试"),
+                    ),
+                    pair(
+                        "control-shape",
+                        atom("一次 schedule_tx 控制只允许一个 op；不得与 enqueue/spawn 或其他控制混合"),
+                    ),
+                    pair(
                         "exclusive",
                         atom("一次响应只能调用一个 schedule_tx，不能同时调用物理工具、context_tx 或其他控制工具"),
                     ),
@@ -3775,7 +3807,7 @@ fn render_protocol() -> SExpr {
                             ),
                             pair(
                                 "input",
-                                atom("读取 kernel.thread-scheduler 中 delivery=pending/deferred 的 result，并结合当前 Session 与其他并发 Thread 的物理状态"),
+                                atom("只读取本次 completion snapshot 在 kernel.thread-scheduler 中可见的 delivery=pending/deferred result，并结合当前 Session 与其他并发 Thread 的物理状态；新完成结果留给下一次 Delivery"),
                             ),
                             pair(
                                 "form",
@@ -6053,6 +6085,15 @@ mod tests {
             "runtime/tool_calls_selected".to_string(),
             serde_json::Map::new(),
         );
+        let reasoning_summary = Event::new(
+            "runtime:model-reasoning-summary".to_string(),
+            "Model-Provider".to_string(),
+            "runtime_control".to_string(),
+            "runtime/model_reasoning_summary".to_string(),
+            vec![("text".to_string(), json!("provider-authored summary"))]
+                .into_iter()
+                .collect(),
+        );
         let external_output = Event::new(
             "output:read".to_string(),
             "System-Executor".to_string(),
@@ -6081,6 +6122,7 @@ mod tests {
         assert!(!is_observation(&assistant_call));
         assert!(!is_observation(&context_receipt));
         assert!(!is_observation(&tool_activity));
+        assert!(!is_observation(&reasoning_summary));
         assert!(is_observation(&rejected_context));
         assert!(is_observation(&external_output));
     }

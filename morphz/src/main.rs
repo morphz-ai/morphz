@@ -1802,6 +1802,7 @@ async fn monitor_objective(
                 let mut stdin = std::io::stdin().lock();
                 let mut stderr = std::io::stderr();
                 prompt_for_human_approval(&text, runtime, &mut stdin, &mut stderr)
+                    .await
                     .map_err(|error| format!("审批失败: {error}"))?;
             }
         }
@@ -1925,6 +1926,7 @@ async fn run_once(
                 let mut stdin = std::io::stdin().lock();
                 let mut stderr = std::io::stderr();
                 prompt_for_human_approval(&text, &runtime, &mut stdin, &mut stderr)
+                    .await
                     .map_err(|error| format!("审批失败: {error}"))?;
             }
         }
@@ -2136,12 +2138,12 @@ async fn run_interactive(
                     }
                     Some(ConsoleWaitOutcome::NoReply) => break,
                     Some(ConsoleWaitOutcome::Approval(payload)) => {
-                        if let Err(error) = prompt_for_human_approval(
+                        if let Err(error) = rt.block_on(prompt_for_human_approval(
                             &payload,
                             &console_runtime,
                             &mut stdin,
                             &mut stdout,
-                        ) {
+                        )) {
                             let _ = writeln!(stdout, "[审批失败] {error}");
                         }
                     }
@@ -2157,12 +2159,12 @@ async fn run_interactive(
                 while let Ok(message) = reply_rx.try_recv() {
                     match message.2 {
                         ConsoleMessageKind::Approval => {
-                            if let Err(error) = prompt_for_human_approval(
+                            if let Err(error) = rt.block_on(prompt_for_human_approval(
                                 &message.1,
                                 &console_runtime,
                                 &mut stdin,
                                 &mut stdout,
-                            ) {
+                            )) {
                                 let _ = writeln!(stdout, "[审批失败] {error}");
                             }
                         }
@@ -2350,7 +2352,7 @@ async fn wait_for_session_reply(
     }
 }
 
-fn prompt_for_human_approval<R: BufRead, W: Write>(
+async fn prompt_for_human_approval<R: BufRead, W: Write>(
     payload: &str,
     runtime: &MorphzRuntime,
     reader: &mut R,
@@ -2395,7 +2397,7 @@ fn prompt_for_human_approval<R: BufRead, W: Write>(
                 continue;
             }
         };
-        return runtime.decide_approval(approval_id, decision);
+        return runtime.decide_approval(approval_id, decision).await;
     }
 }
 

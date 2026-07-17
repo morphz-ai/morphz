@@ -76,6 +76,12 @@ pub enum ModelStreamEvent {
     TextDelta {
         text: String,
     },
+    /// A provider-authored summary of its reasoning process. This is a
+    /// transient presentation channel: callers must not merge it into the
+    /// assistant reply or persist it as conversation content.
+    ReasoningSummaryDelta {
+        text: String,
+    },
     ToolCallStarted {
         index: usize,
         id: String,
@@ -154,6 +160,21 @@ pub struct ToolCallRepr {
 
 #[async_trait::async_trait]
 pub trait Client: Send + Sync {
+    /// Whether dropping an in-flight completion future reliably cancels its
+    /// underlying I/O.
+    ///
+    /// This is deliberately independent from streaming support. Compatibility
+    /// clients may implement an async trait method with synchronously blocking
+    /// work inside it; awaiting such a client directly would let one bad
+    /// implementation pin a Tokio worker past the Runtime deadline. The
+    /// default therefore stays conservative and lets the Orchestrator isolate
+    /// the call on a dedicated OS thread. Native async protocol adapters should
+    /// opt in so a Tokio timeout can drop the reqwest future and close the
+    /// actual HTTP request rather than merely abandoning a receiver.
+    fn supports_async_cancellation(&self) -> bool {
+        false
+    }
+
     /// Current process-local reasoning override. `None` means provider/model
     /// default and therefore emits no protocol-specific request field.
     fn reasoning_effort(&self) -> Option<ReasoningEffort> {

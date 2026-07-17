@@ -1,9 +1,22 @@
+use crate::activation_admission::{
+    ActivationAdmissionController, ActivationAdmissionError, ActivationAdmissionLimits,
+    ActivationAdmissionPermit, RestoreQueuedOutcome,
+};
+use crate::admission::{AdmissionClass, AdmissionKey};
+use crate::approval::{ApprovalDecision, ApprovalRequest, HumanApprovalHub};
+use crate::approval_authority::stable_approval_identity;
 use crate::config::OrchestratorConfig;
 use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
+use crate::execution::{
+    ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat, JobOutcome, JobReceipt,
+};
 use crate::llm::{Client, Message, PromptTokenCount};
 use crate::memory::{
-    ActivationOutcomeCommit, DelegationStatus, DeliveryStatus, EventStore, NewCognitiveContext,
-    NewDelegation, NewRuntimeTimer, NewSession, NewThreadActivation, NewThreadSignal,
+    ActivationOutcomeCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
+    ApprovalStatus, ApprovalStore, DelegationStatus, DeliveryFlushCommit, EventStore,
+    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, NewApprovalRequest, NewCognitiveContext, NewDelegation,
+    NewExecutionJob, NewRuntimeTimer, NewSession, NewThreadActivation, NewThreadSignal,
     NewWorkThread, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ScheduledIntentStatus,
     SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionStore,
     SessionUpdate, SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord,
@@ -12,11 +25,13 @@ use crate::memory::{
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{ContextEngine, ContextView};
 use crate::orchestrator::context_contract::{render_system_contract, render_system_contract_sexpr};
+use crate::permission::{DurableApprovalGrant, PermissionBroker};
 use crate::sexpr::SExpr;
 use crate::sexpr_vm_contract::ANNOTATED_RESPONSE_KERNEL;
 use crate::timer::{TimerDisposition, TimerEngine};
 use crate::tool::{
-    active_background_task_count, active_background_task_count_for_root, Registry, ThreadScheduler,
+    active_background_task_count, active_background_task_count_for_root, BackgroundTaskScheduler,
+    Registry, ThreadScheduler, Tool,
 };
 use chrono::Utc;
 use dashmap::DashMap;
@@ -52,7 +67,7 @@ Context 的状态分为三个权限域：
 - no-reply：确认本次 Evaluation 无需向 active Session 发送任何消息时，独占调用无参数的 no_reply。Dialogue Thread 中它结束本次求值；仍有后台任务的 Work Thread 中它表示 yield/wait，Thread 保持非终态并在物理事件到达后继续。它不代表 Objective 完成，也不取消后台任务。
 - act：确实需要新的外部结果；调用物理工具，可并行附带一个不依赖这些新结果的 context_tx；若有正文则只是可见进度，Runtime 执行工具后必定再次调用你。
 - maintain：需要先修改 Mind 时可单独调用 context_tx，不输出最终正文。事务成功后 Runtime 必定再次调用你，并在非 critical 时暂时隐藏 context_tx；maintain 不是用户回合终点，下一响应必须 reply、no-reply 或 act。
-- schedule：需要决定串行、并行、依赖或定时执行时，独占调用一次 schedule_tx。enqueue 把意图加入既有 Thread，spawn 创建并行 Thread；not_before/delay_seconds 设置定时，after 设置依赖。schedule_tx 只提交调度，不代替物理工具，也不结束当前 Evaluation；收到回执后再向 active Session 说明安排。
+- schedule：需要决定串行、并行、依赖或定时执行时，独占调用一次 schedule_tx。enqueue 把意图加入既有 Thread，spawn 创建并行 Thread；not_before/delay_seconds 设置定时，after 设置依赖。inspect 读取调度及 revision；pause/resume/reschedule/cancel 是带 expected_revision 的 CAS 控制，冲突时必须重新 inspect 后再决策，不得盲目重试。每次控制只能包含一个 op。schedule_tx 只提交调度，不代替物理工具，也不结束当前 Evaluation；收到回执后再向 active Session 说明安排。
 
 每个模型请求只有一个 kernel.active-session，普通文本只路由到它。需要主动向同一 Agent 的其他 Session 发送消息时，调用 send_message；该工具不结束当前 Evaluation，也不触发目标 Session 的新求值。context_tx 永远不能代替 Session 消息输出。空响应不是终态；Runtime 会返回协议错误并有限重试。
 
@@ -83,7 +98,7 @@ Context 的状态分为三个权限域：
 14. exec 回执中的 execution、process_status、exit_code、task_status 和 effective_boundary 是 Runtime 观测到的物理事实；不得用命令意图或自己的预期取代它们。exec 转入后台后，用 task_status/list_tasks 做必要的一次查询，或调用 wait_task 并设置合适的 wait_secs 后调用 no_reply 进入事件驱动等待；任务结束或等待时间到达时 Runtime 会主动唤醒，你可自行决定继续等待多长时间或调用 kill_task，不得用 sleep、ps 或重复读取空日志轮询。不得把 token/key 字面量写入命令、进程参数、Mind 或 Ledger；只能由使用者预先配置 Runtime 环境变量，再通过 requested_permissions.secret_env 按变量名申请对单个子进程注入。
 15. kernel.objectives 与 evaluate.objective-context 让你看到当前 Session 的 Objective 物理状态，但“可见”不等于“已绑定”。仅当 evaluate.objective-binding 指向某个 Objective 时，本轮才属于它的 objective thread 并可推进它；binding=none 时只可用这些状态回答用户的进度问题，不得为其调用工具。绑定的 Objective 仍有工作且不等待时正常交付当前进度，Supervisor 会自动续跑；等待确定事件时先调用 objective_update(status=active, wait_condition=...)；确实无法自动等待或推进时才提交 blocked；只有逐项审计 stated objective 并有真实 Ledger 证据支持时才提交 completed。Objective 状态工具成功后仍需产生普通文本或调用 no_reply 完成本次 IO。
 16. 你可以调用 objective_create，把当前 Session 中确实需要跨多次 Evaluation、异步等待或 Runtime 重启继续推进的工作升级为 First-Class Objective。它不是普通 Todo 或延长思考时间的手段：当前 Evaluation 可以可靠完成的任务不得创建 Objective；创建时完整保留用户范围与完成条件，并说明持久化的必要性。Runtime 自动绑定当前 Agent/Context/Session 并生成 ID；成功或返回 existing 后不得为同一目标重复创建。若指定 parent_objective_id，它必须是当前正在求值的 Objective。创建成功后继续工作，普通文本或 no_reply 只结束被收编后的当前 Evaluation，未完成 Objective 将由 Supervisor 自动续跑。
-17. 调度决策由你负责，Runtime 只执行并发与时序机制。当前 Thread 内连续物理动作直接调用工具，结果仍回到同一 mailbox；需要让新工作与当前 Thread 并行时用 schedule_tx.spawn，需要等待当前或指定 Thread 完成后串行推进时用 schedule_tx.enqueue/after。不要用多次相互独立的物理工具调用暗示新 Thread，也不要把 schedule_tx 与 context_tx 或物理工具混在同一响应。定时调度到期只是一条新的 observation；必须根据届时的真实 Context 再决策，不得预先声称结果已完成。
+17. 调度决策由你负责，Runtime 只执行并发与时序机制。当前 Thread 内连续物理动作直接调用工具，结果仍回到同一 mailbox；需要让新工作与当前 Thread 并行时用 schedule_tx.spawn，需要等待当前或指定 Thread 完成后串行推进时用 schedule_tx.enqueue/after。已有调度的状态先用 schedule_tx.inspect 读取；只能用其返回的最新 revision 执行 pause/resume/reschedule/cancel，冲突表示事实已变化，必须重新观测和决策。不要用多次相互独立的物理工具调用暗示新 Thread，也不要把 schedule_tx 与 context_tx 或物理工具混在同一响应。定时调度到期只是一条新的 observation；必须根据届时的真实 Context 再决策，不得预先声称结果已完成。
 
 Context 的修改是你的元认知行为；read/write/exec/delegate 等工具是对外部世界的行为。保持二者边界清晰。"#;
 
@@ -297,6 +312,70 @@ struct ToolExecutionOutcome {
 }
 
 #[derive(Debug, Clone)]
+struct ClaimedExecutionJob {
+    id: String,
+    revision: u64,
+    claim_token: String,
+}
+
+#[derive(Debug, Clone)]
+struct ToolTaskMetadata {
+    output_id: String,
+    context_id: String,
+    session_id: String,
+    attempt_id: String,
+    tool_call_id: String,
+    tool_name: String,
+    activation_route: Option<ActivationRoute>,
+    execution_job: Option<ClaimedExecutionJob>,
+}
+
+struct SpawnedToolTask {
+    handle: tokio::task::JoinHandle<Result<SpawnedToolTaskResult, DynError>>,
+    metadata: ToolTaskMetadata,
+}
+
+struct SpawnedToolTaskResult {
+    output: Event,
+    already_persisted: bool,
+}
+
+enum PreparedPhysicalExecution {
+    Claimed(Box<ClaimedPhysicalExecution>),
+    Terminal(Event),
+}
+
+struct ClaimedPhysicalExecution {
+    job: ClaimedExecutionJob,
+    context: crate::tool::ToolExecutionJobContext,
+    approval: Option<DurableApprovalGrant>,
+}
+
+#[derive(Clone)]
+pub struct DurableApprovalServices {
+    broker: Arc<PermissionBroker>,
+    approvals: Arc<dyn ApprovalStore>,
+    execution_approvals: Arc<dyn ExecutionApprovalStore>,
+    human_approval_hub: HumanApprovalHub,
+}
+
+impl DurableApprovalServices {
+    pub fn new(
+        broker: Arc<PermissionBroker>,
+        approvals: Arc<dyn ApprovalStore>,
+        execution_approvals: Arc<dyn ExecutionApprovalStore>,
+        human_approval_hub: HumanApprovalHub,
+    ) -> Self {
+        Self {
+            broker,
+            approvals,
+            execution_approvals,
+            human_approval_hub,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 struct ActivationRoute {
     work_thread_id: String,
     work_item_id: String,
@@ -305,6 +384,25 @@ struct ActivationRoute {
     trigger_sequence: u64,
     context_snapshot_version: Option<u64>,
     thread_kind: &'static str,
+    /// Immutable completion batch that caused a Delivery Activation.  A
+    /// reply must only acknowledge results present in this trigger snapshot;
+    /// results arriving while the model is running belong to a later
+    /// Delivery Activation.
+    delivery_thread_ids: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct ModelReasoningSummaryAccumulator {
+    text: String,
+    complete: bool,
+    persist_started: bool,
+}
+
+struct AdmittedThreadActivation {
+    record: ThreadActivationRecord,
+    /// Dropping this permit is the physical transition back out of the
+    /// single-node running set.  It must span terminal persistence.
+    _permit: ActivationAdmissionPermit,
 }
 
 #[derive(Debug, Default)]
@@ -541,6 +639,7 @@ pub struct Orchestrator {
     context_engine: Arc<ContextEngine>,
     orchestrator_config: OrchestratorConfig,
     pub concurrency_semaphore: Arc<tokio::sync::Semaphore>,
+    activation_admission: ActivationAdmissionController,
     /// One ordered dialogue thread per Session. Tool/objective continuations do
     /// not take this lock: after a dialogue turn launches a work thread, later
     /// user messages can still be answered while that work continues.
@@ -561,76 +660,64 @@ pub struct Orchestrator {
     delegation_start_lock: Mutex<()>,
     objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
     objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
-    timer_engine: Option<Arc<TimerEngine>>,
+    /// Scheduler Kernel physical clock. Every Orchestrator has one: terminal
+    /// Work Thread delivery and activation leases are not optional features.
+    timer_engine: Arc<TimerEngine>,
     thread_scheduler: Option<Arc<ThreadScheduler>>,
+    execution_jobs: Option<Arc<ExecutionJobManager<dyn ExecutionJobStore>>>,
+    background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
+    durable_approvals: Option<DurableApprovalServices>,
+}
+
+/// Commit the provider-authored reasoning summary as one independent Ledger
+/// artifact. Deltas remain ephemeral; this helper is also used after timeout
+/// so a partial summary can survive without waiting for a stuck provider.
+async fn persist_model_reasoning_summary(
+    bus: &Arc<InMemoryEventBus>,
+    context_id: &str,
+    session_id: &str,
+    attempt_id: &str,
+    route: &[(String, serde_json::Value)],
+    accumulator: &Arc<Mutex<ModelReasoningSummaryAccumulator>>,
+    force_incomplete: bool,
+) -> Result<(), DynError> {
+    let (text, complete) = {
+        let mut accumulator = accumulator.lock().await;
+        if force_incomplete {
+            accumulator.complete = false;
+        }
+        if accumulator.persist_started || accumulator.text.is_empty() {
+            return Ok(());
+        }
+        accumulator.persist_started = true;
+        (accumulator.text.clone(), accumulator.complete)
+    };
+
+    let mut payload = vec![
+        ("context_id".to_string(), json!(context_id)),
+        ("session_id".to_string(), json!(session_id)),
+        ("attempt_id".to_string(), json!(attempt_id)),
+        ("text".to_string(), json!(text)),
+        ("complete".to_string(), json!(complete)),
+    ];
+    payload.extend_from_slice(route);
+    let event = Event::new(
+        format!("model_reasoning_summary_{attempt_id}"),
+        "Model-Provider".to_string(),
+        "runtime_control".to_string(),
+        "runtime/model_reasoning_summary".to_string(),
+        payload.into_iter().collect(),
+    );
+    if let Err(error) = bus.publish(event).await {
+        accumulator.lock().await.persist_started = false;
+        return Err(error);
+    }
+    Ok(())
 }
 
 impl Orchestrator {
-    pub fn new(
-        bus: Arc<InMemoryEventBus>,
-        store: Arc<dyn EventStore>,
-        client: Arc<dyn Client>,
-        registry: Arc<Registry>,
-    ) -> Self {
-        let orchestrator_config = OrchestratorConfig::default();
-        let context_engine = Arc::new(ContextEngine::new(
-            Arc::clone(&store),
-            orchestrator_config.clone(),
-        ));
-        Self::new_with_context_engine(
-            bus,
-            store,
-            client,
-            registry,
-            orchestrator_config,
-            context_engine,
-        )
-    }
-
-    pub fn new_with_context_engine(
-        bus: Arc<InMemoryEventBus>,
-        store: Arc<dyn EventStore>,
-        client: Arc<dyn Client>,
-        registry: Arc<Registry>,
-        orchestrator_config: OrchestratorConfig,
-        context_engine: Arc<ContextEngine>,
-    ) -> Self {
-        Self::new_with_context_engine_and_objectives(
-            bus,
-            store,
-            client,
-            registry,
-            orchestrator_config,
-            context_engine,
-            Arc::new(ObjectiveEvaluationRegistry::default()),
-        )
-    }
-
-    pub fn new_with_context_engine_and_objectives(
-        bus: Arc<InMemoryEventBus>,
-        store: Arc<dyn EventStore>,
-        client: Arc<dyn Client>,
-        registry: Arc<Registry>,
-        orchestrator_config: OrchestratorConfig,
-        context_engine: Arc<ContextEngine>,
-        objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
-    ) -> Self {
-        Self::new_with_context_engine_and_objectives_and_supervisor(
-            bus,
-            store,
-            client,
-            registry,
-            orchestrator_config,
-            context_engine,
-            objective_evaluations,
-            None,
-            None,
-            None,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
-    pub fn new_with_context_engine_and_objectives_and_supervisor(
+    pub(crate) fn assemble_with_scheduler_kernel(
         bus: Arc<InMemoryEventBus>,
         store: Arc<dyn EventStore>,
         client: Arc<dyn Client>,
@@ -639,14 +726,32 @@ impl Orchestrator {
         context_engine: Arc<ContextEngine>,
         objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
         objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
-        timer_engine: Option<Arc<TimerEngine>>,
+        timer_engine: Arc<TimerEngine>,
         thread_scheduler: Option<Arc<ThreadScheduler>>,
-    ) -> Self {
+        execution_jobs: Option<Arc<ExecutionJobManager<dyn ExecutionJobStore>>>,
+        background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
+        durable_approvals: Option<DurableApprovalServices>,
+    ) -> Result<Arc<Self>, DynError> {
         let concurrency_semaphore = Arc::new(tokio::sync::Semaphore::new(
             orchestrator_config.concurrency_limit.max(1),
         ));
+        let activation_admission = ActivationAdmissionController::new(ActivationAdmissionLimits {
+            total_slots: orchestrator_config.concurrency_limit,
+            dialogue_delivery_slots: orchestrator_config
+                .activation_admission
+                .dialogue_delivery_reserved_slots,
+            max_queued: orchestrator_config.activation_admission.max_queued,
+            dialogue_delivery_queue_slots: orchestrator_config
+                .activation_admission
+                .dialogue_delivery_reserved_queue_slots,
+            aging_promotion_interval_ms: orchestrator_config
+                .activation_admission
+                .aging_promotion_interval
+                .as_secs()
+                .saturating_mul(1_000),
+        });
         let tool_definitions = registry.definitions();
-        Self {
+        let orchestrator = Arc::new(Self {
             bus,
             store,
             client,
@@ -655,6 +760,7 @@ impl Orchestrator {
             context_engine,
             orchestrator_config,
             concurrency_semaphore,
+            activation_admission,
             dialogue_thread_gates: DashMap::new(),
             work_thread_gates: DashMap::new(),
             read_turn_guards: DashMap::new(),
@@ -668,13 +774,52 @@ impl Orchestrator {
             objective_supervisor,
             timer_engine,
             thread_scheduler,
-        }
+            execution_jobs,
+            background_scheduler,
+            durable_approvals,
+        });
+        orchestrator.register_timer_handlers()?;
+        Ok(orchestrator)
     }
 
-    pub fn register_timer_handlers(self: &Arc<Self>) -> Result<(), DynError> {
-        let Some(timers) = &self.timer_engine else {
-            return Ok(());
-        };
+    /// Safe integration-test factory. It deliberately exposes only the
+    /// Scheduler Kernel minimum, requires a durable TimerEngine, and registers
+    /// the Orchestrator handlers and starts its dispatcher before returning.
+    ///
+    /// Product assembly goes through `MorphzRuntimeBuilder`; this function is
+    /// public solely because Cargo integration tests are separate crates.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_test_with_context_engine(
+        bus: Arc<InMemoryEventBus>,
+        store: Arc<dyn EventStore>,
+        client: Arc<dyn Client>,
+        registry: Arc<Registry>,
+        orchestrator_config: OrchestratorConfig,
+        context_engine: Arc<ContextEngine>,
+        timer_engine: Arc<TimerEngine>,
+    ) -> Result<Arc<Self>, DynError> {
+        let orchestrator = Self::assemble_with_scheduler_kernel(
+            bus,
+            store,
+            client,
+            registry,
+            orchestrator_config,
+            context_engine,
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+            None,
+            timer_engine,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        orchestrator.timer_engine.start();
+        Ok(orchestrator)
+    }
+
+    fn register_timer_handlers(self: &Arc<Self>) -> Result<(), DynError> {
+        let timers = &self.timer_engine;
         let orchestrator = Arc::downgrade(self);
         timers.register_handler(RuntimeTimerKind::ActivationLease, move |timer| {
             let orchestrator = orchestrator.clone();
@@ -684,6 +829,16 @@ impl Orchestrator {
                 };
                 orchestrator.dispatch_activation_lease(timer).await
             }
+        })?;
+        let orchestrator = Arc::downgrade(self);
+        timers.register_handler(RuntimeTimerKind::DeliveryFlush, move |timer| {
+            let orchestrator = orchestrator.clone();
+            async move {
+                let Some(orchestrator) = orchestrator.upgrade() else {
+                    return Ok(TimerDisposition::Complete);
+                };
+                orchestrator.dispatch_delivery_flush(timer).await
+            }
         })
     }
 
@@ -691,13 +846,10 @@ impl Orchestrator {
         &self,
         activation: &ThreadActivationRecord,
     ) -> Result<(), DynError> {
-        let Some(timers) = &self.timer_engine else {
-            return Ok(());
-        };
         if activation.status != ThreadActivationStatus::Running {
             return Ok(());
         }
-        timers
+        self.timer_engine
             .schedule(NewRuntimeTimer {
                 id: activation_lease_timer_id(&activation.id),
                 generation: activation.revision,
@@ -716,11 +868,9 @@ impl Orchestrator {
     }
 
     async fn cancel_activation_lease(&self, activation_id: &str) -> Result<(), DynError> {
-        if let Some(timers) = &self.timer_engine {
-            timers
-                .cancel(&activation_lease_timer_id(activation_id))
-                .await?;
-        }
+        self.timer_engine
+            .cancel(&activation_lease_timer_id(activation_id))
+            .await?;
         Ok(())
     }
 
@@ -750,6 +900,52 @@ impl Orchestrator {
                 });
             }
         }
+        if self.activation_admission.is_in_flight(&current.id) {
+            // The durable lease expired while this exact Activation still has
+            // its process-local execution permit. Re-dispatching the Trigger
+            // would only reach `AlreadyLocal`. Completing this timer after
+            // that no-op used to consume the sole crash-recovery opportunity:
+            // if the original task subsequently aborted, the row remained
+            // `running` forever. Advance the durable generation and arm the
+            // next lease before completing the claimed old generation. Timer
+            // completion is generation-fenced, so it cannot erase this newer
+            // recovery clock.
+            let renewed_expires_at = Utc::now() + self.activation_lease_duration();
+            match session_store
+                .update_thread_activation(
+                    &current.id,
+                    current.revision,
+                    ThreadActivationStatus::Running,
+                    current.claimed_by.as_deref(),
+                    Some(renewed_expires_at),
+                    current.context_snapshot_version,
+                )
+                .await?
+            {
+                ThreadActivationMutation::Updated(renewed) => {
+                    self.arm_activation_lease(&renewed).await?;
+                    tracing::debug!(
+                        activation_id = %renewed.id,
+                        revision = renewed.revision,
+                        lease_expires_at = %renewed_expires_at,
+                        "本地 Activation 仍在执行；续租并保留恢复时钟"
+                    );
+                    return Ok(TimerDisposition::Complete);
+                }
+                ThreadActivationMutation::Conflict { current }
+                    if current.status == ThreadActivationStatus::Running =>
+                {
+                    // A concurrent snapshot/heartbeat already advanced the
+                    // owner revision. Arm that authoritative generation; the
+                    // old claimed generation may now complete harmlessly.
+                    self.arm_activation_lease(&current).await?;
+                    return Ok(TimerDisposition::Complete);
+                }
+                ThreadActivationMutation::Conflict { .. } | ThreadActivationMutation::NotFound => {
+                    return Ok(TimerDisposition::Complete);
+                }
+            }
+        }
         let Some(trigger) = self
             .store
             .query(QueryFilter {
@@ -771,6 +967,22 @@ impl Orchestrator {
         // model work can be stranded again.
         self.bus.dispatch_persisted(trigger).await?;
         Ok(TimerDisposition::Complete)
+    }
+
+    fn activation_lease_duration(&self) -> chrono::Duration {
+        let lease_seconds = self
+            .orchestrator_config
+            .model_attempt_timeout_secs
+            .max(1)
+            .saturating_mul((MAX_RESPONSE_PROTOCOL_RETRIES + 1) as u64)
+            .saturating_add(30)
+            .max(
+                self.orchestrator_config
+                    .tool_timeout_secs
+                    .max(1)
+                    .saturating_add(30),
+            );
+        chrono::Duration::seconds(i64::try_from(lease_seconds).unwrap_or(i64::MAX))
     }
 
     pub fn objective_evaluations(&self) -> Arc<ObjectiveEvaluationRegistry> {
@@ -816,13 +1028,51 @@ impl Orchestrator {
             }),
         );
 
+        self.rebuild_activation_admission_queue().await?;
         self.recover_thread_activations().await?;
         self.dispatch_pending_signal_outbox().await?;
         self.recover_pending_thread_signals().await?;
         self.recover_delegations().await?;
         self.reconcile_orphaned_work_threads().await?;
+        self.recover_pending_delivery_flushes().await?;
+        self.refill_activation_admission_queue().await?;
+        self.start_activation_admission_refill();
         self.start_signal_outbox_dispatcher();
         Ok(())
+    }
+
+    fn start_activation_admission_refill(self: &Arc<Self>) {
+        let orchestrator = Arc::downgrade(self);
+        let admission = self.activation_admission.clone();
+        tokio::spawn(async move {
+            loop {
+                if orchestrator.upgrade().is_none() {
+                    break;
+                }
+                // Never retain the Orchestrator Arc while sleeping on a
+                // process-local notification. Otherwise this maintenance task
+                // keeps the whole Runtime alive after every external owner has
+                // gone away.
+                let changed = tokio::select! {
+                    _ = admission.wait_for_change() => true,
+                    // This is only a lifecycle check; durable admission is
+                    // still notification-driven and never polls SQLite.
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => false,
+                };
+                if !changed {
+                    continue;
+                }
+                // Collapse a burst of permit/queue changes into one durable
+                // scan without turning admission into a polling loop.
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                let Some(current) = orchestrator.upgrade() else {
+                    break;
+                };
+                if let Err(error) = current.refill_activation_admission_queue().await {
+                    tracing::error!(%error, "Activation admission 持久队列重扫失败；保留 queued 等待下一次唤醒");
+                }
+            }
+        });
     }
 
     fn start_signal_outbox_dispatcher(self: &Arc<Self>) {
@@ -919,6 +1169,92 @@ impl Orchestrator {
         Ok(())
     }
 
+    async fn rebuild_activation_admission_queue(&self) -> Result<(), DynError> {
+        let Some(session_store) = self.context_engine.session_store() else {
+            return Ok(());
+        };
+        let limit = self.activation_admission.limits().max_queued;
+        let aging_ms = self
+            .activation_admission
+            .limits()
+            .aging_promotion_interval_ms;
+        let reserved_queue_slots = self
+            .activation_admission
+            .limits()
+            .dialogue_delivery_queue_slots;
+        for (activation, class) in session_store
+            .list_queued_thread_activations_for_admission(limit, reserved_queue_slots, aging_ms)
+            .await?
+        {
+            let outcome = self
+                .activation_admission
+                .restore_queued(activation_admission_key_for_class(&activation, class))?;
+            if outcome == RestoreQueuedOutcome::DeferredWindowFull {
+                tracing::debug!(
+                    work_item_id = %activation.id,
+                    "Activation 保留在 SQLite queued；等待进入有界内存准入窗口"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Fill newly available in-memory scheduling positions from SQLite.  Only
+    /// rows actually entering the window are re-dispatched; overflow remains a
+    /// durable queued fact and never becomes a synthetic failure reply.
+    async fn refill_activation_admission_queue(&self) -> Result<usize, DynError> {
+        let Some(session_store) = self.context_engine.session_store() else {
+            return Ok(0);
+        };
+        let mut dispatched = 0usize;
+        let limit = self.activation_admission.limits().max_queued;
+        let aging_ms = self
+            .activation_admission
+            .limits()
+            .aging_promotion_interval_ms;
+        let reserved_queue_slots = self
+            .activation_admission
+            .limits()
+            .dialogue_delivery_queue_slots;
+        for (activation, class) in session_store
+            .list_queued_thread_activations_for_admission(limit, reserved_queue_slots, aging_ms)
+            .await?
+        {
+            if self.activation_admission.contains(&activation.id) {
+                continue;
+            }
+            let Some(trigger) = self
+                .store
+                .query(QueryFilter {
+                    event_id: Some(activation.trigger_event_id.clone()),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .find(|event| event.id == activation.trigger_event_id)
+            else {
+                tracing::error!(
+                    work_item_id = %activation.id,
+                    trigger_event_id = %activation.trigger_event_id,
+                    "无法重扫 queued Activation：Ledger 中不存在 Trigger Event"
+                );
+                continue;
+            };
+            match self
+                .activation_admission
+                .restore_queued(activation_admission_key_for_class(&activation, class))?
+            {
+                RestoreQueuedOutcome::Restored => {
+                    self.bus.dispatch_persisted(trigger).await?;
+                    dispatched = dispatched.saturating_add(1);
+                }
+                RestoreQueuedOutcome::AlreadyTracked | RestoreQueuedOutcome::DeferredWindowFull => {
+                }
+            }
+        }
+        Ok(dispatched)
+    }
+
     async fn recover_thread_activations(&self) -> Result<(), DynError> {
         let Some(session_store) = self.context_engine.session_store() else {
             return Ok(());
@@ -967,6 +1303,7 @@ impl Orchestrator {
                         .await?
                     {
                         ThreadActivationMutation::Updated(_) => {
+                            self.activation_admission.forget(&work_item.id);
                             tracing::info!(
                                 work_item_id = %work_item.id,
                                 root_turn_id = %work_item.root_turn_id,
@@ -1032,7 +1369,9 @@ impl Orchestrator {
                 }
                 match work_item.status {
                     ThreadActivationStatus::Queued => {
-                        self.bus.dispatch_persisted(trigger).await?;
+                        if self.activation_admission.contains(&work_item.id) {
+                            self.bus.dispatch_persisted(trigger).await?;
+                        }
                     }
                     ThreadActivationStatus::Running => {
                         if runtime_claimant_is_definitely_dead(work_item.claimed_by.as_deref()) {
@@ -1052,9 +1391,14 @@ impl Orchestrator {
                                 )
                                 .await?
                             {
-                                ThreadActivationMutation::Updated(_) => {
+                                ThreadActivationMutation::Updated(queued) => {
                                     self.cancel_activation_lease(&work_item.id).await?;
-                                    self.bus.dispatch_persisted(trigger).await?;
+                                    if self.activation_admission.restore_queued(
+                                        activation_admission_key(&queued, &trigger),
+                                    )? == RestoreQueuedOutcome::Restored
+                                    {
+                                        self.bus.dispatch_persisted(trigger).await?;
+                                    }
                                 }
                                 ThreadActivationMutation::Conflict { .. }
                                 | ThreadActivationMutation::NotFound => {}
@@ -1655,7 +1999,24 @@ impl Orchestrator {
             self.read_turn_guards.remove(&session_id);
         }
 
-        let Some(work_item) = self.claim_thread_activation(&event).await? else {
+        // Serialize every durable event belonging to one root turn before it
+        // materializes or claims a successor Activation. The original user
+        // Activation holds this gate through terminal persistence and the
+        // pending-signal handoff below. A physical result that arrives during
+        // that window therefore cannot observe the old Activation as running,
+        // leave its Signal pending, and race the terminal side's one-shot scan.
+        let routed_root_turn_id = event
+            .payload
+            .get("root_turn_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or(event.id.as_str())
+            .to_string();
+        let _work_thread_guard = self
+            .work_thread_gate(&routed_root_turn_id)
+            .lock_owned()
+            .await;
+
+        let Some(admitted) = self.claim_thread_activation(&event).await? else {
             tracing::debug!(
                 session_id,
                 event_id = %event.id,
@@ -1663,39 +2024,61 @@ impl Orchestrator {
             );
             return Ok(());
         };
+        let work_item = admitted.record;
+        let _activation_admission_permit = admitted._permit;
 
-        // Every physical wake belonging to the same root turn drains through
-        // one mailbox lane. The guard deliberately spans terminal commit so a
-        // timer, task-exit and ordinary tool output can never become sibling
-        // model chains with independent replies.
-        let _work_thread_guard = if event.event_type == TYPE_TOOL_OUTPUT {
-            Some(
-                self.work_thread_gate(&work_item.root_turn_id)
-                    .lock_owned()
-                    .await,
-            )
-        } else {
-            None
-        };
+        // Bind an Objective continuation before any await in the Evaluation
+        // body. A concurrent pause/cancel can therefore target this exact
+        // Activation instead of falling back to the enclosing Session.
+        self.bind_embedded_objective_route(&work_item.id, &event);
+        if let (Some(supervisor), Some(objective_id), Some(evaluation_id)) = (
+            self.objective_supervisor.as_ref(),
+            event
+                .payload
+                .get("objective_id")
+                .and_then(|value| value.as_str()),
+            event
+                .payload
+                .get("objective_evaluation_id")
+                .and_then(|value| value.as_str()),
+        ) {
+            let objective_control_receipt = event
+                .payload
+                .get("tool_name")
+                .and_then(|value| value.as_str())
+                == Some("objective_update");
+            if !supervisor
+                .accepts_routed_evaluation(objective_id, evaluation_id, objective_control_receipt)
+                .await?
+            {
+                tracing::info!(
+                    session_id,
+                    objective_id,
+                    evaluation_id,
+                    work_item_id = %work_item.id,
+                    "抑制已被暂停、取消或取代的 Objective Evaluation"
+                );
+                self.finish_thread_activation(&work_item, ThreadActivationStatus::Cancelled)
+                    .await?;
+                self.objective_evaluations.remove_work_item(&work_item.id);
+                return Ok(());
+            }
+        }
 
-        let deadline = std::time::Duration::from_secs(
-            self.orchestrator_config
-                .model_attempt_timeout_secs
-                .max(1)
-                .saturating_mul((MAX_RESPONSE_PROTOCOL_RETRIES + 1) as u64)
-                .saturating_add(1),
-        );
-        let watchdog_attempt_id = format!(
-            "attempt_watchdog_{}_{}",
-            session_id,
-            Utc::now().timestamp_nanos_opt().unwrap_or(0)
-        );
         let mut cancellation = self.cancellation_sender(&session_id).subscribe();
         let start_epoch = *cancellation.borrow();
         let active_counter = self.active_counter(&session_id);
         active_counter.fetch_add(1, Ordering::SeqCst);
         let attempt = tokio::select! {
-            result = tokio::time::timeout(deadline, async {
+            biased;
+            cancelled = self.objective_evaluations.wait_for_work_item_cancellation(&work_item.id) => {
+                (None, Some(cancelled))
+            }
+            _ = cancellation.changed() => {
+                debug_assert_ne!(*cancellation.borrow(), start_epoch);
+                (None, None)
+            }
+            result = async {
             if let Some(thread) = self
                 .context_engine
                 .session_store()
@@ -1735,17 +2118,12 @@ impl Orchestrator {
             if let Some(supervisor) = &self.objective_supervisor {
                 supervisor.prepare_routed_event(&event, &work_item.id).await?;
             }
-            self.bind_embedded_objective_route(&work_item.id, &event);
             self.run_attempt(&session_id, &work_item).await
-            }) => Some(result),
-            _ = cancellation.changed() => {
-                debug_assert_ne!(*cancellation.borrow(), start_epoch);
-                None
-            }
+            } => (Some(result), None),
         };
         active_counter.fetch_sub(1, Ordering::SeqCst);
         let (result, final_status) = match attempt {
-            Some(Ok(result)) => {
+            (Some(result), _) => {
                 let status = if result.is_ok() {
                     ThreadActivationStatus::Succeeded
                 } else {
@@ -1753,21 +2131,36 @@ impl Orchestrator {
                 };
                 (result, status)
             }
-            Some(Err(error)) => {
+            (None, Some(cancelled)) => {
+                tracing::info!(
+                    session_id,
+                    objective_id = %cancelled.objective_id,
+                    evaluation_id = %cancelled.evaluation_id,
+                    work_item_id = %work_item.id,
+                    "当前 Objective Evaluation 已取消；Session 与其他 Evaluation 继续运行"
+                );
                 let result = self
-                    .publish_runtime_failure(
-                        &session_id,
-                        &watchdog_attempt_id,
-                        "attempt_watchdog",
-                        &error,
-                        None,
+                    .request_cancel_execution_jobs_for_activation(
+                        &work_item.id,
+                        &format!(
+                            "Objective '{}' Evaluation '{}' 已被暂停或取消",
+                            cancelled.objective_id, cancelled.evaluation_id
+                        ),
                     )
-                    .await;
-                (result, ThreadActivationStatus::Failed)
+                    .await
+                    .map(|_| ());
+                (result, ThreadActivationStatus::Cancelled)
             }
-            None => {
+            (None, None) => {
                 tracing::info!(session_id, "当前 Session 执行已由用户取消");
-                (Ok(()), ThreadActivationStatus::Cancelled)
+                let result = self
+                    .request_cancel_execution_jobs_for_activation(
+                        &work_item.id,
+                        &format!("Session '{session_id}' 已由用户取消"),
+                    )
+                    .await
+                    .map(|_| ());
+                (result, ThreadActivationStatus::Cancelled)
             }
         };
         if matches!(
@@ -1843,7 +2236,7 @@ impl Orchestrator {
     async fn claim_thread_activation(
         &self,
         event: &Event,
-    ) -> Result<Option<ThreadActivationRecord>, DynError> {
+    ) -> Result<Option<AdmittedThreadActivation>, DynError> {
         let session_id = required_payload_str(event, "session_id")?;
         let session_store = self
             .context_engine
@@ -2009,6 +2402,7 @@ impl Orchestrator {
             return Ok(None);
         };
         if work_item.status.is_terminal() {
+            self.activation_admission.forget(&work_item.id);
             return Ok(None);
         }
         let now = Utc::now();
@@ -2017,22 +2411,31 @@ impl Orchestrator {
                 .lease_expires_at
                 .is_some_and(|expires_at| expires_at > now)
         {
+            self.activation_admission.forget(&work_item.id);
             return Ok(None);
         }
-        let lease_seconds = self
-            .orchestrator_config
-            .model_attempt_timeout_secs
-            .max(1)
-            .saturating_mul((MAX_RESPONSE_PROTOCOL_RETRIES + 1) as u64)
-            .saturating_add(30)
-            .max(
-                self.orchestrator_config
-                    .tool_timeout_secs
-                    .max(1)
-                    .saturating_add(30),
-            );
-        let lease_seconds = i64::try_from(lease_seconds).unwrap_or(i64::MAX);
-        let lease_expires_at = now + chrono::Duration::seconds(lease_seconds);
+        let admission_permit = match self
+            .activation_admission
+            .acquire(activation_admission_key(&work_item, event))
+            .await
+        {
+            Ok(permit) => permit,
+            Err(ActivationAdmissionError::AlreadyLocal(_)) => return Ok(None),
+            Err(error @ ActivationAdmissionError::WindowFull { .. }) => {
+                // The Activation and its claimed Signal batch remain durably
+                // queued. A permit/window change wakes the refill loop, which
+                // re-dispatches this Trigger when it can enter the window.
+                tracing::info!(
+                    work_item_id = %work_item.id,
+                    session_id = %work_item.session_id,
+                    %error,
+                    "Activation 受到有界 backpressure；延迟而非失败"
+                );
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let lease_expires_at = now + self.activation_lease_duration();
         match session_store
             .update_thread_activation(
                 &work_item.id,
@@ -2046,7 +2449,10 @@ impl Orchestrator {
         {
             ThreadActivationMutation::Updated(claimed) => {
                 self.arm_activation_lease(&claimed).await?;
-                Ok(Some(claimed))
+                Ok(Some(AdmittedThreadActivation {
+                    record: claimed,
+                    _permit: admission_permit,
+                }))
             }
             ThreadActivationMutation::Conflict { .. } => Ok(None),
             ThreadActivationMutation::NotFound => {
@@ -2451,15 +2857,81 @@ impl Orchestrator {
         let deadline = std::time::Duration::from_secs(
             self.orchestrator_config.model_attempt_timeout_secs.max(1),
         );
-        let _permit = self.concurrency_semaphore.acquire().await?;
+        // The configured model deadline covers both queueing for a provider
+        // slot and the physical request.  Without a shared absolute deadline,
+        // a saturated semaphore could wait forever after the old whole-
+        // Attempt watchdog was removed, or consume one full timeout before
+        // starting another full timeout for the request itself.
+        let model_deadline = tokio::time::Instant::now() + deadline;
+        let _permit =
+            match tokio::time::timeout_at(model_deadline, self.concurrency_semaphore.acquire())
+                .await
+            {
+                Ok(permit) => permit?,
+                Err(error) => return Err(error.into()),
+            };
         let client = Arc::clone(&self.client);
         let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel();
         let stream_bus = Arc::clone(&self.bus);
         let stream_session_id = session_id.to_string();
         let stream_context_id = self.context_id_for_session(session_id)?;
         let stream_attempt_id = attempt_id.to_string();
+        let mut stream_route = Vec::new();
+        self.append_activation_route(attempt_id, &mut stream_route);
+        let reasoning_summary = Arc::new(Mutex::new(ModelReasoningSummaryAccumulator::default()));
+        let forward_bus = Arc::clone(&stream_bus);
+        let forward_session_id = stream_session_id.clone();
+        let forward_context_id = stream_context_id.clone();
+        let forward_attempt_id = stream_attempt_id.clone();
+        let forward_route = stream_route.clone();
+        let forward_reasoning_summary = Arc::clone(&reasoning_summary);
         let stream_forwarder = tokio::spawn(async move {
+            let stream_started_at = tokio::time::Instant::now();
+            let mut text_delta_count = 0u64;
+            let mut text_chars = 0usize;
+            let mut reasoning_summary_delta_count = 0u64;
+            let mut reasoning_summary_chars = 0usize;
+            let mut first_text_delta_ms = None;
             while let Some(stream_event) = stream_rx.recv().await {
+                match &stream_event {
+                    crate::llm::ModelStreamEvent::TextDelta { text } => {
+                        text_delta_count = text_delta_count.saturating_add(1);
+                        text_chars = text_chars.saturating_add(text.chars().count());
+                        first_text_delta_ms.get_or_insert_with(|| {
+                            u64::try_from(stream_started_at.elapsed().as_millis())
+                                .unwrap_or(u64::MAX)
+                        });
+                    }
+                    crate::llm::ModelStreamEvent::ReasoningSummaryDelta { text } => {
+                        reasoning_summary_delta_count =
+                            reasoning_summary_delta_count.saturating_add(1);
+                        reasoning_summary_chars =
+                            reasoning_summary_chars.saturating_add(text.chars().count());
+                        forward_reasoning_summary.lock().await.text.push_str(text);
+                    }
+                    crate::llm::ModelStreamEvent::Completed => {
+                        forward_reasoning_summary.lock().await.complete = true;
+                        tracing::info!(
+                            session_id = %forward_session_id,
+                            attempt_id = %forward_attempt_id,
+                            text_delta_count,
+                            text_chars,
+                            reasoning_summary_delta_count,
+                            reasoning_summary_chars,
+                            first_text_delta_ms,
+                            total_stream_ms = u64::try_from(stream_started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                            "模型原生流已完成"
+                        );
+                    }
+                    _ => {}
+                }
+                let mut payload = vec![
+                    ("context_id".to_string(), json!(&forward_context_id)),
+                    ("session_id".to_string(), json!(&forward_session_id)),
+                    ("attempt_id".to_string(), json!(&forward_attempt_id)),
+                    ("stream".to_string(), json!(stream_event)),
+                ];
+                payload.extend(forward_route.clone());
                 let event = Event::new(
                     format!(
                         "model_stream_{}",
@@ -2468,48 +2940,104 @@ impl Orchestrator {
                     "Model-Provider".to_string(),
                     "runtime_ephemeral".to_string(),
                     "runtime/model_stream".to_string(),
-                    vec![
-                        ("context_id".to_string(), json!(&stream_context_id)),
-                        ("session_id".to_string(), json!(&stream_session_id)),
-                        ("attempt_id".to_string(), json!(&stream_attempt_id)),
-                        ("stream".to_string(), json!(stream_event)),
-                    ]
-                    .into_iter()
-                    .collect(),
+                    payload.into_iter().collect(),
                 );
-                if let Err(error) = stream_bus.publish_ephemeral(event).await {
+                if let Err(error) = forward_bus.publish_ephemeral(event).await {
                     tracing::debug!(%error, "发布瞬时模型流事件失败");
                 }
             }
+            persist_model_reasoning_summary(
+                &forward_bus,
+                &forward_context_id,
+                &forward_session_id,
+                &forward_attempt_id,
+                &forward_route,
+                &forward_reasoning_summary,
+                false,
+            )
+            .await
         });
-        let (model_tx, model_rx) = tokio::sync::oneshot::channel();
-        std::thread::Builder::new()
-            .name(format!("morphz-llm-{attempt_id}"))
-            .spawn(move || {
-                let result = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|error| Box::new(error) as DynError)
-                    .and_then(|runtime| {
-                        runtime.block_on(client.create_completion_measured_stream(
-                            messages,
-                            tools,
-                            prompt_measurement,
-                            stream_tx,
-                        ))
-                    });
-                let _ = model_tx.send(result);
-            })?;
-        let result = match tokio::time::timeout(deadline, model_rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(error)) => Err(error.into()),
-            Err(error) => {
-                stream_forwarder.abort();
-                return Err(error.into());
+        let result = if client.supports_async_cancellation() {
+            // Protocol-native clients are fully asynchronous. Keeping their
+            // future in this task means timeout/cancellation drops the reqwest
+            // future itself and therefore closes the underlying HTTP request.
+            match tokio::time::timeout_at(
+                model_deadline,
+                client.create_completion_measured_stream(
+                    messages,
+                    tools,
+                    prompt_measurement,
+                    stream_tx,
+                ),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    stream_forwarder.abort();
+                    let _ = stream_forwarder.await;
+                    persist_model_reasoning_summary(
+                        &stream_bus,
+                        &stream_context_id,
+                        &stream_session_id,
+                        &stream_attempt_id,
+                        &stream_route,
+                        &reasoning_summary,
+                        true,
+                    )
+                    .await?;
+                    return Err(error.into());
+                }
+            }
+        } else {
+            // Compatibility boundary for custom clients and test doubles that
+            // may synchronously block inside an async method. A Tokio timeout
+            // cannot pre-empt such code, so keep it off the Runtime workers.
+            let (model_tx, model_rx) = tokio::sync::oneshot::channel();
+            std::thread::Builder::new()
+                .name(format!("morphz-llm-{attempt_id}"))
+                .spawn(move || {
+                    let result = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|error| Box::new(error) as DynError)
+                        .and_then(|runtime| {
+                            runtime.block_on(client.create_completion_measured_stream(
+                                messages,
+                                tools,
+                                prompt_measurement,
+                                stream_tx,
+                            ))
+                        });
+                    let _ = model_tx.send(result);
+                })?;
+            match tokio::time::timeout_at(model_deadline, model_rx).await {
+                Ok(Ok(result)) => result,
+                Ok(Err(error)) => Err(error.into()),
+                Err(error) => {
+                    stream_forwarder.abort();
+                    let _ = stream_forwarder.await;
+                    persist_model_reasoning_summary(
+                        &stream_bus,
+                        &stream_context_id,
+                        &stream_session_id,
+                        &stream_attempt_id,
+                        &stream_route,
+                        &reasoning_summary,
+                        true,
+                    )
+                    .await?;
+                    return Err(error.into());
+                }
             }
         };
-        let _ = stream_forwarder.await;
-        result
+        let forward_result = stream_forwarder.await;
+        match (result, forward_result) {
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error.into()),
+            (Ok(_), Ok(Err(error))) => Err(error),
+            (Ok(response), Ok(Ok(()))) => Ok(response),
+        }
     }
 
     /// 用当前协议 Client 声明的 TokenCounter 计量完整候选工作请求，
@@ -2526,13 +3054,14 @@ impl Orchestrator {
                 .model_attempt_timeout_secs
                 .clamp(1, 15),
         );
-        let _permit = self.concurrency_semaphore.acquire().await?;
+        let measurement_deadline = tokio::time::Instant::now() + deadline;
         let token_scope = format!("{}:{}", context.context_id, context.active_session_id);
-        let measurement = tokio::time::timeout(
-            deadline,
+        let measurement = tokio::time::timeout_at(measurement_deadline, async {
+            let _permit = self.concurrency_semaphore.acquire().await?;
             self.client
-                .count_prompt_tokens(&token_scope, messages, tools),
-        )
+                .count_prompt_tokens(&token_scope, messages, tools)
+                .await
+        })
         .await;
 
         let measurement = match measurement {
@@ -2656,8 +3185,18 @@ impl Orchestrator {
             );
             match decision {
                 TerminalDecision::Deliver(content) => {
-                    self.publish_reply(session_id, &work_item.id, content, parent.as_deref())
-                        .await?;
+                    let model_attempt_id = assistant_call
+                        .payload
+                        .get("model_attempt_id")
+                        .and_then(|value| value.as_str());
+                    self.publish_reply_for_model_attempt(
+                        session_id,
+                        &work_item.id,
+                        model_attempt_id,
+                        content,
+                        parent.as_deref(),
+                    )
+                    .await?;
                 }
                 TerminalDecision::NoReply => {
                     self.publish_no_reply(session_id, &work_item.id, parent.as_deref())
@@ -2780,6 +3319,26 @@ impl Orchestrator {
             "delivery" => WorkThreadKind::Delivery,
             _ => WorkThreadKind::Work,
         };
+        let delivery_thread_ids = if thread_kind == "delivery" {
+            self.context_engine
+                .find_event(&work_item.context_id, &work_item.trigger_event_id)
+                .await?
+                .and_then(|event| {
+                    event
+                        .payload
+                        .get("completed_thread_ids")
+                        .and_then(serde_json::Value::as_array)
+                        .map(|ids| {
+                            ids.iter()
+                                .filter_map(serde_json::Value::as_str)
+                                .map(ToOwned::to_owned)
+                                .collect::<Vec<_>>()
+                        })
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         if work_thread.kind != desired_kind {
             if let WorkThreadMutation::Updated(updated) = session_store
                 .update_work_thread(
@@ -2807,6 +3366,7 @@ impl Orchestrator {
                 trigger_sequence: work_item.trigger_sequence,
                 context_snapshot_version: work_item.context_snapshot_version,
                 thread_kind,
+                delivery_thread_ids,
             },
         );
         if self
@@ -2910,9 +3470,13 @@ impl Orchestrator {
                 .as_ref()
                 .map(|measurement| measurement.tokens)
                 .unwrap_or(context.pressure.estimated_tokens);
-            if let Err(error) = supervisor.record_prompt_tokens(session_id, tokens).await {
+            if let Err(error) = supervisor
+                .record_prompt_tokens_for_work_item(&work_item.id, tokens)
+                .await
+            {
                 tracing::warn!(
                     session_id,
+                    work_item_id = %work_item.id,
                     error = %error,
                     "Objective Prompt Token 记账失败；继续当前 Evaluation"
                 );
@@ -3031,7 +3595,7 @@ impl Orchestrator {
         self.record_context_inspect(session_id, &attempt_id, &context, &messages);
         let mut protocol_messages = messages;
         let mut protocol_errors = 0usize;
-        let (response, terminal_decision) = loop {
+        let (response, terminal_decision, terminal_model_attempt_id) = loop {
             let model_attempt_id = if protocol_errors == 0 {
                 attempt_id.clone()
             } else {
@@ -3106,7 +3670,7 @@ impl Orchestrator {
                     }
                 });
             match classification {
-                Ok(decision) => break (response, decision),
+                Ok(decision) => break (response, decision, model_attempt_id),
                 Err(reason) => {
                     protocol_errors += 1;
                     self.record_response_protocol_error(
@@ -3176,6 +3740,7 @@ impl Orchestrator {
             self.record_terminal_response(
                 session_id,
                 &attempt_id,
+                &terminal_model_attempt_id,
                 effective_phase,
                 &response,
                 &decision,
@@ -3184,12 +3749,18 @@ impl Orchestrator {
             let result = match decision {
                 TerminalDecision::Deliver(content) => {
                     if thread_kind == "work" {
-                        self.publish_thread_result(session_id, &attempt_id, content)
-                            .await
-                    } else {
-                        self.publish_reply(
+                        self.publish_thread_result(
                             session_id,
                             &attempt_id,
+                            &terminal_model_attempt_id,
+                            content,
+                        )
+                        .await
+                    } else {
+                        self.publish_reply_for_model_attempt(
+                            session_id,
+                            &attempt_id,
+                            Some(&terminal_model_attempt_id),
                             content,
                             context.parent_session_id.as_deref(),
                         )
@@ -3328,6 +3899,7 @@ impl Orchestrator {
         &self,
         session_id: &str,
         attempt_id: &str,
+        model_attempt_id: &str,
         phase: &str,
         response: &crate::llm::Response,
         decision: &TerminalDecision,
@@ -3349,6 +3921,7 @@ impl Orchestrator {
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
+            ("model_attempt_id".to_string(), json!(model_attempt_id)),
             ("phase".to_string(), json!(phase)),
             ("text".to_string(), json!(response.content)),
             ("tool_calls".to_string(), json!(tool_calls)),
@@ -3393,13 +3966,12 @@ impl Orchestrator {
         if let Some(parent_session_id) = parent_session_id {
             payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
         }
-        if self
+        if let Some(route) = self
             .activation_route(attempt_id)
-            .is_some_and(|route| route.thread_kind == "delivery")
+            .filter(|route| route.thread_kind == "delivery")
         {
-            let deferred = self.pending_delivery_threads(session_id).await?;
-            if !deferred.is_empty() {
-                payload.push(("defer_covers".to_string(), json!(deferred)));
+            if !route.delivery_thread_ids.is_empty() {
+                payload.push(("defer_covers".to_string(), json!(route.delivery_thread_ids)));
             }
         }
         self.append_activation_route(attempt_id, &mut payload);
@@ -3426,6 +3998,24 @@ impl Orchestrator {
         content: String,
         parent_session_id: Option<&str>,
     ) -> Result<(), DynError> {
+        self.publish_reply_for_model_attempt(
+            session_id,
+            attempt_id,
+            None,
+            content,
+            parent_session_id,
+        )
+        .await
+    }
+
+    async fn publish_reply_for_model_attempt(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        model_attempt_id: Option<&str>,
+        content: String,
+        parent_session_id: Option<&str>,
+    ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
@@ -3434,16 +4024,18 @@ impl Orchestrator {
             ("disposition".to_string(), json!("deliver")),
             ("text".to_string(), json!(content)),
         ];
+        if let Some(model_attempt_id) = model_attempt_id {
+            payload.push(("model_attempt_id".to_string(), json!(model_attempt_id)));
+        }
         if let Some(parent_session_id) = parent_session_id {
             payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
         }
-        if self
+        if let Some(route) = self
             .activation_route(attempt_id)
-            .is_some_and(|route| route.thread_kind == "delivery")
+            .filter(|route| route.thread_kind == "delivery")
         {
-            let covers = self.delivery_batch_threads(session_id).await?;
-            if !covers.is_empty() {
-                payload.push(("covers".to_string(), json!(covers)));
+            if !route.delivery_thread_ids.is_empty() {
+                payload.push(("covers".to_string(), json!(route.delivery_thread_ids)));
             }
         }
         self.append_activation_route(attempt_id, &mut payload);
@@ -3467,6 +4059,7 @@ impl Orchestrator {
         &self,
         session_id: &str,
         attempt_id: &str,
+        model_attempt_id: &str,
         content: String,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
@@ -3482,6 +4075,7 @@ impl Orchestrator {
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
+            ("model_attempt_id".to_string(), json!(model_attempt_id)),
             (
                 "disposition".to_string(),
                 json!("complete_pending_delivery"),
@@ -3504,41 +4098,170 @@ impl Orchestrator {
             return Ok(());
         }
 
-        let delivery_event_id = format!("delivery_ready_{}", result_event_id);
-        self.bus
-            .publish(Event::new(
-                delivery_event_id.clone(),
-                "Runtime-Delivery".to_string(),
-                TYPE_TOOL_OUTPUT.to_string(),
-                "chat/thread_completion_ready".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(context_id)),
-                    ("session_id".to_string(), json!(session_id)),
-                    ("root_turn_id".to_string(), json!(delivery_event_id)),
-                    ("thread_kind".to_string(), json!("delivery")),
-                    (
-                        "completed_thread_id".to_string(),
-                        json!(route.work_thread_id),
-                    ),
-                    ("result_event_id".to_string(), json!(result_event_id)),
-                    (
-                        "text".to_string(),
-                        json!("一个 Work Thread 已完成。请读取 kernel.thread-scheduler 中 delivery=pending 的完成结果，结合当前 Session 与其他并发 Thread 的最新状态，决定合并交付一条消息、分别交付，或明确 no_reply。不得重复已经 delivered 的结果。"),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ))
+        self.arm_delivery_flush(session_id).await?;
+        Ok(())
+    }
+
+    async fn arm_delivery_flush(&self, session_id: &str) -> Result<(), DynError> {
+        let timers = &self.timer_engine;
+        let store = self
+            .context_engine
+            .session_store()
+            .ok_or("Completion delivery 需要持久化 SessionStore")?;
+        let timer_id = delivery_flush_timer_id(session_id);
+        let Some(timer) = store
+            .arm_delivery_flush_timer(
+                &timer_id,
+                session_id,
+                self.orchestrator_config
+                    .scheduler
+                    .delivery_merge_window
+                    .as_secs(),
+                self.orchestrator_config
+                    .scheduler
+                    .delivery_max_wait
+                    .as_secs(),
+            )
+            .await?
+        else {
+            return Ok(());
+        };
+        // The store already armed the authoritative generation atomically.
+        // Scheduling the same generation only wakes a sleeping dispatcher.
+        timers
+            .schedule(NewRuntimeTimer {
+                id: timer.id,
+                generation: timer.generation,
+                kind: timer.kind,
+                owner_id: timer.owner_id,
+                due_at: timer.due_at,
+                payload: timer.payload,
+            })
             .await?;
         Ok(())
     }
 
-    async fn pending_delivery_threads(&self, session_id: &str) -> Result<Vec<String>, DynError> {
-        self.delivery_threads(session_id, false).await
+    async fn recover_pending_delivery_flushes(&self) -> Result<usize, DynError> {
+        let Some(store) = self.context_engine.session_store() else {
+            return Ok(0);
+        };
+        let sessions = store.list_pending_delivery_sessions().await?;
+        for session_id in &sessions {
+            self.arm_delivery_flush(session_id).await?;
+        }
+        if !sessions.is_empty() {
+            tracing::info!(
+                sessions = sessions.len(),
+                "已从 pending/deferred Work Thread 恢复 Delivery Flush Timer"
+            );
+        }
+        Ok(sessions.len())
     }
 
-    async fn delivery_batch_threads(&self, session_id: &str) -> Result<Vec<String>, DynError> {
-        self.delivery_threads(session_id, true).await
+    async fn dispatch_delivery_flush(
+        self: Arc<Self>,
+        timer: RuntimeTimerRecord,
+    ) -> Result<TimerDisposition, DynError> {
+        let store = self
+            .context_engine
+            .session_store()
+            .ok_or("Delivery Flush 需要持久化 SessionStore")?;
+        let session_id = timer.owner_id.clone();
+        let threads = store
+            .list_session_delivery_threads(&session_id, true)
+            .await?;
+        if threads.is_empty() {
+            return Ok(TimerDisposition::Complete);
+        }
+        let session = store
+            .get_session(&session_id)
+            .await?
+            .ok_or_else(|| format!("Delivery Flush Session '{}' 不存在", session_id))?;
+        let completed_thread_ids = timer
+            .payload
+            .get("completed_thread_ids")
+            .and_then(serde_json::Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|ids| !ids.is_empty())
+            .unwrap_or_else(|| threads.iter().map(|thread| thread.id.clone()).collect());
+        let result_event_ids = timer
+            .payload
+            .get("result_event_ids")
+            .and_then(serde_json::Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| {
+                threads
+                    .iter()
+                    .filter_map(|thread| thread.result_event_id.clone())
+                    .collect()
+            });
+        let delivery_event_id = delivery_flush_event_id(&timer.id, timer.generation);
+        let mut event = Event::new(
+            delivery_event_id.clone(),
+            "Runtime-Delivery".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/thread_completion_ready".to_string(),
+            vec![
+                ("context_id".to_string(), json!(session.context_id)),
+                ("session_id".to_string(), json!(session_id)),
+                ("root_turn_id".to_string(), json!(delivery_event_id)),
+                ("thread_kind".to_string(), json!("delivery")),
+                (
+                    "delivery_timer_generation".to_string(),
+                    json!(timer.generation),
+                ),
+                (
+                    "completed_thread_ids".to_string(),
+                    json!(completed_thread_ids),
+                ),
+                ("result_event_ids".to_string(), json!(result_event_ids)),
+                (
+                    "text".to_string(),
+                    json!("一个或多个 Work Thread 已完成。请只交付本次 completion snapshot 在 kernel.thread-scheduler 中呈现的 delivery=pending/deferred 结果，并结合最新并发状态形成一条清晰且不重复的消息；本次求值开始后新完成的结果属于下一次 Delivery，不要提前声称已覆盖。确实无需通知时才独占调用 no_reply。不得重复已经 delivered 的结果。"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        // Retrying one Timer generation must produce byte-identical Event
+        // content. The latest pending timestamp is immutable for that
+        // generation and survives process restart.
+        if let Some(timestamp) = timer
+            .payload
+            .get("latest_pending_at")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        {
+            event.timestamp = timestamp.with_timezone(&Utc);
+        } else {
+            event.timestamp = timer.created_at;
+        }
+        match store
+            .commit_delivery_flush(&timer.id, timer.generation, &event)
+            .await?
+        {
+            DeliveryFlushCommit::Committed => {
+                self.bus.dispatch_persisted(event).await?;
+            }
+            DeliveryFlushCommit::Existing { .. }
+            | DeliveryFlushCommit::Stale
+            | DeliveryFlushCommit::Empty => {}
+        }
+        Ok(TimerDisposition::Complete)
+    }
+
+    async fn pending_delivery_threads(&self, session_id: &str) -> Result<Vec<String>, DynError> {
+        self.delivery_threads(session_id, false).await
     }
 
     async fn delivery_threads(
@@ -3546,20 +4269,14 @@ impl Orchestrator {
         session_id: &str,
         include_deferred: bool,
     ) -> Result<Vec<String>, DynError> {
-        let context_id = self.context_id_for_session(session_id)?;
         let store = self
             .context_engine
             .session_store()
             .ok_or("Completion delivery 需要持久化 SessionStore")?;
         Ok(store
-            .list_context_work_threads(&context_id, true)
+            .list_session_delivery_threads(session_id, include_deferred)
             .await?
             .into_iter()
-            .filter(|thread| thread.session_id == session_id)
-            .filter(|thread| {
-                thread.delivery_status == DeliveryStatus::Pending
-                    || (include_deferred && thread.delivery_status == DeliveryStatus::Deferred)
-            })
             .map(|thread| thread.id)
             .collect())
     }
@@ -3827,6 +4544,309 @@ impl Orchestrator {
                 tracing::error!(?error, "记录 model_attempt_started 失败");
             }
         });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn prepare_physical_execution(
+        &self,
+        tool: &Arc<dyn Tool>,
+        route: &ActivationRoute,
+        agent_id: &str,
+        thread_id: &str,
+        context_id: &str,
+        session_id: &str,
+        attempt_id: &str,
+        call: &crate::llm::ToolCallRepr,
+        output_id: &str,
+        timeout_secs: u64,
+    ) -> Result<PreparedPhysicalExecution, DynError> {
+        let manager = self
+            .execution_jobs
+            .as_ref()
+            .ok_or("Physical Execution 缺少 ExecutionJobManager")?;
+        let request = serde_json::from_str(&call.arguments).unwrap_or_else(|_| {
+            json!({
+                "raw_arguments": call.arguments,
+            })
+        });
+        let requirement = tool.approval_requirement(&call.arguments)?;
+        let spec = ExecutionJobSpec {
+            activation_id: route.work_item_id.clone(),
+            thread_id: thread_id.to_string(),
+            agent_id: agent_id.to_string(),
+            context_id: context_id.to_string(),
+            session_id: session_id.to_string(),
+            tool_call_id: call.id.clone(),
+            tool_name: call.func_name.clone(),
+            request,
+            retry_safety: tool.retry_safety(),
+            requires_approval: requirement.is_some(),
+        };
+        let lease_expires_at = Utc::now()
+            + chrono::Duration::seconds(
+                i64::try_from(timeout_secs.saturating_add(60)).unwrap_or(i64::MAX),
+            );
+        let claim_token = format!(
+            "claim_{}_{}_{}",
+            crate::execution::deterministic_job_id(&route.work_item_id, &call.id)?,
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+
+        let (mut job, durable_grant) = match requirement {
+            None => {
+                let job = manager.ensure(spec).await?;
+                if let Some(event) = self.terminal_execution_event(&job).await? {
+                    return Ok(PreparedPhysicalExecution::Terminal(event));
+                }
+                if job.status != ExecutionJobStatus::Queued {
+                    return Err(format!(
+                        "Execution Job '{}' 当前为 {}，不能重复开始物理执行",
+                        job.id,
+                        job.status.as_str()
+                    )
+                    .into());
+                }
+                let job = applied_execution_job(
+                    manager
+                        .claim(
+                            &job.id,
+                            job.revision,
+                            JobClaim {
+                                worker_id: "morphz-local-executor",
+                                claim_token: &claim_token,
+                                lease_expires_at,
+                                approval_ref: None,
+                            },
+                        )
+                        .await?,
+                    "claim",
+                )?;
+                (job, None)
+            }
+            Some(requirement) => {
+                let services = self.durable_approvals.as_ref().ok_or(
+                    "Physical Execution 需要审批，但 Runtime 未配置持久化 Approval authority",
+                )?;
+                let new_job = spec.into_new_job()?;
+                let action = serde_json::to_value(&requirement.action)?;
+                let requested = serde_json::to_value(&requirement.requested)?;
+                let identity = stable_approval_identity(
+                    &new_job.id,
+                    &action,
+                    &requested,
+                    &services.broker.policy_digest(),
+                )?;
+                let new_approval = NewApprovalRequest {
+                    id: identity.approval_id.clone(),
+                    job_id: new_job.id.clone(),
+                    request_digest: identity.request_digest.clone(),
+                    policy_digest: identity.policy_digest.clone(),
+                    action: action.clone(),
+                    requested: requested.clone(),
+                    justification: requirement.justification.clone(),
+                    pending_status: services.broker.pending_approval_status(),
+                };
+                let request_event =
+                    approval_request_event(&new_job, &new_approval, attempt_id, route);
+                let (job, mut approval, created) = execution_approval_records(
+                    services
+                        .execution_approvals
+                        .ensure_execution_job_with_approval(new_job, new_approval, &request_event)
+                        .await?,
+                    "create approval authority",
+                )?;
+                // A persisted request is an immutable fact, but UI delivery is
+                // process-local. Re-dispatch an exact still-pending replay so
+                // restart never leaves a human Approval invisible merely
+                // because its Event already existed in the Ledger.
+                if created || approval.status.is_pending() {
+                    self.bus.dispatch_persisted(request_event).await?;
+                }
+                if let Some(event) = self.terminal_execution_event(&job).await? {
+                    return Ok(PreparedPhysicalExecution::Terminal(event));
+                }
+
+                if approval.status.is_pending() {
+                    let decision = services
+                        .broker
+                        .review(&ApprovalRequest {
+                            approval_id: approval.id.clone(),
+                            context_id: context_id.to_string(),
+                            session_id: session_id.to_string(),
+                            attempt_id: attempt_id.to_string(),
+                            action: requirement.action.clone(),
+                            requested: requirement.requested.clone(),
+                            justification: requirement.justification.clone(),
+                        })
+                        .await?;
+                    let resolution = match decision {
+                        ApprovalDecision::AllowOnce {
+                            rationale,
+                            risk_tags,
+                        } => ApprovalResolution::Allow {
+                            rationale,
+                            risk_tags,
+                        },
+                        ApprovalDecision::Deny {
+                            rationale,
+                            risk_tags,
+                        } => ApprovalResolution::Deny {
+                            rationale,
+                            risk_tags,
+                        },
+                        ApprovalDecision::AskHuman { rationale, .. } => {
+                            return Err(format!(
+                                "Approval provider 返回 ask_human 但未完成人工审批: {rationale}"
+                            )
+                            .into());
+                        }
+                    };
+                    let commit = services
+                        .approvals
+                        .commit_approval_decision(&approval.id, approval.revision, resolution)
+                        .await?;
+                    let (updated, _changed) = approval_record_from_mutation(
+                        commit.mutation,
+                        "persist approval decision",
+                    )?;
+                    approval = updated;
+                    if commit.event_created {
+                        let decision_event = commit
+                            .event
+                            .ok_or("Approval 审计 Event 已原子创建，但 Store 未返回持久化投影")?;
+                        self.bus.dispatch_persisted(decision_event).await?;
+                    }
+                }
+
+                match approval.status {
+                    ApprovalStatus::Denied | ApprovalStatus::Cancelled => {
+                        let output = approval_denied_tool_output(
+                            output_id, context_id, session_id, attempt_id, call, route, &approval,
+                        );
+                        let reason = approval
+                            .rationale
+                            .clone()
+                            .or(approval.cancel_reason.clone())
+                            .unwrap_or_else(|| "审批未授权该物理操作".to_string());
+                        applied_execution_job(
+                            manager
+                                .finish_with_event(
+                                    &job.id,
+                                    job.revision,
+                                    None,
+                                    JobOutcome::Cancelled {
+                                        result_event_id: Some(output.id.clone()),
+                                        result_refs: Vec::new(),
+                                        reason: Some(reason),
+                                        exit_code: None,
+                                    },
+                                    &output,
+                                )
+                                .await?,
+                            "approval denial terminal commit",
+                        )?;
+                        return Ok(PreparedPhysicalExecution::Terminal(output));
+                    }
+                    ApprovalStatus::Allowed => {}
+                    ApprovalStatus::PendingAuto | ApprovalStatus::PendingHuman => {
+                        return Err(format!(
+                            "Approval '{}' 审批源返回后仍处于 {}",
+                            approval.id,
+                            approval.status.as_str()
+                        )
+                        .into());
+                    }
+                }
+
+                let grant_id = approval
+                    .grant_id
+                    .clone()
+                    .ok_or("Allowed Approval 缺少持久化 grant_id")?;
+                let (job, consumed_approval, _) = execution_approval_records(
+                    services
+                        .execution_approvals
+                        .claim_execution_job_with_grant(
+                            &job.id,
+                            job.revision,
+                            &approval.id,
+                            approval.revision,
+                            "morphz-local-executor",
+                            &claim_token,
+                            lease_expires_at,
+                        )
+                        .await?,
+                    "consume approval grant and claim",
+                )?;
+                let grant = DurableApprovalGrant {
+                    approval_id: consumed_approval.id,
+                    grant_id,
+                    policy_digest: consumed_approval.policy_digest,
+                    action: serde_json::from_value(consumed_approval.action)?,
+                    requested: serde_json::from_value(consumed_approval.requested)?,
+                };
+                (job, Some(grant))
+            }
+        };
+
+        job = applied_execution_job(
+            manager
+                .heartbeat(
+                    &job.id,
+                    job.revision,
+                    JobHeartbeat {
+                        claim_token: &claim_token,
+                        lease_expires_at,
+                        side_effect_started_at: Some(Utc::now()),
+                        progress_ref: None,
+                    },
+                )
+                .await?,
+            "side-effect boundary",
+        )?;
+        Ok(PreparedPhysicalExecution::Claimed(Box::new(
+            ClaimedPhysicalExecution {
+                context: crate::tool::ToolExecutionJobContext {
+                    parent_job_id: job.id.clone(),
+                    activation_id: route.work_item_id.clone(),
+                    thread_id: thread_id.to_string(),
+                    agent_id: agent_id.to_string(),
+                    context_id: context_id.to_string(),
+                    session_id: session_id.to_string(),
+                    tool_call_id: call.id.clone(),
+                },
+                job: ClaimedExecutionJob {
+                    id: job.id,
+                    revision: job.revision,
+                    claim_token,
+                },
+                approval: durable_grant,
+            },
+        )))
+    }
+
+    async fn terminal_execution_event(
+        &self,
+        job: &ExecutionJobRecord,
+    ) -> Result<Option<Event>, DynError> {
+        if !job.status.is_terminal() {
+            return Ok(None);
+        }
+        let event_id = job
+            .result_event_id
+            .as_deref()
+            .ok_or_else(|| format!("终态 Execution Job '{}' 缺少 result_event_id", job.id))?;
+        let event = self
+            .context_engine
+            .find_event(&job.context_id, event_id)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "终态 Execution Job '{}' 引用的结果 Event '{}' 不存在",
+                    job.id, event_id
+                )
+            })?;
+        Ok(Some(event))
     }
 
     async fn execute_tool_calls(
@@ -4108,6 +5128,28 @@ impl Orchestrator {
 
         let mut tasks = Vec::new();
         let mut outputs = Vec::<(Event, bool)>::new();
+        let durable_execution_identity = match (&self.execution_jobs, &activation_route) {
+            (Some(_), Some(route)) => {
+                let session_store = self
+                    .context_engine
+                    .session_store()
+                    .ok_or("Execution Job 需要持久化 SessionStore")?;
+                let thread = session_store
+                    .get_work_thread(&route.work_thread_id)
+                    .await?
+                    .ok_or_else(|| {
+                        format!(
+                            "Execution Job 的 Work Thread '{}' 不存在",
+                            route.work_thread_id
+                        )
+                    })?;
+                if thread.context_id != context_id || thread.session_id != session_id {
+                    return Err("Execution Job 的 Work Thread 路由与当前 Evaluation 不一致".into());
+                }
+                Some((thread.agent_id, thread.id))
+            }
+            _ => None,
+        };
         let mut allowed_tool_names = options
             .allowed_tool_names
             .iter()
@@ -4230,7 +5272,44 @@ impl Orchestrator {
                     continue;
                 }
             }
-            let registry = Arc::clone(&self.registry);
+            let tool = self.registry.get(&call.func_name);
+            let timeout_secs = self.orchestrator_config.tool_timeout_secs;
+            let mut claimed_execution_job = None;
+            let mut tool_execution_job_context = None;
+            let mut durable_approval_grant = None;
+            if let (Some(tool), Some(route), Some((agent_id, thread_id))) = (
+                tool.as_ref().filter(|tool| {
+                    tool.execution_class() == crate::tool::ToolExecutionClass::PhysicalJob
+                }),
+                activation_route.as_ref(),
+                durable_execution_identity.as_ref(),
+            ) {
+                let prepared = self
+                    .prepare_physical_execution(
+                        tool,
+                        route,
+                        agent_id,
+                        thread_id,
+                        &context_id,
+                        session_id,
+                        attempt_id,
+                        &call,
+                        &output_id,
+                        timeout_secs,
+                    )
+                    .await;
+                match prepared? {
+                    PreparedPhysicalExecution::Claimed(claimed) => {
+                        claimed_execution_job = Some(claimed.job);
+                        tool_execution_job_context = Some(claimed.context);
+                        durable_approval_grant = claimed.approval;
+                    }
+                    PreparedPhysicalExecution::Terminal(event) => {
+                        outputs.push((event, true));
+                        continue;
+                    }
+                }
+            }
             let session_id = session_id.to_string();
             let context_id = context_id.clone();
             let attempt_id = attempt_id.to_string();
@@ -4245,124 +5324,223 @@ impl Orchestrator {
                         trigger_event_id: route.trigger_event_id.clone(),
                         trigger_sequence: route.trigger_sequence,
                     });
-            let timeout_secs = self.orchestrator_config.tool_timeout_secs;
-            tasks.push(tokio::spawn(async move {
-                crate::tool::CURRENT_CAUSAL_ROUTE
-                    .scope(tool_causal_route, async move {
-                        crate::tool::CURRENT_ATTEMPT_ID
-                            .scope(attempt_id.clone(), async move {
-                                crate::tool::CURRENT_CONTEXT_ID
-                                    .scope(context_id.clone(), async move {
-                                        crate::tool::CURRENT_SESSION_ID
-                                            .scope(session_id.clone(), async move {
-                                                let result = tokio::time::timeout(
-                                                    tokio::time::Duration::from_secs(timeout_secs),
-                                                    async {
-                                                        match registry.get(&call.func_name) {
-                                                            Some(tool) => {
-                                                                tool.execute(&call.arguments).await
+            let metadata = ToolTaskMetadata {
+                output_id: output_id.clone(),
+                context_id: context_id.clone(),
+                session_id: session_id.clone(),
+                attempt_id: attempt_id.clone(),
+                tool_call_id: call.id.clone(),
+                tool_name: call.func_name.clone(),
+                activation_route: activation_route.clone(),
+                execution_job: claimed_execution_job.clone(),
+            };
+            let execution_jobs = self.execution_jobs.clone();
+            let objective_evaluation = self.objective_evaluations.get_for_work_item(&attempt_id);
+            let handle = tokio::spawn(async move {
+                crate::permission::CURRENT_DURABLE_APPROVAL
+                        .scope(durable_approval_grant, async move {
+                            crate::tool::CURRENT_EXECUTION_JOB
+                                .scope(tool_execution_job_context, async move {
+                                    crate::tool::CURRENT_CAUSAL_ROUTE
+                                        .scope(tool_causal_route, async move {
+                                            crate::tool::CURRENT_ATTEMPT_ID
+                                                .scope(attempt_id.clone(), async move {
+                                                    crate::tool::CURRENT_CONTEXT_ID
+                                                        .scope(context_id.clone(), async move {
+                                                            crate::tool::CURRENT_SESSION_ID
+                                                    .scope(session_id.clone(), async move {
+                                                        let result = tokio::time::timeout(
+                                                            tokio::time::Duration::from_secs(
+                                                                timeout_secs,
+                                                            ),
+                                                            async {
+                                                                match tool {
+                                                                    Some(tool) => {
+                                                                        tool.execute(
+                                                                            &call.arguments,
+                                                                        )
+                                                                        .await
+                                                                    }
+                                                                    None => Err(format!(
+                                                                        "未注册的工具: {}",
+                                                                        call.func_name
+                                                                    )
+                                                                    .into()),
+                                                                }
+                                                            },
+                                                        )
+                                                        .await;
+                                                        let (output, tool_status) = match result {
+                                                            Ok(Ok(output)) => {
+                                                                let status =
+                                                                    infer_tool_status(&output);
+                                                                (output, status)
                                                             }
-                                                            None => Err(format!(
-                                                                "未注册的工具: {}",
-                                                                call.func_name
-                                                            )
-                                                            .into()),
+                                                            Ok(Err(error)) => (
+                                                                format!("执行失败: {}", error),
+                                                                "error",
+                                                            ),
+                                                            Err(_) => (
+                                                                format!(
+                                                                    "执行超时: 超过 {} 秒限额",
+                                                                    timeout_secs
+                                                                ),
+                                                                "timeout",
+                                                            ),
+                                                        };
+                                                        let wake_policy = if call.func_name
+                                                            == "delegate"
+                                                            && tool_status == "success"
+                                                            && delegation_mode_from_arguments(
+                                                                &call.arguments,
+                                                            ) != "detached"
+                                                        {
+                                                            "delegation_result"
+                                                        } else {
+                                                            "immediate"
+                                                        };
+                                                        let output_empty = output.trim().is_empty();
+                                                        let mut payload = vec![
+                                                            (
+                                                                "context_id".to_string(),
+                                                                json!(context_id),
+                                                            ),
+                                                            (
+                                                                "session_id".to_string(),
+                                                                json!(session_id),
+                                                            ),
+                                                            (
+                                                                "attempt_id".to_string(),
+                                                                json!(attempt_id),
+                                                            ),
+                                                            (
+                                                                "tool_call_id".to_string(),
+                                                                json!(call.id),
+                                                            ),
+                                                            (
+                                                                "caused_by".to_string(),
+                                                                json!(call.id),
+                                                            ),
+                                                            (
+                                                                "tool_name".to_string(),
+                                                                json!(call.func_name),
+                                                            ),
+                                                            (
+                                                                "tool_status".to_string(),
+                                                                json!(tool_status),
+                                                            ),
+                                                            (
+                                                                "wake_policy".to_string(),
+                                                                json!(wake_policy),
+                                                            ),
+                                                            (
+                                                                "output_empty".to_string(),
+                                                                json!(output_empty),
+                                                            ),
+                                                            ("text".to_string(), json!(output)),
+                                                        ]
+                                                        .into_iter()
+                                                        .collect::<serde_json::Map<_, _>>();
+                                                        if let Some(route) = activation_route {
+                                                            payload.insert(
+                                                                "work_thread_id".to_string(),
+                                                                json!(route.work_thread_id),
+                                                            );
+                                                            payload.insert(
+                                                                "work_item_id".to_string(),
+                                                                json!(route.work_item_id),
+                                                            );
+                                                            payload.insert(
+                                                                "root_turn_id".to_string(),
+                                                                json!(route.root_turn_id),
+                                                            );
+                                                            payload.insert(
+                                                                "trigger_event_id".to_string(),
+                                                                json!(route.trigger_event_id),
+                                                            );
+                                                            payload.insert(
+                                                                "trigger_sequence".to_string(),
+                                                                json!(route.trigger_sequence),
+                                                            );
+                                                            if let Some(version) =
+                                                                route.context_snapshot_version
+                                                            {
+                                                                payload.insert(
+                                                                    "context_snapshot_version"
+                                                                        .to_string(),
+                                                                    json!(version),
+                                                                );
+                                                            }
                                                         }
-                                                    },
-                                                )
-                                                .await;
-                                                let (output, tool_status) = match result {
-                                                    Ok(Ok(output)) => {
-                                                        let status = infer_tool_status(&output);
-                                                        (output, status)
-                                                    }
-                                                    Ok(Err(error)) => {
-                                                        (format!("执行失败: {}", error), "error")
-                                                    }
-                                                    Err(_) => (
-                                                        format!(
-                                                            "执行超时: 超过 {} 秒限额",
-                                                            timeout_secs
-                                                        ),
-                                                        "timeout",
-                                                    ),
-                                                };
-                                                let wake_policy = if call.func_name == "delegate"
-                                                    && tool_status == "success"
-                                                    && delegation_mode_from_arguments(
-                                                        &call.arguments,
-                                                    ) != "detached"
-                                                {
-                                                    "delegation_result"
-                                                } else {
-                                                    "immediate"
-                                                };
-                                                let output_empty = output.trim().is_empty();
-                                                let mut payload = vec![
-                                                    ("context_id".to_string(), json!(context_id)),
-                                                    ("session_id".to_string(), json!(session_id)),
-                                                    ("attempt_id".to_string(), json!(attempt_id)),
-                                                    ("tool_call_id".to_string(), json!(call.id)),
-                                                    ("caused_by".to_string(), json!(call.id)),
-                                                    (
-                                                        "tool_name".to_string(),
-                                                        json!(call.func_name),
-                                                    ),
-                                                    ("tool_status".to_string(), json!(tool_status)),
-                                                    ("wake_policy".to_string(), json!(wake_policy)),
-                                                    (
-                                                        "output_empty".to_string(),
-                                                        json!(output_empty),
-                                                    ),
-                                                    ("text".to_string(), json!(output)),
-                                                ]
-                                                .into_iter()
-                                                .collect::<serde_json::Map<_, _>>();
-                                                if let Some(route) = activation_route {
-                                                    payload.insert(
-                                                        "work_item_id".to_string(),
-                                                        json!(route.work_item_id),
-                                                    );
-                                                    payload.insert(
-                                                        "root_turn_id".to_string(),
-                                                        json!(route.root_turn_id),
-                                                    );
-                                                    payload.insert(
-                                                        "trigger_event_id".to_string(),
-                                                        json!(route.trigger_event_id),
-                                                    );
-                                                    payload.insert(
-                                                        "trigger_sequence".to_string(),
-                                                        json!(route.trigger_sequence),
-                                                    );
-                                                    if let Some(version) =
-                                                        route.context_snapshot_version
-                                                    {
-                                                        payload.insert(
-                                                            "context_snapshot_version".to_string(),
-                                                            json!(version),
+                                                        if call.func_name == "exec" {
+                                                            extend_exec_output_facts(
+                                                                &mut payload,
+                                                                &output,
+                                                            );
+                                                        }
+                                                        let mut output = Event::new(
+                                                            format!(
+                                                                "output_{}_{}",
+                                                                attempt_id, call.id
+                                                            ),
+                                                            "System-Executor".to_string(),
+                                                            TYPE_TOOL_OUTPUT.to_string(),
+                                                            "chat/tool_output".to_string(),
+                                                            payload,
                                                         );
-                                                    }
-                                                }
-                                                if call.func_name == "exec" {
-                                                    extend_exec_output_facts(&mut payload, &output);
-                                                }
-                                                Event::new(
-                                                    format!("output_{}_{}", attempt_id, call.id),
-                                                    "System-Executor".to_string(),
-                                                    TYPE_TOOL_OUTPUT.to_string(),
-                                                    "chat/tool_output".to_string(),
-                                                    payload,
-                                                )
-                                            })
-                                            .await
-                                    })
-                                    .await
-                            })
-                            .await
-                    })
-                    .await
-            }));
+                                                        if let Some(active) = objective_evaluation {
+                                                            output.payload.insert(
+                                                                "objective_id".to_string(),
+                                                                json!(active.objective_id),
+                                                            );
+                                                            output.payload.insert(
+                                                                "objective_evaluation_id".to_string(),
+                                                                json!(active.evaluation_id),
+                                                            );
+                                                            output.payload.insert(
+                                                                "objective_revision".to_string(),
+                                                                json!(active.revision),
+                                                            );
+                                                        }
+                                                        let already_persisted = match (
+                                                            execution_jobs,
+                                                            claimed_execution_job,
+                                                        ) {
+                                                            (Some(manager), Some(job)) => {
+                                                                finish_claimed_physical_job(
+                                                                    manager.as_ref(),
+                                                                    &job,
+                                                                    &mut output,
+                                                                )
+                                                                .await?;
+                                                                true
+                                                            }
+                                                            (None, None) | (Some(_), None) => false,
+                                                            (None, Some(_)) => {
+                                                                return Err(
+                                                                    "工具任务与 Execution Job Manager 边界不一致"
+                                                                        .into(),
+                                                                );
+                                                            }
+                                                        };
+                                                        Ok(SpawnedToolTaskResult {
+                                                            output,
+                                                            already_persisted,
+                                                        })
+                                                    })
+                                                    .await
+                                                        })
+                                                        .await
+                                                })
+                                                .await
+                                        })
+                                        .await
+                                })
+                                .await
+                        })
+                        .await
+            });
+            tasks.push(SpawnedToolTask { handle, metadata });
         }
 
         if let Some(error) = context_tx_batch_error {
@@ -4405,20 +5583,69 @@ impl Orchestrator {
             }
         }
         for task in tasks {
-            match task.await {
-                Ok(mut output) => {
-                    if let Some(attempt_id) = output
-                        .payload
-                        .get("attempt_id")
-                        .and_then(|value| value.as_str())
-                        .map(ToOwned::to_owned)
-                    {
-                        self.stamp_objective_activation_route(&attempt_id, &mut output.payload);
-                    }
-                    outputs.push((output, false));
+            let metadata = task.metadata;
+            let (mut output, already_persisted, job_outcome) = match task.handle.await {
+                Ok(Ok(result)) => (result.output, result.already_persisted, None),
+                Ok(Err(error)) => {
+                    tracing::error!(
+                        tool = %metadata.tool_name,
+                        tool_call_id = %metadata.tool_call_id,
+                        %error,
+                        "工具任务在持久化终态前失败"
+                    );
+                    return Err(error);
                 }
-                Err(error) => tracing::error!(?error, "工具任务 join 失败"),
+                Err(error) => {
+                    let reason = format!(
+                        "工具 '{}' 的执行任务异常终止，外部结果未知：{error}",
+                        metadata.tool_name
+                    );
+                    tracing::error!(
+                        tool = %metadata.tool_name,
+                        tool_call_id = %metadata.tool_call_id,
+                        ?error,
+                        "工具任务 join 失败；生成显式 lost 结果"
+                    );
+                    let output = lost_tool_output(&metadata, &reason);
+                    let outcome = metadata.execution_job.as_ref().map(|_| JobOutcome::Lost {
+                        result_event_id: Some(output.id.clone()),
+                        reason,
+                    });
+                    (output, false, outcome)
+                }
+            };
+            if let Some(attempt_id) = output
+                .payload
+                .get("attempt_id")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+            {
+                self.stamp_objective_activation_route(&attempt_id, &mut output.payload);
             }
+            let already_persisted = match (metadata.execution_job, job_outcome) {
+                (Some(job), Some(outcome)) => {
+                    let manager = self
+                        .execution_jobs
+                        .as_ref()
+                        .ok_or("Execution Job 完成时 Manager 不存在")?;
+                    applied_execution_job(
+                        manager
+                            .finish_with_event(
+                                &job.id,
+                                job.revision,
+                                Some(&job.claim_token),
+                                outcome,
+                                &output,
+                            )
+                            .await?,
+                        "terminal result commit",
+                    )?;
+                    true
+                }
+                (_, None) => already_persisted,
+                _ => return Err("工具任务与 Execution Job 结果边界不一致".into()),
+            };
+            outputs.push((output, already_persisted));
         }
         if outputs.is_empty() {
             return Err("所有工具任务都在产生结果前异常终止".into());
@@ -4446,17 +5673,21 @@ impl Orchestrator {
                 })
             })
             .flatten();
+        // Persist every non-waking result before arming the one batch barrier.
+        // This preserves model Function Calling semantics even when physical
+        // tools finish out of order: the resumed Activation can observe all
+        // call IDs, and no early result creates a partial Evaluation.
+        let mut wake_output = None;
         for (index, (output, already_persisted)) in outputs.into_iter().enumerate() {
             if wake_index == Some(index) {
-                if already_persisted {
-                    self.store.append_with_signal_outbox(output.clone()).await?;
-                    self.bus.dispatch_persisted(output).await?;
-                } else {
-                    self.bus.publish(output).await?;
-                }
+                wake_output = Some(output);
             } else if !already_persisted {
                 self.store.append(output).await?;
             }
+        }
+        if let Some(output) = wake_output {
+            self.store.append_with_signal_outbox(output.clone()).await?;
+            self.bus.dispatch_persisted(output).await?;
         }
         Ok(outcome)
     }
@@ -4617,6 +5848,15 @@ impl Orchestrator {
     }
 
     fn work_thread_gate(&self, root_turn_id: &str) -> Arc<Mutex<()>> {
+        // Gates are a single-process serialization aid, not durable Thread
+        // state.  Keep the cache bounded: an entry whose Arc is owned only by
+        // the map has no holder or waiter and can be recreated safely.  DashMap
+        // retains a gate that a concurrent caller has already cloned.
+        const MAX_CACHED_IDLE_WORK_THREAD_GATES: usize = 4_096;
+        if self.work_thread_gates.len() >= MAX_CACHED_IDLE_WORK_THREAD_GATES {
+            self.work_thread_gates
+                .retain(|_, gate| Arc::strong_count(gate) > 1);
+        }
         self.work_thread_gates
             .entry(root_turn_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -4626,6 +5866,239 @@ impl Orchestrator {
     async fn release_dialogue_thread(&self, session_id: &str, root_turn_id: &str) -> bool {
         let gate = self.dialogue_thread_gate(session_id);
         gate.release(root_turn_id).await
+    }
+
+    /// Cancel only the Activation(s) bound to one persistent Objective
+    /// Evaluation. This deliberately does not mutate Session cancellation
+    /// state and therefore cannot suppress dialogue or sibling Objectives.
+    pub async fn cancel_objective_evaluation(
+        &self,
+        objective_id: &str,
+        evaluation_id: &str,
+    ) -> Result<bool, DynError> {
+        let reason =
+            format!("Objective '{objective_id}' Evaluation '{evaluation_id}' 已被暂停或取消");
+        // The physical cancellation intent is durable before the in-memory
+        // signal drops the model/Activation future. This ordering prevents a
+        // fast cancellation from orphaning already-materialized Actions.
+        let mut cancellation_error = None;
+        for activation_id in self
+            .objective_evaluations
+            .work_item_ids_for_evaluation(objective_id, evaluation_id)
+        {
+            if let Err(error) = self
+                .request_cancel_execution_jobs_for_activation(&activation_id, &reason)
+                .await
+            {
+                tracing::error!(
+                    objective_id,
+                    evaluation_id,
+                    activation_id,
+                    error = %error,
+                    "Objective 已停止调度，但物理 Execution Job 取消意图未能完整持久化"
+                );
+                if cancellation_error.is_none() {
+                    cancellation_error = Some(error);
+                }
+            }
+        }
+        let was_running = self
+            .objective_evaluations
+            .cancel_evaluation(objective_id, evaluation_id);
+        if let Some(error) = cancellation_error {
+            return Err(error);
+        }
+        Ok(was_running)
+    }
+
+    /// Persist cancellation intent for every non-terminal physical Action
+    /// materialized by one Activation. Jobs that have not crossed the side-
+    /// effect boundary are closed immediately with a deterministic cancelled
+    /// Event; running work remains owned by its executor until physical exit.
+    async fn request_cancel_execution_jobs_for_activation(
+        &self,
+        activation_id: &str,
+        reason: &str,
+    ) -> Result<usize, DynError> {
+        let Some(manager) = self.execution_jobs.as_ref() else {
+            return Ok(0);
+        };
+        let jobs = manager
+            .store()
+            .list_execution_jobs(ExecutionJobFilter {
+                activation_id: Some(activation_id.to_string()),
+                include_terminal: false,
+                ..Default::default()
+            })
+            .await?;
+        let mut requested = 0usize;
+        for job in jobs {
+            let job_id = job.id.clone();
+            let mut current = job;
+            let mut settled = false;
+            for _ in 0..16 {
+                match manager
+                    .request_cancel(&job_id, current.revision, Some(reason))
+                    .await?
+                {
+                    JobReceipt::Applied { job, .. } | JobReceipt::Existing { job, .. } => {
+                        current = job;
+                    }
+                    JobReceipt::Conflict {
+                        current: changed, ..
+                    } if !changed.status.is_terminal() => {
+                        current = changed;
+                        continue;
+                    }
+                    JobReceipt::Conflict { .. }
+                    | JobReceipt::Rejected { .. }
+                    | JobReceipt::NotFound { .. } => {
+                        // A concurrent executor may have committed the real
+                        // terminal fact before this control request won CAS.
+                        settled = true;
+                        break;
+                    }
+                }
+
+                requested = requested.saturating_add(1);
+                if matches!(
+                    current.status,
+                    ExecutionJobStatus::Queued | ExecutionJobStatus::WaitingApproval
+                ) && current.side_effect_started_at.is_none()
+                {
+                    self.cancel_pending_approval_for_job(&current, reason)
+                        .await?;
+                    let output = unstarted_cancelled_tool_output(&current, reason);
+                    match manager
+                        .finish_with_event(
+                            &current.id,
+                            current.revision,
+                            None,
+                            JobOutcome::Cancelled {
+                                result_event_id: Some(output.id.clone()),
+                                result_refs: Vec::new(),
+                                reason: Some(reason.to_string()),
+                                exit_code: None,
+                            },
+                            &output,
+                        )
+                        .await?
+                    {
+                        JobReceipt::Applied { .. } | JobReceipt::Existing { .. } => {
+                            settled = true;
+                            break;
+                        }
+                        JobReceipt::Conflict {
+                            current: changed, ..
+                        } if !changed.status.is_terminal() => {
+                            current = changed;
+                            continue;
+                        }
+                        JobReceipt::Conflict { .. }
+                        | JobReceipt::Rejected { .. }
+                        | JobReceipt::NotFound { .. } => {
+                            settled = true;
+                            break;
+                        }
+                    }
+                }
+                settled = true;
+                break;
+            }
+            if !settled {
+                return Err(format!(
+                    "Execution Job '{job_id}' 在连续 revision 竞争下未能持久化取消请求"
+                )
+                .into());
+            }
+        }
+        if let Some(scheduler) = self.background_scheduler.as_ref() {
+            scheduler
+                .cancel_live_tasks_for_activation(activation_id, reason)
+                .await?;
+        }
+        Ok(requested)
+    }
+
+    async fn cancel_pending_approval_for_job(
+        &self,
+        job: &ExecutionJobRecord,
+        reason: &str,
+    ) -> Result<(), DynError> {
+        let Some(services) = self.durable_approvals.as_ref() else {
+            return Ok(());
+        };
+        let approvals = services
+            .approvals
+            .list_approvals(ApprovalFilter {
+                job_id: Some(job.id.clone()),
+                pending_only: false,
+                limit: Some(2),
+                ..Default::default()
+            })
+            .await?;
+        for approval in approvals {
+            let approval_id = approval.id.clone();
+            let mut current = approval;
+            let mut settled = false;
+            for _ in 0..16 {
+                let cancellable = current.status.is_pending()
+                    || (current.status == ApprovalStatus::Allowed
+                        && current.grant_consumed_at.is_none());
+                if !cancellable {
+                    settled = true;
+                    break;
+                }
+                let commit = services
+                    .approvals
+                    .commit_approval_cancellation(&current.id, current.revision, reason)
+                    .await?;
+                match commit.mutation {
+                    ApprovalMutation::Updated(cancelled)
+                    | ApprovalMutation::Existing(cancelled) => {
+                        // Durable authority changes first. Only then wake and
+                        // remove the process-local waiter.
+                        let decision = ApprovalDecision::Deny {
+                            rationale: cancelled
+                                .cancel_reason
+                                .clone()
+                                .unwrap_or_else(|| reason.to_string()),
+                            risk_tags: vec!["runtime-cancelled".to_string()],
+                        };
+                        if let Err(error) = services
+                            .human_approval_hub
+                            .notify_decision(&cancelled.id, decision)
+                        {
+                            tracing::warn!(approval_id = %cancelled.id, %error, "Approval 已持久取消，但进程内 waiter 通知失败");
+                        }
+                        if commit.event_created {
+                            let event = commit.event.ok_or(
+                                "Approval 审计 Event 已原子创建，但 Store 未返回持久化投影",
+                            )?;
+                            self.bus.dispatch_persisted(event).await?;
+                        }
+                        settled = true;
+                        break;
+                    }
+                    ApprovalMutation::Conflict {
+                        current: changed, ..
+                    } => current = changed,
+                    ApprovalMutation::Rejected { .. } | ApprovalMutation::NotFound => {
+                        settled = true;
+                        break;
+                    }
+                    ApprovalMutation::Created(_) => {
+                        return Err("Approval cancel 返回了不可能的 Created 状态".into());
+                    }
+                }
+            }
+            if !settled {
+                return Err(
+                    format!("Approval '{approval_id}' 在连续 revision 竞争下未能取消").into(),
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Cancels attempts already running or queued for this Session. Later tool
@@ -4755,6 +6228,67 @@ fn stable_work_thread_id(root_turn_id: &str) -> String {
     id[..31].to_string()
 }
 
+fn delivery_flush_timer_id(session_id: &str) -> String {
+    let digest = Sha256::digest(format!("delivery-flush:{session_id}").as_bytes());
+    format!("delivery-flush:{digest:x}")
+}
+
+fn delivery_flush_event_id(timer_id: &str, generation: u64) -> String {
+    let digest = Sha256::digest(format!("{timer_id}:{generation}").as_bytes());
+    format!("delivery_ready_{digest:x}")
+}
+
+fn activation_admission_key(activation: &ThreadActivationRecord, trigger: &Event) -> AdmissionKey {
+    activation_admission_key_for_class(activation, activation_admission_class(trigger))
+}
+
+fn activation_admission_class(trigger: &Event) -> AdmissionClass {
+    if trigger.event_type == TYPE_USER_MESSAGE {
+        AdmissionClass::InteractiveControl
+    } else if trigger.topic == "chat/thread_completion_ready" {
+        AdmissionClass::Delivery
+    } else if trigger.payload.get("objective_id").is_some()
+        || trigger.payload.get("objective_evaluation_id").is_some()
+        || trigger.topic.starts_with("objective/")
+    {
+        AdmissionClass::Objective
+    } else if trigger
+        .payload
+        .get("runtime_maintenance")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+        || matches!(
+            trigger.topic.as_str(),
+            "runtime/context_maintenance" | "chat/context_maintenance"
+        )
+    {
+        AdmissionClass::Maintenance
+    } else if trigger.topic == "chat/schedule_due"
+        || trigger.payload.get("scheduled_intent_id").is_some()
+    {
+        AdmissionClass::ScheduledBackground
+    } else {
+        // Ordinary tool/background wakes are not interactive merely because
+        // they eventually deliver to a Session. Their completed result gets a
+        // separate Delivery Activation and reserved lane.
+        AdmissionClass::ScheduledBackground
+    }
+}
+
+fn activation_admission_key_for_class(
+    activation: &ThreadActivationRecord,
+    class: AdmissionClass,
+) -> AdmissionKey {
+    AdmissionKey::new(
+        activation.id.clone(),
+        activation.agent_id.clone(),
+        activation.context_id.clone(),
+        activation.session_id.clone(),
+        class,
+        activation.created_at.timestamp_millis(),
+    )
+}
+
 fn event_contains_physical_tool_plan(event: &Event) -> bool {
     let calls = if event.topic == "chat/assistant_call" {
         event.payload.get("tool_calls")
@@ -4875,6 +6409,370 @@ fn infer_tool_status(text: &str) -> &'static str {
     } else {
         "success"
     }
+}
+
+fn approval_request_event(
+    job: &NewExecutionJob,
+    approval: &NewApprovalRequest,
+    attempt_id: &str,
+    route: &ActivationRoute,
+) -> Event {
+    Event::new(
+        format!("approval_requested_{}", approval.id),
+        "System-ApprovalAuthority".to_string(),
+        "approval_requested".to_string(),
+        "runtime/approval_requested".to_string(),
+        serde_json::Map::from_iter([
+            ("approval_id".to_string(), json!(approval.id)),
+            ("job_id".to_string(), json!(job.id)),
+            ("request_digest".to_string(), json!(approval.request_digest)),
+            ("policy_digest".to_string(), json!(approval.policy_digest)),
+            ("activation_id".to_string(), json!(job.activation_id)),
+            ("thread_id".to_string(), json!(job.thread_id)),
+            ("context_id".to_string(), json!(job.context_id)),
+            ("session_id".to_string(), json!(job.session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("tool_call_id".to_string(), json!(job.tool_call_id)),
+            ("tool_name".to_string(), json!(job.tool_name)),
+            ("action".to_string(), approval.action.clone()),
+            ("requested".to_string(), approval.requested.clone()),
+            ("justification".to_string(), json!(approval.justification)),
+            ("work_thread_id".to_string(), json!(route.work_thread_id)),
+            ("work_item_id".to_string(), json!(route.work_item_id)),
+            ("root_turn_id".to_string(), json!(route.root_turn_id)),
+            (
+                "text".to_string(),
+                json!(format!(
+                    "审批请求 {} 正在等待决定：{}",
+                    approval.id, approval.justification
+                )),
+            ),
+        ]),
+    )
+}
+
+fn approval_denied_tool_output(
+    output_id: &str,
+    context_id: &str,
+    session_id: &str,
+    attempt_id: &str,
+    call: &crate::llm::ToolCallRepr,
+    route: &ActivationRoute,
+    approval: &ApprovalRecord,
+) -> Event {
+    let reason = approval
+        .rationale
+        .as_deref()
+        .or(approval.cancel_reason.as_deref())
+        .unwrap_or("未提供理由");
+    Event::new(
+        output_id.to_string(),
+        "System-ApprovalAuthority".to_string(),
+        TYPE_TOOL_OUTPUT.to_string(),
+        "chat/tool_output".to_string(),
+        serde_json::Map::from_iter([
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("tool_call_id".to_string(), json!(call.id)),
+            ("caused_by".to_string(), json!(call.id)),
+            ("tool_name".to_string(), json!(call.func_name)),
+            ("tool_status".to_string(), json!("rejected")),
+            ("executed".to_string(), json!(false)),
+            ("wake_policy".to_string(), json!("immediate")),
+            ("approval_id".to_string(), json!(approval.id)),
+            (
+                "approval_status".to_string(),
+                json!(approval.status.as_str()),
+            ),
+            ("work_thread_id".to_string(), json!(route.work_thread_id)),
+            ("work_item_id".to_string(), json!(route.work_item_id)),
+            ("root_turn_id".to_string(), json!(route.root_turn_id)),
+            (
+                "text".to_string(),
+                json!(format!("执行拒绝: 权限审批未授权本次操作: {reason}")),
+            ),
+        ]),
+    )
+}
+
+fn execution_approval_records(
+    mutation: ExecutionApprovalMutation,
+    operation: &str,
+) -> Result<(ExecutionJobRecord, ApprovalRecord, bool), DynError> {
+    match mutation {
+        ExecutionApprovalMutation::Created { job, approval } => Ok((job, approval, true)),
+        ExecutionApprovalMutation::Updated { job, approval } => Ok((job, approval, false)),
+        ExecutionApprovalMutation::Existing { job, approval } => Ok((job, approval, false)),
+        ExecutionApprovalMutation::Conflict {
+            job,
+            approval,
+            reason,
+        }
+        | ExecutionApprovalMutation::Rejected {
+            job,
+            approval,
+            reason,
+        } => Err(format!(
+            "Execution/Approval 在 {operation} 时被拒绝: {reason} (job={:?}, approval={:?})",
+            job.as_ref()
+                .map(|record| (&record.id, record.revision, record.status)),
+            approval
+                .as_ref()
+                .map(|record| (&record.id, record.revision, record.status))
+        )
+        .into()),
+        ExecutionApprovalMutation::NotFound => {
+            Err(format!("Execution/Approval 在 {operation} 时不存在").into())
+        }
+    }
+}
+
+fn approval_record_from_mutation(
+    mutation: ApprovalMutation,
+    operation: &str,
+) -> Result<(ApprovalRecord, bool), DynError> {
+    match mutation {
+        ApprovalMutation::Created(record) | ApprovalMutation::Updated(record) => Ok((record, true)),
+        ApprovalMutation::Existing(record) => Ok((record, false)),
+        ApprovalMutation::Conflict { current, reason }
+        | ApprovalMutation::Rejected { current, reason } => Err(format!(
+            "Approval '{}' 在 {operation} 时被拒绝（r{} / {}）: {reason}",
+            current.id,
+            current.revision,
+            current.status.as_str()
+        )
+        .into()),
+        ApprovalMutation::NotFound => Err(format!("Approval 在 {operation} 时不存在").into()),
+    }
+}
+
+fn applied_execution_job(
+    receipt: JobReceipt,
+    operation: &str,
+) -> Result<ExecutionJobRecord, DynError> {
+    match receipt {
+        JobReceipt::Applied { job, .. } | JobReceipt::Existing { job, .. } => Ok(job),
+        JobReceipt::Conflict { current, .. } => Err(format!(
+            "Execution Job '{}' 在 {operation} 时发生 revision 冲突（当前 r{} / {}）",
+            current.id,
+            current.revision,
+            current.status.as_str()
+        )
+        .into()),
+        JobReceipt::Rejected {
+            current, reason, ..
+        } => Err(format!(
+            "Execution Job '{}' 在 {operation} 时被拒绝（{}）：{reason}",
+            current.id,
+            current.status.as_str()
+        )
+        .into()),
+        JobReceipt::NotFound { .. } => Err(format!("Execution Job 在 {operation} 时不存在").into()),
+    }
+}
+
+fn execution_job_outcome(event: &Event) -> JobOutcome {
+    let tool_status = event
+        .payload
+        .get("tool_status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("error");
+    let exit_code = event
+        .payload
+        .get("exit_code")
+        .and_then(|value| value.as_i64())
+        .and_then(|value| i32::try_from(value).ok());
+    if tool_status == "success" {
+        JobOutcome::Succeeded {
+            result_event_id: Some(event.id.clone()),
+            result_refs: Vec::new(),
+            exit_code,
+        }
+    } else {
+        JobOutcome::Failed {
+            result_event_id: Some(event.id.clone()),
+            result_refs: Vec::new(),
+            error: event
+                .payload
+                .get("text")
+                .and_then(|value| value.as_str())
+                .unwrap_or("工具执行失败但没有提供错误文本")
+                .to_string(),
+            exit_code,
+        }
+    }
+}
+
+async fn finish_claimed_physical_job(
+    manager: &ExecutionJobManager<dyn ExecutionJobStore>,
+    claimed: &ClaimedExecutionJob,
+    output: &mut Event,
+) -> Result<(), DynError> {
+    for _ in 0..8 {
+        let current = manager
+            .store()
+            .get_execution_job(&claimed.id)
+            .await?
+            .ok_or_else(|| format!("Execution Job '{}' 在终态提交前消失", claimed.id))?;
+        if current.status.is_terminal() {
+            if current.result_event_id.as_deref() == Some(output.id.as_str()) {
+                return Ok(());
+            }
+            return Err(format!(
+                "Execution Job '{}' 已由不同结果 '{}' 终结",
+                current.id,
+                current.result_event_id.as_deref().unwrap_or("<none>")
+            )
+            .into());
+        }
+
+        let outcome = if current.cancel_requested_at.is_some() {
+            let reason = current
+                .cancel_reason
+                .clone()
+                .unwrap_or_else(|| "Runtime 已请求取消该物理 Action".to_string());
+            let prior = output
+                .payload
+                .get("text")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            output
+                .payload
+                .insert("tool_status".to_string(), json!("cancelled"));
+            for key in ["process_status", "task_status", "execution"] {
+                if output.payload.contains_key(key) {
+                    output.payload.insert(key.to_string(), json!("cancelled"));
+                }
+            }
+            output.payload.insert(
+                "text".to_string(),
+                json!(format!(
+                    "物理 Action 已取消：{reason}\n--- 已观测输出 ---\n{prior}"
+                )),
+            );
+            let exit_code = output
+                .payload
+                .get("exit_code")
+                .and_then(|value| value.as_i64())
+                .and_then(|value| i32::try_from(value).ok());
+            JobOutcome::Cancelled {
+                result_event_id: Some(output.id.clone()),
+                result_refs: Vec::new(),
+                reason: Some(reason),
+                exit_code,
+            }
+        } else {
+            execution_job_outcome(output)
+        };
+        match manager
+            .finish_with_event(
+                &current.id,
+                current.revision,
+                Some(&claimed.claim_token),
+                outcome,
+                output,
+            )
+            .await?
+        {
+            JobReceipt::Applied { .. } | JobReceipt::Existing { .. } => return Ok(()),
+            JobReceipt::Conflict { .. } => continue,
+            JobReceipt::Rejected { current, .. }
+                if !current.status.is_terminal() && current.cancel_requested_at.is_some() =>
+            {
+                continue;
+            }
+            JobReceipt::Rejected {
+                current, reason, ..
+            } => {
+                return Err(format!(
+                    "Execution Job '{}' 终态提交被拒绝（{}）：{reason}",
+                    current.id,
+                    current.status.as_str()
+                )
+                .into());
+            }
+            JobReceipt::NotFound { .. } => {
+                return Err(format!("Execution Job '{}' 在终态提交时不存在", claimed.id).into());
+            }
+        }
+    }
+    Err(format!(
+        "Execution Job '{}' 在终态提交时持续发生 revision 竞争",
+        claimed.id
+    )
+    .into())
+}
+
+fn lost_tool_output(metadata: &ToolTaskMetadata, reason: &str) -> Event {
+    let mut payload = serde_json::Map::from_iter([
+        ("context_id".to_string(), json!(metadata.context_id.clone())),
+        ("session_id".to_string(), json!(metadata.session_id.clone())),
+        ("attempt_id".to_string(), json!(metadata.attempt_id.clone())),
+        (
+            "tool_call_id".to_string(),
+            json!(metadata.tool_call_id.clone()),
+        ),
+        (
+            "caused_by".to_string(),
+            json!(metadata.tool_call_id.clone()),
+        ),
+        ("tool_name".to_string(), json!(metadata.tool_name.clone())),
+        ("tool_status".to_string(), json!("lost")),
+        ("wake_policy".to_string(), json!("immediate")),
+        ("output_empty".to_string(), json!(false)),
+        ("text".to_string(), json!(reason)),
+    ]);
+    if let Some(route) = &metadata.activation_route {
+        payload.insert("work_thread_id".to_string(), json!(route.work_thread_id));
+        payload.insert("work_item_id".to_string(), json!(route.work_item_id));
+        payload.insert("root_turn_id".to_string(), json!(route.root_turn_id));
+        payload.insert(
+            "trigger_event_id".to_string(),
+            json!(route.trigger_event_id),
+        );
+        payload.insert(
+            "trigger_sequence".to_string(),
+            json!(route.trigger_sequence),
+        );
+    }
+    Event::new(
+        metadata.output_id.clone(),
+        "System-Executor".to_string(),
+        TYPE_TOOL_OUTPUT.to_string(),
+        "chat/tool_output".to_string(),
+        payload,
+    )
+}
+
+fn unstarted_cancelled_tool_output(job: &ExecutionJobRecord, reason: &str) -> Event {
+    Event::new(
+        format!("output_cancelled_{}", job.id),
+        "System-Executor".to_string(),
+        TYPE_TOOL_OUTPUT.to_string(),
+        "chat/tool_output".to_string(),
+        serde_json::Map::from_iter([
+            ("context_id".to_string(), json!(job.context_id)),
+            ("session_id".to_string(), json!(job.session_id)),
+            ("attempt_id".to_string(), json!(job.activation_id)),
+            ("tool_call_id".to_string(), json!(job.tool_call_id)),
+            ("caused_by".to_string(), json!(job.tool_call_id)),
+            ("tool_name".to_string(), json!(job.tool_name)),
+            ("tool_status".to_string(), json!("cancelled")),
+            ("executed".to_string(), json!(false)),
+            ("wake_policy".to_string(), json!("none")),
+            ("output_empty".to_string(), json!(false)),
+            ("work_thread_id".to_string(), json!(job.thread_id)),
+            ("work_item_id".to_string(), json!(job.activation_id)),
+            (
+                "text".to_string(),
+                json!(format!(
+                    "物理 Action 在副作用开始前已取消，因此没有执行：{reason}"
+                )),
+            ),
+        ]),
+    )
 }
 
 fn extend_exec_output_facts(
@@ -5086,13 +6984,124 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        baseline_system_prompt, classify_terminal_response, cognitive_sexpr_vm_system_prompt,
-        compact_context_inspect_for_persistence, compose_system_prompt, event_needs_signal_outbox,
-        extend_exec_output_facts, render_system_contract, semantic_sexpr_vm_system_prompt,
-        should_force_final_for_maintenance, tool_call_activity_preview, ReadTurnGuard,
-        SystemPromptMode, TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        activation_admission_class, baseline_system_prompt, classify_terminal_response,
+        cognitive_sexpr_vm_system_prompt, compact_context_inspect_for_persistence,
+        compose_system_prompt, event_needs_signal_outbox, extend_exec_output_facts,
+        persist_model_reasoning_summary, render_system_contract, semantic_sexpr_vm_system_prompt,
+        should_force_final_for_maintenance, tool_call_activity_preview,
+        ModelReasoningSummaryAccumulator, ReadTurnGuard, SystemPromptMode, TerminalDecision,
+        AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
-    use crate::event::{Event, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
+    use crate::admission::AdmissionClass;
+    use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn partial_reasoning_summary_is_persisted_once_with_stable_attempt_identity() {
+        let bus = Arc::new(InMemoryEventBus::new());
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let durable_capture = Arc::clone(&captured);
+        bus.subscribe_durable(
+            "runtime/model_reasoning_summary".to_string(),
+            Arc::new(move |event| {
+                let capture = Arc::clone(&durable_capture);
+                Box::pin(async move {
+                    capture.lock().unwrap().push(event);
+                    Ok(())
+                })
+            }),
+        );
+        let accumulator = Arc::new(Mutex::new(ModelReasoningSummaryAccumulator {
+            text: "partial provider summary".to_string(),
+            complete: true,
+            persist_started: false,
+        }));
+        let route = vec![
+            ("work_item_id".to_string(), json!("activation-1")),
+            ("thread_kind".to_string(), json!("dialogue")),
+        ];
+
+        for _ in 0..2 {
+            persist_model_reasoning_summary(
+                &bus,
+                "context-1",
+                "session-1",
+                "attempt-1",
+                &route,
+                &accumulator,
+                true,
+            )
+            .await
+            .unwrap();
+        }
+
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "model_reasoning_summary_attempt-1");
+        assert_eq!(events[0].payload["text"], "partial provider summary");
+        assert_eq!(events[0].payload["complete"], false);
+        assert_eq!(events[0].payload["work_item_id"], "activation-1");
+        assert_eq!(events[0].payload["thread_kind"], "dialogue");
+    }
+
+    #[test]
+    fn activation_admission_class_is_runtime_owned_and_deterministic() {
+        let event =
+            |event_type: &str, topic: &str, payload: serde_json::Map<String, serde_json::Value>| {
+                Event::new(
+                    format!("class-{topic}"),
+                    "fixture".to_string(),
+                    event_type.to_string(),
+                    topic.to_string(),
+                    payload,
+                )
+            };
+        assert_eq!(
+            activation_admission_class(&event(
+                TYPE_USER_MESSAGE,
+                "chat/user_message",
+                serde_json::Map::new(),
+            )),
+            AdmissionClass::InteractiveControl
+        );
+        assert_eq!(
+            activation_admission_class(&event(
+                TYPE_TOOL_OUTPUT,
+                "chat/thread_completion_ready",
+                serde_json::Map::new(),
+            )),
+            AdmissionClass::Delivery
+        );
+        assert_eq!(
+            activation_admission_class(&event(
+                TYPE_TOOL_OUTPUT,
+                "objective/resume",
+                serde_json::Map::new(),
+            )),
+            AdmissionClass::Objective
+        );
+        assert_eq!(
+            activation_admission_class(&event(
+                TYPE_TOOL_OUTPUT,
+                "chat/schedule_due",
+                serde_json::Map::new(),
+            )),
+            AdmissionClass::ScheduledBackground
+        );
+        assert_eq!(
+            activation_admission_class(&event(
+                TYPE_TOOL_OUTPUT,
+                "runtime/context_maintenance",
+                serde_json::Map::from_iter([(
+                    "scheduled_intent_id".to_string(),
+                    json!("schedule-1"),
+                )]),
+            )),
+            AdmissionClass::Maintenance,
+            "explicit Runtime maintenance must not be reclassified by an incidental schedule field"
+        );
+    }
 
     #[test]
     fn signal_outbox_is_reserved_for_routable_scheduler_inputs() {

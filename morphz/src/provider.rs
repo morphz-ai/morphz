@@ -571,6 +571,10 @@ pub async fn probe_provider(
 
 #[async_trait::async_trait]
 impl Client for ProtocolClient {
+    fn supports_async_cancellation(&self) -> bool {
+        true
+    }
+
     fn reasoning_effort(&self) -> Option<ReasoningEffort> {
         self.reasoning_effort
             .read()
@@ -669,29 +673,61 @@ impl StreamAccumulator {
         });
     }
 
+    fn reasoning_summary(&self, text: &str, stream: &ModelStreamSender) {
+        if text.is_empty() {
+            return;
+        }
+        // Reasoning summaries are deliberately not accumulated into
+        // `content`: they are an optional, ephemeral UI aid rather than part
+        // of the model's final assistant message.
+        let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
+            text: text.to_string(),
+        });
+    }
+
     fn tool(
         &mut self,
         index: usize,
         id: Option<&str>,
         name: Option<&str>,
         stream: &ModelStreamSender,
-    ) -> &mut StreamingToolCall {
-        let tool = self.tools.entry(index).or_default();
-        if let Some(id) = id.filter(|value| !value.is_empty()) {
-            tool.id = id.to_string();
+    ) {
+        let (started, buffered_arguments) = {
+            let tool = self.tools.entry(index).or_default();
+            if let Some(id) = id.filter(|value| !value.is_empty()) {
+                tool.id = id.to_string();
+            }
+            if let Some(name) = name.filter(|value| !value.is_empty()) {
+                tool.name = name.to_string();
+            }
+
+            // OpenAI Chat-compatible endpoints are allowed to split the tool
+            // identity across deltas (commonly `id` first and `name` next).
+            // Publishing an incomplete ToolCallStarted event is irreversible:
+            // the normalized protocol has no later rename event. Delay the
+            // announcement until the complete identity is known, and retain
+            // any unusually early argument bytes until after that event.
+            if !tool.announced && !tool.id.is_empty() && !tool.name.is_empty() {
+                tool.announced = true;
+                (
+                    Some(ModelStreamEvent::ToolCallStarted {
+                        index,
+                        id: tool.id.clone(),
+                        name: tool.name.clone(),
+                    }),
+                    (!tool.arguments.is_empty()).then(|| tool.arguments.clone()),
+                )
+            } else {
+                (None, None)
+            }
+        };
+
+        if let Some(started) = started {
+            let _ = stream.send(started);
         }
-        if let Some(name) = name.filter(|value| !value.is_empty()) {
-            tool.name = name.to_string();
+        if let Some(delta) = buffered_arguments {
+            let _ = stream.send(ModelStreamEvent::ToolArgumentsDelta { index, delta });
         }
-        if !tool.announced && (!tool.id.is_empty() || !tool.name.is_empty()) {
-            tool.announced = true;
-            let _ = stream.send(ModelStreamEvent::ToolCallStarted {
-                index,
-                id: tool.id.clone(),
-                name: tool.name.clone(),
-            });
-        }
-        tool
     }
 
     fn arguments(&mut self, index: usize, delta: &str, stream: &ModelStreamSender) {
@@ -700,15 +736,17 @@ impl StreamAccumulator {
         }
         let tool = self.tools.entry(index).or_default();
         tool.arguments.push_str(delta);
-        let _ = stream.send(ModelStreamEvent::ToolArgumentsDelta {
-            index,
-            delta: delta.to_string(),
-        });
+        if tool.announced {
+            let _ = stream.send(ModelStreamEvent::ToolArgumentsDelta {
+                index,
+                delta: delta.to_string(),
+            });
+        }
     }
 
     fn complete_tool(&mut self, index: usize, stream: &ModelStreamSender) {
         if let Some(tool) = self.tools.get_mut(&index) {
-            if !tool.completed {
+            if tool.announced && !tool.completed {
                 tool.completed = true;
                 let _ = stream.send(ModelStreamEvent::ToolCallCompleted { index });
             }
@@ -811,6 +849,11 @@ impl StreamAccumulator {
                     self.text(delta, stream);
                 }
             }
+            "response.reasoning_summary_text.delta" => {
+                if let Some(delta) = event.get("delta").and_then(Value::as_str) {
+                    self.reasoning_summary(delta, stream);
+                }
+            }
             "response.output_item.added" => {
                 let item = event.get("item").unwrap_or(&Value::Null);
                 if item.get("type").and_then(Value::as_str) == Some("function_call") {
@@ -860,6 +903,23 @@ impl StreamAccumulator {
                         .get("output_index")
                         .and_then(Value::as_u64)
                         .unwrap_or(0) as usize;
+                    self.tool(
+                        index,
+                        item.get("call_id")
+                            .or_else(|| item.get("id"))
+                            .and_then(Value::as_str),
+                        item.get("name").and_then(Value::as_str),
+                        stream,
+                    );
+                    if self
+                        .tools
+                        .get(&index)
+                        .is_some_and(|tool| tool.arguments.is_empty())
+                    {
+                        if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
+                            self.arguments(index, arguments, stream);
+                        }
+                    }
                     self.complete_tool(index, stream);
                 }
             }
@@ -997,8 +1057,15 @@ impl StreamAccumulator {
             .into_iter()
             .flatten()
         {
-            if let Some(text) = part.get("text").and_then(Value::as_str) {
-                self.text(text, stream);
+            // Gemini may stream internal reasoning as a normal-looking text
+            // part marked with `thought: true`. It is protocol metadata, not
+            // assistant-visible content, and must never reach the user-facing
+            // text channel. A sibling `thoughtSignature` is intentionally not
+            // interpreted as text either.
+            if part.get("thought").and_then(Value::as_bool) != Some(true) {
+                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                    self.text(text, stream);
+                }
             }
             if let Some(call) = part.get("functionCall") {
                 let index = self.gemini_tool_index;
@@ -1552,8 +1619,10 @@ fn parse_gemini_response(value: Value) -> Result<Response, ProviderError> {
         .flatten()
         .enumerate()
     {
-        if let Some(text) = part.get("text").and_then(Value::as_str) {
-            content.push(text.to_string());
+        if part.get("thought").and_then(Value::as_bool) != Some(true) {
+            if let Some(text) = part.get("text").and_then(Value::as_str) {
+                content.push(text.to_string());
+            }
         }
         if let Some(call) = part.get("functionCall") {
             tool_calls.push(ToolCallRepr {
@@ -1630,6 +1699,29 @@ mod tests {
         AxumResponse::builder()
             .header("content-type", "text/event-stream")
             .body(Body::from(body))
+            .unwrap()
+    }
+
+    fn gated_sse(chunks: Vec<&'static str>, gate: Arc<tokio::sync::Semaphore>) -> AxumResponse {
+        let body = futures_util::stream::unfold(
+            (chunks.into_iter(), true, gate),
+            |(mut chunks, first, gate)| async move {
+                let chunk = chunks.next()?;
+                if !first {
+                    gate.acquire()
+                        .await
+                        .expect("test gate must remain open")
+                        .forget();
+                }
+                Some((
+                    Ok::<_, std::convert::Infallible>(chunk.to_string()),
+                    (chunks, false, gate),
+                ))
+            },
+        );
+        AxumResponse::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::from_stream(body))
             .unwrap()
     }
 
@@ -1897,6 +1989,7 @@ mod tests {
                 },
             )
             .unwrap();
+            assert!(client.supports_async_cancellation());
             let response = client
                 .create_completion(prompt.clone(), Vec::new())
                 .await
@@ -1926,6 +2019,7 @@ mod tests {
                 "/responses",
                 post(|| async {
                     sse(concat!(
+                        "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"summary\"}\n\n",
                         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
                         "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"reply\"}}\n\n",
                         "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{\\\"text\\\":\\\"done\\\"}\"}\n\n",
@@ -2006,6 +2100,168 @@ mod tests {
                 event,
                 ModelStreamEvent::ToolArgumentsDelta { delta, .. } if delta.contains("done")
             )));
+            let reasoning_summaries = events
+                .iter()
+                .filter_map(|event| match event {
+                    ModelStreamEvent::ReasoningSummaryDelta { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if protocol == ModelProtocol::OpenaiResponses {
+                assert_eq!(reasoning_summaries, ["summary"]);
+            } else {
+                assert!(reasoning_summaries.is_empty(), "protocol={protocol:?}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn all_protocols_deliver_first_text_delta_before_http_body_completes() {
+        // The second chunk of every response is held behind a semaphore. This
+        // is a real streaming HTTP body, not a pre-concatenated Body::from:
+        // receiving `early` while the request task is still blocked proves
+        // that ProtocolClient forwards bytes before response completion.
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let chat_gate = gate.clone();
+        let responses_gate = gate.clone();
+        let anthropic_gate = gate.clone();
+        let gemini_gate = gate.clone();
+        let app = Router::new()
+            .route(
+                "/chat/completions",
+                post(move || {
+                    let gate = chat_gate.clone();
+                    async move {
+                        gated_sse(
+                            vec![
+                                "data: {\"choices\":[{\"delta\":{\"content\":\"early\"}}]}\n\n",
+                                concat!(
+                                    "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                                    "data: [DONE]\n\n"
+                                ),
+                            ],
+                            gate,
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/responses",
+                post(move || {
+                    let gate = responses_gate.clone();
+                    async move {
+                        gated_sse(
+                            vec![
+                                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"early\"}\n\n",
+                                "data: {\"type\":\"response.completed\",\"response\":{}}\n\n",
+                            ],
+                            gate,
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/messages",
+                post(move || {
+                    let gate = anthropic_gate.clone();
+                    async move {
+                        gated_sse(
+                            vec![
+                                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"early\"}}\n\n",
+                                "data: {\"type\":\"message_stop\"}\n\n",
+                            ],
+                            gate,
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/models/test-model:streamGenerateContent",
+                post(move || {
+                    let gate = gemini_gate.clone();
+                    async move {
+                        gated_sse(
+                            vec![
+                                "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"early\"}]}}]}\n\n",
+                                "data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[]}}]}\n\n",
+                            ],
+                            gate,
+                        )
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base_url = format!("http://{address}");
+
+        for protocol in [
+            ModelProtocol::OpenaiChat,
+            ModelProtocol::OpenaiResponses,
+            ModelProtocol::AnthropicMessages,
+            ModelProtocol::GeminiContent,
+        ] {
+            let client = ProtocolClient::new(
+                &ProviderConfig {
+                    protocol,
+                    base_url: base_url.clone(),
+                    ..ProviderConfig::default()
+                },
+                "test-model".to_string(),
+                None,
+                &LlmConfig::default(),
+            )
+            .unwrap();
+            let prompt = vec![Message {
+                role: "user".to_string(),
+                content: "hello".to_string(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            }];
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let request = tokio::spawn(async move {
+                client
+                    .create_completion_measured_stream(prompt, Vec::new(), None, tx)
+                    .await
+            });
+
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                    .await
+                    .unwrap(),
+                Some(ModelStreamEvent::Started),
+                "protocol={protocol:?}"
+            );
+            let first_text = loop {
+                let event = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                    .await
+                    .unwrap()
+                    .expect("stream closed before text delta");
+                if let ModelStreamEvent::TextDelta { text } = event {
+                    break text;
+                }
+            };
+            assert_eq!(first_text, "early", "protocol={protocol:?}");
+            assert!(
+                !request.is_finished(),
+                "protocol={protocol:?} completed before the gated HTTP body"
+            );
+
+            gate.add_permits(1);
+            let response = tokio::time::timeout(Duration::from_secs(1), request)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(response.content, "early", "protocol={protocol:?}");
+            assert!(
+                std::iter::from_fn(|| rx.try_recv().ok())
+                    .any(|event| event == ModelStreamEvent::Completed),
+                "protocol={protocol:?}"
+            );
         }
     }
 

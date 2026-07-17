@@ -1,12 +1,12 @@
 # Morphz Scheduler Kernel 与领域命名模型 v1
 
-> 状态：设计与实现基线；Phase 0–2 已完成，Phase 3–5 为后续路线
+> 状态：设计与实现基线；Phase 0–4 的单机实现已经收口，Phase 5 分布式执行明确不在当前范围
 >
 > 日期：2026-07-17
 >
 > 适用范围：Runtime 调度、Session 并发、工具执行、Objective、Delegation、定时任务与结果交付
 >
-> 相关文档：[Session Thread Model v1](./morphz_session_thread_model_v1.md)、[First-Class Objective Supervisor v1](./morphz_first_class_objective_supervisor_v1.md)、[共享 Context 多 Session 架构](./morphz_shared_context_multisession_architecture.md)
+> 相关文档：[Session Thread Model v1](./morphz_session_thread_model_v1.md)、[First-Class Objective Supervisor v1](./morphz_first_class_objective_supervisor_v1.md)、[共享 Context 多 Session 架构](./morphz_shared_context_multisession_architecture.md)、[单 Session 求值与响应路由协议 v1](./morphz_response_routing_protocol_v1.md)
 
 ## 1. 背景
 
@@ -349,7 +349,7 @@ Execution Job 是 Runtime 将一个需要现实执行的 Action 物化后的记�
 - 一次需要审批的命令；
 - 一次 Sub Agent 或远程 Worker 执行。
 
-当前的 `BackgroundTask` 应逐步收敛为 Execution Job。前台和后台不需要两套 Job 类型，区别只在于当前 Activation 是否同步等待，以及 Job 完成后如何生成 Signal。
+当前物理工具 Action 和脱离当前 Activation 继续运行的后台进程都已经物化为持久 `ExecutionJob`。前台和后台不需要两套权威 Job 类型；进程内 `BackgroundTask` 只保留 live process group、增量输出等不可持久化的执行句柄和缓存，Job 生命周期以数据库记录为准。两者的区别只在于当前 Activation 是否同步等待，以及 Job 完成后如何生成 Signal。
 
 推荐状态：
 
@@ -363,7 +363,34 @@ cancelled
 lost
 ```
 
-Job 终态会原子地产生对应的 `ThreadSignal`，但不能直接伪造 Thread 已经完成。
+Job 终态必须与对应的不可变结果 Event 原子提交。脱离当前 Activation 的后台 Job 可以同时写入 Signal Outbox；同一 Activation 中的一批并行工具则先各自提交 Job/Event，待全部 sibling 终态后只写入一个 batch-complete barrier Event/Outbox，避免一个工具结果启动一条重复模型链。无论哪种路径，Job 终态都不能直接伪造 Thread 已经完成。
+
+单机重启恢复遵循保守的现实边界：尚未越过副作用边界且声明为幂等的 Job 可以通过 revision/claim fencing 重新排队；外部结果无法证明的运行中 Job 必须标记为 `lost`，不得自动重放一个可能已经发生的非幂等副作用。
+
+取消也必须遵循物理事实而不是控制愿望：`cancel_requested` 只是持久意图。未启动或仍在等待审批且未越过副作用边界的 Job 可以直接以确定性 cancelled Event 关闭；运行中的本机 exec 必须先记录意图，再终止对应进程组，并由 executor/watcher 观察退出后提交 `cancelled`。如果跨重启后无法证明实际结果，则提交 `lost`，不能用“曾经请求取消”伪造物理终止。
+
+### 3.10.1 Durable Approval
+
+推荐名称：`Approval` 或 `ExecutionApproval`。
+
+中文：持久审批、执行授权。
+
+审批不是进程内回调，也不是模型对安全性的随口判断。它是一个绑定到**确切 Execution Job、规范化 Action、请求能力集合和权限策略版本**的持久授权对象。
+
+推荐状态：
+
+```text
+pending_auto | pending_human | allowed | denied | cancelled
+```
+
+关键边界：
+
+1. 需要审批的 Job 在物理执行 claim 之前进入 `waiting_approval`；
+2. Approval request、Job 与不可变审计 Event 采用稳定身份，精确重放幂等，不同请求不能复用同一个授权；
+3. `allowed` 产生的 grant 只能使用一次，并与 Job claim 在同一事务消费；
+4. 人工审批可以跨 Runtime 重启等待，不应被普通工具执行超时误判为工具失败；
+5. `denied/cancelled` 会形成明确的工具结果和 Job 终态，而不是静默丢弃调用；
+6. 人或自动 reviewer 是 Approval authority 的决策适配器，持久 Approval 记录才是 Runtime 的权威事实。
 
 ### 3.11 Executor 与 Delegation
 
@@ -457,6 +484,10 @@ Outcome 与“结果是否已经发送给用户”是两个维度。后台 Execu
 - 向另一个 Session 发送消息；
 - 暂时 `deferred`；
 - 明确不发送用户可见文本。
+
+当前单机 Runtime 已为同一 Session 的相邻完成结果提供持久 Delivery merge window。第一个 pending 结果启动最大等待边界；后续结果只在该边界内重排短合并窗口。到期后由 generation-fenced Timer 原子写入一条确定性的 `chat/thread_completion_ready` Event 与 Signal Outbox，再由一次 Delivery Activation 统一解释和交付。这个窗口只合并完成通知，不改变各 Execution Thread/Job 的物理完成时刻。
+
+每次 Delivery Activation 的交付范围由其**不可变触发快照**决定：`chat/thread_completion_ready.completed_thread_ids/result_event_ids` 在 Timer generation 触发时冻结，Context Encoding 只把这批 ID 中仍为 `pending/deferred` 的结果呈现为待交付事实，Activation Route 也保存同一组 ID。最终 `chat/reply.covers` 或 `chat/no_reply.defer_covers` 只能确认这批快照；求值开始后新完成的 Thread 保持待交付，并进入下一次 Delivery。Runtime 不能在终态提交时重新扫描 Session 的“当前全部 pending”，否则一次旧求值可能误确认它从未看见的新结果。
 
 ## 4. 统一执行链
 
@@ -739,10 +770,18 @@ Scheduler Kernel 至少应维护以下不变量：
 14. Thread Outcome 与用户 Delivery 必须分离。
 15. Schedule 到期只产生 Signal，不直接宣称任务成功。
 16. Objective 的等待、暂停和阻塞必须能够区分。
-17. Runtime 状态转换和由此产生的 Signal 必须原子提交。
+17. 凡是一次控制事务已经决定“应唤醒 Thread”，其 Event 与 Signal Outbox 必须原子提交；Job terminal 与后续 batch/background wake 可以是两个语义事务，但中间状态必须持久、幂等且具备启动恢复桥接。
 18. 重启恢复不得重复执行已确认的外部副作用。
 19. `lifecycle=open` 且长期没有 Signal、Job、Schedule、Wait Condition 或 active Activation 的 Thread 是孤儿状态，必须被检测。
 20. UI 展示状态必须来自权威控制记录，不能来自陈旧日志文案或未经验证的 phase 缓存。
+21. 需要审批的 Execution Job 在授权 grant 与 Job claim 原子提交之前不得跨越物理副作用边界。
+22. 一个 Approval grant 只能被与其 Job、Action、能力集合和策略摘要完全匹配的一次 claim 消费。
+23. Activation admission 窗口满只能造成持久 `queued` 延迟，不能把合法工作伪造成失败或丢弃。
+24. 只要执行资源持续释放，固定低优先级工作必须通过 aging 获得最终推进机会；模型不能提供任意数字绕过 Runtime 的 class 和容量策略。
+25. Objective 的 pause/cancel 只能取消与该 Objective Evaluation 精确绑定的 Activation/Job，不得扩大成 Session 级取消并影响普通对话或兄弟 Objective。
+26. Delivery 合并不得越过第一个 pending 结果的最大等待边界；同一 Timer generation 的重试最多产生一个确定性 Event/Outbox。
+27. Delivery 终态只能确认其不可变 Trigger Snapshot 中的 Thread；求值开始后新完成的结果必须留给下一次 Delivery。
+28. 瞬时模型流是可丢弃的 UI 草稿，不能反向阻塞 Model Attempt、Execution Job 或持久事实提交；最终界面必须由持久终态纠正。Provider 返回的 reasoning summary 必须与公开正文分通道展示，不得混入 Session 回复或 Context observation；一次 Attempt 只能在终态聚合后写入一条独立 Ledger 可观测事实。
 
 ## 10. 持久化调度内核
 
@@ -757,8 +796,11 @@ activation_signals
 thread_wait_conditions
 model_attempts                 optional audit projection
 execution_jobs
+approvals
 schedules
 schedule_occurrences           phase 2
+runtime_timers
+signal_outbox
 thread_outcomes
 deliveries
 objectives
@@ -795,10 +837,9 @@ activation → succeeded
 ```text
 job → succeeded/failed
 + append physical result event
-+ create thread signal
 ```
 
-必须在同一事务完成。
+Job terminal 与 physical result Event 必须在同一事务完成。其后的 wake 边界取决于 Action 形态：同一 Activation 的并行工具必须等待所有 sibling Job/Event 终态后再追加**一个** batch barrier Event/Outbox；脱离 Activation 的后台 Job 则追加自己的 Signal Outbox。当前后台路径的 Outbox 是紧随 terminal transaction 的幂等第二步，并在启动时扫描 terminal background Job 修复崩溃窗口；这是已覆盖的单机恢复边界，不应被误写成一次 SQLite 原子提交。
 
 ### 10.4 Thread Terminal
 
@@ -830,34 +871,81 @@ acknowledge signals after activation outcome commits
 
 这样，进程在“数据库提交成功、内存派发尚未发生”之间崩溃时，不需要每个模块分别实现特殊恢复扫描。
 
-## 11. 公平性、优先级与背压
-
-模型可以建议并发关系，但 Runtime 必须拥有物理资源控制权。
-
-建议的调度维度：
-
-- Provider 并发限制；
-- Agent 并发限制；
-- Context 并发限制；
-- Session Dialogue 公平性；
-- 每 Thread 最大并发 Job；
-- 每 Activation 最大并行 Action；
-- Delivery 延迟上限；
-- Objective 配额和预算；
-- 全局队列背压。
-
-推荐的默认优先级方向：
+### 10.6 Approval 与 Job Claim
 
 ```text
-interactive dialogue
-delivery of completed work
-approval/user-visible control
-active objective continuation
-scheduled/background work
+ensure waiting_approval job
++ ensure pending approval
++ append approval request event
+
+approval authority decides
++ persist allow/deny authority state
++ append idempotent audit projection
+
+consume exact one-use grant
++ claim execution job
+```
+
+waiting Job、pending Approval 与 request Event 在一个事务中创建。Approval 的每次 Decision/Cancel 状态迁移与对应 immutable decision Event 也在同一个事务中提交；事件身份绑定 `approval_id + decision status`，因此先允许、后在 grant 消费前取消是两个合法且可重放的审计事实，同时 grant 消费造成的普通 revision 推进不会伪造新的 decision。精确重放可以补齐旧 Runtime 留下的缺失事件，不同内容则冲突并整体回滚。Decision record 必须先于进程内 waiter 唤醒持久化；decision Event 是幂等审计投影，不是第二个 authority。grant 消费与 Job claim 在另一个事务中原子完成，并通过 revision、request/policy digest 和 claim token fencing。Approval 等待发生在工具物理执行超时开始之前；拒绝则以显式 Job/Tool terminal fact 结束。
+
+### 10.7 Delivery Flush
+
+```text
+thread outcome becomes pending delivery
++ arm/bump session delivery timer generation
+
+timer generation fires
++ append deterministic completion-ready event
++ append signal outbox
+```
+
+`due_at = min(latest_pending + merge_window, first_pending + max_wait)`。Timer 重排、Runtime 重启和旧 generation 迟到都不能延长第一条结果的最大等待时间，也不能生成第二条相同 Delivery wake。Timer generation 触发时写入的 `completed_thread_ids/result_event_ids` 是不可变 Trigger Snapshot；Context Encoding、`covers` 和 `defer_covers` 都必须使用这组 ID，而不是在 Delivery 结束时重新扫描 live pending 集合。
+
+## 11. 公平性、优先级与背压
+
+模型可以建议串行、并行、依赖和定时关系，但 Runtime 必须拥有物理资源控制权。当前单机实现已经把 Activation admission 从“只有一个全局 Semaphore”推进为以下组合：
+
+### 11.1 固定 Admission Class
+
+```text
+interactive/control
+delivery
+objective
+scheduled/background
 maintenance
 ```
 
-这只是 Runtime 资源策略，不决定业务重要性。模型可以通过受限字段表达优先级建议，但不能绕过系统配额和安全限制。
+class 由 Runtime 根据持久 Trigger Event 推导，不接受模型提供任意数字优先级。它表达延迟敏感性和系统生存性，不判断用户业务的重要程度。
+
+### 11.2 分层公平与 Aging
+
+同一有效 class 内按 `Agent → Context → Session` 分层轮转，再选取该 Session 中持久 `(created_at, id)` 最早的 Activation。等待达到配置间隔后，低 class 逐级提升，直到获得执行机会，避免后台或维护工作永久饥饿。
+
+公平游标目前属于单机进程内加速状态；重启后可以从持久 queued rows 确定性重建。重启可能重置轮转相位，但不会改变 FIFO、aging 或是否最终可运行。
+
+### 11.3 保留通道与有界背压
+
+总运行槽位由 Runtime `concurrency_limit` 控制，并为 Dialogue/Delivery 保留可配置容量。内存调度窗口也为这两类延迟敏感工作保留位置；普通队列溢出仍留在 SQLite 的 `queued` Activation 中，通过无丢失 Notify 驱动的 refill 再进入窗口，不生成假失败回复，也不扫描整个 Event Ledger。
+
+当前配置项包括：
+
+```text
+orchestrator.concurrency_limit
+orchestrator.activation_admission.max_queued
+orchestrator.activation_admission.dialogue_delivery_reserved_slots
+orchestrator.activation_admission.dialogue_delivery_reserved_queue_slots
+orchestrator.activation_admission.aging_promotion_interval
+```
+
+### 11.4 已实现与尚未实现的边界
+
+已经实现的是单机 Activation 层的固定 class、分层公平、aging、保留容量和持久 overflow backpressure。尚未实现的是每 Agent/Context/Session/Thread 的独立**数字并发配额**、每 Objective 的吞吐预算，以及跨进程的全局公平游标。Provider 调用仍受全局并发限制；Execution Job/Action 的更细粒度资源池仍应作为后续单机策略扩展，而不是在本文中误报为已经完成。
+
+### 11.5 瞬时展示流的背压边界
+
+`runtime/model_stream` 只承载 Provider 原生文本、推理摘要和工具参数增量，不是 Scheduler 的持久事实。Runtime 对这类事件采用 best-effort、非阻塞投递：某个 TUI、Dashboard 或 SDK 订阅者的有界队列已满时可以丢弃 draft chunk，不能让同步 EventBus 反向阻塞 Provider 流。`chat/reply`、`chat/no_reply`、工具结果和其他持久事件仍走可靠等待路径，并在终态原子替换不完整草稿。Dashboard WebSocket 一旦检测到广播 gap，会断开并从持久快照重同步，而不是把缺少中段的 draft 继续显示为完整响应。
+
+推理摘要在此有一条额外的单次终态路径：Runtime 在 Model Attempt 结束后聚合全部 `ReasoningSummaryDelta`，只写入一条 `runtime/model_reasoning_summary`。该事件是可恢复的调试/观察数据，但不是 Reply、Session 消息或 Context observation；因此 Runtime 重启后 Dashboard 仍可查询，而 Agent 后续求值不会看到它。持久路由 `attempt_id` 幂等定位，并携带 `complete` 区分完整流与可能的中断摘要。
 
 ## 12. Context Encoding 中的表达
 
@@ -903,13 +991,16 @@ maintenance
 | `ThreadActivationRecord` | `ThreadActivationRecord` | 领域类型与状态已经收口，SQLite 物理表已迁移为 `thread_activations` |
 | `ThreadSignalRecord` + Event | `ThreadSignal` | Event 保存不可变事实，Signal 保存 mailbox 消费状态 |
 | `signal_outbox` | Durable Signal Outbox | Event 与投递意图同事务提交；dispatcher 幂等物化 Signal |
-| `ScheduledIntentRecord` | `ScheduleRecord` | 当前将 rule、intent 和 occurrence 混在一起 |
-| `BackgroundTask` | `ExecutionJob` | 当前主要驻留进程内，需持久化 |
+| `ScheduledIntentRecord` | `ScheduleRecord` | 已有 inspect/pause/resume/reschedule/cancel CAS 控制；rule、intent 和 occurrence 仍在同一记录 |
+| `ExecutionJobRecord` | `ExecutionJob` | 已持久化普通物理 Action 与后台进程生命周期；进程内 BackgroundTask 只保留 live 句柄/输出缓存 |
+| `ApprovalRecord` + `ExecutionApprovalStore` | `ExecutionApproval` | exact request/policy binding、单次 grant 与 Job claim 原子消费 |
 | Tool Call | `Action` | 已有标准 Function Calling 表达 |
-| ObjectiveRecord | `Objective` | 保留，Supervisor 应改为 Signal 生产策略 |
+| ObjectiveRecord | `Objective` | 保留；Supervisor 已通过 continuation Event/Outbox 生产 Signal |
 | DelegationRecord | `Delegation` | 保留，逐步改为 Executor 关系 |
 | `work_thread_outcomes` | `ThreadOutcome` | 已具备唯一终态事务边界 |
 | Completion Inbox + Delivery Thread | `Delivery` | 方向正确，继续保留 |
+| `runtime_timers(kind=delivery_flush)` + Trigger Snapshot | Delivery merge window | 同 Session 合并、first-result max wait、generation fencing、不可变交付范围与重启恢复 |
+| `ActivationAdmissionController` | Activation admission | 单机固定 class、分层公平、aging、保留容量与 bounded refill |
 
 当前已经正确的部分：
 
@@ -925,16 +1016,27 @@ maintenance
 - Schedule、Objective、Background wake 与 Activation lease 共用持久 Timer Engine；
 - Schedule dependency 由持久反向索引事件驱动唤醒，不再固定间隔轮询；
 - Work completion 与用户 Delivery 分离；
+- 同 Session 并发完成结果通过持久 Delivery Flush Timer 合并，并受 first-result max wait 约束；
+- Delivery Activation 的 Context Encoding 与终态 `covers/defer_covers` 使用 Trigger Event 中冻结的完成 Thread ID；求值期间的新结果不会被旧 Delivery 误确认；
+- Schedule inspect/pause/resume/reschedule/cancel 已使用 expected revision CAS，并通过 Timer generation fencing 阻止旧计划复活；
+- 普通工具 Action 与脱离 Activation 的后台 exec 已物化为持久 Execution Job；空输出也以明确终态表达；
+- Job 终态与不可变结果 Event 原子提交，后台 Job 的终态 Event→Outbox 崩溃窗口可在启动时幂等修复；
+- 同一 Activation 的并行物理 Action 只在所有 sibling Job/Event 终态后产生一个 batch barrier wake，避免每条工具结果各自启动重复求值；
+- 审批请求、决策和一次性 grant 已持久化；grant 与 Job claim 原子消费，拒绝形成明确工具结果；
+- Runtime 启动时对 running Job 进行保守 reconcile：只有尚未越过副作用边界的幂等工作可重新排队，其余不确定事实进入 `lost`；
+- Objective/Activation cancellation 先持久化精确 Job 取消意图；未启动或等待审批的 Job 原子关闭为 cancelled，运行中的本机 exec 终止其进程组并由 watcher 提交真实终态；
+- Activation admission 已提供固定 class、Agent→Context→Session 分层公平、aging、Dialogue/Delivery 保留通道和 SQLite durable overflow；
+- Objective pause/cancel 已按 Objective Evaluation/Activation 精确路由，不再通过 Session 级取消抑制普通对话或兄弟 Objective；
 - 不同 Session、Dialogue 和 Execution 工作并发。
 
-Phase 3 以后需要继续收口的部分：
+当前单机收口仍保留的边界：
 
-- Thread、Objective、Delegation、Schedule、BackgroundTask 仍存在部分重复状态投影；
-- 后台 Job 主要是进程内状态；
-- 缺少 Schedule cancel/reschedule/pause/resume；
-- 缺少父子 Thread、Wait Reason、Priority 等明确关系；
-- 调度公平性主要只有全局模型并发限制；
-- 多进程 Worker 仍受进程内 EventBus、Gate 和缓存限制。
+- Thread、Objective、Delegation 和 Schedule 仍存在部分 UI/审计缓存投影；BackgroundTask live handle/cache 必须继续保持非权威；
+- `work_threads` 等少量 SQLite 物理名称仍沿用迁移前术语；
+- 缺少通用的父子 Thread/Action Group、组合 Wait Reason 和每 Agent/Context/Session/Thread 数字配额；
+- 取消不能回滚已经提交到外部系统的副作用；对无法证明结果的跨重启 Job 仍必须进入 `lost`，具体工具若需要更强语义，应提供幂等键、reconcile 或专用 cancel hook；
+- Approval 的 durable authority 已建立，但人工交互 UI/adapter 的产品体验仍可继续完善；
+- 多进程 Worker 明确属于 Phase 5，当前仍受进程内 EventBus、Gate、admission permit、公平游标和 live process cache 限制。
 
 ## 14. 命名迁移表
 
@@ -952,8 +1054,8 @@ Phase 3 以后需要继续收口的部分：
 | `EvaluationWorkItemStatus` | `ThreadActivationStatus` | 激活状态 |
 | `EvaluationOutcomeCommit` | `ActivationOutcomeCommit` 或直接并入 Thread Outcome 事务 | 激活结果提交 |
 | `ScheduledIntentRecord` | `ScheduleRecord` | 调度记录 |
-| `BackgroundTask` | `ExecutionJob` | 执行作业 |
-| `BackgroundTaskStatus` | `JobStatus` | 作业状态 |
+| 持久 `BackgroundTask` 领域状态 | `ExecutionJob` | 执行作业；进程内 live handle/cache 可保留实现名 |
+| 持久 `BackgroundTaskStatus` | `ExecutionJobStatus` | 作业状态 |
 | 触发用 Event | `ThreadSignal` | 线程信号 |
 | `wake` | 保留为 Scheduler 动作 | 唤醒动作 |
 | `Model Attempt` | 保留 | 模型尝试 |
@@ -990,19 +1092,34 @@ Phase 3 以后需要继续收口的部分：
 
 ### Phase 3：Execution Job 持久化
 
-- 将后台进程、工具执行和审批等待统一为 Job；
-- 持久化 Job 生命周期、执行边界、结果引用和 heartbeat；
-- Runtime 启动时统一 reconcile Job 与 Thread；
-- 加入取消传播和 lost worker 处理。
+单机持久控制面已经实现：
+
+- 将普通物理工具 Action、后台进程和审批等待统一物化为 Execution Job；
+- 持久化 Job 生命周期、claim/lease、heartbeat、副作用边界、取消意图、结果引用和终态 Event；
+- Runtime 启动时统一 reconcile Job：安全的幂等前副作用 Job 可重新排队，不确定执行进入 `lost`；
+- 后台 exec 的 live process group 与输出仍是进程内执行句柄，但 list/status/wait/kill 以持久 Job 为权威；
+- Approval request/decision/grant 持久化，grant 与 Job claim 原子消费，拒绝形成显式终态；
+- 同一 Activation 中的并行 Action 各自拥有确定性 Job 身份和终态 Event，全部 sibling 结束后才产生一个 batch-complete wake；
+- 后台 Job 完成、强杀和终态 Event→Outbox 恢复已经进入同一控制面。
+
+Phase 3 的单机物理取消链路已经收口：Activation caller 被取消时，已 spawn 的 executor 继续持有 Job 直至提交终态；尚未启动或等待审批且未越过副作用边界的 Job 会同时取消 Approval、写入确定性 Tool Event 并进入 `cancelled`；运行中的本机 exec 先持久化取消意图，再按 causal route 终止进程组，由 watcher 根据真实退出提交 `cancelled`。Runtime 不把 `cancel_requested` 本身当成终态，也不声称能回滚已提交的外部副作用；重启后无法证明结果的工作仍保守进入 `lost`。
 
 ### Phase 4：调度管理和公平性
 
-- 为 `schedule_tx` 增加 cancel、reschedule、pause、resume、inspect；
-- 增加 Provider/Agent/Context/Session/Thread 多级并发配额；
-- 增加优先级、公平队列和背压；
-- Delivery 使用小窗口合并同 Session 的并发完成结果。
+当前单机范围已经完成：
+
+- `schedule_tx` 的 inspect/pause/resume/reschedule/cancel，全部使用 expected revision CAS 和 Timer generation fencing；
+- Runtime 固定 Admission Class、Agent→Context→Session 分层公平、aging 与有界背压；
+- Dialogue/Delivery 的运行槽和内存窗口保留容量，使后台饱和时仍能对话和交付；
+- overflow Activation 保留在 SQLite `queued`，由 notification-driven refill 恢复，不转换为失败；
+- Delivery 使用持久小窗口合并同 Session 并发完成结果，并用 first-result max wait、generation fencing、确定性 Event/Outbox、不可变 Trigger Snapshot 和启动恢复保证边界；
+- Objective pause/cancel 使用精确 Objective Evaluation/Activation 路由，Session 与兄弟 Objective 继续运行。
+
+Phase 4 的单机调度管理闭环至此完成。每 Agent/Context/Session/Thread 的独立数字配额、每 Objective 资源预算和跨进程全局公平游标未纳入本阶段完成标准；它们是后续单机策略扩展或 Phase 5 的分布式资源治理问题，不影响当前统一任务调度内核可用。
 
 ### Phase 5：多 Worker 与分布式执行
+
+**明确排除在当前实现目标之外。** Morphz 当前首先完成单机可证明的调度语义；不能因为数据结构带有 lease/fencing 字段，就宣称已经支持多个进程或多节点共同执行。
 
 - 使用稳定 worker identity、lease、heartbeat 和 fencing token；
 - 把进程内路由缓存降级为加速层；
@@ -1016,13 +1133,25 @@ Phase 3 以后需要继续收口的部分：
 
 1. `WaitCondition` v1 是否只支持单一条件，还是直接支持 `any/all`；
 2. Execution Thread 是否需要显式 `parent_thread_id`，还是通过 causal relation 表表达；
-3. Delivery Thread 的合并窗口和最大等待时间；
+3. Delivery merge window 与最大等待时间的默认配置如何针对交互延迟和批量效率调优；
 4. 模型能够在多大程度上可靠选择优先级、串行和并行；
 5. Objective 与 Objective Thread 是一对一，还是允许一次 Objective 同时拥有多个推进 Thread；
 6. 周期 Schedule 的每次 occurrence 应创建新 Thread，还是向长期 Thread 投递新 Signal；
 7. Context pressure 下，哪些 dormant Thread 和 Signal 摘要应进入 Context Encoding。
 
 这些属于策略和可扩展性问题，不影响统一内核的基本成立。
+
+### 16.1 当前单机边界
+
+当前 Runtime 的可靠性声明限定在**一个进程拥有一个 SQLite 调度数据库和本机 executor**的部署模型：
+
+- EventBus、Dialogue/Work gate、Activation admission permit、公平 cursor 和 live process group cache 都是进程内对象；数据库是恢复权威，但这些对象还不是跨 Worker 协调协议；
+- SQLite queued rows、lease 和 generation fencing 解决单机崩溃恢复与迟到写覆盖，不自动等价于多节点共识；
+- 对已经越过外部副作用边界但结果未知的 Job，Runtime 选择 `lost` 而不是自动重放；exactly-once 外部副作用仍需要具体工具/服务提供幂等键或 reconcile 能力；
+- Approval 可以持久等待和恢复，但自动 reviewer、人类 UI、密钥系统和 OS sandbox 是可替换 adapter，不应与 Scheduler Kernel 绑定为一种部署方式；
+- Activation fairness 已跨 Agent/Context/Session 分层轮转，但容量上限当前仍以单机全局并发和保留槽为主，不是租户级资源治理系统；
+- Objective scoped cancellation 已覆盖 executor cancellation resistance、未启动 Job/Approval 原子关闭和本机 exec 进程组终止；它保证可观测终态，不承诺撤销已经发生的外部副作用；
+- `runtime/model_stream` 是进程内、best-effort 的 UI 草稿通道；丢失增量不影响持久回复正确性，但断线客户端必须从持久快照重建，不能把 draft 当恢复协议。其中的 reasoning summary 会在 Attempt 终态额外聚合为 `runtime/model_reasoning_summary` 供重启后查询，但仍不属于 Agent 可见 Context。
 
 ## 17. 设计总结
 
@@ -1098,7 +1227,7 @@ Delivery 是结果路由
 - Objective CAS 冲突不会留下 continuation Event/Outbox；Delegation 重复完成不会产生第二个 result Event；
 - Signal batch、Activation single-flight、Schedule restart、Objective restart 与普通 Runtime 回归继续通过。
 
-Phase 1 至此完成。仍然保留的独立 timer/sleep、依赖轮询和进程内 BackgroundTask 状态，分别属于 Phase 2 的统一 Wait/Timer Engine 与 Phase 3 的持久 Execution Job，不再被误认为 Event → Signal 可靠性缺口。
+Phase 1 至此完成。当时仍然保留的独立 timer/sleep、依赖轮询和进程内 BackgroundTask 权威状态，分别被归入后续 Phase 2 的统一 Wait/Timer Engine 与 Phase 3 的持久 Execution Job，不再被误认为 Event → Signal 可靠性缺口；这些后续阶段现已完成单机收口。
 
 ### 2026-07-16：Phase 2.1 持久 Timer Engine 与 Schedule 纵切
 
@@ -1143,7 +1272,7 @@ Phase 1 至此完成。仍然保留的独立 timer/sleep、依赖轮询和进程
 
 - `BackgroundTaskScheduler` 注册 `BackgroundWake` handler；`exec` 的默认检查点、`wait_task` 的用户指定检查点以及任务终态取消都通过持久 `runtime_timers` 表达，不再为每次等待创建独立 sleep；
 - Background wake 使用 task `wake_generation` 做 fencing。重排等待会生成更高 generation，旧 claim 不能覆盖新检查点；到期 Event 先以 Event + Signal Outbox 原子提交，再执行进程内投递；
-- 当前 `BackgroundTask` 的物理进程所有权仍属于 Phase 3 的进程内 `ExecutionJob`。因此 Runtime 重启后如果 owner 已不存在，遗留 Timer 会被审计为已消费，但不会伪造“任务已完成”或虚假的工具输出；
+- 该纵切实现时，`BackgroundTask` 的物理进程所有权尚待 Phase 3 持久化。因此 Runtime 重启后如果 owner 已不存在，遗留 Timer 只会被审计为已消费，不会伪造“任务已完成”或虚假的工具输出；Phase 3 现已将其持久控制面迁移到 `ExecutionJob`；
 - `ThreadActivation` 每次进入 `running` 都注册 `activation-lease:<activation-id>`，以 Activation revision 为 generation；snapshot 推进会续约新 generation，唯一终态提交会取消未 claim 的 lease；
 - Activation lease 到期时 handler 重新读取权威 Activation 状态和 revision。陈旧代立即结束；有效过期 lease 重新投递已持久化的原始 trigger，由 Activation claim CAS 保证只恢复一次；
 - Runtime 启动恢复会为仍由活跃 claimant 持有的 Activation 补齐/重挂 lease Timer；过期 lease 立即进入统一 Timer Engine，而不是创建进程内延时任务。
@@ -1171,4 +1300,81 @@ Phase 1 至此完成。仍然保留的独立 timer/sleep、依赖轮询和进程
 - 两个并发终态通知即使分别产生新 generation，最终也只能提交一个 Schedule occurrence；
 - 故障注入覆盖“依赖终态提交后、通知前崩溃”，重启 recovery 能补偿唤醒并保持单次投递。
 
-Phase 2 至此完成。统一的物理时钟、lease、generation fencing、事件条件唤醒和启动恢复已经形成 Scheduler Kernel 的共同机制。仍然进程内的后台执行主体属于 Phase 3 `ExecutionJob` 持久化，不再被误判为 Timer Engine 的缺口。
+Phase 2 至此完成。统一的物理时钟、lease、generation fencing、事件条件唤醒和启动恢复已经形成 Scheduler Kernel 的共同机制。该阶段尚为进程内权威的后台执行状态被明确留给 Phase 3，而不是误判为 Timer Engine 的缺口；Phase 3 现已完成 `ExecutionJob` 持久化。
+
+### 2026-07-17：Phase 3.1 持久 Execution Job 控制面
+
+已经实现：
+
+- 新增持久 `execution_jobs`，用 `(activation_id, tool_call_id)` 的规范化摘要形成确定性 Job ID；同一 causal Action 精确重放返回既有记录，不能用相同身份替换请求或路由；
+- Job 状态收口为 `queued | waiting_approval | running | succeeded | failed | cancelled | lost`，并持久保存 revision、worker/claim token、lease、heartbeat、副作用边界、取消意图、结果 Event/ref、exit code 和错误；
+- Job claim、heartbeat、cancel request 和 terminal commit 全部使用 revision + claim-token fencing。Running Job 收到取消请求时不会立即伪造成 `cancelled`；只有 executor 的真实退出观察或恢复器的保守判断能够提交终态；
+- 普通物理工具 Action 在执行前物化并 claim Job；工具输出为空时也提交明确的成功/失败事实，不再通过“没有输出”暗示调用尚未发生；
+- 同一 Activation 中并行的物理 Action 各自提交 Job + 不可变结果 Event；所有 sibling 终态之后只产生一个 batch barrier Signal，保留 Function Calling transcript 的批次边界；
+- 后台 exec 派生独立 child Job。`list/status/wait/kill` 从持久 Job 读取权威状态，进程内映射只保留当前 Runtime 的 PGID、输出和 watcher；kill 先持久化取消意图，再向进程组发送信号，watcher 根据真实退出提交 `cancelled`；
+- Runtime 启动统一 reconcile 非终态 Job：`queued/waiting_approval` 保留；尚未持久化副作用边界且声明幂等的 running Job 可以 fenced requeue；其余结果不确定的 running Job 以 `lost` + 结果 Event 关闭，绝不自动重放非幂等 Action；
+- 启动恢复会幂等修复已经 terminal 的后台 Job 在“Job/Event 已提交、Signal Outbox 尚未写入”窗口中的 delivery intent。
+
+物理取消收口：
+
+- Activation 的工具 executor 运行在独立 task 中；拥有 Activation 的 caller 被取消后，executor 仍负责把观测结果提交为 Job/Event 终态，不会把一个已物化 Action 留成无主 running；
+- queued/waiting_approval Job 在未跨越副作用边界时会取消持久 Approval、唤醒进程内 waiter，并原子提交确定性的 cancelled Tool Event/Job 终态；
+- Objective/Activation scoped cancellation 精确锁定其 Job；当前活跃 exec 通过 causal route 找到 PGID，先持久化取消意图，再 kill process group，最后由 watcher 提交真实退出终态；
+- 取消、并发自然完成与重启恢复均通过 revision/claim fencing 收敛。`cancel_requested` 始终只是意图；如果 Runtime 重启后无法证明物理结果，则进入 `lost`，不会伪造 `cancelled` 或自动重放外部副作用。
+
+Phase 3 的单机 Execution Job、Durable Approval 与物理取消控制面至此完成。
+
+### 2026-07-17：Phase 3.2 Durable Approval Authority
+
+已经实现：
+
+- 新增持久 `approvals` 与 ExecutionJob/Approval 跨 authority 事务；需要能力扩张的 Job 在任何物理 claim 之前进入 `waiting_approval`；
+- Approval identity 绑定 Job ID、规范化 Action、请求能力集合和 policy digest。数组型能力按集合规范化，字段顺序不能制造第二个授权；请求或策略变化必然产生不同身份；
+- approval request Event 与 waiting Job/Approval 原子创建；精确重放返回同一 authority，不重复创建第二个请求；
+- Allow/Deny/Cancel 的 authority 状态与 `runtime/approval_decision` 审计 Event 在同一 SQLite 事务提交。Event 由关联 Execution Job 补齐 `context_id/session_id/correlation_id/activation_id/thread_id/tool_call_id` 路由；精确重放可以修复旧数据中“状态已提交、审计 Event 缺失”的窗口，但不可覆盖冲突的不可变 Event；
+- 自动 reviewer 和人工审批共用相同的 durable decision 状态。人工等待没有 Runtime 截止时间，普通 tool timeout 只从真正取得 grant 并开始物理执行后计算；
+- Allow 生成稳定、一次性的 grant；grant 消费与 Job claim 在同一事务完成，并绑定 claim token。错误 Job、错误 request/policy、pending/denied 或已经消费的 grant 都不能启动执行；
+- Deny/Cancel 形成明确工具输出与 `cancelled` Job terminal fact，并继续服从同一物理工具 batch barrier。取消与允许并发时，Pending 或 `Allowed + grant 尚未消费` 都可通过 revision fencing 收敛为 Cancelled；已经消费的授权不能被事后伪装为未执行；
+- Runtime 重启后 pending Approval 仍可重新呈现给审批 adapter，allowed/denied/consumed 状态按持久记录恢复，不依赖旧进程中的 oneshot 才能解释 authority；
+- Objective Supervisor 启动时会按 `context_id + objective.updated_at + 精确 topic` 检查 Permission、ExternalEvent 与 ResourceAvailable 的持久 Ledger 事实。因此进程即使在“审批/外部事件已提交、EventBus 尚未派发”的窗口退出，重启后也会复用 `wake_non_routed_event → reconcile` 清除等待并继续推进，而不会永久漏唤醒或制造第二套状态迁移。
+
+### 2026-07-17：Phase 4.1 Schedule 控制面
+
+已经实现：
+
+- `schedule_tx` 新增 `inspect | pause | resume | reschedule | cancel`，控制操作一次只修改一个 Schedule；
+- 所有写操作都要求最新 `expected_revision`。陈旧写返回当前记录供模型重新 inspect，不能盲目覆盖并发控制变化；
+- pause/cancel 会使尚未领取的 Timer 失效；resume/reschedule 推进 Schedule revision 并创建新 Timer generation；
+- 已被旧 worker claim 的 generation 即使迟到，也必须重新读取 Schedule 权威状态，不能把已经暂停、取消或重排的计划重新投递；
+- reschedule 同时维护 dependency 反向索引，控制事务不会留下旧依赖路由或半更新 Timer 语义。
+
+### 2026-07-17：Phase 4.2 Activation Admission、公平与背压
+
+已经实现：
+
+- Activation 只有取得 admission permit 后才能从 durable `queued` 进入 `running`；permit 跨越完整 Activation 直到 terminal persistence，而不是只包住一次 Provider 请求；
+- Runtime 根据 Trigger Event 固定分类为 Interactive/Control、Delivery、Objective、Scheduled/Background、Maintenance，模型不能自行注入数字优先级；
+- 同一有效 class 中按 Agent→Context→Session 分层 round-robin，并在 Session 内按持久 `(created_at, id)` FIFO；
+- aging 按固定间隔逐级提升有效 class，避免低 class 在持续交互流量下永久饥饿；
+- Runtime 为 Dialogue/Delivery 保留运行槽和内存排队位置。一般工作不能占满全部保留容量；一槽 Runtime 会自动归一化，避免保留规则使一般工作永远不能运行；
+- in-memory window 满时 Activation 留在 SQLite `queued`，不失败、不丢弃。Store 使用有界 reserved/general candidate union，旧的一般工作 aging 后也不能把声明为 Dialogue/Delivery 的所有候选挤出查询窗口；
+- permit/window 变化通过可保留通知触发 refill，Runtime 不轮询整张 Event Ledger；重启从 durable queued Activation 重建确定顺序。
+
+当前边界：fairness cursor 是进程内加速状态，重启会重置轮转相位；容量控制仍是单机全局上限 + Dialogue/Delivery 保留槽，不等于每 Agent/Context/Session/Thread 独立数字配额。
+
+### 2026-07-17：Phase 4.3 Objective Scoped Cancellation 与 Delivery Merge
+
+已经实现：
+
+- Objective evaluation registry 以 Objective ID、evaluation ID 和 Activation/work-item ID 建立精确绑定；pause/cancel 只通知这一 Evaluation 的 Activation，并持久请求取消它物化的非终态 Job；
+- Objective 控制不再调用 Session-wide cancel/resume，因此同一 Session 的普通 Dialogue 和兄弟 Objective 不会因为一个 Objective 暂停而被抑制；
+- 迟到的 Objective 结果仍需通过 Objective revision/status fence，不能在 pause/cancel 已生效后提交为新的权威进展；
+- Work Thread 完成不再立即为每条结果唤醒 Delivery。Runtime 为 Session 持久维护一个 `delivery_flush` Timer：`due_at = min(latest + merge_window, first + max_wait)`；
+- 新结果推进 generation 并刷新短窗口，但不能越过第一条 pending 结果的最大等待边界；旧 generation、重复 claim 和 Runtime 重启均不能产生第二条 completion-ready wake；
+- Timer handler 冻结本 generation 的 `completed_thread_ids/result_event_ids`，使用 Timer ID + generation 生成确定性 `chat/thread_completion_ready` Event，并在一个事务内追加 Event + Signal Outbox；
+- Context Encoding 只向这次 Delivery Activation 呈现 Trigger Snapshot 内仍为 pending/deferred 的结果；`chat/reply.covers` 与 `chat/no_reply.defer_covers` 也只能确认同一组 ID，求值期间新完成的 Thread 留给下一次 Delivery；
+- Runtime 启动扫描仍有 pending/deferred completion 的 Session 并补齐 Delivery Flush Timer，关闭结果已持久化但内存定时器尚未启动的崩溃窗口。
+
+Delivery 验证已经覆盖：同 Session 两条相邻结果只产生一次 Delivery 求值、第一条结果最大等待边界、Runtime 重启恢复、旧 generation 迟到 fencing、Event/Outbox 幂等提交、旧 SQLite Timer CHECK 约束的无损迁移，以及“Trigger 之后到达的新结果不能被旧回复覆盖”的快照竞态。
+
+Phase 4 已经形成单机调度管理闭环。每租户数字配额、跨进程公平、多 Worker claim 与分布式存储仍属于明确排除的 Phase 5 或后续单机策略增强，不属于本阶段完成标准。

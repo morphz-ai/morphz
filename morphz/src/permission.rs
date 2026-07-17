@@ -1,12 +1,90 @@
 use crate::approval::{
     ApprovalAction, ApprovalDecision, ApprovalProvider, ApprovalRequest, CapabilityDelta,
 };
+use crate::memory::ApprovalStatus;
 use glob::{MatchOptions, Pattern};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub type PermissionError = Box<dyn std::error::Error + Send + Sync>;
+
+tokio::task_local! {
+    /// One exact durable grant consumed atomically with the current physical
+    /// ExecutionJob claim. It is a task-local capability, never a reusable
+    /// profile mutation.
+    pub static CURRENT_DURABLE_APPROVAL: Option<DurableApprovalGrant>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalRequirement {
+    pub action: ApprovalAction,
+    pub requested: CapabilityDelta,
+    pub justification: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DurableApprovalGrant {
+    pub approval_id: String,
+    pub grant_id: String,
+    pub policy_digest: String,
+    pub action: ApprovalAction,
+    pub requested: CapabilityDelta,
+}
+
+impl DurableApprovalGrant {
+    fn covers(
+        &self,
+        action: &ApprovalAction,
+        requested: &CapabilityDelta,
+        policy_digest: &str,
+    ) -> bool {
+        if self.policy_digest != policy_digest {
+            return false;
+        }
+        let action_matches = match (&self.action, action) {
+            (
+                ApprovalAction::Shell {
+                    command: granted_command,
+                    cwd: granted_cwd,
+                },
+                ApprovalAction::Shell { command, cwd },
+            ) => granted_command == command && granted_cwd == cwd,
+            (
+                ApprovalAction::ToolOperation {
+                    tool: granted_tool,
+                    operation: granted_operation,
+                    target: granted_target,
+                },
+                ApprovalAction::ToolOperation {
+                    tool,
+                    operation,
+                    target,
+                },
+            ) => {
+                granted_tool == tool
+                    && granted_operation == operation
+                    && (granted_target.is_none() || granted_target == target)
+            }
+            _ => false,
+        };
+        action_matches
+            && (!requested.network || self.requested.network)
+            && requested
+                .read_roots
+                .iter()
+                .all(|root| self.requested.read_roots.contains(root))
+            && requested
+                .write_roots
+                .iter()
+                .all(|root| self.requested.write_roots.contains(root))
+            && requested
+                .secret_env
+                .iter()
+                .all(|name| self.requested.secret_env.contains(name))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -331,21 +409,54 @@ impl PermissionBroker {
         &self.profile
     }
 
-    pub async fn authorize_path(
+    pub fn policy_digest(&self) -> String {
+        let material = serde_json::json!({
+            "mode": self.profile.mode,
+            "sandbox_mode": self.profile.sandbox_mode,
+            "approval_policy": self.profile.approval_policy,
+            "reviewer": self.profile.reviewer,
+            "workspace_root": self.profile.workspace_root,
+            "read_roots": self.profile.read_roots,
+            "write_roots": self.profile.write_roots,
+            "protected_paths": self.profile.protected_paths,
+            "network": self.profile.network,
+            "shell_environment_policy": self.profile.shell_environment_policy,
+        });
+        let bytes = serde_json::to_vec(&material).unwrap_or_default();
+        format!("policy_{:x}", Sha256::digest(bytes))
+    }
+
+    pub fn pending_approval_status(&self) -> ApprovalStatus {
+        match self.profile.reviewer {
+            ReviewerKind::User => ApprovalStatus::PendingHuman,
+            ReviewerKind::AutoReview | ReviewerKind::Deny => ApprovalStatus::PendingAuto,
+        }
+    }
+
+    pub async fn review(
+        &self,
+        request: &ApprovalRequest,
+    ) -> Result<ApprovalDecision, PermissionError> {
+        self.approval.review(request).await
+    }
+
+    pub fn approval_requirement_for_path(
         &self,
         input: &str,
         access: FilesystemAccess,
         tool: &str,
         operation: &str,
-        context: ApprovalContext,
-    ) -> Result<PathBuf, PermissionError> {
+    ) -> Result<(PathBuf, Option<ApprovalRequirement>), PermissionError> {
         match self.profile.inspect_path(input, access)? {
-            PathDecision::Allowed(path) => Ok(path),
+            PathDecision::Allowed(path) => Ok((path, None)),
             PathDecision::Denied(reason) => Err(reason.into()),
             PathDecision::NeedsApproval {
                 candidate,
                 resolved_anchor,
             } => {
+                if self.profile.approval_policy == ApprovalPolicy::Never {
+                    return Err("当前权限 Profile 不允许请求边界外能力".into());
+                }
                 let requested = match access {
                     FilesystemAccess::Read => CapabilityDelta {
                         read_roots: vec![resolved_anchor],
@@ -356,19 +467,62 @@ impl PermissionBroker {
                         ..CapabilityDelta::default()
                     },
                 };
-                let action = ApprovalAction::ToolOperation {
-                    tool: tool.to_string(),
-                    operation: operation.to_string(),
-                    target: Some(candidate.clone()),
-                };
+                Ok((
+                    candidate.clone(),
+                    Some(ApprovalRequirement {
+                        action: ApprovalAction::ToolOperation {
+                            tool: tool.to_string(),
+                            operation: operation.to_string(),
+                            target: Some(candidate.clone()),
+                        },
+                        requested,
+                        justification: format!(
+                            "工具 {tool} 需要对 '{}' 执行 {} 操作",
+                            candidate.display(),
+                            access.as_str()
+                        ),
+                    }),
+                ))
+            }
+        }
+    }
+
+    pub fn approval_requirement_for_delta(
+        &self,
+        action: ApprovalAction,
+        requested: CapabilityDelta,
+        justification: String,
+    ) -> Result<Option<ApprovalRequirement>, PermissionError> {
+        if requested.is_empty() || self.profile.full_access() {
+            return Ok(None);
+        }
+        if self.profile.approval_policy == ApprovalPolicy::Never {
+            return Err("当前权限 Profile 不允许请求边界外能力".into());
+        }
+        Ok(Some(ApprovalRequirement {
+            action,
+            requested,
+            justification,
+        }))
+    }
+
+    pub async fn authorize_path(
+        &self,
+        input: &str,
+        access: FilesystemAccess,
+        tool: &str,
+        operation: &str,
+        context: ApprovalContext,
+    ) -> Result<PathBuf, PermissionError> {
+        let (candidate, requirement) =
+            self.approval_requirement_for_path(input, access, tool, operation)?;
+        match requirement {
+            None => Ok(candidate),
+            Some(requirement) => {
                 self.authorize_delta(
-                    action,
-                    requested,
-                    format!(
-                        "工具 {tool} 需要对 '{}' 执行 {} 操作",
-                        candidate.display(),
-                        access.as_str()
-                    ),
+                    requirement.action,
+                    requirement.requested,
+                    requirement.justification,
                     context,
                 )
                 .await?;
@@ -389,6 +543,17 @@ impl PermissionBroker {
         }
         if self.profile.approval_policy == ApprovalPolicy::Never {
             return Err("当前权限 Profile 不允许请求边界外能力".into());
+        }
+        let policy_digest = self.policy_digest();
+        if CURRENT_DURABLE_APPROVAL
+            .try_with(|grant| {
+                grant
+                    .as_ref()
+                    .is_some_and(|grant| grant.covers(&action, &requested, &policy_digest))
+            })
+            .unwrap_or(false)
+        {
+            return Ok(());
         }
         let approval_id = format!(
             "approval_{}_{}",

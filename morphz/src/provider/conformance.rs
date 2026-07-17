@@ -123,6 +123,161 @@ fn openai_responses_keeps_interleaved_parallel_tool_calls_separate() {
 }
 
 #[test]
+fn openai_chat_waits_for_complete_tool_identity_before_streaming_it() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+
+    // Some compatible endpoints split `id`, `name`, and even arguments over
+    // independent chunks. The normalized stream must never expose an empty
+    // tool name, nor arguments before ToolCallStarted.
+    accumulator
+        .apply(
+            ModelProtocol::OpenaiChat,
+            json!({
+                "choices":[{"delta":{"tool_calls":[{
+                    "index":0,
+                    "id":"call-split",
+                    "function":{"arguments":"{\"path\":"}
+                }]}}]
+            }),
+            &tx,
+        )
+        .unwrap();
+    assert!(
+        rx.try_recv().is_err(),
+        "incomplete identity must stay buffered"
+    );
+
+    accumulator
+        .apply(
+            ModelProtocol::OpenaiChat,
+            json!({
+                "choices":[{"delta":{"tool_calls":[{
+                    "index":0,
+                    "function":{"name":"read","arguments":"\"README.md\"}"}
+                }]}}]
+            }),
+            &tx,
+        )
+        .unwrap();
+    accumulator
+        .apply(
+            ModelProtocol::OpenaiChat,
+            json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
+            &tx,
+        )
+        .unwrap();
+
+    let response = accumulator.finish(&tx).unwrap();
+    assert_eq!(response.tool_calls.len(), 1);
+    assert_eq!(response.tool_calls[0].id, "call-split");
+    assert_eq!(response.tool_calls[0].func_name, "read");
+    assert_eq!(response.tool_calls[0].arguments, "{\"path\":\"README.md\"}");
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert_eq!(
+        events,
+        vec![
+            ModelStreamEvent::ToolCallStarted {
+                index: 0,
+                id: "call-split".to_string(),
+                name: "read".to_string(),
+            },
+            ModelStreamEvent::ToolArgumentsDelta {
+                index: 0,
+                delta: "{\"path\":".to_string(),
+            },
+            ModelStreamEvent::ToolArgumentsDelta {
+                index: 0,
+                delta: "\"README.md\"}".to_string(),
+            },
+            ModelStreamEvent::ToolCallCompleted { index: 0 },
+        ]
+    );
+}
+
+#[test]
+fn openai_responses_output_item_done_backfills_undelivered_arguments() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+    for event in [
+        json!({
+            "type":"response.output_item.added",
+            "output_index":0,
+            "item":{"type":"function_call","call_id":"call-done","name":"lookup"}
+        }),
+        json!({
+            "type":"response.output_item.done",
+            "output_index":0,
+            "item":{
+                "type":"function_call",
+                "call_id":"call-done",
+                "name":"lookup",
+                "arguments":"{\"id\":7}"
+            }
+        }),
+        json!({"type":"response.completed","response":{}}),
+    ] {
+        accumulator
+            .apply(ModelProtocol::OpenaiResponses, event, &tx)
+            .unwrap();
+    }
+
+    let response = accumulator.finish(&tx).unwrap();
+    assert_eq!(response.tool_calls.len(), 1);
+    assert_eq!(response.tool_calls[0].id, "call-done");
+    assert_eq!(response.tool_calls[0].func_name, "lookup");
+    assert_eq!(response.tool_calls[0].arguments, "{\"id\":7}");
+    assert!(std::iter::from_fn(|| rx.try_recv().ok()).any(|event| {
+        matches!(
+            event,
+            ModelStreamEvent::ToolArgumentsDelta { index: 0, delta }
+                if delta == "{\"id\":7}"
+        )
+    }));
+}
+
+#[test]
+fn openai_responses_streams_reasoning_summary_without_promoting_it_to_reply_text() {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+    for event in [
+        json!({
+            "type":"response.reasoning_summary_text.delta",
+            "delta":"Check the current state. "
+        }),
+        json!({
+            "type":"response.reasoning_summary_text.delta",
+            "delta":"Then answer concisely."
+        }),
+        json!({"type":"response.output_text.delta","delta":"Public answer"}),
+        json!({"type":"response.completed","response":{}}),
+    ] {
+        accumulator
+            .apply(ModelProtocol::OpenaiResponses, event, &tx)
+            .unwrap();
+    }
+
+    let response = accumulator.finish(&tx).unwrap();
+    assert_eq!(response.content, "Public answer");
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert_eq!(
+        events,
+        vec![
+            ModelStreamEvent::ReasoningSummaryDelta {
+                text: "Check the current state. ".to_string(),
+            },
+            ModelStreamEvent::ReasoningSummaryDelta {
+                text: "Then answer concisely.".to_string(),
+            },
+            ModelStreamEvent::TextDelta {
+                text: "Public answer".to_string(),
+            },
+        ]
+    );
+}
+
+#[test]
 fn anthropic_ignores_future_events_without_losing_known_content() {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut accumulator = StreamAccumulator::default();
@@ -246,6 +401,42 @@ fn gemini_parallel_calls_preserve_native_ids_in_both_directions() {
         request["contents"][1]["parts"][1]["functionResponse"]["id"],
         "call-a"
     );
+}
+
+#[test]
+fn gemini_never_exposes_thought_parts_as_assistant_text() {
+    let fixture = json!({
+        "candidates": [{
+            "finishReason": "STOP",
+            "content": {"parts": [
+                {
+                    "thought": true,
+                    "text": "private chain of thought",
+                    "thoughtSignature": "opaque-provider-signature"
+                },
+                {"text": "public answer"}
+            ]}
+        }]
+    });
+
+    let parsed = parse_gemini_response(fixture.clone()).unwrap();
+    assert_eq!(parsed.content, "public answer");
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut accumulator = StreamAccumulator::default();
+    accumulator
+        .apply(ModelProtocol::GeminiContent, fixture, &tx)
+        .unwrap();
+    let streamed = accumulator.finish(&tx).unwrap();
+    assert_eq!(streamed.content, "public answer");
+
+    let deltas = std::iter::from_fn(|| rx.try_recv().ok())
+        .filter_map(|event| match event {
+            ModelStreamEvent::TextDelta { text } => Some(text),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(deltas, vec!["public answer"]);
 }
 
 #[test]

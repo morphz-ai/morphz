@@ -1,0 +1,331 @@
+{
+  "common": {
+    "shared": "shared"
+  },
+  "header": {
+    "context": "Context",
+    "runtimeTasks": "Runtime Tasks",
+    "session": "Session",
+    "noContext": "No Context selected",
+    "noSession": "No Session selected",
+    "visibleSessions": "Visible Sessions",
+    "sessionsInContext": "{{count}} in this Context",
+    "active": "Active",
+    "resident": "Resident",
+    "dashboardHint": "Dashboard only shows Sessions currently readable by the Runtime API.",
+    "agentLabel": "agent/{{title}}"
+  },
+  "theme": {
+    "title": "Accent Theme",
+    "hint": "Only affects this browser",
+    "iris": {
+      "label": "Iris",
+      "description": "Restrained, cognitive"
+    },
+    "cyan": {
+      "label": "Cyan",
+      "description": "Clear, technical"
+    },
+    "coral": {
+      "label": "Coral",
+      "description": "Warm, alive"
+    },
+    "mono": {
+      "label": "Mono",
+      "description": "Neutral, low-distraction"
+    }
+  },
+
+  "reasoning": {
+    "label": "Reasoning",
+    "title": "Only affects future model requests; default lets the model service decide.",
+    "default": "Default",
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High"
+  },
+  "reasoningSummary": {
+    "toggle": "Reasoning summary",
+    "toggleTitle": "Show or collapse the provider's reasoning summary; it is stored separately and never merged into reply text",
+    "title": "Reasoning summary",
+    "live": "live · separate channel",
+    "persisted": "saved · not reply text",
+    "persistedShort": "saved",
+    "streaming": "evaluating",
+    "toolCalls": "{{count}} tool calls",
+    "workLiveTitle": "Live model evaluations",
+    "workLiveSubtitle": "Only running work evaluations; summaries never enter chat text",
+    "workHistoryTitle": "Work reasoning summaries",
+    "workHistorySubtitle": "Recent summaries rebuilt from Runtime events"
+  },
+  "model": {
+    "unavailable": "model unavailable",
+    "tokens": "{{used}} / {{limit}}"
+  },
+  "connection": {
+    "connected": "connected",
+    "connecting": "connecting",
+    "disconnected": "disconnected"
+  },
+  "language": {
+    "toggle": "Toggle language"
+  },
+  "conversation": {
+    "heading": "Session · {{title}}",
+    "emptyTitle": "No messages in this Session yet",
+    "emptyDescription": "Messages enter the shared cognitive Context, but replies are always routed back to the current Session.<br />Send the first message below to start.",
+    "startChat": "Start chat",
+    "roleYou": "You",
+    "roleAgent": "Morphz",
+    "roleObjective": "Objective",
+    "roleWork": "Work",
+    "roleRuntime": "Runtime",
+    "noText": "(no text)",
+    "copy": "Copy message",
+    "copied": "Copied",
+    "streaming": "Generating",
+    "streamFailed": "Streaming response failed",
+    "pendingHint": "You can keep sending messages; current execution will not block the dialogue."
+  },
+  "work": {
+    "title": "Runtime Tasks",
+    "heading": "Tasks & Execution",
+    "description": "Only Runtime-verifiable Objectives, evaluations, background processes and Delegations are shown; ordinary Frames are not guessed as tasks.",
+    "refresh": "Refresh",
+    "backToChat": "Back to chat",
+    "executingCount": "{{count}} running",
+    "waitingShort": "waiting",
+    "objectivesShort": "Objectives",
+    "taskSummary": "{{waiting}} waiting · {{objectives}} Objectives",
+    "metrics": {
+      "active": "Active",
+      "waiting": "Waiting",
+      "pendingSignals": "Pending Signals",
+      "objectives": "Objectives"
+    },
+    "objectives": {
+      "title": "Objectives",
+      "confirm": "Confirm goals and status before inspecting execution traces",
+      "empty": "No non-terminal Objectives",
+      "resume": "Resume",
+      "resuming": "Resuming",
+      "delete": "Delete Objective",
+      "deleting": "Deleting",
+      "waitCondition": "Waiting · {{kind}}",
+      "revision": "r{{revision}}",
+      "tokens": "{{tokens}} tok",
+      "seconds": "{{seconds}}s"
+    },
+    "scheduler": {
+      "title": "Thread Scheduler",
+      "subtitle": "{{count}} queued / scheduled intents · Runtime authoritative state",
+      "workThreads": "Work Threads",
+      "noWorkThreads": "No non-terminal Work Threads",
+      "scheduledIntents": "Scheduled Intents",
+      "immediate": "Immediate",
+      "every": " · every {{seconds}}s",
+      "waitingThreads_one": " · waiting {{count}} Thread",
+      "waitingThreads_other": " · waiting {{count}} Threads",
+      "noIntents": "No queued or scheduled intents",
+      "pendingSignals": "Pending Signals",
+      "noSignals": "No signals awaiting claim"
+    },
+    "activations": {
+      "title": "Thread Activations",
+      "empty": "No active Activations",
+      "dialogueThread": "dialogue thread",
+      "objectiveThread": "objective thread",
+      "workThread": "work thread"
+    },
+    "backgroundTasks": {
+      "title": "Background Tasks",
+      "empty": "No background process records",
+      "bytes": "{{bytes}} bytes"
+    },
+    "delegations": {
+      "title": "Delegations",
+      "subtitle": "Delegation tasks · independent scroll, does not affect layout above",
+      "empty": "No Delegations"
+    },
+    "toolTimeline": {
+      "title": "Tool Call Timeline",
+      "subtitle": "Runtime real execution events · auto-scrolls to bottom",
+      "parameters": "PARAMETERS",
+      "truncated": " · raw {{chars}} chars",
+      "result": "RESULT · {{status}}",
+      "noOutput": "(Tool produced no output)",
+      "empty": "No tool call records for current Session",
+      "ariaLabel": "Tool call timeline, scrollable within this area"
+    }
+  },
+  "mindView": {
+    "title": "Cognitive Context",
+    "heading": "Shared Cognition",
+    "description": "Frame business structure is autonomously formed by the Agent; Runtime only presents identity, source, version, relations and lifecycle.",
+    "backToChat": "Back to chat",
+    "metrics": {
+      "frames": "Frames",
+      "relations": "Relations",
+      "observations": "Observations",
+      "residentSessions": "Resident Sessions"
+    },
+    "frameLibrary": "Frame Library",
+    "sourceCount_one": "{{count}} source",
+    "sourceCount_other": "{{count}} sources",
+    "retired": "Retired",
+    "frame": "Frame",
+    "revision": "revision {{revision}}",
+    "created": "Created",
+    "updated": "Updated",
+    "sources": "Sources",
+    "protected": "Protected",
+    "yes": "yes",
+    "no": "no",
+    "relationsTitle": "Relations",
+    "emptyFrame": "No Frames available to inspect",
+    "sessionWindow": "Session Window",
+    "sessionWindowDetail": "Up to {{count}} full Sessions",
+    "pressure": "Pressure",
+    "checkpoints": "Checkpoints",
+    "checkpointsDetail": "Explicitly maintained by Agent",
+    "retiredCount": "Retired",
+    "retiredDetail": "Recoverable, Ledger not deleted"
+  },
+  "composer": {
+    "placeholder": "Type a message…",
+    "noSessionPlaceholder": "Select a Session",
+    "send": "Send",
+    "inputAriaLabel": "Message input",
+    "cancelTitle": "Cancel current Session execution",
+    "status": {
+      "idle": "Idle",
+      "active": "Objective auto-running",
+      "blocked": "Objective blocked",
+      "paused": "Objective paused",
+      "running": "Running",
+      "waitingModel": "Waiting for model",
+      "modelResponding": "Model responding",
+      "waitingEvent": "Waiting for registered external event",
+      "noWork": "No work in progress",
+      "executing": "Executing",
+      "delegating": "Delegating",
+      "summary": "{{executing}} running · {{waiting}} waiting"
+    },
+    "shortcuts": {
+      "send": "Enter to send",
+      "newline": "Shift+Enter for newline",
+      "tasks": "Ctrl+T Tasks",
+      "mind": "Ctrl+M Mind",
+      "back": "Esc Back to chat"
+    }
+  },
+  "status": {
+    "active": "active",
+    "blocked": "blocked",
+    "paused": "paused",
+    "completed": "completed",
+    "cancelled": "cancelled",
+    "failed": "failed",
+    "queued": "queued",
+    "runnable": "runnable",
+    "running": "running",
+    "waiting": "waiting",
+    "idle": "idle",
+    "open": "open",
+    "success": "success",
+    "guarded": "guarded",
+    "timeout": "timeout",
+    "rejected": "rejected",
+    "waiting_tool": "waiting tool",
+    "waiting_external": "waiting external",
+    "starting": "starting",
+    "succeeded": "succeeded",
+    "kill_requested": "kill requested",
+    "killed": "killed",
+    "normal": "normal",
+    "notice": "notice",
+    "warning": "warning",
+    "critical": "critical",
+    "resident": "resident",
+    "retired": "retired",
+    "swapped": "swapped"
+  },
+  "toolCall": {
+    "read": "Read file",
+    "write": "Write file",
+    "edit": "Edit file",
+    "exec": "Run command",
+    "search": "Search workspace",
+    "listFiles": "Browse files",
+    "recall": "Recall evidence",
+    "contextTx": "Maintain cognition",
+    "delegate": "Delegate work",
+    "waitTask": "Wait background task",
+    "taskStatus": "Query task status",
+    "killTask": "Kill background task",
+    "sendMessage": "Send Session message",
+    "noReply": "Silent end",
+    "unspecifiedFile": "unspecified file",
+    "unspecifiedCommand": "command hidden",
+    "unspecifiedQuery": "query hidden",
+    "workspace": "workspace",
+    "contextLedger": "Context Ledger",
+    "subAgent": "Sub Agent",
+    "backgroundTask": "background task",
+    "targetSession": "target Session",
+    "noMessage": "no text sent to current Session",
+    "viewArgs": "View arguments",
+    "lines": "{{range}} lines"
+  },
+  "activation": {
+    "processDialogue": "Process dialogue: {{text}}",
+    "processCurrentMessage": "Process current user message",
+    "continueObjective": "Continue persistent Objective",
+    "processToolResult": "Process {{tool}} result: {{target}}",
+    "processRuntimeEvent": "Process Runtime event: {{kind}}"
+  },
+  "time": {
+    "ago": {
+      "seconds_one": "{{count}}s ago",
+      "seconds_other": "{{count}}s ago",
+      "minutes_one": "{{count}}m ago",
+      "minutes_other": "{{count}}m ago",
+      "hours_one": "{{count}}h ago",
+      "hours_other": "{{count}}h ago",
+      "days_one": "{{count}}d ago",
+      "days_other": "{{count}}d ago"
+    }
+  },
+  "turnStatus": {
+    "toolCalls_one": "Executing {{count}} tool call",
+    "toolCalls_other": "Executing {{count}} tool calls",
+    "executingTools": "Executing {{tools}}",
+    "toolResult": "Processing result of {{tool}}",
+    "modelEval": "Thinking",
+    "waiting": "Request received, waiting for Runtime evaluation"
+  },
+  "errors": {
+    "statusHttp": "Runtime status HTTP {{status}}",
+    "contextHttp": "Context Encoding HTTP {{status}}",
+    "sendMessage": "Send message HTTP {{status}}",
+    "cancelSession": "Cancel Session HTTP {{status}}",
+    "reasoning": "Set reasoning depth HTTP {{status}}",
+    "resumeObjective": "Resume Objective HTTP {{status}}",
+    "deleteObjective": "Delete Objective HTTP {{status}}",
+    "websocketParse": "WebSocket returned an unparseable event",
+    "copyFailed": "Copy failed"
+  },
+  "reason": {
+    "resumeByUser": "User explicitly resumed Objective via Dashboard",
+    "deleteByUser": "User deleted Objective via Dashboard"
+  },
+  "dialog": {
+    "deleteObjectiveTitle": "Delete this Objective?",
+    "deleteObjectiveBody": "{{objective}}\n\nDeletion will stop automatic reruns immediately; audit history is retained."
+  },
+  "nav": {
+    "tasks": "Open Tasks view (Ctrl+T)",
+    "toggleTasks": "Toggle tasks view (Ctrl+T)",
+    "connection": "WebSocket connection status"
+  }
+}

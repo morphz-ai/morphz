@@ -198,6 +198,14 @@ impl Server {
         let mut events = self.runtime.subscribe("*", 1024);
         tokio::spawn(async move {
             while let Some(ev) = events.recv().await {
+                // Model stream events are deliberately ephemeral. They must reach the
+                // browser with the lowest possible latency and must not mutate durable
+                // Session metadata once per token/chunk. Persisted events below still
+                // pass through the normal routing validation and activity touch.
+                if !dashboard_event_requires_session_touch(&ev) {
+                    let _ = broadcast_tx_clone.send(ev);
+                    continue;
+                }
                 let result: Result<(), crate::runtime::RuntimeError> = async {
                     if let Some(session_id) = ev
                         .payload
@@ -489,7 +497,7 @@ async fn handle_list_approvals(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    Json(json!({ "approvals": state.runtime.pending_approvals() })).into_response()
+    Json(json!({ "approvals": state.runtime.pending_approvals().await })).into_response()
 }
 
 async fn handle_decide_approval(
@@ -521,7 +529,7 @@ async fn handle_decide_approval(
             )
         }
     };
-    match state.runtime.decide_approval(&approval_id, decision) {
+    match state.runtime.decide_approval(&approval_id, decision).await {
         Ok(()) => Json(json!({ "approval_id": approval_id, "accepted": true })).into_response(),
         Err(error) => error_response(StatusCode::NOT_FOUND, error),
     }
@@ -1496,6 +1504,16 @@ fn token_is_authorized(
     bearer == Some(expected) || query_token == Some(expected)
 }
 
+fn dashboard_event_requires_session_touch(event: &Event) -> bool {
+    // Provider deltas and their one-shot durable reasoning-summary snapshot
+    // are observability data, not user activity. Replaying either in the
+    // Dashboard must not make an otherwise inactive Session look active.
+    !matches!(
+        event.topic.as_str(),
+        "runtime/model_stream" | "runtime/model_reasoning_summary"
+    )
+}
+
 async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: Option<String>) {
     let mut rx = state.broadcast_tx.subscribe();
 
@@ -1521,8 +1539,12 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: 
                             }
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        // 缓冲区滞后，忽略继续
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        // Continuing would render a syntactically valid but incomplete
+                        // model draft. Drop the connection so the client discards all
+                        // transient text and reconnects to the durable snapshot.
+                        tracing::warn!(skipped, "Dashboard WebSocket 已丢失事件，关闭连接以重新同步");
+                        break;
                     }
                     Err(broadcast::error::RecvError::Closed) => {
                         break;
@@ -1545,7 +1567,10 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: 
 mod tests {
     use super::*;
     use crate::config::AppConfig;
-    use crate::llm::{Client, Message, ReasoningEffort, Response, ToolDefinition};
+    use crate::llm::{
+        Client, Message, ModelStreamEvent, ModelStreamSender, PromptTokenCount, ReasoningEffort,
+        Response, ToolDefinition,
+    };
     use crate::runtime::{RuntimeIdentity, RuntimeToolPolicy};
     use tempfile::NamedTempFile;
 
@@ -1575,12 +1600,34 @@ mod tests {
                 tool_calls: Vec::new(),
             })
         }
+
+        async fn create_completion_measured_stream(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+            _measurement: Option<PromptTokenCount>,
+            stream: ModelStreamSender,
+        ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+            let _ = stream.send(ModelStreamEvent::Started);
+            let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
+                text: "provider-authored summary".to_string(),
+            });
+            let _ = stream.send(ModelStreamEvent::TextDelta {
+                text: "session-api-".to_string(),
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            let _ = stream.send(ModelStreamEvent::TextDelta {
+                text: "reply".to_string(),
+            });
+            let _ = stream.send(ModelStreamEvent::Completed);
+            Ok(Response {
+                content: "session-api-reply".to_string(),
+                tool_calls: Vec::new(),
+            })
+        }
     }
 
-    async fn test_state() -> (Arc<AppState>, MorphzRuntime) {
-        let tmp = NamedTempFile::new().unwrap();
-        let path = tmp.path().to_path_buf();
-        drop(tmp);
+    async fn test_state_at(path: &std::path::Path) -> (Arc<AppState>, MorphzRuntime) {
         let runtime =
             MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient::default()))
                 .database_path(path.to_str().unwrap())
@@ -1609,9 +1656,55 @@ mod tests {
         )
     }
 
+    async fn test_state() -> (Arc<AppState>, MorphzRuntime) {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        drop(tmp);
+        test_state_at(&path).await
+    }
+
     #[test]
     fn dashboard_auth_accepts_local_no_token_mode() {
         assert!(token_is_authorized(None, &HeaderMap::new(), None));
+    }
+
+    #[test]
+    fn model_observability_events_do_not_mutate_session_activity() {
+        let event = Event::new(
+            "model-stream-test".to_string(),
+            "Model-Provider".to_string(),
+            "runtime_ephemeral".to_string(),
+            "runtime/model_stream".to_string(),
+            serde_json::Map::new(),
+        );
+        assert!(!dashboard_event_requires_session_touch(&event));
+
+        let durable_summary = Event::new(
+            "model-summary-test".to_string(),
+            "Model-Provider".to_string(),
+            "runtime_control".to_string(),
+            "runtime/model_reasoning_summary".to_string(),
+            serde_json::Map::new(),
+        );
+        assert!(!dashboard_event_requires_session_touch(&durable_summary));
+
+        let unrelated_ephemeral = Event::new(
+            "other-ephemeral-test".to_string(),
+            "Runtime-Test".to_string(),
+            "runtime_ephemeral".to_string(),
+            "runtime/other_ephemeral".to_string(),
+            serde_json::Map::new(),
+        );
+        assert!(dashboard_event_requires_session_touch(&unrelated_ephemeral));
+
+        let durable = Event::new(
+            "reply-test".to_string(),
+            "Agent-Morphz".to_string(),
+            crate::event::TYPE_AGENT_CALL.to_string(),
+            "chat/reply".to_string(),
+            serde_json::Map::new(),
+        );
+        assert!(dashboard_event_requires_session_touch(&durable));
     }
 
     #[test]
@@ -1713,6 +1806,271 @@ mod tests {
             1
         );
         assert!(events.iter().any(|event| event.topic == "chat/reply"));
+    }
+
+    #[tokio::test]
+    async fn model_stream_precedes_durable_reply_and_carries_stable_route() {
+        let (state, runtime) = test_state().await;
+        let create = handle_create_session(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("stream-session".to_string()),
+                agent_id: None,
+                parent_session_id: None,
+                title: Some("Stream Session".to_string()),
+                mount: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(create.status(), StatusCode::CREATED);
+
+        let mut live_events = runtime.subscribe("*", 32);
+        let response = handle_send_message(
+            State(Arc::clone(&state)),
+            Path("stream-session".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(SendMessageRequest {
+                text: "stream please".to_string(),
+                client_message_id: Some("stream-message-1".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        let mut stream_kinds = Vec::new();
+        let mut streamed_text = String::new();
+        let mut streamed_reasoning_summary = String::new();
+        let mut stable_work_item_id = None;
+        let mut reply_seen = false;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !reply_seen {
+                let event = live_events
+                    .recv()
+                    .await
+                    .expect("runtime event stream closed");
+                if event.topic == "runtime/model_stream" {
+                    let work_item_id = event
+                        .payload
+                        .get("work_item_id")
+                        .and_then(|value| value.as_str())
+                        .expect("model stream route must include work_item_id");
+                    if let Some(expected) = stable_work_item_id.as_deref() {
+                        assert_eq!(work_item_id, expected);
+                    } else {
+                        stable_work_item_id = Some(work_item_id.to_string());
+                    }
+                    let stream_kind = event
+                        .payload
+                        .get("stream")
+                        .and_then(|value| value.get("kind"))
+                        .and_then(|value| value.as_str())
+                        .expect("stream kind");
+                    stream_kinds.push(stream_kind.to_string());
+                    if stream_kind == "text_delta" {
+                        if let Some(text) = event
+                            .payload
+                            .get("stream")
+                            .and_then(|value| value.get("text"))
+                            .and_then(|value| value.as_str())
+                        {
+                            streamed_text.push_str(text);
+                        }
+                    } else if stream_kind == "reasoning_summary_delta" {
+                        if let Some(text) = event
+                            .payload
+                            .get("stream")
+                            .and_then(|value| value.get("text"))
+                            .and_then(|value| value.as_str())
+                        {
+                            streamed_reasoning_summary.push_str(text);
+                        }
+                    }
+                } else if event.topic == "chat/reply" {
+                    assert_eq!(
+                        event
+                            .payload
+                            .get("work_item_id")
+                            .and_then(|value| value.as_str()),
+                        stable_work_item_id.as_deref()
+                    );
+                    reply_seen = true;
+                }
+            }
+        })
+        .await
+        .expect("stream and reply timed out");
+
+        assert_eq!(
+            stream_kinds,
+            [
+                "started",
+                "reasoning_summary_delta",
+                "text_delta",
+                "text_delta",
+                "completed"
+            ]
+        );
+        assert_eq!(streamed_text, "session-api-reply");
+        assert_eq!(streamed_reasoning_summary, "provider-authored summary");
+        let persisted = runtime
+            .query_events(QueryFilter {
+                session_id: Some("stream-session".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert!(persisted
+            .iter()
+            .all(|event| event.topic != "runtime/model_stream"));
+        let reply = persisted.iter().find(|event| {
+            event.topic == "chat/reply"
+                && event.payload.get("text").and_then(|value| value.as_str())
+                    == Some("session-api-reply")
+        });
+        assert!(reply.is_some());
+        let summary = persisted
+            .iter()
+            .find(|event| event.topic == "runtime/model_reasoning_summary")
+            .expect("reasoning summary must be durable independently of reply");
+        assert_eq!(
+            summary
+                .payload
+                .get("context_id")
+                .and_then(|value| value.as_str()),
+            Some("context-test")
+        );
+        assert_eq!(
+            summary
+                .payload
+                .get("session_id")
+                .and_then(|value| value.as_str()),
+            Some("stream-session")
+        );
+        assert_eq!(
+            summary
+                .payload
+                .get("work_item_id")
+                .and_then(|value| value.as_str()),
+            stable_work_item_id.as_deref()
+        );
+        assert_eq!(
+            summary
+                .payload
+                .get("thread_kind")
+                .and_then(|value| value.as_str()),
+            Some("dialogue")
+        );
+        assert_eq!(
+            summary.payload.get("text").and_then(|value| value.as_str()),
+            Some("provider-authored summary")
+        );
+        assert_eq!(
+            summary
+                .payload
+                .get("complete")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
+        assert_ne!(summary.id, reply.unwrap().id);
+
+        let context = runtime
+            .context_encoding("context-test", "stream-session")
+            .await
+            .unwrap();
+        assert!(context
+            .observations
+            .iter()
+            .all(|observation| observation.preview != "provider-authored summary"));
+    }
+
+    #[tokio::test]
+    async fn reasoning_summary_survives_runtime_rebuild_and_remains_queryable() {
+        let directory = tempfile::tempdir().unwrap();
+        let database_path = directory.path().join("reasoning-summary.db");
+        let (state, runtime) = test_state_at(&database_path).await;
+        let create = handle_create_session(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("summary-restart-session".to_string()),
+                agent_id: None,
+                parent_session_id: None,
+                title: Some("Reasoning Summary Restart".to_string()),
+                mount: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(create.status(), StatusCode::CREATED);
+
+        let response = handle_send_message(
+            State(Arc::clone(&state)),
+            Path("summary-restart-session".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(SendMessageRequest {
+                text: "persist summary".to_string(),
+                client_message_id: Some("summary-restart-message".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let events = runtime
+                    .query_events(QueryFilter {
+                        session_id: Some("summary-restart-session".to_string()),
+                        ..QueryFilter::default()
+                    })
+                    .await
+                    .unwrap();
+                if events
+                    .iter()
+                    .any(|event| event.topic == "runtime/model_reasoning_summary")
+                    && events.iter().any(|event| event.topic == "chat/reply")
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("summary and reply were not durably committed");
+
+        drop(state);
+        drop(runtime);
+
+        let (_restarted_state, restarted_runtime) = test_state_at(&database_path).await;
+        let restored = restarted_runtime
+            .query_events(QueryFilter {
+                session_id: Some("summary-restart-session".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        let summary = restored
+            .iter()
+            .find(|event| event.topic == "runtime/model_reasoning_summary")
+            .expect("restarted Runtime must recover the reasoning summary from the Ledger");
+        assert_eq!(
+            summary.payload.get("text").and_then(|value| value.as_str()),
+            Some("provider-authored summary")
+        );
+        assert_eq!(
+            summary
+                .payload
+                .get("complete")
+                .and_then(|value| value.as_bool()),
+            Some(true)
+        );
     }
 
     #[tokio::test]

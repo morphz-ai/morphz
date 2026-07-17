@@ -9,12 +9,13 @@ use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     DelegationStatus, EventStore, NewAgent, NewCognitiveContext, NewSession, NewThreadActivation,
     NewWorkThread, QueryFilter, SessionMountKind, SessionStore, ThreadActivationMutation,
-    ThreadActivationStatus, ThreadLifecycle, WorkThreadKind,
+    ThreadActivationStatus, ThreadLifecycle, TimerStore, WorkThreadKind,
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
 use morphz::permission::PermissionConfig;
 use morphz::sexpr::{parse, SExpr};
+use morphz::timer::TimerEngine;
 use morphz::tool::{
     get_tasks_map, BackgroundTask, BackgroundTaskStatus, DelegateTool, EditFileTool, ReadFileTool,
     Registry, Tool, WriteFileTool,
@@ -22,7 +23,7 @@ use morphz::tool::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{HashSet, VecDeque};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tempfile::{NamedTempFile, TempDir};
 
@@ -52,6 +53,18 @@ struct FailingClient;
 struct HangingClient;
 
 struct BlockingClient;
+
+struct AsyncCancellationClient {
+    dropped: Arc<AtomicBool>,
+}
+
+struct CancellationDropProbe(Arc<AtomicBool>);
+
+impl Drop for CancellationDropProbe {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
 
 struct CancellableClient {
     calls: AtomicUsize,
@@ -256,7 +269,28 @@ impl Client for BlockingClient {
 }
 
 #[async_trait::async_trait]
+impl Client for AsyncCancellationClient {
+    fn supports_async_cancellation(&self) -> bool {
+        true
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        let _drop_probe = CancellationDropProbe(Arc::clone(&self.dropped));
+        std::future::pending::<()>().await;
+        unreachable!("orchestrator deadline must drop the cancellable client future")
+    }
+}
+
+#[async_trait::async_trait]
 impl Client for CancellableClient {
+    fn supports_async_cancellation(&self) -> bool {
+        true
+    }
+
     async fn create_completion(
         &self,
         _messages: Vec<Message>,
@@ -347,6 +381,30 @@ impl MockClient {
     fn delivery_calls(&self) -> usize {
         self.delivery_calls.load(Ordering::SeqCst)
     }
+}
+
+fn new_test_orchestrator(
+    bus: Arc<InMemoryEventBus>,
+    store: Arc<SqliteStore>,
+    client: Arc<dyn Client>,
+    registry: Arc<Registry>,
+    config: morphz::config::OrchestratorConfig,
+    context_engine: Arc<ContextEngine>,
+) -> Arc<Orchestrator> {
+    // Production terminal delivery is driven by the durable TimerEngine. Keep
+    // integration fixtures on the same execution path instead of relying on an
+    // inline delivery fallback that does not exist in Runtime.
+    let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+    Orchestrator::new_test_with_context_engine(
+        bus,
+        store as Arc<dyn EventStore>,
+        client,
+        registry,
+        config,
+        context_engine,
+        Arc::clone(&timers),
+    )
+    .unwrap()
 }
 
 #[async_trait::async_trait]
@@ -459,14 +517,14 @@ async fn build_orchestrator_with_config_and_reply_mode(
     registry.register(Arc::new(WriteFileTool::default()));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&context_engine))));
 
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         registry,
         orchestrator_config,
         context_engine,
-    ));
+    );
     orchestrator.clone().start().await.unwrap();
     (bus, store, orchestrator, client, tmp)
 }
@@ -854,14 +912,14 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         Arc::new(Registry::new()),
         config,
         engine,
-    ));
+    );
     orchestrator.start().await.unwrap();
 
     for session_id in &recovery_sessions {
@@ -1089,14 +1147,14 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         registry,
         config,
         engine,
-    ));
+    );
     orchestrator.start().await.unwrap();
 
     assert_eq!(
@@ -1258,14 +1316,14 @@ async fn test_llm_failure_is_audited_and_always_replies_to_user() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::new(FailingClient) as Arc<dyn Client>,
         Arc::new(Registry::new()),
         config,
         engine,
-    ));
+    );
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, session_id, "do work").await;
@@ -1311,14 +1369,17 @@ async fn test_orchestrator_deadline_cancels_hanging_client_and_replies() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let dropped = Arc::new(AtomicBool::new(false));
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
-        Arc::new(HangingClient) as Arc<dyn Client>,
+        Arc::clone(&store),
+        Arc::new(AsyncCancellationClient {
+            dropped: Arc::clone(&dropped),
+        }) as Arc<dyn Client>,
         Arc::new(Registry::new()),
         config,
         engine,
-    ));
+    );
     orchestrator.start().await.unwrap();
 
     let started = std::time::Instant::now();
@@ -1331,6 +1392,10 @@ async fn test_orchestrator_deadline_cancels_hanging_client_and_replies() {
     assert_eq!(replies.len(), 1);
     assert_eq!(failures.len(), 1);
     assert_eq!(starts.len(), 1);
+    assert!(
+        dropped.load(Ordering::SeqCst),
+        "deadline must drop the client future, not only abandon its result receiver"
+    );
     assert_eq!(
         starts[0]
             .payload
@@ -1367,14 +1432,14 @@ async fn test_orchestrator_deadline_covers_waiting_for_concurrency_permit() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         Arc::new(Registry::new()),
         config,
         engine,
-    ));
+    );
     orchestrator.clone().start().await.unwrap();
     let held_permit = orchestrator
         .concurrency_semaphore
@@ -1409,14 +1474,14 @@ async fn test_orchestrator_deadline_isolates_synchronously_blocking_client() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::new(BlockingClient) as Arc<dyn Client>,
         Arc::new(Registry::new()),
         config,
         engine,
-    ));
+    );
     orchestrator.start().await.unwrap();
 
     let started = std::time::Instant::now();
@@ -1452,16 +1517,16 @@ async fn test_session_cancel_stops_current_attempt_until_new_user_message() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::new(CancellableClient {
             calls: AtomicUsize::new(0),
         }),
         Arc::new(Registry::new()),
         config,
         engine,
-    ));
+    );
     orchestrator.clone().start().await.unwrap();
 
     publish_user(&bus, session_id, "first hangs").await;
@@ -1741,14 +1806,14 @@ async fn test_empty_tool_output_is_explicit_success_and_does_not_require_retry()
     );
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(EmptyOutputTool));
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         registry,
         config,
         context_engine,
-    ));
+    );
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, session_id, "run empty tool once").await;
@@ -2481,14 +2546,14 @@ async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(ReadFileTool::default()));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         registry,
         config,
         engine,
-    ));
+    );
     orchestrator.clone().start().await.unwrap();
 
     publish_user(&bus, session_id, "preserve physical work").await;
@@ -2614,14 +2679,14 @@ async fn test_turn_soft_checkpoint_preserves_tools_and_continues() {
     );
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(ReadFileTool::default()));
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         registry,
         config,
         engine,
-    ));
+    );
     orchestrator.clone().start().await.unwrap();
 
     publish_user(&bus, session_id, "keep reading forever").await;
@@ -2701,14 +2766,14 @@ async fn test_soft_checkpoint_allows_context_maintenance_without_forcing_final_r
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(ReadFileTool::default()));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         registry,
         config,
         Arc::clone(&engine),
-    ));
+    );
     orchestrator.clone().start().await.unwrap();
 
     publish_user(&bus, session_id, "repair and close context").await;
@@ -2801,14 +2866,14 @@ async fn test_failed_context_tx_at_soft_checkpoint_does_not_force_final_reply() 
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(ReadFileTool::default()));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         registry,
         config,
         engine,
-    ));
+    );
     orchestrator.clone().start().await.unwrap();
 
     publish_user(&bus, session_id, "fail closure safely").await;
@@ -2886,14 +2951,14 @@ async fn test_edit_file_change_becomes_next_attempt_observation() {
         security,
         Arc::clone(&bus),
     )));
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         client as Arc<dyn Client>,
         registry,
         config,
         engine,
-    ));
+    );
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, session_id, "fix answer").await;
@@ -3016,14 +3081,14 @@ async fn test_delegate_isolates_siblings_returns_to_parent_and_parent_integrates
     ]));
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         registry,
         config,
         Arc::clone(&engine),
-    ));
+    );
     Arc::clone(&orchestrator).start().await.unwrap();
 
     bus.publish(Event::new(
@@ -3171,14 +3236,14 @@ async fn attached_delegate_waits_for_result_without_model_polling() {
     ]));
     let registry = Arc::new(Registry::new());
     registry.register(Arc::new(DelegateTool::new(Arc::clone(&bus))));
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         registry,
         config,
         engine,
-    ));
+    );
     Arc::clone(&orchestrator).start().await.unwrap();
 
     publish_user_in_context(
@@ -3261,14 +3326,14 @@ async fn delegation_depth_limit_rejects_recursive_spawn_before_creating_child() 
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::new(HangingClient) as Arc<dyn Client>,
         Arc::new(Registry::new()),
         config,
         engine,
-    ));
+    );
     Arc::clone(&orchestrator).start().await.unwrap();
 
     let request = |id: &str,
@@ -3361,14 +3426,14 @@ async fn same_session_dialogue_turns_are_serialized() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         Arc::new(Registry::new()),
         config,
         engine,
-    ));
+    );
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, "serialized-session", "first").await;
@@ -3461,14 +3526,14 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         registry,
         config,
         engine,
-    ));
+    );
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, "context-maintenance-dialogue", "first").await;
@@ -3528,14 +3593,14 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         registry,
         config,
         engine,
-    ));
+    );
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, "same-session-tool", "message-a starts tool").await;
@@ -3718,14 +3783,14 @@ async fn concurrent_session_inspect_cannot_suppress_another_root_turns_tool_wake
         delay_ms: 600,
     }));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         registry,
         config,
         engine,
-    ));
+    );
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, "causal-wake-session", "root A").await;
@@ -3798,14 +3863,14 @@ async fn test_distinct_sessions_evaluate_concurrently_in_shared_context() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         Arc::new(Registry::new()),
         config,
         Arc::clone(&engine),
-    ));
+    );
     Arc::clone(&orchestrator).start().await.unwrap();
 
     tokio::join!(
@@ -3873,14 +3938,14 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         Arc::new(Registry::new()),
         config,
         engine,
-    ));
+    );
     orchestrator.start().await.unwrap();
 
     publish_user(&bus, "coalesced-session", "start").await;
@@ -3893,30 +3958,125 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
     publish_tool_output(&bus, "coalesced-session", "tool-output-1").await;
     publish_tool_output(&bus, "coalesced-session", "tool-output-2").await;
 
-    for _ in 0..80 {
-        if client.calls.load(Ordering::SeqCst) >= 2 {
+    let mut source_activations = Vec::new();
+    for _ in 0..100 {
+        source_activations = store
+            .list_context_thread_activations("coalesced-session", true)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|activation| {
+                activation.trigger_kind == "chat/user_message"
+                    || matches!(
+                        activation.trigger_event_id.as_str(),
+                        "tool-output-1" | "tool-output-2"
+                    )
+            })
+            .collect();
+        if source_activations.len() == 3
+            && source_activations
+                .iter()
+                .all(|activation| activation.status.is_terminal())
+        {
             break;
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-    let calls = client.calls.load(Ordering::SeqCst);
-    assert!((2..=3).contains(&calls));
+    assert_eq!(source_activations.len(), 3);
+    assert!(source_activations
+        .iter()
+        .all(|activation| activation.status.is_terminal()));
+    assert!((2..=3).contains(&client.calls.load(Ordering::SeqCst)));
     assert!(client.max_active.load(Ordering::SeqCst) >= 2);
-    // Context Inspect is committed before the model call finishes and increments
-    // `calls`, so a third in-flight wake may already be visible here even when
-    // the completion counter still reads two.
-    let inspections =
-        wait_for_topic_count(&store, "chat/context_inspect", "coalesced-session", calls).await;
-    assert!(inspections.len() >= calls);
-    assert!(inspections.len() <= 5);
-    let work_items = store
-        .list_context_thread_activations("coalesced-session", true)
+
+    let result_events = store
+        .query(QueryFilter {
+            session_id: Some("coalesced-session".to_string()),
+            topic: Some("runtime/thread_result".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!((1..=2).contains(&result_events.len()));
+    let result_thread_ids = result_events
+        .iter()
+        .filter_map(|event| {
+            event
+                .payload
+                .get("work_thread_id")
+                .and_then(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        })
+        .collect::<HashSet<_>>();
+    assert_eq!(result_thread_ids.len(), result_events.len());
+    for _ in 0..100 {
+        if store
+            .list_session_delivery_threads("coalesced-session", true)
+            .await
+            .unwrap()
+            .is_empty()
+        {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+    assert!(store
+        .list_session_delivery_threads("coalesced-session", true)
         .await
         .unwrap()
-        .len();
-    assert!((4..=5).contains(&work_items));
+        .is_empty());
+
+    let completion_events = store
+        .query(QueryFilter {
+            session_id: Some("coalesced-session".to_string()),
+            topic: Some("chat/thread_completion_ready".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!((1..=2).contains(&completion_events.len()));
+    let covered_thread_ids = completion_events
+        .iter()
+        .flat_map(|event| {
+            event
+                .payload
+                .get("completed_thread_ids")
+                .and_then(|value| value.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str())
+                .map(ToOwned::to_owned)
+        })
+        .collect::<Vec<_>>();
+    let unique_covered_thread_ids = covered_thread_ids.iter().cloned().collect::<HashSet<_>>();
+    assert_eq!(
+        covered_thread_ids.len(),
+        unique_covered_thread_ids.len(),
+        "delivery snapshots must never cover one work thread twice"
+    );
+    assert_eq!(unique_covered_thread_ids, result_thread_ids);
+
+    let replies = wait_for_topic_count(
+        &store,
+        "chat/reply",
+        "coalesced-session",
+        1 + completion_events.len(),
+    )
+    .await;
+    assert_eq!(replies.len(), 1 + completion_events.len());
+    let activation_records = store
+        .list_context_thread_activations("coalesced-session", true)
+        .await
+        .unwrap();
+    assert_eq!(activation_records.len(), 3 + completion_events.len());
+    assert_eq!(
+        activation_records
+            .iter()
+            .filter(|activation| activation.trigger_kind == "chat/thread_completion_ready")
+            .count(),
+        completion_events.len(),
+        "each durable completion snapshot must create exactly one delivery activation"
+    );
 }
 
 #[tokio::test]
@@ -3936,14 +4096,14 @@ async fn tool_wakeups_for_one_root_are_single_flight_and_commit_one_reply() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
-    let orchestrator = Arc::new(Orchestrator::new_with_context_engine(
+    let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
-        Arc::clone(&store) as Arc<dyn EventStore>,
+        Arc::clone(&store),
         Arc::clone(&client) as Arc<dyn Client>,
         Arc::new(Registry::new()),
         config,
         engine,
-    ));
+    );
     orchestrator.start().await.unwrap();
 
     let publish = |id: &'static str| {

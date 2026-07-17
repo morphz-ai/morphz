@@ -1,15 +1,20 @@
 use crate::approval::{ApprovalAction, ApprovalProvider, CapabilityDelta, DenyAllApprovalProvider};
 use crate::config::BackgroundTaskConfig;
 use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT};
+use crate::execution::{
+    deterministic_job_id, ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat,
+    JobOutcome, JobReceipt,
+};
 use crate::llm::ToolDefinition;
 use crate::memory::{
-    EventStore, NewRuntimeTimer, NewScheduledIntent, NewWorkThread, QueryFilter, RuntimeTimerKind,
-    RuntimeTimerRecord, ScheduledIntentRecord, ScheduledIntentStatus, SessionStatus, SessionStore,
-    WorkThreadKind,
+    EventStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionRetrySafety, NewRuntimeTimer, NewScheduledIntent, NewWorkThread, QueryFilter,
+    RuntimeTimerKind, RuntimeTimerRecord, ScheduledIntentMutation, ScheduledIntentRecord,
+    ScheduledIntentStatus, SessionStatus, SessionStore, WorkThreadKind,
 };
 use crate::permission::{
-    ApprovalContext, FilesystemAccess, PermissionBroker, PermissionConfig, PermissionProfile,
-    SandboxMode, ShellEnvironmentPolicy,
+    ApprovalContext, ApprovalRequirement, FilesystemAccess, PermissionBroker, PermissionConfig,
+    PermissionProfile, SandboxMode, ShellEnvironmentPolicy,
 };
 use crate::sandbox::{
     EnforcementStatus, NativeSandbox, NetworkPolicy, SandboxPolicy, ShellRequest,
@@ -36,6 +41,7 @@ tokio::task_local! {
     pub static CURRENT_CONTEXT_ID: String;
     pub static CURRENT_ATTEMPT_ID: String;
     pub static CURRENT_CAUSAL_ROUTE: Option<ToolCausalRoute>;
+    pub static CURRENT_EXECUTION_JOB: Option<ToolExecutionJobContext>;
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +51,20 @@ pub struct ToolCausalRoute {
     pub root_turn_id: String,
     pub trigger_event_id: String,
     pub trigger_sequence: u64,
+}
+
+/// Durable identity of the physical tool invocation currently crossing the
+/// reality boundary. Long-running tools may derive a child ExecutionJob from
+/// this identity when ownership outlives the immediate Function Call.
+#[derive(Debug, Clone)]
+pub struct ToolExecutionJobContext {
+    pub parent_job_id: String,
+    pub activation_id: String,
+    pub thread_id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub tool_call_id: String,
 }
 
 fn extend_causal_route(
@@ -105,10 +125,37 @@ fn broker_from_config(config: Arc<PermissionConfig>) -> Arc<PermissionBroker> {
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn definition(&self) -> ToolDefinition;
+    /// Runtime execution ownership. Physical tools must be materialized as a
+    /// durable ExecutionJob before `execute` may cross a reality boundary.
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::PhysicalJob
+    }
+    /// Conservative restart policy for a physical Action. Tools should opt in
+    /// to idempotent replay only when repeating the exact causal request is safe.
+    fn retry_safety(&self) -> ExecutionRetrySafety {
+        ExecutionRetrySafety::AtMostOnce
+    }
+    /// Pure preflight for the exact capability delta this invocation would
+    /// request before crossing a physical boundary. Runtime persists and
+    /// resolves this requirement before claiming the ExecutionJob.
+    fn approval_requirement(
+        &self,
+        _arguments: &str,
+    ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(None)
+    }
     async fn execute(
         &self,
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolExecutionClass {
+    /// Atomic Runtime/Context control transaction; no separate physical Job.
+    LogicalInline,
+    /// Reality-facing operation whose lifecycle belongs to ExecutionJob.
+    PhysicalJob,
 }
 
 pub struct Registry {
@@ -182,6 +229,10 @@ impl SendMessageTool {
 impl Tool for SendMessageTool {
     fn name(&self) -> &str {
         "send_message"
+    }
+
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
     }
 
     fn definition(&self) -> ToolDefinition {
@@ -293,16 +344,14 @@ impl Tool for SendMessageTool {
     }
 }
 
-/// Persistent clock adapter for process-local background Shell tasks. The
-/// task process itself remains owned by the current Runtime process until the
-/// ExecutionJob persistence phase; only its requested wake checkpoint is a
-/// durable timer. After restart an orphaned wake safely completes because no
-/// matching live task exists, while any already-persisted Signal Outbox entry
-/// is still recovered by the Orchestrator.
+/// Durable control plane for long-running Shell processes. ExecutionJob owns
+/// lifecycle truth; the process-local map only retains the live PGID and output
+/// cache required to interact with a process owned by this Runtime instance.
 pub struct BackgroundTaskScheduler {
     bus: Arc<InMemoryEventBus>,
     events: Arc<dyn EventStore>,
     timers: Arc<TimerEngine>,
+    execution_jobs: Option<Arc<ExecutionJobManager<dyn ExecutionJobStore>>>,
 }
 
 impl BackgroundTaskScheduler {
@@ -315,7 +364,649 @@ impl BackgroundTaskScheduler {
             bus,
             events,
             timers,
+            execution_jobs: None,
         }
+    }
+
+    pub fn new_with_execution_jobs(
+        bus: Arc<InMemoryEventBus>,
+        events: Arc<dyn EventStore>,
+        timers: Arc<TimerEngine>,
+        execution_jobs: Arc<ExecutionJobManager<dyn ExecutionJobStore>>,
+    ) -> Self {
+        Self {
+            bus,
+            events,
+            timers,
+            execution_jobs: Some(execution_jobs),
+        }
+    }
+
+    fn durable_task_identity(
+        &self,
+        parent: &ToolExecutionJobContext,
+    ) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
+        let child_tool_call_id = format!("{}:background", parent.tool_call_id);
+        let job_id = deterministic_job_id(&parent.activation_id, &child_tool_call_id)?;
+        Ok((job_id, child_tool_call_id))
+    }
+
+    async fn ensure_parent_accepts_background_child(
+        &self,
+        parent: &ToolExecutionJobContext,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Err("后台任务 Scheduler 未配置 ExecutionJob Store".into());
+        };
+        let parent_job = manager
+            .store()
+            .get_execution_job(&parent.parent_job_id)
+            .await?
+            .ok_or_else(|| format!("父 ExecutionJob '{}' 不存在", parent.parent_job_id))?;
+        if parent_job.status != ExecutionJobStatus::Running
+            || parent_job.cancel_requested_at.is_some()
+        {
+            return Err(format!(
+                "父 ExecutionJob '{}' 已取消或不再 running，拒绝挂载后台 child",
+                parent.parent_job_id
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    async fn attach_execution_job(
+        &self,
+        task_id: &str,
+        parent: &ToolExecutionJobContext,
+    ) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Err("后台任务 Scheduler 未配置 ExecutionJob Store".into());
+        };
+        self.ensure_parent_accepts_background_child(parent).await?;
+        let (_, child_tool_call_id) = self.durable_task_identity(parent)?;
+        let request = {
+            let task = get_tasks_map()
+                .get(task_id)
+                .ok_or_else(|| format!("后台进程 '{task_id}' 的 live handle 不存在"))?;
+            serde_json::json!({
+                "kind": "background_exec",
+                "parent_job_id": parent.parent_job_id,
+                "task_id": task.id,
+                "command": task.cmd_str,
+                "process_group_id": task.pgid,
+                "started_at": task.started_at,
+                "artifact_path": task.artifact_path,
+                "effective_boundary": {
+                    "network_enabled": task.effective_network,
+                    "secret_env": task.secret_env,
+                    "sandbox_backend": task.sandbox_backend,
+                    "sandbox_status": task.sandbox_status,
+                }
+            })
+        };
+        let mut job = manager
+            .ensure(ExecutionJobSpec {
+                activation_id: parent.activation_id.clone(),
+                thread_id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                tool_call_id: child_tool_call_id,
+                tool_name: "exec/background".to_string(),
+                request,
+                retry_safety: ExecutionRetrySafety::ReconcileRequired,
+                requires_approval: false,
+            })
+            .await?;
+        if job.id != task_id {
+            return Err(format!(
+                "后台任务 ID '{}' 与派生 ExecutionJob '{}' 不一致",
+                task_id, job.id
+            )
+            .into());
+        }
+        if job.status != ExecutionJobStatus::Queued {
+            return Err(format!(
+                "后台 ExecutionJob '{}' 当前为 {}，无法接管新进程",
+                job.id,
+                job.status.as_str()
+            )
+            .into());
+        }
+        self.ensure_parent_accepts_background_child(parent).await?;
+        let claim_token = format!(
+            "background-claim-{}-{}-{}",
+            job.id,
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let lease_expires_at = chrono::Utc::now() + chrono::Duration::minutes(2);
+        job = applied_background_job(
+            manager
+                .claim(
+                    &job.id,
+                    job.revision,
+                    JobClaim {
+                        worker_id: "morphz-background-executor",
+                        claim_token: &claim_token,
+                        lease_expires_at,
+                        approval_ref: None,
+                    },
+                )
+                .await?,
+            "claim",
+        )?;
+        job = applied_background_job(
+            manager
+                .heartbeat(
+                    &job.id,
+                    job.revision,
+                    JobHeartbeat {
+                        claim_token: &claim_token,
+                        lease_expires_at,
+                        side_effect_started_at: Some(
+                            job.started_at.unwrap_or_else(chrono::Utc::now),
+                        ),
+                        progress_ref: job
+                            .request
+                            .get("artifact_path")
+                            .and_then(serde_json::Value::as_str),
+                    },
+                )
+                .await?,
+            "side-effect boundary",
+        )?;
+        if let Err(error) = self.ensure_parent_accepts_background_child(parent).await {
+            for _ in 0..8 {
+                match manager
+                    .request_cancel(&job.id, job.revision, Some(&error.to_string()))
+                    .await?
+                {
+                    JobReceipt::Applied { .. } | JobReceipt::Existing { .. } => break,
+                    JobReceipt::Conflict { current, .. } if !current.status.is_terminal() => {
+                        job = current;
+                    }
+                    JobReceipt::Conflict { .. }
+                    | JobReceipt::Rejected { .. }
+                    | JobReceipt::NotFound { .. } => break,
+                }
+            }
+            return Err(error);
+        }
+        self.spawn_execution_heartbeat(job.id.clone(), claim_token);
+        Ok(job)
+    }
+
+    fn spawn_execution_heartbeat(&self, job_id: String, claim_token: String) {
+        let Some(manager) = self.execution_jobs.clone() else {
+            return;
+        };
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                let Ok(Some(job)) = manager.store().get_execution_job(&job_id).await else {
+                    break;
+                };
+                if job.status != ExecutionJobStatus::Running
+                    || job.claim_token.as_deref() != Some(claim_token.as_str())
+                {
+                    break;
+                }
+                let progress_ref = job
+                    .request
+                    .get("artifact_path")
+                    .and_then(serde_json::Value::as_str);
+                match manager
+                    .heartbeat(
+                        &job.id,
+                        job.revision,
+                        JobHeartbeat {
+                            claim_token: &claim_token,
+                            lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                            side_effect_started_at: None,
+                            progress_ref,
+                        },
+                    )
+                    .await
+                {
+                    Ok(JobReceipt::Applied { .. }) | Ok(JobReceipt::Existing { .. }) => {}
+                    Ok(JobReceipt::Conflict { .. }) => continue,
+                    Ok(_) | Err(_) => break,
+                }
+            }
+        });
+    }
+
+    async fn finish_background_execution(
+        &self,
+        task_id: &str,
+        exit_code: i32,
+        output: &str,
+        residual_note: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Ok(false);
+        };
+        for _ in 0..4 {
+            let Some(job) = manager.store().get_execution_job(task_id).await? else {
+                return Err(format!("后台 ExecutionJob '{task_id}' 不存在").into());
+            };
+            if job.status.is_terminal() {
+                return Ok(false);
+            }
+            let cancelled = job.cancel_requested_at.is_some();
+            let status_text = if cancelled {
+                "cancelled"
+            } else if exit_code == 0 {
+                "succeeded"
+            } else {
+                "failed"
+            };
+            let text = format!(
+                "\n[后台任务 {} 执行结束，状态: {}，退出码: {}]{}\n--- 输出 ---\n{}",
+                task_id, status_text, exit_code, residual_note, output
+            );
+            let mut payload = serde_json::Map::from_iter([
+                ("context_id".to_string(), serde_json::json!(job.context_id)),
+                ("session_id".to_string(), serde_json::json!(job.session_id)),
+                (
+                    "attempt_id".to_string(),
+                    serde_json::json!(job.activation_id),
+                ),
+                (
+                    "work_item_id".to_string(),
+                    serde_json::json!(job.activation_id),
+                ),
+                (
+                    "work_thread_id".to_string(),
+                    serde_json::json!(job.thread_id),
+                ),
+                (
+                    "tool_call_id".to_string(),
+                    serde_json::json!(job.tool_call_id),
+                ),
+                ("caused_by".to_string(), serde_json::json!(job.tool_call_id)),
+                ("tool_name".to_string(), serde_json::json!(job.tool_name)),
+                ("tool_status".to_string(), serde_json::json!(status_text)),
+                ("wake_policy".to_string(), serde_json::json!("immediate")),
+                (
+                    "output_empty".to_string(),
+                    serde_json::json!(output.is_empty()),
+                ),
+                ("task_id".to_string(), serde_json::json!(task_id)),
+                ("task_status".to_string(), serde_json::json!(status_text)),
+                ("process_status".to_string(), serde_json::json!(status_text)),
+                ("exit_code".to_string(), serde_json::json!(exit_code)),
+                ("text".to_string(), serde_json::json!(text)),
+            ]);
+            let artifact_path = job
+                .request
+                .get("artifact_path")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned);
+            if let Some(path) = artifact_path.as_deref() {
+                payload.insert("artifact_path".to_string(), serde_json::json!(path));
+            }
+            if let Some(route) = get_tasks_map()
+                .get(task_id)
+                .and_then(|task| task.causal_route.clone())
+            {
+                payload.insert(
+                    "root_turn_id".to_string(),
+                    serde_json::json!(route.root_turn_id),
+                );
+                payload.insert(
+                    "trigger_event_id".to_string(),
+                    serde_json::json!(route.trigger_event_id),
+                );
+                payload.insert(
+                    "trigger_sequence".to_string(),
+                    serde_json::json!(route.trigger_sequence),
+                );
+            }
+            let event = Event::new(
+                format!("background_output_{}", job.id),
+                "System-TaskMonitor".to_string(),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                payload,
+            );
+            let result_refs = artifact_path.into_iter().collect::<Vec<_>>();
+            let outcome = if cancelled {
+                JobOutcome::Cancelled {
+                    result_event_id: Some(event.id.clone()),
+                    result_refs,
+                    reason: job.cancel_reason.clone(),
+                    exit_code: Some(exit_code),
+                }
+            } else if exit_code == 0 {
+                JobOutcome::Succeeded {
+                    result_event_id: Some(event.id.clone()),
+                    result_refs,
+                    exit_code: Some(exit_code),
+                }
+            } else {
+                JobOutcome::Failed {
+                    result_event_id: Some(event.id.clone()),
+                    result_refs,
+                    error: format!("后台进程退出码为 {exit_code}"),
+                    exit_code: Some(exit_code),
+                }
+            };
+            match manager
+                .finish_with_event(
+                    &job.id,
+                    job.revision,
+                    job.claim_token.as_deref(),
+                    outcome,
+                    &event,
+                )
+                .await?
+            {
+                JobReceipt::Applied { .. } | JobReceipt::Existing { .. } => {
+                    self.events.append_with_signal_outbox(event.clone()).await?;
+                    self.bus.dispatch_persisted(event).await?;
+                    return Ok(true);
+                }
+                JobReceipt::Conflict { .. } => continue,
+                JobReceipt::Rejected { reason, .. } => return Err(reason.into()),
+                JobReceipt::NotFound { .. } => {
+                    return Err(format!("后台 ExecutionJob '{task_id}' 不存在").into());
+                }
+            }
+        }
+        Err(format!("后台 ExecutionJob '{task_id}' 完成时持续发生 revision 冲突").into())
+    }
+
+    async fn get_background_job(
+        &self,
+        task_id: &str,
+    ) -> Result<Option<ExecutionJobRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Ok(None);
+        };
+        Ok(manager
+            .store()
+            .get_execution_job(task_id)
+            .await?
+            .filter(|job| job.tool_name == "exec/background"))
+    }
+
+    /// Repairs the crash window between a detached background Job/result Event
+    /// terminal commit and arming its scheduler delivery intent. Generic
+    /// physical Action batches arm one barrier only after every sibling result
+    /// is durable, so the generic ExecutionJob reconciler deliberately commits
+    /// Event without Outbox. A detached background process is its own Action
+    /// boundary and therefore owns exactly one deterministic Event + Outbox.
+    /// Replaying this scan is safe because both inserts are idempotent and a
+    /// materialized Outbox row is never reset to pending.
+    pub async fn recover_terminal_background_outboxes(
+        &self,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Ok(0);
+        };
+        let jobs = manager
+            .store()
+            .list_execution_jobs(ExecutionJobFilter {
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await?;
+        let mut armed = 0;
+        for job in jobs {
+            if job.tool_name != "exec/background" || !job.status.is_terminal() {
+                continue;
+            }
+            let event_id = job
+                .result_event_id
+                .as_deref()
+                .ok_or_else(|| format!("后台 ExecutionJob '{}' lost 但缺少结果 Event", job.id))?;
+            let mut events = self
+                .events
+                .query(QueryFilter {
+                    event_id: Some(event_id.to_string()),
+                    ..Default::default()
+                })
+                .await?;
+            if events.len() != 1 {
+                return Err(format!(
+                    "后台 ExecutionJob '{}' 的 lost 结果 Event '{}' 数量异常：{}",
+                    job.id,
+                    event_id,
+                    events.len()
+                )
+                .into());
+            }
+            self.events
+                .append_with_signal_outbox(events.remove(0))
+                .await?;
+            armed += 1;
+        }
+        Ok(armed)
+    }
+
+    async fn background_job_snapshot(
+        &self,
+        task_id: &str,
+        context_id: &str,
+    ) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(job) = self.get_background_job(task_id).await? else {
+            return Ok(None);
+        };
+        if !context_id.is_empty() && job.context_id != context_id {
+            return Err(format!("后台任务 '{task_id}' 不属于当前 Context").into());
+        }
+        let live = get_tasks_map().get(task_id);
+        Ok(Some(background_execution_snapshot(&job, live.as_deref())))
+    }
+
+    async fn list_background_job_snapshots(
+        &self,
+        context_id: &str,
+        session_id: Option<&str>,
+        include_finished: bool,
+    ) -> Result<Option<Vec<serde_json::Value>>, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Ok(None);
+        };
+        let jobs = manager
+            .store()
+            .list_execution_jobs(ExecutionJobFilter {
+                context_id: (!context_id.is_empty()).then(|| context_id.to_string()),
+                session_id: session_id.map(ToOwned::to_owned),
+                include_terminal: include_finished,
+                ..Default::default()
+            })
+            .await?;
+        let mut snapshots = jobs
+            .into_iter()
+            .filter(|job| job.tool_name == "exec/background")
+            .map(|job| {
+                let live = get_tasks_map().get(&job.id);
+                background_execution_snapshot(&job, live.as_deref())
+            })
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| {
+            left["started_at"]
+                .as_str()
+                .cmp(&right["started_at"].as_str())
+        });
+        Ok(Some(snapshots))
+    }
+
+    async fn request_cancel_and_signal(
+        &self,
+        task_id: &str,
+        context_id: &str,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(manager) = &self.execution_jobs else {
+            return Err("后台任务 Scheduler 未配置 ExecutionJob Store".into());
+        };
+        let mut job = self
+            .get_background_job(task_id)
+            .await?
+            .ok_or_else(|| format!("未找到后台任务 '{task_id}'"))?;
+        if !context_id.is_empty() && job.context_id != context_id {
+            return Err(format!("后台任务 '{task_id}' 不属于当前 Context").into());
+        }
+        if job.status.is_terminal() {
+            let live = get_tasks_map().get(task_id);
+            return Ok(serde_json::json!({
+                "kind": "background_task_kill",
+                "task": background_execution_snapshot(&job, live.as_deref()),
+                "killed": false,
+                "reason": "task_already_finished",
+            }));
+        }
+        for _ in 0..4 {
+            match manager
+                .request_cancel(&job.id, job.revision, Some("Agent requested kill_task"))
+                .await?
+            {
+                JobReceipt::Applied { job: updated, .. }
+                | JobReceipt::Existing { job: updated, .. } => {
+                    job = updated;
+                    break;
+                }
+                JobReceipt::Conflict { current, .. } => {
+                    job = current;
+                    if job.status.is_terminal() {
+                        break;
+                    }
+                }
+                JobReceipt::Rejected {
+                    current, reason, ..
+                } => {
+                    return Err(format!(
+                        "后台 ExecutionJob '{}' 取消请求被拒绝：{}",
+                        current.id, reason
+                    )
+                    .into());
+                }
+                JobReceipt::NotFound { .. } => {
+                    return Err(format!("后台 ExecutionJob '{task_id}' 不存在").into());
+                }
+            }
+        }
+        if job.status.is_terminal() {
+            let live = get_tasks_map().get(task_id);
+            return Ok(serde_json::json!({
+                "kind": "background_task_kill",
+                "task": background_execution_snapshot(&job, live.as_deref()),
+                "killed": false,
+                "reason": "task_finished_during_cancel",
+            }));
+        }
+        let task_pgid = get_tasks_map()
+            .get(task_id)
+            .map(|task| task.pgid)
+            .ok_or_else(|| {
+                format!(
+                    "后台任务 '{task_id}' 没有当前 Runtime 的 live process owner；已持久化取消请求但不能伪造物理终止"
+                )
+            })?;
+        if let Some(mut task) = get_tasks_map().get_mut(task_id) {
+            task.status = BackgroundTaskStatus::KillRequested;
+            task.wake_generation = task.wake_generation.wrapping_add(1);
+            task.next_wakeup_at = None;
+        }
+        self.cancel(task_id).await;
+        let pgid = nix::unistd::Pid::from_raw(-task_pgid);
+        match nix::sys::signal::kill(pgid, nix::sys::signal::Signal::SIGKILL) {
+            Ok(()) => Ok(serde_json::json!({
+                "kind": "background_task_kill",
+                "task_id": task_id,
+                "execution_job_id": job.id,
+                "status": "cancel_requested",
+                "process_group_id": task_pgid,
+                "killed": true,
+                "guidance": "取消意图已持久化；只有进程退出观察提交后，ExecutionJob 才会进入 cancelled 终态。"
+            })),
+            Err(nix::errno::Errno::ESRCH) => Ok(serde_json::json!({
+                "kind": "background_task_kill",
+                "task_id": task_id,
+                "execution_job_id": job.id,
+                "status": "cancel_requested",
+                "process_group_id": task_pgid,
+                "killed": false,
+                "reason": "process_group_not_found",
+                "guidance": "取消意图已持久化；等待进程 watcher 提交真实终态，Runtime 不把 ESRCH 猜成 cancelled。"
+            })),
+            Err(error) => Err(format!(
+                "强杀进程组 {} 遭遇系统级错误: {:?}；取消请求仍保持持久化",
+                task_pgid, error
+            )
+            .into()),
+        }
+    }
+
+    /// Physically terminates every live exec process owned by one Activation.
+    /// The durable ExecutionJob cancellation is performed first by the
+    /// Orchestrator; this method closes the OS side of that same causal route.
+    /// A detached child that raced the first store scan is fenced here too by
+    /// persisting cancellation on its derived background Job before killpg.
+    pub async fn cancel_live_tasks_for_activation(
+        &self,
+        activation_id: &str,
+        reason: &str,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        let live_tasks = get_tasks_map()
+            .iter()
+            .filter(|entry| {
+                entry
+                    .causal_route
+                    .as_ref()
+                    .is_some_and(|route| route.work_item_id == activation_id)
+            })
+            .map(|entry| (entry.id.clone(), entry.pgid))
+            .collect::<Vec<_>>();
+        let mut targeted = 0usize;
+        for (task_id, pgid) in live_tasks {
+            if let (Some(manager), Some(mut job)) = (
+                self.execution_jobs.as_ref(),
+                self.get_background_job(&task_id).await?,
+            ) {
+                for _ in 0..8 {
+                    if job.status.is_terminal() || job.cancel_requested_at.is_some() {
+                        break;
+                    }
+                    match manager
+                        .request_cancel(&job.id, job.revision, Some(reason))
+                        .await?
+                    {
+                        JobReceipt::Applied { job: current, .. }
+                        | JobReceipt::Existing { job: current, .. }
+                        | JobReceipt::Conflict { current, .. } => job = current,
+                        JobReceipt::Rejected { .. } => break,
+                        JobReceipt::NotFound { .. } => break,
+                    }
+                }
+            }
+            if let Some(mut task) = get_tasks_map().get_mut(&task_id) {
+                task.status = BackgroundTaskStatus::KillRequested;
+                task.wake_generation = task.wake_generation.wrapping_add(1);
+                task.next_wakeup_at = None;
+            }
+            self.cancel(&task_id).await;
+            match nix::sys::signal::killpg(
+                nix::unistd::Pid::from_raw(pgid),
+                nix::sys::signal::Signal::SIGKILL,
+            ) {
+                Ok(()) | Err(nix::errno::Errno::ESRCH) => {
+                    targeted = targeted.saturating_add(1);
+                }
+                Err(error) => {
+                    return Err(format!(
+                        "Activation '{}' 的进程组 {} 终止失败: {}；取消意图仍保持持久化",
+                        activation_id, pgid, error
+                    )
+                    .into());
+                }
+            }
+        }
+        Ok(targeted)
     }
 
     pub fn register_timer_handler(
@@ -342,6 +1033,19 @@ impl BackgroundTaskScheduler {
     ) -> Result<chrono::DateTime<chrono::Utc>, String> {
         if !(1..=MAX_TASK_WAIT_SECS).contains(&wait_secs) {
             return Err(format!("wait_secs 必须在 1 到 {MAX_TASK_WAIT_SECS} 秒之间"));
+        }
+        if self.execution_jobs.is_some() {
+            let job = self
+                .get_background_job(task_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("未找到后台 ExecutionJob '{task_id}'"))?;
+            if job.status.is_terminal() {
+                return Err(format!(
+                    "后台任务 '{task_id}' 已经以 {} 结束，无需继续等待",
+                    job.status.as_str()
+                ));
+            }
         }
         let (generation, wakeup_at) = {
             let tasks = get_tasks_map();
@@ -410,7 +1114,18 @@ impl BackgroundTaskScheduler {
             .get("wake_source")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("runtime");
-        let payload = {
+        let authoritative_job = if self.execution_jobs.is_some() {
+            let Some(job) = self.get_background_job(&timer.owner_id).await? else {
+                return Ok(TimerDisposition::Complete);
+            };
+            if job.status.is_terminal() {
+                return Ok(TimerDisposition::Complete);
+            }
+            Some(job)
+        } else {
+            None
+        };
+        let mut payload = {
             let tasks = get_tasks_map();
             let Some(mut task) = tasks.get_mut(&timer.owner_id) else {
                 return Ok(TimerDisposition::Complete);
@@ -430,6 +1145,21 @@ impl BackgroundTaskScheduler {
             task.next_wakeup_at = None;
             background_wait_elapsed_payload(&task, wait_secs, wake_source)
         };
+        if let Some(job) = authoritative_job {
+            payload.insert(
+                "task_status".to_string(),
+                serde_json::json!(if job.cancel_requested_at.is_some() {
+                    "cancel_requested"
+                } else {
+                    job.status.as_str()
+                }),
+            );
+            payload.insert("execution_job_id".to_string(), serde_json::json!(job.id));
+            payload.insert(
+                "execution_job_revision".to_string(),
+                serde_json::json!(job.revision),
+            );
+        }
         let event = Event::new(
             format!("task_wait_elapsed_{}_g{}", timer.owner_id, generation),
             "System-TaskMonitor".to_string(),
@@ -440,6 +1170,30 @@ impl BackgroundTaskScheduler {
         self.events.append_with_signal_outbox(event.clone()).await?;
         self.bus.dispatch_persisted(event).await?;
         Ok(TimerDisposition::Complete)
+    }
+}
+
+fn applied_background_job(
+    receipt: JobReceipt,
+    operation: &str,
+) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>> {
+    match receipt {
+        JobReceipt::Applied { job, .. } | JobReceipt::Existing { job, .. } => Ok(job),
+        JobReceipt::Conflict { current, .. } => Err(format!(
+            "后台 ExecutionJob {} {} 发生 revision 冲突（当前 r{}）",
+            current.id, operation, current.revision
+        )
+        .into()),
+        JobReceipt::Rejected {
+            current, reason, ..
+        } => Err(format!(
+            "后台 ExecutionJob {} {} 被拒绝：{}",
+            current.id, operation, reason
+        )
+        .into()),
+        JobReceipt::NotFound { .. } => {
+            Err(format!("后台 ExecutionJob {operation} 时不存在").into())
+        }
     }
 }
 
@@ -489,10 +1243,23 @@ impl ThreadScheduler {
     }
 
     pub async fn recover(self: &Arc<Self>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let queued = self
-            .sessions
-            .list_scheduled_intents(None, Some(ScheduledIntentStatus::Queued))
-            .await?;
+        let schedules = self.sessions.list_scheduled_intents(None, None).await?;
+        let queued = schedules
+            .iter()
+            .filter(|intent| intent.status == ScheduledIntentStatus::Queued)
+            .cloned()
+            .collect::<Vec<_>>();
+        // The owner row is authoritative. A crash may happen after pause or
+        // cancel commits but before its timer is cancelled; proactively clean
+        // those generations before the Timer Engine starts. A timer which was
+        // already claimed is still harmless because dispatch_timer fences on
+        // both owner status and revision.
+        for intent in schedules
+            .iter()
+            .filter(|intent| intent.status != ScheduledIntentStatus::Queued)
+        {
+            self.timers.cancel(&schedule_timer_id(&intent.id)).await?;
+        }
         // Close the crash window between a dependency Thread's terminal
         // commit and its in-process notification. Replaying terminal
         // dependency IDs through the persistent reverse index advances owner
@@ -550,6 +1317,82 @@ impl ThreadScheduler {
                 self.events.append_with_signal_outbox(event.clone()).await?;
                 self.bus.dispatch_persisted(event).await?;
             }
+        }
+        Ok(())
+    }
+
+    pub async fn inspect(
+        &self,
+        id: &str,
+    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        self.sessions.inspect_scheduled_intent(id).await
+    }
+
+    pub async fn pause(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let mutation = self
+            .sessions
+            .pause_scheduled_intent(id, expected_revision)
+            .await?;
+        self.reconcile_control_mutation(&mutation).await?;
+        Ok(mutation)
+    }
+
+    pub async fn resume(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let mutation = self
+            .sessions
+            .resume_scheduled_intent(id, expected_revision)
+            .await?;
+        self.reconcile_control_mutation(&mutation).await?;
+        Ok(mutation)
+    }
+
+    pub async fn reschedule(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        not_before: Option<chrono::DateTime<chrono::Utc>>,
+        interval_seconds: Option<u64>,
+    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let mutation = self
+            .sessions
+            .reschedule_scheduled_intent(id, expected_revision, not_before, interval_seconds)
+            .await?;
+        self.reconcile_control_mutation(&mutation).await?;
+        Ok(mutation)
+    }
+
+    pub async fn cancel(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let mutation = self
+            .sessions
+            .cancel_scheduled_intent(id, expected_revision)
+            .await?;
+        self.reconcile_control_mutation(&mutation).await?;
+        Ok(mutation)
+    }
+
+    async fn reconcile_control_mutation(
+        &self,
+        mutation: &ScheduledIntentMutation,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let ScheduledIntentMutation::Updated(intent) = mutation else {
+            return Ok(());
+        };
+        if intent.status == ScheduledIntentStatus::Queued {
+            self.arm(intent.clone()).await?;
+        } else {
+            self.timers.cancel(&schedule_timer_id(&intent.id)).await?;
         }
         Ok(())
     }
@@ -727,6 +1570,126 @@ impl ScheduleTxTool {
             sessions,
         }
     }
+
+    async fn execute_control(
+        &self,
+        operation: ScheduleOperation,
+        context_id: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let schedule_id = match &operation {
+            ScheduleOperation::Inspect { schedule_id }
+            | ScheduleOperation::Pause { schedule_id, .. }
+            | ScheduleOperation::Resume { schedule_id, .. }
+            | ScheduleOperation::Reschedule { schedule_id, .. }
+            | ScheduleOperation::Cancel { schedule_id, .. } => schedule_id,
+            ScheduleOperation::Enqueue { .. } | ScheduleOperation::Spawn { .. } => {
+                return Err("内部错误：创建操作不能进入 Schedule 控制面".into());
+            }
+        };
+        if schedule_id.trim().is_empty() {
+            return Err("schedule_id 不能为空".into());
+        }
+        let inspected = self.scheduler.inspect(schedule_id).await?;
+        if let Some(intent) = &inspected {
+            let target = self
+                .sessions
+                .get_work_thread(&intent.thread_id)
+                .await?
+                .ok_or_else(|| format!("Schedule '{}' 的目标 Thread 不存在", intent.id))?;
+            if target.context_id != context_id {
+                return Err("不能检查或修改其他 Context 的 Schedule".into());
+            }
+        }
+
+        let (operation_name, mutation) = match operation {
+            ScheduleOperation::Inspect { .. } => {
+                return Ok(serde_json::json!({
+                    "status": if inspected.is_some() { "ok" } else { "not_found" },
+                    "operation": "inspect",
+                    "schedule": inspected,
+                    "guidance": "后续修改必须提交这里返回的当前 revision；Runtime 会拒绝过期 revision。"
+                })
+                .to_string());
+            }
+            ScheduleOperation::Pause {
+                schedule_id,
+                expected_revision,
+            } => (
+                "pause",
+                self.scheduler
+                    .pause(&schedule_id, expected_revision)
+                    .await?,
+            ),
+            ScheduleOperation::Resume {
+                schedule_id,
+                expected_revision,
+            } => (
+                "resume",
+                self.scheduler
+                    .resume(&schedule_id, expected_revision)
+                    .await?,
+            ),
+            ScheduleOperation::Reschedule {
+                schedule_id,
+                expected_revision,
+                not_before,
+                delay_seconds,
+                every_seconds,
+            } => {
+                if not_before.is_some() && delay_seconds.is_some() {
+                    return Err("not_before 与 delay_seconds 只能提供一个".into());
+                }
+                let due_at = schedule_due_at(not_before.as_deref(), delay_seconds)?;
+                (
+                    "reschedule",
+                    self.scheduler
+                        .reschedule(&schedule_id, expected_revision, due_at, every_seconds)
+                        .await?,
+                )
+            }
+            ScheduleOperation::Cancel {
+                schedule_id,
+                expected_revision,
+            } => (
+                "cancel",
+                self.scheduler
+                    .cancel(&schedule_id, expected_revision)
+                    .await?,
+            ),
+            ScheduleOperation::Enqueue { .. } | ScheduleOperation::Spawn { .. } => unreachable!(),
+        };
+        Ok(schedule_mutation_receipt(operation_name, mutation).to_string())
+    }
+}
+
+fn schedule_mutation_receipt(
+    operation: &str,
+    mutation: ScheduledIntentMutation,
+) -> serde_json::Value {
+    match mutation {
+        ScheduledIntentMutation::Updated(schedule) => serde_json::json!({
+            "status": "updated",
+            "operation": operation,
+            "schedule": schedule,
+            "guidance": "Schedule 与对应 Timer generation 已按同一个 revision 收口。"
+        }),
+        ScheduledIntentMutation::Conflict { current } => serde_json::json!({
+            "status": "conflict",
+            "operation": operation,
+            "schedule": current,
+            "guidance": "提交的 expected_revision 已过期；请依据返回的当前状态重新决策，不要盲目重试旧请求。"
+        }),
+        ScheduledIntentMutation::Rejected { current, reason } => serde_json::json!({
+            "status": "rejected",
+            "operation": operation,
+            "schedule": current,
+            "reason": reason
+        }),
+        ScheduledIntentMutation::NotFound => serde_json::json!({
+            "status": "not_found",
+            "operation": operation
+        }),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -762,6 +1725,44 @@ enum ScheduleOperation {
         #[serde(default)]
         after: Vec<String>,
     },
+    Inspect {
+        schedule_id: String,
+    },
+    Pause {
+        schedule_id: String,
+        expected_revision: u64,
+    },
+    Resume {
+        schedule_id: String,
+        expected_revision: u64,
+    },
+    Reschedule {
+        schedule_id: String,
+        expected_revision: u64,
+        #[serde(default)]
+        not_before: Option<String>,
+        #[serde(default)]
+        delay_seconds: Option<u64>,
+        #[serde(default)]
+        every_seconds: Option<u64>,
+    },
+    Cancel {
+        schedule_id: String,
+        expected_revision: u64,
+    },
+}
+
+impl ScheduleOperation {
+    fn is_control(&self) -> bool {
+        matches!(
+            self,
+            Self::Inspect { .. }
+                | Self::Pause { .. }
+                | Self::Resume { .. }
+                | Self::Reschedule { .. }
+                | Self::Cancel { .. }
+        )
+    }
 }
 
 #[async_trait::async_trait]
@@ -770,10 +1771,14 @@ impl Tool for ScheduleTxTool {
         "schedule_tx"
     }
 
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "原子提交 Thread 调度计划。enqueue 把意图串行加入现有 Work Thread；spawn 创建可并行的新 Work Thread。not_before 或 delay_seconds 可设置一次性定时，spawn 的 every_seconds 可创建周期调度；after 指定依赖 Thread，只有依赖进入终态后才唤醒。定时到期只是向目标 Thread mailbox 投递 observation，不会绕过 Thread 再开执行分支。schedule_tx 必须是本次响应中唯一的工具调用。".to_string(),
+            description: "创建或控制持久 Thread 调度计划。enqueue/spawn 可以在一个事务中批量创建；inspect/pause/resume/reschedule/cancel 是带 expected_revision 的单计划 CAS 控制操作，每次调用只能包含一个控制操作。not_before 或 delay_seconds 设置时间，every_seconds 设置周期；after 指定依赖 Thread。定时到期只向目标 Thread mailbox 投递 observation。schedule_tx 必须是本次响应中唯一的工具调用。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -809,6 +1814,58 @@ impl Tool for ScheduleTxTool {
                                         "after": {"type": "array", "items": {"type": "string"}}
                                     },
                                     "required": ["op", "intent"],
+                                    "additionalProperties": false
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": {"const": "inspect"},
+                                        "schedule_id": {"type": "string"}
+                                    },
+                                    "required": ["op", "schedule_id"],
+                                    "additionalProperties": false
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": {"const": "pause"},
+                                        "schedule_id": {"type": "string"},
+                                        "expected_revision": {"type": "integer", "minimum": 1, "description": "inspect 返回的当前 revision；过期值会返回 conflict"}
+                                    },
+                                    "required": ["op", "schedule_id", "expected_revision"],
+                                    "additionalProperties": false
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": {"const": "resume"},
+                                        "schedule_id": {"type": "string"},
+                                        "expected_revision": {"type": "integer", "minimum": 1}
+                                    },
+                                    "required": ["op", "schedule_id", "expected_revision"],
+                                    "additionalProperties": false
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": {"const": "reschedule"},
+                                        "schedule_id": {"type": "string"},
+                                        "expected_revision": {"type": "integer", "minimum": 1},
+                                        "not_before": {"type": "string", "description": "新的 RFC 3339 绝对时间；与 delay_seconds 二选一"},
+                                        "delay_seconds": {"type": "integer", "minimum": 0},
+                                        "every_seconds": {"type": "integer", "minimum": 1, "description": "新的周期；省略表示改为一次性"}
+                                    },
+                                    "required": ["op", "schedule_id", "expected_revision"],
+                                    "additionalProperties": false
+                                },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "op": {"const": "cancel"},
+                                        "schedule_id": {"type": "string"},
+                                        "expected_revision": {"type": "integer", "minimum": 1}
+                                    },
+                                    "required": ["op", "schedule_id", "expected_revision"],
                                     "additionalProperties": false
                                 }
                             ]
@@ -852,6 +1909,27 @@ impl Tool for ScheduleTxTool {
             .ok_or("schedule_tx 当前 Session 不存在")?;
         if session.context_id != context_id {
             return Err("schedule_tx Session 与 Context 路由不一致".into());
+        }
+        let control_count = args
+            .operations
+            .iter()
+            .filter(|operation| operation.is_control())
+            .count();
+        if control_count > 0 {
+            if control_count != 1 || args.operations.len() != 1 {
+                return Err(
+                    "Schedule 控制操作必须单独提交，不能与创建操作或其他控制操作混合".into(),
+                );
+            }
+            return self
+                .execute_control(
+                    args.operations
+                        .into_iter()
+                        .next()
+                        .expect("validated one control operation"),
+                    &context_id,
+                )
+                .await;
         }
         let current_thread = self
             .sessions
@@ -926,6 +2004,13 @@ impl Tool for ScheduleTxTool {
                         every_seconds,
                         after,
                     ),
+                    ScheduleOperation::Inspect { .. }
+                    | ScheduleOperation::Pause { .. }
+                    | ScheduleOperation::Resume { .. }
+                    | ScheduleOperation::Reschedule { .. }
+                    | ScheduleOperation::Cancel { .. } => {
+                        unreachable!("control operations returned before create transaction")
+                    }
                 };
             validate_schedule_intent(&intent)?;
             if not_before.is_some() && delay_seconds.is_some() {
@@ -1148,6 +2233,54 @@ pub(crate) fn background_task_snapshot(task: &BackgroundTask) -> serde_json::Val
             "sandbox_status": task.sandbox_status,
         },
         "artifact_path": task.artifact_path,
+    })
+}
+
+fn background_execution_snapshot(
+    job: &ExecutionJobRecord,
+    live: Option<&BackgroundTask>,
+) -> serde_json::Value {
+    let now = chrono::Utc::now();
+    let started_at = job
+        .request
+        .get("started_at")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&chrono::Utc))
+        .or(job.started_at)
+        .unwrap_or(job.created_at);
+    let ended_at = job.finished_at;
+    let status = if job.cancel_requested_at.is_some() && !job.status.is_terminal() {
+        "cancel_requested"
+    } else {
+        job.status.as_str()
+    };
+    serde_json::json!({
+        "task_id": job.id,
+        "execution_job_id": job.id,
+        "revision": job.revision,
+        "status": status,
+        "command": job.request.get("command"),
+        "process_group_id": job.request.get("process_group_id"),
+        "session_id": job.session_id,
+        "context_id": job.context_id,
+        "work_item_id": job.activation_id,
+        "work_thread_id": job.thread_id,
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "elapsed_secs": (ended_at.unwrap_or(now) - started_at).num_seconds().max(0),
+        "last_output_at": live.map(|task| task.last_output_at),
+        "last_output_age_secs": live.map(|task| (now - task.last_output_at).num_seconds().max(0)),
+        "output_bytes": live.map_or(0, |task| task.output_bytes),
+        "output_tail": live.map_or("", |task| task.output_tail.as_str()),
+        "next_wakeup_at": live.and_then(|task| task.next_wakeup_at),
+        "exit_code": job.exit_code,
+        "error": job.error,
+        "cancel_reason": job.cancel_reason,
+        "effective_boundary": job.request.get("effective_boundary"),
+        "artifact_path": job.request.get("artifact_path"),
+        "result_refs": job.result_refs,
+        "live_owner": live.is_some(),
     })
 }
 
@@ -1767,6 +2900,22 @@ impl Tool for WriteFileTool {
         }
     }
 
+    fn approval_requirement(
+        &self,
+        arguments: &str,
+    ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
+        let args: WriteFileArgs = serde_json::from_str(arguments)?;
+        Ok(self
+            .permissions
+            .approval_requirement_for_path(
+                &args.path,
+                FilesystemAccess::Write,
+                self.name(),
+                &args.mode,
+            )?
+            .1)
+    }
+
     async fn execute(
         &self,
         arguments: &str,
@@ -1913,6 +3062,10 @@ impl Tool for ReadFileTool {
         "read"
     }
 
+    fn retry_safety(&self) -> ExecutionRetrySafety {
+        ExecutionRetrySafety::Idempotent
+    }
+
     fn definition(&self) -> ToolDefinition {
         let params_json = serde_json::json!({
             "type": "object",
@@ -1957,6 +3110,17 @@ impl Tool for ReadFileTool {
                 .to_string(),
             parameters: params_json,
         }
+    }
+
+    fn approval_requirement(
+        &self,
+        arguments: &str,
+    ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
+        let args: ReadFileArgs = serde_json::from_str(arguments)?;
+        Ok(self
+            .permissions
+            .approval_requirement_for_path(&args.path, FilesystemAccess::Read, self.name(), "read")?
+            .1)
     }
 
     async fn execute(
@@ -2171,6 +3335,22 @@ impl Tool for EditFileTool {
                 "required": ["path", "expected_sha256", "edits"]
             }),
         }
+    }
+
+    fn approval_requirement(
+        &self,
+        arguments: &str,
+    ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
+        let args: EditFileArgs = serde_json::from_str(arguments)?;
+        Ok(self
+            .permissions
+            .approval_requirement_for_path(
+                &args.path,
+                FilesystemAccess::Write,
+                self.name(),
+                "edit",
+            )?
+            .1)
     }
 
     async fn execute(
@@ -2395,6 +3575,10 @@ impl Tool for ListFilesTool {
         "list_files"
     }
 
+    fn retry_safety(&self) -> ExecutionRetrySafety {
+        ExecutionRetrySafety::Idempotent
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "list_files".to_string(),
@@ -2410,6 +3594,17 @@ impl Tool for ListFilesTool {
                 }
             }),
         }
+    }
+
+    fn approval_requirement(
+        &self,
+        arguments: &str,
+    ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
+        let args: ListFilesArgs = serde_json::from_str(arguments)?;
+        Ok(self
+            .permissions
+            .approval_requirement_for_path(&args.path, FilesystemAccess::Read, self.name(), "list")?
+            .1)
     }
 
     async fn execute(
@@ -2520,6 +3715,10 @@ impl Tool for SearchTool {
         "search"
     }
 
+    fn retry_safety(&self) -> ExecutionRetrySafety {
+        ExecutionRetrySafety::Idempotent
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "search".to_string(),
@@ -2538,6 +3737,59 @@ impl Tool for SearchTool {
                 "required": ["query", "paths"]
             }),
         }
+    }
+
+    fn approval_requirement(
+        &self,
+        arguments: &str,
+    ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
+        let args: SearchArgs = serde_json::from_str(arguments)?;
+        if args.paths.is_empty() {
+            return Err("search.paths 至少需要一个路径".into());
+        }
+        let mut requested = CapabilityDelta::default();
+        let mut targets = Vec::new();
+        for input in &args.paths {
+            if let Some(requirement) = self
+                .permissions
+                .approval_requirement_for_path(
+                    input,
+                    FilesystemAccess::Read,
+                    self.name(),
+                    "search",
+                )?
+                .1
+            {
+                for root in requirement.requested.read_roots {
+                    if !requested.read_roots.contains(&root) {
+                        requested.read_roots.push(root);
+                    }
+                }
+                if let ApprovalAction::ToolOperation {
+                    target: Some(target),
+                    ..
+                } = requirement.action
+                {
+                    targets.push(target);
+                }
+            }
+        }
+        self.permissions.approval_requirement_for_delta(
+            ApprovalAction::ToolOperation {
+                tool: self.name().to_string(),
+                operation: "search".to_string(),
+                target: None,
+            },
+            requested,
+            format!(
+                "工具 search 需要读取边界外路径：{}",
+                targets
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
     }
 
     async fn execute(
@@ -3043,6 +4295,78 @@ impl Tool for ExecuteCommandTool {
         }
     }
 
+    fn approval_requirement(
+        &self,
+        arguments: &str,
+    ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
+        let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
+        let command = args.command.trim();
+        validate_managed_shell_command(command)?;
+        let profile = self.permissions.profile();
+        if profile.sandbox_mode != SandboxMode::WorkspaceWrite {
+            return Ok(None);
+        }
+        let cwd_input = args.cwd.as_deref().unwrap_or(".");
+        let resolved_cwd = profile.resolve_candidate(cwd_input)?;
+        if resolved_cwd.protected {
+            return Err(format!(
+                "exec.cwd '{}' 命中不可覆盖的 protected_paths 规则",
+                cwd_input
+            )
+            .into());
+        }
+        if !resolved_cwd.candidate.is_dir() {
+            return Err(format!("exec.cwd '{}' 不是已存在目录", cwd_input).into());
+        }
+        let exec_cwd = std::fs::canonicalize(&resolved_cwd.candidate)?;
+        let policy = SandboxPolicy {
+            read_roots: profile.read_roots.clone(),
+            write_roots: profile.write_roots.clone(),
+            denied_read_paths: Vec::new(),
+            denied_write_paths: Vec::new(),
+            network: if profile.network {
+                NetworkPolicy::Allow
+            } else {
+                NetworkPolicy::Deny
+            },
+            fail_closed: true,
+        };
+        let mut requested =
+            requested_capability_delta(&args.requested_permissions, profile.as_ref(), &policy)?;
+        let canonical_reads = canonicalize_permission_roots(&policy.read_roots)?;
+        let canonical_writes = canonicalize_permission_roots(&policy.write_roots)?;
+        if !path_is_covered_by(&exec_cwd, &canonical_reads)
+            && !path_is_covered_by(&exec_cwd, &canonical_writes)
+            && !path_is_covered_by(&exec_cwd, &requested.read_roots)
+            && !path_is_covered_by(&exec_cwd, &requested.write_roots)
+        {
+            push_unique_permission_root(&mut requested.read_roots, exec_cwd.clone());
+        }
+        match args.sandbox_permissions {
+            SandboxPermissionMode::UseDefault if !requested.is_empty() => Err(
+                "requested_permissions 只能与 sandbox_permissions=require_escalated 一起使用"
+                    .into(),
+            ),
+            SandboxPermissionMode::RequireEscalated if !requested.is_empty() => {
+                let justification = args
+                    .justification
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or("require_escalated 必须提供非空 justification")?;
+                self.permissions.approval_requirement_for_delta(
+                    ApprovalAction::Shell {
+                        command: command.to_string(),
+                        cwd: exec_cwd,
+                    },
+                    requested,
+                    justification.to_string(),
+                )
+            }
+            SandboxPermissionMode::RequireEscalated | SandboxPermissionMode::UseDefault => Ok(None),
+        }
+    }
+
     async fn execute(
         &self,
         arguments: &str,
@@ -3074,6 +4398,7 @@ impl Tool for ExecuteCommandTool {
             .try_with(Clone::clone)
             .unwrap_or_else(|_| "unknown-attempt".to_string());
         let causal_route = CURRENT_CAUSAL_ROUTE.try_with(Clone::clone).ok().flatten();
+        let execution_job_context = CURRENT_EXECUTION_JOB.try_with(Clone::clone).ok().flatten();
         request_context.session_id = session_id.clone();
         request_context.context_id = context_id.clone();
         request_context.attempt_id = attempt_id.clone();
@@ -3227,19 +4552,93 @@ impl Tool for ExecuteCommandTool {
             )
         })?;
 
+        if let (Some(scheduler), Some(parent)) =
+            (&self.background_scheduler, execution_job_context.as_ref())
+        {
+            if scheduler.execution_jobs.is_some() {
+                scheduler
+                    .ensure_parent_accepts_background_child(parent)
+                    .await?;
+            }
+        }
+
         let mut child = cmd.spawn()?;
         let pid = child.id().ok_or("无法获取进程 ID")? as i32;
 
-        let task_id = format!(
-            "task_{}_{}",
-            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
-            pid
-        );
+        let task_id = match (
+            self.background_scheduler.as_ref(),
+            execution_job_context.as_ref(),
+        ) {
+            (Some(scheduler), Some(parent)) if scheduler.execution_jobs.is_some() => {
+                scheduler.durable_task_identity(parent)?.0
+            }
+            _ => format!(
+                "task_{}_{}",
+                chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0),
+                pid
+            ),
+        };
         let archive_path = artifact_dir.join(format!("{}.log", task_id));
+        // Publish the live PGID immediately after spawn. Objective cancellation
+        // can now always find this process even while archive/pipes/background
+        // attachment are still being prepared.
+        let tasks = get_tasks_map();
+        let now = chrono::Utc::now();
+        tasks.insert(
+            task_id.clone(),
+            BackgroundTask {
+                id: task_id.clone(),
+                cmd_str: cmd_trimmed.to_string(),
+                pgid: pid,
+                session_id: session_id.clone(),
+                context_id: context_id.clone(),
+                causal_route: causal_route.clone(),
+                started_at: now,
+                last_output_at: now,
+                output_bytes: 0,
+                output_tail: String::new(),
+                wake_generation: 0,
+                next_wakeup_at: None,
+                status: BackgroundTaskStatus::Starting,
+                effective_network,
+                secret_env: effective_secret_env.clone(),
+                sandbox_backend: sandbox_backend.clone(),
+                sandbox_status: sandbox_status.clone(),
+                artifact_path: archive_path.to_string_lossy().to_string(),
+                ended_at: None,
+                exit_code: None,
+            },
+        );
+        if let (Some(scheduler), Some(parent)) =
+            (&self.background_scheduler, execution_job_context.as_ref())
+        {
+            if scheduler.execution_jobs.is_some() {
+                if let Err(error) = scheduler
+                    .ensure_parent_accepts_background_child(parent)
+                    .await
+                {
+                    if let Some(mut task) = tasks.get_mut(&task_id) {
+                        task.status = BackgroundTaskStatus::KillRequested;
+                    }
+                    let _ = nix::sys::signal::killpg(
+                        nix::unistd::Pid::from_raw(pid),
+                        nix::sys::signal::Signal::SIGKILL,
+                    );
+                    let _ = child.wait().await;
+                    tasks.remove(&task_id);
+                    return Err(error);
+                }
+            }
+        }
         let archive = match std::fs::File::create(&archive_path) {
             Ok(archive) => archive,
             Err(error) => {
-                let _ = child.kill().await;
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pid),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+                let _ = child.wait().await;
+                tasks.remove(&task_id);
                 return Err(format!(
                     "无法创建 exec 原始输出归档 '{}': {}",
                     archive_path.display(),
@@ -3291,35 +4690,6 @@ impl Tool for ExecuteCommandTool {
             monitor_pipe(stderr, buffer_err, publish_err).await;
         });
 
-        // 将任务先行放入全局的任务 Map 以供超时或手动 kill
-        let tasks = get_tasks_map();
-        let now = chrono::Utc::now();
-        tasks.insert(
-            task_id.clone(),
-            BackgroundTask {
-                id: task_id.clone(),
-                cmd_str: cmd_trimmed.to_string(),
-                pgid: pid,
-                session_id: session_id.clone(),
-                context_id: context_id.clone(),
-                causal_route: causal_route.clone(),
-                started_at: now,
-                last_output_at: now,
-                output_bytes: 0,
-                output_tail: String::new(),
-                wake_generation: 0,
-                next_wakeup_at: None,
-                status: BackgroundTaskStatus::Starting,
-                effective_network,
-                secret_env: effective_secret_env.clone(),
-                sandbox_backend: sandbox_backend.clone(),
-                sandbox_status: sandbox_status.clone(),
-                artifact_path: buffer.archive_path.clone(),
-                ended_at: None,
-                exit_code: None,
-            },
-        );
-
         // 同步等待设定时间
         let requested_wait = tokio::time::Duration::from_millis(args.wait_ms.unwrap_or(10_000));
         let remaining_sync_budget = self
@@ -3369,6 +4739,26 @@ impl Tool for ExecuteCommandTool {
             }
             Err(_) => {
                 // 运行超时，正式脱离 (Detach) 为后台长任务
+                if let (Some(scheduler), Some(parent)) =
+                    (&self.background_scheduler, execution_job_context.as_ref())
+                {
+                    if scheduler.execution_jobs.is_some() {
+                        if let Err(error) = scheduler.attach_execution_job(&task_id, parent).await {
+                            let _ = nix::sys::signal::killpg(
+                                nix::unistd::Pid::from_raw(pid),
+                                nix::sys::signal::Signal::SIGKILL,
+                            );
+                            let _ = child.wait().await;
+                            let _ = stdout_task.await;
+                            let _ = stderr_task.await;
+                            tasks.remove(&task_id);
+                            return Err(format!(
+                                "后台进程未能交接给持久 ExecutionJob，已终止进程组: {error}"
+                            )
+                            .into());
+                        }
+                    }
+                }
                 publish_flag.store(true, Ordering::SeqCst);
                 if let Some(mut task) = tasks.get_mut(&task_id) {
                     task.status = BackgroundTaskStatus::Running;
@@ -3428,6 +4818,26 @@ impl Tool for ExecuteCommandTool {
                         task.next_wakeup_at = None;
                     }
                     if let Some(scheduler) = &background_scheduler_cleanup {
+                        if scheduler.execution_jobs.is_some() {
+                            match scheduler
+                                .finish_background_execution(
+                                    &task_id_cleanup,
+                                    code,
+                                    &output_str,
+                                    residual_note,
+                                )
+                                .await
+                            {
+                                Ok(_) => scheduler.cancel(&task_id_cleanup).await,
+                                Err(error) => tracing::error!(
+                                    task_id = %task_id_cleanup,
+                                    %error,
+                                    "后台进程已退出，但持久 ExecutionJob 终态提交失败"
+                                ),
+                            }
+                            prune_background_task_history();
+                            return;
+                        }
                         scheduler.cancel(&task_id_cleanup).await;
                     }
                     let effective_boundary = tasks_cleanup.get(&task_id_cleanup).map(|task| {
@@ -3518,8 +4928,12 @@ impl Tool for ExecuteCommandTool {
 // ==========================================
 // 5. Background task control plane
 // ==========================================
-pub struct ListTasksTool;
-pub struct TaskStatusTool;
+pub struct ListTasksTool {
+    background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
+}
+pub struct TaskStatusTool {
+    background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
+}
 pub struct WaitTaskTool {
     background_scheduler: Arc<BackgroundTaskScheduler>,
     default_wait_secs: u64,
@@ -3533,6 +4947,36 @@ impl WaitTaskTool {
         Self {
             background_scheduler,
             default_wait_secs: default_wait_secs.clamp(1, MAX_TASK_WAIT_SECS),
+        }
+    }
+}
+
+impl ListTasksTool {
+    pub fn new(background_scheduler: Arc<BackgroundTaskScheduler>) -> Self {
+        Self {
+            background_scheduler: Some(background_scheduler),
+        }
+    }
+
+    #[cfg(test)]
+    fn without_scheduler() -> Self {
+        Self {
+            background_scheduler: None,
+        }
+    }
+}
+
+impl TaskStatusTool {
+    pub fn new(background_scheduler: Arc<BackgroundTaskScheduler>) -> Self {
+        Self {
+            background_scheduler: Some(background_scheduler),
+        }
+    }
+
+    #[cfg(test)]
+    fn without_scheduler() -> Self {
+        Self {
+            background_scheduler: None,
         }
     }
 }
@@ -3584,6 +5028,10 @@ impl Tool for ListTasksTool {
         "list_tasks"
     }
 
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
@@ -3610,6 +5058,26 @@ impl Tool for ListTasksTool {
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: ListTasksArgs = serde_json::from_str(arguments)?;
+        let current_context = CURRENT_CONTEXT_ID
+            .try_with(Clone::clone)
+            .unwrap_or_default();
+        if let Some(scheduler) = &self.background_scheduler {
+            if let Some(tasks) = scheduler
+                .list_background_job_snapshots(
+                    &current_context,
+                    args.session_id.as_deref(),
+                    args.include_finished,
+                )
+                .await?
+            {
+                return Ok(serde_json::json!({
+                    "kind": "background_task_list",
+                    "count": tasks.len(),
+                    "tasks": tasks,
+                })
+                .to_string());
+            }
+        }
         let mut tasks = get_tasks_map()
             .iter()
             .filter(|task| task_visible_in_current_context(task))
@@ -3652,6 +5120,10 @@ impl Tool for TaskStatusTool {
         "task_status"
     }
 
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
@@ -3675,6 +5147,21 @@ impl Tool for TaskStatusTool {
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: TaskStatusArgs = serde_json::from_str(arguments)?;
+        let current_context = CURRENT_CONTEXT_ID
+            .try_with(Clone::clone)
+            .unwrap_or_default();
+        if let Some(scheduler) = &self.background_scheduler {
+            if let Some(task) = scheduler
+                .background_job_snapshot(&args.task_id, &current_context)
+                .await?
+            {
+                return Ok(serde_json::json!({
+                    "kind": "background_task_status",
+                    "task": task,
+                })
+                .to_string());
+            }
+        }
         let task = require_visible_task(&args.task_id)?;
         Ok(serde_json::json!({
             "kind": "background_task_status",
@@ -3688,6 +5175,10 @@ impl Tool for TaskStatusTool {
 impl Tool for WaitTaskTool {
     fn name(&self) -> &str {
         "wait_task"
+    }
+
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
     }
 
     fn definition(&self) -> ToolDefinition {
@@ -3719,6 +5210,29 @@ impl Tool for WaitTaskTool {
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: WaitTaskArgs = serde_json::from_str(arguments)?;
+        let current_context = CURRENT_CONTEXT_ID
+            .try_with(Clone::clone)
+            .unwrap_or_default();
+        if self.background_scheduler.execution_jobs.is_some() {
+            let job = self
+                .background_scheduler
+                .get_background_job(&args.task_id)
+                .await?
+                .ok_or_else(|| format!("未找到后台任务 '{}'", args.task_id))?;
+            if !current_context.is_empty() && job.context_id != current_context {
+                return Err(format!("后台任务 '{}' 不属于当前 Context", args.task_id).into());
+            }
+            if job.status.is_terminal() {
+                let live = get_tasks_map().get(&args.task_id);
+                return Ok(serde_json::json!({
+                    "kind": "background_task_wait",
+                    "waiting": false,
+                    "task": background_execution_snapshot(&job, live.as_deref()),
+                    "next_action": "任务已经结束，直接根据持久 ExecutionJob 的退出码和结果继续处理。",
+                })
+                .to_string());
+            }
+        }
         let task = require_visible_task(&args.task_id)?;
         let terminal = task.status.is_terminal();
         drop(task);
@@ -3779,6 +5293,10 @@ impl Tool for KillTaskTool {
         "kill_task"
     }
 
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
+    }
+
     fn definition(&self) -> ToolDefinition {
         let params_json = serde_json::json!({
             "type": "object",
@@ -3805,6 +5323,17 @@ impl Tool for KillTaskTool {
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: KillTaskArgs = serde_json::from_str(arguments)?;
+        if let Some(scheduler) = &self.background_scheduler {
+            if scheduler.execution_jobs.is_some() {
+                let current_context = CURRENT_CONTEXT_ID
+                    .try_with(Clone::clone)
+                    .unwrap_or_default();
+                return Ok(scheduler
+                    .request_cancel_and_signal(&args.task_id, &current_context)
+                    .await?
+                    .to_string());
+            }
+        }
         let tasks = get_tasks_map();
 
         if let Some(mut task) = tasks.get_mut(&args.task_id) {
@@ -3910,6 +5439,10 @@ fn default_delegation_mode() -> String {
 impl Tool for DelegateTool {
     fn name(&self) -> &str {
         "delegate"
+    }
+
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
     }
 
     fn definition(&self) -> ToolDefinition {
@@ -4053,6 +5586,10 @@ impl Tool for ListSkillsTool {
         "list_skills"
     }
 
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
+    }
+
     fn definition(&self) -> ToolDefinition {
         let params_json = serde_json::json!({
             "type": "object",
@@ -4153,8 +5690,8 @@ mod tests {
     use crate::approval::{ApprovalDecision, ApprovalRequest};
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        NewAgent, NewCognitiveContext, NewScheduledIntent, NewSession, SessionMountKind,
-        SessionStore, ThreadLifecycle, TimerStore,
+        NewAgent, NewCognitiveContext, NewScheduledIntent, NewSession, NewThreadActivation,
+        SessionMountKind, SessionStore, ThreadLifecycle, TimerStore,
     };
     use crate::permission::PermissionMode;
     #[cfg(target_os = "macos")]
@@ -4168,10 +5705,10 @@ mod tests {
 
     struct ReplacementDefinitionTool;
 
-    fn start_test_scheduler(
+    fn build_test_scheduler(
         bus: Arc<InMemoryEventBus>,
         store: Arc<SqliteStore>,
-    ) -> Arc<ThreadScheduler> {
+    ) -> (Arc<ThreadScheduler>, Arc<TimerEngine>) {
         let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
         let scheduler = Arc::new(ThreadScheduler::new(
             bus,
@@ -4180,6 +5717,14 @@ mod tests {
             Arc::clone(&timers),
         ));
         scheduler.register_timer_handler().unwrap();
+        (scheduler, timers)
+    }
+
+    fn start_test_scheduler(
+        bus: Arc<InMemoryEventBus>,
+        store: Arc<SqliteStore>,
+    ) -> Arc<ThreadScheduler> {
+        let (scheduler, timers) = build_test_scheduler(bus, store);
         timers.start();
         scheduler
     }
@@ -4202,6 +5747,140 @@ mod tests {
         scheduler.register_timer_handler().unwrap();
         timers.start();
         (scheduler, database)
+    }
+
+    fn start_test_durable_background_scheduler(
+        bus: Arc<InMemoryEventBus>,
+        store: Arc<SqliteStore>,
+    ) -> Arc<BackgroundTaskScheduler> {
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let execution_jobs = Arc::new(ExecutionJobManager::new(
+            Arc::clone(&store) as Arc<dyn ExecutionJobStore>
+        ));
+        let scheduler = Arc::new(BackgroundTaskScheduler::new_with_execution_jobs(
+            bus,
+            store as Arc<dyn EventStore>,
+            Arc::clone(&timers),
+            execution_jobs,
+        ));
+        scheduler.register_timer_handler().unwrap();
+        timers.start();
+        scheduler
+    }
+
+    async fn seed_test_execution_route(
+        store: &Arc<SqliteStore>,
+        parent: &ToolExecutionJobContext,
+        root_turn_id: &str,
+        trigger_event_id: &str,
+    ) {
+        store
+            .ensure_agent(NewAgent {
+                id: parent.agent_id.clone(),
+                title: "Durable background agent".to_string(),
+                root_context_id: parent.context_id.clone(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_context(NewCognitiveContext {
+                id: parent.context_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                title: "Durable background context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_session(NewSession {
+                id: parent.session_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                parent_session_id: None,
+                title: "Durable background session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_work_thread(NewWorkThread {
+                id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                root_turn_id: root_turn_id.to_string(),
+                kind: WorkThreadKind::Work,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_thread_activation(NewThreadActivation {
+                id: parent.activation_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                trigger_event_id: trigger_event_id.to_string(),
+                trigger_sequence: 7,
+                trigger_kind: "chat/user_message".to_string(),
+                parent_activation_id: None,
+                root_turn_id: root_turn_id.to_string(),
+            })
+            .await
+            .unwrap();
+
+        let manager = ExecutionJobManager::new(Arc::clone(store) as Arc<dyn ExecutionJobStore>);
+        let mut parent_job = manager
+            .ensure(ExecutionJobSpec {
+                activation_id: parent.activation_id.clone(),
+                thread_id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                tool_call_id: parent.tool_call_id.clone(),
+                tool_name: "exec".to_string(),
+                request: serde_json::json!({"command": "test-parent-exec"}),
+                retry_safety: ExecutionRetrySafety::ReconcileRequired,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(parent_job.id, parent.parent_job_id);
+        let claim_token = format!("test-parent-claim-{}", parent.activation_id);
+        parent_job = applied_background_job(
+            manager
+                .claim(
+                    &parent_job.id,
+                    parent_job.revision,
+                    JobClaim {
+                        worker_id: "test-parent-executor",
+                        claim_token: &claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        approval_ref: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "parent claim",
+        )
+        .unwrap();
+        applied_background_job(
+            manager
+                .heartbeat(
+                    &parent_job.id,
+                    parent_job.revision,
+                    JobHeartbeat {
+                        claim_token: &claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        side_effect_started_at: Some(chrono::Utc::now()),
+                        progress_ref: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "parent side-effect boundary",
+        )
+        .unwrap();
     }
 
     #[tokio::test]
@@ -4453,6 +6132,416 @@ mod tests {
                 .unwrap();
         }
         store
+    }
+
+    async fn seed_test_schedule(
+        store: &SqliteStore,
+        id: &str,
+        thread_id: &str,
+        due_at: chrono::DateTime<chrono::Utc>,
+    ) -> ScheduledIntentRecord {
+        store
+            .ensure_scheduled_intent(NewScheduledIntent {
+                id: id.to_string(),
+                thread_id: thread_id.to_string(),
+                source_turn_id: format!("source-{id}"),
+                intent: format!("intent-{id}"),
+                not_before: Some(due_at),
+                interval_seconds: None,
+                dependency_thread_ids: Vec::new(),
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn scheduler_pause_cancels_timer_and_resume_rearms_current_generation() {
+        let database = NamedTempFile::new().unwrap();
+        let store = scheduler_store_with_threads(
+            &database,
+            &[("thread-control-pause", "root-control-pause")],
+        )
+        .await;
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        bus.subscribe(
+            "chat/schedule_due".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let (scheduler, timers) = build_test_scheduler(bus, Arc::clone(&store));
+        let created = seed_test_schedule(
+            &store,
+            "schedule-control-pause",
+            "thread-control-pause",
+            chrono::Utc::now() - chrono::Duration::seconds(1),
+        )
+        .await;
+        scheduler.arm(created.clone()).await.unwrap();
+
+        let paused = match scheduler
+            .pause(&created.id, created.revision)
+            .await
+            .unwrap()
+        {
+            ScheduledIntentMutation::Updated(intent) => intent,
+            other => panic!("unexpected pause result: {other:?}"),
+        };
+        assert_eq!(paused.status, ScheduledIntentStatus::Paused);
+        assert_eq!(
+            store
+                .get_runtime_timer("schedule:schedule-control-pause")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            crate::memory::RuntimeTimerStatus::Cancelled
+        );
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 0);
+        assert!(receiver.try_recv().is_err());
+
+        let resumed = match scheduler
+            .pause(&created.id, created.revision)
+            .await
+            .unwrap()
+        {
+            ScheduledIntentMutation::Conflict { current } => {
+                assert_eq!(current, paused);
+                match scheduler
+                    .resume(&current.id, current.revision)
+                    .await
+                    .unwrap()
+                {
+                    ScheduledIntentMutation::Updated(intent) => intent,
+                    other => panic!("unexpected resume result: {other:?}"),
+                }
+            }
+            other => panic!("stale pause must conflict: {other:?}"),
+        };
+        let timer = store
+            .get_runtime_timer("schedule:schedule-control-pause")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(timer.generation, resumed.revision);
+        assert_eq!(timer.status, crate::memory::RuntimeTimerStatus::Pending);
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 1);
+        let event = receiver.recv().await.unwrap();
+        assert_eq!(event.payload["occurrence_revision"], resumed.revision);
+        assert_eq!(
+            store
+                .get_scheduled_intent(&created.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScheduledIntentStatus::Dispatched
+        );
+    }
+
+    #[tokio::test]
+    async fn schedule_tx_exposes_revision_fenced_control_receipts() {
+        let database = NamedTempFile::new().unwrap();
+        let store = scheduler_store_with_threads(
+            &database,
+            &[("thread-control-tool", "root-control-tool")],
+        )
+        .await;
+        let (scheduler, _timers) =
+            build_test_scheduler(Arc::new(InMemoryEventBus::new()), Arc::clone(&store));
+        let created = seed_test_schedule(
+            &store,
+            "schedule-control-tool",
+            "thread-control-tool",
+            chrono::Utc::now() + chrono::Duration::hours(1),
+        )
+        .await;
+        scheduler.arm(created.clone()).await.unwrap();
+        let tool = ScheduleTxTool::new(
+            Arc::clone(&scheduler),
+            Arc::clone(&store) as Arc<dyn SessionStore>,
+        );
+        let route = Some(ToolCausalRoute {
+            work_thread_id: "thread-control-tool".to_string(),
+            work_item_id: "activation-control-tool".to_string(),
+            root_turn_id: "root-control-tool".to_string(),
+            trigger_event_id: "event-control-tool".to_string(),
+            trigger_sequence: 1,
+        });
+
+        let inspect = CURRENT_SESSION_ID
+            .scope(
+                "session-scheduler-test".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-scheduler-test".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "attempt-control-tool-inspect".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(
+                            route.clone(),
+                            tool.execute(
+                                &serde_json::json!({
+                                    "operations": [{
+                                        "op": "inspect",
+                                        "schedule_id": created.id
+                                    }]
+                                })
+                                .to_string(),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let inspect: serde_json::Value = serde_json::from_str(&inspect).unwrap();
+        assert_eq!(inspect["status"], "ok");
+        assert_eq!(inspect["schedule"]["revision"], 1);
+
+        let pause = CURRENT_SESSION_ID
+            .scope(
+                "session-scheduler-test".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-scheduler-test".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "attempt-control-tool-pause".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(
+                            route.clone(),
+                            tool.execute(
+                                &serde_json::json!({
+                                    "operations": [{
+                                        "op": "pause",
+                                        "schedule_id": "schedule-control-tool",
+                                        "expected_revision": 1
+                                    }]
+                                })
+                                .to_string(),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let pause: serde_json::Value = serde_json::from_str(&pause).unwrap();
+        assert_eq!(pause["status"], "updated");
+        assert_eq!(pause["schedule"]["status"], "paused");
+
+        let stale_resume = CURRENT_SESSION_ID
+            .scope(
+                "session-scheduler-test".to_string(),
+                CURRENT_CONTEXT_ID.scope(
+                    "context-scheduler-test".to_string(),
+                    CURRENT_ATTEMPT_ID.scope(
+                        "attempt-control-tool-stale".to_string(),
+                        CURRENT_CAUSAL_ROUTE.scope(
+                            route,
+                            tool.execute(
+                                &serde_json::json!({
+                                    "operations": [{
+                                        "op": "resume",
+                                        "schedule_id": "schedule-control-tool",
+                                        "expected_revision": 1
+                                    }]
+                                })
+                                .to_string(),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let stale_resume: serde_json::Value = serde_json::from_str(&stale_resume).unwrap();
+        assert_eq!(stale_resume["status"], "conflict");
+        assert_eq!(stale_resume["schedule"]["revision"], 2);
+    }
+
+    #[tokio::test]
+    async fn scheduler_reschedule_moves_timer_both_later_and_earlier_and_fences_stale_timer() {
+        let database = NamedTempFile::new().unwrap();
+        let store = scheduler_store_with_threads(
+            &database,
+            &[("thread-control-reschedule", "root-control-reschedule")],
+        )
+        .await;
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        bus.subscribe(
+            "chat/schedule_due".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let (scheduler, timers) = build_test_scheduler(bus, Arc::clone(&store));
+        let created = seed_test_schedule(
+            &store,
+            "schedule-control-reschedule",
+            "thread-control-reschedule",
+            chrono::Utc::now() + chrono::Duration::minutes(10),
+        )
+        .await;
+        let stale_timer = scheduler.arm(created.clone()).await.unwrap();
+
+        let later_due = chrono::Utc::now() + chrono::Duration::minutes(20);
+        let later = match scheduler
+            .reschedule(&created.id, created.revision, Some(later_due), None)
+            .await
+            .unwrap()
+        {
+            ScheduledIntentMutation::Updated(intent) => intent,
+            other => panic!("unexpected later reschedule: {other:?}"),
+        };
+        let later_timer = store
+            .get_runtime_timer("schedule:schedule-control-reschedule")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(later_timer.generation, later.revision);
+        assert_eq!(later_timer.due_at, later_due);
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 0);
+
+        // A worker may already hold the old generation when reschedule wins.
+        // Feeding that stale record to the handler must neither emit a due
+        // Event nor overwrite the new timer generation.
+        assert_eq!(
+            Arc::clone(&scheduler)
+                .dispatch_timer(stale_timer)
+                .await
+                .unwrap(),
+            TimerDisposition::Complete
+        );
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(
+            store
+                .get_runtime_timer("schedule:schedule-control-reschedule")
+                .await
+                .unwrap()
+                .unwrap()
+                .generation,
+            later.revision
+        );
+
+        let earlier_due = chrono::Utc::now() - chrono::Duration::seconds(1);
+        let earlier = match scheduler
+            .reschedule(&created.id, later.revision, Some(earlier_due), None)
+            .await
+            .unwrap()
+        {
+            ScheduledIntentMutation::Updated(intent) => intent,
+            other => panic!("unexpected earlier reschedule: {other:?}"),
+        };
+        assert_eq!(timers.dispatch_due_once().await.unwrap(), 1);
+        let event = receiver.recv().await.unwrap();
+        assert_eq!(event.payload["occurrence_revision"], earlier.revision);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn scheduler_restart_recovers_pause_and_resume_crash_windows_without_duplicate_signal() {
+        let database = NamedTempFile::new().unwrap();
+        let path = database.path().to_string_lossy().to_string();
+        let store = scheduler_store_with_threads(
+            &database,
+            &[("thread-control-restart", "root-control-restart")],
+        )
+        .await;
+        let (scheduler, timers) =
+            build_test_scheduler(Arc::new(InMemoryEventBus::new()), Arc::clone(&store));
+        let created = seed_test_schedule(
+            &store,
+            "schedule-control-restart",
+            "thread-control-restart",
+            chrono::Utc::now() - chrono::Duration::seconds(1),
+        )
+        .await;
+        scheduler.arm(created.clone()).await.unwrap();
+        let paused = match store
+            .pause_scheduled_intent(&created.id, created.revision)
+            .await
+            .unwrap()
+        {
+            ScheduledIntentMutation::Updated(intent) => intent,
+            other => panic!("unexpected direct pause: {other:?}"),
+        };
+        // Crash after owner CAS but before timer cancellation.
+        drop(scheduler);
+        drop(timers);
+        drop(store);
+
+        let paused_store = Arc::new(SqliteStore::new(&path).await.unwrap());
+        let (paused_recovery, paused_timers) =
+            build_test_scheduler(Arc::new(InMemoryEventBus::new()), Arc::clone(&paused_store));
+        paused_recovery.recover().await.unwrap();
+        assert_eq!(
+            paused_store
+                .get_runtime_timer("schedule:schedule-control-restart")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            crate::memory::RuntimeTimerStatus::Cancelled
+        );
+        assert_eq!(paused_timers.dispatch_due_once().await.unwrap(), 0);
+
+        let resumed = match paused_store
+            .resume_scheduled_intent(&paused.id, paused.revision)
+            .await
+            .unwrap()
+        {
+            ScheduledIntentMutation::Updated(intent) => intent,
+            other => panic!("unexpected direct resume: {other:?}"),
+        };
+        // Crash after resume CAS but before the new generation is armed.
+        drop(paused_recovery);
+        drop(paused_timers);
+        drop(paused_store);
+
+        let recovered_store = Arc::new(SqliteStore::new(&path).await.unwrap());
+        let recovered_bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        recovered_bus.subscribe(
+            "chat/schedule_due".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let (recovered, recovered_timers) =
+            build_test_scheduler(recovered_bus, Arc::clone(&recovered_store));
+        recovered.recover().await.unwrap();
+        let timer = recovered_store
+            .get_runtime_timer("schedule:schedule-control-restart")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(timer.generation, resumed.revision);
+        assert_eq!(timer.status, crate::memory::RuntimeTimerStatus::Pending);
+        assert_eq!(recovered_timers.dispatch_due_once().await.unwrap(), 1);
+        receiver.recv().await.unwrap();
+
+        // Replaying recovery may re-broadcast the immutable Event, but Event +
+        // Outbox identities remain unique, so it cannot create a second
+        // persistent Thread Signal.
+        recovered.recover().await.unwrap();
+        let due_events = recovered_store
+            .query(QueryFilter {
+                topic: Some("chat/schedule_due".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(due_events.len(), 1);
+        assert_eq!(
+            recovered_store
+                .list_signal_outbox(crate::memory::SignalOutboxStatus::Pending, 16)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -5276,7 +7365,7 @@ mod tests {
                 &serde_json::json!({
                     "cwd": ".",
                     "command": "rustc --edition=2021 --test check.rs -o check-bin && ./check-bin",
-                    "wait_ms": 5000
+                    "wait_ms": 30000
                 })
                 .to_string(),
             )
@@ -5729,6 +7818,625 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_background_process_completion_commits_one_terminal_event_and_outbox() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        bus.subscribe(
+            "chat/tool_output".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let scheduler =
+            start_test_durable_background_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        let artifacts = TempDir::new().unwrap();
+        let tool = ExecuteCommandTool::new_with_permissions_and_scheduler(
+            Arc::clone(&bus),
+            Arc::new(BackgroundTaskConfig {
+                artifact_dir: artifacts.path().to_string_lossy().to_string(),
+                timeout_notify_enabled: false,
+                ..BackgroundTaskConfig::default()
+            }),
+            broker_from_config(permissive_security()),
+            30,
+            Some(Arc::clone(&scheduler)),
+        );
+        let parent = ToolExecutionJobContext {
+            parent_job_id: deterministic_job_id(
+                "activation-durable-background-success",
+                "exec-call-durable-background-success",
+            )
+            .unwrap(),
+            activation_id: "activation-durable-background-success".to_string(),
+            thread_id: "thread-durable-background-success".to_string(),
+            agent_id: "agent-durable-background-success".to_string(),
+            context_id: "context-durable-background-success".to_string(),
+            session_id: "session-durable-background-success".to_string(),
+            tool_call_id: "exec-call-durable-background-success".to_string(),
+        };
+        seed_test_execution_route(
+            &store,
+            &parent,
+            "root-durable-background-success",
+            "trigger-durable-background-success",
+        )
+        .await;
+        let result = CURRENT_EXECUTION_JOB
+            .scope(
+                Some(parent.clone()),
+                CURRENT_SESSION_ID.scope(
+                    parent.session_id.clone(),
+                    CURRENT_CONTEXT_ID.scope(
+                        parent.context_id.clone(),
+                        CURRENT_ATTEMPT_ID.scope(
+                            parent.activation_id.clone(),
+                            tool.execute(
+                                &serde_json::json!({
+                                    "command": "sleep 0.2 && printf durable-done",
+                                    "wait_ms": 10
+                                })
+                                .to_string(),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let task_id = result["task_id"].as_str().unwrap().to_string();
+        assert_eq!(result["execution"], "background");
+
+        let completion = tokio::time::timeout(std::time::Duration::from_secs(3), receiver.recv())
+            .await
+            .expect("background process must complete")
+            .expect("completion channel must remain open");
+        assert_eq!(completion.payload["task_id"], task_id);
+        assert_eq!(completion.payload["task_status"], "succeeded");
+        assert_eq!(completion.payload["exit_code"], 0);
+        let terminal = store.get_execution_job(&task_id).await.unwrap().unwrap();
+        assert_eq!(terminal.status, ExecutionJobStatus::Succeeded);
+        assert_eq!(
+            terminal.result_event_id.as_deref(),
+            Some(completion.id.as_str())
+        );
+        assert_eq!(
+            store
+                .query(QueryFilter {
+                    event_id: Some(completion.id.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .list_signal_outbox(crate::memory::SignalOutboxStatus::Pending, 16)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|outbox| outbox.event_id == completion.id)
+                .count(),
+            1
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), receiver.recv())
+                .await
+                .is_err(),
+            "one physical completion must not produce duplicate wakes"
+        );
+        get_tasks_map().remove(&task_id);
+    }
+
+    #[tokio::test]
+    async fn durable_background_execution_is_authoritative_and_cancelled_after_pgid_exit() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
+        bus.subscribe(
+            "chat/tool_output".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let scheduler =
+            start_test_durable_background_scheduler(Arc::clone(&bus), Arc::clone(&store));
+        let artifacts = TempDir::new().unwrap();
+        let tool = ExecuteCommandTool::new_with_permissions_and_scheduler(
+            Arc::clone(&bus),
+            Arc::new(BackgroundTaskConfig {
+                artifact_dir: artifacts.path().to_string_lossy().to_string(),
+                timeout_notify_enabled: false,
+                ..BackgroundTaskConfig::default()
+            }),
+            broker_from_config(permissive_security()),
+            30,
+            Some(Arc::clone(&scheduler)),
+        );
+        let parent = ToolExecutionJobContext {
+            parent_job_id: deterministic_job_id(
+                "activation-durable-background",
+                "exec-call-durable-background",
+            )
+            .unwrap(),
+            activation_id: "activation-durable-background".to_string(),
+            thread_id: "thread-durable-background".to_string(),
+            agent_id: "agent-durable-background".to_string(),
+            context_id: "context-durable-background".to_string(),
+            session_id: "session-durable-background".to_string(),
+            tool_call_id: "exec-call-durable-background".to_string(),
+        };
+        seed_test_execution_route(
+            &store,
+            &parent,
+            "root-durable-background",
+            "trigger-durable-background",
+        )
+        .await;
+        let result = CURRENT_EXECUTION_JOB
+            .scope(
+                Some(parent.clone()),
+                CURRENT_SESSION_ID.scope(
+                    parent.session_id.clone(),
+                    CURRENT_CONTEXT_ID.scope(
+                        parent.context_id.clone(),
+                        CURRENT_ATTEMPT_ID.scope(
+                            parent.activation_id.clone(),
+                            CURRENT_CAUSAL_ROUTE.scope(
+                                Some(ToolCausalRoute {
+                                    work_thread_id: parent.thread_id.clone(),
+                                    work_item_id: parent.activation_id.clone(),
+                                    root_turn_id: "root-durable-background".to_string(),
+                                    trigger_event_id: "trigger-durable-background".to_string(),
+                                    trigger_sequence: 7,
+                                }),
+                                tool.execute(
+                                    &serde_json::json!({
+                                        "command": "sleep 30",
+                                        "wait_ms": 10
+                                    })
+                                    .to_string(),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(result["execution"], "background");
+        let task_id = result["task_id"].as_str().unwrap().to_string();
+        assert!(task_id.starts_with("job_"));
+
+        let running = store.get_execution_job(&task_id).await.unwrap().unwrap();
+        assert_eq!(running.status, ExecutionJobStatus::Running);
+        assert_eq!(running.tool_name, "exec/background");
+        assert!(running.side_effect_started_at.is_some());
+
+        let status = CURRENT_CONTEXT_ID
+            .scope(
+                parent.context_id.clone(),
+                TaskStatusTool::new(Arc::clone(&scheduler))
+                    .execute(&serde_json::json!({ "task_id": task_id }).to_string()),
+            )
+            .await
+            .unwrap();
+        let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status["task"]["status"], "running");
+        assert_eq!(status["task"]["live_owner"], true);
+
+        let waiting = CURRENT_CONTEXT_ID
+            .scope(
+                parent.context_id.clone(),
+                WaitTaskTool::new(Arc::clone(&scheduler), 60).execute(
+                    &serde_json::json!({ "task_id": task_id, "wait_secs": 1 }).to_string(),
+                ),
+            )
+            .await
+            .unwrap();
+        let waiting: serde_json::Value = serde_json::from_str(&waiting).unwrap();
+        assert_eq!(waiting["waiting"], true);
+        let replaced_wait = CURRENT_CONTEXT_ID
+            .scope(
+                parent.context_id.clone(),
+                WaitTaskTool::new(Arc::clone(&scheduler), 60).execute(
+                    &serde_json::json!({ "task_id": task_id, "wait_secs": 1 }).to_string(),
+                ),
+            )
+            .await
+            .unwrap();
+        let replaced_wait: serde_json::Value = serde_json::from_str(&replaced_wait).unwrap();
+        assert_eq!(replaced_wait["waiting"], true);
+        let checkpoint = tokio::time::timeout(std::time::Duration::from_secs(2), receiver.recv())
+            .await
+            .expect("wait timer must wake without polling")
+            .expect("wait checkpoint channel must remain open");
+        assert_eq!(checkpoint.payload["event"], "background_task_wait_elapsed");
+        assert_eq!(checkpoint.payload["task_status"], "running");
+        assert_eq!(
+            store
+                .get_execution_job(&task_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ExecutionJobStatus::Running,
+            "wait checkpoint must not terminate the child ExecutionJob"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), receiver.recv())
+                .await
+                .is_err(),
+            "replacing a wait timer generation must not produce duplicate wakes"
+        );
+
+        let killed = CURRENT_CONTEXT_ID
+            .scope(
+                parent.context_id.clone(),
+                KillTaskTool::new(Arc::clone(&scheduler))
+                    .execute(&serde_json::json!({ "task_id": task_id }).to_string()),
+            )
+            .await
+            .unwrap();
+        let killed: serde_json::Value = serde_json::from_str(&killed).unwrap();
+        assert_eq!(killed["status"], "cancel_requested");
+        assert_eq!(killed["killed"], true);
+
+        let completion = tokio::time::timeout(std::time::Duration::from_secs(3), receiver.recv())
+            .await
+            .expect("cancelled process must emit one durable completion")
+            .expect("completion channel must remain open");
+        assert_eq!(completion.payload["task_id"], task_id);
+        assert_eq!(completion.payload["task_status"], "cancelled");
+        assert_eq!(completion.payload["tool_name"], "exec/background");
+
+        let terminal = store.get_execution_job(&task_id).await.unwrap().unwrap();
+        assert_eq!(terminal.status, ExecutionJobStatus::Cancelled);
+        assert_eq!(
+            terminal.result_event_id.as_deref(),
+            Some(completion.id.as_str())
+        );
+        assert!(
+            !scheduler
+                .finish_background_execution(&task_id, -9, "", "")
+                .await
+                .unwrap(),
+            "terminal replay must not emit another completion"
+        );
+        let completion_events = store
+            .query(QueryFilter {
+                event_id: Some(completion.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(completion_events.len(), 1);
+        let completion_outboxes = store
+            .list_signal_outbox(crate::memory::SignalOutboxStatus::Pending, 16)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|outbox| outbox.event_id == completion.id)
+            .collect::<Vec<_>>();
+        assert_eq!(completion_outboxes.len(), 1);
+
+        get_tasks_map().remove(&task_id);
+        let terminal_status = CURRENT_CONTEXT_ID
+            .scope(
+                parent.context_id.clone(),
+                TaskStatusTool::new(Arc::clone(&scheduler))
+                    .execute(&serde_json::json!({ "task_id": task_id }).to_string()),
+            )
+            .await
+            .unwrap();
+        let terminal_status: serde_json::Value = serde_json::from_str(&terminal_status).unwrap();
+        assert_eq!(terminal_status["task"]["status"], "cancelled");
+        assert_eq!(terminal_status["task"]["live_owner"], false);
+        let terminal_list = CURRENT_CONTEXT_ID
+            .scope(
+                parent.context_id.clone(),
+                ListTasksTool::new(Arc::clone(&scheduler))
+                    .execute(&serde_json::json!({ "include_finished": true }).to_string()),
+            )
+            .await
+            .unwrap();
+        let terminal_list: serde_json::Value = serde_json::from_str(&terminal_list).unwrap();
+        assert_eq!(terminal_list["count"], 1);
+        assert_eq!(terminal_list["tasks"][0]["status"], "cancelled");
+        let terminal_wait = CURRENT_CONTEXT_ID
+            .scope(
+                parent.context_id.clone(),
+                WaitTaskTool::new(Arc::clone(&scheduler), 60)
+                    .execute(&serde_json::json!({ "task_id": task_id }).to_string()),
+            )
+            .await
+            .unwrap();
+        let terminal_wait: serde_json::Value = serde_json::from_str(&terminal_wait).unwrap();
+        assert_eq!(terminal_wait["waiting"], false);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), receiver.recv())
+                .await
+                .is_err(),
+            "terminal wait must not poll or wake the Thread again"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_marks_unowned_background_job_lost_and_controls_read_store() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let bus = Arc::new(InMemoryEventBus::new());
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        bus.subscribe(
+            "chat/tool_output".to_string(),
+            Arc::new(move |event| {
+                let sender = sender.clone();
+                Box::pin(async move { sender.send(event).await.map_err(|error| error.into()) })
+            }),
+        );
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let manager = Arc::new(ExecutionJobManager::new(
+            Arc::clone(&store) as Arc<dyn ExecutionJobStore>
+        ));
+        let scheduler = Arc::new(BackgroundTaskScheduler::new_with_execution_jobs(
+            Arc::clone(&bus),
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            Arc::clone(&timers),
+            Arc::clone(&manager),
+        ));
+        scheduler.register_timer_handler().unwrap();
+        let parent = ToolExecutionJobContext {
+            parent_job_id: deterministic_job_id(
+                "activation-restart-background",
+                "exec-call-restart-background",
+            )
+            .unwrap(),
+            activation_id: "activation-restart-background".to_string(),
+            thread_id: "thread-restart-background".to_string(),
+            agent_id: "agent-restart-background".to_string(),
+            context_id: "context-restart-background".to_string(),
+            session_id: "session-restart-background".to_string(),
+            tool_call_id: "exec-call-restart-background".to_string(),
+        };
+        seed_test_execution_route(
+            &store,
+            &parent,
+            "root-restart-background",
+            "trigger-restart-background",
+        )
+        .await;
+        let child_call_id = format!("{}:background", parent.tool_call_id);
+        let task_id = deterministic_job_id(&parent.activation_id, &child_call_id).unwrap();
+        let mut job = manager
+            .ensure(ExecutionJobSpec {
+                activation_id: parent.activation_id.clone(),
+                thread_id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                tool_call_id: child_call_id,
+                tool_name: "exec/background".to_string(),
+                request: serde_json::json!({
+                    "kind": "background_exec",
+                    "task_id": task_id,
+                    "command": "long-running-before-restart",
+                    "process_group_id": 424242,
+                    "artifact_path": "/tmp/restart-background.log",
+                    "started_at": chrono::Utc::now(),
+                    "effective_boundary": {}
+                }),
+                retry_safety: ExecutionRetrySafety::ReconcileRequired,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        let claim_token = "restart-background-claim";
+        job = applied_background_job(
+            manager
+                .claim(
+                    &job.id,
+                    job.revision,
+                    JobClaim {
+                        worker_id: "dead-runtime",
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        approval_ref: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "claim",
+        )
+        .unwrap();
+        job = applied_background_job(
+            manager
+                .heartbeat(
+                    &job.id,
+                    job.revision,
+                    JobHeartbeat {
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        side_effect_started_at: Some(chrono::Utc::now()),
+                        progress_ref: Some("/tmp/restart-background.log"),
+                    },
+                )
+                .await
+                .unwrap(),
+            "side-effect boundary",
+        )
+        .unwrap();
+        assert_eq!(job.status, ExecutionJobStatus::Running);
+        assert!(!get_tasks_map().contains_key(&task_id));
+
+        // The parent `exec` Action has already returned the detached-task
+        // receipt by the time a real Runtime can restart.  Only the child
+        // process is still physically outstanding.  Keep the fixture faithful
+        // to that boundary so restart reconciliation cannot manufacture an
+        // unrelated lost parent Action.
+        let parent_job = manager
+            .store()
+            .get_execution_job(&parent.parent_job_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let parent_claim_token = format!("test-parent-claim-{}", parent.activation_id);
+        let parent_terminal = applied_background_job(
+            manager
+                .finish(
+                    &parent_job.id,
+                    parent_job.revision,
+                    Some(&parent_claim_token),
+                    JobOutcome::Succeeded {
+                        result_event_id: None,
+                        result_refs: Vec::new(),
+                        exit_code: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "parent detached receipt",
+        )
+        .unwrap();
+        assert_eq!(parent_terminal.status, ExecutionJobStatus::Succeeded);
+
+        let recovery = manager.reconcile_restart().await.unwrap();
+        assert_eq!(recovery.lost_receipts.len(), 1);
+        assert_eq!(
+            scheduler
+                .recover_terminal_background_outboxes()
+                .await
+                .unwrap(),
+            1
+        );
+        // Recovery replay may try to arm delivery again, but Event/Outbox
+        // identities remain deterministic and physically unique.
+        scheduler
+            .recover_terminal_background_outboxes()
+            .await
+            .unwrap();
+        let lost = store.get_execution_job(&task_id).await.unwrap().unwrap();
+        assert_eq!(lost.status, ExecutionJobStatus::Lost);
+        let lost_event_id = lost.result_event_id.as_deref().unwrap();
+        assert_eq!(
+            store
+                .query(QueryFilter {
+                    event_id: Some(lost_event_id.to_string()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .list_signal_outbox(crate::memory::SignalOutboxStatus::Pending, 16)
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|outbox| outbox.event_id == lost_event_id)
+                .count(),
+            1
+        );
+
+        let status = CURRENT_CONTEXT_ID
+            .scope(
+                parent.context_id.clone(),
+                TaskStatusTool::new(Arc::clone(&scheduler))
+                    .execute(&serde_json::json!({ "task_id": task_id }).to_string()),
+            )
+            .await
+            .unwrap();
+        let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status["task"]["status"], "lost");
+        assert_eq!(status["task"]["live_owner"], false);
+
+        let listed = CURRENT_CONTEXT_ID
+            .scope(
+                parent.context_id.clone(),
+                ListTasksTool::new(Arc::clone(&scheduler))
+                    .execute(&serde_json::json!({ "include_finished": true }).to_string()),
+            )
+            .await
+            .unwrap();
+        let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        assert_eq!(listed["count"], 1);
+        assert_eq!(listed["tasks"][0]["task_id"], task_id);
+
+        let waited = CURRENT_CONTEXT_ID
+            .scope(
+                parent.context_id.clone(),
+                WaitTaskTool::new(Arc::clone(&scheduler), 60)
+                    .execute(&serde_json::json!({ "task_id": task_id }).to_string()),
+            )
+            .await
+            .unwrap();
+        let waited: serde_json::Value = serde_json::from_str(&waited).unwrap();
+        assert_eq!(waited["waiting"], false);
+        assert_eq!(waited["task"]["status"], "lost");
+
+        let timer_id = background_wake_timer_id(&task_id);
+        timers.start();
+        scheduler
+            .timers
+            .schedule(NewRuntimeTimer {
+                id: timer_id.clone(),
+                generation: 1,
+                kind: RuntimeTimerKind::BackgroundWake,
+                owner_id: task_id,
+                due_at: chrono::Utc::now(),
+                payload: serde_json::json!({
+                    "generation": 1,
+                    "wait_secs": 60,
+                    "wake_source": "restart-test"
+                }),
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if store
+                    .get_runtime_timer(&timer_id)
+                    .await
+                    .unwrap()
+                    .is_some_and(|timer| timer.status == crate::memory::RuntimeTimerStatus::Fired)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), receiver.recv())
+                .await
+                .is_err(),
+            "lost Job 的陈旧 wait timer 不得伪造仍在运行 observation"
+        );
+    }
+
+    #[tokio::test]
     async fn background_completion_preserves_the_originating_causal_route() {
         let bus = Arc::new(crate::event::InMemoryEventBus::new());
         let (sender, mut receiver) = tokio::sync::mpsc::channel(4);
@@ -5955,7 +8663,7 @@ mod tests {
         assert!(tasks.contains_key(task_id));
 
         let status: serde_json::Value = serde_json::from_str(
-            &TaskStatusTool
+            &TaskStatusTool::without_scheduler()
                 .execute(&serde_json::json!({ "task_id": task_id }).to_string())
                 .await
                 .unwrap(),
@@ -5968,7 +8676,7 @@ mod tests {
         );
 
         let listed: serde_json::Value = serde_json::from_str(
-            &ListTasksTool
+            &ListTasksTool::without_scheduler()
                 .execute(&serde_json::json!({}).to_string())
                 .await
                 .unwrap(),

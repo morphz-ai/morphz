@@ -243,6 +243,10 @@ pub fn host_env_path() -> Option<PathBuf> {
 pub struct OrchestratorConfig {
     /// 并发信号量限制
     pub concurrency_limit: usize,
+    /// Runtime 通用调度策略。这里只定义物理调度窗口，不承载任务语义。
+    pub scheduler: SchedulerConfig,
+    /// 持久 Thread Activation 从 queued 进入 running 前的单机准入策略。
+    pub activation_admission: ActivationAdmissionConfig,
     /// 单条 Delegation 链允许的最大嵌套深度。根 Agent 派生第一个 Sub Agent 计为 1。
     pub max_delegation_depth: usize,
     /// 同一 Agent 同时处于 queued/running 的 Delegation 总数上限。
@@ -278,6 +282,8 @@ impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
             concurrency_limit: 4,
+            scheduler: SchedulerConfig::default(),
+            activation_admission: ActivationAdmissionConfig::default(),
             max_delegation_depth: 3,
             max_active_delegations_per_agent: 8,
             reply_wait_notice_secs: 120,
@@ -291,6 +297,57 @@ impl Default for OrchestratorConfig {
             max_context_transactions_per_turn: 6,
             session_working_set: SessionWorkingSetConfig::default(),
             persist_full_context_inspect: false,
+        }
+    }
+}
+
+/// Runtime 的通用持久调度策略。
+///
+/// Delivery 窗口只合并同一 Session 内相邻的完成通知；它不会延迟或合并
+/// Work Thread 本身的物理执行结果。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct SchedulerConfig {
+    /// 第一个结果完成后，等待相邻结果一起进入一次 Delivery Evaluation。
+    pub delivery_merge_window: HumanDuration,
+    /// 无论后续结果如何到达，第一个 pending 结果允许等待的最长时间。
+    pub delivery_max_wait: HumanDuration,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            delivery_merge_window: HumanDuration::from_secs(1),
+            delivery_max_wait: HumanDuration::from_secs(3),
+        }
+    }
+}
+
+/// 单机持久 Activation 准入配置。
+///
+/// `concurrency_limit` 仍是总物理并发上限；本节只定义排队、保留容量和
+/// aging。所有值都是 Runtime policy，不接受模型提供任意数字优先级。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct ActivationAdmissionConfig {
+    /// Runtime 内存中允许等待的 durable queued Activation 总数。
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub max_queued: usize,
+    /// 为交互对话与完成结果交付共同保留的运行槽位。
+    pub dialogue_delivery_reserved_slots: usize,
+    /// 队列末端仅允许交互对话与完成结果交付使用的等待位置。
+    pub dialogue_delivery_reserved_queue_slots: usize,
+    /// 每等待一个完整间隔，固定 class 向上提升一级以避免永久饥饿。
+    pub aging_promotion_interval: HumanDuration,
+}
+
+impl Default for ActivationAdmissionConfig {
+    fn default() -> Self {
+        Self {
+            max_queued: 256,
+            dialogue_delivery_reserved_slots: 1,
+            dialogue_delivery_reserved_queue_slots: 16,
+            aging_promotion_interval: HumanDuration::from_secs(30),
         }
     }
 }
@@ -311,7 +368,7 @@ where
 {
     let value = usize::deserialize(deserializer)?;
     if value == 0 {
-        Err(serde::de::Error::custom("max_sessions 必须大于等于 1"))
+        Err(serde::de::Error::custom("该配置值必须大于等于 1"))
     } else {
         Ok(value)
     }
@@ -1405,6 +1462,41 @@ mod tests {
             "active_window = '0s'\nmax_sessions = 1\n"
         )
         .is_err());
+    }
+
+    #[test]
+    fn activation_admission_config_has_bounded_defaults_and_rejects_zero_window() {
+        let defaults = ActivationAdmissionConfig::default();
+        assert_eq!(defaults.max_queued, 256);
+        assert_eq!(defaults.dialogue_delivery_reserved_slots, 1);
+        assert_eq!(defaults.dialogue_delivery_reserved_queue_slots, 16);
+        assert_eq!(defaults.aging_promotion_interval.as_secs(), 30);
+
+        let parsed: ActivationAdmissionConfig = toml::from_str(
+            "max_queued = 32\ndialogue_delivery_reserved_slots = 2\ndialogue_delivery_reserved_queue_slots = 4\naging_promotion_interval = '45s'\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.max_queued, 32);
+        assert_eq!(parsed.aging_promotion_interval.as_secs(), 45);
+
+        let error = toml::from_str::<ActivationAdmissionConfig>("max_queued = 0\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("max_queued"));
+        assert!(error.contains("必须大于等于 1"));
+        assert!(!error.contains("max_sessions"));
+    }
+
+    #[test]
+    fn scheduler_config_has_small_bounded_delivery_window() {
+        let defaults = SchedulerConfig::default();
+        assert_eq!(defaults.delivery_merge_window.as_secs(), 1);
+        assert_eq!(defaults.delivery_max_wait.as_secs(), 3);
+
+        let parsed: SchedulerConfig =
+            toml::from_str("delivery_merge_window = '2s'\ndelivery_max_wait = '7s'\n").unwrap();
+        assert_eq!(parsed.delivery_merge_window.as_secs(), 2);
+        assert_eq!(parsed.delivery_max_wait.as_secs(), 7);
     }
 
     #[test]

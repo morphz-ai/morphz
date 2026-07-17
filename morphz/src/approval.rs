@@ -1,10 +1,11 @@
-use crate::event::{Event, InMemoryEventBus, TYPE_USER_MESSAGE};
+use crate::event::TYPE_USER_MESSAGE;
 use crate::llm::{Client, Message};
-use crate::memory::{EventStore, QueryFilter};
+use crate::memory::{ApprovalStatus, ApprovalStore, EventStore, QueryFilter};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sha2::{Digest, Sha256};
+use std::collections::hash_map::Entry;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
@@ -63,12 +64,6 @@ pub enum ApprovalAction {
         operation: String,
         target: Option<PathBuf>,
     },
-}
-
-impl ApprovalAction {
-    fn digest_material(&self) -> String {
-        serde_json::to_string(self).unwrap_or_else(|_| format!("{self:?}"))
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,13 +141,62 @@ pub struct PendingHumanApproval {
 }
 
 struct PendingHumanApprovalEntry {
+    waiter_id: u64,
     view: PendingHumanApproval,
     response: oneshot::Sender<ApprovalDecision>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct HumanApprovalHub {
     pending: Arc<Mutex<std::collections::HashMap<String, PendingHumanApprovalEntry>>>,
+    next_waiter_id: Arc<AtomicU64>,
+}
+
+impl Default for HumanApprovalHub {
+    fn default() -> Self {
+        Self {
+            pending: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            // Zero is deliberately left unused so accidental/default tokens
+            // can never identify a live waiter.
+            next_waiter_id: Arc::new(AtomicU64::new(1)),
+        }
+    }
+}
+
+/// Process-local attachment to one durable Approval.
+///
+/// The database remains authoritative. This guard owns only the current
+/// process's oneshot receiver and removes precisely its own registration when
+/// the awaiting future is cancelled or dropped.
+struct HumanApprovalWaiter {
+    hub: HumanApprovalHub,
+    approval_id: String,
+    waiter_id: u64,
+    receiver: Option<oneshot::Receiver<ApprovalDecision>>,
+}
+
+impl HumanApprovalWaiter {
+    async fn wait(mut self) -> Result<ApprovalDecision, PermissionApprovalError> {
+        let receiver = self.receiver.take().ok_or_else(|| {
+            PermissionApprovalError(format!(
+                "人工审批请求 '{}' 缺少进程内 waiter",
+                self.approval_id
+            ))
+        })?;
+        receiver.await.map_err(|_| {
+            PermissionApprovalError(format!(
+                "人工审批请求 '{}' 在收到决定前被取消",
+                self.approval_id
+            ))
+        })
+    }
+}
+
+impl Drop for HumanApprovalWaiter {
+    fn drop(&mut self) {
+        self.hub
+            .detach_if_current(&self.approval_id, self.waiter_id);
+    }
 }
 
 impl HumanApprovalHub {
@@ -168,7 +212,14 @@ impl HumanApprovalHub {
         pending
     }
 
-    pub fn decide(&self, approval_id: &str, decision: ApprovalDecision) -> Result<(), String> {
+    /// Notify an in-process reviewer waiter *after* the durable authority has
+    /// accepted the decision. Missing waiters are normal across restart: the
+    /// database, not this oneshot, is the source of truth.
+    pub fn notify_decision(
+        &self,
+        approval_id: &str,
+        decision: ApprovalDecision,
+    ) -> Result<bool, String> {
         if matches!(decision, ApprovalDecision::AskHuman { .. }) {
             return Err("人工审批结果只能是 allow_once 或 deny".to_string());
         }
@@ -176,47 +227,69 @@ impl HumanApprovalHub {
             .pending
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(approval_id)
-            .ok_or_else(|| format!("审批请求 '{approval_id}' 不存在或已经结束"))?;
-        pending
-            .response
-            .send(decision)
-            .map_err(|_| format!("审批请求 '{approval_id}' 的执行方已经结束"))
+            .remove(approval_id);
+        let Some(pending) = pending else {
+            return Ok(false);
+        };
+        Ok(pending.response.send(decision).is_ok())
     }
 
-    fn insert(
+    fn attach(
         &self,
         request: ApprovalRequest,
-        response: oneshot::Sender<ApprovalDecision>,
-    ) -> Result<(), PermissionApprovalError> {
+    ) -> Result<HumanApprovalWaiter, PermissionApprovalError> {
         let approval_id = request.approval_id.clone();
-        let replaced = self
+        let waiter_id = self.next_waiter_id.fetch_add(1, Ordering::Relaxed);
+        let (response, receiver) = oneshot::channel();
+        let entry = PendingHumanApprovalEntry {
+            waiter_id,
+            view: PendingHumanApproval {
+                request,
+                requested_at: chrono::Utc::now(),
+            },
+            response,
+        };
+        let mut pending = self
             .pending
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                approval_id.clone(),
-                PendingHumanApprovalEntry {
-                    view: PendingHumanApproval {
-                        request,
-                        requested_at: chrono::Utc::now(),
-                    },
-                    response,
-                },
-            );
-        if replaced.is_some() {
-            return Err(PermissionApprovalError(format!(
-                "重复的人工审批 ID: {approval_id}"
-            )));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match pending.entry(approval_id.clone()) {
+            Entry::Vacant(slot) => {
+                slot.insert(entry);
+            }
+            // A cancelled receiver can be replaced even if its Drop cleanup
+            // has not won the lock yet. The old guard's token prevents it
+            // from deleting this newer attachment afterwards.
+            Entry::Occupied(mut slot) if slot.get().response.is_closed() => {
+                slot.insert(entry);
+            }
+            Entry::Occupied(_) => {
+                return Err(PermissionApprovalError(format!(
+                    "人工审批 ID '{approval_id}' 已有活跃 waiter"
+                )));
+            }
         }
-        Ok(())
+        drop(pending);
+        Ok(HumanApprovalWaiter {
+            hub: self.clone(),
+            approval_id,
+            waiter_id,
+            receiver: Some(receiver),
+        })
     }
 
-    fn remove(&self, approval_id: &str) {
-        self.pending
+    fn detach_if_current(&self, approval_id: &str, waiter_id: u64) -> bool {
+        let mut pending = self
+            .pending
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(approval_id);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match pending.entry(approval_id.to_string()) {
+            Entry::Occupied(slot) if slot.get().waiter_id == waiter_id => {
+                slot.remove();
+                true
+            }
+            Entry::Occupied(_) | Entry::Vacant(_) => false,
+        }
     }
 }
 
@@ -233,25 +306,37 @@ impl std::error::Error for PermissionApprovalError {}
 
 pub struct HumanApprovalProvider {
     hub: HumanApprovalHub,
-    bus: Arc<InMemoryEventBus>,
-    store: Arc<dyn EventStore>,
+    approvals: Arc<dyn ApprovalStore>,
 }
 
 impl HumanApprovalProvider {
-    pub fn new(
-        hub: HumanApprovalHub,
-        bus: Arc<InMemoryEventBus>,
-        store: Arc<dyn EventStore>,
-    ) -> Self {
-        Self { hub, bus, store }
+    pub fn new(hub: HumanApprovalHub, approvals: Arc<dyn ApprovalStore>) -> Self {
+        Self { hub, approvals }
     }
 
-    async fn record_and_publish(
+    async fn durable_decision(
         &self,
-        event: Event,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.store.append(event.clone()).await?;
-        self.bus.publish(event).await
+        approval_id: &str,
+    ) -> Result<Option<ApprovalDecision>, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(record) = self.approvals.get_approval(approval_id).await? else {
+            return Ok(None);
+        };
+        let rationale = record
+            .rationale
+            .clone()
+            .or(record.cancel_reason.clone())
+            .unwrap_or_else(|| "持久化 Approval 已终止".to_string());
+        Ok(match record.status {
+            ApprovalStatus::Allowed => Some(ApprovalDecision::AllowOnce {
+                rationale,
+                risk_tags: record.risk_tags,
+            }),
+            ApprovalStatus::Denied | ApprovalStatus::Cancelled => Some(ApprovalDecision::Deny {
+                rationale,
+                risk_tags: record.risk_tags,
+            }),
+            ApprovalStatus::PendingAuto | ApprovalStatus::PendingHuman => None,
+        })
     }
 }
 
@@ -262,65 +347,18 @@ impl ApprovalProvider for HumanApprovalProvider {
         request: &ApprovalRequest,
     ) -> Result<ApprovalDecision, Box<dyn std::error::Error + Send + Sync>> {
         let request = request.clone();
-        let (sender, receiver) = oneshot::channel();
-        self.hub.insert(request.clone(), sender)?;
-        let request_event = Event::new(
-            format!("human_approval_requested_{}", request.approval_id),
-            "System-PermissionBroker".to_string(),
-            "approval_requested".to_string(),
-            "runtime/approval_requested".to_string(),
-            vec![
-                ("context_id".to_string(), json!(request.context_id)),
-                ("session_id".to_string(), json!(request.session_id)),
-                ("attempt_id".to_string(), json!(request.attempt_id)),
-                ("approval_id".to_string(), json!(request.approval_id)),
-                ("action".to_string(), json!(request.action)),
-                ("requested".to_string(), json!(request.requested)),
-                ("justification".to_string(), json!(request.justification)),
-                (
-                    "text".to_string(),
-                    json!(format!(
-                        "权限请求 {}\n动作: {}\n额外能力: {}\n理由: {}",
-                        request.approval_id,
-                        serde_json::to_string(&request.action)?,
-                        serde_json::to_string(&request.requested)?,
-                        request.justification
-                    )),
-                ),
-            ]
-            .into_iter()
-            .collect(),
-        );
-        if let Err(error) = self.record_and_publish(request_event).await {
-            self.hub.remove(&request.approval_id);
-            return Err(error);
+        if let Some(decision) = self.durable_decision(&request.approval_id).await? {
+            return Ok(decision);
         }
-
-        let decision = receiver.await.map_err(|_| {
-            PermissionApprovalError(format!(
-                "人工审批请求 '{}' 在收到决定前被取消",
-                request.approval_id
-            ))
-        })?;
-        self.record_and_publish(Event::new(
-            format!("human_approval_decided_{}", request.approval_id),
-            "User-Reviewer".to_string(),
-            "approval_decision".to_string(),
-            "runtime/approval_decision".to_string(),
-            vec![
-                ("context_id".to_string(), json!(request.context_id)),
-                ("session_id".to_string(), json!(request.session_id)),
-                ("attempt_id".to_string(), json!(request.attempt_id)),
-                ("approval_id".to_string(), json!(request.approval_id)),
-                ("decision".to_string(), json!(decision.name())),
-                ("rationale".to_string(), json!(decision.rationale())),
-                ("risk_tags".to_string(), json!(decision.risk_tags())),
-            ]
-            .into_iter()
-            .collect(),
-        ))
-        .await?;
-        Ok(decision)
+        let waiter = self.hub.attach(request.clone())?;
+        // Fence the registration race: a decision may have committed between
+        // the first durable read and inserting the process-local waiter.
+        if let Some(decision) = self.durable_decision(&request.approval_id).await? {
+            let _ = self
+                .hub
+                .notify_decision(&request.approval_id, decision.clone());
+        }
+        Ok(waiter.wait().await?)
     }
 }
 
@@ -393,69 +431,6 @@ impl AiAutoReviewProvider {
             recent_user_intents,
         })
     }
-
-    async fn record_request(
-        &self,
-        request: &ApprovalRequest,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let digest = format!(
-            "{:x}",
-            Sha256::digest(request.action.digest_material().as_bytes())
-        );
-        self.store
-            .append(Event::new(
-                format!("approval_requested_{}", request.approval_id),
-                "System-PermissionBroker".to_string(),
-                "approval_requested".to_string(),
-                "runtime/approval_requested".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(request.context_id)),
-                    ("session_id".to_string(), json!(request.session_id)),
-                    ("attempt_id".to_string(), json!(request.attempt_id)),
-                    ("approval_id".to_string(), json!(request.approval_id)),
-                    ("action_sha256".to_string(), json!(digest)),
-                    ("action".to_string(), json!(request.action)),
-                    ("requested".to_string(), json!(request.requested)),
-                    (
-                        "justification".to_string(),
-                        json!(request
-                            .justification
-                            .chars()
-                            .take(2_000)
-                            .collect::<String>()),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ))
-            .await
-    }
-
-    async fn record_decision(
-        &self,
-        request: &ApprovalRequest,
-        decision: &ApprovalDecision,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.store
-            .append(Event::new(
-                format!("approval_decided_{}", request.approval_id),
-                "System-AutoReviewer".to_string(),
-                "approval_decision".to_string(),
-                "runtime/approval_decision".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(request.context_id)),
-                    ("session_id".to_string(), json!(request.session_id)),
-                    ("attempt_id".to_string(), json!(request.attempt_id)),
-                    ("approval_id".to_string(), json!(request.approval_id)),
-                    ("decision".to_string(), json!(decision.name())),
-                    ("rationale".to_string(), json!(decision.rationale())),
-                    ("risk_tags".to_string(), json!(decision.risk_tags())),
-                ]
-                .into_iter()
-                .collect(),
-            ))
-            .await
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -472,7 +447,6 @@ impl ApprovalProvider for AiAutoReviewProvider {
         &self,
         request: &ApprovalRequest,
     ) -> Result<ApprovalDecision, Box<dyn std::error::Error + Send + Sync>> {
-        self.record_request(request).await?;
         let evidence = self.evidence(request).await?;
         let payload = serde_json::to_string_pretty(&json!({
             "approval_request": request,
@@ -519,7 +493,6 @@ impl ApprovalProvider for AiAutoReviewProvider {
             },
             other => return Err(format!("自动审批 Reviewer 返回未知决定: {other}").into()),
         };
-        self.record_decision(request, &decision).await?;
         Ok(decision)
     }
 }
@@ -651,8 +624,112 @@ mod tests {
     #[tokio::test]
     async fn human_approval_hub_keeps_request_pending_until_explicit_decision() {
         let hub = HumanApprovalHub::default();
-        let request = ApprovalRequest {
-            approval_id: "human-1".to_string(),
+        let request = human_request("human-1");
+        let waiter = hub.attach(request).unwrap();
+        assert_eq!(hub.pending().len(), 1);
+
+        assert!(hub
+            .notify_decision(
+                "human-1",
+                ApprovalDecision::AllowOnce {
+                    rationale: "allowed".to_string(),
+                    risk_tags: vec!["human-approved".to_string()],
+                },
+            )
+            .unwrap());
+        assert!(matches!(
+            waiter.wait().await.unwrap(),
+            ApprovalDecision::AllowOnce { .. }
+        ));
+        assert!(hub.pending().is_empty());
+    }
+
+    #[tokio::test]
+    async fn duplicate_active_waiter_is_rejected_without_replacing_the_original() {
+        let hub = HumanApprovalHub::default();
+        let first = hub.attach(human_request("human-duplicate")).unwrap();
+        let duplicate = hub.attach(human_request("human-duplicate"));
+        assert!(matches!(
+            duplicate,
+            Err(PermissionApprovalError(message)) if message.contains("已有活跃 waiter")
+        ));
+        assert_eq!(hub.pending().len(), 1);
+
+        assert!(hub
+            .notify_decision(
+                "human-duplicate",
+                ApprovalDecision::Deny {
+                    rationale: "denied".to_string(),
+                    risk_tags: Vec::new(),
+                },
+            )
+            .unwrap());
+        assert!(matches!(
+            first.wait().await.unwrap(),
+            ApprovalDecision::Deny { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancelled_wait_future_detaches_and_same_durable_approval_can_reattach() {
+        let hub = HumanApprovalHub::default();
+        let first = hub.attach(human_request("human-retry")).unwrap();
+        let cancelled = first.wait();
+        assert_eq!(hub.pending().len(), 1);
+        drop(cancelled);
+        assert!(hub.pending().is_empty());
+
+        let retry = hub.attach(human_request("human-retry")).unwrap();
+        assert!(hub
+            .notify_decision(
+                "human-retry",
+                ApprovalDecision::AllowOnce {
+                    rationale: "retry allowed".to_string(),
+                    risk_tags: Vec::new(),
+                },
+            )
+            .unwrap());
+        assert!(matches!(
+            retry.wait().await.unwrap(),
+            ApprovalDecision::AllowOnce { .. }
+        ));
+        assert!(hub.pending().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_cancelled_waiter_cannot_remove_a_new_same_id_attachment() {
+        let hub = HumanApprovalHub::default();
+        let mut stale = hub.attach(human_request("human-race")).unwrap();
+        stale
+            .receiver
+            .as_mut()
+            .expect("stale waiter receiver")
+            .close();
+
+        // `attach` replaces the closed receiver before its old Drop guard has
+        // run. Dropping that old guard must not remove this newer waiter.
+        let current = hub.attach(human_request("human-race")).unwrap();
+        drop(stale);
+        assert_eq!(hub.pending().len(), 1);
+        assert!(hub
+            .notify_decision(
+                "human-race",
+                ApprovalDecision::Deny {
+                    rationale: "current denied".to_string(),
+                    risk_tags: Vec::new(),
+                },
+            )
+            .unwrap());
+        assert!(matches!(
+            current.wait().await.unwrap(),
+            ApprovalDecision::Deny { .. }
+        ));
+        assert!(hub.pending().is_empty());
+    }
+
+    fn human_request(approval_id: &str) -> ApprovalRequest {
+        ApprovalRequest {
+            approval_id: approval_id.to_string(),
             context_id: "c1".to_string(),
             session_id: "s1".to_string(),
             attempt_id: "t1".to_string(),
@@ -666,23 +743,6 @@ mod tests {
                 ..CapabilityDelta::default()
             },
             justification: "test".to_string(),
-        };
-        let (sender, receiver) = oneshot::channel();
-        hub.insert(request, sender).unwrap();
-        assert_eq!(hub.pending().len(), 1);
-
-        hub.decide(
-            "human-1",
-            ApprovalDecision::AllowOnce {
-                rationale: "allowed".to_string(),
-                risk_tags: vec!["human-approved".to_string()],
-            },
-        )
-        .unwrap();
-        assert!(matches!(
-            receiver.await.unwrap(),
-            ApprovalDecision::AllowOnce { .. }
-        ));
-        assert!(hub.pending().is_empty());
+        }
     }
 }

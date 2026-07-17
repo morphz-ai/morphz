@@ -1,0 +1,338 @@
+{
+  "common": {
+    "shared": "共享"
+  },
+  "header": {
+    "context": "上下文",
+    "runtimeTasks": "运行时任务",
+    "session": "会话",
+    "noContext": "未选择上下文",
+    "noSession": "未选择会话",
+    "visibleSessions": "可见会话",
+    "sessionsInContext": "此上下文中有 {{count}} 个",
+    "active": "活跃",
+    "resident": "驻留",
+    "dashboardHint": "Dashboard 只展示 Runtime API 当前允许读取的会话。",
+    "agentLabel": "agent/{{title}}"
+  },
+  "theme": {
+    "title": "强调色主题",
+    "hint": "仅影响当前浏览器",
+    "iris": {
+      "label": "鸢尾紫",
+      "description": "克制、认知感"
+    },
+    "cyan": {
+      "label": "电光青",
+      "description": "清晰、技术感"
+    },
+    "coral": {
+      "label": "暖珊瑚",
+      "description": "温和、有生命力"
+    },
+    "mono": {
+      "label": "纯单色",
+      "description": "中性、低干扰"
+    }
+  },
+
+  "reasoning": {
+    "label": "推理",
+    "title": "只影响后续模型请求；默认表示由模型服务决定",
+    "default": "默认",
+    "low": "低",
+    "medium": "中",
+    "high": "高"
+  },
+  "reasoningSummary": {
+    "toggle": "推理摘要",
+    "toggleTitle": "显示或收起 Provider 返回的推理摘要；摘要独立保存，绝不会混入回复正文",
+    "title": "推理摘要",
+    "live": "实时 · 独立通道",
+    "persisted": "已保存 · 非回复正文",
+    "persistedShort": "已保存",
+    "streaming": "求值中",
+    "toolCalls": "{{count}} 个工具调用",
+    "workLiveTitle": "实时模型求值",
+    "workLiveSubtitle": "只展示正在运行的工作求值；摘要不会进入聊天正文",
+    "workHistoryTitle": "工作推理摘要",
+    "workHistorySubtitle": "从 Runtime 事件恢复的近期摘要"
+  },
+  "model": {
+    "unavailable": "模型不可用",
+    "tokens": "{{used}} / {{limit}}"
+  },
+  "connection": {
+    "connected": "已连接",
+    "connecting": "连接中",
+    "disconnected": "已断开"
+  },
+  "language": {
+    "toggle": "切换语言"
+  },
+  "conversation": {
+    "heading": "会话 · {{title}}",
+    "emptyTitle": "这个会话还没有对话",
+    "emptyDescription": "消息会进入共享认知上下文，但回复始终路由回当前会话。<br />在下方输入框发送第一条消息即可开始。",
+    "startChat": "开始对话",
+    "roleYou": "你",
+    "roleAgent": "Morphz",
+    "roleObjective": "目标",
+    "roleWork": "工作",
+    "roleRuntime": "Runtime",
+    "noText": "（无文本）",
+    "copy": "复制消息",
+    "copied": "已复制",
+    "streaming": "正在生成",
+    "streamFailed": "流式响应失败",
+    "pendingHint": "你可以继续发送消息，当前执行不会阻塞对话。"
+  },
+  "work": {
+    "title": "运行时任务",
+    "heading": "任务与执行",
+    "description": "这里只展示 Runtime 可验证的目标、求值、后台进程和委派；普通认知框架不会被猜成任务。",
+    "refresh": "刷新",
+    "backToChat": "返回对话",
+    "executingCount": "{{count}} 执行中",
+    "waitingShort": "等待",
+    "objectivesShort": "目标",
+    "taskSummary": "{{waiting}} 等待 · {{objectives}} 目标",
+    "metrics": {
+      "active": "活跃",
+      "waiting": "等待",
+      "pendingSignals": "待处理信号",
+      "objectives": "目标"
+    },
+    "objectives": {
+      "title": "目标",
+      "confirm": "先确认目标与状态，再查看执行轨迹",
+      "empty": "没有非终态目标",
+      "resume": "恢复并继续",
+      "resuming": "正在恢复",
+      "delete": "删除目标",
+      "deleting": "正在删除",
+      "waitCondition": "等待 · {{kind}}",
+      "revision": "r{{revision}}",
+      "tokens": "{{tokens}} tok",
+      "seconds": "{{seconds}}s"
+    },
+    "scheduler": {
+      "title": "线程调度",
+      "subtitle": "{{count}} 条排队 / 定时意图 · Runtime 权威状态",
+      "workThreads": "工作线程",
+      "noWorkThreads": "没有非终态工作线程",
+      "scheduledIntents": "调度意图",
+      "immediate": "立即",
+      "every": " · 每 {{seconds}} 秒",
+      "waitingThreads": " · 等待 {{count}} 个线程",
+      "waitingThreads_one": " · 等待 {{count}} 个线程",
+      "waitingThreads_other": " · 等待 {{count}} 个线程",
+      "noIntents": "没有排队或定时意图",
+      "pendingSignals": "待处理信号",
+      "noSignals": "没有待领取信号"
+    },
+    "activations": {
+      "title": "线程激活",
+      "empty": "没有活跃激活",
+      "dialogueThread": "对话线程",
+      "objectiveThread": "目标线程",
+      "workThread": "工作线程"
+    },
+    "backgroundTasks": {
+      "title": "后台任务",
+      "empty": "没有后台进程记录",
+      "bytes": "{{bytes}} bytes"
+    },
+    "delegations": {
+      "title": "委派",
+      "subtitle": "委派任务 · 独立滚动，不影响上方布局",
+      "empty": "没有委派"
+    },
+    "toolTimeline": {
+      "title": "工具调用时间线",
+      "subtitle": "Runtime 真实执行事件 · 自动滚动到底部",
+      "parameters": "参数",
+      "truncated": " · 原始 {{chars}} 字符",
+      "result": "结果 · {{status}}",
+      "noOutput": "（工具没有输出）",
+      "empty": "当前会话还没有工具调用记录",
+      "ariaLabel": "工具调用时间线，可在区域内滚动"
+    }
+  },
+  "mindView": {
+    "title": "认知上下文",
+    "heading": "共享认知",
+    "description": "认知框架的业务结构由 Agent 自主形成；Runtime 只呈现身份、来源、版本、关系与生命周期。",
+    "backToChat": "返回对话",
+    "metrics": {
+      "frames": "框架",
+      "relations": "关系",
+      "observations": "观察",
+      "residentSessions": "驻留会话"
+    },
+    "frameLibrary": "认知库",
+    "sourceCount": "{{count}} 来源",
+    "sourceCount_one": "{{count}} 来源",
+    "sourceCount_other": "{{count}} 来源",
+    "retired": "已退役",
+    "frame": "认知框架",
+    "revision": "修订 {{revision}}",
+    "created": "创建",
+    "updated": "更新",
+    "sources": "来源",
+    "protected": "受保护",
+    "yes": "是",
+    "no": "否",
+    "relationsTitle": "关系",
+    "emptyFrame": "还没有可查看的认知框架",
+    "sessionWindow": "会话窗口",
+    "sessionWindowDetail": "最多 {{count}} 个完整会话",
+    "pressure": "压力",
+    "checkpoints": "检查点",
+    "checkpointsDetail": "Agent 显式维护",
+    "retiredCount": "已退役",
+    "retiredDetail": "可恢复，未删除账本"
+  },
+  "composer": {
+    "placeholder": "输入消息…",
+    "noSessionPlaceholder": "请选择会话",
+    "send": "发送",
+    "inputAriaLabel": "消息输入",
+    "cancelTitle": "取消当前会话执行",
+    "status": {
+      "idle": "空闲",
+      "active": "目标自动执行",
+      "blocked": "目标受阻",
+      "paused": "目标暂停",
+      "running": "运行中",
+      "waitingModel": "等待模型",
+      "modelResponding": "模型响应中",
+      "waitingEvent": "等待已登记的外部事件",
+      "noWork": "当前没有进行中的工作",
+      "executing": "正在执行",
+      "delegating": "正在委派",
+      "summary": "{{executing}} 执行 · {{waiting}} 等待"
+    },
+    "shortcuts": {
+      "send": "Enter 发送",
+      "newline": "Shift+Enter 换行",
+      "tasks": "Ctrl+T 任务",
+      "mind": "Ctrl+M 认知",
+      "back": "Esc 返回对话"
+    }
+  },
+  "status": {
+    "active": "进行中",
+    "blocked": "受阻",
+    "paused": "暂停",
+    "completed": "完成",
+    "cancelled": "取消",
+    "failed": "失败",
+    "queued": "排队",
+    "runnable": "可运行",
+    "running": "执行中",
+    "waiting": "等待中",
+    "idle": "空闲",
+    "open": "开放",
+    "success": "完成",
+    "guarded": "已处理",
+    "timeout": "超时",
+    "rejected": "拒绝",
+    "waiting_tool": "等待工具",
+    "waiting_external": "等待事件",
+    "starting": "启动中",
+    "succeeded": "完成",
+    "kill_requested": "正在终止",
+    "killed": "已终止",
+    "normal": "正常",
+    "notice": "注意",
+    "warning": "警告",
+    "critical": "严重",
+    "resident": "驻留",
+    "retired": "已退役",
+    "swapped": "已换出"
+  },
+  "toolCall": {
+    "read": "读取文件",
+    "write": "写入文件",
+    "edit": "修改文件",
+    "exec": "执行命令",
+    "search": "搜索工作区",
+    "listFiles": "浏览文件",
+    "recall": "召回证据",
+    "contextTx": "维护认知",
+    "delegate": "委派工作",
+    "waitTask": "等待后台任务",
+    "taskStatus": "查询任务状态",
+    "killTask": "终止后台任务",
+    "sendMessage": "发送会话消息",
+    "noReply": "静默结束",
+    "unspecifiedFile": "未指定文件",
+    "unspecifiedCommand": "未显示命令",
+    "unspecifiedQuery": "未显示查询",
+    "workspace": "工作区",
+    "contextLedger": "上下文账本",
+    "subAgent": "子 Agent",
+    "backgroundTask": "后台任务",
+    "targetSession": "目标会话",
+    "noMessage": "不向当前会话发送文本",
+    "viewArgs": "查看参数",
+    "lines": "{{range}} 行"
+  },
+  "activation": {
+    "processDialogue": "处理对话：{{text}}",
+    "processCurrentMessage": "处理当前用户消息",
+    "continueObjective": "继续持久目标",
+    "processToolResult": "处理{{tool}}结果：{{target}}",
+    "processRuntimeEvent": "处理 Runtime 事件：{{kind}}"
+  },
+  "time": {
+    "ago": {
+      "seconds": "{{count}} 秒前",
+      "seconds_one": "{{count}} 秒前",
+      "seconds_other": "{{count}} 秒前",
+      "minutes": "{{count}} 分钟前",
+      "minutes_one": "{{count}} 分钟前",
+      "minutes_other": "{{count}} 分钟前",
+      "hours": "{{count}} 小时前",
+      "hours_one": "{{count}} 小时前",
+      "hours_other": "{{count}} 小时前",
+      "days": "{{count}} 天前",
+      "days_one": "{{count}} 天前",
+      "days_other": "{{count}} 天前"
+    }
+  },
+  "turnStatus": {
+    "toolCalls": "正在执行 {{count}} 个工具调用",
+    "toolCalls_one": "正在执行 {{count}} 个工具调用",
+    "toolCalls_other": "正在执行 {{count}} 个工具调用",
+    "executingTools": "正在执行 {{tools}}",
+    "toolResult": "正在处理 {{tool}} 的结果",
+    "modelEval": "正在思考",
+    "waiting": "请求已接收，等待 Runtime 求值"
+  },
+  "errors": {
+    "statusHttp": "Runtime 状态 HTTP {{status}}",
+    "contextHttp": "Context Encoding HTTP {{status}}",
+    "sendMessage": "发送消息 HTTP {{status}}",
+    "cancelSession": "取消会话 HTTP {{status}}",
+    "reasoning": "调整推理深度 HTTP {{status}}",
+    "resumeObjective": "恢复目标 HTTP {{status}}",
+    "deleteObjective": "删除目标 HTTP {{status}}",
+    "websocketParse": "WebSocket 返回了无法解析的事件",
+    "copyFailed": "复制失败"
+  },
+  "reason": {
+    "resumeByUser": "用户通过 Dashboard 显式恢复 Objective",
+    "deleteByUser": "用户通过 Dashboard 删除 Objective"
+  },
+  "dialog": {
+    "deleteObjectiveTitle": "删除这个目标？",
+    "deleteObjectiveBody": "{{objective}}\n\n删除会立即停止它的自动续跑；审计历史仍会保留。"
+  },
+  "nav": {
+    "tasks": "打开任务视图 (Ctrl+T)",
+    "toggleTasks": "切换任务视图 (Ctrl+T)",
+    "connection": "WebSocket 连接状态"
+  }
+}

@@ -229,6 +229,15 @@ pub enum ActivationOutcomeCommit {
     Existing { event_id: String },
 }
 
+/// Fenced commit result for one persistent Delivery Timer generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeliveryFlushCommit {
+    Committed,
+    Existing { event_id: String },
+    Stale,
+    Empty,
+}
+
 /// Durable mailbox fact addressed to one causal Thread. The immutable Event
 /// remains the physical/audit fact; this record owns only scheduler delivery
 /// and consumption state.
@@ -315,6 +324,7 @@ pub enum RuntimeTimerKind {
     ObjectiveLease,
     BackgroundWake,
     ActivationLease,
+    DeliveryFlush,
 }
 
 impl RuntimeTimerKind {
@@ -325,6 +335,7 @@ impl RuntimeTimerKind {
             Self::ObjectiveLease => "objective_lease",
             Self::BackgroundWake => "background_wake",
             Self::ActivationLease => "activation_lease",
+            Self::DeliveryFlush => "delivery_flush",
         }
     }
 }
@@ -502,6 +513,8 @@ pub struct ExecutionJobFilter {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExecutionJobMutation {
     Updated(ExecutionJobRecord),
+    /// Exact replay of an already committed terminal Job/result Event pair.
+    Existing(ExecutionJobRecord),
     Conflict {
         current: ExecutionJobRecord,
     },
@@ -519,6 +532,183 @@ pub struct ExecutionJobTerminal {
     pub result_refs: Vec<String>,
     pub error: Option<String>,
     pub exit_code: Option<i32>,
+}
+
+/// Durable authorization state for one exact Execution Job capability request.
+/// Pending human approval has no Runtime timeout and survives process restart.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalStatus {
+    PendingAuto,
+    PendingHuman,
+    Allowed,
+    Denied,
+    Cancelled,
+}
+
+impl ApprovalStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PendingAuto => "pending_auto",
+            Self::PendingHuman => "pending_human",
+            Self::Allowed => "allowed",
+            Self::Denied => "denied",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn is_pending(self) -> bool {
+        matches!(self, Self::PendingAuto | Self::PendingHuman)
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Denied | Self::Cancelled)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "decision", rename_all = "snake_case")]
+pub enum ApprovalResolution {
+    Allow {
+        rationale: String,
+        #[serde(default)]
+        risk_tags: Vec<String>,
+    },
+    Deny {
+        rationale: String,
+        #[serde(default)]
+        risk_tags: Vec<String>,
+    },
+}
+
+impl ApprovalResolution {
+    pub fn status(&self) -> ApprovalStatus {
+        match self {
+            Self::Allow { .. } => ApprovalStatus::Allowed,
+            Self::Deny { .. } => ApprovalStatus::Denied,
+        }
+    }
+
+    pub fn rationale(&self) -> &str {
+        match self {
+            Self::Allow { rationale, .. } | Self::Deny { rationale, .. } => rationale,
+        }
+    }
+
+    pub fn risk_tags(&self) -> &[String] {
+        match self {
+            Self::Allow { risk_tags, .. } | Self::Deny { risk_tags, .. } => risk_tags,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ApprovalRecord {
+    pub id: String,
+    pub revision: u64,
+    pub job_id: String,
+    pub request_digest: String,
+    pub policy_digest: String,
+    pub action: serde_json::Value,
+    pub requested: serde_json::Value,
+    pub justification: String,
+    pub status: ApprovalStatus,
+    pub rationale: Option<String>,
+    pub risk_tags: Vec<String>,
+    /// Stable one-use capability identity. `ExecutionApprovalStore` consumes
+    /// it atomically with Job claim.
+    pub grant_id: Option<String>,
+    pub grant_consumed_at: Option<DateTime<Utc>>,
+    pub consumed_by_claim_token: Option<String>,
+    pub cancel_reason: Option<String>,
+    pub last_error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub decided_at: Option<DateTime<Utc>>,
+    pub cancelled_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewApprovalRequest {
+    pub id: String,
+    pub job_id: String,
+    pub request_digest: String,
+    pub policy_digest: String,
+    pub action: serde_json::Value,
+    pub requested: serde_json::Value,
+    pub justification: String,
+    /// Only a pending status is accepted when the authority is first created.
+    pub pending_status: ApprovalStatus,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ApprovalFilter {
+    pub job_id: Option<String>,
+    pub status: Option<ApprovalStatus>,
+    pub pending_only: bool,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ApprovalMutation {
+    Created(ApprovalRecord),
+    Updated(ApprovalRecord),
+    /// Exact idempotent replay of an already persisted request or decision.
+    Existing(ApprovalRecord),
+    Conflict {
+        current: ApprovalRecord,
+        reason: String,
+    },
+    Rejected {
+        current: ApprovalRecord,
+        reason: String,
+    },
+    NotFound,
+}
+
+/// Result of atomically committing an Approval authority transition and its
+/// immutable audit Event. `event_created` is true both for a new transition
+/// and when an exact replay repairs an Event that was missing from data
+/// written by an older Runtime.
+#[derive(Debug, Clone)]
+pub struct ApprovalAuditCommit {
+    pub mutation: ApprovalMutation,
+    pub event_created: bool,
+    /// Exact immutable Event projection committed in the same transaction.
+    /// Callers must dispatch this value rather than reconstructing it from a
+    /// later, potentially changed authority read.
+    pub event: Option<crate::event::Event>,
+}
+
+/// Result of a transaction which crosses the Execution Job and Approval
+/// authorities. Returning both records keeps callers from making a second,
+/// racy read before deciding what to do next.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExecutionApprovalMutation {
+    Created {
+        job: ExecutionJobRecord,
+        approval: ApprovalRecord,
+    },
+    Updated {
+        job: ExecutionJobRecord,
+        approval: ApprovalRecord,
+    },
+    /// Exact replay of a transaction which was already committed.
+    Existing {
+        job: ExecutionJobRecord,
+        approval: ApprovalRecord,
+    },
+    Conflict {
+        job: Option<ExecutionJobRecord>,
+        approval: Option<ApprovalRecord>,
+        reason: String,
+    },
+    Rejected {
+        job: Option<ExecutionJobRecord>,
+        approval: Option<ApprovalRecord>,
+        reason: String,
+    },
+    NotFound,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -662,6 +852,7 @@ pub enum WorkThreadMutation {
 #[serde(rename_all = "snake_case")]
 pub enum ScheduledIntentStatus {
     Queued,
+    Paused,
     Dispatched,
     Completed,
     Cancelled,
@@ -671,10 +862,15 @@ impl ScheduledIntentStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Queued => "queued",
+            Self::Paused => "paused",
             Self::Dispatched => "dispatched",
             Self::Completed => "completed",
             Self::Cancelled => "cancelled",
         }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Cancelled)
     }
 }
 
@@ -702,6 +898,22 @@ pub struct NewScheduledIntent {
     pub not_before: Option<DateTime<Utc>>,
     pub interval_seconds: Option<u64>,
     pub dependency_thread_ids: Vec<String>,
+}
+
+/// Result of a revision-fenced Schedule control-plane mutation. `Rejected`
+/// means the caller held the current revision, but the requested lifecycle
+/// transition was not legal; `Conflict` means a newer writer already won.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScheduledIntentMutation {
+    Updated(ScheduledIntentRecord),
+    Conflict {
+        current: ScheduledIntentRecord,
+    },
+    Rejected {
+        current: ScheduledIntentRecord,
+        reason: String,
+    },
+    NotFound,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1014,6 +1226,14 @@ pub trait ExecutionJobStore: Send + Sync {
         side_effect_started_at: Option<DateTime<Utc>>,
         progress_ref: Option<&str>,
     ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Recovery-only transition for an idempotent Job whose previous worker
+    /// disappeared before the persisted side-effect boundary. This is never a
+    /// generic lease-steal operation.
+    async fn requeue_execution_job(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Records intent to cancel without claiming that a running process has
     /// already stopped. A controller must subsequently commit `cancelled`.
     async fn request_cancel_execution_job(
@@ -1032,6 +1252,94 @@ pub trait ExecutionJobStore: Send + Sync {
         claim_token: Option<&str>,
         terminal: ExecutionJobTerminal,
     ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically commits the terminal physical fact and its immutable result
+    /// Event. It deliberately does not create a Signal Outbox record: callers
+    /// executing an Action group must first close every Job/result pair, then
+    /// arm exactly one deterministic batch-barrier Event.
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_execution_job_with_event(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        claim_token: Option<&str>,
+        terminal: ExecutionJobTerminal,
+        event: &crate::event::Event,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Durable approval authority. Audit Events remain immutable facts, while this
+/// Store is the revision-fenced source of truth for pending and decided state.
+#[async_trait::async_trait]
+pub trait ApprovalStore: Send + Sync {
+    /// Idempotently creates a pending request for an existing
+    /// `waiting_approval` Execution Job. Exact replay returns `Existing`; the
+    /// same identity or causal digest with different immutable content is a
+    /// conflict.
+    async fn ensure_approval_request(
+        &self,
+        request: NewApprovalRequest,
+    ) -> Result<ApprovalMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_approval(
+        &self,
+        id: &str,
+    ) -> Result<Option<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_approvals(
+        &self,
+        filter: ApprovalFilter,
+    ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically commits a revision-fenced allow/deny decision and its
+    /// deterministic `runtime/approval_decision` Event. An exact retry of a
+    /// committed decision returns `Existing` and repairs a missing Event; an
+    /// opposite decision never overwrites it.
+    async fn commit_approval_decision(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        decision: ApprovalResolution,
+    ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically cancels a still-pending request (or an unconsumed allowed
+    /// grant) and appends the same immutable authority audit Event. Denied and
+    /// consumed grants are immutable.
+    async fn commit_approval_cancellation(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: &str,
+    ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Atomic boundary between durable physical work and its one-use authority.
+///
+/// This is intentionally separate from `ExecutionJobStore` and
+/// `ApprovalStore`: ordinary mutations stay within one aggregate, while these
+/// two operations must either commit both aggregates (and, for creation, the
+/// immutable request Event) or commit nothing.
+#[async_trait::async_trait]
+pub trait ExecutionApprovalStore: Send + Sync {
+    /// Atomically creates a `waiting_approval` Job, its pending Approval and
+    /// the immutable request Event. Exact replay is idempotent; reusing any
+    /// identity with different immutable content is fenced as a conflict.
+    async fn ensure_execution_job_with_approval(
+        &self,
+        job: NewExecutionJob,
+        approval: NewApprovalRequest,
+        request_event: &crate::event::Event,
+    ) -> Result<ExecutionApprovalMutation, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Atomically consumes one exact allowed grant and claims its Job. The
+    /// Job and Approval revisions are fenced together, so a grant can never be
+    /// consumed without worker ownership (or vice versa).
+    #[allow(clippy::too_many_arguments)]
+    async fn claim_execution_job_with_grant(
+        &self,
+        job_id: &str,
+        expected_job_revision: u64,
+        approval_id: &str,
+        expected_approval_revision: u64,
+        worker_id: &str,
+        claim_token: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<ExecutionApprovalMutation, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Persistent product-level Session directory. It deliberately owns routing and
@@ -1171,6 +1479,22 @@ pub trait SessionStore: Send + Sync {
         context_id: &str,
         include_terminal: bool,
     ) -> Result<Vec<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Bounded, globally ordered durable admission source. The returned class
+    /// is derived from the immutable Trigger Event by the Runtime-owned policy;
+    /// durable age participates in the DB ordering so overflow cannot starve
+    /// outside the in-memory window. Declared dialogue/delivery rows retain
+    /// their reserved waiting room even when old general rows have aged into
+    /// the same effective class. Callers must not scan the Context Event Ledger
+    /// to rebuild this queue.
+    async fn list_queued_thread_activations_for_admission(
+        &self,
+        limit: usize,
+        dialogue_delivery_reserved_queue_slots: usize,
+        aging_promotion_interval_ms: u64,
+    ) -> Result<
+        Vec<(ThreadActivationRecord, crate::admission::AdmissionClass)>,
+        Box<dyn std::error::Error + Send + Sync>,
+    >;
     async fn update_thread_activation(
         &self,
         id: &str,
@@ -1204,6 +1528,36 @@ pub trait SessionStore: Send + Sync {
         context_id: &str,
         include_terminal: bool,
     ) -> Result<Vec<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Narrow indexed read for completion delivery; avoids scanning every
+    /// Thread in a shared Cognitive Context.
+    async fn list_session_delivery_threads(
+        &self,
+        session_id: &str,
+        include_deferred: bool,
+    ) -> Result<Vec<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Sessions with recoverable pending/deferred completion results.
+    async fn list_pending_delivery_sessions(
+        &self,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically bumps the Session's persistent Delivery Timer generation and
+    /// computes its due time from the oldest/newest pending result. The due
+    /// time can move with the merge window but never past the first result's
+    /// max-wait deadline.
+    async fn arm_delivery_flush_timer(
+        &self,
+        timer_id: &str,
+        session_id: &str,
+        merge_window_secs: u64,
+        max_wait_secs: u64,
+    ) -> Result<Option<RuntimeTimerRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Generation-fenced, idempotent publication of one Delivery wake Event
+    /// and its Signal Outbox row.
+    async fn commit_delivery_flush(
+        &self,
+        timer_id: &str,
+        generation: u64,
+        event: &crate::event::Event,
+    ) -> Result<DeliveryFlushCommit, Box<dyn std::error::Error + Send + Sync>>;
     #[allow(clippy::too_many_arguments)]
     async fn update_work_thread(
         &self,
@@ -1224,6 +1578,39 @@ pub trait SessionStore: Send + Sync {
         &self,
         id: &str,
     ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Control-plane read used by `schedule inspect`. It deliberately returns
+    /// the revision token required by every subsequent Schedule mutation.
+    async fn inspect_scheduled_intent(
+        &self,
+        id: &str,
+    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn pause_scheduled_intent(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn resume_scheduled_intent(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Replaces the timing rule as one CAS operation. Dependency ownership and
+    /// its reverse index are intentionally left untouched, so a timing-only
+    /// reschedule cannot partially rewrite dependency routing. A one-shot rule
+    /// that already reached `dispatched` cannot be rewound: its Signal is an
+    /// immutable physical fact, and replay must use a new Schedule identity.
+    async fn reschedule_scheduled_intent(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        not_before: Option<DateTime<Utc>>,
+        interval_seconds: Option<u64>,
+    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn cancel_scheduled_intent(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Atomically creates any new Work Threads and their queued intents.
     /// Validation happens before commit, so a failed multi-operation
     /// schedule_tx never leaves a partially-created scheduling plan.

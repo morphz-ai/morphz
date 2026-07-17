@@ -143,6 +143,32 @@ struct LiveToolCall {
     completed: bool,
 }
 
+#[derive(Debug, Clone)]
+struct LiveAttempt {
+    work_item_id: String,
+    thread_kind: String,
+    text: String,
+    tools: BTreeMap<usize, LiveToolCall>,
+}
+
+impl LiveAttempt {
+    fn new(work_item_id: String, thread_kind: String) -> Self {
+        Self {
+            work_item_id,
+            thread_kind,
+            text: String::new(),
+            tools: BTreeMap::new(),
+        }
+    }
+
+    fn is_conversation(&self) -> bool {
+        matches!(
+            self.thread_kind.as_str(),
+            "dialogue" | "objective" | "delivery"
+        )
+    }
+}
+
 #[derive(Debug)]
 struct Composer {
     chars: Vec<char>,
@@ -227,8 +253,7 @@ struct UiState {
     model: String,
     entries: Vec<TranscriptEntry>,
     composer: Composer,
-    live_text: String,
-    live_tools: BTreeMap<usize, LiveToolCall>,
+    live_attempts: BTreeMap<String, LiveAttempt>,
     status: String,
     context_status: String,
     objectives: Vec<ObjectiveRecord>,
@@ -265,8 +290,7 @@ impl UiState {
             model: runtime.config().llm.model.clone(),
             entries: Vec::new(),
             composer: Composer::new(),
-            live_text: String::new(),
-            live_tools: BTreeMap::new(),
+            live_attempts: BTreeMap::new(),
             status: "ready".to_string(),
             context_status: "Context loading".to_string(),
             objectives: Vec::new(),
@@ -334,8 +358,6 @@ impl UiState {
         self.push(EntryKind::User, prompt.to_string());
         self.busy = true;
         self.status = "queued".to_string();
-        self.live_text.clear();
-        self.live_tools.clear();
     }
 
     fn update_context(&mut self, view: &ContextView) {
@@ -360,12 +382,29 @@ impl UiState {
         self.context_view = Some(view.clone());
     }
 
-    fn finish_live_progress(&mut self) {
-        if !self.live_text.trim().is_empty() {
-            let text = std::mem::take(&mut self.live_text);
-            self.push(EntryKind::Progress, text);
-        }
-        self.live_tools.clear();
+    fn clear_live_attempt(&mut self, causal_id: &str) -> bool {
+        let previous_len = self.live_attempts.len();
+        self.live_attempts.retain(|attempt_id, attempt| {
+            attempt_id != causal_id && attempt.work_item_id != causal_id
+        });
+        previous_len != self.live_attempts.len()
+    }
+
+    fn refresh_busy_from_live_attempts(&mut self) {
+        self.busy = !self.live_attempts.is_empty();
+    }
+
+    fn clear_causal_live_attempt(&mut self, event: &RuntimeEvent) -> bool {
+        event_causal_id(&event.payload).is_some_and(|causal_id| self.clear_live_attempt(causal_id))
+    }
+
+    fn clear_exact_live_attempt(&mut self, event: &RuntimeEvent) -> bool {
+        event
+            .payload
+            .get("attempt_id")
+            .and_then(Value::as_str)
+            .filter(|attempt_id| !attempt_id.is_empty())
+            .is_some_and(|attempt_id| self.live_attempts.remove(attempt_id).is_some())
     }
 
     fn ingest_history(&mut self, event: &RuntimeEvent) {
@@ -382,13 +421,17 @@ impl UiState {
             "chat/reply" | "chat/outbound_message" => self.push(EntryKind::Assistant, text),
             "chat/progress" => self.push(EntryKind::Progress, text),
             "runtime/tool_calls_selected" => {
-                if let Some(activity) = format_tool_activity(&event.payload) {
-                    self.push_tool(activity.compact, activity.detail);
+                if event_thread_kind(&event.payload) != "work" {
+                    if let Some(activity) = format_tool_activity(&event.payload) {
+                        self.push_tool(activity.compact, activity.detail);
+                    }
                 }
             }
             "chat/tool_output" => {
-                if let Some(activity) = format_tool_result(&event.payload) {
-                    self.push_tool(activity.compact, activity.detail);
+                if event_thread_kind(&event.payload) != "work" {
+                    if let Some(activity) = format_tool_result(&event.payload) {
+                        self.push_tool(activity.compact, activity.detail);
+                    }
                 }
             }
             _ => {}
@@ -401,28 +444,55 @@ impl UiState {
         }
         match event.topic.as_str() {
             "runtime/model_stream" => {
+                let Some(attempt_id) = event
+                    .payload
+                    .get("attempt_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return;
+                };
+                let work_item_id = event
+                    .payload
+                    .get("work_item_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or(attempt_id);
+                let thread_kind = event
+                    .payload
+                    .get("thread_kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("dialogue");
                 if let Some(value) = event.payload.get("stream") {
                     if let Ok(stream_event) =
                         serde_json::from_value::<ModelStreamEvent>(value.clone())
                     {
-                        self.on_model_stream(stream_event);
+                        self.on_model_stream(attempt_id, work_item_id, thread_kind, stream_event);
                     }
                 }
             }
             "runtime/tool_calls_selected" => {
-                self.finish_live_progress();
-                if let Some(activity) = format_tool_activity(&event.payload) {
-                    self.push_tool(activity.compact, activity.detail);
+                self.clear_causal_live_attempt(&event);
+                if event_thread_kind(&event.payload) != "work" {
+                    if let Some(activity) = format_tool_activity(&event.payload) {
+                        self.push_tool(activity.compact, activity.detail);
+                    }
                 }
+                self.busy = true;
                 self.status = "running tools".to_string();
             }
             "chat/tool_output" => {
-                if let Some(activity) = format_tool_result(&event.payload) {
-                    self.push_tool(activity.compact, activity.detail);
+                if event_thread_kind(&event.payload) != "work" {
+                    if let Some(activity) = format_tool_result(&event.payload) {
+                        self.push_tool(activity.compact, activity.detail);
+                    }
                 }
                 self.status = "processing results".to_string();
             }
             "chat/progress" => {
+                // The durable progress fact commits the text just streamed by
+                // this exact model Attempt. Do not clear by Work Item here: a
+                // later protocol-retry Attempt may already share that route.
+                self.clear_exact_live_attempt(&event);
                 let text = event
                     .payload
                     .get("text")
@@ -430,17 +500,41 @@ impl UiState {
                     .unwrap_or_default();
                 self.push(EntryKind::Progress, text);
             }
+            "runtime/response_protocol_error" => {
+                self.clear_exact_live_attempt(&event);
+                self.refresh_busy_from_live_attempts();
+                self.status = "correcting model response".to_string();
+            }
+            "runtime/response_protocol_fused" => {
+                self.clear_exact_live_attempt(&event);
+                self.refresh_busy_from_live_attempts();
+                self.status = if self.busy {
+                    "response protocol error · other work continues"
+                } else {
+                    "response protocol error"
+                }
+                .to_string();
+            }
+            "chat/assistant_call"
+                if event
+                    .payload
+                    .get("terminal_outcome")
+                    .and_then(Value::as_bool)
+                    != Some(true) =>
+            {
+                self.clear_exact_live_attempt(&event);
+                self.refresh_busy_from_live_attempts();
+            }
             "chat/reply" => {
                 let text = event
                     .payload
                     .get("text")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                self.live_text.clear();
-                self.live_tools.clear();
+                self.clear_causal_live_attempt(&event);
                 self.push(EntryKind::Assistant, text);
-                self.busy = false;
-                self.status = "ready".to_string();
+                self.refresh_busy_from_live_attempts();
+                self.status = if self.busy { "running" } else { "ready" }.to_string();
             }
             "chat/outbound_message" => {
                 let text = event
@@ -451,20 +545,62 @@ impl UiState {
                 self.push(EntryKind::Assistant, text);
             }
             "chat/no_reply" => {
-                self.live_text.clear();
-                self.live_tools.clear();
+                self.clear_causal_live_attempt(&event);
                 let background = event
                     .payload
                     .get("active_background_tasks")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
                 if background > 0 {
-                    self.busy = false;
-                    self.status = format!("ready · {background} background task(s)");
+                    self.refresh_busy_from_live_attempts();
+                    self.status = if self.busy {
+                        format!("running · {background} background task(s)")
+                    } else {
+                        format!("ready · {background} background task(s)")
+                    };
                 } else {
-                    self.busy = false;
-                    self.status = "ready · no reply".to_string();
+                    self.refresh_busy_from_live_attempts();
+                    self.status = if self.busy {
+                        "running".to_string()
+                    } else {
+                        "ready · no reply".to_string()
+                    };
                 }
+            }
+            "chat/cancelled" => {
+                if !self.clear_causal_live_attempt(&event)
+                    && event_causal_id(&event.payload).is_none()
+                {
+                    // The public Session cancellation endpoint deliberately
+                    // cancels the whole Session and therefore has no single
+                    // causal Work Item. In that one case every local draft is
+                    // stale; routed cancellation still removes only its own
+                    // Attempt.
+                    self.live_attempts.clear();
+                }
+                self.refresh_busy_from_live_attempts();
+                self.status = if self.busy { "running" } else { "cancelled" }.to_string();
+            }
+            "chat/runtime_error" => {
+                self.clear_causal_live_attempt(&event);
+                let message = event
+                    .payload
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Runtime error");
+                self.push(EntryKind::Error, message);
+                self.refresh_busy_from_live_attempts();
+                self.status = if self.busy {
+                    "runtime error · other work continues"
+                } else {
+                    "runtime error"
+                }
+                .to_string();
+            }
+            "runtime/thread_result" => {
+                self.clear_causal_live_attempt(&event);
+                self.refresh_busy_from_live_attempts();
+                self.status = if self.busy { "running" } else { "ready" }.to_string();
             }
             "runtime/approval_requested" => {
                 let id = event
@@ -486,17 +622,40 @@ impl UiState {
         }
     }
 
-    fn on_model_stream(&mut self, event: ModelStreamEvent) {
+    fn on_model_stream(
+        &mut self,
+        attempt_id: &str,
+        work_item_id: &str,
+        thread_kind: &str,
+        event: ModelStreamEvent,
+    ) {
         match event {
             ModelStreamEvent::Started => {
                 self.busy = true;
-                self.live_text.clear();
-                self.live_tools.clear();
-                self.status = "thinking".to_string();
+                self.live_attempts.insert(
+                    attempt_id.to_string(),
+                    LiveAttempt::new(work_item_id.to_string(), thread_kind.to_string()),
+                );
+                self.status = if thread_kind == "work" {
+                    "work evaluating"
+                } else {
+                    "thinking"
+                }
+                .to_string();
             }
-            ModelStreamEvent::TextDelta { text } => self.live_text.push_str(&text),
+            ModelStreamEvent::TextDelta { text } => {
+                if let Some(attempt) = self.live_attempts.get_mut(attempt_id) {
+                    attempt.text.push_str(&text);
+                }
+            }
+            // The TUI currently renders only public answer text. Provider
+            // reasoning summaries remain available on runtime/model_stream
+            // for clients that expose an explicit opt-in presentation.
+            ModelStreamEvent::ReasoningSummaryDelta { .. } => {}
             ModelStreamEvent::ToolCallStarted { index, name, .. } => {
-                self.live_tools.entry(index).or_default().name = name.clone();
+                if let Some(attempt) = self.live_attempts.get_mut(attempt_id) {
+                    attempt.tools.entry(index).or_default().name = name.clone();
+                }
                 self.status = if name == "no_reply" {
                     "finishing silently".to_string()
                 } else {
@@ -504,12 +663,20 @@ impl UiState {
                 };
             }
             ModelStreamEvent::ToolArgumentsDelta { index, delta } => {
-                let tool = self.live_tools.entry(index).or_default();
-                tool.arguments.push_str(&delta);
+                if let Some(attempt) = self.live_attempts.get_mut(attempt_id) {
+                    attempt
+                        .tools
+                        .entry(index)
+                        .or_default()
+                        .arguments
+                        .push_str(&delta);
+                }
             }
             ModelStreamEvent::ToolCallCompleted { index } => {
-                if let Some(tool) = self.live_tools.get_mut(&index) {
-                    tool.completed = true;
+                if let Some(attempt) = self.live_attempts.get_mut(attempt_id) {
+                    if let Some(tool) = attempt.tools.get_mut(&index) {
+                        tool.completed = true;
+                    }
                 }
             }
             ModelStreamEvent::Usage { .. } => {}
@@ -517,8 +684,15 @@ impl UiState {
                 self.status = "processing response".to_string();
             }
             ModelStreamEvent::Failed { message } => {
+                self.live_attempts.remove(attempt_id);
                 self.push(EntryKind::Error, message);
-                self.status = "model error".to_string();
+                self.refresh_busy_from_live_attempts();
+                self.status = if self.busy {
+                    "model error · other work continues"
+                } else {
+                    "model error"
+                }
+                .to_string();
             }
         }
         self.follow_tail = true;
@@ -802,8 +976,9 @@ impl UiState {
                 )
             })
             .or_else(|| {
-                self.live_tools
+                self.live_attempts
                     .values()
+                    .flat_map(|attempt| attempt.tools.values())
                     .next()
                     .map(|tool| tool_title(&tool.name).to_string())
             })
@@ -1980,59 +2155,65 @@ impl UiState {
             }
             lines.push(Line::from(""));
         }
-        if !self.live_text.trim().is_empty() {
-            for (index, body_line) in self.live_text.lines().enumerate() {
+        for attempt in self
+            .live_attempts
+            .values()
+            .filter(|attempt| attempt.is_conversation())
+        {
+            if !attempt.text.trim().is_empty() {
+                for (index, body_line) in attempt.text.lines().enumerate() {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            if index == 0 {
+                                format!("{:<ROLE_WIDTH$}", "Morphz")
+                            } else {
+                                " ".repeat(ROLE_WIDTH)
+                            },
+                            Style::default()
+                                .fg(self.theme.brand)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            body_line.to_string(),
+                            Style::default().fg(self.theme.text_primary),
+                        ),
+                    ]));
+                }
+                lines.push(Line::from(""));
+            }
+            for tool in attempt.tools.values() {
+                let activity = summarize_tool_call(&tool.name, &tool.arguments, None);
+                let marker = if tool.completed { "✓" } else { "◇" };
                 lines.push(Line::from(vec![
+                    Span::styled("  │  ", Style::default().fg(self.theme.focus)),
                     Span::styled(
-                        if index == 0 {
-                            format!("{:<ROLE_WIDTH$}", "Morphz")
-                        } else {
-                            " ".repeat(ROLE_WIDTH)
-                        },
+                        format!("{marker} {}", activity.title),
                         Style::default()
-                            .fg(self.theme.brand)
+                            .fg(if tool.completed {
+                                self.theme.success
+                            } else {
+                                self.theme.tool
+                            })
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        body_line.to_string(),
-                        Style::default().fg(self.theme.text_primary),
-                    ),
                 ]));
+                if !activity.target.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled("  │  ", Style::default().fg(self.theme.focus)),
+                        Span::styled(activity.target, Style::default().fg(self.theme.text_muted)),
+                    ]));
+                }
+                if self.show_tool_details && !tool.arguments.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled("  │  ", Style::default().fg(self.theme.focus)),
+                        Span::styled(
+                            truncate(&pretty_json(&tool.arguments), 800),
+                            Style::default().fg(self.theme.text_muted),
+                        ),
+                    ]));
+                }
+                lines.push(Line::from(""));
             }
-            lines.push(Line::from(""));
-        }
-        for tool in self.live_tools.values() {
-            let activity = summarize_tool_call(&tool.name, &tool.arguments, None);
-            let marker = if tool.completed { "✓" } else { "◇" };
-            lines.push(Line::from(vec![
-                Span::styled("  │  ", Style::default().fg(self.theme.focus)),
-                Span::styled(
-                    format!("{marker} {}", activity.title),
-                    Style::default()
-                        .fg(if tool.completed {
-                            self.theme.success
-                        } else {
-                            self.theme.tool
-                        })
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            if !activity.target.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::styled("  │  ", Style::default().fg(self.theme.focus)),
-                    Span::styled(activity.target, Style::default().fg(self.theme.text_muted)),
-                ]));
-            }
-            if self.show_tool_details && !tool.arguments.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::styled("  │  ", Style::default().fg(self.theme.focus)),
-                    Span::styled(
-                        truncate(&pretty_json(&tool.arguments), 800),
-                        Style::default().fg(self.theme.text_muted),
-                    ),
-                ]));
-            }
-            lines.push(Line::from(""));
         }
         lines
     }
@@ -2478,7 +2659,7 @@ pub async fn run(
                                             risk_tags: vec!["human-denied".to_string()],
                                         }
                                     };
-                                    match runtime.decide_approval(&approval.id, decision) {
+                                    match runtime.decide_approval(&approval.id, decision).await {
                                         Ok(()) => state.push(EntryKind::System, if allow { "权限请求已批准一次。" } else { "权限请求已拒绝。" }),
                                         Err(error) => state.push(EntryKind::Error, error),
                                     }
@@ -2591,8 +2772,7 @@ async fn handle_command(
         }
         "/clear" => {
             state.entries.clear();
-            state.live_text.clear();
-            state.live_tools.clear();
+            state.live_attempts.clear();
             Ok(true)
         }
         "/cancel" => {
@@ -3118,6 +3298,21 @@ fn format_causal_route(payload: &serde_json::Map<String, Value>) -> String {
     }
 }
 
+fn event_causal_id(payload: &serde_json::Map<String, Value>) -> Option<&str> {
+    payload
+        .get("work_item_id")
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("attempt_id").and_then(Value::as_str))
+        .filter(|value| !value.is_empty())
+}
+
+fn event_thread_kind(payload: &serde_json::Map<String, Value>) -> &str {
+    payload
+        .get("thread_kind")
+        .and_then(Value::as_str)
+        .unwrap_or("dialogue")
+}
+
 fn summarize_tool_call(name: &str, arguments: &str, _call_id: Option<&str>) -> ToolSummary {
     let value = serde_json::from_str::<Value>(arguments).unwrap_or(Value::Null);
     let string = |key: &str| {
@@ -3290,8 +3485,7 @@ mod tests {
             model: "m".to_string(),
             entries: Vec::new(),
             composer,
-            live_text: String::new(),
-            live_tools: BTreeMap::new(),
+            live_attempts: BTreeMap::new(),
             status: "ready".to_string(),
             context_status: "normal".to_string(),
             objectives: Vec::new(),
@@ -3311,6 +3505,268 @@ mod tests {
             theme_kind: TuiTheme::Mono,
             theme: Theme::from_kind(TuiTheme::Mono),
         }
+    }
+
+    fn stream_runtime_event(
+        attempt_id: &str,
+        work_item_id: &str,
+        thread_kind: &str,
+        stream: ModelStreamEvent,
+    ) -> RuntimeEvent {
+        RuntimeEvent::new(
+            format!("stream-{attempt_id}"),
+            "Model-Provider".to_string(),
+            "runtime_ephemeral".to_string(),
+            "runtime/model_stream".to_string(),
+            serde_json::json!({
+                "session_id": "s",
+                "attempt_id": attempt_id,
+                "work_item_id": work_item_id,
+                "thread_kind": thread_kind,
+                "stream": stream,
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+    }
+
+    fn terminal_runtime_event(
+        topic: &str,
+        attempt_id: &str,
+        work_item_id: &str,
+        text: &str,
+    ) -> RuntimeEvent {
+        RuntimeEvent::new(
+            format!("terminal-{attempt_id}"),
+            "Runtime".to_string(),
+            "agent_call".to_string(),
+            topic.to_string(),
+            serde_json::json!({
+                "session_id": "s",
+                "attempt_id": attempt_id,
+                "work_item_id": work_item_id,
+                "thread_kind": "dialogue",
+                "text": text,
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+    }
+
+    fn transcript_text(state: &UiState) -> String {
+        state
+            .transcript_lines()
+            .into_iter()
+            .flat_map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn concurrent_stream_attempts_remain_isolated_and_close_by_causal_work_item() {
+        let mut state = test_state(Composer::new());
+        for (attempt_id, work_item_id, thread_kind, text) in [
+            ("attempt-a", "work-a", "dialogue", "alpha draft"),
+            ("attempt-b", "work-b", "objective", "beta draft"),
+        ] {
+            state.on_runtime_event(stream_runtime_event(
+                attempt_id,
+                work_item_id,
+                thread_kind,
+                ModelStreamEvent::Started,
+            ));
+            state.on_runtime_event(stream_runtime_event(
+                attempt_id,
+                work_item_id,
+                thread_kind,
+                ModelStreamEvent::TextDelta {
+                    text: text.to_string(),
+                },
+            ));
+        }
+
+        assert_eq!(state.live_attempts["attempt-a"].text, "alpha draft");
+        assert_eq!(state.live_attempts["attempt-b"].text, "beta draft");
+        assert!(state.busy);
+        let rendered = transcript_text(&state);
+        assert!(rendered.contains("alpha draft"));
+        assert!(rendered.contains("beta draft"));
+
+        // A retry Attempt can have a different id from the durable Work Item;
+        // the terminal fact must close only the Work Item's own stream.
+        state.on_runtime_event(terminal_runtime_event(
+            "chat/reply",
+            "terminal-attempt-a",
+            "work-a",
+            "alpha final",
+        ));
+        assert!(!state.live_attempts.contains_key("attempt-a"));
+        assert!(state.live_attempts.contains_key("attempt-b"));
+        assert!(state.busy);
+        assert!(transcript_text(&state).contains("beta draft"));
+
+        state.on_runtime_event(terminal_runtime_event(
+            "chat/no_reply",
+            "attempt-b",
+            "work-b",
+            "",
+        ));
+        assert!(state.live_attempts.is_empty());
+        assert!(!state.busy);
+    }
+
+    #[test]
+    fn work_stream_is_tracked_but_never_rendered_as_conversation_draft() {
+        let mut state = test_state(Composer::new());
+        state.on_runtime_event(stream_runtime_event(
+            "attempt-work",
+            "work-hidden",
+            "work",
+            ModelStreamEvent::Started,
+        ));
+        state.on_runtime_event(stream_runtime_event(
+            "attempt-work",
+            "work-hidden",
+            "work",
+            ModelStreamEvent::TextDelta {
+                text: "internal chain must stay out of chat".to_string(),
+            },
+        ));
+        state.on_runtime_event(stream_runtime_event(
+            "attempt-work",
+            "work-hidden",
+            "work",
+            ModelStreamEvent::ToolCallStarted {
+                index: 0,
+                id: "call-1".to_string(),
+                name: "read".to_string(),
+            },
+        ));
+
+        assert!(state.live_attempts.contains_key("attempt-work"));
+        let rendered = transcript_text(&state);
+        assert!(!rendered.contains("internal chain must stay out of chat"));
+        assert!(!rendered.contains("Read file"));
+
+        state.on_runtime_event(terminal_runtime_event(
+            "runtime/thread_result",
+            "attempt-work",
+            "work-hidden",
+            "internal result",
+        ));
+        assert!(state.live_attempts.is_empty());
+        assert!(!state.busy);
+    }
+
+    #[test]
+    fn failed_stream_discards_partial_draft_and_closes_single_stream_busy_state() {
+        let mut state = test_state(Composer::new());
+        state.on_runtime_event(stream_runtime_event(
+            "attempt-failed",
+            "work-failed",
+            "dialogue",
+            ModelStreamEvent::Started,
+        ));
+        state.on_runtime_event(stream_runtime_event(
+            "attempt-failed",
+            "work-failed",
+            "dialogue",
+            ModelStreamEvent::TextDelta {
+                text: "half of a sentence".to_string(),
+            },
+        ));
+        state.on_runtime_event(stream_runtime_event(
+            "attempt-failed",
+            "work-failed",
+            "dialogue",
+            ModelStreamEvent::Failed {
+                message: "provider disconnected".to_string(),
+            },
+        ));
+
+        assert!(state.live_attempts.is_empty());
+        assert!(!state.busy);
+        assert_eq!(state.status, "model error");
+        let rendered = transcript_text(&state);
+        assert!(!rendered.contains("half of a sentence"));
+        assert!(rendered.contains("provider disconnected"));
+    }
+
+    #[test]
+    fn durable_progress_replaces_its_exact_draft_without_duplicate_text() {
+        let mut state = test_state(Composer::new());
+        state.on_runtime_event(stream_runtime_event(
+            "attempt-progress",
+            "work-progress",
+            "dialogue",
+            ModelStreamEvent::Started,
+        ));
+        state.on_runtime_event(stream_runtime_event(
+            "attempt-progress",
+            "work-progress",
+            "dialogue",
+            ModelStreamEvent::TextDelta {
+                text: "checkpoint reached".to_string(),
+            },
+        ));
+        state.on_runtime_event(terminal_runtime_event(
+            "chat/progress",
+            "attempt-progress",
+            "work-progress",
+            "checkpoint reached",
+        ));
+
+        assert!(state.live_attempts.is_empty());
+        assert_eq!(
+            transcript_text(&state)
+                .matches("checkpoint reached")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn protocol_correction_clears_old_attempt_without_erasing_new_retry() {
+        let mut state = test_state(Composer::new());
+        for attempt_id in ["attempt-base", "attempt-base_response_retry_1"] {
+            state.on_runtime_event(stream_runtime_event(
+                attempt_id,
+                "shared-work",
+                "dialogue",
+                ModelStreamEvent::Started,
+            ));
+            state.on_runtime_event(stream_runtime_event(
+                attempt_id,
+                "shared-work",
+                "dialogue",
+                ModelStreamEvent::TextDelta {
+                    text: format!("draft from {attempt_id}"),
+                },
+            ));
+        }
+
+        state.on_runtime_event(terminal_runtime_event(
+            "runtime/response_protocol_error",
+            "attempt-base",
+            "shared-work",
+            "",
+        ));
+
+        assert!(!state.live_attempts.contains_key("attempt-base"));
+        assert!(state
+            .live_attempts
+            .contains_key("attempt-base_response_retry_1"));
+        assert!(state.busy);
+        let rendered = transcript_text(&state);
+        assert!(!rendered.contains("draft from attempt-base\n"));
+        assert!(rendered.contains("draft from attempt-base_response_retry_1"));
     }
 
     fn test_objective() -> ObjectiveRecord {

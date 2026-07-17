@@ -1,16 +1,22 @@
+use crate::approval_authority::{
+    approval_decision_event, stable_approval_identity, stable_grant_id,
+};
 use crate::config::MemoryConfig;
 use crate::event::Event;
 use crate::memory::{
-    ActivationOutcomeCommit, AgentBootstrapRecord, AgentRecord, CognitiveContextRecord,
-    DelegationRecord, DelegationStatus, DeliveryStatus, EventStore, ExecutionJobFilter,
-    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim, NewAgent, NewCognitiveContext,
-    NewDelegation, NewExecutionJob, NewObjective, NewRuntimeTimer, NewScheduledIntent, NewSession,
-    NewThreadActivation, NewThreadSignal, NewWorkThread, ObjectiveMutation, ObjectiveRecord,
-    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind,
-    RuntimeTimerRecord, RuntimeTimerStatus, ScheduledIntentRecord, ScheduledIntentStatus,
-    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionRecord, SessionStatus,
-    SessionStore, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
+    ActivationOutcomeCommit, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit,
+    ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus,
+    ApprovalStore, CognitiveContextRecord, DelegationRecord, DelegationStatus, DeliveryFlushCommit,
+    DeliveryStatus, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
+    ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
+    ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim, NewAgent,
+    NewApprovalRequest, NewCognitiveContext, NewDelegation, NewExecutionJob, NewObjective,
+    NewRuntimeTimer, NewScheduledIntent, NewSession, NewThreadActivation, NewThreadSignal,
+    NewWorkThread, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus,
+    ScheduledIntentMutation, ScheduledIntentRecord, ScheduledIntentStatus, SessionAttentionState,
+    SessionAttentionUpdate, SessionMountKind, SessionRecord, SessionStatus, SessionStore,
+    SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
     ThreadActivationRecord, ThreadActivationStatus, ThreadLifecycle, ThreadSignalRecord,
     ThreadSignalStatus, TimerStore, WorkThreadKind, WorkThreadMutation, WorkThreadRecord,
 };
@@ -125,7 +131,7 @@ impl SqliteStore {
         CREATE TABLE IF NOT EXISTS runtime_timers (
             id TEXT PRIMARY KEY,
             generation INTEGER NOT NULL CHECK(generation >= 0),
-            kind TEXT NOT NULL CHECK(kind IN ('schedule', 'objective_wait', 'objective_lease', 'background_wake', 'activation_lease')),
+            kind TEXT NOT NULL CHECK(kind IN ('schedule', 'objective_wait', 'objective_lease', 'background_wake', 'activation_lease', 'delivery_flush')),
             owner_id TEXT NOT NULL,
             due_at TEXT NOT NULL,
             status TEXT NOT NULL CHECK(status IN ('pending', 'claimed', 'fired', 'cancelled')),
@@ -378,6 +384,54 @@ impl SqliteStore {
             SELECT RAISE(ABORT, 'execution job terminal status is irreversible');
         END;
 
+        CREATE TABLE IF NOT EXISTS approval_requests (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            job_id TEXT NOT NULL,
+            request_digest TEXT NOT NULL,
+            policy_digest TEXT NOT NULL,
+            action_json TEXT NOT NULL,
+            requested_json TEXT NOT NULL,
+            justification TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'pending_auto', 'pending_human', 'allowed', 'denied', 'cancelled'
+            )),
+            rationale TEXT,
+            risk_tags_json TEXT NOT NULL DEFAULT '[]',
+            grant_id TEXT,
+            grant_consumed_at TEXT,
+            consumed_by_claim_token TEXT,
+            cancel_reason TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            decided_at TEXT,
+            cancelled_at TEXT,
+            UNIQUE(job_id, request_digest, policy_digest),
+            FOREIGN KEY(job_id) REFERENCES execution_jobs(id) ON DELETE CASCADE,
+            CHECK(
+                (status = 'allowed' AND grant_id IS NOT NULL)
+                OR (status <> 'allowed' AND grant_id IS NULL)
+            ),
+            CHECK(
+                (grant_consumed_at IS NULL AND consumed_by_claim_token IS NULL)
+                OR (grant_consumed_at IS NOT NULL AND consumed_by_claim_token IS NOT NULL)
+            )
+        );
+        CREATE INDEX IF NOT EXISTS idx_approval_requests_status
+            ON approval_requests(status, created_at, id);
+        CREATE INDEX IF NOT EXISTS idx_approval_requests_job
+            ON approval_requests(job_id, created_at, id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_approval_requests_one_active_per_job
+            ON approval_requests(job_id)
+            WHERE status IN ('pending_auto', 'pending_human', 'allowed');
+        CREATE TRIGGER IF NOT EXISTS approval_terminal_status_is_irreversible
+        BEFORE UPDATE OF status ON approval_requests
+        WHEN OLD.status IN ('denied', 'cancelled') AND NEW.status <> OLD.status
+        BEGIN
+            SELECT RAISE(ABORT, 'approval terminal status is irreversible');
+        END;
+
         CREATE TABLE IF NOT EXISTS thread_signals (
             id TEXT PRIMARY KEY,
             thread_id TEXT NOT NULL,
@@ -413,7 +467,7 @@ impl SqliteStore {
             thread_id TEXT NOT NULL,
             source_turn_id TEXT NOT NULL,
             intent TEXT NOT NULL,
-            status TEXT NOT NULL CHECK(status IN ('queued', 'dispatched', 'completed', 'cancelled')),
+            status TEXT NOT NULL CHECK(status IN ('queued', 'paused', 'dispatched', 'completed', 'cancelled')),
             not_before TEXT,
             interval_seconds INTEGER CHECK(interval_seconds IS NULL OR interval_seconds > 0),
             dependency_thread_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -423,6 +477,12 @@ impl SqliteStore {
         );
         CREATE INDEX IF NOT EXISTS idx_scheduled_intents_due
             ON scheduled_intents(status, not_before, created_at);
+        CREATE TRIGGER IF NOT EXISTS scheduled_intents_terminal_status_is_irreversible
+        BEFORE UPDATE OF status ON scheduled_intents
+        WHEN OLD.status IN ('completed', 'cancelled') AND NEW.status <> OLD.status
+        BEGIN
+            SELECT RAISE(ABORT, 'scheduled intent terminal status is irreversible');
+        END;
 
         CREATE TABLE IF NOT EXISTS scheduled_intent_dependencies (
             scheduled_intent_id TEXT NOT NULL,
@@ -449,6 +509,8 @@ impl SqliteStore {
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
+        migrate_runtime_timer_delivery_flush_kind(&pool).await?;
+        migrate_scheduled_intent_paused_status(&pool).await?;
         // Backfill databases created before the reverse dependency index was
         // introduced. JSON remains on the owner row as the public record; the
         // index only makes terminal dependency wakes deterministic and cheap.
@@ -530,6 +592,184 @@ impl SqliteStore {
 
         Ok(Self { pool })
     }
+}
+
+/// SQLite cannot widen a CHECK constraint in place. Preserve every Timer row
+/// while adding the Runtime-owned Delivery Flush kind used by completion
+/// coalescing. Runtime timers have no inbound foreign keys, so rebuilding only
+/// this table is sufficient and remains transactional.
+async fn migrate_runtime_timer_delivery_flush_kind(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let table_sql = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'runtime_timers'",
+    )
+    .fetch_one(pool)
+    .await?
+    .unwrap_or_default();
+    if table_sql.contains("'delivery_flush'") {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    sqlx::query("ALTER TABLE runtime_timers RENAME TO runtime_timers_legacy")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        r#"CREATE TABLE runtime_timers (
+            id TEXT PRIMARY KEY,
+            generation INTEGER NOT NULL CHECK(generation >= 0),
+            kind TEXT NOT NULL CHECK(kind IN ('schedule', 'objective_wait', 'objective_lease', 'background_wake', 'activation_lease', 'delivery_flush')),
+            owner_id TEXT NOT NULL,
+            due_at TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'claimed', 'fired', 'cancelled')),
+            payload_json TEXT NOT NULL,
+            claimed_by TEXT,
+            claim_expires_at TEXT,
+            last_error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            fired_at TEXT
+        )"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO runtime_timers
+           (id, generation, kind, owner_id, due_at, status, payload_json,
+            claimed_by, claim_expires_at, last_error, created_at, updated_at, fired_at)
+           SELECT id, generation, kind, owner_id, due_at, status, payload_json,
+                  claimed_by, claim_expires_at, last_error, created_at, updated_at, fired_at
+           FROM runtime_timers_legacy"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DROP TABLE runtime_timers_legacy")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "CREATE INDEX idx_runtime_timers_due ON runtime_timers(status, due_at, claim_expires_at, id)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX idx_runtime_timers_owner ON runtime_timers(kind, owner_id, generation)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// SQLite cannot widen a CHECK constraint in place. Rebuild only the Schedule
+/// owner table and its reverse dependency index so pre-Phase-4 databases can
+/// persist `paused` without dropping either the Schedule rows or dependency
+/// routing. The whole migration is transactional.
+async fn migrate_scheduled_intent_paused_status(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let table_sql = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_intents'",
+    )
+    .fetch_one(pool)
+    .await?
+    .unwrap_or_default();
+    if table_sql.contains("'paused'") {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    sqlx::query("DROP TABLE IF EXISTS scheduled_intent_dependencies_migration")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        r#"CREATE TEMP TABLE scheduled_intent_dependencies_migration AS
+           SELECT scheduled_intent_id, dependency_thread_id
+           FROM scheduled_intent_dependencies"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DROP TABLE scheduled_intent_dependencies")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("ALTER TABLE scheduled_intents RENAME TO scheduled_intents_legacy")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        r#"CREATE TABLE scheduled_intents (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            thread_id TEXT NOT NULL,
+            source_turn_id TEXT NOT NULL,
+            intent TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('queued', 'paused', 'dispatched', 'completed', 'cancelled')),
+            not_before TEXT,
+            interval_seconds INTEGER CHECK(interval_seconds IS NULL OR interval_seconds > 0),
+            dependency_thread_ids_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(thread_id) REFERENCES work_threads(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO scheduled_intents
+           (id, revision, thread_id, source_turn_id, intent, status, not_before,
+            interval_seconds, dependency_thread_ids_json, created_at, updated_at)
+           SELECT id, revision, thread_id, source_turn_id, intent, status, not_before,
+                  interval_seconds, dependency_thread_ids_json, created_at, updated_at
+           FROM scheduled_intents_legacy"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DROP TABLE scheduled_intents_legacy")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query(
+        "CREATE INDEX idx_scheduled_intents_due ON scheduled_intents(status, not_before, created_at)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"CREATE TRIGGER scheduled_intents_terminal_status_is_irreversible
+           BEFORE UPDATE OF status ON scheduled_intents
+           WHEN OLD.status IN ('completed', 'cancelled') AND NEW.status <> OLD.status
+           BEGIN
+               SELECT RAISE(ABORT, 'scheduled intent terminal status is irreversible');
+           END"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"CREATE TABLE scheduled_intent_dependencies (
+            scheduled_intent_id TEXT NOT NULL,
+            dependency_thread_id TEXT NOT NULL,
+            PRIMARY KEY(scheduled_intent_id, dependency_thread_id),
+            FOREIGN KEY(scheduled_intent_id) REFERENCES scheduled_intents(id) ON DELETE CASCADE,
+            FOREIGN KEY(dependency_thread_id) REFERENCES work_threads(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX idx_scheduled_intent_dependencies_thread ON scheduled_intent_dependencies(dependency_thread_id, scheduled_intent_id)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        r#"INSERT INTO scheduled_intent_dependencies
+           (scheduled_intent_id, dependency_thread_id)
+           SELECT scheduled_intent_id, dependency_thread_id
+           FROM scheduled_intent_dependencies_migration"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("DROP TABLE scheduled_intent_dependencies_migration")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 async fn backfill_objective_status_reasons(
@@ -651,6 +891,7 @@ fn parse_scheduled_intent_status(
 ) -> Result<ScheduledIntentStatus, Box<dyn std::error::Error + Send + Sync>> {
     match value {
         "queued" => Ok(ScheduledIntentStatus::Queued),
+        "paused" => Ok(ScheduledIntentStatus::Paused),
         "dispatched" => Ok(ScheduledIntentStatus::Dispatched),
         "completed" => Ok(ScheduledIntentStatus::Completed),
         "cancelled" => Ok(ScheduledIntentStatus::Cancelled),
@@ -844,6 +1085,24 @@ fn scheduled_intent_from_row(
     })
 }
 
+async fn scheduled_intent_mutation_failure(
+    store: &SqliteStore,
+    id: &str,
+    expected_revision: u64,
+    reason: impl Into<String>,
+) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(match store.get_scheduled_intent(id).await? {
+        Some(current) if current.revision != expected_revision => {
+            ScheduledIntentMutation::Conflict { current }
+        }
+        Some(current) => ScheduledIntentMutation::Rejected {
+            current,
+            reason: reason.into(),
+        },
+        None => ScheduledIntentMutation::NotFound,
+    })
+}
+
 fn context_from_row(row: &sqlx::sqlite::SqliteRow) -> CognitiveContextRecord {
     CognitiveContextRecord {
         id: row.get("id"),
@@ -941,6 +1200,55 @@ fn parse_execution_retry_safety(
     }
 }
 
+fn parse_approval_status(
+    value: &str,
+) -> Result<ApprovalStatus, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "pending_auto" => Ok(ApprovalStatus::PendingAuto),
+        "pending_human" => Ok(ApprovalStatus::PendingHuman),
+        "allowed" => Ok(ApprovalStatus::Allowed),
+        "denied" => Ok(ApprovalStatus::Denied),
+        "cancelled" => Ok(ApprovalStatus::Cancelled),
+        other => Err(format!("未知 Approval status：'{other}'").into()),
+    }
+}
+
+fn approval_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<ApprovalRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ApprovalRecord {
+        id: row.get("id"),
+        revision: sqlite_u64(row, "revision")?,
+        job_id: row.get("job_id"),
+        request_digest: row.get("request_digest"),
+        policy_digest: row.get("policy_digest"),
+        action: serde_json::from_str(&row.get::<String, _>("action_json"))?,
+        requested: serde_json::from_str(&row.get::<String, _>("requested_json"))?,
+        justification: row.get("justification"),
+        status: parse_approval_status(&row.get::<String, _>("status"))?,
+        rationale: row.get("rationale"),
+        risk_tags: serde_json::from_str(&row.get::<String, _>("risk_tags_json"))?,
+        grant_id: row.get("grant_id"),
+        grant_consumed_at: row
+            .get::<Option<String>, _>("grant_consumed_at")
+            .as_deref()
+            .map(parse_time),
+        consumed_by_claim_token: row.get("consumed_by_claim_token"),
+        cancel_reason: row.get("cancel_reason"),
+        last_error: row.get("last_error"),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+        decided_at: row
+            .get::<Option<String>, _>("decided_at")
+            .as_deref()
+            .map(parse_time),
+        cancelled_at: row
+            .get::<Option<String>, _>("cancelled_at")
+            .as_deref()
+            .map(parse_time),
+    })
+}
+
 fn execution_job_from_row(
     row: &sqlx::sqlite::SqliteRow,
 ) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>> {
@@ -1006,6 +1314,7 @@ fn runtime_timer_from_row(
         "objective_lease" => RuntimeTimerKind::ObjectiveLease,
         "background_wake" => RuntimeTimerKind::BackgroundWake,
         "activation_lease" => RuntimeTimerKind::ActivationLease,
+        "delivery_flush" => RuntimeTimerKind::DeliveryFlush,
         value => return Err(format!("未知 Runtime Timer kind: {value}").into()),
     };
     let status = match row.get::<String, _>("status").as_str() {
@@ -1071,7 +1380,7 @@ async fn append_event_in_transaction(
 async fn append_event_idempotent_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     event: &Event,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let payload = serde_json::to_string(&event.payload)?;
     let timestamp = event
         .timestamp
@@ -1096,7 +1405,7 @@ async fn append_event_idempotent_in_transaction(
     .execute(&mut **tx)
     .await?;
     if inserted.rows_affected() == 1 {
-        return Ok(());
+        return Ok(true);
     }
     let existing = sqlx::query(
         "SELECT timestamp, actor, type, topic, context_id, session_id, payload FROM events WHERE id = ?",
@@ -1114,7 +1423,7 @@ async fn append_event_idempotent_in_transaction(
     if !same {
         return Err(format!("Event ID '{}' 已被不同内容占用", event.id).into());
     }
-    Ok(())
+    Ok(false)
 }
 
 async fn append_signal_outbox_in_transaction(
@@ -2080,6 +2389,104 @@ impl SessionStore for SqliteStore {
         rows.iter().map(thread_activation_from_row).collect()
     }
 
+    async fn list_queued_thread_activations_for_admission(
+        &self,
+        limit: usize,
+        dialogue_delivery_reserved_queue_slots: usize,
+        aging_promotion_interval_ms: u64,
+    ) -> Result<
+        Vec<(ThreadActivationRecord, crate::admission::AdmissionClass)>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit)
+            .map_err(|_| "Activation admission 查询上限超出 SQLite INTEGER 范围")?;
+        let reserved_queue_slots =
+            dialogue_delivery_reserved_queue_slots.min((limit as usize).saturating_sub(1));
+        let general_limit =
+            limit.saturating_sub(i64::try_from(reserved_queue_slots).unwrap_or(i64::MAX));
+        let aging_promotion_interval_ms = aging_promotion_interval_ms.max(1) as f64;
+        // Keep the DB read proportional to the configured in-memory window.
+        // The CASE expression mirrors the Runtime-owned fixed classifier; no
+        // model-provided priority enters this ordering.
+        let rows = sqlx::query(
+            r#"WITH classified AS (
+                 SELECT activations.*,
+                      CASE
+                        WHEN events.type = 'user_message' THEN 0
+                        WHEN activations.trigger_kind = 'chat/thread_completion_ready' THEN 1
+                        WHEN json_type(events.payload, '$.objective_id') IS NOT NULL
+                          OR json_type(events.payload, '$.objective_evaluation_id') IS NOT NULL
+                          OR events.topic LIKE 'objective/%' THEN 2
+                        WHEN json_extract(events.payload, '$.runtime_maintenance') = 1
+                          OR events.topic IN ('runtime/context_maintenance', 'chat/context_maintenance')
+                          THEN 4
+                        ELSE 3
+                      END AS admission_rank
+                 FROM thread_activations activations
+                 JOIN events ON events.id = activations.trigger_event_id
+                 WHERE activations.status = 'queued'
+               ), aged AS (
+                 SELECT classified.*,
+                        MAX(
+                          0,
+                          admission_rank - CAST(
+                            MAX(
+                              0.0,
+                              (julianday('now') - julianday(created_at)) * 86400000.0
+                            ) / ? AS INTEGER
+                          )
+                        ) AS effective_rank
+                 FROM classified
+               ), reserved_candidates AS (
+                 SELECT * FROM aged
+                 WHERE admission_rank IN (0, 1)
+                 ORDER BY effective_rank, created_at, id
+                 LIMIT ?
+               ), general_candidates AS (
+                 SELECT * FROM aged
+                 WHERE admission_rank NOT IN (0, 1)
+                 ORDER BY effective_rank, created_at, id
+                 LIMIT ?
+               ), candidates AS (
+                 SELECT * FROM reserved_candidates
+                 UNION ALL
+                 SELECT * FROM general_candidates
+               )
+               SELECT * FROM candidates
+               ORDER BY effective_rank, created_at, id
+               LIMIT ?"#,
+        )
+        .bind(aging_promotion_interval_ms)
+        // Reserved work may use any slot, so keep up to the total window. The
+        // general candidate set is the one capped to preserve reserved room.
+        .bind(limit)
+        .bind(general_limit)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let activation = thread_activation_from_row(row)?;
+                let class = match row.get::<i64, _>("admission_rank") {
+                    0 => crate::admission::AdmissionClass::InteractiveControl,
+                    1 => crate::admission::AdmissionClass::Delivery,
+                    2 => crate::admission::AdmissionClass::Objective,
+                    3 => crate::admission::AdmissionClass::ScheduledBackground,
+                    4 => crate::admission::AdmissionClass::Maintenance,
+                    rank => {
+                        return Err(
+                            format!("SQLite 返回未知 Activation admission rank {rank}").into()
+                        )
+                    }
+                };
+                Ok((activation, class))
+            })
+            .collect()
+    }
+
     async fn update_thread_activation(
         &self,
         id: &str,
@@ -2377,6 +2784,251 @@ impl SessionStore for SqliteStore {
         rows.iter().map(work_thread_from_row).collect()
     }
 
+    async fn list_session_delivery_threads(
+        &self,
+        session_id: &str,
+        include_deferred: bool,
+    ) -> Result<Vec<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = if include_deferred {
+            sqlx::query(
+                "SELECT * FROM work_threads WHERE session_id = ? AND delivery_status IN ('pending', 'deferred') ORDER BY updated_at, id",
+            )
+            .bind(session_id)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                "SELECT * FROM work_threads WHERE session_id = ? AND delivery_status = 'pending' ORDER BY updated_at, id",
+            )
+            .bind(session_id)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.iter().map(work_thread_from_row).collect()
+    }
+
+    async fn list_pending_delivery_sessions(
+        &self,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(sqlx::query_scalar::<_, String>(
+            r#"SELECT DISTINCT pending.session_id
+               FROM work_threads AS pending
+               WHERE pending.delivery_status = 'pending'
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM signal_outbox AS outbox
+                   JOIN events AS event ON event.id = outbox.event_id
+                   WHERE event.session_id = pending.session_id
+                     AND event.topic = 'chat/thread_completion_ready'
+                     AND outbox.status = 'pending'
+                 )
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM work_threads AS delivery
+                   WHERE delivery.session_id = pending.session_id
+                     AND delivery.kind = 'delivery'
+                     AND delivery.status NOT IN ('completed', 'failed', 'cancelled')
+                 )
+               ORDER BY pending.session_id"#,
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    async fn arm_delivery_flush_timer(
+        &self,
+        timer_id: &str,
+        session_id: &str,
+        merge_window_secs: u64,
+        max_wait_secs: u64,
+    ) -> Result<Option<RuntimeTimerRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if timer_id.trim().is_empty() || session_id.trim().is_empty() {
+            return Err("Delivery Flush timer_id/session_id 不能为空".into());
+        }
+        if merge_window_secs == 0 || max_wait_secs == 0 {
+            return Err("Delivery Flush merge_window/max_wait 必须大于 0".into());
+        }
+        let merge_window = chrono::Duration::seconds(
+            i64::try_from(merge_window_secs).map_err(|_| "Delivery Flush merge_window 超出范围")?,
+        );
+        let max_wait = chrono::Duration::seconds(
+            i64::try_from(max_wait_secs).map_err(|_| "Delivery Flush max_wait 超出范围")?,
+        );
+
+        // BEGIN IMMEDIATE serializes the aggregate read with the generation
+        // bump. Two results completing concurrently can therefore never let
+        // an older aggregate overwrite a newer due time.
+        let mut connection = self.pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *connection)
+            .await?;
+        let operation: Result<
+            Option<RuntimeTimerRecord>,
+            Box<dyn std::error::Error + Send + Sync>,
+        > = async {
+            let aggregate = sqlx::query(
+                r#"SELECT MIN(updated_at) AS first_pending_at,
+                          MAX(updated_at) AS latest_pending_at
+                   FROM work_threads
+                   WHERE session_id = ?
+                     AND delivery_status = 'pending'"#,
+            )
+            .bind(session_id)
+            .fetch_one(&mut *connection)
+            .await?;
+            let Some(first_pending_at) =
+                aggregate.get::<Option<String>, _>("first_pending_at")
+            else {
+                return Ok(None);
+            };
+            let latest_pending_at = aggregate
+                .get::<Option<String>, _>("latest_pending_at")
+                .ok_or("Delivery Flush pending aggregate 缺少 latest_pending_at")?;
+            let first_pending = parse_time(&first_pending_at);
+            let latest_pending = parse_time(&latest_pending_at);
+            let due_at = std::cmp::min(latest_pending + merge_window, first_pending + max_wait);
+            let delivery_rows = sqlx::query(
+                "SELECT id, result_event_id FROM work_threads WHERE session_id = ? AND delivery_status IN ('pending', 'deferred') ORDER BY updated_at, id",
+            )
+            .bind(session_id)
+            .fetch_all(&mut *connection)
+            .await?;
+            let completed_thread_ids = delivery_rows
+                .iter()
+                .map(|row| row.get::<String, _>("id"))
+                .collect::<Vec<_>>();
+            let result_event_ids = delivery_rows
+                .iter()
+                .filter_map(|row| row.get::<Option<String>, _>("result_event_id"))
+                .collect::<Vec<_>>();
+
+            let current_generation = sqlx::query_scalar::<_, i64>(
+                "SELECT generation FROM runtime_timers WHERE id = ?",
+            )
+            .bind(timer_id)
+            .fetch_optional(&mut *connection)
+            .await?
+            .unwrap_or(0);
+            let generation = current_generation
+                .checked_add(1)
+                .ok_or("Delivery Flush generation 溢出")?;
+            let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let due_at_text =
+                due_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let payload = serde_json::to_string(&serde_json::json!({
+                "session_id": session_id,
+                "first_pending_at": first_pending_at,
+                "latest_pending_at": latest_pending_at,
+                "merge_window_secs": merge_window_secs,
+                "max_wait_secs": max_wait_secs,
+                "completed_thread_ids": completed_thread_ids,
+                "result_event_ids": result_event_ids,
+            }))?;
+            sqlx::query(
+                r#"INSERT INTO runtime_timers
+                   (id, generation, kind, owner_id, due_at, status, payload_json,
+                    created_at, updated_at)
+                   VALUES (?, ?, 'delivery_flush', ?, ?, 'pending', ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                     generation = excluded.generation,
+                     kind = 'delivery_flush',
+                     owner_id = excluded.owner_id,
+                     due_at = excluded.due_at,
+                     status = 'pending',
+                     payload_json = excluded.payload_json,
+                     claimed_by = NULL,
+                     claim_expires_at = NULL,
+                     last_error = NULL,
+                     updated_at = excluded.updated_at,
+                     fired_at = NULL"#,
+            )
+            .bind(timer_id)
+            .bind(generation)
+            .bind(session_id)
+            .bind(due_at_text)
+            .bind(payload)
+            .bind(&now)
+            .bind(&now)
+            .execute(&mut *connection)
+            .await?;
+            let row = sqlx::query("SELECT * FROM runtime_timers WHERE id = ?")
+                .bind(timer_id)
+                .fetch_one(&mut *connection)
+                .await?;
+            Ok(Some(runtime_timer_from_row(&row)?))
+        }
+        .await;
+        match operation {
+            Ok(timer) => {
+                sqlx::query("COMMIT").execute(&mut *connection).await?;
+                Ok(timer)
+            }
+            Err(error) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn commit_delivery_flush(
+        &self,
+        timer_id: &str,
+        generation: u64,
+        event: &Event,
+    ) -> Result<DeliveryFlushCommit, Box<dyn std::error::Error + Send + Sync>> {
+        if event.topic != "chat/thread_completion_ready" {
+            return Err("Delivery Flush 只能提交 chat/thread_completion_ready Event".into());
+        }
+        let session_id = event
+            .payload
+            .get("session_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Delivery Flush Event 缺少 session_id")?;
+        let generation = i64::try_from(generation)
+            .map_err(|_| "Delivery Flush generation 超出 SQLite INTEGER 范围")?;
+        let mut tx = self.pool.begin().await?;
+        let timer = sqlx::query(
+            "SELECT generation, kind, owner_id, status FROM runtime_timers WHERE id = ?",
+        )
+        .bind(timer_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(timer) = timer else {
+            tx.commit().await?;
+            return Ok(DeliveryFlushCommit::Stale);
+        };
+        if timer.get::<i64, _>("generation") != generation
+            || timer.get::<String, _>("kind") != "delivery_flush"
+            || timer.get::<String, _>("owner_id") != session_id
+            || timer.get::<String, _>("status") != "claimed"
+        {
+            tx.commit().await?;
+            return Ok(DeliveryFlushCommit::Stale);
+        }
+        let has_pending = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM work_threads WHERE session_id = ? AND delivery_status = 'pending')",
+        )
+        .bind(session_id)
+        .fetch_one(&mut *tx)
+        .await?
+            != 0;
+        if !has_pending {
+            tx.commit().await?;
+            return Ok(DeliveryFlushCommit::Empty);
+        }
+
+        let inserted = append_event_idempotent_in_transaction(&mut tx, event).await?;
+        append_signal_outbox_in_transaction(&mut tx, event).await?;
+        tx.commit().await?;
+        Ok(if inserted {
+            DeliveryFlushCommit::Committed
+        } else {
+            DeliveryFlushCommit::Existing {
+                event_id: event.id.clone(),
+            }
+        })
+    }
+
     async fn update_work_thread(
         &self,
         id: &str,
@@ -2501,6 +3153,167 @@ impl SessionStore for SqliteStore {
             .as_ref()
             .map(scheduled_intent_from_row)
             .transpose()
+    }
+
+    async fn inspect_scheduled_intent(
+        &self,
+        id: &str,
+    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        self.get_scheduled_intent(id).await
+    }
+
+    async fn pause_scheduled_intent(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let revision = i64::try_from(expected_revision)
+            .map_err(|_| "Scheduled Intent revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut rows = sqlx::query(
+            r#"UPDATE scheduled_intents
+               SET status = 'paused', revision = revision + 1, updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'queued'
+               RETURNING *"#,
+        )
+        .bind(now)
+        .bind(id)
+        .bind(revision)
+        .fetch_all(&self.pool)
+        .await?;
+        if let Some(row) = rows.pop() {
+            return Ok(ScheduledIntentMutation::Updated(scheduled_intent_from_row(
+                &row,
+            )?));
+        }
+        scheduled_intent_mutation_failure(
+            self,
+            id,
+            expected_revision,
+            "只有 queued Schedule 可以暂停",
+        )
+        .await
+    }
+
+    async fn resume_scheduled_intent(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let revision = i64::try_from(expected_revision)
+            .map_err(|_| "Scheduled Intent revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut rows = sqlx::query(
+            r#"UPDATE scheduled_intents
+               SET status = 'queued', revision = revision + 1, updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'paused'
+               RETURNING *"#,
+        )
+        .bind(now)
+        .bind(id)
+        .bind(revision)
+        .fetch_all(&self.pool)
+        .await?;
+        if let Some(row) = rows.pop() {
+            return Ok(ScheduledIntentMutation::Updated(scheduled_intent_from_row(
+                &row,
+            )?));
+        }
+        scheduled_intent_mutation_failure(
+            self,
+            id,
+            expected_revision,
+            "只有 paused Schedule 可以恢复",
+        )
+        .await
+    }
+
+    async fn reschedule_scheduled_intent(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        not_before: Option<DateTime<Utc>>,
+        interval_seconds: Option<u64>,
+    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let revision = i64::try_from(expected_revision)
+            .map_err(|_| "Scheduled Intent revision 超出 SQLite INTEGER 范围")?;
+        let interval_seconds = interval_seconds
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| "Scheduled Intent interval 超出 SQLite INTEGER 范围")?;
+        if interval_seconds == Some(0) {
+            return Err("Scheduled Intent interval 必须大于 0".into());
+        }
+        let not_before =
+            not_before.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        // Paused rules keep their paused lifecycle while their timing rule is
+        // edited. A dispatched one-shot is deliberately immutable: its wake
+        // Event/Signal already exists and cannot be revoked by rewriting the
+        // owner row. Dependency JSON and the reverse index are not touched by
+        // this timing-only CAS, hence they cannot diverge through partial
+        // writes.
+        let mut rows = sqlx::query(
+            r#"UPDATE scheduled_intents
+               SET not_before = ?, interval_seconds = ?,
+                   revision = revision + 1, updated_at = ?
+               WHERE id = ? AND revision = ?
+                 AND status IN ('queued', 'paused')
+               RETURNING *"#,
+        )
+        .bind(not_before)
+        .bind(interval_seconds)
+        .bind(now)
+        .bind(id)
+        .bind(revision)
+        .fetch_all(&self.pool)
+        .await?;
+        if let Some(row) = rows.pop() {
+            return Ok(ScheduledIntentMutation::Updated(scheduled_intent_from_row(
+                &row,
+            )?));
+        }
+        scheduled_intent_mutation_failure(
+            self,
+            id,
+            expected_revision,
+            "只有尚未派发的 queued/paused Schedule 可以重新调度",
+        )
+        .await
+    }
+
+    async fn cancel_scheduled_intent(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let revision = i64::try_from(expected_revision)
+            .map_err(|_| "Scheduled Intent revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut rows = sqlx::query(
+            r#"UPDATE scheduled_intents
+               SET status = 'cancelled', revision = revision + 1, updated_at = ?
+               WHERE id = ? AND revision = ?
+                 AND status IN ('queued', 'paused')
+               RETURNING *"#,
+        )
+        .bind(now)
+        .bind(id)
+        .bind(revision)
+        .fetch_all(&self.pool)
+        .await?;
+        if let Some(row) = rows.pop() {
+            return Ok(ScheduledIntentMutation::Updated(scheduled_intent_from_row(
+                &row,
+            )?));
+        }
+        scheduled_intent_mutation_failure(
+            self,
+            id,
+            expected_revision,
+            "只有尚未派发的 queued/paused Schedule 可以取消",
+        )
+        .await
     }
 
     async fn commit_schedule_transaction(
@@ -3775,119 +4588,148 @@ impl TimerStore for SqliteStore {
     }
 }
 
+fn validate_new_execution_job(
+    job: &NewExecutionJob,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for (field, value) in [
+        ("id", job.id.as_str()),
+        ("activation_id", job.activation_id.as_str()),
+        ("thread_id", job.thread_id.as_str()),
+        ("agent_id", job.agent_id.as_str()),
+        ("context_id", job.context_id.as_str()),
+        ("session_id", job.session_id.as_str()),
+        ("tool_call_id", job.tool_call_id.as_str()),
+        ("tool_name", job.tool_name.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("Execution Job {field} 不能为空").into());
+        }
+    }
+    Ok(())
+}
+
+async fn ensure_execution_job_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    job: &NewExecutionJob,
+) -> Result<(ExecutionJobRecord, bool), Box<dyn std::error::Error + Send + Sync>> {
+    validate_new_execution_job(job)?;
+    let request_json = serde_json::to_string(&job.request)?;
+    let status = if job.requires_approval {
+        ExecutionJobStatus::WaitingApproval
+    } else {
+        ExecutionJobStatus::Queued
+    };
+
+    // This helper validates causal rows before inserting the Job. Acquire the
+    // writer slot first so the validation read does not create a deferred
+    // snapshot that later fails to upgrade when a sibling Job is concurrently
+    // terminalizing. The parent Activation is immutable for this purpose; the
+    // no-op write changes no logical revision.
+    sqlx::query("UPDATE thread_activations SET revision = revision WHERE id = ?")
+        .bind(&job.activation_id)
+        .execute(&mut **tx)
+        .await?;
+
+    // A Job must route back through the same causal identity as both its
+    // Activation and stable Thread. Foreign keys alone cannot prove this.
+    let causal = sqlx::query(
+        r#"SELECT activations.agent_id AS activation_agent_id,
+                  activations.context_id AS activation_context_id,
+                  activations.session_id AS activation_session_id,
+                  activations.root_turn_id AS activation_root_turn_id,
+                  threads.agent_id AS thread_agent_id,
+                  threads.context_id AS thread_context_id,
+                  threads.session_id AS thread_session_id,
+                  threads.root_turn_id AS thread_root_turn_id
+           FROM thread_activations activations, work_threads threads
+           WHERE activations.id = ? AND threads.id = ?"#,
+    )
+    .bind(&job.activation_id)
+    .bind(&job.thread_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let causal = causal.ok_or("Execution Job 引用的 Activation 或 Thread 不存在")?;
+    let activation_agent_id: String = causal.get("activation_agent_id");
+    let activation_context_id: String = causal.get("activation_context_id");
+    let activation_session_id: String = causal.get("activation_session_id");
+    let activation_root_turn_id: String = causal.get("activation_root_turn_id");
+    let thread_agent_id: String = causal.get("thread_agent_id");
+    let thread_context_id: String = causal.get("thread_context_id");
+    let thread_session_id: String = causal.get("thread_session_id");
+    let thread_root_turn_id: String = causal.get("thread_root_turn_id");
+    if activation_agent_id != job.agent_id
+        || thread_agent_id != job.agent_id
+        || activation_context_id != job.context_id
+        || thread_context_id != job.context_id
+        || activation_session_id != job.session_id
+        || thread_session_id != job.session_id
+        || activation_root_turn_id != thread_root_turn_id
+    {
+        return Err("Execution Job 的 Agent/Context/Session/Root Turn 因果边界不一致".into());
+    }
+
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let inserted = sqlx::query(
+        r#"INSERT OR IGNORE INTO execution_jobs
+           (id, revision, activation_id, thread_id, agent_id, context_id,
+            session_id, tool_call_id, tool_name, request_json, status,
+            retry_safety, result_refs_json, created_at, updated_at)
+           VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)"#,
+    )
+    .bind(&job.id)
+    .bind(&job.activation_id)
+    .bind(&job.thread_id)
+    .bind(&job.agent_id)
+    .bind(&job.context_id)
+    .bind(&job.session_id)
+    .bind(&job.tool_call_id)
+    .bind(&job.tool_name)
+    .bind(&request_json)
+    .bind(status.as_str())
+    .bind(job.retry_safety.as_str())
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+    let row =
+        sqlx::query("SELECT * FROM execution_jobs WHERE activation_id = ? AND tool_call_id = ?")
+            .bind(&job.activation_id)
+            .bind(&job.tool_call_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or("Execution Job 创建失败：ID 或因果唯一键已被其他记录占用")?;
+    let existing = execution_job_from_row(&row)?;
+    let pending_status_conflict = matches!(
+        existing.status,
+        ExecutionJobStatus::Queued | ExecutionJobStatus::WaitingApproval
+    ) && existing.status != status;
+    if existing.id != job.id
+        || existing.thread_id != job.thread_id
+        || existing.agent_id != job.agent_id
+        || existing.context_id != job.context_id
+        || existing.session_id != job.session_id
+        || existing.tool_name != job.tool_name
+        || existing.request != job.request
+        || pending_status_conflict
+        || existing.retry_safety != job.retry_safety
+    {
+        return Err(format!(
+            "Execution Job 因果键 ('{}', '{}') 已被不同请求占用",
+            job.activation_id, job.tool_call_id
+        )
+        .into());
+    }
+    Ok((existing, inserted.rows_affected() == 1))
+}
+
 #[async_trait::async_trait]
 impl ExecutionJobStore for SqliteStore {
     async fn create_execution_job(
         &self,
         job: NewExecutionJob,
     ) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>> {
-        for (field, value) in [
-            ("id", job.id.as_str()),
-            ("activation_id", job.activation_id.as_str()),
-            ("thread_id", job.thread_id.as_str()),
-            ("agent_id", job.agent_id.as_str()),
-            ("context_id", job.context_id.as_str()),
-            ("session_id", job.session_id.as_str()),
-            ("tool_call_id", job.tool_call_id.as_str()),
-            ("tool_name", job.tool_name.as_str()),
-        ] {
-            if value.trim().is_empty() {
-                return Err(format!("Execution Job {field} 不能为空").into());
-            }
-        }
-        let request_json = serde_json::to_string(&job.request)?;
-        let status = if job.requires_approval {
-            ExecutionJobStatus::WaitingApproval
-        } else {
-            ExecutionJobStatus::Queued
-        };
-        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
-
-        // A Job must route back through the same causal identity as both its
-        // Activation and stable Thread. Foreign keys alone cannot prove this.
-        let causal = sqlx::query(
-            r#"SELECT activations.agent_id AS activation_agent_id,
-                      activations.context_id AS activation_context_id,
-                      activations.session_id AS activation_session_id,
-                      activations.root_turn_id AS activation_root_turn_id,
-                      threads.agent_id AS thread_agent_id,
-                      threads.context_id AS thread_context_id,
-                      threads.session_id AS thread_session_id,
-                      threads.root_turn_id AS thread_root_turn_id
-               FROM thread_activations activations, work_threads threads
-               WHERE activations.id = ? AND threads.id = ?"#,
-        )
-        .bind(&job.activation_id)
-        .bind(&job.thread_id)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let causal = causal.ok_or("Execution Job 引用的 Activation 或 Thread 不存在")?;
-        let activation_agent_id: String = causal.get("activation_agent_id");
-        let activation_context_id: String = causal.get("activation_context_id");
-        let activation_session_id: String = causal.get("activation_session_id");
-        let activation_root_turn_id: String = causal.get("activation_root_turn_id");
-        let thread_agent_id: String = causal.get("thread_agent_id");
-        let thread_context_id: String = causal.get("thread_context_id");
-        let thread_session_id: String = causal.get("thread_session_id");
-        let thread_root_turn_id: String = causal.get("thread_root_turn_id");
-        if activation_agent_id != job.agent_id
-            || thread_agent_id != job.agent_id
-            || activation_context_id != job.context_id
-            || thread_context_id != job.context_id
-            || activation_session_id != job.session_id
-            || thread_session_id != job.session_id
-            || activation_root_turn_id != thread_root_turn_id
-        {
-            return Err("Execution Job 的 Agent/Context/Session/Root Turn 因果边界不一致".into());
-        }
-
-        sqlx::query(
-            r#"INSERT OR IGNORE INTO execution_jobs
-               (id, revision, activation_id, thread_id, agent_id, context_id,
-                session_id, tool_call_id, tool_name, request_json, status,
-                retry_safety, result_refs_json, created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)"#,
-        )
-        .bind(&job.id)
-        .bind(&job.activation_id)
-        .bind(&job.thread_id)
-        .bind(&job.agent_id)
-        .bind(&job.context_id)
-        .bind(&job.session_id)
-        .bind(&job.tool_call_id)
-        .bind(&job.tool_name)
-        .bind(&request_json)
-        .bind(status.as_str())
-        .bind(job.retry_safety.as_str())
-        .bind(&now)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
-        let row = sqlx::query(
-            "SELECT * FROM execution_jobs WHERE activation_id = ? AND tool_call_id = ?",
-        )
-        .bind(&job.activation_id)
-        .bind(&job.tool_call_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or("Execution Job 创建失败：ID 或因果唯一键已被其他记录占用")?;
-        let existing = execution_job_from_row(&row)?;
-        if existing.id != job.id
-            || existing.thread_id != job.thread_id
-            || existing.agent_id != job.agent_id
-            || existing.context_id != job.context_id
-            || existing.session_id != job.session_id
-            || existing.tool_name != job.tool_name
-            || existing.request != job.request
-            || existing.retry_safety != job.retry_safety
-        {
-            return Err(format!(
-                "Execution Job 因果键 ('{}', '{}') 已被不同请求占用",
-                job.activation_id, job.tool_call_id
-            )
-            .into());
-        }
+        let (existing, _) = ensure_execution_job_in_transaction(&mut tx, &job).await?;
         tx.commit().await?;
         Ok(existing)
     }
@@ -4082,6 +4924,45 @@ impl ExecutionJobStore for SqliteStore {
         ))
     }
 
+    async fn requeue_execution_job(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let expected_sql = i64::try_from(expected_revision)
+            .map_err(|_| "Execution Job revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE execution_jobs
+               SET revision = revision + 1, status = 'queued', claimed_by = NULL,
+                   claim_token = NULL, lease_expires_at = NULL, heartbeat_at = NULL,
+                   progress_ref = NULL, updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'running'
+                 AND retry_safety = 'idempotent'
+                 AND side_effect_started_at IS NULL
+                 AND cancel_requested_at IS NULL"#,
+        )
+        .bind(&now)
+        .bind(id)
+        .bind(expected_sql)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() != 1 {
+            return execution_job_mutation_failure(
+                self,
+                id,
+                expected_revision,
+                "只有尚未越过副作用边界的 idempotent running Job 可以恢复为 queued",
+            )
+            .await;
+        }
+        Ok(ExecutionJobMutation::Updated(
+            self.get_execution_job(id)
+                .await?
+                .ok_or("Execution Job requeue 后无法读取")?,
+        ))
+    }
+
     async fn request_cancel_execution_job(
         &self,
         id: &str,
@@ -4266,6 +5147,991 @@ impl ExecutionJobStore for SqliteStore {
                 .ok_or("Execution Job terminal commit 后无法读取")?,
         ))
     }
+
+    async fn finish_execution_job_with_event(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        claim_token: Option<&str>,
+        terminal: ExecutionJobTerminal,
+        event: &Event,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if !terminal.status.is_terminal() {
+            return Err("Execution Job finish 只能提交终态".into());
+        }
+        if terminal.result_event_id.as_deref() != Some(event.id.as_str()) {
+            return Err(
+                "Execution Job terminal result_event_id 必须等于原子提交的 Event ID".into(),
+            );
+        }
+
+        let mut tx = self.pool.begin().await?;
+        // Acquire SQLite's single-writer slot before reading the current Job.
+        // Starting this transaction with SELECT would create a deferred read
+        // snapshot that cannot reliably upgrade when another tool in the same
+        // batch is concurrently being prepared/claimed. In that interleaving
+        // SQLite returns SQLITE_BUSY immediately instead of honoring the busy
+        // timeout, stranding the batch after only one physical result.
+        sqlx::query("UPDATE execution_jobs SET revision = revision WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let Some(row) = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            tx.commit().await?;
+            return Ok(ExecutionJobMutation::NotFound);
+        };
+        let current = execution_job_from_row(&row)?;
+
+        // Validate the causal identity before every path, including exact
+        // terminal replay. Otherwise a missing historical Event could be
+        // "repaired" by inserting a same-id Event routed to another
+        // Session/Thread while the Job itself already looks terminal.
+        let event_context_id = event.payload.get("context_id").and_then(JsonValue::as_str);
+        let event_session_id = event.payload.get("session_id").and_then(JsonValue::as_str);
+        let event_tool_call_id = event
+            .payload
+            .get("tool_call_id")
+            .and_then(JsonValue::as_str);
+        let event_tool_name = event.payload.get("tool_name").and_then(JsonValue::as_str);
+        let event_activation_id = event
+            .payload
+            .get("work_item_id")
+            .and_then(JsonValue::as_str);
+        let event_thread_id = event
+            .payload
+            .get("work_thread_id")
+            .and_then(JsonValue::as_str);
+        if event_context_id != Some(current.context_id.as_str())
+            || event_session_id != Some(current.session_id.as_str())
+            || event_tool_call_id != Some(current.tool_call_id.as_str())
+            || event_tool_name != Some(current.tool_name.as_str())
+            || event_activation_id != Some(current.activation_id.as_str())
+            || event_thread_id != Some(current.thread_id.as_str())
+            || event.topic != "chat/tool_output"
+            || event.event_type != crate::event::TYPE_TOOL_OUTPUT
+        {
+            tx.rollback().await?;
+            return Err(format!(
+                "Execution Job '{}' 的结果 Event 路由或工具因果身份不匹配",
+                current.id
+            )
+            .into());
+        }
+
+        if current.status.is_terminal() {
+            let error = terminal
+                .error
+                .as_ref()
+                .map(|value| value.chars().take(100_000).collect::<String>());
+            let exact_replay = current.status == terminal.status
+                && current.result_event_id.as_deref() == Some(event.id.as_str())
+                && current.result_refs == terminal.result_refs
+                && current.error == error
+                && current.exit_code == terminal.exit_code;
+            if exact_replay {
+                append_event_idempotent_in_transaction(&mut tx, event).await?;
+                tx.commit().await?;
+                return Ok(ExecutionJobMutation::Existing(current));
+            }
+            tx.commit().await?;
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "Execution Job 已有不同终态或结果 Event，不能覆盖".to_string(),
+            });
+        }
+        if current.revision != expected_revision {
+            tx.commit().await?;
+            return Ok(ExecutionJobMutation::Conflict { current });
+        }
+
+        let worker_terminal = matches!(
+            terminal.status,
+            ExecutionJobStatus::Succeeded | ExecutionJobStatus::Failed
+        );
+        if worker_terminal
+            && (current.status != ExecutionJobStatus::Running
+                || claim_token.is_none_or(|token| {
+                    token.is_empty() || current.claim_token.as_deref() != Some(token)
+                }))
+        {
+            tx.commit().await?;
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "succeeded/failed 需要当前 running claim token".to_string(),
+            });
+        }
+        if worker_terminal && current.cancel_requested_at.is_some() {
+            tx.commit().await?;
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "已请求取消的 running Job 只能确认 cancelled，不能再提交 succeeded/failed"
+                    .to_string(),
+            });
+        }
+        if terminal.status == ExecutionJobStatus::Lost
+            && current.status != ExecutionJobStatus::Running
+        {
+            tx.commit().await?;
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "只有 running Job 可以被 reconcile 为 lost".to_string(),
+            });
+        }
+        if terminal.status == ExecutionJobStatus::Cancelled
+            && current.status == ExecutionJobStatus::Running
+            && current.cancel_requested_at.is_none()
+            && claim_token != current.claim_token.as_deref()
+        {
+            tx.commit().await?;
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "running Job 只能由当前 worker 或已请求取消的控制面确认 cancelled"
+                    .to_string(),
+            });
+        }
+
+        let expected_sql = i64::try_from(expected_revision)
+            .map_err(|_| "Execution Job revision 超出 SQLite INTEGER 范围")?;
+        let result_refs_json = serde_json::to_string(&terminal.result_refs)?;
+        let error = terminal
+            .error
+            .as_ref()
+            .map(|value| value.chars().take(100_000).collect::<String>());
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = if worker_terminal {
+            sqlx::query(
+                r#"UPDATE execution_jobs
+                   SET revision = revision + 1, status = ?, lease_expires_at = NULL,
+                       result_event_id = ?, result_refs_json = ?, error = ?,
+                       exit_code = ?, updated_at = ?, finished_at = ?
+                   WHERE id = ? AND revision = ? AND status = 'running'
+                     AND claim_token = ?"#,
+            )
+            .bind(terminal.status.as_str())
+            .bind(&terminal.result_event_id)
+            .bind(&result_refs_json)
+            .bind(&error)
+            .bind(terminal.exit_code)
+            .bind(&now)
+            .bind(&now)
+            .bind(id)
+            .bind(expected_sql)
+            .bind(claim_token)
+            .execute(&mut *tx)
+            .await?
+        } else {
+            sqlx::query(
+                r#"UPDATE execution_jobs
+                   SET revision = revision + 1, status = ?, lease_expires_at = NULL,
+                       result_event_id = ?, result_refs_json = ?, error = ?,
+                       exit_code = ?, updated_at = ?, finished_at = ?
+                   WHERE id = ? AND revision = ?
+                     AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')"#,
+            )
+            .bind(terminal.status.as_str())
+            .bind(&terminal.result_event_id)
+            .bind(&result_refs_json)
+            .bind(&error)
+            .bind(terminal.exit_code)
+            .bind(&now)
+            .bind(&now)
+            .bind(id)
+            .bind(expected_sql)
+            .execute(&mut *tx)
+            .await?
+        };
+        if result.rows_affected() != 1 {
+            tx.rollback().await?;
+            return execution_job_mutation_failure(
+                self,
+                id,
+                expected_revision,
+                "Execution Job terminal/Event 原子提交前置条件不再成立",
+            )
+            .await;
+        }
+        append_event_idempotent_in_transaction(&mut tx, event).await?;
+        let updated = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let updated = execution_job_from_row(&updated)?;
+        tx.commit().await?;
+        Ok(ExecutionJobMutation::Updated(updated))
+    }
+}
+
+fn validate_new_approval_request(
+    request: &NewApprovalRequest,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for (field, value) in [
+        ("id", request.id.as_str()),
+        ("job_id", request.job_id.as_str()),
+        ("request_digest", request.request_digest.as_str()),
+        ("policy_digest", request.policy_digest.as_str()),
+        ("justification", request.justification.as_str()),
+    ] {
+        if value.trim().is_empty() {
+            return Err(format!("Approval {field} 不能为空").into());
+        }
+    }
+    if !request.pending_status.is_pending() {
+        return Err("Approval 首次创建只能使用 pending_auto 或 pending_human".into());
+    }
+    let stable_identity = stable_approval_identity(
+        &request.job_id,
+        &request.action,
+        &request.requested,
+        &request.policy_digest,
+    )?;
+    if request.id != stable_identity.approval_id
+        || request.request_digest != stable_identity.request_digest
+    {
+        return Err("Approval id/request_digest 与规范化请求身份不一致".into());
+    }
+    Ok(())
+}
+
+async fn ensure_approval_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    request: &NewApprovalRequest,
+) -> Result<ApprovalMutation, Box<dyn std::error::Error + Send + Sync>> {
+    validate_new_approval_request(request)?;
+    let action_json = serde_json::to_string(&request.action)?;
+    let requested_json = serde_json::to_string(&request.requested)?;
+
+    let existing = sqlx::query(
+        r#"SELECT * FROM approval_requests
+           WHERE id = ? OR (job_id = ? AND request_digest = ? AND policy_digest = ?)
+           ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END
+           LIMIT 1"#,
+    )
+    .bind(&request.id)
+    .bind(&request.job_id)
+    .bind(&request.request_digest)
+    .bind(&request.policy_digest)
+    .bind(&request.id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(row) = existing {
+        let current = approval_from_row(&row)?;
+        let immutable_match = current.id == request.id
+            && current.job_id == request.job_id
+            && current.request_digest == request.request_digest
+            && current.policy_digest == request.policy_digest
+            && current.action == request.action
+            && current.requested == request.requested
+            && current.justification == request.justification
+            && (!current.status.is_pending() || current.status == request.pending_status);
+        return Ok(if immutable_match {
+            ApprovalMutation::Existing(current)
+        } else {
+            ApprovalMutation::Conflict {
+                current,
+                reason: "Approval identity 或因果摘要已被不同请求占用".to_string(),
+            }
+        });
+    }
+
+    let job_status =
+        sqlx::query_scalar::<_, String>("SELECT status FROM execution_jobs WHERE id = ?")
+            .bind(&request.job_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or("Approval 引用的 Execution Job 不存在")?;
+    if parse_execution_job_status(&job_status)? != ExecutionJobStatus::WaitingApproval {
+        return Err("Approval 只能绑定 waiting_approval Execution Job".into());
+    }
+
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let inserted = sqlx::query(
+        r#"INSERT OR IGNORE INTO approval_requests
+           (id, revision, job_id, request_digest, policy_digest, action_json,
+            requested_json, justification, status, risk_tags_json,
+            created_at, updated_at)
+           VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)"#,
+    )
+    .bind(&request.id)
+    .bind(&request.job_id)
+    .bind(&request.request_digest)
+    .bind(&request.policy_digest)
+    .bind(action_json)
+    .bind(requested_json)
+    .bind(&request.justification)
+    .bind(request.pending_status.as_str())
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+    if inserted.rows_affected() != 1 {
+        let row = sqlx::query(
+            r#"SELECT * FROM approval_requests
+               WHERE id = ? OR (job_id = ? AND request_digest = ? AND policy_digest = ?)
+               LIMIT 1"#,
+        )
+        .bind(&request.id)
+        .bind(&request.job_id)
+        .bind(&request.request_digest)
+        .bind(&request.policy_digest)
+        .fetch_optional(&mut **tx)
+        .await?;
+        return Ok(match row {
+            Some(row) => ApprovalMutation::Conflict {
+                current: approval_from_row(&row)?,
+                reason: "Approval 并发创建时身份或活动 Job 前置条件发生冲突".to_string(),
+            },
+            None => return Err("Approval 创建失败且无法读取冲突记录".into()),
+        });
+    }
+    let created = sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
+        .bind(&request.id)
+        .fetch_one(&mut **tx)
+        .await?;
+    Ok(ApprovalMutation::Created(approval_from_row(&created)?))
+}
+
+async fn approval_job_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    approval: &ApprovalRecord,
+) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>> {
+    let row = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
+        .bind(&approval.job_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "Approval '{}' 引用的 Execution Job '{}' 不存在",
+                approval.id, approval.job_id
+            )
+        })?;
+    execution_job_from_row(&row)
+}
+
+#[async_trait::async_trait]
+impl ApprovalStore for SqliteStore {
+    async fn ensure_approval_request(
+        &self,
+        request: NewApprovalRequest,
+    ) -> Result<ApprovalMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let mut tx = self.pool.begin().await?;
+        let result = ensure_approval_in_transaction(&mut tx, &request).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    async fn get_approval(
+        &self,
+        id: &str,
+    ) -> Result<Option<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(approval_from_row)
+            .transpose()
+    }
+
+    async fn list_approvals(
+        &self,
+        filter: ApprovalFilter,
+    ) -> Result<Vec<ApprovalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if filter.limit == Some(0) {
+            return Ok(Vec::new());
+        }
+        let mut query =
+            QueryBuilder::<sqlx::Sqlite>::new("SELECT * FROM approval_requests WHERE 1=1");
+        if let Some(job_id) = filter.job_id {
+            query.push(" AND job_id = ").push_bind(job_id);
+        }
+        if let Some(status) = filter.status {
+            query.push(" AND status = ").push_bind(status.as_str());
+        }
+        if filter.pending_only {
+            query.push(" AND status IN ('pending_auto', 'pending_human')");
+        }
+        query.push(" ORDER BY created_at, id");
+        if let Some(limit) = filter.limit {
+            let limit =
+                i64::try_from(limit).map_err(|_| "Approval 查询上限超出 SQLite INTEGER 范围")?;
+            query.push(" LIMIT ").push_bind(limit);
+        }
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(approval_from_row).collect()
+    }
+
+    async fn commit_approval_decision(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        decision: ApprovalResolution,
+    ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>> {
+        let rationale = decision.rationale().trim();
+        if rationale.is_empty() {
+            return Err("Approval decision rationale 不能为空".into());
+        }
+        let rationale = rationale.chars().take(100_000).collect::<String>();
+        let risk_tags = decision.risk_tags().to_vec();
+        let risk_tags_json = serde_json::to_string(&risk_tags)?;
+        let target_status = decision.status();
+        let mut tx = self.pool.begin().await?;
+        let Some(row) = sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::NotFound,
+                event_created: false,
+                event: None,
+            });
+        };
+        let current = approval_from_row(&row)?;
+        let exact_replay = current.status == target_status
+            && current.rationale.as_deref() == Some(rationale.as_str())
+            && current.risk_tags == risk_tags;
+        if exact_replay {
+            let job = approval_job_in_transaction(&mut tx, &current).await?;
+            let event = approval_decision_event(&current, &job);
+            let event_created = append_event_idempotent_in_transaction(&mut tx, &event).await?;
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::Existing(current),
+                event_created,
+                event: Some(event),
+            });
+        }
+        if current.revision != expected_revision {
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::Conflict {
+                    current,
+                    reason: "Approval decision revision 已变化".to_string(),
+                },
+                event_created: false,
+                event: None,
+            });
+        }
+        if !current.status.is_pending() {
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::Rejected {
+                    current,
+                    reason: "Approval 已有不同决定或已取消，不能覆盖".to_string(),
+                },
+                event_created: false,
+                event: None,
+            });
+        }
+        let grant_id = if target_status == ApprovalStatus::Allowed {
+            Some(stable_grant_id(
+                &current.id,
+                &current.request_digest,
+                &current.policy_digest,
+            )?)
+        } else {
+            None
+        };
+        let expected_sql = i64::try_from(expected_revision)
+            .map_err(|_| "Approval revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE approval_requests
+               SET revision = revision + 1, status = ?, rationale = ?,
+                   risk_tags_json = ?, grant_id = ?, last_error = NULL,
+                   updated_at = ?, decided_at = ?
+               WHERE id = ? AND revision = ?
+                 AND status IN ('pending_auto', 'pending_human')"#,
+        )
+        .bind(target_status.as_str())
+        .bind(&rationale)
+        .bind(risk_tags_json)
+        .bind(grant_id)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .bind(expected_sql)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: approval_mutation_failure(
+                    self,
+                    id,
+                    expected_revision,
+                    "Approval decision 前置条件不再成立",
+                )
+                .await?,
+                event_created: false,
+                event: None,
+            });
+        }
+        let updated = sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let updated = approval_from_row(&updated)?;
+        let job = approval_job_in_transaction(&mut tx, &updated).await?;
+        let event = approval_decision_event(&updated, &job);
+        let event_created = append_event_idempotent_in_transaction(&mut tx, &event).await?;
+        tx.commit().await?;
+        Ok(ApprovalAuditCommit {
+            mutation: ApprovalMutation::Updated(updated),
+            event_created,
+            event: Some(event),
+        })
+    }
+
+    async fn commit_approval_cancellation(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: &str,
+    ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err("Approval cancel reason 不能为空".into());
+        }
+        let reason = reason.chars().take(100_000).collect::<String>();
+        let mut tx = self.pool.begin().await?;
+        let Some(row) = sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::NotFound,
+                event_created: false,
+                event: None,
+            });
+        };
+        let current = approval_from_row(&row)?;
+        if current.status == ApprovalStatus::Cancelled
+            && current.cancel_reason.as_deref() == Some(reason.as_str())
+        {
+            let job = approval_job_in_transaction(&mut tx, &current).await?;
+            let event = approval_decision_event(&current, &job);
+            let event_created = append_event_idempotent_in_transaction(&mut tx, &event).await?;
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::Existing(current),
+                event_created,
+                event: Some(event),
+            });
+        }
+        if current.revision != expected_revision {
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::Conflict {
+                    current,
+                    reason: "Approval cancellation revision 已变化".to_string(),
+                },
+                event_created: false,
+                event: None,
+            });
+        }
+        let cancellable = current.status.is_pending()
+            || (current.status == ApprovalStatus::Allowed && current.grant_consumed_at.is_none());
+        if !cancellable {
+            tx.commit().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: ApprovalMutation::Rejected {
+                    current,
+                    reason: "Approval 已拒绝、已取消或授权已消费，不能取消".to_string(),
+                },
+                event_created: false,
+                event: None,
+            });
+        }
+        let expected_sql = i64::try_from(expected_revision)
+            .map_err(|_| "Approval revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE approval_requests
+               SET revision = revision + 1, status = 'cancelled', grant_id = NULL,
+                   cancel_reason = ?, updated_at = ?, cancelled_at = ?
+               WHERE id = ? AND revision = ?
+                 AND (status IN ('pending_auto', 'pending_human')
+                      OR (status = 'allowed' AND grant_consumed_at IS NULL))"#,
+        )
+        .bind(&reason)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .bind(expected_sql)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(ApprovalAuditCommit {
+                mutation: approval_mutation_failure(
+                    self,
+                    id,
+                    expected_revision,
+                    "Approval cancellation 前置条件不再成立",
+                )
+                .await?,
+                event_created: false,
+                event: None,
+            });
+        }
+        let updated = sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let updated = approval_from_row(&updated)?;
+        let job = approval_job_in_transaction(&mut tx, &updated).await?;
+        let event = approval_decision_event(&updated, &job);
+        let event_created = append_event_idempotent_in_transaction(&mut tx, &event).await?;
+        tx.commit().await?;
+        Ok(ApprovalAuditCommit {
+            mutation: ApprovalMutation::Updated(updated),
+            event_created,
+            event: Some(event),
+        })
+    }
+}
+
+fn approval_event_payload_str<'a>(
+    event: &'a Event,
+    key: &str,
+) -> Result<&'a str, Box<dyn std::error::Error + Send + Sync>> {
+    event
+        .payload
+        .get(key)
+        .and_then(JsonValue::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("Approval request Event 缺少非空字符串字段 '{key}'").into())
+}
+
+fn validate_approval_request_event(
+    event: &Event,
+    job: &NewExecutionJob,
+    approval: &NewApprovalRequest,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if event.id.trim().is_empty() || event.actor.trim().is_empty() {
+        return Err("Approval request Event id/actor 不能为空".into());
+    }
+    if event.event_type != "approval_requested" || event.topic != "runtime/approval_requested" {
+        return Err(
+            "Approval request Event 必须使用 approval_requested/runtime/approval_requested".into(),
+        );
+    }
+    for (key, expected) in [
+        ("approval_id", approval.id.as_str()),
+        ("job_id", job.id.as_str()),
+        ("request_digest", approval.request_digest.as_str()),
+        ("policy_digest", approval.policy_digest.as_str()),
+        ("activation_id", job.activation_id.as_str()),
+        ("thread_id", job.thread_id.as_str()),
+        ("context_id", job.context_id.as_str()),
+        ("session_id", job.session_id.as_str()),
+        ("tool_call_id", job.tool_call_id.as_str()),
+    ] {
+        if approval_event_payload_str(event, key)? != expected {
+            return Err(format!("Approval request Event 字段 '{key}' 与权威记录不一致").into());
+        }
+    }
+    if event.payload.get("action") != Some(&approval.action)
+        || event.payload.get("requested") != Some(&approval.requested)
+        || event
+            .payload
+            .get("justification")
+            .and_then(JsonValue::as_str)
+            != Some(approval.justification.as_str())
+    {
+        return Err("Approval request Event 的 action/requested/justification 与请求不一致".into());
+    }
+    Ok(())
+}
+
+fn validate_persisted_approval_authority(
+    approval: &ApprovalRecord,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let identity = stable_approval_identity(
+        &approval.job_id,
+        &approval.action,
+        &approval.requested,
+        &approval.policy_digest,
+    )?;
+    if identity.approval_id != approval.id || identity.request_digest != approval.request_digest {
+        return Err(format!("Approval '{}' 的持久化身份摘要已损坏", approval.id).into());
+    }
+    if let Some(grant_id) = approval.grant_id.as_deref() {
+        let expected = stable_grant_id(
+            &approval.id,
+            &approval.request_digest,
+            &approval.policy_digest,
+        )?;
+        if grant_id != expected {
+            return Err(format!("Approval '{}' 的 Grant 摘要已损坏", approval.id).into());
+        }
+    }
+    Ok(())
+}
+
+#[async_trait::async_trait]
+impl ExecutionApprovalStore for SqliteStore {
+    async fn ensure_execution_job_with_approval(
+        &self,
+        job: NewExecutionJob,
+        approval: NewApprovalRequest,
+        request_event: &Event,
+    ) -> Result<ExecutionApprovalMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if !job.requires_approval {
+            return Err("原子 Approval 创建要求 Execution Job.requires_approval=true".into());
+        }
+        if approval.job_id != job.id {
+            return Err("Approval job_id 与 Execution Job id 不一致".into());
+        }
+        validate_new_execution_job(&job)?;
+        validate_new_approval_request(&approval)?;
+        validate_approval_request_event(request_event, &job, &approval)?;
+
+        let mut tx = self.pool.begin().await?;
+        let (job_record, job_created) = ensure_execution_job_in_transaction(&mut tx, &job).await?;
+        let approval_mutation = ensure_approval_in_transaction(&mut tx, &approval).await?;
+        let (approval_record, approval_created) = match approval_mutation {
+            ApprovalMutation::Created(record) => (record, true),
+            ApprovalMutation::Existing(record) => (record, false),
+            ApprovalMutation::Conflict { current, reason } => {
+                tx.rollback().await?;
+                return Ok(ExecutionApprovalMutation::Conflict {
+                    job: (!job_created).then_some(job_record),
+                    approval: Some(current),
+                    reason,
+                });
+            }
+            ApprovalMutation::Rejected { current, reason } => {
+                tx.rollback().await?;
+                return Ok(ExecutionApprovalMutation::Rejected {
+                    job: (!job_created).then_some(job_record),
+                    approval: Some(current),
+                    reason,
+                });
+            }
+            ApprovalMutation::Updated(_) | ApprovalMutation::NotFound => {
+                tx.rollback().await?;
+                return Err("Approval ensure 返回了不可能的状态".into());
+            }
+        };
+        let event_created = append_event_idempotent_in_transaction(&mut tx, request_event).await?;
+        tx.commit().await?;
+
+        if job_created || approval_created || event_created {
+            Ok(ExecutionApprovalMutation::Created {
+                job: job_record,
+                approval: approval_record,
+            })
+        } else {
+            Ok(ExecutionApprovalMutation::Existing {
+                job: job_record,
+                approval: approval_record,
+            })
+        }
+    }
+
+    async fn claim_execution_job_with_grant(
+        &self,
+        job_id: &str,
+        expected_job_revision: u64,
+        approval_id: &str,
+        expected_approval_revision: u64,
+        worker_id: &str,
+        claim_token: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<ExecutionApprovalMutation, Box<dyn std::error::Error + Send + Sync>> {
+        for (field, value) in [
+            ("job_id", job_id),
+            ("approval_id", approval_id),
+            ("worker_id", worker_id),
+            ("claim_token", claim_token),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!("Grant claim {field} 不能为空").into());
+            }
+        }
+        let now = Utc::now();
+        if lease_expires_at <= now {
+            return Err("Grant claim lease 必须在未来".into());
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let job_row = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let approval_row = sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
+            .bind(approval_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let (Some(job_row), Some(approval_row)) = (job_row, approval_row) else {
+            tx.commit().await?;
+            return Ok(ExecutionApprovalMutation::NotFound);
+        };
+        let job = execution_job_from_row(&job_row)?;
+        let approval = approval_from_row(&approval_row)?;
+        validate_persisted_approval_authority(&approval)?;
+
+        let grant_id = approval.grant_id.clone();
+        let exact_replay = job.status == ExecutionJobStatus::Running
+            && job.claimed_by.as_deref() == Some(worker_id)
+            && job.claim_token.as_deref() == Some(claim_token)
+            && job.approval_ref == grant_id
+            && approval.status == ApprovalStatus::Allowed
+            && approval.grant_consumed_at.is_some()
+            && approval.consumed_by_claim_token.as_deref() == Some(claim_token);
+        if exact_replay {
+            tx.commit().await?;
+            return Ok(ExecutionApprovalMutation::Existing { job, approval });
+        }
+
+        if job.revision != expected_job_revision || approval.revision != expected_approval_revision
+        {
+            tx.commit().await?;
+            return Ok(ExecutionApprovalMutation::Conflict {
+                job: Some(job),
+                approval: Some(approval),
+                reason: "Execution Job 或 Approval revision 已变化".to_string(),
+            });
+        }
+        if approval.job_id != job.id {
+            tx.commit().await?;
+            return Ok(ExecutionApprovalMutation::Rejected {
+                job: Some(job),
+                approval: Some(approval),
+                reason: "Approval Grant 不属于目标 Execution Job".to_string(),
+            });
+        }
+        if job.status != ExecutionJobStatus::WaitingApproval
+            || job.cancel_requested_at.is_some()
+            || job.approval_ref.is_some()
+        {
+            tx.commit().await?;
+            return Ok(ExecutionApprovalMutation::Rejected {
+                job: Some(job),
+                approval: Some(approval),
+                reason: "Execution Job 不处于可消费 Grant 的 waiting_approval 状态".to_string(),
+            });
+        }
+        if approval.status != ApprovalStatus::Allowed
+            || approval.grant_consumed_at.is_some()
+            || approval.consumed_by_claim_token.is_some()
+        {
+            tx.commit().await?;
+            return Ok(ExecutionApprovalMutation::Rejected {
+                job: Some(job),
+                approval: Some(approval),
+                reason: "Approval 尚未允许、已取消或 Grant 已被消费".to_string(),
+            });
+        }
+        let Some(grant_id) = grant_id else {
+            return Err("Allowed Approval 缺少 Grant ID".into());
+        };
+
+        let expected_job_sql = i64::try_from(expected_job_revision)
+            .map_err(|_| "Execution Job revision 超出 SQLite INTEGER 范围")?;
+        let expected_approval_sql = i64::try_from(expected_approval_revision)
+            .map_err(|_| "Approval revision 超出 SQLite INTEGER 范围")?;
+        let now_text = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let lease_text = lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+
+        let consumed = sqlx::query(
+            r#"UPDATE approval_requests
+               SET revision = revision + 1, grant_consumed_at = ?,
+                   consumed_by_claim_token = ?, last_error = NULL, updated_at = ?
+               WHERE id = ? AND revision = ? AND job_id = ? AND status = 'allowed'
+                 AND grant_id = ? AND grant_consumed_at IS NULL
+                 AND consumed_by_claim_token IS NULL"#,
+        )
+        .bind(&now_text)
+        .bind(claim_token)
+        .bind(&now_text)
+        .bind(approval_id)
+        .bind(expected_approval_sql)
+        .bind(job_id)
+        .bind(&grant_id)
+        .execute(&mut *tx)
+        .await?;
+        if consumed.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(ExecutionApprovalMutation::Conflict {
+                job: self.get_execution_job(job_id).await?,
+                approval: self.get_approval(approval_id).await?,
+                reason: "Approval Grant 消费前置条件不再成立".to_string(),
+            });
+        }
+
+        let claimed = sqlx::query(
+            r#"UPDATE execution_jobs
+               SET revision = revision + 1, status = 'running', claimed_by = ?,
+                   claim_token = ?, lease_expires_at = ?, heartbeat_at = ?,
+                   approval_ref = ?, started_at = COALESCE(started_at, ?), updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'waiting_approval'
+                 AND approval_ref IS NULL AND cancel_requested_at IS NULL"#,
+        )
+        .bind(worker_id)
+        .bind(claim_token)
+        .bind(lease_text)
+        .bind(&now_text)
+        .bind(&grant_id)
+        .bind(&now_text)
+        .bind(&now_text)
+        .bind(job_id)
+        .bind(expected_job_sql)
+        .execute(&mut *tx)
+        .await?;
+        if claimed.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(ExecutionApprovalMutation::Conflict {
+                job: self.get_execution_job(job_id).await?,
+                approval: self.get_approval(approval_id).await?,
+                reason: "Execution Job claim 前置条件不再成立；Grant 消费已回滚".to_string(),
+            });
+        }
+
+        let updated_job = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
+            .bind(job_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let updated_approval = sqlx::query("SELECT * FROM approval_requests WHERE id = ?")
+            .bind(approval_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let updated_job = execution_job_from_row(&updated_job)?;
+        let updated_approval = approval_from_row(&updated_approval)?;
+        tx.commit().await?;
+        Ok(ExecutionApprovalMutation::Updated {
+            job: updated_job,
+            approval: updated_approval,
+        })
+    }
+}
+
+async fn approval_mutation_failure(
+    store: &SqliteStore,
+    id: &str,
+    expected_revision: u64,
+    reason: impl Into<String>,
+) -> Result<ApprovalMutation, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(match store.get_approval(id).await? {
+        Some(current) if current.revision != expected_revision => ApprovalMutation::Conflict {
+            current,
+            reason: reason.into(),
+        },
+        Some(current) => ApprovalMutation::Rejected {
+            current,
+            reason: reason.into(),
+        },
+        None => ApprovalMutation::NotFound,
+    })
 }
 
 #[async_trait::async_trait]
@@ -4434,17 +6300,534 @@ impl EventStore for SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::approval_authority::stable_approval_identity;
     use crate::memory::QueryFilter;
     use std::collections::HashMap;
     use std::sync::Arc;
     use tempfile::NamedTempFile;
 
-    async fn seed_execution_job(
+    async fn seed_scheduled_intent(store: &SqliteStore, suffix: &str) -> ScheduledIntentRecord {
+        let context_id = format!("schedule-context-{suffix}");
+        let session_id = format!("schedule-session-{suffix}");
+        let target_thread_id = format!("schedule-thread-{suffix}");
+        let dependency_thread_id = format!("schedule-dependency-{suffix}");
+        store
+            .create_context(NewCognitiveContext {
+                id: context_id.clone(),
+                agent_id: "schedule-agent".to_string(),
+                title: "Schedule Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: session_id.clone(),
+                agent_id: "schedule-agent".to_string(),
+                context_id: context_id.clone(),
+                parent_session_id: None,
+                title: "Schedule Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        for (thread_id, root_turn_id) in [
+            (&target_thread_id, format!("schedule-root-{suffix}")),
+            (
+                &dependency_thread_id,
+                format!("schedule-dependency-root-{suffix}"),
+            ),
+        ] {
+            store
+                .ensure_work_thread(NewWorkThread {
+                    id: thread_id.clone(),
+                    agent_id: "schedule-agent".to_string(),
+                    context_id: context_id.clone(),
+                    session_id: session_id.clone(),
+                    root_turn_id,
+                    kind: WorkThreadKind::Work,
+                    executor_kind: "self".to_string(),
+                    executor_id: None,
+                })
+                .await
+                .unwrap();
+        }
+        store
+            .ensure_scheduled_intent(NewScheduledIntent {
+                id: format!("schedule-{suffix}"),
+                thread_id: target_thread_id,
+                source_turn_id: format!("schedule-source-{suffix}"),
+                intent: format!("run schedule {suffix}"),
+                not_before: Some(Utc::now() + chrono::Duration::hours(1)),
+                interval_seconds: Some(60),
+                dependency_thread_ids: vec![dependency_thread_id],
+            })
+            .await
+            .unwrap()
+    }
+
+    async fn seed_delivery_fixture(
+        store: &SqliteStore,
+        suffix: &str,
+        thread_count: usize,
+    ) -> (String, String, Vec<WorkThreadRecord>) {
+        let context_id = format!("delivery-context-{suffix}");
+        let session_id = format!("delivery-session-{suffix}");
+        store
+            .create_context(NewCognitiveContext {
+                id: context_id.clone(),
+                agent_id: "delivery-agent".to_string(),
+                title: "Delivery Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: session_id.clone(),
+                agent_id: "delivery-agent".to_string(),
+                context_id: context_id.clone(),
+                parent_session_id: None,
+                title: "Delivery Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut threads = Vec::new();
+        for index in 0..thread_count {
+            threads.push(
+                store
+                    .ensure_work_thread(NewWorkThread {
+                        id: format!("delivery-thread-{suffix}-{index}"),
+                        agent_id: "delivery-agent".to_string(),
+                        context_id: context_id.clone(),
+                        session_id: session_id.clone(),
+                        root_turn_id: format!("delivery-root-{suffix}-{index}"),
+                        kind: WorkThreadKind::Work,
+                        executor_kind: "self".to_string(),
+                        executor_id: None,
+                    })
+                    .await
+                    .unwrap(),
+            );
+        }
+        (context_id, session_id, threads)
+    }
+
+    async fn mark_delivery_pending(
+        store: &SqliteStore,
+        thread: &WorkThreadRecord,
+        text: &str,
+        event_id: &str,
+        at: DateTime<Utc>,
+    ) -> WorkThreadRecord {
+        let updated = match store
+            .update_work_thread(
+                &thread.id,
+                thread.revision,
+                None,
+                Some(ThreadLifecycle::Completed),
+                Some(text),
+                Some(event_id),
+                Some(DeliveryStatus::Pending),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            WorkThreadMutation::Updated(thread) => thread,
+            other => panic!("unexpected Work Thread mutation: {other:?}"),
+        };
+        sqlx::query("UPDATE work_threads SET updated_at = ? WHERE id = ?")
+            .bind(at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .bind(&thread.id)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        store.get_work_thread(&updated.id).await.unwrap().unwrap()
+    }
+
+    #[tokio::test]
+    async fn scheduled_intent_control_plane_is_revision_fenced_and_atomic() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let store = SqliteStore::new(path).await.unwrap();
+        let created = seed_scheduled_intent(&store, "control").await;
+        assert_eq!(created.status, ScheduledIntentStatus::Queued);
+        assert_eq!(created.revision, 1);
+
+        assert!(matches!(
+            store.pause_scheduled_intent(&created.id, 0).await.unwrap(),
+            ScheduledIntentMutation::Conflict {
+                current: ScheduledIntentRecord { revision: 1, .. }
+            }
+        ));
+        let paused = match store
+            .pause_scheduled_intent(&created.id, created.revision)
+            .await
+            .unwrap()
+        {
+            ScheduledIntentMutation::Updated(record) => record,
+            other => panic!("unexpected pause result: {other:?}"),
+        };
+        assert_eq!(paused.status, ScheduledIntentStatus::Paused);
+        assert!(matches!(
+            store
+                .pause_scheduled_intent(&created.id, paused.revision)
+                .await
+                .unwrap(),
+            ScheduledIntentMutation::Rejected { .. }
+        ));
+
+        let next_due = Utc::now() + chrono::Duration::days(2);
+        let rescheduled = match store
+            .reschedule_scheduled_intent(&created.id, paused.revision, Some(next_due), Some(300))
+            .await
+            .unwrap()
+        {
+            ScheduledIntentMutation::Updated(record) => record,
+            other => panic!("unexpected reschedule result: {other:?}"),
+        };
+        assert_eq!(rescheduled.status, ScheduledIntentStatus::Paused);
+        assert_eq!(rescheduled.interval_seconds, Some(300));
+        assert_eq!(rescheduled.not_before, Some(next_due));
+        assert_eq!(
+            rescheduled.dependency_thread_ids,
+            created.dependency_thread_ids
+        );
+        let dependency_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM scheduled_intent_dependencies WHERE scheduled_intent_id = ?",
+        )
+        .bind(&created.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(dependency_count, 1);
+
+        let resumed = match store
+            .resume_scheduled_intent(&created.id, rescheduled.revision)
+            .await
+            .unwrap()
+        {
+            ScheduledIntentMutation::Updated(record) => record,
+            other => panic!("unexpected resume result: {other:?}"),
+        };
+        assert_eq!(resumed.status, ScheduledIntentStatus::Queued);
+        assert_eq!(
+            store
+                .inspect_scheduled_intent(&created.id)
+                .await
+                .unwrap()
+                .unwrap(),
+            resumed
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduled_intent_terminal_states_are_irreversible_and_paused_state_persists() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let store = SqliteStore::new(path).await.unwrap();
+
+        let cancelled_source = seed_scheduled_intent(&store, "cancelled").await;
+        let cancelled = match store
+            .cancel_scheduled_intent(&cancelled_source.id, cancelled_source.revision)
+            .await
+            .unwrap()
+        {
+            ScheduledIntentMutation::Updated(record) => record,
+            other => panic!("unexpected cancel result: {other:?}"),
+        };
+        assert_eq!(cancelled.status, ScheduledIntentStatus::Cancelled);
+        assert!(matches!(
+            store
+                .reschedule_scheduled_intent(
+                    &cancelled.id,
+                    cancelled.revision,
+                    Some(Utc::now()),
+                    None,
+                )
+                .await
+                .unwrap(),
+            ScheduledIntentMutation::Rejected { .. }
+        ));
+        assert!(matches!(
+            store
+                .cancel_scheduled_intent(&cancelled.id, cancelled.revision)
+                .await
+                .unwrap(),
+            ScheduledIntentMutation::Rejected { .. }
+        ));
+        assert!(
+            sqlx::query("UPDATE scheduled_intents SET status = 'queued' WHERE id = ?")
+                .bind(&cancelled.id)
+                .execute(&store.pool)
+                .await
+                .is_err()
+        );
+
+        let completed_source = seed_scheduled_intent(&store, "completed").await;
+        sqlx::query(
+            "UPDATE scheduled_intents SET status = 'completed', revision = revision + 1 WHERE id = ?",
+        )
+        .bind(&completed_source.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let completed = store
+            .get_scheduled_intent(&completed_source.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(completed.status.is_terminal());
+        assert!(matches!(
+            store
+                .pause_scheduled_intent(&completed.id, completed.revision)
+                .await
+                .unwrap(),
+            ScheduledIntentMutation::Rejected { .. }
+        ));
+        assert!(matches!(
+            store
+                .cancel_scheduled_intent(&completed.id, completed.revision)
+                .await
+                .unwrap(),
+            ScheduledIntentMutation::Rejected { .. }
+        ));
+        assert!(
+            sqlx::query("UPDATE scheduled_intents SET status = 'queued' WHERE id = ?")
+                .bind(&completed.id)
+                .execute(&store.pool)
+                .await
+                .is_err()
+        );
+
+        let dispatched_source = seed_scheduled_intent(&store, "dispatched").await;
+        sqlx::query(
+            "UPDATE scheduled_intents SET status = 'dispatched', revision = revision + 1 WHERE id = ?",
+        )
+        .bind(&dispatched_source.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let dispatched = store
+            .get_scheduled_intent(&dispatched_source.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            store
+                .reschedule_scheduled_intent(
+                    &dispatched.id,
+                    dispatched.revision,
+                    Some(Utc::now()),
+                    None,
+                )
+                .await
+                .unwrap(),
+            ScheduledIntentMutation::Rejected { .. }
+        ));
+        assert!(matches!(
+            store
+                .cancel_scheduled_intent(&dispatched.id, dispatched.revision)
+                .await
+                .unwrap(),
+            ScheduledIntentMutation::Rejected { .. }
+        ));
+
+        let persistent_source = seed_scheduled_intent(&store, "persistent").await;
+        let persistent_paused = match store
+            .pause_scheduled_intent(&persistent_source.id, persistent_source.revision)
+            .await
+            .unwrap()
+        {
+            ScheduledIntentMutation::Updated(record) => record,
+            other => panic!("unexpected persistent pause result: {other:?}"),
+        };
+        store.pool.close().await;
+        drop(store);
+
+        let reopened = SqliteStore::new(path).await.unwrap();
+        assert_eq!(
+            reopened
+                .inspect_scheduled_intent(&persistent_paused.id)
+                .await
+                .unwrap()
+                .unwrap(),
+            persistent_paused
+        );
+        assert_eq!(
+            reopened
+                .get_scheduled_intent(&cancelled.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScheduledIntentStatus::Cancelled
+        );
+        assert_eq!(
+            reopened
+                .get_scheduled_intent(&completed.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScheduledIntentStatus::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn migrates_legacy_schedule_schema_without_losing_rows_or_dependencies() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let legacy = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(path)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE sessions (
+                id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, context_id TEXT NOT NULL,
+                parent_session_id TEXT, title TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('active', 'archived')),
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                last_activity_at TEXT NOT NULL
+            )"#,
+        )
+        .execute(&legacy)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE work_threads (
+                id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+                agent_id TEXT NOT NULL, context_id TEXT NOT NULL,
+                session_id TEXT NOT NULL, root_turn_id TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL CHECK(kind IN ('dialogue', 'work', 'objective', 'delegation', 'delivery')),
+                status TEXT NOT NULL CHECK(status IN ('active', 'completed', 'failed', 'cancelled')),
+                executor_kind TEXT NOT NULL, executor_id TEXT, result_text TEXT,
+                result_event_id TEXT,
+                delivery_status TEXT NOT NULL DEFAULT 'none' CHECK(delivery_status IN ('none', 'pending', 'deferred', 'delivered')),
+                delivery_event_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(&legacy)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE scheduled_intents (
+                id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+                thread_id TEXT NOT NULL, source_turn_id TEXT NOT NULL,
+                intent TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('queued', 'dispatched', 'completed', 'cancelled')),
+                not_before TEXT,
+                interval_seconds INTEGER CHECK(interval_seconds IS NULL OR interval_seconds > 0),
+                dependency_thread_ids_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                FOREIGN KEY(thread_id) REFERENCES work_threads(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(&legacy)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE scheduled_intent_dependencies (
+                scheduled_intent_id TEXT NOT NULL,
+                dependency_thread_id TEXT NOT NULL,
+                PRIMARY KEY(scheduled_intent_id, dependency_thread_id),
+                FOREIGN KEY(scheduled_intent_id) REFERENCES scheduled_intents(id) ON DELETE CASCADE,
+                FOREIGN KEY(dependency_thread_id) REFERENCES work_threads(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(&legacy)
+        .await
+        .unwrap();
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            "INSERT INTO sessions (id, agent_id, context_id, title, status, created_at, updated_at, last_activity_at) VALUES ('legacy-session', 'legacy-agent', 'legacy-context', 'legacy', 'active', ?, ?, ?)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&legacy)
+        .await
+        .unwrap();
+        for (id, root) in [
+            ("legacy-target", "legacy-target-root"),
+            ("legacy-dependency", "legacy-dependency-root"),
+        ] {
+            sqlx::query(
+                "INSERT INTO work_threads (id, revision, agent_id, context_id, session_id, root_turn_id, kind, status, executor_kind, delivery_status, created_at, updated_at) VALUES (?, 7, 'legacy-agent', 'legacy-context', 'legacy-session', ?, 'work', 'active', 'self', 'none', ?, ?)",
+            )
+            .bind(id)
+            .bind(root)
+            .bind(&now)
+            .bind(&now)
+            .execute(&legacy)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO scheduled_intents (id, revision, thread_id, source_turn_id, intent, status, not_before, interval_seconds, dependency_thread_ids_json, created_at, updated_at) VALUES ('legacy-schedule', 11, 'legacy-target', 'legacy-source', 'legacy intent', 'queued', ?, 90, '[\"legacy-dependency\"]', ?, ?)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&legacy)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO scheduled_intent_dependencies (scheduled_intent_id, dependency_thread_id) VALUES ('legacy-schedule', 'legacy-dependency')",
+        )
+        .execute(&legacy)
+        .await
+        .unwrap();
+        legacy.close().await;
+
+        let migrated = SqliteStore::new(path).await.unwrap();
+        let schedule = migrated
+            .get_scheduled_intent("legacy-schedule")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(schedule.revision, 11);
+        assert_eq!(schedule.status, ScheduledIntentStatus::Queued);
+        assert_eq!(schedule.interval_seconds, Some(90));
+        assert_eq!(
+            schedule.dependency_thread_ids,
+            vec!["legacy-dependency".to_string()]
+        );
+        let reverse_index = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM scheduled_intent_dependencies WHERE scheduled_intent_id = 'legacy-schedule' AND dependency_thread_id = 'legacy-dependency'",
+        )
+        .fetch_one(&migrated.pool)
+        .await
+        .unwrap();
+        assert_eq!(reverse_index, 1);
+        let foreign_key_errors = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&migrated.pool)
+            .await
+            .unwrap();
+        assert!(foreign_key_errors.is_empty());
+        let table_sql = sqlx::query_scalar::<_, String>(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_intents'",
+        )
+        .fetch_one(&migrated.pool)
+        .await
+        .unwrap();
+        assert!(table_sql.contains("'paused'"));
+    }
+
+    async fn seed_execution_job_input(
         store: &SqliteStore,
         suffix: &str,
         requires_approval: bool,
         retry_safety: ExecutionRetrySafety,
-    ) -> ExecutionJobRecord {
+    ) -> NewExecutionJob {
         let context_id = format!("job-context-{suffix}");
         let session_id = format!("job-session-{suffix}");
         let thread_id = format!("job-thread-{suffix}");
@@ -4496,22 +6879,987 @@ mod tests {
             })
             .await
             .unwrap();
-        store
-            .create_execution_job(NewExecutionJob {
-                id: format!("job-{suffix}"),
-                activation_id,
-                thread_id,
-                agent_id: "job-agent".to_string(),
-                context_id,
-                session_id,
-                tool_call_id: format!("call-{suffix}"),
-                tool_name: "exec".to_string(),
-                request: serde_json::json!({"command": "printf ok"}),
-                retry_safety,
-                requires_approval,
+        NewExecutionJob {
+            id: format!("job-{suffix}"),
+            activation_id,
+            thread_id,
+            agent_id: "job-agent".to_string(),
+            context_id,
+            session_id,
+            tool_call_id: format!("call-{suffix}"),
+            tool_name: "exec".to_string(),
+            request: serde_json::json!({"command": "printf ok"}),
+            retry_safety,
+            requires_approval,
+        }
+    }
+
+    async fn seed_execution_job(
+        store: &SqliteStore,
+        suffix: &str,
+        requires_approval: bool,
+        retry_safety: ExecutionRetrySafety,
+    ) -> ExecutionJobRecord {
+        let job = seed_execution_job_input(store, suffix, requires_approval, retry_safety).await;
+        store.create_execution_job(job).await.unwrap()
+    }
+
+    fn new_approval_request_for_job(
+        job_id: &str,
+        pending_status: ApprovalStatus,
+    ) -> NewApprovalRequest {
+        let action = serde_json::json!({
+            "kind": "shell",
+            "command": "cargo test",
+            "cwd": "/workspace",
+        });
+        let requested = serde_json::json!({
+            "network": true,
+            "read_roots": ["/outside/read"],
+        });
+        let identity =
+            stable_approval_identity(job_id, &action, &requested, "permission-profile-v1").unwrap();
+        NewApprovalRequest {
+            id: identity.approval_id,
+            job_id: job_id.to_string(),
+            request_digest: identity.request_digest,
+            policy_digest: identity.policy_digest,
+            action,
+            requested,
+            justification: "测试需要读取工作区外 fixture".to_string(),
+            pending_status,
+        }
+    }
+
+    fn new_approval_request(
+        job: &ExecutionJobRecord,
+        pending_status: ApprovalStatus,
+    ) -> NewApprovalRequest {
+        new_approval_request_for_job(&job.id, pending_status)
+    }
+
+    fn approval_request_event(job: &NewExecutionJob, approval: &NewApprovalRequest) -> Event {
+        Event::new(
+            format!("approval-requested-{}", approval.id),
+            "System-PermissionBroker".to_string(),
+            "approval_requested".to_string(),
+            "runtime/approval_requested".to_string(),
+            serde_json::json!({
+                "approval_id": approval.id,
+                "job_id": job.id,
+                "request_digest": approval.request_digest,
+                "policy_digest": approval.policy_digest,
+                "activation_id": job.activation_id,
+                "thread_id": job.thread_id,
+                "context_id": job.context_id,
+                "session_id": job.session_id,
+                "tool_call_id": job.tool_call_id,
+                "action": approval.action,
+                "requested": approval.requested,
+                "justification": approval.justification,
+            })
+            .as_object()
+            .expect("approval Event payload must be an object")
+            .clone(),
+        )
+    }
+
+    #[tokio::test]
+    async fn execution_job_approval_and_request_event_are_created_atomically_and_replayable() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap().to_string();
+        let store = SqliteStore::new(&path).await.unwrap();
+        let job = seed_execution_job_input(
+            &store,
+            "approval-atomic-create",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let approval = new_approval_request_for_job(&job.id, ApprovalStatus::PendingHuman);
+        let event = approval_request_event(&job, &approval);
+
+        let (created_job, created_approval) = match store
+            .ensure_execution_job_with_approval(job.clone(), approval.clone(), &event)
+            .await
+            .unwrap()
+        {
+            ExecutionApprovalMutation::Created { job, approval } => (job, approval),
+            other => panic!("unexpected atomic ensure result: {other:?}"),
+        };
+        assert_eq!(created_job.status, ExecutionJobStatus::WaitingApproval);
+        assert_eq!(created_approval.status, ApprovalStatus::PendingHuman);
+        assert_eq!(created_job.revision, 1);
+        assert_eq!(created_approval.revision, 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events WHERE id = ?")
+                .bind(&event.id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(matches!(
+            store
+                .ensure_execution_job_with_approval(job, approval.clone(), &event)
+                .await
+                .unwrap(),
+            ExecutionApprovalMutation::Existing { job, approval: replayed }
+                if job == created_job && replayed == created_approval
+        ));
+
+        store.pool.close().await;
+        drop(store);
+        let restarted = SqliteStore::new(&path).await.unwrap();
+        assert_eq!(
+            restarted.get_execution_job(&created_job.id).await.unwrap(),
+            Some(created_job)
+        );
+        assert_eq!(
+            restarted.get_approval(&approval.id).await.unwrap(),
+            Some(created_approval)
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_or_conflicting_approval_event_rolls_back_job_and_approval() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let job = seed_execution_job_input(
+            &store,
+            "approval-event-rollback",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let approval = new_approval_request_for_job(&job.id, ApprovalStatus::PendingAuto);
+        let mut malformed = approval_request_event(&job, &approval);
+        malformed
+            .payload
+            .insert("session_id".to_string(), serde_json::json!("wrong-session"));
+        assert!(store
+            .ensure_execution_job_with_approval(job.clone(), approval.clone(), &malformed)
+            .await
+            .is_err());
+        assert!(store.get_execution_job(&job.id).await.unwrap().is_none());
+        assert!(store.get_approval(&approval.id).await.unwrap().is_none());
+
+        let event = approval_request_event(&job, &approval);
+        let mut conflicting_event = event.clone();
+        conflicting_event.actor = "Different-Actor".to_string();
+        store.append(conflicting_event).await.unwrap();
+        assert!(store
+            .ensure_execution_job_with_approval(job.clone(), approval.clone(), &event)
+            .await
+            .is_err());
+        assert!(store.get_execution_job(&job.id).await.unwrap().is_none());
+        assert!(store.get_approval(&approval.id).await.unwrap().is_none());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events WHERE id = ?")
+                .bind(&event.id)
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn allowed_grant_is_atomically_consumed_with_job_claim_and_exact_retry() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap().to_string();
+        let store = SqliteStore::new(&path).await.unwrap();
+        let job = seed_execution_job_input(
+            &store,
+            "approval-grant-claim",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let approval = new_approval_request_for_job(&job.id, ApprovalStatus::PendingAuto);
+        let event = approval_request_event(&job, &approval);
+        let (waiting_job, pending) = match store
+            .ensure_execution_job_with_approval(job, approval, &event)
+            .await
+            .unwrap()
+        {
+            ExecutionApprovalMutation::Created { job, approval } => (job, approval),
+            other => panic!("unexpected atomic ensure result: {other:?}"),
+        };
+        let allowed = match store
+            .commit_approval_decision(
+                &pending.id,
+                pending.revision,
+                ApprovalResolution::Allow {
+                    rationale: "能力边界准确".to_string(),
+                    risk_tags: vec!["network".to_string()],
+                },
+            )
+            .await
+            .unwrap()
+            .mutation
+        {
+            ApprovalMutation::Updated(record) => record,
+            other => panic!("unexpected allow result: {other:?}"),
+        };
+        store.pool.close().await;
+        drop(store);
+
+        let restarted = SqliteStore::new(&path).await.unwrap();
+        let lease = Utc::now() + chrono::Duration::minutes(2);
+        let (running, consumed) = match restarted
+            .claim_execution_job_with_grant(
+                &waiting_job.id,
+                waiting_job.revision,
+                &allowed.id,
+                allowed.revision,
+                "worker-a",
+                "claim-a",
+                lease,
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionApprovalMutation::Updated { job, approval } => (job, approval),
+            other => panic!("unexpected grant claim result: {other:?}"),
+        };
+        assert_eq!(running.status, ExecutionJobStatus::Running);
+        assert_eq!(running.revision, waiting_job.revision + 1);
+        assert_eq!(running.approval_ref, consumed.grant_id);
+        assert_eq!(consumed.revision, allowed.revision + 1);
+        assert!(consumed.grant_consumed_at.is_some());
+        assert_eq!(consumed.consumed_by_claim_token.as_deref(), Some("claim-a"));
+        assert!(matches!(
+            restarted
+                .claim_execution_job_with_grant(
+                    &waiting_job.id,
+                    waiting_job.revision,
+                    &allowed.id,
+                    allowed.revision,
+                    "worker-a",
+                    "claim-a",
+                    lease,
+                )
+                .await
+                .unwrap(),
+            ExecutionApprovalMutation::Existing { job, approval }
+                if job == running && approval == consumed
+        ));
+        let decision_replay = restarted
+            .commit_approval_decision(
+                &allowed.id,
+                allowed.revision,
+                ApprovalResolution::Allow {
+                    rationale: "能力边界准确".to_string(),
+                    risk_tags: vec!["network".to_string()],
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            decision_replay.mutation,
+            ApprovalMutation::Existing(record) if record == consumed
+        ));
+        assert!(
+            !decision_replay.event_created,
+            "grant consumption advances Approval revision but must not create another decision Event"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_revision_never_consumes_grant_and_competing_claim_is_fenced() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let job = seed_execution_job_input(
+            &store,
+            "approval-grant-fence",
+            true,
+            ExecutionRetrySafety::ReconcileRequired,
+        )
+        .await;
+        let approval = new_approval_request_for_job(&job.id, ApprovalStatus::PendingHuman);
+        let event = approval_request_event(&job, &approval);
+        let (waiting, pending) = match store
+            .ensure_execution_job_with_approval(job, approval, &event)
+            .await
+            .unwrap()
+        {
+            ExecutionApprovalMutation::Created { job, approval } => (job, approval),
+            other => panic!("unexpected ensure result: {other:?}"),
+        };
+        let allowed = match store
+            .commit_approval_decision(
+                &pending.id,
+                pending.revision,
+                ApprovalResolution::Allow {
+                    rationale: "人工批准".to_string(),
+                    risk_tags: vec![],
+                },
+            )
+            .await
+            .unwrap()
+            .mutation
+        {
+            ApprovalMutation::Updated(record) => record,
+            other => panic!("unexpected allow result: {other:?}"),
+        };
+        let lease = Utc::now() + chrono::Duration::minutes(1);
+        assert!(matches!(
+            store
+                .claim_execution_job_with_grant(
+                    &waiting.id,
+                    waiting.revision + 1,
+                    &allowed.id,
+                    allowed.revision,
+                    "worker-a",
+                    "claim-a",
+                    lease,
+                )
+                .await
+                .unwrap(),
+            ExecutionApprovalMutation::Conflict { .. }
+        ));
+        let unchanged = store.get_approval(&allowed.id).await.unwrap().unwrap();
+        assert!(unchanged.grant_consumed_at.is_none());
+        assert_eq!(unchanged.revision, allowed.revision);
+
+        let claimed = match store
+            .claim_execution_job_with_grant(
+                &waiting.id,
+                waiting.revision,
+                &allowed.id,
+                allowed.revision,
+                "worker-a",
+                "claim-a",
+                lease,
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionApprovalMutation::Updated { job, approval } => (job, approval),
+            other => panic!("unexpected claim result: {other:?}"),
+        };
+        assert!(matches!(
+            store
+                .claim_execution_job_with_grant(
+                    &waiting.id,
+                    claimed.0.revision,
+                    &allowed.id,
+                    claimed.1.revision,
+                    "worker-b",
+                    "claim-b",
+                    lease,
+                )
+                .await
+                .unwrap(),
+            ExecutionApprovalMutation::Rejected { .. } | ExecutionApprovalMutation::Conflict { .. }
+        ));
+        assert_eq!(
+            store
+                .get_approval(&allowed.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .consumed_by_claim_token
+                .as_deref(),
+            Some("claim-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_denied_or_wrong_job_grant_cannot_claim_execution_job() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let first_job = seed_execution_job_input(
+            &store,
+            "approval-grant-owner-a",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let first_approval =
+            new_approval_request_for_job(&first_job.id, ApprovalStatus::PendingHuman);
+        let first_event = approval_request_event(&first_job, &first_approval);
+        let (first_waiting, first_pending) = match store
+            .ensure_execution_job_with_approval(first_job, first_approval, &first_event)
+            .await
+            .unwrap()
+        {
+            ExecutionApprovalMutation::Created { job, approval } => (job, approval),
+            other => panic!("unexpected first ensure: {other:?}"),
+        };
+        let lease = Utc::now() + chrono::Duration::minutes(1);
+        assert!(matches!(
+            store
+                .claim_execution_job_with_grant(
+                    &first_waiting.id,
+                    first_waiting.revision,
+                    &first_pending.id,
+                    first_pending.revision,
+                    "worker-a",
+                    "claim-pending",
+                    lease,
+                )
+                .await
+                .unwrap(),
+            ExecutionApprovalMutation::Rejected { .. }
+        ));
+
+        let second_job = seed_execution_job_input(
+            &store,
+            "approval-grant-owner-b",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let second_approval =
+            new_approval_request_for_job(&second_job.id, ApprovalStatus::PendingAuto);
+        let second_event = approval_request_event(&second_job, &second_approval);
+        let (_second_waiting, second_pending) = match store
+            .ensure_execution_job_with_approval(second_job, second_approval, &second_event)
+            .await
+            .unwrap()
+        {
+            ExecutionApprovalMutation::Created { job, approval } => (job, approval),
+            other => panic!("unexpected second ensure: {other:?}"),
+        };
+        let second_allowed = match store
+            .commit_approval_decision(
+                &second_pending.id,
+                second_pending.revision,
+                ApprovalResolution::Allow {
+                    rationale: "只允许第二个 Job".to_string(),
+                    risk_tags: vec![],
+                },
+            )
+            .await
+            .unwrap()
+            .mutation
+        {
+            ApprovalMutation::Updated(record) => record,
+            other => panic!("unexpected second allow: {other:?}"),
+        };
+        assert!(matches!(
+            store
+                .claim_execution_job_with_grant(
+                    &first_waiting.id,
+                    first_waiting.revision,
+                    &second_allowed.id,
+                    second_allowed.revision,
+                    "worker-a",
+                    "claim-wrong-owner",
+                    lease,
+                )
+                .await
+                .unwrap(),
+            ExecutionApprovalMutation::Rejected { .. }
+        ));
+        assert!(store
+            .get_approval(&second_allowed.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .grant_consumed_at
+            .is_none());
+
+        let denied = match store
+            .commit_approval_decision(
+                &first_pending.id,
+                first_pending.revision,
+                ApprovalResolution::Deny {
+                    rationale: "拒绝第一个 Job".to_string(),
+                    risk_tags: vec![],
+                },
+            )
+            .await
+            .unwrap()
+            .mutation
+        {
+            ApprovalMutation::Updated(record) => record,
+            other => panic!("unexpected deny: {other:?}"),
+        };
+        assert!(matches!(
+            store
+                .claim_execution_job_with_grant(
+                    &first_waiting.id,
+                    first_waiting.revision,
+                    &denied.id,
+                    denied.revision,
+                    "worker-a",
+                    "claim-denied",
+                    lease,
+                )
+                .await
+                .unwrap(),
+            ExecutionApprovalMutation::Rejected { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn approval_request_is_durable_and_exact_replay_is_fenced() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap().to_string();
+        let store = SqliteStore::new(&path).await.unwrap();
+        let job = seed_execution_job(
+            &store,
+            "approval-durable",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let request = new_approval_request(&job, ApprovalStatus::PendingHuman);
+        let created = match store
+            .ensure_approval_request(request.clone())
+            .await
+            .unwrap()
+        {
+            ApprovalMutation::Created(record) => record,
+            other => panic!("unexpected approval creation: {other:?}"),
+        };
+        assert_eq!(created.revision, 1);
+        assert_eq!(created.status, ApprovalStatus::PendingHuman);
+        let mut forged = request.clone();
+        forged.id = "approval_forged".to_string();
+        assert!(store.ensure_approval_request(forged).await.is_err());
+        assert_eq!(
+            store
+                .ensure_approval_request(request.clone())
+                .await
+                .unwrap(),
+            ApprovalMutation::Existing(created.clone())
+        );
+
+        let mut conflicting = request.clone();
+        conflicting.justification = "不同说明不能伪装成精确重放".to_string();
+        assert!(matches!(
+            store.ensure_approval_request(conflicting).await.unwrap(),
+            ApprovalMutation::Conflict { .. }
+        ));
+        let pending = store
+            .list_approvals(ApprovalFilter {
+                pending_only: true,
+                ..ApprovalFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(pending, vec![created.clone()]);
+
+        store.pool.close().await;
+        drop(store);
+        let restarted = SqliteStore::new(&path).await.unwrap();
+        assert_eq!(
+            restarted.get_approval(&request.id).await.unwrap(),
+            Some(created)
+        );
+        assert_eq!(
+            restarted
+                .list_approvals(ApprovalFilter {
+                    status: Some(ApprovalStatus::PendingHuman),
+                    ..ApprovalFilter::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn approval_allow_and_deny_decisions_are_revision_fenced_and_idempotent() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let allow_job = seed_execution_job(
+            &store,
+            "approval-allow",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let allow_request = new_approval_request(&allow_job, ApprovalStatus::PendingAuto);
+        let pending = match store
+            .ensure_approval_request(allow_request.clone())
+            .await
+            .unwrap()
+        {
+            ApprovalMutation::Created(record) => record,
+            other => panic!("unexpected approval creation: {other:?}"),
+        };
+        let allow = ApprovalResolution::Allow {
+            rationale: "范围准确且与用户任务直接相关".to_string(),
+            risk_tags: vec!["network".to_string()],
+        };
+        let allowed = match store
+            .commit_approval_decision(&pending.id, pending.revision, allow.clone())
+            .await
+            .unwrap()
+            .mutation
+        {
+            ApprovalMutation::Updated(record) => record,
+            other => panic!("unexpected allow decision: {other:?}"),
+        };
+        assert_eq!(allowed.status, ApprovalStatus::Allowed);
+        assert_eq!(allowed.revision, 2);
+        assert!(allowed.grant_id.is_some());
+        assert!(matches!(
+            store
+                .commit_approval_decision(&pending.id, pending.revision, allow)
+                .await
+                .unwrap()
+                .mutation,
+            ApprovalMutation::Existing(record) if record == allowed
+        ));
+        assert!(matches!(
+            store
+                .commit_approval_decision(
+                    &pending.id,
+                    allowed.revision,
+                    ApprovalResolution::Deny {
+                        rationale: "opposite replay".to_string(),
+                        risk_tags: vec![],
+                    },
+                )
+                .await
+                .unwrap()
+                .mutation,
+            ApprovalMutation::Rejected { .. }
+        ));
+
+        let deny_job = seed_execution_job(
+            &store,
+            "approval-deny",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let deny_request = new_approval_request(&deny_job, ApprovalStatus::PendingHuman);
+        let pending = match store.ensure_approval_request(deny_request).await.unwrap() {
+            ApprovalMutation::Created(record) => record,
+            other => panic!("unexpected approval creation: {other:?}"),
+        };
+        let deny = ApprovalResolution::Deny {
+            rationale: "用户拒绝本次越界访问".to_string(),
+            risk_tags: vec!["human-denied".to_string()],
+        };
+        assert!(matches!(
+            store
+                .commit_approval_decision(&pending.id, pending.revision + 1, deny.clone())
+                .await
+                .unwrap()
+                .mutation,
+            ApprovalMutation::Conflict { .. }
+        ));
+        let denied = match store
+            .commit_approval_decision(&pending.id, pending.revision, deny.clone())
+            .await
+            .unwrap()
+            .mutation
+        {
+            ApprovalMutation::Updated(record) => record,
+            other => panic!("unexpected deny decision: {other:?}"),
+        };
+        assert_eq!(denied.status, ApprovalStatus::Denied);
+        assert!(denied.grant_id.is_none());
+        assert!(matches!(
+            store
+                .commit_approval_decision(&pending.id, pending.revision, deny)
+                .await
+                .unwrap()
+                .mutation,
+            ApprovalMutation::Existing(record) if record == denied
+        ));
+    }
+
+    #[tokio::test]
+    async fn approval_decision_event_is_atomic_and_exact_replay_repairs_legacy_gap() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+
+        // Simulate data written by an older Runtime which committed the
+        // authority transition but crashed before appending its audit Event.
+        let legacy_job = seed_execution_job(
+            &store,
+            "approval-legacy-decision-gap",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let pending = match store
+            .ensure_approval_request(new_approval_request(
+                &legacy_job,
+                ApprovalStatus::PendingAuto,
+            ))
+            .await
+            .unwrap()
+        {
+            ApprovalMutation::Created(record) => record,
+            other => panic!("unexpected approval creation: {other:?}"),
+        };
+        let rationale = "legacy authority already allowed";
+        let risk_tags = vec!["legacy-repair".to_string()];
+        let grant_id =
+            stable_grant_id(&pending.id, &pending.request_digest, &pending.policy_digest).unwrap();
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            "UPDATE approval_requests SET revision = 2, status = 'allowed', rationale = ?, risk_tags_json = ?, grant_id = ?, updated_at = ?, decided_at = ? WHERE id = ?",
+        )
+        .bind(rationale)
+        .bind(serde_json::to_string(&risk_tags).unwrap())
+        .bind(grant_id)
+        .bind(&now)
+        .bind(&now)
+        .bind(&pending.id)
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        let repaired = store
+            .commit_approval_decision(
+                &pending.id,
+                pending.revision,
+                ApprovalResolution::Allow {
+                    rationale: rationale.to_string(),
+                    risk_tags: risk_tags.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        let repaired_record = match repaired.mutation {
+            ApprovalMutation::Existing(record) => record,
+            other => panic!("unexpected legacy repair result: {other:?}"),
+        };
+        assert!(repaired.event_created);
+        let repaired_event = repaired.event.as_ref().expect("repaired audit event");
+        assert_eq!(
+            repaired_event
+                .payload
+                .get("context_id")
+                .and_then(JsonValue::as_str),
+            Some(legacy_job.context_id.as_str())
+        );
+        assert_eq!(
+            repaired_event
+                .payload
+                .get("session_id")
+                .and_then(JsonValue::as_str),
+            Some(legacy_job.session_id.as_str())
+        );
+        assert_eq!(
+            repaired_event
+                .payload
+                .get("correlation_id")
+                .and_then(JsonValue::as_str),
+            Some(pending.id.as_str())
+        );
+        assert_eq!(repaired_record.revision, 2);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events WHERE id = ?")
+                .bind(format!(
+                    "approval_decided_{}_{}",
+                    pending.id,
+                    repaired_record.status.as_str()
+                ))
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            1
+        );
+        let replay = store
+            .commit_approval_decision(
+                &pending.id,
+                pending.revision,
+                ApprovalResolution::Allow {
+                    rationale: rationale.to_string(),
+                    risk_tags,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!replay.event_created);
+        assert!(matches!(replay.mutation, ApprovalMutation::Existing(_)));
+
+        // A conflicting immutable Event must abort the whole authority
+        // transition, proving the state and audit fact share one transaction.
+        let rollback_job = seed_execution_job(
+            &store,
+            "approval-decision-event-rollback",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let rollback_pending = match store
+            .ensure_approval_request(new_approval_request(
+                &rollback_job,
+                ApprovalStatus::PendingHuman,
+            ))
+            .await
+            .unwrap()
+        {
+            ApprovalMutation::Created(record) => record,
+            other => panic!("unexpected rollback approval creation: {other:?}"),
+        };
+        let mut conflicting_record = rollback_pending.clone();
+        conflicting_record.revision += 1;
+        conflicting_record.status = ApprovalStatus::Denied;
+        conflicting_record.rationale = Some("denied atomically".to_string());
+        conflicting_record.risk_tags = vec!["conflict".to_string()];
+        conflicting_record.updated_at = Utc::now();
+        conflicting_record.decided_at = Some(conflicting_record.updated_at);
+        let mut conflicting_event = approval_decision_event(&conflicting_record, &rollback_job);
+        conflicting_event.actor = "Conflicting-Authority".to_string();
+        store.append(conflicting_event).await.unwrap();
+
+        assert!(store
+            .commit_approval_decision(
+                &rollback_pending.id,
+                rollback_pending.revision,
+                ApprovalResolution::Deny {
+                    rationale: "denied atomically".to_string(),
+                    risk_tags: vec!["conflict".to_string()],
+                },
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            store
+                .get_approval(&rollback_pending.id)
+                .await
+                .unwrap()
+                .unwrap(),
+            rollback_pending
+        );
+    }
+
+    #[tokio::test]
+    async fn pending_or_unconsumed_allowed_approval_can_be_cancelled() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+
+        let pending_job = seed_execution_job(
+            &store,
+            "approval-cancel-pending",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let pending = match store
+            .ensure_approval_request(new_approval_request(
+                &pending_job,
+                ApprovalStatus::PendingHuman,
+            ))
+            .await
+            .unwrap()
+        {
+            ApprovalMutation::Created(record) => record,
+            other => panic!("unexpected approval creation: {other:?}"),
+        };
+        let cancelled = match store
+            .commit_approval_cancellation(&pending.id, pending.revision, "用户取消了对应任务")
+            .await
+            .unwrap()
+            .mutation
+        {
+            ApprovalMutation::Updated(record) => record,
+            other => panic!("unexpected approval cancellation: {other:?}"),
+        };
+        assert_eq!(cancelled.status, ApprovalStatus::Cancelled);
+        assert!(cancelled.cancelled_at.is_some());
+        assert!(matches!(
+            store
+                .commit_approval_cancellation(&pending.id, pending.revision, "用户取消了对应任务")
+                .await
+                .unwrap()
+                .mutation,
+            ApprovalMutation::Existing(record) if record == cancelled
+        ));
+
+        let allowed_job = seed_execution_job(
+            &store,
+            "approval-cancel-allowed",
+            true,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let allowed_pending = match store
+            .ensure_approval_request(new_approval_request(
+                &allowed_job,
+                ApprovalStatus::PendingAuto,
+            ))
+            .await
+            .unwrap()
+        {
+            ApprovalMutation::Created(record) => record,
+            other => panic!("unexpected approval creation: {other:?}"),
+        };
+        let allowed = match store
+            .commit_approval_decision(
+                &allowed_pending.id,
+                allowed_pending.revision,
+                ApprovalResolution::Allow {
+                    rationale: "允许一次".to_string(),
+                    risk_tags: vec![],
+                },
+            )
+            .await
+            .unwrap()
+            .mutation
+        {
+            ApprovalMutation::Updated(record) => record,
+            other => panic!("unexpected allow decision: {other:?}"),
+        };
+        let cancelled = match store
+            .commit_approval_cancellation(&allowed.id, allowed.revision, "执行前撤销")
+            .await
+            .unwrap()
+            .mutation
+        {
+            ApprovalMutation::Updated(record) => record,
+            other => panic!("unexpected allowed cancellation: {other:?}"),
+        };
+        assert_eq!(cancelled.status, ApprovalStatus::Cancelled);
+        assert!(cancelled.grant_id.is_none());
+        let cancellation_event_id = format!(
+            "approval_decided_{}_{}",
+            cancelled.id,
+            ApprovalStatus::Cancelled.as_str()
+        );
+        let cancellation_event = store
+            .query(QueryFilter {
+                event_id: Some(cancellation_event_id.clone()),
+                ..Default::default()
             })
             .await
             .unwrap()
+            .into_iter()
+            .find(|event| event.id == cancellation_event_id)
+            .expect("cancellation audit Event must be durable");
+        assert_eq!(
+            cancellation_event.payload["rationale"],
+            serde_json::json!("执行前撤销")
+        );
+        assert_eq!(
+            cancellation_event.payload["cancel_reason"],
+            serde_json::json!("执行前撤销")
+        );
+        assert_eq!(
+            cancellation_event.payload["risk_tags"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            cancellation_event.timestamp,
+            cancelled.cancelled_at.unwrap()
+        );
     }
 
     #[tokio::test]
@@ -4808,6 +8156,567 @@ mod tests {
                 .unwrap(),
             succeeded
         );
+    }
+
+    #[tokio::test]
+    async fn execution_job_terminal_and_result_event_commit_atomically_before_batch_signal() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let created = seed_execution_job(
+            &store,
+            "atomic-result",
+            false,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let claimed = match store
+            .claim_execution_job(
+                &created.id,
+                created.revision,
+                "worker",
+                "claim-atomic",
+                Utc::now() + chrono::Duration::minutes(1),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected claim: {other:?}"),
+        };
+        let result_event = Event::new(
+            "atomic-job-result".to_string(),
+            "System-Executor".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::from_iter([
+                (
+                    "context_id".to_string(),
+                    serde_json::json!(created.context_id),
+                ),
+                (
+                    "session_id".to_string(),
+                    serde_json::json!(created.session_id),
+                ),
+                (
+                    "work_item_id".to_string(),
+                    serde_json::json!(created.activation_id),
+                ),
+                (
+                    "work_thread_id".to_string(),
+                    serde_json::json!(created.thread_id),
+                ),
+                (
+                    "tool_call_id".to_string(),
+                    serde_json::json!(created.tool_call_id),
+                ),
+                (
+                    "tool_name".to_string(),
+                    serde_json::json!(created.tool_name),
+                ),
+                ("text".to_string(), serde_json::json!("ok")),
+            ]),
+        );
+        let terminal = ExecutionJobTerminal {
+            status: ExecutionJobStatus::Succeeded,
+            result_event_id: Some(result_event.id.clone()),
+            result_refs: Vec::new(),
+            error: None,
+            exit_code: Some(0),
+        };
+
+        let mut misrouted = result_event.clone();
+        misrouted.payload.insert(
+            "work_thread_id".to_string(),
+            serde_json::json!("another-thread"),
+        );
+        assert!(store
+            .finish_execution_job_with_event(
+                &created.id,
+                claimed.revision,
+                Some("claim-atomic"),
+                terminal.clone(),
+                &misrouted,
+            )
+            .await
+            .is_err());
+        let after_rejection = store.get_execution_job(&created.id).await.unwrap().unwrap();
+        assert_eq!(after_rejection.status, ExecutionJobStatus::Running);
+        assert_eq!(after_rejection.revision, claimed.revision);
+        assert!(store
+            .query(QueryFilter {
+                event_id: Some(result_event.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+
+        let committed = match store
+            .finish_execution_job_with_event(
+                &created.id,
+                claimed.revision,
+                Some("claim-atomic"),
+                terminal.clone(),
+                &result_event,
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected atomic completion: {other:?}"),
+        };
+        assert_eq!(committed.status, ExecutionJobStatus::Succeeded);
+        assert_eq!(
+            committed.result_event_id.as_deref(),
+            Some(result_event.id.as_str())
+        );
+        assert_eq!(
+            store
+                .query(QueryFilter {
+                    event_id: Some(result_event.id.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(store
+            .list_signal_outbox(SignalOutboxStatus::Pending, 10)
+            .await
+            .unwrap()
+            .is_empty());
+
+        assert!(matches!(
+            store
+                .finish_execution_job_with_event(
+                    &created.id,
+                    claimed.revision,
+                    Some("claim-atomic"),
+                    terminal,
+                    &result_event,
+                )
+                .await
+                .unwrap(),
+            ExecutionJobMutation::Existing(_)
+        ));
+        store
+            .append_with_signal_outbox(result_event.clone())
+            .await
+            .unwrap();
+        let pending = store
+            .list_signal_outbox(SignalOutboxStatus::Pending, 10)
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].event_id, result_event.id);
+    }
+
+    #[tokio::test]
+    async fn execution_job_exact_replay_cannot_repair_missing_event_with_wrong_route() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let created = seed_execution_job(
+            &store,
+            "legacy-terminal-without-event",
+            false,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let claimed = match store
+            .claim_execution_job(
+                &created.id,
+                created.revision,
+                "legacy-worker",
+                "legacy-claim",
+                Utc::now() + chrono::Duration::minutes(1),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected claim: {other:?}"),
+        };
+        let event_id = "legacy-missing-result".to_string();
+        let terminal = ExecutionJobTerminal {
+            status: ExecutionJobStatus::Succeeded,
+            result_event_id: Some(event_id.clone()),
+            result_refs: Vec::new(),
+            error: None,
+            exit_code: Some(0),
+        };
+        let terminal_job = match store
+            .finish_execution_job(
+                &created.id,
+                claimed.revision,
+                Some("legacy-claim"),
+                terminal.clone(),
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected legacy completion: {other:?}"),
+        };
+        let misrouted = Event::new(
+            event_id.clone(),
+            "System-Executor".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::from_iter([
+                (
+                    "context_id".to_string(),
+                    serde_json::json!(created.context_id),
+                ),
+                (
+                    "session_id".to_string(),
+                    serde_json::json!(created.session_id),
+                ),
+                (
+                    "work_item_id".to_string(),
+                    serde_json::json!(created.activation_id),
+                ),
+                (
+                    "work_thread_id".to_string(),
+                    serde_json::json!("wrong-thread"),
+                ),
+                (
+                    "tool_call_id".to_string(),
+                    serde_json::json!(created.tool_call_id),
+                ),
+                (
+                    "tool_name".to_string(),
+                    serde_json::json!(created.tool_name),
+                ),
+            ]),
+        );
+
+        assert!(store
+            .finish_execution_job_with_event(
+                &created.id,
+                terminal_job.revision,
+                Some("legacy-claim"),
+                terminal,
+                &misrouted,
+            )
+            .await
+            .is_err());
+        assert!(store
+            .query(QueryFilter {
+                event_id: Some(event_id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn execution_job_requeue_only_accepts_clean_idempotent_recovery() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let created = seed_execution_job(
+            &store,
+            "safe-requeue",
+            false,
+            ExecutionRetrySafety::Idempotent,
+        )
+        .await;
+        let claimed = match store
+            .claim_execution_job(
+                &created.id,
+                created.revision,
+                "crashed-worker",
+                "claim-requeue",
+                Utc::now() + chrono::Duration::minutes(1),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected claim: {other:?}"),
+        };
+        let requeued = match store
+            .requeue_execution_job(&claimed.id, claimed.revision)
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected requeue: {other:?}"),
+        };
+        assert_eq!(requeued.status, ExecutionJobStatus::Queued);
+        assert!(requeued.claim_token.is_none());
+        assert!(requeued.claimed_by.is_none());
+
+        let unsafe_created = seed_execution_job(
+            &store,
+            "unsafe-requeue",
+            false,
+            ExecutionRetrySafety::AtMostOnce,
+        )
+        .await;
+        let unsafe_claimed = match store
+            .claim_execution_job(
+                &unsafe_created.id,
+                unsafe_created.revision,
+                "crashed-worker",
+                "claim-unsafe",
+                Utc::now() + chrono::Duration::minutes(1),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ExecutionJobMutation::Updated(job) => job,
+            other => panic!("unexpected unsafe claim: {other:?}"),
+        };
+        assert!(matches!(
+            store
+                .requeue_execution_job(&unsafe_claimed.id, unsafe_claimed.revision)
+                .await
+                .unwrap(),
+            ExecutionJobMutation::Rejected { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn delivery_flush_rearm_never_crosses_first_result_max_wait() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let (_context_id, session_id, threads) = seed_delivery_fixture(&store, "max-wait", 2).await;
+        let first_at = Utc::now() - chrono::Duration::seconds(1);
+        mark_delivery_pending(
+            &store,
+            &threads[0],
+            "first result",
+            "first-result-event",
+            first_at,
+        )
+        .await;
+        let first = store
+            .arm_delivery_flush_timer("delivery-max-wait", &session_id, 10, 3)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.generation, 1);
+        assert_eq!(first.due_at, first_at + chrono::Duration::seconds(3));
+
+        let second_at = first_at + chrono::Duration::seconds(2);
+        mark_delivery_pending(
+            &store,
+            &threads[1],
+            "second result",
+            "second-result-event",
+            second_at,
+        )
+        .await;
+        let rearmed = store
+            .arm_delivery_flush_timer("delivery-max-wait", &session_id, 10, 3)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(rearmed.generation, 2);
+        assert_eq!(
+            rearmed.due_at,
+            first_at + chrono::Duration::seconds(3),
+            "a late adjacent completion must not extend the first result past max_wait"
+        );
+        assert_eq!(
+            store.list_pending_delivery_sessions().await.unwrap(),
+            vec![session_id.clone()]
+        );
+
+        store.pool.close().await;
+        drop(store);
+        let reopened = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let recovered = reopened
+            .arm_delivery_flush_timer("delivery-max-wait", &session_id, 10, 3)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.generation, 3);
+        assert_eq!(
+            recovered.due_at,
+            first_at + chrono::Duration::seconds(3),
+            "restart recovery must preserve the original first-result deadline"
+        );
+    }
+
+    #[tokio::test]
+    async fn delivery_flush_generation_fence_and_event_outbox_are_idempotent() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let (context_id, session_id, threads) = seed_delivery_fixture(&store, "fence", 1).await;
+        let pending_at = Utc::now();
+        mark_delivery_pending(
+            &store,
+            &threads[0],
+            "fenced result",
+            "fenced-result-event",
+            pending_at,
+        )
+        .await;
+        let stale = store
+            .arm_delivery_flush_timer("delivery-fence", &session_id, 1, 3)
+            .await
+            .unwrap()
+            .unwrap();
+        let current = store
+            .arm_delivery_flush_timer("delivery-fence", &session_id, 1, 3)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.generation, stale.generation + 1);
+        let claimed = store
+            .claim_due_runtime_timers(
+                Utc::now() + chrono::Duration::seconds(10),
+                "delivery-claim",
+                Utc::now() + chrono::Duration::seconds(40),
+                8,
+            )
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].generation, current.generation);
+
+        let mut event = Event::new(
+            "delivery-ready-fenced".to_string(),
+            "Runtime-Delivery".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/thread_completion_ready".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), serde_json::json!(context_id)),
+                ("session_id".to_string(), serde_json::json!(session_id)),
+                (
+                    "root_turn_id".to_string(),
+                    serde_json::json!("delivery-ready-fenced"),
+                ),
+                ("thread_kind".to_string(), serde_json::json!("delivery")),
+            ]),
+        );
+        event.timestamp = pending_at;
+        assert_eq!(
+            store
+                .commit_delivery_flush("delivery-fence", stale.generation, &event)
+                .await
+                .unwrap(),
+            DeliveryFlushCommit::Stale
+        );
+        assert_eq!(
+            store
+                .commit_delivery_flush("delivery-fence", current.generation, &event)
+                .await
+                .unwrap(),
+            DeliveryFlushCommit::Committed
+        );
+        assert_eq!(
+            store
+                .commit_delivery_flush("delivery-fence", current.generation, &event)
+                .await
+                .unwrap(),
+            DeliveryFlushCommit::Existing {
+                event_id: event.id.clone()
+            }
+        );
+        assert_eq!(
+            store
+                .query(QueryFilter {
+                    event_id: Some(event.id.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let outbox = store
+            .list_signal_outbox(SignalOutboxStatus::Pending, 8)
+            .await
+            .unwrap();
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].event_id, event.id);
+    }
+
+    #[tokio::test]
+    async fn migrates_runtime_timer_check_to_delivery_flush_without_losing_rows() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(path)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE runtime_timers (
+                id TEXT PRIMARY KEY,
+                generation INTEGER NOT NULL CHECK(generation >= 0),
+                kind TEXT NOT NULL CHECK(kind IN ('schedule', 'objective_wait', 'objective_lease', 'background_wake', 'activation_lease')),
+                owner_id TEXT NOT NULL,
+                due_at TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('pending', 'claimed', 'fired', 'cancelled')),
+                payload_json TEXT NOT NULL,
+                claimed_by TEXT,
+                claim_expires_at TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                fired_at TEXT
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            "INSERT INTO runtime_timers (id, generation, kind, owner_id, due_at, status, payload_json, created_at, updated_at) VALUES ('legacy-timer', 7, 'schedule', 'legacy-owner', ?, 'pending', '{}', ?, ?)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let store = SqliteStore::new(path).await.unwrap();
+        let legacy = store
+            .get_runtime_timer("legacy-timer")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(legacy.generation, 7);
+        assert_eq!(legacy.kind, RuntimeTimerKind::Schedule);
+        let delivery = store
+            .upsert_runtime_timer(NewRuntimeTimer {
+                id: "new-delivery-timer".to_string(),
+                generation: 1,
+                kind: RuntimeTimerKind::DeliveryFlush,
+                owner_id: "delivery-session".to_string(),
+                due_at: Utc::now(),
+                payload: serde_json::json!({}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(delivery.kind, RuntimeTimerKind::DeliveryFlush);
     }
 
     #[tokio::test]
@@ -5307,6 +9216,341 @@ mod tests {
                 .unwrap()[0]
                 .event_id,
             discarded.id
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_activation_admission_query_is_bounded_reserved_and_restart_safe() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let store = SqliteStore::new(path).await.unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "admission-context".to_string(),
+                agent_id: "admission-agent".to_string(),
+                title: "Admission Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "admission-session".to_string(),
+                agent_id: "admission-agent".to_string(),
+                context_id: "admission-context".to_string(),
+                parent_session_id: None,
+                title: "Admission Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+
+        let fixtures = [
+            (
+                "interactive",
+                crate::event::TYPE_USER_MESSAGE,
+                "chat/user_message",
+                serde_json::Map::new(),
+                crate::admission::AdmissionClass::InteractiveControl,
+            ),
+            (
+                "delivery",
+                crate::event::TYPE_TOOL_OUTPUT,
+                "chat/thread_completion_ready",
+                serde_json::Map::new(),
+                crate::admission::AdmissionClass::Delivery,
+            ),
+            (
+                "objective",
+                crate::event::TYPE_TOOL_OUTPUT,
+                "objective/resume",
+                serde_json::Map::new(),
+                crate::admission::AdmissionClass::Objective,
+            ),
+            (
+                "scheduled",
+                crate::event::TYPE_TOOL_OUTPUT,
+                "chat/schedule_due",
+                serde_json::Map::new(),
+                crate::admission::AdmissionClass::ScheduledBackground,
+            ),
+            (
+                "maintenance",
+                crate::event::TYPE_TOOL_OUTPUT,
+                "runtime/context_maintenance",
+                serde_json::Map::new(),
+                crate::admission::AdmissionClass::Maintenance,
+            ),
+        ];
+
+        for (name, event_type, topic, extra_payload, _) in &fixtures {
+            let event_id = format!("admission-event-{name}");
+            let root_turn_id = format!("admission-root-{name}");
+            let mut payload = serde_json::Map::from_iter([
+                (
+                    "context_id".to_string(),
+                    serde_json::json!("admission-context"),
+                ),
+                (
+                    "session_id".to_string(),
+                    serde_json::json!("admission-session"),
+                ),
+                ("root_turn_id".to_string(), serde_json::json!(root_turn_id)),
+            ]);
+            payload.extend(extra_payload.clone());
+            store
+                .append(Event::new(
+                    event_id.clone(),
+                    "fixture".to_string(),
+                    (*event_type).to_string(),
+                    (*topic).to_string(),
+                    payload,
+                ))
+                .await
+                .unwrap();
+            let sequence = store
+                .query(QueryFilter {
+                    event_id: Some(event_id.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()[0]
+                .sequence
+                .unwrap();
+            let thread = store
+                .ensure_work_thread(NewWorkThread {
+                    id: format!("admission-thread-{name}"),
+                    agent_id: "admission-agent".to_string(),
+                    context_id: "admission-context".to_string(),
+                    session_id: "admission-session".to_string(),
+                    root_turn_id: root_turn_id.clone(),
+                    kind: WorkThreadKind::Work,
+                    executor_kind: "self".to_string(),
+                    executor_id: None,
+                })
+                .await
+                .unwrap();
+            let activation = store
+                .claim_thread_signal_batch(
+                    NewThreadSignal {
+                        id: format!("admission-signal-{name}"),
+                        thread_id: thread.id,
+                        event_id: event_id.clone(),
+                        sequence,
+                        kind: (*topic).to_string(),
+                        parent_activation_id: None,
+                    },
+                    NewThreadActivation {
+                        id: format!("admission-activation-{name}"),
+                        agent_id: "admission-agent".to_string(),
+                        context_id: "admission-context".to_string(),
+                        session_id: "admission-session".to_string(),
+                        trigger_event_id: event_id,
+                        trigger_sequence: sequence,
+                        trigger_kind: (*topic).to_string(),
+                        parent_activation_id: None,
+                        root_turn_id,
+                    },
+                    32,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(activation.status, ThreadActivationStatus::Queued);
+        }
+
+        let first_three = store
+            .list_queued_thread_activations_for_admission(3, 1, 60_000)
+            .await
+            .unwrap();
+        assert_eq!(first_three.len(), 3);
+        assert_eq!(
+            first_three
+                .iter()
+                .map(|(_, class)| *class)
+                .collect::<Vec<_>>(),
+            fixtures[..3]
+                .iter()
+                .map(|fixture| fixture.4)
+                .collect::<Vec<_>>()
+        );
+
+        store.pool.close().await;
+        drop(store);
+        let restarted = SqliteStore::new(path).await.unwrap();
+        let rebuilt = restarted
+            .list_queued_thread_activations_for_admission(16, 4, 60_000)
+            .await
+            .unwrap();
+        assert_eq!(rebuilt.len(), fixtures.len());
+        assert_eq!(
+            rebuilt.iter().map(|(_, class)| *class).collect::<Vec<_>>(),
+            fixtures.iter().map(|fixture| fixture.4).collect::<Vec<_>>()
+        );
+
+        let old = (Utc::now() - chrono::Duration::minutes(5))
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            "UPDATE thread_activations SET created_at = ?, updated_at = ? WHERE id = 'admission-activation-maintenance'",
+        )
+        .bind(&old)
+        .bind(&old)
+        .execute(&restarted.pool)
+        .await
+        .unwrap();
+        let aged = restarted
+            .list_queued_thread_activations_for_admission(1, 0, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(aged.len(), 1);
+        assert_eq!(aged[0].1, crate::admission::AdmissionClass::Maintenance);
+        assert_eq!(aged[0].0.id, "admission-activation-maintenance");
+
+        let much_older = (Utc::now() - chrono::Duration::minutes(10))
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        for index in 0..8 {
+            let event_id = format!("aged-general-event-{index}");
+            restarted
+                .append(Event::new(
+                    event_id.clone(),
+                    "fixture".to_string(),
+                    crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                    "chat/tool_output".to_string(),
+                    serde_json::Map::from_iter([
+                        (
+                            "context_id".to_string(),
+                            serde_json::json!("admission-context"),
+                        ),
+                        (
+                            "session_id".to_string(),
+                            serde_json::json!("admission-session"),
+                        ),
+                    ]),
+                ))
+                .await
+                .unwrap();
+            let sequence = restarted
+                .query(QueryFilter {
+                    event_id: Some(event_id.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()[0]
+                .sequence
+                .unwrap();
+            sqlx::query(
+                r#"INSERT INTO thread_activations
+                   (id, revision, agent_id, context_id, session_id,
+                    trigger_event_id, trigger_sequence, trigger_kind,
+                    root_turn_id, status, created_at, updated_at)
+                   VALUES (?, 1, 'admission-agent', 'admission-context',
+                           'admission-session', ?, ?, 'chat/tool_output', ?,
+                           'queued', ?, ?)"#,
+            )
+            .bind(format!("aged-general-activation-{index}"))
+            .bind(event_id)
+            .bind(i64::try_from(sequence).unwrap())
+            .bind(format!("aged-general-root-{index}"))
+            .bind(&much_older)
+            .bind(&much_older)
+            .execute(&restarted.pool)
+            .await
+            .unwrap();
+        }
+        let reserved_window = restarted
+            .list_queued_thread_activations_for_admission(3, 1, 30_000)
+            .await
+            .unwrap();
+        assert_eq!(reserved_window.len(), 3);
+        assert!(reserved_window
+            .iter()
+            .any(|(activation, _)| activation.id == "admission-activation-interactive"));
+        assert!(
+            reserved_window
+                .iter()
+                .filter(|(_, class)| !class.uses_reserved_lane())
+                .count()
+                <= 2,
+            "aged general rows must not consume the declared reserved queue seat"
+        );
+
+        // A bounded process-local window is not a durable queue bound. Rows
+        // outside it stay queued in SQLite and become eligible after the
+        // admitted row crosses to Running; no synthetic failed/cancelled state
+        // is written for backpressure.
+        let controller = crate::activation_admission::ActivationAdmissionController::new(
+            crate::activation_admission::ActivationAdmissionLimits {
+                total_slots: 1,
+                dialogue_delivery_slots: 0,
+                max_queued: 1,
+                dialogue_delivery_queue_slots: 0,
+                aging_promotion_interval_ms: 60_000,
+            },
+        );
+        for (index, (activation, class)) in rebuilt.iter().enumerate() {
+            let outcome = controller
+                .restore_queued(crate::admission::AdmissionKey::new(
+                    activation.id.clone(),
+                    activation.agent_id.clone(),
+                    activation.context_id.clone(),
+                    activation.session_id.clone(),
+                    *class,
+                    activation.created_at.timestamp_millis(),
+                ))
+                .unwrap();
+            assert_eq!(
+                outcome,
+                if index == 0 {
+                    crate::activation_admission::RestoreQueuedOutcome::Restored
+                } else {
+                    crate::activation_admission::RestoreQueuedOutcome::DeferredWindowFull
+                }
+            );
+            assert_eq!(
+                restarted
+                    .get_thread_activation(&activation.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                ThreadActivationStatus::Queued
+            );
+        }
+        let first = &rebuilt[0].0;
+        let running = match restarted
+            .update_thread_activation(
+                &first.id,
+                first.revision,
+                ThreadActivationStatus::Running,
+                Some("test-runtime"),
+                Some(Utc::now() + chrono::Duration::seconds(30)),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(record) => record,
+            other => panic!("unexpected admission mutation: {other:?}"),
+        };
+        assert_eq!(running.status, ThreadActivationStatus::Running);
+        assert!(controller.forget(&first.id));
+        let next = restarted
+            .list_queued_thread_activations_for_admission(1, 0, 60_000)
+            .await
+            .unwrap();
+        assert_eq!(next.len(), 1);
+        assert_ne!(next[0].0.id, first.id);
+        assert_eq!(
+            controller
+                .restore_queued(crate::admission::AdmissionKey::new(
+                    next[0].0.id.clone(),
+                    next[0].0.agent_id.clone(),
+                    next[0].0.context_id.clone(),
+                    next[0].0.session_id.clone(),
+                    next[0].1,
+                    next[0].0.created_at.timestamp_millis(),
+                ))
+                .unwrap(),
+            crate::activation_admission::RestoreQueuedOutcome::Restored
         );
     }
 

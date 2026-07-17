@@ -2,18 +2,20 @@ use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT};
 use crate::llm::ToolDefinition;
 use crate::memory::{
     EventStore, NewObjective, NewRuntimeTimer, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, RuntimeTimerKind, RuntimeTimerRecord,
+    ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
 };
 use crate::orchestrator::context::ContextEngine;
 use crate::timer::{TimerDisposition, TimerEngine};
-use crate::tool::{Tool, CURRENT_ATTEMPT_ID, CURRENT_CONTEXT_ID, CURRENT_SESSION_ID};
+use crate::tool::{
+    Tool, ToolExecutionClass, CURRENT_ATTEMPT_ID, CURRENT_CONTEXT_ID, CURRENT_SESSION_ID,
+};
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -54,6 +56,10 @@ impl ObjectiveCreateTool {
 impl Tool for ObjectiveCreateTool {
     fn name(&self) -> &str {
         "objective_create"
+    }
+
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
     }
 
     fn definition(&self) -> ToolDefinition {
@@ -329,6 +335,10 @@ impl Tool for ObjectiveUpdateTool {
         "objective_update"
     }
 
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
+    }
+
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "objective_update".to_string(),
@@ -561,10 +571,26 @@ pub struct ActiveObjectiveEvaluation {
 /// Runtime-local routing metadata. The persistent lease in ObjectiveStore is
 /// authoritative; this registry only lets Orchestrator stamp terminal IO with
 /// the Objective Evaluation that caused it.
-#[derive(Default)]
 pub struct ObjectiveEvaluationRegistry {
     by_session: DashMap<String, ActiveObjectiveEvaluation>,
     by_work_item: DashMap<String, ActiveObjectiveEvaluation>,
+    /// A cancellation tombstone is keyed by the persistent Evaluation ID, not
+    /// by Session.  It therefore cannot cancel an unrelated dialogue or a
+    /// sibling Objective that happens to share the same coordinator Session.
+    cancelled_evaluations: DashMap<String, String>,
+    cancellation_epoch: watch::Sender<u64>,
+}
+
+impl Default for ObjectiveEvaluationRegistry {
+    fn default() -> Self {
+        let (cancellation_epoch, _) = watch::channel(0);
+        Self {
+            by_session: DashMap::new(),
+            by_work_item: DashMap::new(),
+            cancelled_evaluations: DashMap::new(),
+            cancellation_epoch,
+        }
+    }
 }
 
 impl ObjectiveEvaluationRegistry {
@@ -579,13 +605,82 @@ impl ObjectiveEvaluationRegistry {
     }
 
     pub fn bind_work_item(&self, work_item_id: &str, evaluation: ActiveObjectiveEvaluation) {
-        self.by_work_item
-            .insert(canonical_work_item_id(work_item_id).to_string(), evaluation);
+        self.by_work_item.insert(
+            canonical_work_item_id(work_item_id).to_string(),
+            evaluation.clone(),
+        );
+        // Another Activation for the same Evaluation can bind after its peer
+        // was cancelled. Bump the epoch after that late bind so it observes
+        // the existing tombstone too.
+        if self.evaluation_is_cancelled(&evaluation) {
+            self.bump_cancellation_epoch();
+        }
     }
 
     pub fn remove_work_item(&self, work_item_id: &str) {
+        if let Some((_, evaluation)) = self
+            .by_work_item
+            .remove(canonical_work_item_id(work_item_id))
+        {
+            self.cleanup_cancellation_tombstone(&evaluation);
+        }
+    }
+
+    pub fn cancel_evaluation(&self, objective_id: &str, evaluation_id: &str) -> bool {
+        let active = self.by_work_item.iter().any(|entry| {
+            entry.objective_id == objective_id && entry.evaluation_id == evaluation_id
+        });
+        if !active {
+            // A not-yet-claimed continuation is rejected against the durable
+            // Objective state before model execution, so no process-local
+            // tombstone is needed (and none can leak if that route never arrives).
+            return false;
+        }
+        self.cancelled_evaluations
+            .insert(evaluation_id.to_string(), objective_id.to_string());
+        self.bump_cancellation_epoch();
+        true
+    }
+
+    pub fn work_item_ids_for_evaluation(
+        &self,
+        objective_id: &str,
+        evaluation_id: &str,
+    ) -> Vec<String> {
         self.by_work_item
-            .remove(canonical_work_item_id(work_item_id));
+            .iter()
+            .filter(|entry| {
+                entry.objective_id == objective_id && entry.evaluation_id == evaluation_id
+            })
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
+    pub fn clear_cancelled_evaluation(&self, objective_id: &str, evaluation_id: &str) {
+        self.cancelled_evaluations
+            .remove_if(evaluation_id, |_, cancelled_objective_id| {
+                cancelled_objective_id == objective_id
+            });
+    }
+
+    pub fn cancelled_work_item(&self, work_item_id: &str) -> Option<ActiveObjectiveEvaluation> {
+        self.get_for_work_item(work_item_id)
+            .filter(|evaluation| self.evaluation_is_cancelled(evaluation))
+    }
+
+    pub async fn wait_for_work_item_cancellation(
+        &self,
+        work_item_id: &str,
+    ) -> ActiveObjectiveEvaluation {
+        let mut cancellation = self.cancellation_epoch.subscribe();
+        loop {
+            if let Some(evaluation) = self.cancelled_work_item(work_item_id) {
+                return evaluation;
+            }
+            // watch retains the latest epoch, so a cancellation between the
+            // predicate above and this await cannot be lost.
+            let _ = cancellation.changed().await;
+        }
     }
 
     fn try_bind(
@@ -606,8 +701,35 @@ impl ObjectiveEvaluationRegistry {
         self.by_session.remove_if(session_id, |_, active| {
             active.evaluation_id == evaluation_id
         });
-        self.by_work_item
-            .retain(|_, active| active.evaluation_id != evaluation_id);
+        // Work-item routing has a longer lifetime than the Session scheduling
+        // lane.  A pause/cancel releases the lane first, then signals the exact
+        // running Activation.  The Orchestrator removes this binding only after
+        // that Activation reaches a durable terminal state.
+    }
+
+    fn evaluation_is_cancelled(&self, evaluation: &ActiveObjectiveEvaluation) -> bool {
+        self.cancelled_evaluations
+            .get(&evaluation.evaluation_id)
+            .is_some_and(|objective_id| objective_id.as_str() == evaluation.objective_id)
+    }
+
+    fn cleanup_cancellation_tombstone(&self, evaluation: &ActiveObjectiveEvaluation) {
+        let still_bound_to_session = self.by_session.iter().any(|entry| {
+            entry.objective_id == evaluation.objective_id
+                && entry.evaluation_id == evaluation.evaluation_id
+        });
+        let still_bound_to_work = self.by_work_item.iter().any(|entry| {
+            entry.objective_id == evaluation.objective_id
+                && entry.evaluation_id == evaluation.evaluation_id
+        });
+        if !still_bound_to_session && !still_bound_to_work {
+            self.clear_cancelled_evaluation(&evaluation.objective_id, &evaluation.evaluation_id);
+        }
+    }
+
+    fn bump_cancellation_epoch(&self) {
+        let next = (*self.cancellation_epoch.borrow()).wrapping_add(1);
+        self.cancellation_epoch.send_replace(next);
     }
 }
 
@@ -721,6 +843,18 @@ impl ObjectiveSupervisor {
                     }
                 }
             }
+            if objective.status == ObjectiveStatus::Active {
+                if let Some(event) = self.find_persisted_wait_event(&objective).await? {
+                    tracing::info!(
+                        objective_id = %objective.id,
+                        event_id = %event.id,
+                        event_topic = %event.topic,
+                        "Objective 启动恢复发现已持久化的等待完成事件"
+                    );
+                    self.wake_non_routed_event(&event).await?;
+                    continue;
+                }
+            }
             self.reconcile(objective).await?;
         }
         Ok(())
@@ -744,6 +878,33 @@ impl ObjectiveSupervisor {
         self.store.get_objective(id).await
     }
 
+    /// Validate an embedded Objective route against the durable lease before
+    /// the Orchestrator starts a model Evaluation.  This rejects a continuation
+    /// that was queued before pause/cancel (including after a Runtime restart,
+    /// when process-local cancellation tombstones no longer exist).
+    pub async fn accepts_routed_evaluation(
+        &self,
+        objective_id: &str,
+        evaluation_id: &str,
+        objective_control_receipt: bool,
+    ) -> Result<bool, DynError> {
+        Ok(self
+            .store
+            .get_objective(objective_id)
+            .await?
+            .is_some_and(|objective| {
+                (objective.status == ObjectiveStatus::Active
+                    && objective.active_evaluation_id.as_deref() == Some(evaluation_id))
+                    || (objective_control_receipt
+                        && matches!(
+                            objective.status,
+                            ObjectiveStatus::Blocked
+                                | ObjectiveStatus::Completed
+                                | ObjectiveStatus::Failed
+                        ))
+            }))
+    }
+
     pub async fn list(
         &self,
         context_id: &str,
@@ -752,6 +913,21 @@ impl ObjectiveSupervisor {
         self.store
             .list_context_objectives(context_id, include_terminal)
             .await
+    }
+
+    /// Re-run scheduling policy for every non-terminal Objective in one
+    /// Cognitive Context. Control paths call this only after the exact stopped
+    /// Evaluation has received its cancellation signal, so a sibling cannot
+    /// enter the released Session lane ahead of that signal.
+    pub async fn reconcile_context(self: &Arc<Self>, context_id: &str) -> Result<(), DynError> {
+        for objective in self
+            .store
+            .list_context_objectives(context_id, false)
+            .await?
+        {
+            self.reconcile(objective).await?;
+        }
+        Ok(())
     }
 
     pub async fn edit(
@@ -798,6 +974,9 @@ impl ObjectiveSupervisor {
         if let ObjectiveMutation::Updated(updated) = &mutation {
             self.publish_state_event("updated", updated, reason).await?;
             self.reconcile(updated.clone()).await?;
+            if updated.status == ObjectiveStatus::Failed {
+                self.reconcile_context(&updated.context_id).await?;
+            }
         }
         Ok(mutation)
     }
@@ -910,6 +1089,43 @@ impl ObjectiveSupervisor {
         Ok(())
     }
 
+    /// Close the crash window between committing a durable wake fact and
+    /// dispatching it through the process-local EventBus. Only non-routed
+    /// waits are eligible here; routed user/tool events are recovered by their
+    /// own scheduler outboxes. The Objective update time is the lower bound so
+    /// an event observed before the current wait was installed cannot wake it.
+    async fn find_persisted_wait_event(
+        &self,
+        objective: &ObjectiveRecord,
+    ) -> Result<Option<Event>, DynError> {
+        let Some(wait) = objective.wait_condition.as_ref() else {
+            return Ok(None);
+        };
+        let topic = match wait {
+            ObjectiveWaitCondition::Permission { .. } => "runtime/approval_decision".to_string(),
+            ObjectiveWaitCondition::ExternalEvent { topic, .. } => topic.clone(),
+            ObjectiveWaitCondition::ResourceAvailable { .. } => {
+                "runtime/resource_available".to_string()
+            }
+            ObjectiveWaitCondition::ToolTask { .. }
+            | ObjectiveWaitCondition::Delegation { .. }
+            | ObjectiveWaitCondition::Timer { .. }
+            | ObjectiveWaitCondition::UserInput { .. } => return Ok(None),
+        };
+        let events = self
+            .audit_store
+            .query(QueryFilter {
+                context_id: Some(objective.context_id.clone()),
+                start_time: Some(objective.updated_at),
+                topic: Some(topic),
+                ..QueryFilter::default()
+            })
+            .await?;
+        Ok(events
+            .into_iter()
+            .find(|event| wait_matches_event(wait, event)))
+    }
+
     pub async fn terminal_outcome(self: &Arc<Self>, event: &Event) -> Result<(), DynError> {
         let Some(session_id) = event
             .payload
@@ -1000,12 +1216,12 @@ impl ObjectiveSupervisor {
         Ok(())
     }
 
-    pub async fn record_prompt_tokens(
+    pub async fn record_prompt_tokens_for_work_item(
         &self,
-        session_id: &str,
+        work_item_id: &str,
         tokens: usize,
     ) -> Result<(), DynError> {
-        let Some(binding) = self.evaluations.get(session_id) else {
+        let Some(binding) = self.evaluations.get_for_work_item(work_item_id) else {
             return Ok(());
         };
         let tokens = u64::try_from(tokens).unwrap_or(u64::MAX);
@@ -1578,6 +1794,127 @@ fn wait_matches_event(wait: &ObjectiveWaitCondition, event: &Event) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::sqlite::SqliteStore;
+    use crate::memory::{
+        NewAgent, NewCognitiveContext, NewSession, SessionMountKind, SessionStore, TimerStore,
+    };
+    use tempfile::NamedTempFile;
+
+    #[tokio::test]
+    async fn startup_recovers_a_persisted_external_wake_that_was_never_dispatched() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "agent-recovery".to_string(),
+                    title: "Recovery Agent".to_string(),
+                    root_context_id: "context-recovery".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "context-recovery".to_string(),
+                    agent_id: "agent-recovery".to_string(),
+                    title: "Recovery Context".to_string(),
+                },
+                NewSession {
+                    id: "session-recovery".to_string(),
+                    agent_id: "agent-recovery".to_string(),
+                    context_id: "context-recovery".to_string(),
+                    parent_session_id: None,
+                    title: "Recovery Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .create_objective(NewObjective {
+                id: "objective-persisted-wake".to_string(),
+                agent_id: "agent-recovery".to_string(),
+                context_id: "context-recovery".to_string(),
+                coordinator_session_id: "session-recovery".to_string(),
+                delivery_session_id: "session-recovery".to_string(),
+                parent_objective_id: None,
+                source_event_id: "source-persisted-wake".to_string(),
+                stated_objective: "外部事件到达后继续".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let waiting = store
+            .update_objective_state(
+                "objective-persisted-wake",
+                1,
+                ObjectiveStatus::Active,
+                Some(ObjectiveWaitCondition::ExternalEvent {
+                    topic: "build/released".to_string(),
+                    correlation_id: "release-42".to_string(),
+                }),
+                Some("等待构建发布"),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(waiting, ObjectiveMutation::Updated(_)));
+
+        // This is the exact commit-before-dispatch crash window: the physical
+        // fact is durable, but no EventBus instance has ever observed it.
+        let wake_event = Event::new(
+            "release-event-42".to_string(),
+            "Build-System".to_string(),
+            "external_event".to_string(),
+            "build/released".to_string(),
+            [
+                ("context_id".to_string(), json!("context-recovery")),
+                ("session_id".to_string(), json!("session-recovery")),
+                ("correlation_id".to_string(), json!("release-42")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        store.append(wake_event.clone()).await.unwrap();
+
+        let bus = Arc::new(InMemoryEventBus::new());
+        let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
+        let supervisor = Arc::new(ObjectiveSupervisor::new(
+            Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            bus,
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+            timers,
+            std::time::Duration::from_secs(600),
+        ));
+        supervisor.start().await.unwrap();
+
+        let recovered = store
+            .get_objective("objective-persisted-wake")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.status, ObjectiveStatus::Active);
+        assert!(recovered.wait_condition.is_none());
+        assert!(recovered.active_evaluation_id.is_some());
+        assert_eq!(recovered.continuation_sequence, 1);
+        let wait_events = store
+            .query(QueryFilter {
+                context_id: Some("context-recovery".to_string()),
+                topic: Some("objective/wait_satisfied".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(wait_events.len(), 1);
+        assert_eq!(
+            wait_events[0]
+                .payload
+                .get("reason")
+                .and_then(serde_json::Value::as_str),
+            Some(wake_event.id.as_str())
+        );
+    }
 
     #[test]
     fn evaluation_registry_does_not_overwrite_an_active_session_lane() {
@@ -1600,10 +1937,53 @@ mod tests {
         };
         assert_eq!(registry.try_bind("session-a", second), Err(first.clone()));
         registry.unbind("session-a", "wrong-evaluation");
-        assert_eq!(registry.get("session-a"), Some(first));
+        assert_eq!(registry.get("session-a"), Some(first.clone()));
         registry.unbind("session-a", "evaluation-a");
         assert!(registry.get("session-a").is_none());
+        assert_eq!(registry.get_for_work_item("work-a"), Some(first));
+        registry.remove_work_item("work-a");
         assert!(registry.get_for_work_item("work-a").is_none());
+    }
+
+    #[tokio::test]
+    async fn evaluation_cancellation_targets_only_bound_work_and_cleans_its_tombstone() {
+        let registry = Arc::new(ObjectiveEvaluationRegistry::default());
+        let first = ActiveObjectiveEvaluation {
+            objective_id: "objective-a".to_string(),
+            evaluation_id: "evaluation-a".to_string(),
+            revision: 2,
+            started_at: Utc::now(),
+        };
+        let second = ActiveObjectiveEvaluation {
+            objective_id: "objective-b".to_string(),
+            evaluation_id: "evaluation-b".to_string(),
+            revision: 4,
+            started_at: Utc::now(),
+        };
+        registry.bind_work_item("work-a", first.clone());
+        registry.bind_work_item("work-b", second.clone());
+
+        let waiting = {
+            let registry = Arc::clone(&registry);
+            tokio::spawn(async move {
+                registry
+                    .wait_for_work_item_cancellation("work-a_response_retry_1")
+                    .await
+            })
+        };
+        assert!(registry.cancel_evaluation("objective-a", "evaluation-a"));
+        assert_eq!(waiting.await.unwrap(), first);
+        assert!(registry.cancelled_work_item("work-b").is_none());
+        assert!(registry.cancelled_work_item("unbound-dialogue").is_none());
+
+        registry.remove_work_item("work-a_response_retry_2");
+        assert!(!registry.cancelled_evaluations.contains_key("evaluation-a"));
+        assert_eq!(registry.get_for_work_item("work-b"), Some(second));
+
+        assert!(!registry.cancel_evaluation("objective-late", "evaluation-never-claimed"));
+        assert!(!registry
+            .cancelled_evaluations
+            .contains_key("evaluation-never-claimed"));
     }
 
     #[test]
