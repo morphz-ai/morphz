@@ -2,6 +2,7 @@ use crate::approval::{
     ApprovalAction, ApprovalDecision, ApprovalProvider, ApprovalRequest, CapabilityDelta,
 };
 use crate::memory::ApprovalStatus;
+use crate::sandbox::SandboxPathPattern;
 use glob::{MatchOptions, Pattern};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -199,7 +200,6 @@ pub struct PermissionProfile {
     pub read_roots: Vec<PathBuf>,
     pub write_roots: Vec<PathBuf>,
     pub protected_paths: Vec<String>,
-    protected_existing_paths: Vec<PathBuf>,
     pub network: bool,
     pub shell_environment_policy: ShellEnvironmentPolicy,
 }
@@ -232,7 +232,6 @@ impl PermissionProfile {
             Pattern::new(pattern)
                 .map_err(|error| format!("无效 protected_paths glob '{pattern}': {error}"))?;
         }
-        let protected_existing_paths = expand_protected_paths(&read_roots, &config.protected_paths);
         Ok(Self {
             mode: config.mode,
             sandbox_mode,
@@ -242,7 +241,6 @@ impl PermissionProfile {
             read_roots,
             write_roots,
             protected_paths: config.protected_paths.clone(),
-            protected_existing_paths,
             network: sandbox_mode == SandboxMode::DangerFullAccess || config.network,
             shell_environment_policy: config.shell_environment_policy,
         })
@@ -250,6 +248,11 @@ impl PermissionProfile {
 
     pub fn full_access(&self) -> bool {
         self.sandbox_mode == SandboxMode::DangerFullAccess
+    }
+
+    pub fn permission_request_available(&self) -> bool {
+        self.sandbox_mode == SandboxMode::WorkspaceWrite
+            && self.approval_policy == ApprovalPolicy::OnRequest
     }
 
     pub fn resolve_candidate(&self, input: &str) -> Result<ResolvedPath, PermissionError> {
@@ -334,25 +337,31 @@ impl PermissionProfile {
             .is_ok_and(|decision| matches!(decision, PathDecision::Allowed(_)))
     }
 
-    /// 将通用 protected_paths glob 展开为当前授权根中已经存在的物理路径，
-    /// 供原生 OS 沙箱编译精确 deny 规则。直接文件工具仍会在每次访问时匹配
-    /// 原始 glob，因此尚不存在的目标也不能绕过 Runtime 权限代理。
-    pub fn existing_protected_paths(&self, roots: &[PathBuf]) -> Vec<PathBuf> {
-        let mut matches = self.protected_existing_paths.clone();
-        let additional_roots = roots
-            .iter()
-            .filter(|root| {
-                !self
-                    .read_roots
-                    .iter()
-                    .any(|base| root.starts_with(base) || base.starts_with(*root))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        for path in expand_protected_paths(&additional_roots, &self.protected_paths) {
-            push_unique(&mut matches, path);
+    /// Keep protected paths symbolic. Native sandbox backends compile these
+    /// rules directly; Runtime startup must never enumerate a workspace merely
+    /// to discover every current match. Newly-created protected paths are
+    /// therefore covered by the same policy without rebuilding the Profile.
+    pub fn sandbox_protected_patterns(&self, roots: &[PathBuf]) -> Vec<SandboxPathPattern> {
+        let mut rules = Vec::new();
+        for pattern in &self.protected_paths {
+            let path = Path::new(pattern);
+            if path.is_absolute() {
+                let root = path.ancestors().last().unwrap_or(path);
+                let relative = path.strip_prefix(root).unwrap_or(path);
+                push_unique_sandbox_pattern(
+                    &mut rules,
+                    SandboxPathPattern::new(root, slash_path(relative)),
+                );
+                continue;
+            }
+            for root in roots {
+                push_unique_sandbox_pattern(
+                    &mut rules,
+                    SandboxPathPattern::new(root, slash_path(path)),
+                );
+            }
         }
-        matches
+        rules
     }
 }
 
@@ -639,40 +648,17 @@ fn path_matches_pattern(candidate: &Path, resolved: &Path, pattern: &str) -> boo
     })
 }
 
-fn expand_protected_paths(roots: &[PathBuf], patterns: &[String]) -> Vec<PathBuf> {
-    let mut matches = Vec::new();
-    for root in roots {
-        let escaped_root = Pattern::escape(&root.to_string_lossy().replace('\\', "/"));
-        for pattern in patterns {
-            if !pattern
-                .chars()
-                .any(|character| matches!(character, '*' | '?' | '['))
-            {
-                let candidate = if Path::new(pattern).is_absolute() {
-                    PathBuf::from(pattern)
-                } else {
-                    root.join(pattern)
-                };
-                let stable = std::fs::canonicalize(&candidate).unwrap_or(candidate);
-                push_unique(&mut matches, stable);
-                continue;
-            }
-            let expression = if Path::new(pattern).is_absolute() {
-                pattern.clone()
-            } else {
-                format!("{escaped_root}/{}", pattern.trim_start_matches('/'))
-            };
-            let Ok(entries) = glob::glob(&expression) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                if let Ok(canonical) = std::fs::canonicalize(entry) {
-                    push_unique(&mut matches, canonical);
-                }
-            }
-        }
+fn slash_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn push_unique_sandbox_pattern(
+    patterns: &mut Vec<SandboxPathPattern>,
+    pattern: SandboxPathPattern,
+) {
+    if !patterns.iter().any(|existing| existing == &pattern) {
+        patterns.push(pattern);
     }
-    matches
 }
 
 fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
@@ -722,7 +708,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_missing_protected_path_is_retained_for_native_sandbox() {
+    fn exact_missing_protected_path_is_retained_symbolically_for_native_sandbox() {
         let root = TempDir::new().unwrap();
         let mut config = PermissionConfig {
             workspace_root: root.path().to_string_lossy().into_owned(),
@@ -735,8 +721,11 @@ mod tests {
             .push("future-config.toml".to_string());
         let profile = PermissionProfile::from_config(&config).unwrap();
         assert!(profile
-            .existing_protected_paths(&profile.read_roots)
-            .contains(&profile.workspace_root.join("future-config.toml")));
+            .sandbox_protected_patterns(&profile.read_roots)
+            .contains(&SandboxPathPattern::new(
+                &profile.workspace_root,
+                "future-config.toml",
+            )));
     }
 
     #[test]
@@ -792,14 +781,16 @@ mod tests {
     }
 
     #[test]
-    fn existing_protected_paths_are_precomputed_for_os_sandbox() {
+    fn protected_paths_remain_symbolic_for_os_sandbox() {
         let root = TempDir::new().unwrap();
-        std::fs::create_dir(root.path().join(".git")).unwrap();
         let profile = profile(root.path());
-        let protected = profile.existing_protected_paths(&profile.read_roots);
+        let protected = profile.sandbox_protected_patterns(&profile.read_roots);
         assert!(protected
             .iter()
-            .any(|path| path.ends_with(Path::new(".git"))));
+            .any(|rule| rule.root == profile.workspace_root && rule.glob == "**/.git/**"));
+        assert!(protected
+            .iter()
+            .any(|rule| rule.root == profile.workspace_root && rule.glob == "**/.env"));
     }
 
     #[tokio::test]

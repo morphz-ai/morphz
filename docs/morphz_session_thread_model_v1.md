@@ -1,5 +1,10 @@
 # Morphz Session Thread Model v1
 
+> 历史文档：其中长期 Dialogue Thread、Work Thread 与 Delegation Thread 的分类已经被
+> [Scheduler Kernel and Domain Model v1](./morphz_scheduler_kernel_and_domain_model_v1.md)
+> 取代。当前实现使用 Dialogue Lane，以及有限的 DialogueTurn / Execution /
+> Objective / Delivery Thread；Delegation 是 Executor 关系。本文只保留为设计演进记录。
+
 > 状态：Protocol v19 已实现
 >
 > 目标：让连续对话、工具工作和持久目标在同一个 Session 内并发而不混淆

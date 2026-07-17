@@ -109,13 +109,10 @@ pub fn approval_decision_event(approval: &ApprovalRecord, job: &ExecutionJobReco
                 serde_json::json!(job.activation_id),
             ),
             (
-                "work_item_id".to_string(),
+                "activation_id".to_string(),
                 serde_json::json!(job.activation_id),
             ),
-            (
-                "work_thread_id".to_string(),
-                serde_json::json!(job.thread_id),
-            ),
+            ("thread_id".to_string(), serde_json::json!(job.thread_id)),
             (
                 "tool_call_id".to_string(),
                 serde_json::json!(job.tool_call_id),

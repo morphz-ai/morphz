@@ -469,7 +469,7 @@ impl Tool for ObjectiveUpdateTool {
         let active = self
             .supervisor
             .evaluations
-            .get_for_work_item(&attempt_id)
+            .get_for_activation(&attempt_id)
             .ok_or(
                 "当前 Evaluation 不属于任何 Objective；不能接管共享 Context 中的其他 Objective",
             )?;
@@ -573,7 +573,7 @@ pub struct ActiveObjectiveEvaluation {
 /// the Objective Evaluation that caused it.
 pub struct ObjectiveEvaluationRegistry {
     by_session: DashMap<String, ActiveObjectiveEvaluation>,
-    by_work_item: DashMap<String, ActiveObjectiveEvaluation>,
+    by_activation: DashMap<String, ActiveObjectiveEvaluation>,
     /// A cancellation tombstone is keyed by the persistent Evaluation ID, not
     /// by Session.  It therefore cannot cancel an unrelated dialogue or a
     /// sibling Objective that happens to share the same coordinator Session.
@@ -586,7 +586,7 @@ impl Default for ObjectiveEvaluationRegistry {
         let (cancellation_epoch, _) = watch::channel(0);
         Self {
             by_session: DashMap::new(),
-            by_work_item: DashMap::new(),
+            by_activation: DashMap::new(),
             cancelled_evaluations: DashMap::new(),
             cancellation_epoch,
         }
@@ -598,15 +598,15 @@ impl ObjectiveEvaluationRegistry {
         self.by_session.get(session_id).map(|entry| entry.clone())
     }
 
-    pub fn get_for_work_item(&self, work_item_id: &str) -> Option<ActiveObjectiveEvaluation> {
-        self.by_work_item
-            .get(canonical_work_item_id(work_item_id))
+    pub fn get_for_activation(&self, activation_id: &str) -> Option<ActiveObjectiveEvaluation> {
+        self.by_activation
+            .get(canonical_activation_id(activation_id))
             .map(|entry| entry.clone())
     }
 
-    pub fn bind_work_item(&self, work_item_id: &str, evaluation: ActiveObjectiveEvaluation) {
-        self.by_work_item.insert(
-            canonical_work_item_id(work_item_id).to_string(),
+    pub fn bind_activation(&self, activation_id: &str, evaluation: ActiveObjectiveEvaluation) {
+        self.by_activation.insert(
+            canonical_activation_id(activation_id).to_string(),
             evaluation.clone(),
         );
         // Another Activation for the same Evaluation can bind after its peer
@@ -617,17 +617,17 @@ impl ObjectiveEvaluationRegistry {
         }
     }
 
-    pub fn remove_work_item(&self, work_item_id: &str) {
+    pub fn remove_activation(&self, activation_id: &str) {
         if let Some((_, evaluation)) = self
-            .by_work_item
-            .remove(canonical_work_item_id(work_item_id))
+            .by_activation
+            .remove(canonical_activation_id(activation_id))
         {
             self.cleanup_cancellation_tombstone(&evaluation);
         }
     }
 
     pub fn cancel_evaluation(&self, objective_id: &str, evaluation_id: &str) -> bool {
-        let active = self.by_work_item.iter().any(|entry| {
+        let active = self.by_activation.iter().any(|entry| {
             entry.objective_id == objective_id && entry.evaluation_id == evaluation_id
         });
         if !active {
@@ -642,12 +642,12 @@ impl ObjectiveEvaluationRegistry {
         true
     }
 
-    pub fn work_item_ids_for_evaluation(
+    pub fn activation_ids_for_evaluation(
         &self,
         objective_id: &str,
         evaluation_id: &str,
     ) -> Vec<String> {
-        self.by_work_item
+        self.by_activation
             .iter()
             .filter(|entry| {
                 entry.objective_id == objective_id && entry.evaluation_id == evaluation_id
@@ -663,18 +663,18 @@ impl ObjectiveEvaluationRegistry {
             });
     }
 
-    pub fn cancelled_work_item(&self, work_item_id: &str) -> Option<ActiveObjectiveEvaluation> {
-        self.get_for_work_item(work_item_id)
+    pub fn cancelled_activation(&self, activation_id: &str) -> Option<ActiveObjectiveEvaluation> {
+        self.get_for_activation(activation_id)
             .filter(|evaluation| self.evaluation_is_cancelled(evaluation))
     }
 
-    pub async fn wait_for_work_item_cancellation(
+    pub async fn wait_for_activation_cancellation(
         &self,
-        work_item_id: &str,
+        activation_id: &str,
     ) -> ActiveObjectiveEvaluation {
         let mut cancellation = self.cancellation_epoch.subscribe();
         loop {
-            if let Some(evaluation) = self.cancelled_work_item(work_item_id) {
+            if let Some(evaluation) = self.cancelled_activation(activation_id) {
                 return evaluation;
             }
             // watch retains the latest epoch, so a cancellation between the
@@ -701,7 +701,7 @@ impl ObjectiveEvaluationRegistry {
         self.by_session.remove_if(session_id, |_, active| {
             active.evaluation_id == evaluation_id
         });
-        // Work-item routing has a longer lifetime than the Session scheduling
+        // Activation routing has a longer lifetime than the Session scheduling
         // lane.  A pause/cancel releases the lane first, then signals the exact
         // running Activation.  The Orchestrator removes this binding only after
         // that Activation reaches a durable terminal state.
@@ -718,7 +718,7 @@ impl ObjectiveEvaluationRegistry {
             entry.objective_id == evaluation.objective_id
                 && entry.evaluation_id == evaluation.evaluation_id
         });
-        let still_bound_to_work = self.by_work_item.iter().any(|entry| {
+        let still_bound_to_work = self.by_activation.iter().any(|entry| {
             entry.objective_id == evaluation.objective_id
                 && entry.evaluation_id == evaluation.evaluation_id
         });
@@ -733,7 +733,7 @@ impl ObjectiveEvaluationRegistry {
     }
 }
 
-fn canonical_work_item_id(attempt_id: &str) -> &str {
+fn canonical_activation_id(attempt_id: &str) -> &str {
     attempt_id
         .split_once("_response_retry_")
         .map(|(base, _)| base)
@@ -1002,7 +1002,7 @@ impl ObjectiveSupervisor {
     pub async fn prepare_routed_event(
         self: &Arc<Self>,
         event: &Event,
-        work_item_id: &str,
+        activation_id: &str,
     ) -> Result<(), DynError> {
         let Some(context_id) = event
             .payload
@@ -1042,7 +1042,7 @@ impl ObjectiveSupervisor {
             self.publish_state_event("wait_satisfied", &woken, Some(&event.id))
                 .await?;
             if route_session_id == Some(woken.coordinator_session_id.as_str()) {
-                self.claim_routed_evaluation(&woken, &event.id, Some(work_item_id), true)
+                self.claim_routed_evaluation(&woken, &event.id, Some(activation_id), true)
                     .await?;
             } else {
                 self.reconcile(woken).await?;
@@ -1150,9 +1150,9 @@ impl ObjectiveSupervisor {
         };
         let binding = event
             .payload
-            .get("work_item_id")
+            .get("activation_id")
             .and_then(|value| value.as_str())
-            .and_then(|work_item_id| self.evaluations.get_for_work_item(work_item_id))
+            .and_then(|activation_id| self.evaluations.get_for_activation(activation_id))
             .filter(|active| {
                 active.objective_id == objective_id && active.evaluation_id == evaluation_id
             })
@@ -1216,12 +1216,12 @@ impl ObjectiveSupervisor {
         Ok(())
     }
 
-    pub async fn record_prompt_tokens_for_work_item(
+    pub async fn record_prompt_tokens_for_activation(
         &self,
-        work_item_id: &str,
+        activation_id: &str,
         tokens: usize,
     ) -> Result<(), DynError> {
-        let Some(binding) = self.evaluations.get_for_work_item(work_item_id) else {
+        let Some(binding) = self.evaluations.get_for_activation(activation_id) else {
             return Ok(());
         };
         let tokens = u64::try_from(tokens).unwrap_or(u64::MAX);
@@ -1306,7 +1306,7 @@ impl ObjectiveSupervisor {
         self: &Arc<Self>,
         objective: &ObjectiveRecord,
         source_event_id: &str,
-        work_item_id: Option<&str>,
+        activation_id: Option<&str>,
         publish_started: bool,
     ) -> Result<Option<ObjectiveRecord>, DynError> {
         let evaluation_id = format!(
@@ -1352,9 +1352,9 @@ impl ObjectiveSupervisor {
                 active.revision = claimed.revision;
             }
         }
-        if let Some(work_item_id) = work_item_id {
-            self.evaluations.bind_work_item(
-                work_item_id,
+        if let Some(activation_id) = activation_id {
+            self.evaluations.bind_activation(
+                activation_id,
                 ActiveObjectiveEvaluation {
                     objective_id: claimed.id.clone(),
                     evaluation_id: evaluation_id.clone(),
@@ -1926,9 +1926,9 @@ mod tests {
             started_at: Utc::now(),
         };
         assert!(registry.try_bind("session-a", first.clone()).is_ok());
-        registry.bind_work_item("work-a", first.clone());
-        assert_eq!(registry.get_for_work_item("work-a"), Some(first.clone()));
-        assert!(registry.get_for_work_item("work-b").is_none());
+        registry.bind_activation("work-a", first.clone());
+        assert_eq!(registry.get_for_activation("work-a"), Some(first.clone()));
+        assert!(registry.get_for_activation("work-b").is_none());
         let second = ActiveObjectiveEvaluation {
             objective_id: "objective-b".to_string(),
             evaluation_id: "evaluation-b".to_string(),
@@ -1940,9 +1940,9 @@ mod tests {
         assert_eq!(registry.get("session-a"), Some(first.clone()));
         registry.unbind("session-a", "evaluation-a");
         assert!(registry.get("session-a").is_none());
-        assert_eq!(registry.get_for_work_item("work-a"), Some(first));
-        registry.remove_work_item("work-a");
-        assert!(registry.get_for_work_item("work-a").is_none());
+        assert_eq!(registry.get_for_activation("work-a"), Some(first));
+        registry.remove_activation("work-a");
+        assert!(registry.get_for_activation("work-a").is_none());
     }
 
     #[tokio::test]
@@ -1960,25 +1960,25 @@ mod tests {
             revision: 4,
             started_at: Utc::now(),
         };
-        registry.bind_work_item("work-a", first.clone());
-        registry.bind_work_item("work-b", second.clone());
+        registry.bind_activation("work-a", first.clone());
+        registry.bind_activation("work-b", second.clone());
 
         let waiting = {
             let registry = Arc::clone(&registry);
             tokio::spawn(async move {
                 registry
-                    .wait_for_work_item_cancellation("work-a_response_retry_1")
+                    .wait_for_activation_cancellation("work-a_response_retry_1")
                     .await
             })
         };
         assert!(registry.cancel_evaluation("objective-a", "evaluation-a"));
         assert_eq!(waiting.await.unwrap(), first);
-        assert!(registry.cancelled_work_item("work-b").is_none());
-        assert!(registry.cancelled_work_item("unbound-dialogue").is_none());
+        assert!(registry.cancelled_activation("work-b").is_none());
+        assert!(registry.cancelled_activation("unbound-dialogue").is_none());
 
-        registry.remove_work_item("work-a_response_retry_2");
+        registry.remove_activation("work-a_response_retry_2");
         assert!(!registry.cancelled_evaluations.contains_key("evaluation-a"));
-        assert_eq!(registry.get_for_work_item("work-b"), Some(second));
+        assert_eq!(registry.get_for_activation("work-b"), Some(second));
 
         assert!(!registry.cancel_evaluation("objective-late", "evaluation-never-claimed"));
         assert!(!registry

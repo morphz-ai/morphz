@@ -18,9 +18,9 @@ test('a direct dialogue reply settles its user-message root', () => {
   assert.equal(findTurnSettlement([reply], 'message-1'), reply)
 })
 
-test('a delivery reply settles the original turn through its covered Work Thread', () => {
+test('a delivery reply settles the original turn through its covered Thread', () => {
   const result = event('result-1', 'runtime/thread_result', {
-    work_thread_id: 'thread-weather',
+    thread_id: 'thread-weather',
     root_turn_id: 'message-weather',
   })
   const reply = event('reply-delivery', 'chat/reply', {
@@ -34,7 +34,7 @@ test('a delivery reply settles the original turn through its covered Work Thread
 
 test('a delivery no-reply settles roots explicitly covered for deferral', () => {
   const result = event('result-1', 'runtime/thread_result', {
-    work_thread_id: 'thread-silent',
+    thread_id: 'thread-silent',
     root_turn_id: 'message-silent',
   })
   const noReply = event('no-reply-delivery', 'chat/no_reply', {
@@ -47,7 +47,7 @@ test('a delivery no-reply settles roots explicitly covered for deferral', () => 
 
 test('an unrelated concurrent delivery cannot settle the pending turn', () => {
   const unrelatedResult = event('result-other', 'runtime/thread_result', {
-    work_thread_id: 'thread-other',
+    thread_id: 'thread-other',
     root_turn_id: 'message-other',
   })
   const unrelatedReply = event('reply-other', 'chat/reply', {

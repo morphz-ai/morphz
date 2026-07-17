@@ -38,11 +38,14 @@
 
   "reasoning": {
     "label": "Reasoning",
-    "title": "Only affects future model requests; default lets the model service decide.",
-    "default": "Default",
+    "title": "Only affects future model requests; Off sends none. GLM-5.2 defaults to Max and maps Low/Medium to High.",
+    "defaultUnknown": "Provider default (unresolved)",
+    "off": "Off",
     "low": "Low",
     "medium": "Medium",
-    "high": "High"
+    "high": "High",
+    "max": "Max",
+    "maxDefault": "Max (model default)"
   },
   "reasoningSummary": {
     "toggle": "Reasoning summary",
@@ -81,6 +84,9 @@
     "roleWork": "Work",
     "roleRuntime": "Runtime",
     "noText": "(no text)",
+    "addToChat": "Add to chat",
+    "removeQuote": "Remove quote",
+    "commentPlaceholder": "Write a comment…",
     "copy": "Copy message",
     "copied": "Copied",
     "streaming": "Generating",
@@ -118,24 +124,30 @@
     },
     "scheduler": {
       "title": "Thread Scheduler",
-      "subtitle": "{{count}} queued / scheduled intents · Runtime authoritative state",
-      "workThreads": "Work Threads",
-      "noWorkThreads": "No non-terminal Work Threads",
-      "scheduledIntents": "Scheduled Intents",
+      "subtitle": "{{count}} queued schedules · Runtime authoritative state",
+      "threads": "Threads",
+      "noThreads": "No non-terminal Threads",
+      "schedules": "Schedules",
       "immediate": "Immediate",
       "every": " · every {{seconds}}s",
       "waitingThreads_one": " · waiting {{count}} Thread",
       "waitingThreads_other": " · waiting {{count}} Threads",
-      "noIntents": "No queued or scheduled intents",
+      "noIntents": "No queued schedules",
       "pendingSignals": "Pending Signals",
       "noSignals": "No signals awaiting claim"
     },
     "activations": {
       "title": "Thread Activations",
       "empty": "No active Activations",
-      "dialogueThread": "dialogue thread",
+      "dialogueThread": "dialogue turn",
       "objectiveThread": "objective thread",
-      "workThread": "work thread"
+      "executionThread": "execution thread"
+    },
+    "threadKind": {
+      "dialogue_turn": "Dialogue Turn",
+      "execution": "Execution Thread",
+      "objective": "Objective Thread",
+      "delivery": "Delivery Thread"
     },
     "attention": {
       "title": "Needs Attention",

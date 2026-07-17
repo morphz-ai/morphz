@@ -145,16 +145,16 @@ struct LiveToolCall {
 
 #[derive(Debug, Clone)]
 struct LiveAttempt {
-    work_item_id: String,
+    activation_id: String,
     thread_kind: String,
     text: String,
     tools: BTreeMap<usize, LiveToolCall>,
 }
 
 impl LiveAttempt {
-    fn new(work_item_id: String, thread_kind: String) -> Self {
+    fn new(activation_id: String, thread_kind: String) -> Self {
         Self {
-            work_item_id,
+            activation_id,
             thread_kind,
             text: String::new(),
             tools: BTreeMap::new(),
@@ -164,7 +164,7 @@ impl LiveAttempt {
     fn is_conversation(&self) -> bool {
         matches!(
             self.thread_kind.as_str(),
-            "dialogue" | "objective" | "delivery"
+            "dialogue_turn" | "objective" | "delivery"
         )
     }
 }
@@ -385,7 +385,7 @@ impl UiState {
     fn clear_live_attempt(&mut self, causal_id: &str) -> bool {
         let previous_len = self.live_attempts.len();
         self.live_attempts.retain(|attempt_id, attempt| {
-            attempt_id != causal_id && attempt.work_item_id != causal_id
+            attempt_id != causal_id && attempt.activation_id != causal_id
         });
         previous_len != self.live_attempts.len()
     }
@@ -421,14 +421,14 @@ impl UiState {
             "chat/reply" | "chat/outbound_message" => self.push(EntryKind::Assistant, text),
             "chat/progress" => self.push(EntryKind::Progress, text),
             "runtime/tool_calls_selected" => {
-                if event_thread_kind(&event.payload) != "work" {
+                if event_thread_kind(&event.payload) != "execution" {
                     if let Some(activity) = format_tool_activity(&event.payload) {
                         self.push_tool(activity.compact, activity.detail);
                     }
                 }
             }
             "chat/tool_output" => {
-                if event_thread_kind(&event.payload) != "work" {
+                if event_thread_kind(&event.payload) != "execution" {
                     if let Some(activity) = format_tool_result(&event.payload) {
                         self.push_tool(activity.compact, activity.detail);
                     }
@@ -452,27 +452,27 @@ impl UiState {
                 else {
                     return;
                 };
-                let work_item_id = event
+                let activation_id = event
                     .payload
-                    .get("work_item_id")
+                    .get("activation_id")
                     .and_then(Value::as_str)
                     .unwrap_or(attempt_id);
                 let thread_kind = event
                     .payload
                     .get("thread_kind")
                     .and_then(Value::as_str)
-                    .unwrap_or("dialogue");
+                    .unwrap_or("dialogue_turn");
                 if let Some(value) = event.payload.get("stream") {
                     if let Ok(stream_event) =
                         serde_json::from_value::<ModelStreamEvent>(value.clone())
                     {
-                        self.on_model_stream(attempt_id, work_item_id, thread_kind, stream_event);
+                        self.on_model_stream(attempt_id, activation_id, thread_kind, stream_event);
                     }
                 }
             }
             "runtime/tool_calls_selected" => {
                 self.clear_causal_live_attempt(&event);
-                if event_thread_kind(&event.payload) != "work" {
+                if event_thread_kind(&event.payload) != "execution" {
                     if let Some(activity) = format_tool_activity(&event.payload) {
                         self.push_tool(activity.compact, activity.detail);
                     }
@@ -481,7 +481,7 @@ impl UiState {
                 self.status = "running tools".to_string();
             }
             "chat/tool_output" => {
-                if event_thread_kind(&event.payload) != "work" {
+                if event_thread_kind(&event.payload) != "execution" {
                     if let Some(activity) = format_tool_result(&event.payload) {
                         self.push_tool(activity.compact, activity.detail);
                     }
@@ -490,7 +490,7 @@ impl UiState {
             }
             "chat/progress" => {
                 // The durable progress fact commits the text just streamed by
-                // this exact model Attempt. Do not clear by Work Item here: a
+                // this exact model Attempt. Do not clear by Activation here: a
                 // later protocol-retry Attempt may already share that route.
                 self.clear_exact_live_attempt(&event);
                 let text = event
@@ -573,7 +573,7 @@ impl UiState {
                 {
                     // The public Session cancellation endpoint deliberately
                     // cancels the whole Session and therefore has no single
-                    // causal Work Item. In that one case every local draft is
+                    // causal Activation. In that one case every local draft is
                     // stale; routed cancellation still removes only its own
                     // Attempt.
                     self.live_attempts.clear();
@@ -625,7 +625,7 @@ impl UiState {
     fn on_model_stream(
         &mut self,
         attempt_id: &str,
-        work_item_id: &str,
+        activation_id: &str,
         thread_kind: &str,
         event: ModelStreamEvent,
     ) {
@@ -634,9 +634,9 @@ impl UiState {
                 self.busy = true;
                 self.live_attempts.insert(
                     attempt_id.to_string(),
-                    LiveAttempt::new(work_item_id.to_string(), thread_kind.to_string()),
+                    LiveAttempt::new(activation_id.to_string(), thread_kind.to_string()),
                 );
-                self.status = if thread_kind == "work" {
+                self.status = if thread_kind == "execution" {
                     "work evaluating"
                 } else {
                     "thinking"
@@ -1137,18 +1137,18 @@ impl UiState {
             Line::from(""),
         ];
 
-        let work_items = self
+        let activations = self
             .context_view
             .as_ref()
             .map(|view| view.active_activations.as_slice())
             .unwrap_or_default();
         lines.push(section_title(
             "ACTIVATIONS",
-            work_items.len(),
+            activations.len(),
             self.theme.text_secondary,
             self.theme.text_muted,
         ));
-        for item in work_items {
+        for item in activations {
             lines.push(Line::from(vec![
                 Span::styled("  ◇ ", Style::default().fg(self.theme.tool)),
                 Span::styled(
@@ -1168,7 +1168,7 @@ impl UiState {
                 ),
             ]));
         }
-        if work_items.is_empty() {
+        if activations.is_empty() {
             lines.push(empty_state_line(
                 "没有活跃的模型求值",
                 self.theme.text_muted,
@@ -3282,7 +3282,7 @@ fn format_tool_result(payload: &serde_json::Map<String, Value>) -> Option<ToolAc
 fn format_causal_route(payload: &serde_json::Map<String, Value>) -> String {
     let mut fields = Vec::new();
     for (label, key) in [
-        ("work", "work_item_id"),
+        ("execution", "activation_id"),
         ("root", "root_turn_id"),
         ("trigger", "trigger_event_id"),
         ("cause", "caused_by"),
@@ -3300,7 +3300,7 @@ fn format_causal_route(payload: &serde_json::Map<String, Value>) -> String {
 
 fn event_causal_id(payload: &serde_json::Map<String, Value>) -> Option<&str> {
     payload
-        .get("work_item_id")
+        .get("activation_id")
         .and_then(Value::as_str)
         .or_else(|| payload.get("attempt_id").and_then(Value::as_str))
         .filter(|value| !value.is_empty())
@@ -3310,7 +3310,7 @@ fn event_thread_kind(payload: &serde_json::Map<String, Value>) -> &str {
     payload
         .get("thread_kind")
         .and_then(Value::as_str)
-        .unwrap_or("dialogue")
+        .unwrap_or("dialogue_turn")
 }
 
 fn summarize_tool_call(name: &str, arguments: &str, _call_id: Option<&str>) -> ToolSummary {
@@ -3509,7 +3509,7 @@ mod tests {
 
     fn stream_runtime_event(
         attempt_id: &str,
-        work_item_id: &str,
+        activation_id: &str,
         thread_kind: &str,
         stream: ModelStreamEvent,
     ) -> RuntimeEvent {
@@ -3521,7 +3521,7 @@ mod tests {
             serde_json::json!({
                 "session_id": "s",
                 "attempt_id": attempt_id,
-                "work_item_id": work_item_id,
+                "activation_id": activation_id,
                 "thread_kind": thread_kind,
                 "stream": stream,
             })
@@ -3534,7 +3534,7 @@ mod tests {
     fn terminal_runtime_event(
         topic: &str,
         attempt_id: &str,
-        work_item_id: &str,
+        activation_id: &str,
         text: &str,
     ) -> RuntimeEvent {
         RuntimeEvent::new(
@@ -3545,8 +3545,8 @@ mod tests {
             serde_json::json!({
                 "session_id": "s",
                 "attempt_id": attempt_id,
-                "work_item_id": work_item_id,
-                "thread_kind": "dialogue",
+                "activation_id": activation_id,
+                "thread_kind": "dialogue_turn",
                 "text": text,
             })
             .as_object()
@@ -3570,21 +3570,21 @@ mod tests {
     }
 
     #[test]
-    fn concurrent_stream_attempts_remain_isolated_and_close_by_causal_work_item() {
+    fn concurrent_stream_attempts_remain_isolated_and_close_by_causal_activation() {
         let mut state = test_state(Composer::new());
-        for (attempt_id, work_item_id, thread_kind, text) in [
-            ("attempt-a", "work-a", "dialogue", "alpha draft"),
+        for (attempt_id, activation_id, thread_kind, text) in [
+            ("attempt-a", "work-a", "dialogue_turn", "alpha draft"),
             ("attempt-b", "work-b", "objective", "beta draft"),
         ] {
             state.on_runtime_event(stream_runtime_event(
                 attempt_id,
-                work_item_id,
+                activation_id,
                 thread_kind,
                 ModelStreamEvent::Started,
             ));
             state.on_runtime_event(stream_runtime_event(
                 attempt_id,
-                work_item_id,
+                activation_id,
                 thread_kind,
                 ModelStreamEvent::TextDelta {
                     text: text.to_string(),
@@ -3599,8 +3599,8 @@ mod tests {
         assert!(rendered.contains("alpha draft"));
         assert!(rendered.contains("beta draft"));
 
-        // A retry Attempt can have a different id from the durable Work Item;
-        // the terminal fact must close only the Work Item's own stream.
+        // A retry Attempt can have a different id from the durable Activation;
+        // the terminal fact must close only the Activation's own stream.
         state.on_runtime_event(terminal_runtime_event(
             "chat/reply",
             "terminal-attempt-a",
@@ -3623,18 +3623,18 @@ mod tests {
     }
 
     #[test]
-    fn work_stream_is_tracked_but_never_rendered_as_conversation_draft() {
+    fn execution_stream_is_tracked_but_never_rendered_as_conversation_draft() {
         let mut state = test_state(Composer::new());
         state.on_runtime_event(stream_runtime_event(
             "attempt-work",
             "work-hidden",
-            "work",
+            "execution",
             ModelStreamEvent::Started,
         ));
         state.on_runtime_event(stream_runtime_event(
             "attempt-work",
             "work-hidden",
-            "work",
+            "execution",
             ModelStreamEvent::TextDelta {
                 text: "internal chain must stay out of chat".to_string(),
             },
@@ -3642,7 +3642,7 @@ mod tests {
         state.on_runtime_event(stream_runtime_event(
             "attempt-work",
             "work-hidden",
-            "work",
+            "execution",
             ModelStreamEvent::ToolCallStarted {
                 index: 0,
                 id: "call-1".to_string(),
@@ -3671,13 +3671,13 @@ mod tests {
         state.on_runtime_event(stream_runtime_event(
             "attempt-failed",
             "work-failed",
-            "dialogue",
+            "dialogue_turn",
             ModelStreamEvent::Started,
         ));
         state.on_runtime_event(stream_runtime_event(
             "attempt-failed",
             "work-failed",
-            "dialogue",
+            "dialogue_turn",
             ModelStreamEvent::TextDelta {
                 text: "half of a sentence".to_string(),
             },
@@ -3685,7 +3685,7 @@ mod tests {
         state.on_runtime_event(stream_runtime_event(
             "attempt-failed",
             "work-failed",
-            "dialogue",
+            "dialogue_turn",
             ModelStreamEvent::Failed {
                 message: "provider disconnected".to_string(),
             },
@@ -3705,13 +3705,13 @@ mod tests {
         state.on_runtime_event(stream_runtime_event(
             "attempt-progress",
             "work-progress",
-            "dialogue",
+            "dialogue_turn",
             ModelStreamEvent::Started,
         ));
         state.on_runtime_event(stream_runtime_event(
             "attempt-progress",
             "work-progress",
-            "dialogue",
+            "dialogue_turn",
             ModelStreamEvent::TextDelta {
                 text: "checkpoint reached".to_string(),
             },
@@ -3739,13 +3739,13 @@ mod tests {
             state.on_runtime_event(stream_runtime_event(
                 attempt_id,
                 "shared-work",
-                "dialogue",
+                "dialogue_turn",
                 ModelStreamEvent::Started,
             ));
             state.on_runtime_event(stream_runtime_event(
                 attempt_id,
                 "shared-work",
-                "dialogue",
+                "dialogue_turn",
                 ModelStreamEvent::TextDelta {
                     text: format!("draft from {attempt_id}"),
                 },

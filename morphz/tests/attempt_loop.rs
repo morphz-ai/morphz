@@ -7,9 +7,9 @@ use morphz::llm::{
 };
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    DelegationStatus, EventStore, NewAgent, NewCognitiveContext, NewSession, NewThreadActivation,
-    NewWorkThread, QueryFilter, SessionMountKind, SessionStore, ThreadActivationMutation,
-    ThreadActivationStatus, ThreadLifecycle, TimerStore, WorkThreadKind,
+    DelegationStatus, EventStore, NewAgent, NewCognitiveContext, NewSession, NewThread,
+    NewThreadActivation, QueryFilter, SessionMountKind, SessionStore, ThreadActivationMutation,
+    ThreadActivationStatus, ThreadKind, ThreadLifecycle, TimerStore,
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
@@ -675,7 +675,7 @@ async fn test_attempt_loop_plain_text_reply_delivers() {
 }
 
 #[tokio::test]
-async fn duplicate_routed_event_creates_one_work_item_and_one_reply() {
+async fn duplicate_routed_event_creates_one_activation_and_one_reply() {
     let session_id = "duplicate-routed-event";
     let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
         vec![text_reply_response("exactly once")],
@@ -714,9 +714,9 @@ async fn duplicate_routed_event_creates_one_work_item_and_one_reply() {
 }
 
 #[tokio::test]
-async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
+async fn runtime_start_interrupts_unfinished_dialogue_activations() {
     let tmp = TempDir::new().unwrap();
-    let db_path = tmp.path().join("work-item-recovery.db");
+    let db_path = tmp.path().join("activation-recovery.db");
     let bus = Arc::new(InMemoryEventBus::new());
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     store
@@ -782,7 +782,7 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
             .unwrap()[0]
             .sequence
             .unwrap();
-        let work_item = store
+        let activation = store
             .ensure_thread_activation(NewThreadActivation {
                 id: format!("recovery-work-{index}"),
                 agent_id: "recovery-agent".to_string(),
@@ -800,8 +800,8 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
             assert!(matches!(
                 store
                     .update_thread_activation(
-                        &work_item.id,
-                        work_item.revision,
+                        &activation.id,
+                        activation.revision,
                         ThreadActivationStatus::Running,
                         Some("dead-runtime"),
                         Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
@@ -817,8 +817,8 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
             assert!(matches!(
                 store
                     .update_thread_activation(
-                        &work_item.id,
-                        work_item.revision,
+                        &activation.id,
+                        activation.revision,
                         ThreadActivationStatus::Running,
                         Some("runtime:2147483647"),
                         Some(chrono::Utc::now() + chrono::Duration::hours(1)),
@@ -867,7 +867,7 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
         .unwrap()[0]
         .sequence
         .unwrap();
-    let orphan_work_item = store
+    let orphan_activation = store
         .ensure_thread_activation(NewThreadActivation {
             id: "recovery-orphan-work".to_string(),
             agent_id: "recovery-agent".to_string(),
@@ -883,8 +883,8 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
         .unwrap();
     store
         .update_thread_activation(
-            &orphan_work_item.id,
-            orphan_work_item.revision,
+            &orphan_activation.id,
+            orphan_activation.revision,
             ThreadActivationStatus::Succeeded,
             None,
             None,
@@ -893,13 +893,13 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
         .await
         .unwrap();
     store
-        .ensure_work_thread(NewWorkThread {
+        .ensure_thread(NewThread {
             id: "recovery-orphan-thread".to_string(),
             agent_id: "recovery-agent".to_string(),
             context_id: "recovery-context".to_string(),
             session_id: orphan_session_id.to_string(),
             root_turn_id: orphan_root.id,
-            kind: WorkThreadKind::Work,
+            kind: ThreadKind::Execution,
             executor_kind: "self".to_string(),
             executor_id: None,
         })
@@ -931,7 +931,7 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
         );
     }
     let orphan_thread = store
-        .get_work_thread("recovery-orphan-thread")
+        .get_thread("recovery-orphan-thread")
         .await
         .unwrap()
         .unwrap();
@@ -948,13 +948,13 @@ async fn runtime_start_interrupts_unfinished_dialogue_work_items() {
         1
     );
     assert!(client.messages_seen().is_empty());
-    let work_items = store
+    let activations = store
         .list_context_thread_activations("recovery-context", true)
         .await
         .unwrap();
-    assert_eq!(work_items.len(), recovery_sessions.len() + 1);
+    assert_eq!(activations.len(), recovery_sessions.len() + 1);
     assert_eq!(
-        work_items
+        activations
             .iter()
             .filter(|item| item.status == ThreadActivationStatus::Cancelled)
             .count(),
@@ -1035,7 +1035,7 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         .find(|event| event.id == trigger.id)
         .and_then(|event| event.sequence)
         .unwrap();
-    let work_item = store
+    let activation = store
         .ensure_thread_activation(NewThreadActivation {
             id: "plan-recovery-work".to_string(),
             agent_id: "plan-recovery-agent".to_string(),
@@ -1051,8 +1051,8 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         .unwrap();
     let running = match store
         .update_thread_activation(
-            &work_item.id,
-            work_item.revision,
+            &activation.id,
+            activation.revision,
             ThreadActivationStatus::Running,
             // Runtime claimant IDs are structured as `runtime:<pid>`; use a
             // valid but impossible local PID so this direct-Orchestrator
@@ -1064,7 +1064,7 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         .await
         .unwrap()
     {
-        ThreadActivationMutation::Updated(work_item) => work_item,
+        ThreadActivationMutation::Updated(activation) => activation,
         other => panic!("unexpected Thread Activation mutation: {other:?}"),
     };
     let persisted_call = json!([{
@@ -1091,7 +1091,7 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
                 ("transcript_tool_calls".to_string(), persisted_call),
                 ("unavailable_tool_names".to_string(), json!([])),
                 ("context_tx_rejection_status".to_string(), json!(null)),
-                ("work_item_id".to_string(), json!(running.id)),
+                ("activation_id".to_string(), json!(running.id)),
                 ("root_turn_id".to_string(), json!(running.root_turn_id)),
                 (
                     "trigger_event_id".to_string(),
@@ -1233,6 +1233,7 @@ async fn test_no_reply_is_terminal_without_session_delivery() {
             secret_env: Vec::new(),
             sandbox_backend: "test".to_string(),
             sandbox_status: "enforced".to_string(),
+            permission_request_available: false,
             artifact_path: "test.log".to_string(),
             ended_at: None,
             exit_code: None,
@@ -3459,17 +3460,17 @@ async fn same_session_dialogue_turns_are_serialized() {
     assert_eq!(
         client.max_active.load(Ordering::SeqCst),
         1,
-        "one Session has one ordered dialogue thread"
+        "one Session has one ordered dialogue lane"
     );
-    let work_items = store
+    let activations = store
         .list_context_thread_activations("serialized-session", true)
         .await
         .unwrap();
-    assert_eq!(work_items.len(), 2);
-    assert!(work_items
+    assert_eq!(activations.len(), 2);
+    assert!(activations
         .iter()
         .all(|item| item.root_turn_id == item.trigger_event_id));
-    assert_ne!(work_items[0].root_turn_id, work_items[1].root_turn_id);
+    assert_ne!(activations[0].root_turn_id, activations[1].root_turn_id);
     let inspections = store
         .query(QueryFilter {
             session_id: Some("serialized-session".to_string()),
@@ -3558,7 +3559,7 @@ async fn context_maintenance_keeps_the_dialogue_turn_serialized_until_reply() {
             .payload
             .get("thread_kind")
             .and_then(|value| value.as_str())
-            == Some("dialogue")
+            == Some("dialogue_turn")
     }));
 }
 
@@ -3620,12 +3621,12 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
         .expect("message B must receive its own reply");
     assert_eq!(
         message_b_reply.payload.get("thread_kind"),
-        Some(&json!("dialogue"))
+        Some(&json!("dialogue_turn"))
     );
     let tool_reply = replies
         .iter()
         .find(|event| event.payload.get("text") == Some(&json!("tool-a-finished")))
-        .expect("tool A must complete on its work thread");
+        .expect("tool A must complete on its execution thread");
     assert_eq!(
         tool_reply.payload.get("thread_kind"),
         Some(&json!("delivery"))
@@ -3724,7 +3725,7 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
     assert!(message_b_encoding.content.contains("(evaluate"));
     assert!(message_b_encoding
         .content
-        .contains("(thread (kind dialogue) (id same-session-tool)"));
+        .contains("(thread (kind dialogue-turn) (id same-session-tool)"));
     assert!(message_b_encoding
         .content
         .contains("(root-input \"message-b while tool runs\")"));
@@ -3826,13 +3827,13 @@ async fn concurrent_session_inspect_cannot_suppress_another_root_turns_tool_wake
         .expect("root A continuation must include Context Encoding");
     assert!(root_a_encoding.content.contains("root A"));
     assert!(root_a_encoding.content.contains("(evaluate"));
-    assert!(root_a_encoding.content.contains("(thread (kind work)"));
+    assert!(root_a_encoding.content.contains("(thread (kind execution)"));
     assert!(root_a_encoding
         .content
         .contains("(parent-dialogue causal-wake-session)"));
     assert!(
         !root_a_encoding.content.contains("root B"),
-        "a newer concurrent user turn must not leak into an older WorkItem's Inbox"
+        "a newer concurrent user turn must not leak into an older Activation's Inbox"
     );
     let roots = replies
         .iter()
@@ -4003,7 +4004,7 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
         .filter_map(|event| {
             event
                 .payload
-                .get("work_thread_id")
+                .get("thread_id")
                 .and_then(|value| value.as_str())
                 .map(ToOwned::to_owned)
         })
@@ -4052,7 +4053,7 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
     assert_eq!(
         covered_thread_ids.len(),
         unique_covered_thread_ids.len(),
-        "delivery snapshots must never cover one work thread twice"
+        "delivery snapshots must never cover one execution thread twice"
     );
     assert_eq!(unique_covered_thread_ids, result_thread_ids);
 

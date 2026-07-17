@@ -11,7 +11,9 @@ use morphz::memory::{
 use morphz::permission::{ApprovalPolicy, PermissionMode, ReviewerKind, SandboxMode};
 use morphz::provider::build_configured_client;
 use morphz::provider::{list_provider_models, probe_provider};
-use morphz::runtime::{MorphzRuntime, RuntimeEventStream, RuntimeIdentity, SessionHandle};
+use morphz::runtime::{
+    MorphzRuntime, RuntimeEventStream, RuntimeIdentity, SchedulerQuery, SessionHandle,
+};
 use morphz::web::{Server, ServerDefaults};
 use std::io::IsTerminal;
 use std::io::{BufRead, Write};
@@ -28,7 +30,7 @@ USAGE:
   morphz exec [OPTIONS] PROMPT...
   morphz serve [OPTIONS]
   morphz dashboard [OPTIONS]
-  morphz <context|session|agent|objective|job|config> <COMMAND> [ARGS...]
+  morphz <context|session|agent|objective|scheduler|job|config> <COMMAND> [ARGS...]
 
 SESSION SEMANTICS:
   A bare invocation creates a new Session mounted in the selected shared Context.
@@ -44,6 +46,7 @@ CORE COMMANDS:
   model list|use                 Discover or select models
   profile list|show|use          Inspect or select configuration Profiles
   context list|show|status       Inspect Cognitive Contexts
+  scheduler show                Inspect the authoritative Scheduler snapshot
   session list|show|create       Manage Sessions
   session resume [ID] [PROMPT...] Reattach ID, or the most recently active Session when omitted
   agent list|show|create         Manage Agents
@@ -59,7 +62,7 @@ GLOBAL OPTIONS:
   -C, --cwd=DIR                  Change working directory before loading config
       --config-file=FILE         Load an explicit trusted config file
   -m, --model=MODEL              Override the configured model
-      --reasoning-effort=LEVEL   default | low | medium | high
+      --reasoning-effort=LEVEL   default | none | low | medium | high | max
       --agent=ID                 Select an Agent
       --context=ID               Select or mount a Cognitive Context
       --session=ID               Reattach an existing Session
@@ -70,6 +73,8 @@ GLOBAL OPTIONS:
       --bind=ADDR                Override server bind address
       --format=human|json        Management-command output format
       --token-budget=N           Optional Objective token budget
+      --include-terminal         Include terminal Threads and Jobs in scheduler reads
+      --limit=N                  Bound scheduler history (1..=2000)
       --reason=TEXT              Auditable lifecycle-control reason
       --log-level=LEVEL          Override the tracing filter
       --theme=THEME              system | mono | iris | cyan | coral | no-color
@@ -94,7 +99,7 @@ DESCRIPTION:
 
 OPTIONS:
       --bind=ADDR                Listen address, for example 127.0.0.1:8080
-      --reasoning-effort=LEVEL   default | low | medium | high
+      --reasoning-effort=LEVEL   default | none | low | medium | high | max
       --config-file=FILE         Load an explicit trusted config file
   -p, --profile=NAME             Load a named configuration Profile
       --log-level=LEVEL          Override the tracing filter
@@ -124,7 +129,7 @@ DESCRIPTION:
 
 OPTIONS:
       --bind=ADDR                Listen address, for example 127.0.0.1:8080
-      --reasoning-effort=LEVEL   default | low | medium | high
+      --reasoning-effort=LEVEL   default | none | low | medium | high | max
       --config-file=FILE         Load an explicit trusted config file
   -p, --profile=NAME             Load a named configuration Profile
       --log-level=LEVEL          Override the tracing filter
@@ -591,7 +596,7 @@ fn apply_cli_config(
         app_config.llm.reasoning_effort = match effort.trim().to_ascii_lowercase().as_str() {
             "default" | "auto" => None,
             value => Some(ReasoningEffort::parse(value).ok_or_else(|| {
-                format!("未知推理深度 '{effort}'；可用 default、low、medium、high")
+                format!("未知推理深度 '{effort}'；可用 default、none、low、medium、high、max")
             })?),
         };
     }
@@ -816,6 +821,9 @@ async fn dispatch_runtime_command(
         "context" | "context list" => list_contexts(&runtime, &invocation).await,
         "context show" => show_context(&runtime, &invocation, &default_context_id, false).await,
         "context status" => show_context(&runtime, &invocation, &default_context_id, true).await,
+        "scheduler" | "scheduler show" => {
+            show_scheduler(&runtime, &invocation, &default_context_id).await
+        }
         "session" | "session list" => list_sessions(&runtime, &invocation).await,
         "session show" => show_session(&runtime, &invocation).await,
         "session create" => {
@@ -1289,6 +1297,64 @@ async fn show_context(
         }
     } else {
         println!("{}", serde_json::to_string_pretty(&record)?);
+    }
+    Ok(())
+}
+
+async fn show_scheduler(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    default_context_id: &str,
+) -> Result<(), AppError> {
+    let context_id = option_value(invocation, "context").unwrap_or(default_context_id);
+    let limit = option_value(invocation, "limit")
+        .map(str::parse::<usize>)
+        .transpose()
+        .map_err(|_| "--limit 必须是正整数")?
+        .unwrap_or(200);
+    if limit == 0 || limit > 2_000 {
+        return Err("--limit 必须在 1..=2000 之间".into());
+    }
+    let snapshot = runtime
+        .scheduler_snapshot(
+            context_id,
+            SchedulerQuery {
+                include_terminal: switch_enabled(invocation, "include-terminal")?,
+                limit,
+            },
+        )
+        .await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&snapshot)?);
+        return Ok(());
+    }
+
+    println!(
+        "Scheduler context={} threads={} signals={} activations={}/{} jobs={} approvals={} schedules={}",
+        snapshot.context_id,
+        snapshot.summary.open_threads,
+        snapshot.summary.pending_signals,
+        snapshot.summary.running_activations,
+        snapshot.summary.queued_activations,
+        snapshot.summary.active_jobs,
+        snapshot.summary.pending_approvals,
+        snapshot.summary.active_schedules,
+    );
+    for item in snapshot.threads {
+        println!(
+            "{}  kind={} lifecycle={} phase={} activations={} jobs={} signals={} schedules={}",
+            item.thread.id,
+            item.thread.kind.as_str(),
+            item.thread.lifecycle.as_str(),
+            item.phase.as_str(),
+            item.activations.len(),
+            item.activations
+                .iter()
+                .map(|value| value.jobs.len())
+                .sum::<usize>(),
+            item.pending_signals.len(),
+            item.schedules.len(),
+        );
     }
     Ok(())
 }
@@ -2927,6 +2993,18 @@ mod tests {
         apply_cli_config(&high, &mut config).unwrap();
         assert_eq!(config.llm.reasoning_effort, Some(ReasoningEffort::High));
 
+        let off = morphz_command_line_parser()
+            .parse(["--reasoning-effort=none"])
+            .unwrap();
+        apply_cli_config(&off, &mut config).unwrap();
+        assert_eq!(config.llm.reasoning_effort, Some(ReasoningEffort::Off));
+
+        let max = morphz_command_line_parser()
+            .parse(["--reasoning-effort=max"])
+            .unwrap();
+        apply_cli_config(&max, &mut config).unwrap();
+        assert_eq!(config.llm.reasoning_effort, Some(ReasoningEffort::Max));
+
         let provider_default = morphz_command_line_parser()
             .parse(["--reasoning-effort=default"])
             .unwrap();
@@ -2934,7 +3012,7 @@ mod tests {
         assert_eq!(config.llm.reasoning_effort, None);
 
         let invalid = morphz_command_line_parser()
-            .parse(["--reasoning-effort=maximum"])
+            .parse(["--reasoning-effort=ultra"])
             .unwrap();
         assert!(apply_cli_config(&invalid, &mut config).is_err());
     }

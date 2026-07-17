@@ -30,7 +30,7 @@ function directlyReferencesRoot(event: RuntimeEventLike, rootTurnId: string): bo
  * Returns the terminal Runtime event that settles one Dashboard-submitted turn.
  *
  * Delivery evaluations intentionally have their own causal root. Their terminal
- * reply therefore points at the delivered Work Threads through `covers` instead
+ * reply therefore points at the delivered Threads through `covers` instead
  * of repeating the original user-message root. Resolve that durable join rather
  * than guessing from timestamps or accepting an unrelated concurrent reply.
  */
@@ -43,7 +43,7 @@ export function findTurnSettlement(
   const threadRoots = new Map<string, string>()
   for (const event of events) {
     if (event.topic !== 'runtime/thread_result') continue
-    const threadId = event.payload.work_thread_id
+    const threadId = event.payload.thread_id
     const rootId = event.payload.root_turn_id
     if (typeof threadId === 'string' && typeof rootId === 'string') {
       threadRoots.set(threadId, rootId)

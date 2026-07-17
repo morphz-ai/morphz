@@ -8,9 +8,9 @@ use crate::execution::{
 use crate::llm::ToolDefinition;
 use crate::memory::{
     EventStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionRetrySafety, NewRuntimeTimer, NewScheduledIntent, NewWorkThread, QueryFilter,
-    RuntimeTimerKind, RuntimeTimerRecord, ScheduledIntentMutation, ScheduledIntentRecord,
-    ScheduledIntentStatus, SessionStatus, SessionStore, WorkThreadKind,
+    ExecutionRetrySafety, NewRuntimeTimer, NewSchedule, NewThread, QueryFilter, RuntimeTimerKind,
+    RuntimeTimerRecord, ScheduleMutation, ScheduleRecord, ScheduleStatus, SessionStatus,
+    SessionStore, ThreadKind,
 };
 use crate::permission::{
     ApprovalContext, ApprovalRequirement, FilesystemAccess, PermissionBroker, PermissionConfig,
@@ -46,8 +46,8 @@ tokio::task_local! {
 
 #[derive(Debug, Clone)]
 pub struct ToolCausalRoute {
-    pub work_thread_id: String,
-    pub work_item_id: String,
+    pub thread_id: String,
+    pub activation_id: String,
     pub root_turn_id: String,
     pub trigger_event_id: String,
     pub trigger_sequence: u64,
@@ -74,13 +74,10 @@ fn extend_causal_route(
     let Some(route) = route else {
         return;
     };
+    payload.insert("thread_id".to_string(), serde_json::json!(route.thread_id));
     payload.insert(
-        "work_thread_id".to_string(),
-        serde_json::json!(route.work_thread_id),
-    );
-    payload.insert(
-        "work_item_id".to_string(),
-        serde_json::json!(route.work_item_id),
+        "activation_id".to_string(),
+        serde_json::json!(route.activation_id),
     );
     payload.insert(
         "root_turn_id".to_string(),
@@ -439,6 +436,7 @@ impl BackgroundTaskScheduler {
                 "artifact_path": task.artifact_path,
                 "effective_boundary": {
                     "network_enabled": task.effective_network,
+                    "permission_request_available": task.permission_request_available,
                     "secret_env": task.secret_env,
                     "sandbox_backend": task.sandbox_backend,
                     "sandbox_status": task.sandbox_status,
@@ -615,13 +613,10 @@ impl BackgroundTaskScheduler {
                     serde_json::json!(job.activation_id),
                 ),
                 (
-                    "work_item_id".to_string(),
+                    "activation_id".to_string(),
                     serde_json::json!(job.activation_id),
                 ),
-                (
-                    "work_thread_id".to_string(),
-                    serde_json::json!(job.thread_id),
-                ),
+                ("thread_id".to_string(), serde_json::json!(job.thread_id)),
                 (
                     "tool_call_id".to_string(),
                     serde_json::json!(job.tool_call_id),
@@ -640,6 +635,28 @@ impl BackgroundTaskScheduler {
                 ("exit_code".to_string(), serde_json::json!(exit_code)),
                 ("text".to_string(), serde_json::json!(text)),
             ]);
+            if let Some(effective_boundary) = job.request.get("effective_boundary") {
+                payload.insert("effective_boundary".to_string(), effective_boundary.clone());
+            }
+            if exit_code != 0 {
+                let permission_request_available = job
+                    .request
+                    .pointer("/effective_boundary/permission_request_available")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let effective_network = job
+                    .request
+                    .pointer("/effective_boundary/network_enabled")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                payload.insert(
+                    "boundary_remediation".to_string(),
+                    serde_json::json!(boundary_remediation(
+                        permission_request_available,
+                        effective_network,
+                    )),
+                );
+            }
             let artifact_path = job
                 .request
                 .get("artifact_path")
@@ -958,7 +975,7 @@ impl BackgroundTaskScheduler {
                 entry
                     .causal_route
                     .as_ref()
-                    .is_some_and(|route| route.work_item_id == activation_id)
+                    .is_some_and(|route| route.activation_id == activation_id)
             })
             .map(|entry| (entry.id.clone(), entry.pgid))
             .collect::<Vec<_>>();
@@ -1243,10 +1260,10 @@ impl ThreadScheduler {
     }
 
     pub async fn recover(self: &Arc<Self>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let schedules = self.sessions.list_scheduled_intents(None, None).await?;
+        let schedules = self.sessions.list_schedules(None, None).await?;
         let queued = schedules
             .iter()
-            .filter(|intent| intent.status == ScheduledIntentStatus::Queued)
+            .filter(|intent| intent.status == ScheduleStatus::Queued)
             .cloned()
             .collect::<Vec<_>>();
         // The owner row is authoritative. A crash may happen after pause or
@@ -1256,7 +1273,7 @@ impl ThreadScheduler {
         // both owner status and revision.
         for intent in schedules
             .iter()
-            .filter(|intent| intent.status != ScheduledIntentStatus::Queued)
+            .filter(|intent| intent.status != ScheduleStatus::Queued)
         {
             self.timers.cancel(&schedule_timer_id(&intent.id)).await?;
         }
@@ -1275,7 +1292,7 @@ impl ThreadScheduler {
             }
             if self
                 .sessions
-                .get_work_thread(dependency_id)
+                .get_thread(dependency_id)
                 .await?
                 .is_some_and(|thread| thread.lifecycle.is_terminal())
             {
@@ -1285,7 +1302,7 @@ impl ThreadScheduler {
         }
         for intent in self
             .sessions
-            .list_scheduled_intents(None, Some(ScheduledIntentStatus::Queued))
+            .list_schedules(None, Some(ScheduleStatus::Queued))
             .await?
         {
             self.arm(intent).await?;
@@ -1308,7 +1325,7 @@ impl ThreadScheduler {
             let terminal = match root_turn_id {
                 Some(root) => self
                     .sessions
-                    .get_work_thread_by_root(root)
+                    .get_thread_by_root(root)
                     .await?
                     .is_some_and(|thread| thread.lifecycle.is_terminal()),
                 None => true,
@@ -1324,19 +1341,16 @@ impl ThreadScheduler {
     pub async fn inspect(
         &self,
         id: &str,
-    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        self.sessions.inspect_scheduled_intent(id).await
+    ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        self.sessions.inspect_schedule(id).await
     }
 
     pub async fn pause(
         &self,
         id: &str,
         expected_revision: u64,
-    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
-        let mutation = self
-            .sessions
-            .pause_scheduled_intent(id, expected_revision)
-            .await?;
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let mutation = self.sessions.pause_schedule(id, expected_revision).await?;
         self.reconcile_control_mutation(&mutation).await?;
         Ok(mutation)
     }
@@ -1345,11 +1359,8 @@ impl ThreadScheduler {
         &self,
         id: &str,
         expected_revision: u64,
-    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
-        let mutation = self
-            .sessions
-            .resume_scheduled_intent(id, expected_revision)
-            .await?;
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let mutation = self.sessions.resume_schedule(id, expected_revision).await?;
         self.reconcile_control_mutation(&mutation).await?;
         Ok(mutation)
     }
@@ -1360,10 +1371,10 @@ impl ThreadScheduler {
         expected_revision: u64,
         not_before: Option<chrono::DateTime<chrono::Utc>>,
         interval_seconds: Option<u64>,
-    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>> {
         let mutation = self
             .sessions
-            .reschedule_scheduled_intent(id, expected_revision, not_before, interval_seconds)
+            .reschedule_schedule(id, expected_revision, not_before, interval_seconds)
             .await?;
         self.reconcile_control_mutation(&mutation).await?;
         Ok(mutation)
@@ -1373,23 +1384,20 @@ impl ThreadScheduler {
         &self,
         id: &str,
         expected_revision: u64,
-    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
-        let mutation = self
-            .sessions
-            .cancel_scheduled_intent(id, expected_revision)
-            .await?;
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let mutation = self.sessions.cancel_schedule(id, expected_revision).await?;
         self.reconcile_control_mutation(&mutation).await?;
         Ok(mutation)
     }
 
     async fn reconcile_control_mutation(
         &self,
-        mutation: &ScheduledIntentMutation,
+        mutation: &ScheduleMutation,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let ScheduledIntentMutation::Updated(intent) = mutation else {
+        let ScheduleMutation::Updated(intent) = mutation else {
             return Ok(());
         };
-        if intent.status == ScheduledIntentStatus::Queued {
+        if intent.status == ScheduleStatus::Queued {
             self.arm(intent.clone()).await?;
         } else {
             self.timers.cancel(&schedule_timer_id(&intent.id)).await?;
@@ -1399,7 +1407,7 @@ impl ThreadScheduler {
 
     pub async fn arm(
         &self,
-        intent: ScheduledIntentRecord,
+        intent: ScheduleRecord,
     ) -> Result<RuntimeTimerRecord, Box<dyn std::error::Error + Send + Sync>> {
         let due_at = intent.not_before.unwrap_or_else(chrono::Utc::now);
         self.timers
@@ -1410,7 +1418,7 @@ impl ThreadScheduler {
                 owner_id: intent.id.clone(),
                 due_at,
                 payload: serde_json::json!({
-                    "scheduled_intent_id": intent.id,
+                    "schedule_id": intent.id,
                     "revision": intent.revision,
                 }),
             })
@@ -1426,7 +1434,7 @@ impl ThreadScheduler {
     ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
         let intents = self
             .sessions
-            .wake_scheduled_intents_for_dependency(dependency_thread_id)
+            .wake_schedules_for_dependency(dependency_thread_id)
             .await?;
         let count = intents.len();
         for intent in intents {
@@ -1439,11 +1447,11 @@ impl ThreadScheduler {
         self: Arc<Self>,
         timer: RuntimeTimerRecord,
     ) -> Result<TimerDisposition, Box<dyn std::error::Error + Send + Sync>> {
-        let Some(current) = self.sessions.get_scheduled_intent(&timer.owner_id).await? else {
+        let Some(current) = self.sessions.get_schedule(&timer.owner_id).await? else {
             return Ok(TimerDisposition::Complete);
         };
-        if current.status != ScheduledIntentStatus::Queued || current.revision != timer.generation {
-            if current.status == ScheduledIntentStatus::Queued {
+        if current.status != ScheduleStatus::Queued || current.revision != timer.generation {
+            if current.status == ScheduleStatus::Queued {
                 self.arm(current).await?;
             }
             return Ok(TimerDisposition::Complete);
@@ -1452,7 +1460,7 @@ impl ThreadScheduler {
             if not_before > chrono::Utc::now() {
                 return Ok(TimerDisposition::Reschedule {
                     due_at: not_before,
-                    reason: Some("Scheduled Intent 尚未到达 not_before".to_string()),
+                    reason: Some("Schedule 尚未到达 not_before".to_string()),
                 });
             }
         }
@@ -1460,7 +1468,7 @@ impl ThreadScheduler {
         let mut dependency_states = serde_json::Map::new();
         let mut dependencies_ready = true;
         for dependency_id in &current.dependency_thread_ids {
-            let state = self.sessions.get_work_thread(dependency_id).await?;
+            let state = self.sessions.get_thread(dependency_id).await?;
             let status = state
                 .as_ref()
                 .map(|thread| thread.lifecycle.as_str())
@@ -1482,9 +1490,9 @@ impl ThreadScheduler {
         });
         let owner = self
             .sessions
-            .get_work_thread(&current.thread_id)
+            .get_thread(&current.thread_id)
             .await?
-            .ok_or_else(|| format!("Scheduled Intent '{}' 的目标 Thread 不存在", current.id))?;
+            .ok_or_else(|| format!("Schedule '{}' 的目标 Thread 不存在", current.id))?;
         let root_turn_id = if current.interval_seconds.is_some() {
             scheduled_occurrence_root(&current.id, occurrence_revision)
         } else {
@@ -1502,10 +1510,7 @@ impl ThreadScheduler {
                 serde_json::json!(owner.session_id),
             ),
             ("root_turn_id".to_string(), serde_json::json!(root_turn_id)),
-            (
-                "scheduled_intent_id".to_string(),
-                serde_json::json!(current.id),
-            ),
+            ("schedule_id".to_string(), serde_json::json!(current.id)),
             (
                 "scheduled_thread_id".to_string(),
                 serde_json::json!(current.thread_id),
@@ -1547,15 +1552,15 @@ impl ThreadScheduler {
             return Ok(TimerDisposition::Complete);
         };
         self.bus.dispatch_persisted(event).await?;
-        if claimed.status == ScheduledIntentStatus::Queued {
+        if claimed.status == ScheduleStatus::Queued {
             self.arm(claimed).await?;
         }
         Ok(TimerDisposition::Complete)
     }
 }
 
-fn schedule_timer_id(scheduled_intent_id: &str) -> String {
-    format!("schedule:{scheduled_intent_id}")
+fn schedule_timer_id(schedule_id: &str) -> String {
+    format!("schedule:{schedule_id}")
 }
 
 pub struct ScheduleTxTool {
@@ -1593,7 +1598,7 @@ impl ScheduleTxTool {
         if let Some(intent) = &inspected {
             let target = self
                 .sessions
-                .get_work_thread(&intent.thread_id)
+                .get_thread(&intent.thread_id)
                 .await?
                 .ok_or_else(|| format!("Schedule '{}' 的目标 Thread 不存在", intent.id))?;
             if target.context_id != context_id {
@@ -1662,30 +1667,27 @@ impl ScheduleTxTool {
     }
 }
 
-fn schedule_mutation_receipt(
-    operation: &str,
-    mutation: ScheduledIntentMutation,
-) -> serde_json::Value {
+fn schedule_mutation_receipt(operation: &str, mutation: ScheduleMutation) -> serde_json::Value {
     match mutation {
-        ScheduledIntentMutation::Updated(schedule) => serde_json::json!({
+        ScheduleMutation::Updated(schedule) => serde_json::json!({
             "status": "updated",
             "operation": operation,
             "schedule": schedule,
             "guidance": "Schedule 与对应 Timer generation 已按同一个 revision 收口。"
         }),
-        ScheduledIntentMutation::Conflict { current } => serde_json::json!({
+        ScheduleMutation::Conflict { current } => serde_json::json!({
             "status": "conflict",
             "operation": operation,
             "schedule": current,
             "guidance": "提交的 expected_revision 已过期；请依据返回的当前状态重新决策，不要盲目重试旧请求。"
         }),
-        ScheduledIntentMutation::Rejected { current, reason } => serde_json::json!({
+        ScheduleMutation::Rejected { current, reason } => serde_json::json!({
             "status": "rejected",
             "operation": operation,
             "schedule": current,
             "reason": reason
         }),
-        ScheduledIntentMutation::NotFound => serde_json::json!({
+        ScheduleMutation::NotFound => serde_json::json!({
             "status": "not_found",
             "operation": operation
         }),
@@ -1901,7 +1903,7 @@ impl Tool for ScheduleTxTool {
             .try_with(Clone::clone)
             .ok()
             .flatten()
-            .ok_or("schedule_tx 缺少当前 Work Thread 路由")?;
+            .ok_or("schedule_tx 缺少当前 Thread 路由")?;
         let session = self
             .sessions
             .get_session(&session_id)
@@ -1933,9 +1935,9 @@ impl Tool for ScheduleTxTool {
         }
         let current_thread = self
             .sessions
-            .get_work_thread(&route.work_thread_id)
+            .get_thread(&route.thread_id)
             .await?
-            .ok_or("schedule_tx 当前 Work Thread 不存在")?;
+            .ok_or("schedule_tx 当前 Thread 不存在")?;
 
         let mut threads = Vec::new();
         let mut prepared = Vec::new();
@@ -1955,13 +1957,13 @@ impl Tool for ScheduleTxTool {
                     }
                     local_refs.insert(client_id.clone(), thread_id.clone());
                 }
-                threads.push(NewWorkThread {
+                threads.push(NewThread {
                     id: thread_id.clone(),
                     agent_id: session.agent_id.clone(),
                     context_id: context_id.clone(),
                     session_id: session_id.clone(),
                     root_turn_id,
-                    kind: WorkThreadKind::Work,
+                    kind: ThreadKind::Execution,
                     executor_kind: "self".to_string(),
                     executor_id: None,
                 });
@@ -1982,7 +1984,7 @@ impl Tool for ScheduleTxTool {
                         delay_seconds,
                         after,
                     } => (
-                        thread_id.unwrap_or_else(|| route.work_thread_id.clone()),
+                        thread_id.unwrap_or_else(|| route.thread_id.clone()),
                         intent,
                         not_before,
                         delay_seconds,
@@ -2019,11 +2021,11 @@ impl Tool for ScheduleTxTool {
             let waits_for_future = not_before.is_some()
                 || delay_seconds.is_some_and(|seconds| seconds > 0)
                 || !after.is_empty();
-            if target_thread_id == route.work_thread_id
-                && current_thread.kind == WorkThreadKind::Dialogue
+            if target_thread_id == route.thread_id
+                && current_thread.kind == ThreadKind::DialogueTurn
                 && waits_for_future
             {
-                return Err("Dialogue Thread 不能挂起等待未来时间或依赖；请使用 spawn 创建独立 Work Thread，再向当前 Session 回复调度结果".into());
+                return Err("DialogueTurn Thread 不能挂起等待未来时间或依赖；请使用 spawn 创建独立 Execution Thread，再向当前 Session 回复调度结果".into());
             }
             let not_before = schedule_due_at(not_before.as_deref(), delay_seconds)?;
             let mut dependencies = Vec::with_capacity(after.len());
@@ -2041,7 +2043,7 @@ impl Tool for ScheduleTxTool {
             let digest = sha256_hex(
                 format!("{attempt_id}\0{index}\0{target_thread_id}\0{intent}").as_bytes(),
             );
-            intents.push(NewScheduledIntent {
+            intents.push(NewSchedule {
                 id: format!("schedule_{}", &digest[..24]),
                 thread_id: target_thread_id,
                 source_turn_id: route.root_turn_id.clone(),
@@ -2054,13 +2056,7 @@ impl Tool for ScheduleTxTool {
         for intent in &intents {
             for dependency_id in &intent.dependency_thread_ids {
                 let newly_created = threads.iter().any(|thread| thread.id == *dependency_id);
-                if !newly_created
-                    && self
-                        .sessions
-                        .get_work_thread(dependency_id)
-                        .await?
-                        .is_none()
-                {
+                if !newly_created && self.sessions.get_thread(dependency_id).await?.is_none() {
                     return Err(format!("依赖 Thread '{dependency_id}' 不存在").into());
                 }
             }
@@ -2070,14 +2066,14 @@ impl Tool for ScheduleTxTool {
             .commit_schedule_transaction(&threads, &intents)
             .await?;
         for record in &mut records {
-            let continues_current_thread = record.thread_id == route.work_thread_id
+            let continues_current_thread = record.thread_id == route.thread_id
                 && record.not_before.is_none()
                 && record.interval_seconds.is_none()
                 && record.dependency_thread_ids.is_empty();
             if continues_current_thread {
                 if let Some(dispatched) = self
                     .sessions
-                    .claim_scheduled_intent(&record.id, record.revision, None)
+                    .claim_schedule(&record.id, record.revision, None)
                     .await?
                 {
                     *record = dispatched;
@@ -2173,6 +2169,7 @@ pub struct BackgroundTask {
     pub next_wakeup_at: Option<chrono::DateTime<chrono::Utc>>,
     pub status: BackgroundTaskStatus,
     pub effective_network: bool,
+    pub permission_request_available: bool,
     pub secret_env: Vec<String>,
     pub sandbox_backend: String,
     pub sandbox_status: String,
@@ -2215,7 +2212,7 @@ pub(crate) fn background_task_snapshot(task: &BackgroundTask) -> serde_json::Val
         "process_group_id": task.pgid,
         "session_id": task.session_id,
         "context_id": task.context_id,
-        "work_item_id": task.causal_route.as_ref().map(|route| &route.work_item_id),
+        "activation_id": task.causal_route.as_ref().map(|route| &route.activation_id),
         "root_turn_id": task.causal_route.as_ref().map(|route| &route.root_turn_id),
         "started_at": task.started_at,
         "ended_at": task.ended_at,
@@ -2228,6 +2225,7 @@ pub(crate) fn background_task_snapshot(task: &BackgroundTask) -> serde_json::Val
         "exit_code": task.exit_code,
         "effective_boundary": {
             "network_enabled": task.effective_network,
+            "permission_request_available": task.permission_request_available,
             "secret_env": task.secret_env,
             "sandbox_backend": task.sandbox_backend,
             "sandbox_status": task.sandbox_status,
@@ -2264,8 +2262,8 @@ fn background_execution_snapshot(
         "process_group_id": job.request.get("process_group_id"),
         "session_id": job.session_id,
         "context_id": job.context_id,
-        "work_item_id": job.activation_id,
-        "work_thread_id": job.thread_id,
+        "activation_id": job.activation_id,
+        "thread_id": job.thread_id,
         "started_at": started_at,
         "ended_at": ended_at,
         "elapsed_secs": (ended_at.unwrap_or(now) - started_at).num_seconds().max(0),
@@ -2353,6 +2351,7 @@ fn background_wait_elapsed_payload(
         "effective_boundary".to_string(),
         serde_json::json!({
             "network_enabled": task.effective_network,
+            "permission_request_available": task.permission_request_available,
             "secret_env": task.secret_env,
             "sandbox_backend": task.sandbox_backend,
             "sandbox_status": task.sandbox_status,
@@ -4227,6 +4226,20 @@ struct ExecuteCommandArgs {
     justification: Option<String>,
 }
 
+fn boundary_remediation(permission_request_available: bool, network_enabled: bool) -> String {
+    if !permission_request_available {
+        return "当前 Permission Profile 不允许申请额外能力；不要重复调用。".to_string();
+    }
+    let network = if network_enabled {
+        "当前网络已启用；不要把普通网络服务错误误判为沙箱拒绝。"
+    } else {
+        "当前网络未启用。"
+    };
+    format!(
+        "{network} 仅当 stderr/事实明确表明失败源于缺少网络、边界外目录或秘密环境变量时，才用同一条必要命令重试一次：sandbox_permissions=require_escalated，requested_permissions 只列最小能力，并提供 justification。protected_paths 或审批拒绝不可覆盖。"
+    )
+}
+
 #[async_trait::async_trait]
 impl Tool for ExecuteCommandTool {
     fn name(&self) -> &str {
@@ -4252,7 +4265,7 @@ impl Tool for ExecuteCommandTool {
                 "sandbox_permissions": {
                     "type": "string",
                     "enum": ["use_default", "require_escalated"],
-                    "description": "默认 use_default，在当前原生沙箱内运行；只有任务确实需要额外网络或路径能力时才使用 require_escalated。"
+                    "description": "默认 use_default，在当前原生沙箱内运行。若回执和 stderr 明确证明失败源于缺少网络、边界外目录或秘密环境变量，且能力确为当前任务所必需，可用同一条必要命令和 require_escalated 重试一次；普通命令失败、protected_paths 或审批拒绝不得盲目重试。"
                 },
                 "requested_permissions": {
                     "type": "object",
@@ -4290,7 +4303,7 @@ impl Tool for ExecuteCommandTool {
 
         ToolDefinition {
             name: "exec".to_string(),
-            description: "在当前操作系统的原生沙箱中执行 Shell 命令，默认仅允许配置的工作区路径且禁止网络。适合运行测试、编译和格式化；文件发现优先使用 list_files/search，修改优先使用 edit/write。确需额外网络或目录时使用 require_escalated 申请最小能力，由独立审批者决定。命令等待超时后由 Runtime 转为后台托管；禁止通过 '&' 自行创建非托管后台进程。".to_string(),
+            description: "在当前操作系统的原生沙箱中执行 Shell 命令，默认仅允许配置的工作区路径且禁止网络。适合运行测试、编译和格式化；文件发现优先使用 list_files/search，修改优先使用 edit/write。确需额外网络、目录或秘密环境变量时，使用 require_escalated 申请最小能力，由独立审批者决定；若默认执行因明确的边界拒绝失败，回执会说明申请方式。命令等待超时后由 Runtime 转为后台托管；禁止通过 '&' 自行创建非托管后台进程。".to_string(),
             parameters: params_json,
         }
     }
@@ -4324,6 +4337,8 @@ impl Tool for ExecuteCommandTool {
             write_roots: profile.write_roots.clone(),
             denied_read_paths: Vec::new(),
             denied_write_paths: Vec::new(),
+            denied_read_patterns: Vec::new(),
+            denied_write_patterns: Vec::new(),
             network: if profile.network {
                 NetworkPolicy::Allow
             } else {
@@ -4406,6 +4421,7 @@ impl Tool for ExecuteCommandTool {
         use std::process::Stdio;
         let cwd_input = args.cwd.as_deref().unwrap_or(".");
         let profile = self.permissions.profile();
+        let permission_request_available = profile.permission_request_available();
         let resolved_cwd = profile.resolve_candidate(cwd_input)?;
         if resolved_cwd.protected {
             return Err(format!(
@@ -4431,6 +4447,8 @@ impl Tool for ExecuteCommandTool {
                 write_roots: profile.write_roots.clone(),
                 denied_read_paths: Vec::new(),
                 denied_write_paths: Vec::new(),
+                denied_read_patterns: Vec::new(),
+                denied_write_patterns: Vec::new(),
                 network: if profile.network {
                     NetworkPolicy::Allow
                 } else {
@@ -4481,9 +4499,9 @@ impl Tool for ExecuteCommandTool {
                 }
                 SandboxPermissionMode::RequireEscalated | SandboxPermissionMode::UseDefault => {}
             }
-            let protected = profile.existing_protected_paths(&policy.read_roots);
-            for path in protected {
-                policy.deny_path(path);
+            let protected = profile.sandbox_protected_patterns(&policy.read_roots);
+            for pattern in protected {
+                policy.deny_pattern(pattern);
             }
             let effective_network = policy.network == NetworkPolicy::Allow;
             let prepared = self.sandbox.prepare_shell(&ShellRequest {
@@ -4601,6 +4619,7 @@ impl Tool for ExecuteCommandTool {
                 next_wakeup_at: None,
                 status: BackgroundTaskStatus::Starting,
                 effective_network,
+                permission_request_available,
                 secret_env: effective_secret_env.clone(),
                 sandbox_backend: sandbox_backend.clone(),
                 sandbox_status: sandbox_status.clone(),
@@ -4714,6 +4733,8 @@ impl Tool for ExecuteCommandTool {
                     .map(|s| s.code().unwrap_or(-1))
                     .unwrap_or(-1);
                 let output_str = buffer.get_all();
+                let boundary_remediation = (code != 0)
+                    .then(|| boundary_remediation(permission_request_available, effective_network));
                 if residual_processes_terminated {
                     return Err(format!(
                         "exec 检测到 Shell 主进程退出后仍有子进程存活，已终止整个残留进程组。禁止自行后台化；请让前台命令运行超过 wait_ms，由 Runtime 托管。\n--- 已捕获输出 ---\n{output_str}"
@@ -4727,6 +4748,7 @@ impl Tool for ExecuteCommandTool {
                     "exit_code": code,
                     "effective_boundary": {
                         "network_enabled": effective_network,
+                        "permission_request_available": permission_request_available,
                         "secret_env": effective_secret_env,
                         "sandbox_backend": sandbox_backend,
                         "sandbox_status": sandbox_status,
@@ -4734,6 +4756,7 @@ impl Tool for ExecuteCommandTool {
                     "artifact_path": buffer.archive_path,
                     "output_empty": output_str.is_empty(),
                     "output": output_str,
+                    "boundary_remediation": boundary_remediation,
                 })
                 .to_string())
             }
@@ -4843,6 +4866,7 @@ impl Tool for ExecuteCommandTool {
                     let effective_boundary = tasks_cleanup.get(&task_id_cleanup).map(|task| {
                         serde_json::json!({
                             "network_enabled": task.effective_network,
+                            "permission_request_available": task.permission_request_available,
                             "secret_env": task.secret_env,
                             "sandbox_backend": task.sandbox_backend,
                             "sandbox_status": task.sandbox_status,
@@ -4865,6 +4889,21 @@ impl Tool for ExecuteCommandTool {
                         serde_json::json!(if code == 0 { "succeeded" } else { "failed" }),
                     );
                     payload.insert("exit_code".to_string(), serde_json::json!(code));
+                    if code != 0 {
+                        let permission_request_available = tasks_cleanup
+                            .get(&task_id_cleanup)
+                            .is_some_and(|task| task.permission_request_available);
+                        let effective_network = tasks_cleanup
+                            .get(&task_id_cleanup)
+                            .is_some_and(|task| task.effective_network);
+                        payload.insert(
+                            "boundary_remediation".to_string(),
+                            serde_json::json!(boundary_remediation(
+                                permission_request_available,
+                                effective_network,
+                            )),
+                        );
+                    }
                     if let Some(effective_boundary) = effective_boundary {
                         payload.insert("effective_boundary".to_string(), effective_boundary);
                     }
@@ -4910,6 +4949,7 @@ impl Tool for ExecuteCommandTool {
                     "waited": elapsed_str,
                     "effective_boundary": {
                         "network_enabled": effective_network,
+                        "permission_request_available": permission_request_available,
                         "secret_env": effective_secret_env,
                         "sandbox_backend": sandbox_backend,
                         "sandbox_status": sandbox_status,
@@ -5690,7 +5730,7 @@ mod tests {
     use crate::approval::{ApprovalDecision, ApprovalRequest};
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        NewAgent, NewCognitiveContext, NewScheduledIntent, NewSession, NewThreadActivation,
+        NewAgent, NewCognitiveContext, NewSchedule, NewSession, NewThreadActivation,
         SessionMountKind, SessionStore, ThreadLifecycle, TimerStore,
     };
     use crate::permission::PermissionMode;
@@ -5802,13 +5842,13 @@ mod tests {
             .await
             .unwrap();
         store
-            .ensure_work_thread(NewWorkThread {
+            .ensure_thread(NewThread {
                 id: parent.thread_id.clone(),
                 agent_id: parent.agent_id.clone(),
                 context_id: parent.context_id.clone(),
                 session_id: parent.session_id.clone(),
                 root_turn_id: root_turn_id.to_string(),
-                kind: WorkThreadKind::Work,
+                kind: ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
             })
@@ -5947,7 +5987,7 @@ mod tests {
                 CURRENT_CONTEXT_ID.scope(
                     "context-a".to_string(),
                     CURRENT_ATTEMPT_ID.scope(
-                        "work-item-a".to_string(),
+                        "attempt-a".to_string(),
                         CURRENT_CAUSAL_ROUTE.scope(None, tool.execute(&arguments)),
                     ),
                 ),
@@ -6001,13 +6041,13 @@ mod tests {
             .await
             .unwrap();
         store
-            .ensure_work_thread(NewWorkThread {
+            .ensure_thread(NewThread {
                 id: "thread-current".to_string(),
                 agent_id: "agent-scheduler".to_string(),
                 context_id: "context-scheduler".to_string(),
                 session_id: "session-scheduler".to_string(),
                 root_turn_id: "root-current".to_string(),
-                kind: WorkThreadKind::Dialogue,
+                kind: ThreadKind::DialogueTurn,
                 executor_kind: "self".to_string(),
                 executor_id: None,
             })
@@ -6037,8 +6077,8 @@ mod tests {
         })
         .to_string();
         let route = Some(ToolCausalRoute {
-            work_thread_id: "thread-current".to_string(),
-            work_item_id: "work-current".to_string(),
+            thread_id: "thread-current".to_string(),
+            activation_id: "work-current".to_string(),
             root_turn_id: "root-current".to_string(),
             trigger_event_id: "user-current".to_string(),
             trigger_sequence: 7,
@@ -6070,9 +6110,9 @@ mod tests {
             "检查长期任务状态并根据真实结果继续"
         );
         assert_eq!(event.payload["session_id"], "session-scheduler");
-        let records = store.list_scheduled_intents(None, None).await.unwrap();
+        let records = store.list_schedules(None, None).await.unwrap();
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0].status, ScheduledIntentStatus::Dispatched);
+        assert_eq!(records[0].status, ScheduleStatus::Dispatched);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(80), receiver.recv())
                 .await
@@ -6118,13 +6158,13 @@ mod tests {
             .unwrap();
         for (thread_id, root_turn_id) in thread_ids {
             store
-                .ensure_work_thread(NewWorkThread {
+                .ensure_thread(NewThread {
                     id: (*thread_id).to_string(),
                     agent_id: "agent-scheduler-test".to_string(),
                     context_id: "context-scheduler-test".to_string(),
                     session_id: "session-scheduler-test".to_string(),
                     root_turn_id: (*root_turn_id).to_string(),
-                    kind: WorkThreadKind::Work,
+                    kind: ThreadKind::Execution,
                     executor_kind: "self".to_string(),
                     executor_id: None,
                 })
@@ -6139,9 +6179,9 @@ mod tests {
         id: &str,
         thread_id: &str,
         due_at: chrono::DateTime<chrono::Utc>,
-    ) -> ScheduledIntentRecord {
+    ) -> ScheduleRecord {
         store
-            .ensure_scheduled_intent(NewScheduledIntent {
+            .ensure_schedule(NewSchedule {
                 id: id.to_string(),
                 thread_id: thread_id.to_string(),
                 source_turn_id: format!("source-{id}"),
@@ -6186,10 +6226,10 @@ mod tests {
             .await
             .unwrap()
         {
-            ScheduledIntentMutation::Updated(intent) => intent,
+            ScheduleMutation::Updated(intent) => intent,
             other => panic!("unexpected pause result: {other:?}"),
         };
-        assert_eq!(paused.status, ScheduledIntentStatus::Paused);
+        assert_eq!(paused.status, ScheduleStatus::Paused);
         assert_eq!(
             store
                 .get_runtime_timer("schedule:schedule-control-pause")
@@ -6207,14 +6247,14 @@ mod tests {
             .await
             .unwrap()
         {
-            ScheduledIntentMutation::Conflict { current } => {
+            ScheduleMutation::Conflict { current } => {
                 assert_eq!(current, paused);
                 match scheduler
                     .resume(&current.id, current.revision)
                     .await
                     .unwrap()
                 {
-                    ScheduledIntentMutation::Updated(intent) => intent,
+                    ScheduleMutation::Updated(intent) => intent,
                     other => panic!("unexpected resume result: {other:?}"),
                 }
             }
@@ -6232,12 +6272,12 @@ mod tests {
         assert_eq!(event.payload["occurrence_revision"], resumed.revision);
         assert_eq!(
             store
-                .get_scheduled_intent(&created.id)
+                .get_schedule(&created.id)
                 .await
                 .unwrap()
                 .unwrap()
                 .status,
-            ScheduledIntentStatus::Dispatched
+            ScheduleStatus::Dispatched
         );
     }
 
@@ -6264,8 +6304,8 @@ mod tests {
             Arc::clone(&store) as Arc<dyn SessionStore>,
         );
         let route = Some(ToolCausalRoute {
-            work_thread_id: "thread-control-tool".to_string(),
-            work_item_id: "activation-control-tool".to_string(),
+            thread_id: "thread-control-tool".to_string(),
+            activation_id: "activation-control-tool".to_string(),
             root_turn_id: "root-control-tool".to_string(),
             trigger_event_id: "event-control-tool".to_string(),
             trigger_sequence: 1,
@@ -6391,7 +6431,7 @@ mod tests {
             .await
             .unwrap()
         {
-            ScheduledIntentMutation::Updated(intent) => intent,
+            ScheduleMutation::Updated(intent) => intent,
             other => panic!("unexpected later reschedule: {other:?}"),
         };
         let later_timer = store
@@ -6430,7 +6470,7 @@ mod tests {
             .await
             .unwrap()
         {
-            ScheduledIntentMutation::Updated(intent) => intent,
+            ScheduleMutation::Updated(intent) => intent,
             other => panic!("unexpected earlier reschedule: {other:?}"),
         };
         assert_eq!(timers.dispatch_due_once().await.unwrap(), 1);
@@ -6459,11 +6499,11 @@ mod tests {
         .await;
         scheduler.arm(created.clone()).await.unwrap();
         let paused = match store
-            .pause_scheduled_intent(&created.id, created.revision)
+            .pause_schedule(&created.id, created.revision)
             .await
             .unwrap()
         {
-            ScheduledIntentMutation::Updated(intent) => intent,
+            ScheduleMutation::Updated(intent) => intent,
             other => panic!("unexpected direct pause: {other:?}"),
         };
         // Crash after owner CAS but before timer cancellation.
@@ -6487,11 +6527,11 @@ mod tests {
         assert_eq!(paused_timers.dispatch_due_once().await.unwrap(), 0);
 
         let resumed = match paused_store
-            .resume_scheduled_intent(&paused.id, paused.revision)
+            .resume_schedule(&paused.id, paused.revision)
             .await
             .unwrap()
         {
-            ScheduledIntentMutation::Updated(intent) => intent,
+            ScheduleMutation::Updated(intent) => intent,
             other => panic!("unexpected direct resume: {other:?}"),
         };
         // Crash after resume CAS but before the new generation is armed.
@@ -6566,7 +6606,7 @@ mod tests {
         );
         let scheduler = start_test_scheduler(Arc::clone(&bus), Arc::clone(&store));
         let intent = store
-            .ensure_scheduled_intent(NewScheduledIntent {
+            .ensure_schedule(NewSchedule {
                 id: "schedule-dependent".to_string(),
                 thread_id: "thread-dependent".to_string(),
                 source_turn_id: "root-dependent".to_string(),
@@ -6601,12 +6641,12 @@ mod tests {
         .await
         .unwrap();
         let dependency = store
-            .get_work_thread("thread-dependency")
+            .get_thread("thread-dependency")
             .await
             .unwrap()
             .unwrap();
         store
-            .update_work_thread(
+            .update_thread(
                 &dependency.id,
                 dependency.revision,
                 None,
@@ -6651,7 +6691,7 @@ mod tests {
         let first_bus = Arc::new(InMemoryEventBus::new());
         let first_scheduler = start_test_scheduler(first_bus, Arc::clone(&store));
         let intent = store
-            .ensure_scheduled_intent(NewScheduledIntent {
+            .ensure_schedule(NewSchedule {
                 id: "schedule-recovery-dependent".to_string(),
                 thread_id: "thread-recovery-dependent".to_string(),
                 source_turn_id: "root-recovery-dependent".to_string(),
@@ -6679,12 +6719,12 @@ mod tests {
         .await
         .unwrap();
         let dependency = store
-            .get_work_thread("thread-recovery-dependency")
+            .get_thread("thread-recovery-dependency")
             .await
             .unwrap()
             .unwrap();
         store
-            .update_work_thread(
+            .update_thread(
                 &dependency.id,
                 dependency.revision,
                 None,
@@ -6743,7 +6783,7 @@ mod tests {
         );
         let scheduler = start_test_scheduler(bus, Arc::clone(&store));
         let intent = store
-            .ensure_scheduled_intent(NewScheduledIntent {
+            .ensure_schedule(NewSchedule {
                 id: "schedule-fenced-dependent".to_string(),
                 thread_id: "thread-fenced-dependent".to_string(),
                 source_turn_id: "root-fenced-dependent".to_string(),
@@ -6757,12 +6797,12 @@ mod tests {
         scheduler.arm(intent).await.unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
         let dependency = store
-            .get_work_thread("thread-fenced-dependency")
+            .get_thread("thread-fenced-dependency")
             .await
             .unwrap()
             .unwrap();
         store
-            .update_work_thread(
+            .update_thread(
                 &dependency.id,
                 dependency.revision,
                 None,
@@ -6809,7 +6849,7 @@ mod tests {
         )
         .await;
         store
-            .ensure_scheduled_intent(NewScheduledIntent {
+            .ensure_schedule(NewSchedule {
                 id: "schedule-after-restart".to_string(),
                 thread_id: "thread-after-restart".to_string(),
                 source_turn_id: "root-after-restart".to_string(),
@@ -6837,17 +6877,14 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(
-            event.payload["scheduled_intent_id"],
-            "schedule-after-restart"
-        );
+        assert_eq!(event.payload["schedule_id"], "schedule-after-restart");
         assert_eq!(event.payload["intent"], "重启后继续执行");
         let recovered = store
-            .get_scheduled_intent("schedule-after-restart")
+            .get_schedule("schedule-after-restart")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(recovered.status, ScheduledIntentStatus::Dispatched);
+        assert_eq!(recovered.status, ScheduleStatus::Dispatched);
     }
 
     #[async_trait::async_trait]
@@ -7375,6 +7412,42 @@ mod tests {
         assert_eq!(result_json["exit_code"], 0);
         assert_eq!(result_json["process_status"], "succeeded");
         assert!(result.contains("1 passed"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn failed_exec_explains_conditional_permission_request() {
+        let _sandbox_guard = MACOS_SANDBOX_EXEC_TEST_LOCK.lock().await;
+        let workspace = TempDir::new().unwrap();
+        let bus = Arc::new(crate::event::InMemoryEventBus::new());
+        let background = Arc::new(BackgroundTaskConfig {
+            artifact_dir: workspace
+                .path()
+                .join("artifacts")
+                .to_string_lossy()
+                .into_owned(),
+            ..BackgroundTaskConfig::default()
+        });
+        let output = ExecuteCommandTool::new_with_configs(
+            bus,
+            background,
+            jailed_security(workspace.path()),
+            30,
+        )
+        .execute(&serde_json::json!({ "command": "exit 7" }).to_string())
+        .await
+        .unwrap();
+        let output: serde_json::Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(output["exit_code"], 7);
+        assert_eq!(
+            output["effective_boundary"]["permission_request_available"],
+            true
+        );
+        let guidance = output["boundary_remediation"].as_str().unwrap();
+        assert!(guidance.contains("sandbox_permissions=require_escalated"));
+        assert!(guidance.contains("仅当 stderr/事实明确"));
+        assert!(guidance.contains("protected_paths"));
     }
 
     #[tokio::test]
@@ -7999,8 +8072,8 @@ mod tests {
                             parent.activation_id.clone(),
                             CURRENT_CAUSAL_ROUTE.scope(
                                 Some(ToolCausalRoute {
-                                    work_thread_id: parent.thread_id.clone(),
-                                    work_item_id: parent.activation_id.clone(),
+                                    thread_id: parent.thread_id.clone(),
+                                    activation_id: parent.activation_id.clone(),
                                     root_turn_id: "root-durable-background".to_string(),
                                     trigger_event_id: "trigger-durable-background".to_string(),
                                     trigger_sequence: 7,
@@ -8449,8 +8522,8 @@ mod tests {
         );
         let tool = exec_tool_for_tests(Arc::clone(&bus));
         let route = ToolCausalRoute {
-            work_thread_id: "thread-causal-background".to_string(),
-            work_item_id: "work-causal-background".to_string(),
+            thread_id: "thread-causal-background".to_string(),
+            activation_id: "work-causal-background".to_string(),
             root_turn_id: "root-causal-background".to_string(),
             trigger_event_id: "trigger-causal-background".to_string(),
             trigger_sequence: 42,
@@ -8475,7 +8548,7 @@ mod tests {
             .await
             .expect("background task must finish")
             .expect("completion event must be published");
-        assert_eq!(completion.payload["work_item_id"], route.work_item_id);
+        assert_eq!(completion.payload["activation_id"], route.activation_id);
         assert_eq!(completion.payload["root_turn_id"], route.root_turn_id);
         assert_eq!(
             completion.payload["trigger_event_id"],
@@ -8508,6 +8581,7 @@ mod tests {
                 next_wakeup_at: None,
                 status: BackgroundTaskStatus::Running,
                 effective_network: false,
+                permission_request_available: true,
                 secret_env: Vec::new(),
                 sandbox_backend: "test".to_string(),
                 sandbox_status: "enforced".to_string(),

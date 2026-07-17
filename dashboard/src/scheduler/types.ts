@@ -30,14 +30,14 @@ export interface ThreadActivationRecord {
   updated_at: string
 }
 
-export interface WorkThreadRecord {
+export interface ThreadRecord {
   id: string
   revision: number
   agent_id: string
   context_id: string
   session_id: string
   root_turn_id: string
-  kind: 'dialogue' | 'work' | 'objective' | 'delegation' | 'delivery'
+  kind: 'dialogue_turn' | 'execution' | 'objective' | 'delivery'
   lifecycle: 'open' | 'completed' | 'failed' | 'cancelled'
   executor_kind: string
   executor_id?: string
@@ -49,7 +49,7 @@ export interface WorkThreadRecord {
   updated_at: string
 }
 
-export interface ScheduledIntentRecord {
+export interface ScheduleRecord {
   id: string
   revision: number
   thread_id: string
@@ -140,11 +140,11 @@ export interface SchedulerActivationSnapshot {
 }
 
 export interface SchedulerThreadSnapshot {
-  thread: WorkThreadRecord
+  thread: ThreadRecord
   phase: 'idle' | 'runnable' | 'running' | 'waiting'
   pending_signals: ThreadSignalRecord[]
   activations: SchedulerActivationSnapshot[]
-  schedules: ScheduledIntentRecord[]
+  schedules: ScheduleRecord[]
 }
 
 export interface SchedulerSummary {

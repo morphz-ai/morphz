@@ -16,11 +16,11 @@ use crate::memory::{
     ApprovalStatus, ApprovalStore, DelegationStatus, DeliveryFlushCommit, EventStore,
     ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
     ExecutionJobStatus, ExecutionJobStore, NewApprovalRequest, NewCognitiveContext, NewDelegation,
-    NewExecutionJob, NewRuntimeTimer, NewSession, NewThreadActivation, NewThreadSignal,
-    NewWorkThread, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ScheduledIntentStatus,
-    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionStore,
-    SessionUpdate, SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadLifecycle, WorkThreadKind, WorkThreadMutation,
+    NewExecutionJob, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
+    QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ScheduleStatus, SessionAttentionState,
+    SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionStore, SessionUpdate,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadKind, ThreadLifecycle, ThreadMutation,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{ContextEngine, ContextView};
@@ -64,7 +64,7 @@ Context 的状态分为三个权限域：
 
 每次响应必须明确选择 `protocol.response-contract` 中的一种主模式：
 - reply：当前 Evaluation 已到可交付边界时，返回非空普通 assistant 文本且不调用工具。Runtime 将文本流式路由到 kernel.active-session，并在完整响应成功后持久化为终态回复。存在 active Objective 时，它只结束本次 Evaluation，不能代替 objective_update(completed)。
-- no-reply：确认本次 Evaluation 无需向 active Session 发送任何消息时，独占调用无参数的 no_reply。Dialogue Thread 中它结束本次求值；仍有后台任务的 Work Thread 中它表示 yield/wait，Thread 保持非终态并在物理事件到达后继续。它不代表 Objective 完成，也不取消后台任务。
+- no-reply：确认本次 Evaluation 无需向 active Session 发送任何消息时，独占调用无参数的 no_reply。DialogueTurn Thread 中它结束本次求值；仍有后台任务的 Execution Thread 中它表示 yield/wait，Thread 保持非终态并在物理事件到达后继续。它不代表 Objective 完成，也不取消后台任务。
 - act：确实需要新的外部结果；调用物理工具，可并行附带一个不依赖这些新结果的 context_tx；若有正文则只是可见进度，Runtime 执行工具后必定再次调用你。
 - maintain：需要先修改 Mind 时可单独调用 context_tx，不输出最终正文。事务成功后 Runtime 必定再次调用你，并在非 critical 时暂时隐藏 context_tx；maintain 不是用户回合终点，下一响应必须 reply、no-reply 或 act。
 - schedule：需要决定串行、并行、依赖或定时执行时，独占调用一次 schedule_tx。enqueue 把意图加入既有 Thread，spawn 创建并行 Thread；not_before/delay_seconds 设置定时，after 设置依赖。inspect 读取调度及 revision；pause/resume/reschedule/cancel 是带 expected_revision 的 CAS 控制，冲突时必须重新 inspect 后再决策，不得盲目重试。每次控制只能包含一个 op。schedule_tx 只提交调度，不代替物理工具，也不结束当前 Evaluation；收到回执后再向 active Session 说明安排。
@@ -91,12 +91,12 @@ Context 的状态分为三个权限域：
 8. 完成任务前，确认 Mind 中仍需跨轮保留的目标、约束、结论和开放问题准确；若物理工具结果改变了任务状态，在最终文本之前用一次 context_tx 完成收口。Runtime 会在事务回执后再次调用你，届时返回普通文本或独占调用 no_reply。
 9. assistant_call 与 context_tx 回执属于 Runtime 控制轨迹，只保存在 Ledger，不会进入 Inbox；不要为了清理 context_tx 自己产生的记录而连续提交 housekeeping transaction。
    recall/read 等过程 Observation 应在提炼证据的同一事务中按需 retire；事务成功且 Mind 已准确后，不要再为清理刚产生的过程记录继续 recall 或提交 housekeeping，直接 reply。
-10. Context 最后的 `evaluate` 是本次模型请求唯一的执行入口。只处理其中的 `root-input` 和显式绑定的 thread；其他 dialogue/work/objective thread 仅是只读背景。每次调用物理工具前，必须确认它是完成当前 `root-input` 所必需的新信息。当 Mind/inbox 已足以回答，尤其是问候、催问、状态询问或普通对话时，立即返回普通文本；不要替未绑定的 Objective 或旧 work thread 调用工具，不要重复验证、扫描工作区或自行发明后续目标。
+10. Context 最后的 `evaluate` 是本次模型请求唯一的执行入口。只处理其中的 `root-input` 和显式绑定的 Thread；其他 DialogueTurn / Execution / Objective / Delivery Thread 仅是只读背景。每次调用物理工具前，必须确认它是完成当前 `root-input` 所必需的新信息。当 Mind/inbox 已足以回答，尤其是问候、催问、状态询问或普通对话时，立即返回普通文本；不要替未绑定的 Objective 或旧 Execution Thread 调用工具，不要重复验证、扫描工作区或自行发明后续目标。
 11. kernel.turn-control 描述当前用户回合的模型求值进度。phase=soft-checkpoint 是周期性复盘点，不是 Attempt 上限：所有正常工具仍然可用，若任务仍有可靠进展就继续执行；只需检查目标、证据、Mind 和下一步是否一致，避免无进展的重复调用。一次模型响应里并行调用多个工具只计为一次 Attempt。
 12. kernel.wake 说明本次为何被唤醒。独立 context_tx 成功后的 context-transaction-result 会触发一次冷却：除非仍处于 critical，否则本次不再提供 context_tx，必须返回普通文本、调用 no_reply 或执行必要的物理动作。
 13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。相互独立的文件读取必须在同一响应中并行调用；已经进入 Inbox 且 sha256 未被 file_change 改变的内容不得重复 read。完成必要定位后立即修改并验证，不要在反复扫描与阅读中消耗无进展的模型求值。
-14. exec 回执中的 execution、process_status、exit_code、task_status 和 effective_boundary 是 Runtime 观测到的物理事实；不得用命令意图或自己的预期取代它们。exec 转入后台后，用 task_status/list_tasks 做必要的一次查询，或调用 wait_task 并设置合适的 wait_secs 后调用 no_reply 进入事件驱动等待；任务结束或等待时间到达时 Runtime 会主动唤醒，你可自行决定继续等待多长时间或调用 kill_task，不得用 sleep、ps 或重复读取空日志轮询。不得把 token/key 字面量写入命令、进程参数、Mind 或 Ledger；只能由使用者预先配置 Runtime 环境变量，再通过 requested_permissions.secret_env 按变量名申请对单个子进程注入。
-15. kernel.objectives 与 evaluate.objective-context 让你看到当前 Session 的 Objective 物理状态，但“可见”不等于“已绑定”。仅当 evaluate.objective-binding 指向某个 Objective 时，本轮才属于它的 objective thread 并可推进它；binding=none 时只可用这些状态回答用户的进度问题，不得为其调用工具。绑定的 Objective 仍有工作且不等待时正常交付当前进度，Supervisor 会自动续跑；等待确定事件时先调用 objective_update(status=active, wait_condition=...)；确实无法自动等待或推进时才提交 blocked；只有逐项审计 stated objective 并有真实 Ledger 证据支持时才提交 completed。Objective 状态工具成功后仍需产生普通文本或调用 no_reply 完成本次 IO。
+14. exec 回执中的 execution、process_status、exit_code、task_status 和 effective_boundary 是 Runtime 观测到的物理事实；不得用命令意图或自己的预期取代它们。若非零退出的 stderr/事实明确说明失败源于当前边界缺少网络、边界外读写目录或秘密环境变量，且该能力确为当前任务所必需，应使用同一条必要命令重试一次：sandbox_permissions=require_escalated，并在 requested_permissions 中只申请最小能力、用 justification 说明原因；不得仅因普通命令失败猜测权限问题。命中 protected_paths、审批明确拒绝或 permission_request_available=false 时不可通过重试覆盖。exec 转入后台后，用 task_status/list_tasks 做必要的一次查询，或调用 wait_task 并设置合适的 wait_secs 后调用 no_reply 进入事件驱动等待；任务结束或等待时间到达时 Runtime 会主动唤醒，你可自行决定继续等待多长时间或调用 kill_task，不得用 sleep、ps 或重复读取空日志轮询。不得把 token/key 字面量写入命令、进程参数、Mind 或 Ledger；只能由使用者预先配置 Runtime 环境变量，再通过 requested_permissions.secret_env 按变量名申请对单个子进程注入。
+15. kernel.objectives 与 evaluate.objective-context 让你看到当前 Session 的 Objective 物理状态，但“可见”不等于“已绑定”。仅当 evaluate.objective-binding 指向某个 Objective 时，本轮才属于它的 Objective Thread 并可推进它；binding=none 时只可用这些状态回答用户的进度问题，不得为其调用工具。绑定的 Objective 仍有工作且不等待时正常交付当前进度，Supervisor 会自动续跑；等待确定事件时先调用 objective_update(status=active, wait_condition=...)；确实无法自动等待或推进时才提交 blocked；只有逐项审计 stated objective 并有真实 Ledger 证据支持时才提交 completed。Objective 状态工具成功后仍需产生普通文本或调用 no_reply 完成本次 IO。
 16. 你可以调用 objective_create，把当前 Session 中确实需要跨多次 Evaluation、异步等待或 Runtime 重启继续推进的工作升级为 First-Class Objective。它不是普通 Todo 或延长思考时间的手段：当前 Evaluation 可以可靠完成的任务不得创建 Objective；创建时完整保留用户范围与完成条件，并说明持久化的必要性。Runtime 自动绑定当前 Agent/Context/Session 并生成 ID；成功或返回 existing 后不得为同一目标重复创建。若指定 parent_objective_id，它必须是当前正在求值的 Objective。创建成功后继续工作，普通文本或 no_reply 只结束被收编后的当前 Evaluation，未完成 Objective 将由 Supervisor 自动续跑。
 17. 调度决策由你负责，Runtime 只执行并发与时序机制。当前 Thread 内连续物理动作直接调用工具，结果仍回到同一 mailbox；需要让新工作与当前 Thread 并行时用 schedule_tx.spawn，需要等待当前或指定 Thread 完成后串行推进时用 schedule_tx.enqueue/after。已有调度的状态先用 schedule_tx.inspect 读取；只能用其返回的最新 revision 执行 pause/resume/reschedule/cancel，冲突表示事实已变化，必须重新观测和决策。不要用多次相互独立的物理工具调用暗示新 Thread，也不要把 schedule_tx 与 context_tx 或物理工具混在同一响应。定时调度到期只是一条新的 observation；必须根据届时的真实 Context 再决策，不得预先声称结果已完成。
 
@@ -120,7 +120,7 @@ Context 的状态分为三个权限域：
 
 一个 Cognitive Context 运行一个共享 Mind，并可同时承载多个 Session 求值。Session 是 IO 路由与局部进展边界，不是 Mind 的所有者。每次执行周期由 `kernel.active-session` 指定本次输入来源和输出目标；其他 Session 可以同时处于活跃执行状态。所有 observation 都属于共享 Context，并用 `session` 标记来源，因此你可以跨 Session 迁移信息，同时必须让当前回复严格对应 active-session。共享 Mind 的 context_tx 由 Runtime 串行提交并做版本检查。
 
-每个 Session 有一条连续的 dialogue thread；由某个对话 turn 发起、并由工具结果延续的计算形成独立 work thread。Objective 是可跨多个 work thread 持续推进的 objective thread。Context 最后的 `evaluate` 表达式选择本周期唯一活动 thread；其他 thread 即使可见也只是只读状态。
+每个 Session 有一条 Dialogue Lane，用于排序普通对话的首次求值；每条用户输入创建一条独立且有限的 DialogueTurn Thread。由该 turn 发起、并由工具结果延续的计算形成 Execution Thread。Objective 由 Objective Thread 持续推进。Context 最后的 `evaluate` 表达式选择本周期唯一活动 Thread；其他 Thread 即使可见也只是只读状态。
 
 你的职责不只是记录信息，而是让 Mind 成为后续执行可以直接利用的认知程序。当多个已完成任务反复出现相似的判断或执行结构，并且该结构可能改变未来决策、减少重复工作或降低错误率时，你可以基于多个真实来源派生可复用的符号结构。应保留其适用范围、来源、反例和不确定性；不得从单个案例过度泛化，也不得为了形式完整而强制总结经验。
 
@@ -377,8 +377,8 @@ impl DurableApprovalServices {
 
 #[derive(Debug, Clone)]
 struct ActivationRoute {
-    work_thread_id: String,
-    work_item_id: String,
+    thread_id: String,
+    activation_id: String,
     root_turn_id: String,
     trigger_event_id: String,
     trigger_sequence: u64,
@@ -469,7 +469,7 @@ impl TerminalDecision {
 fn no_reply_tool_definition() -> crate::llm::ToolDefinition {
     crate::llm::ToolDefinition {
         name: NO_REPLY_TOOL_NAME.to_string(),
-        description: "明确本次不向当前 active Session 发送消息。Dialogue Thread 中它结束本次求值；存在仍在运行的后台任务时，它只让当前 Work Thread yield 并进入 waiting，后续任务事件会再次唤醒同一 Thread。它不代表 Objective 完成，也不取消后台任务。no_reply 必须是响应中唯一的工具调用，且不能同时返回正文。".to_string(),
+        description: "明确本次不向当前 active Session 发送消息。DialogueTurn Thread 中它结束本次求值；存在仍在运行的后台任务时，它只让当前 Execution Thread yield 并进入 waiting，后续任务事件会再次唤醒同一 Thread。它不代表 Objective 完成，也不取消后台任务。no_reply 必须是响应中唯一的工具调用，且不能同时返回正文。".to_string(),
         parameters: json!({
             "type": "object",
             "properties": {},
@@ -640,14 +640,14 @@ pub struct Orchestrator {
     orchestrator_config: OrchestratorConfig,
     pub concurrency_semaphore: Arc<tokio::sync::Semaphore>,
     activation_admission: ActivationAdmissionController,
-    /// One ordered dialogue thread per Session. Tool/objective continuations do
-    /// not take this lock: after a dialogue turn launches a work thread, later
+    /// One ordered Dialogue Lane per Session. Tool/objective continuations do
+    /// not take this lock: after a dialogue turn launches an Execution Thread, later
     /// user messages can still be answered while that work continues.
     dialogue_thread_gates: DashMap<String, Arc<DialogueThreadGate>>,
-    /// One evaluator at a time may drain a Work Thread mailbox. Tool calls may
+    /// One evaluator at a time may drain a Thread mailbox. Tool calls may
     /// execute concurrently inside an attempt, but their result/timer/exit
     /// events converge here instead of forking independent model chains.
-    work_thread_gates: DashMap<String, Arc<Mutex<()>>>,
+    thread_gates: DashMap<String, Arc<Mutex<()>>>,
     read_turn_guards: DashMap<String, Arc<Mutex<ReadTurnGuard>>>,
     cancellation_epochs: DashMap<String, watch::Sender<u64>>,
     active_session_turns: DashMap<String, Arc<AtomicUsize>>,
@@ -661,7 +661,7 @@ pub struct Orchestrator {
     objective_evaluations: Arc<ObjectiveEvaluationRegistry>,
     objective_supervisor: Option<Arc<ObjectiveSupervisor>>,
     /// Scheduler Kernel physical clock. Every Orchestrator has one: terminal
-    /// Work Thread delivery and activation leases are not optional features.
+    /// Thread delivery and activation leases are not optional features.
     timer_engine: Arc<TimerEngine>,
     thread_scheduler: Option<Arc<ThreadScheduler>>,
     execution_jobs: Option<Arc<ExecutionJobManager<dyn ExecutionJobStore>>>,
@@ -768,7 +768,7 @@ impl Orchestrator {
             concurrency_semaphore,
             activation_admission,
             dialogue_thread_gates: DashMap::new(),
-            work_thread_gates: DashMap::new(),
+            thread_gates: DashMap::new(),
             read_turn_guards: DashMap::new(),
             cancellation_epochs: DashMap::new(),
             active_session_turns: DashMap::new(),
@@ -1039,7 +1039,7 @@ impl Orchestrator {
         self.dispatch_pending_signal_outbox().await?;
         self.recover_pending_thread_signals().await?;
         self.recover_delegations().await?;
-        self.reconcile_orphaned_work_threads().await?;
+        self.reconcile_orphaned_threads().await?;
         self.recover_pending_delivery_flushes().await?;
         self.refill_activation_admission_queue().await?;
         self.start_activation_admission_refill();
@@ -1197,7 +1197,7 @@ impl Orchestrator {
                 .restore_queued(activation_admission_key_for_class(&activation, class))?;
             if outcome == RestoreQueuedOutcome::DeferredWindowFull {
                 tracing::debug!(
-                    work_item_id = %activation.id,
+                    activation_id = %activation.id,
                     "Activation 保留在 SQLite queued；等待进入有界内存准入窗口"
                 );
             }
@@ -1240,7 +1240,7 @@ impl Orchestrator {
                 .find(|event| event.id == activation.trigger_event_id)
             else {
                 tracing::error!(
-                    work_item_id = %activation.id,
+                    activation_id = %activation.id,
                     trigger_event_id = %activation.trigger_event_id,
                     "无法重扫 queued Activation：Ledger 中不存在 Trigger Event"
                 );
@@ -1267,10 +1267,10 @@ impl Orchestrator {
         };
         for context in session_store.list_contexts(false).await? {
             let mut interrupted_dialogue_roots = HashSet::new();
-            let work_items = session_store
+            let activations = session_store
                 .list_context_thread_activations(&context.id, false)
                 .await?;
-            if work_items.is_empty() {
+            if activations.is_empty() {
                 continue;
             }
             let events = self
@@ -1285,22 +1285,22 @@ impl Orchestrator {
                 .into_iter()
                 .map(|event| (event.id.clone(), event))
                 .collect::<HashMap<_, _>>();
-            for work_item in work_items {
-                let Some(trigger) = events.get(&work_item.trigger_event_id).cloned() else {
+            for activation in activations {
+                let Some(trigger) = events.get(&activation.trigger_event_id).cloned() else {
                     tracing::error!(
-                        work_item_id = %work_item.id,
-                        trigger_event_id = %work_item.trigger_event_id,
+                        activation_id = %activation.id,
+                        trigger_event_id = %activation.trigger_event_id,
                         "无法恢复 Thread Activation：Ledger 中不存在 Trigger Event"
                     );
                     continue;
                 };
-                if interrupted_dialogue_on_restart(&work_item, &events) {
+                if interrupted_dialogue_on_restart(&activation, &events) {
                     let announce =
-                        interrupted_dialogue_roots.insert(work_item.root_turn_id.clone());
+                        interrupted_dialogue_roots.insert(activation.root_turn_id.clone());
                     match session_store
                         .update_thread_activation(
-                            &work_item.id,
-                            work_item.revision,
+                            &activation.id,
+                            activation.revision,
                             ThreadActivationStatus::Cancelled,
                             None,
                             None,
@@ -1309,10 +1309,10 @@ impl Orchestrator {
                         .await?
                     {
                         ThreadActivationMutation::Updated(_) => {
-                            self.activation_admission.forget(&work_item.id);
+                            self.activation_admission.forget(&activation.id);
                             tracing::info!(
-                                work_item_id = %work_item.id,
-                                root_turn_id = %work_item.root_turn_id,
+                                activation_id = %activation.id,
+                                root_turn_id = %activation.root_turn_id,
                                 "Runtime 重启后中止未形成物理工作的 Dialogue Turn"
                             );
                             if announce {
@@ -1320,25 +1320,25 @@ impl Orchestrator {
                                     .publish(Event::new(
                                         format!(
                                             "dialogue_interrupted_{}_{}",
-                                            work_item.id,
+                                            activation.id,
                                             Utc::now().timestamp_nanos_opt().unwrap_or(0)
                                         ),
                                         "Runtime-Recovery".to_string(),
                                         TYPE_AGENT_CALL.to_string(),
                                         "chat/cancelled".to_string(),
                                         vec![
-                                            ("context_id".to_string(), json!(work_item.context_id)),
-                                            ("session_id".to_string(), json!(work_item.session_id)),
-                                            ("work_item_id".to_string(), json!(work_item.id)),
+                                            ("context_id".to_string(), json!(activation.context_id)),
+                                            ("session_id".to_string(), json!(activation.session_id)),
+                                            ("activation_id".to_string(), json!(activation.id)),
                                             (
                                                 "root_turn_id".to_string(),
-                                                json!(work_item.root_turn_id),
+                                                json!(activation.root_turn_id),
                                             ),
                                             (
                                                 "trigger_event_id".to_string(),
-                                                json!(work_item.trigger_event_id),
+                                                json!(activation.trigger_event_id),
                                             ),
-                                            ("thread_kind".to_string(), json!("dialogue")),
+                                            ("thread_kind".to_string(), json!("dialogue_turn")),
                                             ("status".to_string(), json!("interrupted")),
                                             ("reason".to_string(), json!("runtime_restart")),
                                             (
@@ -1360,36 +1360,36 @@ impl Orchestrator {
                 // A persisted assistant decision is the durable recovery
                 // boundary. Its original trigger may already be represented
                 // by a later Context snapshot, but suppressing that trigger
-                // would also suppress resume_persisted_work_item and strand
-                // the newly materialized Work Thread. The flag is process
+                // would also suppress resume_persisted_activation and strand
+                // the newly materialized Thread. The flag is process
                 // local: dispatch_persisted does not append a second Event.
                 let mut trigger = trigger;
-                if events.contains_key(&format!("call_{}", work_item.id)) {
+                if events.contains_key(&format!("call_{}", activation.id)) {
                     trigger
                         .payload
                         .insert("runtime_force_evaluation".to_string(), json!(true));
                     trigger.payload.insert(
-                        "runtime_recovery_work_item_id".to_string(),
-                        json!(&work_item.id),
+                        "runtime_recovery_activation_id".to_string(),
+                        json!(&activation.id),
                     );
                 }
-                match work_item.status {
+                match activation.status {
                     ThreadActivationStatus::Queued => {
-                        if self.activation_admission.contains(&work_item.id) {
+                        if self.activation_admission.contains(&activation.id) {
                             self.bus.dispatch_persisted(trigger).await?;
                         }
                     }
                     ThreadActivationStatus::Running => {
-                        if runtime_claimant_is_definitely_dead(work_item.claimed_by.as_deref()) {
+                        if runtime_claimant_is_definitely_dead(activation.claimed_by.as_deref()) {
                             tracing::warn!(
-                                work_item_id = %work_item.id,
-                                claimed_by = ?work_item.claimed_by,
+                                activation_id = %activation.id,
+                                claimed_by = ?activation.claimed_by,
                                 "恢复由已退出 Runtime 持有的 Thread Activation"
                             );
                             match session_store
                                 .update_thread_activation(
-                                    &work_item.id,
-                                    work_item.revision,
+                                    &activation.id,
+                                    activation.revision,
                                     ThreadActivationStatus::Queued,
                                     None,
                                     None,
@@ -1398,7 +1398,7 @@ impl Orchestrator {
                                 .await?
                             {
                                 ThreadActivationMutation::Updated(queued) => {
-                                    self.cancel_activation_lease(&work_item.id).await?;
+                                    self.cancel_activation_lease(&activation.id).await?;
                                     if self.activation_admission.restore_queued(
                                         activation_admission_key(&queued, &trigger),
                                     )? == RestoreQueuedOutcome::Restored
@@ -1411,7 +1411,7 @@ impl Orchestrator {
                             }
                             continue;
                         }
-                        self.arm_activation_lease(&work_item).await?;
+                        self.arm_activation_lease(&activation).await?;
                     }
                     ThreadActivationStatus::Succeeded
                     | ThreadActivationStatus::Cancelled
@@ -1428,33 +1428,33 @@ impl Orchestrator {
     /// their next wake. An active Dialogue/Work/Delivery Thread without a
     /// non-terminal Thread Activation or queued schedule is an inconsistent orphan,
     /// usually produced by an older Runtime crossing a persistence boundary.
-    async fn reconcile_orphaned_work_threads(&self) -> Result<(), DynError> {
+    async fn reconcile_orphaned_threads(&self) -> Result<(), DynError> {
         let Some(session_store) = self.context_engine.session_store() else {
             return Ok(());
         };
         let scheduled_threads = session_store
-            .list_scheduled_intents(None, Some(crate::memory::ScheduledIntentStatus::Queued))
+            .list_schedules(None, Some(crate::memory::ScheduleStatus::Queued))
             .await?
             .into_iter()
             .map(|intent| intent.thread_id)
             .collect::<HashSet<_>>();
         for context in session_store.list_contexts(false).await? {
-            let work_items = session_store
+            let activations = session_store
                 .list_context_thread_activations(&context.id, true)
                 .await?;
-            let active_roots = work_items
+            let active_roots = activations
                 .iter()
                 .filter(|item| !item.status.is_terminal())
                 .map(|item| item.root_turn_id.clone())
                 .collect::<HashSet<_>>();
             let threads = session_store
-                .list_context_work_threads(&context.id, false)
+                .list_context_threads(&context.id, false)
                 .await?;
             for thread in threads {
                 if thread.lifecycle != ThreadLifecycle::Open
                     || !matches!(
                         thread.kind,
-                        WorkThreadKind::Dialogue | WorkThreadKind::Work | WorkThreadKind::Delivery
+                        ThreadKind::DialogueTurn | ThreadKind::Execution | ThreadKind::Delivery
                     )
                     || active_roots.contains(&thread.root_turn_id)
                     || scheduled_threads.contains(&thread.id)
@@ -1464,7 +1464,7 @@ impl Orchestrator {
                 let event_id = format!("thread_reconciled_{}_r{}", thread.id, thread.revision);
                 let reason = "Runtime 重启时检测到 active Thread 没有非终态 Thread Activation、待执行调度或已提交终态；已将遗留孤儿状态标记为 cancelled。";
                 match session_store
-                    .update_work_thread(
+                    .update_thread(
                         &thread.id,
                         thread.revision,
                         None,
@@ -1476,14 +1476,14 @@ impl Orchestrator {
                     )
                     .await?
                 {
-                    WorkThreadMutation::Updated(_) => {
+                    ThreadMutation::Updated(_) => {
                         if let Some(scheduler) = &self.thread_scheduler {
                             scheduler.dependency_completed(&thread.id).await?;
                         }
                         tracing::warn!(
                             thread_id = %thread.id,
                             root_turn_id = %thread.root_turn_id,
-                            "Runtime 启动时已收口孤儿 Work Thread"
+                            "Runtime 启动时已收口孤儿 Thread"
                         );
                         self.bus
                             .publish(Event::new(
@@ -1495,7 +1495,7 @@ impl Orchestrator {
                                     ("agent_id".to_string(), json!(thread.agent_id)),
                                     ("context_id".to_string(), json!(thread.context_id)),
                                     ("session_id".to_string(), json!(thread.session_id)),
-                                    ("work_thread_id".to_string(), json!(thread.id)),
+                                    ("thread_id".to_string(), json!(thread.id)),
                                     ("root_turn_id".to_string(), json!(thread.root_turn_id)),
                                     ("thread_kind".to_string(), json!(thread.kind.as_str())),
                                     ("status".to_string(), json!("cancelled")),
@@ -1510,7 +1510,7 @@ impl Orchestrator {
                             ))
                             .await?;
                     }
-                    WorkThreadMutation::Conflict { .. } | WorkThreadMutation::NotFound => {}
+                    ThreadMutation::Conflict { .. } | ThreadMutation::NotFound => {}
                 }
             }
         }
@@ -1528,10 +1528,10 @@ impl Orchestrator {
             ) {
                 continue;
             }
-            let work_items = session_store
+            let activations = session_store
                 .list_context_thread_activations(&delegation.child_context_id, false)
                 .await?;
-            if work_items
+            if activations
                 .iter()
                 .any(|item| item.session_id == delegation.child_session_id)
             {
@@ -2017,10 +2017,7 @@ impl Orchestrator {
             .and_then(|value| value.as_str())
             .unwrap_or(event.id.as_str())
             .to_string();
-        let _work_thread_guard = self
-            .work_thread_gate(&routed_root_turn_id)
-            .lock_owned()
-            .await;
+        let _thread_guard = self.thread_gate(&routed_root_turn_id).lock_owned().await;
 
         let Some(admitted) = self.claim_thread_activation(&event).await? else {
             tracing::debug!(
@@ -2030,13 +2027,13 @@ impl Orchestrator {
             );
             return Ok(());
         };
-        let work_item = admitted.record;
+        let activation = admitted.record;
         let _activation_admission_permit = admitted._permit;
 
         // Bind an Objective continuation before any await in the Evaluation
         // body. A concurrent pause/cancel can therefore target this exact
         // Activation instead of falling back to the enclosing Session.
-        self.bind_embedded_objective_route(&work_item.id, &event);
+        self.bind_embedded_objective_route(&activation.id, &event);
         if let (Some(supervisor), Some(objective_id), Some(evaluation_id)) = (
             self.objective_supervisor.as_ref(),
             event
@@ -2061,12 +2058,12 @@ impl Orchestrator {
                     session_id,
                     objective_id,
                     evaluation_id,
-                    work_item_id = %work_item.id,
+                    activation_id = %activation.id,
                     "抑制已被暂停、取消或取代的 Objective Evaluation"
                 );
-                self.finish_thread_activation(&work_item, ThreadActivationStatus::Cancelled)
+                self.finish_thread_activation(&activation, ThreadActivationStatus::Cancelled)
                     .await?;
-                self.objective_evaluations.remove_work_item(&work_item.id);
+                self.objective_evaluations.remove_activation(&activation.id);
                 return Ok(());
             }
         }
@@ -2077,7 +2074,7 @@ impl Orchestrator {
         active_counter.fetch_add(1, Ordering::SeqCst);
         let attempt = tokio::select! {
             biased;
-            cancelled = self.objective_evaluations.wait_for_work_item_cancellation(&work_item.id) => {
+            cancelled = self.objective_evaluations.wait_for_activation_cancellation(&activation.id) => {
                 (None, Some(cancelled))
             }
             _ = cancellation.changed() => {
@@ -2088,15 +2085,15 @@ impl Orchestrator {
             if let Some(thread) = self
                 .context_engine
                 .session_store()
-                .ok_or("Work Thread 需要持久化 SessionStore")?
-                .get_work_thread_by_root(&work_item.root_turn_id)
+                .ok_or("Thread 需要持久化 SessionStore")?
+                .get_thread_by_root(&activation.root_turn_id)
                 .await?
             {
                 if thread.lifecycle.is_terminal() {
                     tracing::debug!(
-                        root_turn_id = %work_item.root_turn_id,
+                        root_turn_id = %activation.root_turn_id,
                         event_id = %event.id,
-                        "Work Thread 已终止，抑制迟到的 mailbox wake"
+                        "Thread 已终止，抑制迟到的 mailbox wake"
                     );
                     return Ok(());
                 }
@@ -2109,7 +2106,7 @@ impl Orchestrator {
             if event.event_type == TYPE_TOOL_OUTPUT
                 && !force_evaluation
                 && self
-                    .activation_signals_already_covered(&session_id, &work_item, &event)
+                    .activation_signals_already_covered(&session_id, &activation, &event)
                     .await?
             {
                 tracing::debug!(
@@ -2117,14 +2114,14 @@ impl Orchestrator {
                     event_id = %event.id,
                     "跳过已被更新 Context view 覆盖的排队 tool wakeup"
                 );
-                self.release_dialogue_thread(&session_id, &work_item.root_turn_id)
+                self.release_dialogue_thread(&session_id, &activation.root_turn_id)
                     .await;
                 return Ok(());
             }
             if let Some(supervisor) = &self.objective_supervisor {
-                supervisor.prepare_routed_event(&event, &work_item.id).await?;
+                supervisor.prepare_routed_event(&event, &activation.id).await?;
             }
-            self.run_attempt(&session_id, &work_item).await
+            self.run_attempt(&session_id, &activation).await
             } => (Some(result), None),
         };
         active_counter.fetch_sub(1, Ordering::SeqCst);
@@ -2142,12 +2139,12 @@ impl Orchestrator {
                     session_id,
                     objective_id = %cancelled.objective_id,
                     evaluation_id = %cancelled.evaluation_id,
-                    work_item_id = %work_item.id,
+                    activation_id = %activation.id,
                     "当前 Objective Evaluation 已取消；Session 与其他 Evaluation 继续运行"
                 );
                 let result = self
                     .request_cancel_execution_jobs_for_activation(
-                        &work_item.id,
+                        &activation.id,
                         &format!(
                             "Objective '{}' Evaluation '{}' 已被暂停或取消",
                             cancelled.objective_id, cancelled.evaluation_id
@@ -2161,7 +2158,7 @@ impl Orchestrator {
                 tracing::info!(session_id, "当前 Session 执行已由用户取消");
                 let result = self
                     .request_cancel_execution_jobs_for_activation(
-                        &work_item.id,
+                        &activation.id,
                         &format!("Session '{session_id}' 已由用户取消"),
                     )
                     .await
@@ -2173,31 +2170,31 @@ impl Orchestrator {
             final_status,
             ThreadActivationStatus::Cancelled | ThreadActivationStatus::Failed
         ) {
-            self.release_dialogue_thread(&session_id, &work_item.root_turn_id)
+            self.release_dialogue_thread(&session_id, &activation.root_turn_id)
                 .await;
         }
         if let Err(error) = self
-            .finish_thread_activation(&work_item, final_status)
+            .finish_thread_activation(&activation, final_status)
             .await
         {
-            self.activation_routes.remove(&work_item.id);
-            self.objective_evaluations.remove_work_item(&work_item.id);
+            self.activation_routes.remove(&activation.id);
+            self.objective_evaluations.remove_activation(&activation.id);
             if result.is_ok() {
                 return Err(error);
             }
             tracing::warn!(
-                work_item_id = %work_item.id,
+                activation_id = %activation.id,
                 error = %error,
                 "Thread Activation 终态提交失败；保留原始执行错误"
             );
         }
-        self.activation_routes.remove(&work_item.id);
-        self.objective_evaluations.remove_work_item(&work_item.id);
+        self.activation_routes.remove(&activation.id);
+        self.objective_evaluations.remove_activation(&activation.id);
         if matches!(
             final_status,
             ThreadActivationStatus::Succeeded | ThreadActivationStatus::Failed
         ) {
-            self.dispatch_next_pending_thread_signal(&work_item.root_turn_id)
+            self.dispatch_next_pending_thread_signal(&activation.root_turn_id)
                 .await?;
         }
         result
@@ -2211,7 +2208,7 @@ impl Orchestrator {
             .context_engine
             .session_store()
             .ok_or("Thread Signal dispatch 需要持久化 SessionStore")?;
-        let Some(thread) = session_store.get_work_thread_by_root(root_turn_id).await? else {
+        let Some(thread) = session_store.get_thread_by_root(root_turn_id).await? else {
             return Ok(());
         };
         let Some(signal) = session_store.next_pending_thread_signal(&thread.id).await? else {
@@ -2342,7 +2339,7 @@ impl Orchestrator {
         };
         let parent_activation_id = event
             .payload
-            .get("work_item_id")
+            .get("activation_id")
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned);
         let parent = match parent_activation_id.as_deref() {
@@ -2357,15 +2354,15 @@ impl Orchestrator {
             .or_else(|| parent.as_ref().map(|item| item.root_turn_id.clone()))
             .unwrap_or_else(|| event.id.clone());
         let initial_thread_kind = if event.topic == "chat/thread_completion_ready" {
-            WorkThreadKind::Delivery
+            ThreadKind::Delivery
         } else if event.event_type == TYPE_USER_MESSAGE {
-            WorkThreadKind::Dialogue
+            ThreadKind::DialogueTurn
         } else {
-            WorkThreadKind::Work
+            ThreadKind::Execution
         };
-        let work_thread = session_store
-            .ensure_work_thread(NewWorkThread {
-                id: stable_work_thread_id(&root_turn_id),
+        let thread = session_store
+            .ensure_thread(NewThread {
+                id: stable_thread_id(&root_turn_id),
                 agent_id: session.agent_id.clone(),
                 context_id: session.context_id.clone(),
                 session_id: session.id.clone(),
@@ -2376,22 +2373,22 @@ impl Orchestrator {
             })
             .await?;
         let digest = Sha256::digest(event.id.as_bytes());
-        let work_item_id = format!("work_{:x}", digest);
-        let work_item_id = work_item_id[..29].to_string();
+        let activation_id = format!("work_{:x}", digest);
+        let activation_id = activation_id[..29].to_string();
         let signal_id = format!("signal_{:x}", digest);
         let signal_id = signal_id[..31].to_string();
-        let Some(work_item) = session_store
+        let Some(activation) = session_store
             .claim_thread_signal_batch(
                 NewThreadSignal {
                     id: signal_id,
-                    thread_id: work_thread.id,
+                    thread_id: thread.id,
                     event_id: event.id.clone(),
                     sequence: trigger_sequence,
                     kind: event.topic.clone(),
                     parent_activation_id: parent_activation_id.clone(),
                 },
                 NewThreadActivation {
-                    id: work_item_id,
+                    id: activation_id,
                     agent_id: session.agent_id.clone(),
                     context_id: session.context_id.clone(),
                     session_id: session.id.clone(),
@@ -2407,22 +2404,22 @@ impl Orchestrator {
         else {
             return Ok(None);
         };
-        if work_item.status.is_terminal() {
-            self.activation_admission.forget(&work_item.id);
+        if activation.status.is_terminal() {
+            self.activation_admission.forget(&activation.id);
             return Ok(None);
         }
         let now = Utc::now();
-        if work_item.status == ThreadActivationStatus::Running
-            && work_item
+        if activation.status == ThreadActivationStatus::Running
+            && activation
                 .lease_expires_at
                 .is_some_and(|expires_at| expires_at > now)
         {
-            self.activation_admission.forget(&work_item.id);
+            self.activation_admission.forget(&activation.id);
             return Ok(None);
         }
         let admission_permit = match self
             .activation_admission
-            .acquire(activation_admission_key(&work_item, event))
+            .acquire(activation_admission_key(&activation, event))
             .await
         {
             Ok(permit) => permit,
@@ -2432,8 +2429,8 @@ impl Orchestrator {
                 // queued. A permit/window change wakes the refill loop, which
                 // re-dispatches this Trigger when it can enter the window.
                 tracing::info!(
-                    work_item_id = %work_item.id,
-                    session_id = %work_item.session_id,
+                    activation_id = %activation.id,
+                    session_id = %activation.session_id,
                     %error,
                     "Activation 受到有界 backpressure；延迟而非失败"
                 );
@@ -2444,8 +2441,8 @@ impl Orchestrator {
         let lease_expires_at = now + self.activation_lease_duration();
         match session_store
             .update_thread_activation(
-                &work_item.id,
-                work_item.revision,
+                &activation.id,
+                activation.revision,
                 ThreadActivationStatus::Running,
                 Some(&format!("runtime:{}", std::process::id())),
                 Some(lease_expires_at),
@@ -2462,22 +2459,22 @@ impl Orchestrator {
             }
             ThreadActivationMutation::Conflict { .. } => Ok(None),
             ThreadActivationMutation::NotFound => {
-                Err(format!("Thread Activation '{}' 在 claim 时消失", work_item.id).into())
+                Err(format!("Thread Activation '{}' 在 claim 时消失", activation.id).into())
             }
         }
     }
 
     async fn finish_thread_activation(
         &self,
-        work_item: &ThreadActivationRecord,
+        activation: &ThreadActivationRecord,
         status: ThreadActivationStatus,
     ) -> Result<ThreadActivationRecord, DynError> {
         let session_store = self
             .context_engine
             .session_store()
             .ok_or("Thread Activation 需要持久化 SessionStore")?;
-        let Some(current) = session_store.get_thread_activation(&work_item.id).await? else {
-            return Err(format!("Thread Activation '{}' 在结束时消失", work_item.id).into());
+        let Some(current) = session_store.get_thread_activation(&activation.id).await? else {
+            return Err(format!("Thread Activation '{}' 在结束时消失", activation.id).into());
         };
         if current.status.is_terminal() {
             self.cancel_activation_lease(&current.id).await?;
@@ -2508,24 +2505,24 @@ impl Orchestrator {
                 .into())
             }
             ThreadActivationMutation::NotFound => {
-                return Err(format!("Thread Activation '{}' 在结束时消失", work_item.id).into());
+                return Err(format!("Thread Activation '{}' 在结束时消失", activation.id).into());
             }
         };
         self.cancel_activation_lease(&updated.id).await?;
         Ok(updated)
     }
 
-    async fn record_work_item_context_snapshot(
+    async fn record_activation_context_snapshot(
         &self,
-        work_item: &ThreadActivationRecord,
+        activation: &ThreadActivationRecord,
         context_version: u64,
     ) -> Result<(), DynError> {
         let session_store = self
             .context_engine
             .session_store()
             .ok_or("Thread Activation 需要持久化 SessionStore")?;
-        let Some(current) = session_store.get_thread_activation(&work_item.id).await? else {
-            return Err(format!("Thread Activation '{}' 在记录快照时消失", work_item.id).into());
+        let Some(current) = session_store.get_thread_activation(&activation.id).await? else {
+            return Err(format!("Thread Activation '{}' 在记录快照时消失", activation.id).into());
         };
         if current.status.is_terminal() || current.context_snapshot_version == Some(context_version)
         {
@@ -2558,7 +2555,7 @@ impl Orchestrator {
             .into()),
             ThreadActivationMutation::NotFound => Err(format!(
                 "Thread Activation '{}' 在记录 Context snapshot 时消失",
-                work_item.id
+                activation.id
             )
             .into()),
         }
@@ -3122,15 +3119,15 @@ impl Orchestrator {
     /// owning Thread Activation reached a terminal state. Re-asking the model here could produce a new
     /// set of call IDs and repeat an external side effect, so recovery always reuses the exact
     /// persisted plan. `execute_tool_calls` also reuses any already durable output events.
-    async fn resume_persisted_work_item(
+    async fn resume_persisted_activation(
         &self,
         session_id: &str,
-        work_item: &ThreadActivationRecord,
+        activation: &ThreadActivationRecord,
     ) -> Result<bool, DynError> {
-        let assistant_event_id = format!("call_{}", work_item.id);
+        let assistant_event_id = format!("call_{}", activation.id);
         let Some(assistant_call) = self
             .context_engine
-            .find_event(&work_item.context_id, &assistant_event_id)
+            .find_event(&activation.context_id, &assistant_event_id)
             .await?
         else {
             return Ok(false);
@@ -3138,7 +3135,7 @@ impl Orchestrator {
         if assistant_call.topic != "chat/assistant_call" {
             return Err(format!(
                 "Thread Activation '{}' 的恢复边界 '{}' 不是 assistant_call",
-                work_item.id, assistant_event_id
+                activation.id, assistant_event_id
             )
             .into());
         }
@@ -3178,14 +3175,14 @@ impl Orchestrator {
                 .ok_or_else(|| {
                     format!(
                         "Thread Activation '{}' 的持久化终态响应不合法",
-                        work_item.id
+                        activation.id
                     )
                 })?;
             let parent = self
-                .parent_session_for(&work_item.context_id, session_id)
+                .parent_session_for(&activation.context_id, session_id)
                 .await?;
             tracing::info!(
-                work_item_id = %work_item.id,
+                activation_id = %activation.id,
                 disposition = decision.disposition(),
                 "从持久化 assistant_call 恢复 Evaluation 终态"
             );
@@ -3197,7 +3194,7 @@ impl Orchestrator {
                         .and_then(|value| value.as_str());
                     self.publish_reply_for_model_attempt(
                         session_id,
-                        &work_item.id,
+                        &activation.id,
                         model_attempt_id,
                         content,
                         parent.as_deref(),
@@ -3205,7 +3202,7 @@ impl Orchestrator {
                     .await?;
                 }
                 TerminalDecision::NoReply => {
-                    self.publish_no_reply(session_id, &work_item.id, parent.as_deref())
+                    self.publish_no_reply(session_id, &activation.id, parent.as_deref())
                         .await?;
                 }
             }
@@ -3215,7 +3212,7 @@ impl Orchestrator {
         if response.tool_calls.is_empty() {
             return Err(format!(
                 "Thread Activation '{}' 的持久化 assistant_call 既非终态回复也没有工具调用",
-                work_item.id
+                activation.id
             )
             .into());
         }
@@ -3249,13 +3246,13 @@ impl Orchestrator {
             .and_then(|value| value.as_str())
             .unwrap_or("work");
         tracing::info!(
-            work_item_id = %work_item.id,
+            activation_id = %activation.id,
             tool_calls = response.tool_calls.len(),
             "从持久化 assistant_call 恢复工具执行计划"
         );
         self.execute_tool_calls(
             session_id,
-            &work_item.id,
+            &activation.id,
             response,
             phase,
             ToolExecutionOptions {
@@ -3273,12 +3270,12 @@ impl Orchestrator {
     async fn run_attempt(
         &self,
         session_id: &str,
-        work_item: &ThreadActivationRecord,
+        activation: &ThreadActivationRecord,
     ) -> Result<(), DynError> {
-        let attempt_id = work_item.id.clone();
+        let attempt_id = activation.id.clone();
         let persisted_assistant_call = self
             .context_engine
-            .find_event(&work_item.context_id, &format!("call_{}", work_item.id))
+            .find_event(&activation.context_id, &format!("call_{}", activation.id))
             .await?;
         let persisted_physical_plan = persisted_assistant_call
             .as_ref()
@@ -3292,42 +3289,42 @@ impl Orchestrator {
         });
         let dialogue_gate = self.dialogue_thread_gate(session_id);
         let dialogue_bound =
-            if work_item.trigger_kind == "chat/user_message" && !persisted_physical_plan {
-                dialogue_gate.acquire(&work_item.root_turn_id).await;
+            if activation.trigger_kind == "chat/user_message" && !persisted_physical_plan {
+                dialogue_gate.acquire(&activation.root_turn_id).await;
                 true
             } else {
-                dialogue_gate.owns(&work_item.root_turn_id).await
+                dialogue_gate.owns(&activation.root_turn_id).await
             };
-        let thread_kind = if work_item.trigger_kind == "chat/thread_completion_ready" {
+        let thread_kind = if activation.trigger_kind == "chat/thread_completion_ready" {
             "delivery"
         } else if self
             .objective_evaluations
-            .get_for_work_item(&work_item.id)
+            .get_for_activation(&activation.id)
             .is_some()
         {
             "objective"
         } else if dialogue_bound {
-            "dialogue"
+            "dialogue_turn"
         } else {
-            "work"
+            "execution"
         };
         let session_store = self
             .context_engine
             .session_store()
-            .ok_or("Work Thread 需要持久化 SessionStore")?;
-        let mut work_thread = session_store
-            .get_work_thread_by_root(&work_item.root_turn_id)
+            .ok_or("Thread 需要持久化 SessionStore")?;
+        let mut thread = session_store
+            .get_thread_by_root(&activation.root_turn_id)
             .await?
-            .ok_or_else(|| format!("Root Turn '{}' 缺少 Work Thread", work_item.root_turn_id))?;
+            .ok_or_else(|| format!("Root Turn '{}' 缺少 Thread", activation.root_turn_id))?;
         let desired_kind = match thread_kind {
-            "dialogue" => WorkThreadKind::Dialogue,
-            "objective" => WorkThreadKind::Objective,
-            "delivery" => WorkThreadKind::Delivery,
-            _ => WorkThreadKind::Work,
+            "dialogue_turn" => ThreadKind::DialogueTurn,
+            "objective" => ThreadKind::Objective,
+            "delivery" => ThreadKind::Delivery,
+            _ => ThreadKind::Execution,
         };
         let delivery_thread_ids = if thread_kind == "delivery" {
             self.context_engine
-                .find_event(&work_item.context_id, &work_item.trigger_event_id)
+                .find_event(&activation.context_id, &activation.trigger_event_id)
                 .await?
                 .and_then(|event| {
                     event
@@ -3345,11 +3342,11 @@ impl Orchestrator {
         } else {
             Vec::new()
         };
-        if work_thread.kind != desired_kind {
-            if let WorkThreadMutation::Updated(updated) = session_store
-                .update_work_thread(
-                    &work_thread.id,
-                    work_thread.revision,
+        if thread.kind != desired_kind {
+            if let ThreadMutation::Updated(updated) = session_store
+                .update_thread(
+                    &thread.id,
+                    thread.revision,
                     Some(desired_kind),
                     None,
                     None,
@@ -3359,28 +3356,28 @@ impl Orchestrator {
                 )
                 .await?
             {
-                work_thread = updated;
+                thread = updated;
             }
         }
         self.activation_routes.insert(
             attempt_id.clone(),
             ActivationRoute {
-                work_thread_id: work_thread.id.clone(),
-                work_item_id: work_item.id.clone(),
-                root_turn_id: work_item.root_turn_id.clone(),
-                trigger_event_id: work_item.trigger_event_id.clone(),
-                trigger_sequence: work_item.trigger_sequence,
-                context_snapshot_version: work_item.context_snapshot_version,
+                thread_id: thread.id.clone(),
+                activation_id: activation.id.clone(),
+                root_turn_id: activation.root_turn_id.clone(),
+                trigger_event_id: activation.trigger_event_id.clone(),
+                trigger_sequence: activation.trigger_sequence,
+                context_snapshot_version: activation.context_snapshot_version,
                 thread_kind,
                 delivery_thread_ids,
             },
         );
         if self
-            .resume_persisted_work_item(session_id, work_item)
+            .resume_persisted_activation(session_id, activation)
             .await?
         {
             if dialogue_bound && persisted_terminal {
-                dialogue_gate.release(&work_item.root_turn_id).await;
+                dialogue_gate.release(&activation.root_turn_id).await;
             }
             return Ok(());
         }
@@ -3388,7 +3385,7 @@ impl Orchestrator {
         {
             tracing::info!(
                 session_id,
-                work_item_id = %work_item.id,
+                activation_id = %activation.id,
                 "Completion Inbox 已由并发 Delivery Thread 清空；跳过重复模型求值"
             );
             self.publish_no_reply(session_id, &attempt_id, None).await?;
@@ -3397,20 +3394,20 @@ impl Orchestrator {
         let transcript = self
             .turn_tool_transcript(
                 session_id,
-                Some(&work_item.root_turn_id),
-                Some(&work_item.trigger_event_id),
+                Some(&activation.root_turn_id),
+                Some(&activation.trigger_event_id),
             )
             .await?;
-        let context_id = work_item.context_id.clone();
+        let context_id = activation.context_id.clone();
         let mut context = self
             .context_engine
             .build_context_encoding_for_activation(
                 &context_id,
-                work_item,
+                activation,
                 &transcript.delivered_output_ids,
             )
             .await?;
-        self.record_work_item_context_snapshot(work_item, context.state.version)
+        self.record_activation_context_snapshot(activation, context.state.version)
             .await?;
         if let Some(mut route) = self.activation_routes.get_mut(&attempt_id) {
             route.context_snapshot_version = Some(context.state.version);
@@ -3418,7 +3415,7 @@ impl Orchestrator {
         let context_tx_receipt = self.context_tx_receipt(&context).await?;
         let objective_control_available = self
             .objective_evaluations
-            .get_for_work_item(&work_item.id)
+            .get_for_activation(&activation.id)
             .is_some_and(|active| {
                 context.objectives.iter().any(|objective| {
                     objective.id == active.objective_id
@@ -3477,12 +3474,12 @@ impl Orchestrator {
                 .map(|measurement| measurement.tokens)
                 .unwrap_or(context.pressure.estimated_tokens);
             if let Err(error) = supervisor
-                .record_prompt_tokens_for_work_item(&work_item.id, tokens)
+                .record_prompt_tokens_for_activation(&activation.id, tokens)
                 .await
             {
                 tracing::warn!(
                     session_id,
-                    work_item_id = %work_item.id,
+                    activation_id = %activation.id,
                     error = %error,
                     "Objective Prompt Token 记账失败；继续当前 Evaluation"
                 );
@@ -3718,19 +3715,19 @@ impl Orchestrator {
         if let Some(decision) = terminal_decision {
             let active_root_tasks = active_background_task_count_for_root(
                 session_id,
-                &work_item.context_id,
-                &work_item.root_turn_id,
+                &activation.context_id,
+                &activation.root_turn_id,
             );
             let pending_schedules = session_store
-                .list_scheduled_intents(Some(&work_thread.id), Some(ScheduledIntentStatus::Queued))
+                .list_schedules(Some(&thread.id), Some(ScheduleStatus::Queued))
                 .await?
                 .len();
-            if thread_kind != "dialogue" && (active_root_tasks > 0 || pending_schedules > 0) {
+            if thread_kind != "dialogue_turn" && (active_root_tasks > 0 || pending_schedules > 0) {
                 if let TerminalDecision::Deliver(content) = &decision {
                     self.publish_progress(session_id, &attempt_id, content.clone())
                         .await?;
                 }
-                self.yield_work_thread(
+                self.yield_thread(
                     session_id,
                     &attempt_id,
                     active_root_tasks,
@@ -3739,7 +3736,7 @@ impl Orchestrator {
                 )
                 .await?;
                 if dialogue_bound {
-                    dialogue_gate.release(&work_item.root_turn_id).await;
+                    dialogue_gate.release(&activation.root_turn_id).await;
                 }
                 return Ok(());
             }
@@ -3754,7 +3751,7 @@ impl Orchestrator {
             .await?;
             let result = match decision {
                 TerminalDecision::Deliver(content) => {
-                    if thread_kind == "work" {
+                    if thread_kind == "execution" {
                         self.publish_thread_result(
                             session_id,
                             &attempt_id,
@@ -3783,7 +3780,7 @@ impl Orchestrator {
                 }
             };
             if dialogue_bound {
-                dialogue_gate.release(&work_item.root_turn_id).await;
+                dialogue_gate.release(&activation.root_turn_id).await;
             }
             return result;
         }
@@ -3800,7 +3797,7 @@ impl Orchestrator {
                 .iter()
                 .all(|call| call.func_name == "context_tx");
             if dialogue_bound && !context_maintenance_only {
-                dialogue_gate.release(&work_item.root_turn_id).await;
+                dialogue_gate.release(&activation.root_turn_id).await;
             }
             let result = self
                 .execute_tool_calls(
@@ -3819,7 +3816,7 @@ impl Orchestrator {
                 )
                 .await;
             if result.is_err() && dialogue_bound && context_maintenance_only {
-                dialogue_gate.release(&work_item.root_turn_id).await;
+                dialogue_gate.release(&activation.root_turn_id).await;
             }
             result?;
             return Ok(());
@@ -4074,7 +4071,7 @@ impl Orchestrator {
             .ok_or_else(|| format!("Work result '{}' 缺少 Evaluation route", attempt_id))?;
         let result_event_id = format!(
             "thread_result_{}_{}",
-            route.work_thread_id,
+            route.thread_id,
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
         let mut payload = vec![
@@ -4158,7 +4155,7 @@ impl Orchestrator {
         if !sessions.is_empty() {
             tracing::info!(
                 sessions = sessions.len(),
-                "已从 pending/deferred Work Thread 恢复 Delivery Flush Timer"
+                "已从 pending/deferred Thread 恢复 Delivery Flush Timer"
             );
         }
         Ok(sessions.len())
@@ -4233,7 +4230,7 @@ impl Orchestrator {
                 ("result_event_ids".to_string(), json!(result_event_ids)),
                 (
                     "text".to_string(),
-                    json!("一个或多个 Work Thread 已完成。请只交付本次 completion snapshot 在 kernel.thread-scheduler 中呈现的 delivery=pending/deferred 结果，并结合最新并发状态形成一条清晰且不重复的消息；本次求值开始后新完成的结果属于下一次 Delivery，不要提前声称已覆盖。确实无需通知时才独占调用 no_reply。不得重复已经 delivered 的结果。"),
+                    json!("一个或多个 Thread 已完成。请只交付本次 completion snapshot 在 kernel.thread-scheduler 中呈现的 delivery=pending/deferred 结果，并结合最新并发状态形成一条清晰且不重复的消息；本次求值开始后新完成的结果属于下一次 Delivery，不要提前声称已覆盖。确实无需通知时才独占调用 no_reply。不得重复已经 delivered 的结果。"),
                 ),
             ]
             .into_iter()
@@ -4301,22 +4298,21 @@ impl Orchestrator {
             .session_store()
             .ok_or("Evaluation outcome 需要持久化 SessionStore")?;
         match session_store
-            .commit_activation_outcome(&route.work_item_id, event)
+            .commit_activation_outcome(&route.activation_id, event)
             .await?
         {
             ActivationOutcomeCommit::Committed => {
                 self.bus.dispatch_persisted(event.clone()).await?;
                 if let Some(scheduler) = &self.thread_scheduler {
-                    if let Err(error) = scheduler.dependency_completed(&route.work_thread_id).await
-                    {
-                        // The terminal Work Thread and outcome are already
+                    if let Err(error) = scheduler.dependency_completed(&route.thread_id).await {
+                        // The terminal Thread and outcome are already
                         // durable. Startup recovery re-arms every queued
                         // schedule, so dependency notification failure must
                         // not suppress the user-visible terminal outcome.
                         tracing::error!(
-                            thread_id = %route.work_thread_id,
+                            thread_id = %route.thread_id,
                             %error,
-                            "Work Thread 已终止，但依赖 Schedule 即时唤醒失败；等待恢复路径重放"
+                            "Thread 已终止，但依赖 Schedule 即时唤醒失败；等待恢复路径重放"
                         );
                     }
                 }
@@ -4324,7 +4320,7 @@ impl Orchestrator {
             }
             ActivationOutcomeCommit::Existing { event_id } => {
                 tracing::warn!(
-                    work_item_id = %route.work_item_id,
+                    activation_id = %route.activation_id,
                     duplicate_event_id = %event.id,
                     committed_event_id = %event_id,
                     "抑制同一 Thread Activation 的重复终态输出"
@@ -4334,7 +4330,7 @@ impl Orchestrator {
         }
     }
 
-    async fn yield_work_thread(
+    async fn yield_thread(
         &self,
         session_id: &str,
         attempt_id: &str,
@@ -4344,13 +4340,13 @@ impl Orchestrator {
     ) -> Result<(), DynError> {
         let route = self
             .activation_route(attempt_id)
-            .ok_or_else(|| format!("Evaluation '{}' 缺少 Work Thread route", attempt_id))?;
+            .ok_or_else(|| format!("Evaluation '{}' 缺少 Thread route", attempt_id))?;
         let session_store = self
             .context_engine
             .session_store()
             .ok_or("Thread phase 投影需要持久化 SessionStore")?;
-        let Some(current) = session_store.get_work_thread(&route.work_thread_id).await? else {
-            return Err(format!("Work Thread '{}' 不存在", route.work_thread_id).into());
+        let Some(current) = session_store.get_thread(&route.thread_id).await? else {
+            return Err(format!("Thread '{}' 不存在", route.thread_id).into());
         };
         if current.lifecycle.is_terminal() {
             return Ok(());
@@ -4388,7 +4384,7 @@ impl Orchestrator {
         attempt_id: &str,
         payload: &mut Vec<(String, serde_json::Value)>,
     ) {
-        let Some(active) = self.objective_evaluations.get_for_work_item(attempt_id) else {
+        let Some(active) = self.objective_evaluations.get_for_activation(attempt_id) else {
             return;
         };
         payload.extend([
@@ -4401,7 +4397,7 @@ impl Orchestrator {
         ]);
     }
 
-    fn bind_embedded_objective_route(&self, work_item_id: &str, event: &Event) {
+    fn bind_embedded_objective_route(&self, activation_id: &str, event: &Event) {
         let Some(objective_id) = event
             .payload
             .get("objective_id")
@@ -4416,8 +4412,8 @@ impl Orchestrator {
         else {
             return;
         };
-        self.objective_evaluations.bind_work_item(
-            work_item_id,
+        self.objective_evaluations.bind_activation(
+            activation_id,
             crate::objective::ActiveObjectiveEvaluation {
                 objective_id: objective_id.to_string(),
                 evaluation_id: evaluation_id.to_string(),
@@ -4577,7 +4573,7 @@ impl Orchestrator {
         });
         let requirement = tool.approval_requirement(&call.arguments)?;
         let spec = ExecutionJobSpec {
-            activation_id: route.work_item_id.clone(),
+            activation_id: route.activation_id.clone(),
             thread_id: thread_id.to_string(),
             agent_id: agent_id.to_string(),
             context_id: context_id.to_string(),
@@ -4594,7 +4590,7 @@ impl Orchestrator {
             );
         let claim_token = format!(
             "claim_{}_{}_{}",
-            crate::execution::deterministic_job_id(&route.work_item_id, &call.id)?,
+            crate::execution::deterministic_job_id(&route.activation_id, &call.id)?,
             std::process::id(),
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
@@ -4814,7 +4810,7 @@ impl Orchestrator {
             ClaimedPhysicalExecution {
                 context: crate::tool::ToolExecutionJobContext {
                     parent_job_id: job.id.clone(),
-                    activation_id: route.work_item_id.clone(),
+                    activation_id: route.activation_id.clone(),
                     thread_id: thread_id.to_string(),
                     agent_id: agent_id.to_string(),
                     context_id: context_id.to_string(),
@@ -5141,16 +5137,13 @@ impl Orchestrator {
                     .session_store()
                     .ok_or("Execution Job 需要持久化 SessionStore")?;
                 let thread = session_store
-                    .get_work_thread(&route.work_thread_id)
+                    .get_thread(&route.thread_id)
                     .await?
                     .ok_or_else(|| {
-                        format!(
-                            "Execution Job 的 Work Thread '{}' 不存在",
-                            route.work_thread_id
-                        )
+                        format!("Execution Job 的 Thread '{}' 不存在", route.thread_id)
                     })?;
                 if thread.context_id != context_id || thread.session_id != session_id {
-                    return Err("Execution Job 的 Work Thread 路由与当前 Evaluation 不一致".into());
+                    return Err("Execution Job 的 Thread 路由与当前 Evaluation 不一致".into());
                 }
                 Some((thread.agent_id, thread.id))
             }
@@ -5324,8 +5317,8 @@ impl Orchestrator {
                 activation_route
                     .as_ref()
                     .map(|route| crate::tool::ToolCausalRoute {
-                        work_thread_id: route.work_thread_id.clone(),
-                        work_item_id: route.work_item_id.clone(),
+                        thread_id: route.thread_id.clone(),
+                        activation_id: route.activation_id.clone(),
                         root_turn_id: route.root_turn_id.clone(),
                         trigger_event_id: route.trigger_event_id.clone(),
                         trigger_sequence: route.trigger_sequence,
@@ -5341,7 +5334,7 @@ impl Orchestrator {
                 execution_job: claimed_execution_job.clone(),
             };
             let execution_jobs = self.execution_jobs.clone();
-            let objective_evaluation = self.objective_evaluations.get_for_work_item(&attempt_id);
+            let objective_evaluation = self.objective_evaluations.get_for_activation(&attempt_id);
             let handle = tokio::spawn(async move {
                 crate::permission::CURRENT_DURABLE_APPROVAL
                         .scope(durable_approval_grant, async move {
@@ -5449,12 +5442,12 @@ impl Orchestrator {
                                                         .collect::<serde_json::Map<_, _>>();
                                                         if let Some(route) = activation_route {
                                                             payload.insert(
-                                                                "work_thread_id".to_string(),
-                                                                json!(route.work_thread_id),
+                                                                "thread_id".to_string(),
+                                                                json!(route.thread_id),
                                                             );
                                                             payload.insert(
-                                                                "work_item_id".to_string(),
-                                                                json!(route.work_item_id),
+                                                                "activation_id".to_string(),
+                                                                json!(route.activation_id),
                                                             );
                                                             payload.insert(
                                                                 "root_turn_id".to_string(),
@@ -5778,8 +5771,8 @@ impl Orchestrator {
             return;
         };
         payload.extend([
-            ("work_thread_id".to_string(), json!(route.work_thread_id)),
-            ("work_item_id".to_string(), json!(route.work_item_id)),
+            ("thread_id".to_string(), json!(route.thread_id)),
+            ("activation_id".to_string(), json!(route.activation_id)),
             ("root_turn_id".to_string(), json!(route.root_turn_id)),
             (
                 "trigger_event_id".to_string(),
@@ -5797,7 +5790,7 @@ impl Orchestrator {
         if !payload.iter().any(|(key, _)| key == "caused_by") {
             payload.push(("caused_by".to_string(), json!(route.trigger_event_id)));
         }
-        if let Some(active) = self.objective_evaluations.get_for_work_item(attempt_id) {
+        if let Some(active) = self.objective_evaluations.get_for_activation(attempt_id) {
             payload.extend([
                 ("objective_id".to_string(), json!(active.objective_id)),
                 (
@@ -5814,7 +5807,7 @@ impl Orchestrator {
         attempt_id: &str,
         payload: &mut serde_json::Map<String, serde_json::Value>,
     ) {
-        let Some(active) = self.objective_evaluations.get_for_work_item(attempt_id) else {
+        let Some(active) = self.objective_evaluations.get_for_activation(attempt_id) else {
             return;
         };
         payload.insert("objective_id".to_string(), json!(active.objective_id));
@@ -5853,17 +5846,17 @@ impl Orchestrator {
             .clone()
     }
 
-    fn work_thread_gate(&self, root_turn_id: &str) -> Arc<Mutex<()>> {
+    fn thread_gate(&self, root_turn_id: &str) -> Arc<Mutex<()>> {
         // Gates are a single-process serialization aid, not durable Thread
         // state.  Keep the cache bounded: an entry whose Arc is owned only by
         // the map has no holder or waiter and can be recreated safely.  DashMap
         // retains a gate that a concurrent caller has already cloned.
-        const MAX_CACHED_IDLE_WORK_THREAD_GATES: usize = 4_096;
-        if self.work_thread_gates.len() >= MAX_CACHED_IDLE_WORK_THREAD_GATES {
-            self.work_thread_gates
+        const MAX_CACHED_IDLE_THREAD_GATES: usize = 4_096;
+        if self.thread_gates.len() >= MAX_CACHED_IDLE_THREAD_GATES {
+            self.thread_gates
                 .retain(|_, gate| Arc::strong_count(gate) > 1);
         }
-        self.work_thread_gates
+        self.thread_gates
             .entry(root_turn_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
@@ -5890,7 +5883,7 @@ impl Orchestrator {
         let mut cancellation_error = None;
         for activation_id in self
             .objective_evaluations
-            .work_item_ids_for_evaluation(objective_id, evaluation_id)
+            .activation_ids_for_evaluation(objective_id, evaluation_id)
         {
             if let Err(error) = self
                 .request_cancel_execution_jobs_for_activation(&activation_id, &reason)
@@ -6205,10 +6198,10 @@ impl Orchestrator {
 }
 
 fn interrupted_dialogue_on_restart(
-    work_item: &ThreadActivationRecord,
+    activation: &ThreadActivationRecord,
     events: &HashMap<String, Event>,
 ) -> bool {
-    let Some(root) = events.get(&work_item.root_turn_id) else {
+    let Some(root) = events.get(&activation.root_turn_id) else {
         return false;
     };
     if root.topic != "chat/user_message"
@@ -6223,12 +6216,12 @@ fn interrupted_dialogue_on_restart(
             .payload
             .get("root_turn_id")
             .and_then(|value| value.as_str())
-            == Some(work_item.root_turn_id.as_str())
+            == Some(activation.root_turn_id.as_str())
             && event_contains_physical_tool_plan(event)
     })
 }
 
-fn stable_work_thread_id(root_turn_id: &str) -> String {
+fn stable_thread_id(root_turn_id: &str) -> String {
     let digest = Sha256::digest(root_turn_id.as_bytes());
     let id = format!("thread_{digest:x}");
     id[..31].to_string()
@@ -6269,9 +6262,7 @@ fn activation_admission_class(trigger: &Event) -> AdmissionClass {
         )
     {
         AdmissionClass::Maintenance
-    } else if trigger.topic == "chat/schedule_due"
-        || trigger.payload.get("scheduled_intent_id").is_some()
-    {
+    } else if trigger.topic == "chat/schedule_due" || trigger.payload.get("schedule_id").is_some() {
         AdmissionClass::ScheduledBackground
     } else {
         // Ordinary tool/background wakes are not interactive merely because
@@ -6443,8 +6434,8 @@ fn approval_request_event(
             ("action".to_string(), approval.action.clone()),
             ("requested".to_string(), approval.requested.clone()),
             ("justification".to_string(), json!(approval.justification)),
-            ("work_thread_id".to_string(), json!(route.work_thread_id)),
-            ("work_item_id".to_string(), json!(route.work_item_id)),
+            ("thread_id".to_string(), json!(route.thread_id)),
+            ("activation_id".to_string(), json!(route.activation_id)),
             ("root_turn_id".to_string(), json!(route.root_turn_id)),
             (
                 "text".to_string(),
@@ -6491,8 +6482,8 @@ fn approval_denied_tool_output(
                 "approval_status".to_string(),
                 json!(approval.status.as_str()),
             ),
-            ("work_thread_id".to_string(), json!(route.work_thread_id)),
-            ("work_item_id".to_string(), json!(route.work_item_id)),
+            ("thread_id".to_string(), json!(route.thread_id)),
+            ("activation_id".to_string(), json!(route.activation_id)),
             ("root_turn_id".to_string(), json!(route.root_turn_id)),
             (
                 "text".to_string(),
@@ -6731,8 +6722,8 @@ fn lost_tool_output(metadata: &ToolTaskMetadata, reason: &str) -> Event {
         ("text".to_string(), json!(reason)),
     ]);
     if let Some(route) = &metadata.activation_route {
-        payload.insert("work_thread_id".to_string(), json!(route.work_thread_id));
-        payload.insert("work_item_id".to_string(), json!(route.work_item_id));
+        payload.insert("thread_id".to_string(), json!(route.thread_id));
+        payload.insert("activation_id".to_string(), json!(route.activation_id));
         payload.insert("root_turn_id".to_string(), json!(route.root_turn_id));
         payload.insert(
             "trigger_event_id".to_string(),
@@ -6769,8 +6760,8 @@ fn unstarted_cancelled_tool_output(job: &ExecutionJobRecord, reason: &str) -> Ev
             ("executed".to_string(), json!(false)),
             ("wake_policy".to_string(), json!("none")),
             ("output_empty".to_string(), json!(false)),
-            ("work_thread_id".to_string(), json!(job.thread_id)),
-            ("work_item_id".to_string(), json!(job.activation_id)),
+            ("thread_id".to_string(), json!(job.thread_id)),
+            ("activation_id".to_string(), json!(job.activation_id)),
             (
                 "text".to_string(),
                 json!(format!(
@@ -7024,8 +7015,8 @@ mod tests {
             persist_started: false,
         }));
         let route = vec![
-            ("work_item_id".to_string(), json!("activation-1")),
-            ("thread_kind".to_string(), json!("dialogue")),
+            ("activation_id".to_string(), json!("activation-1")),
+            ("thread_kind".to_string(), json!("dialogue_turn")),
         ];
 
         for _ in 0..2 {
@@ -7047,8 +7038,8 @@ mod tests {
         assert_eq!(events[0].id, "model_reasoning_summary_attempt-1");
         assert_eq!(events[0].payload["text"], "partial provider summary");
         assert_eq!(events[0].payload["complete"], false);
-        assert_eq!(events[0].payload["work_item_id"], "activation-1");
-        assert_eq!(events[0].payload["thread_kind"], "dialogue");
+        assert_eq!(events[0].payload["activation_id"], "activation-1");
+        assert_eq!(events[0].payload["thread_kind"], "dialogue_turn");
     }
 
     #[test]
@@ -7099,10 +7090,7 @@ mod tests {
             activation_admission_class(&event(
                 TYPE_TOOL_OUTPUT,
                 "runtime/context_maintenance",
-                serde_json::Map::from_iter([(
-                    "scheduled_intent_id".to_string(),
-                    json!("schedule-1"),
-                )]),
+                serde_json::Map::from_iter([("schedule_id".to_string(), json!("schedule-1"),)]),
             )),
             AdmissionClass::Maintenance,
             "explicit Runtime maintenance must not be reclassified by an incidental schedule field"
@@ -7163,6 +7151,8 @@ mod tests {
         assert!(first.contains("Agent Epistemic Contract（认识契约）"));
         assert!(first.contains("claims-no-stronger-than-sources"));
         assert!(first.contains("不规定 Mind BODY 的结构"));
+        assert!(first.contains("sandbox_permissions=require_escalated"));
+        assert!(first.contains("不得仅因普通命令失败猜测权限问题"));
     }
 
     #[test]

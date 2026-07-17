@@ -16,10 +16,9 @@ use crate::memory::{
     EventStore, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
     ExecutionJobStore, MessageClaim, NewAgent, NewCognitiveContext, NewDelegation, NewObjective,
     NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, ScheduledIntentMutation, ScheduledIntentRecord,
-    ScheduledIntentStatus, SessionRecord, SessionStore, SessionUpdate, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadPhase, ThreadSignalRecord, ThreadSignalStatus, TimerStore,
-    WorkThreadRecord,
+    ObjectiveWaitCondition, QueryFilter, ScheduleMutation, ScheduleRecord, ScheduleStatus,
+    SessionRecord, SessionStore, SessionUpdate, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -50,7 +49,7 @@ pub struct RuntimeIdentity {
     pub context_id: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerResultSnapshot {
     pub event_id: Option<String>,
     pub status: ExecutionJobStatus,
@@ -60,30 +59,30 @@ pub struct SchedulerResultSnapshot {
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerJobSnapshot {
     pub job: ExecutionJobRecord,
     pub approval: Option<ApprovalRecord>,
     pub result: Option<SchedulerResultSnapshot>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerActivationSnapshot {
     pub activation: ThreadActivationRecord,
     pub signals: Vec<ThreadSignalRecord>,
     pub jobs: Vec<SchedulerJobSnapshot>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerThreadSnapshot {
-    pub thread: WorkThreadRecord,
+    pub thread: ThreadRecord,
     pub phase: ThreadPhase,
     pub pending_signals: Vec<ThreadSignalRecord>,
     pub activations: Vec<SchedulerActivationSnapshot>,
-    pub schedules: Vec<ScheduledIntentRecord>,
+    pub schedules: Vec<ScheduleRecord>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerAdmissionSnapshot {
     #[serde(flatten)]
     pub process: crate::activation_admission::ActivationAdmissionSnapshot,
@@ -94,7 +93,7 @@ pub struct SchedulerAdmissionSnapshot {
     pub context_deferred: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerSummary {
     pub open_threads: usize,
     pub pending_signals: usize,
@@ -110,7 +109,7 @@ pub struct SchedulerSummary {
 /// One read model for every Dashboard scheduler surface. SQLite authorities
 /// are joined by their causal IDs here so the UI never infers Runtime truth
 /// from unrelated event counts or process-local task maps.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchedulerSnapshot {
     pub context_id: String,
     pub generated_at: chrono::DateTime<chrono::Utc>,
@@ -121,6 +120,30 @@ pub struct SchedulerSnapshot {
     pub orphan_signals: Vec<ThreadSignalRecord>,
     pub orphan_jobs: Vec<SchedulerJobSnapshot>,
     pub orphan_approvals: Vec<ApprovalRecord>,
+}
+
+/// Shared query contract for the Rust SDK, CLI and HTTP scheduler read model.
+/// All presentation layers consume the same [`SchedulerSnapshot`]; none may
+/// reconstruct scheduler truth from events or process-local task maps.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SchedulerQuery {
+    #[serde(default)]
+    pub include_terminal: bool,
+    #[serde(default = "default_scheduler_limit")]
+    pub limit: usize,
+}
+
+const fn default_scheduler_limit() -> usize {
+    200
+}
+
+impl Default for SchedulerQuery {
+    fn default() -> Self {
+        Self {
+            include_terminal: false,
+            limit: default_scheduler_limit(),
+        }
+    }
 }
 
 impl Default for RuntimeIdentity {
@@ -522,10 +545,7 @@ impl MorphzRuntime {
         &self.inner.identity
     }
 
-    pub async fn inspect_schedule(
-        &self,
-        id: &str,
-    ) -> Result<Option<ScheduledIntentRecord>, RuntimeError> {
+    pub async fn inspect_schedule(&self, id: &str) -> Result<Option<ScheduleRecord>, RuntimeError> {
         self.inner.thread_scheduler.inspect(id).await
     }
 
@@ -533,7 +553,7 @@ impl MorphzRuntime {
         &self,
         id: &str,
         expected_revision: u64,
-    ) -> Result<ScheduledIntentMutation, RuntimeError> {
+    ) -> Result<ScheduleMutation, RuntimeError> {
         self.inner
             .thread_scheduler
             .pause(id, expected_revision)
@@ -544,7 +564,7 @@ impl MorphzRuntime {
         &self,
         id: &str,
         expected_revision: u64,
-    ) -> Result<ScheduledIntentMutation, RuntimeError> {
+    ) -> Result<ScheduleMutation, RuntimeError> {
         self.inner
             .thread_scheduler
             .resume(id, expected_revision)
@@ -557,7 +577,7 @@ impl MorphzRuntime {
         expected_revision: u64,
         not_before: Option<chrono::DateTime<chrono::Utc>>,
         interval_seconds: Option<u64>,
-    ) -> Result<ScheduledIntentMutation, RuntimeError> {
+    ) -> Result<ScheduleMutation, RuntimeError> {
         self.inner
             .thread_scheduler
             .reschedule(id, expected_revision, not_before, interval_seconds)
@@ -568,7 +588,7 @@ impl MorphzRuntime {
         &self,
         id: &str,
         expected_revision: u64,
-    ) -> Result<ScheduledIntentMutation, RuntimeError> {
+    ) -> Result<ScheduleMutation, RuntimeError> {
         self.inner
             .thread_scheduler
             .cancel(id, expected_revision)
@@ -1219,17 +1239,17 @@ impl MorphzRuntime {
     pub async fn scheduler_snapshot(
         &self,
         context_id: &str,
-        include_terminal: bool,
-        limit: usize,
+        query: SchedulerQuery,
     ) -> Result<SchedulerSnapshot, RuntimeError> {
         if self.inner.store.get_context(context_id).await?.is_none() {
             return Err(format!("Context '{context_id}' 不存在").into());
         }
-        let limit = limit.clamp(1, 2_000);
+        let include_terminal = query.include_terminal;
+        let limit = query.limit.clamp(1, 2_000);
         let mut context_threads = self
             .inner
             .store
-            .list_context_work_threads(context_id, true)
+            .list_context_threads(context_id, true)
             .await?;
         context_threads.sort_by(|left, right| {
             right
@@ -1439,13 +1459,8 @@ impl MorphzRuntime {
             }
         }
 
-        let mut schedules_by_thread = HashMap::<String, Vec<ScheduledIntentRecord>>::new();
-        for schedule in self
-            .inner
-            .store
-            .list_context_scheduled_intents(context_id)
-            .await?
-        {
+        let mut schedules_by_thread = HashMap::<String, Vec<ScheduleRecord>>::new();
+        for schedule in self.inner.store.list_context_schedules(context_id).await? {
             if all_context_thread_ids.contains(&schedule.thread_id)
                 && thread_ids.contains(&schedule.thread_id)
             {
@@ -1528,7 +1543,7 @@ impl MorphzRuntime {
             .filter(|schedule| {
                 matches!(
                     schedule.status,
-                    ScheduledIntentStatus::Queued | ScheduledIntentStatus::Paused
+                    ScheduleStatus::Queued | ScheduleStatus::Paused
                 )
             })
             .count();
@@ -1615,10 +1630,10 @@ fn scheduler_job_snapshot(
 }
 
 fn scheduler_thread_phase(
-    thread: &WorkThreadRecord,
+    thread: &ThreadRecord,
     pending_signals: &[ThreadSignalRecord],
     activations: &[SchedulerActivationSnapshot],
-    schedules: &[ScheduledIntentRecord],
+    schedules: &[ScheduleRecord],
 ) -> ThreadPhase {
     if thread.lifecycle.is_terminal() {
         return ThreadPhase::Idle;
@@ -1652,7 +1667,7 @@ fn scheduler_thread_phase(
     }) || schedules.iter().any(|schedule| {
         matches!(
             schedule.status,
-            ScheduledIntentStatus::Queued | ScheduledIntentStatus::Paused
+            ScheduleStatus::Queued | ScheduleStatus::Paused
         )
     }) {
         return ThreadPhase::Waiting;
@@ -2685,13 +2700,13 @@ mod tests {
         let thread = runtime
             .inner
             .store
-            .ensure_work_thread(crate::memory::NewWorkThread {
+            .ensure_thread(crate::memory::NewThread {
                 id: "thread-scheduler-snapshot".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
                 session_id: "session-scheduler-snapshot".to_string(),
                 root_turn_id: root_turn_id.to_string(),
-                kind: crate::memory::WorkThreadKind::Work,
+                kind: crate::memory::ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
             })
@@ -2801,7 +2816,7 @@ mod tests {
         let schedule = runtime
             .inner
             .store
-            .ensure_scheduled_intent(crate::memory::NewScheduledIntent {
+            .ensure_schedule(crate::memory::NewSchedule {
                 id: "schedule-scheduler-snapshot".to_string(),
                 thread_id: thread.id.clone(),
                 source_turn_id: root_turn_id.to_string(),
@@ -2814,7 +2829,13 @@ mod tests {
             .unwrap();
 
         let snapshot = runtime
-            .scheduler_snapshot(runtime.identity().context_id.as_str(), true, 100)
+            .scheduler_snapshot(
+                runtime.identity().context_id.as_str(),
+                SchedulerQuery {
+                    include_terminal: true,
+                    limit: 100,
+                },
+            )
             .await
             .unwrap();
         let causal_thread = snapshot
@@ -2836,6 +2857,22 @@ mod tests {
         assert_eq!(snapshot.summary.waiting_approval_jobs, 1);
         assert_eq!(snapshot.summary.pending_approvals, 1);
         assert_eq!(snapshot.summary.active_schedules, 1);
+        let contract = serde_json::to_value(&snapshot).unwrap();
+        let contract_thread = contract["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["thread"]["id"] == thread.id)
+            .unwrap();
+        assert_eq!(contract_thread["thread"]["kind"], json!("execution"));
+        assert_eq!(
+            contract_thread["activations"][0]["activation"]["id"],
+            json!(activation.id)
+        );
+        let encoded = serde_json::to_string(&contract).unwrap();
+        assert!(!encoded.contains("work_thread"));
+        assert!(!encoded.contains("work_item"));
+        assert!(!encoded.contains("scheduled_intent"));
 
         let paused = runtime
             .pause_schedule(&schedule.id, schedule.revision)
@@ -2843,20 +2880,20 @@ mod tests {
             .unwrap();
         assert!(matches!(
             paused,
-            ScheduledIntentMutation::Updated(ref record)
-                if record.status == ScheduledIntentStatus::Paused
+            ScheduleMutation::Updated(ref record)
+                if record.status == ScheduleStatus::Paused
         ));
         assert!(matches!(
             runtime
                 .pause_schedule(&schedule.id, schedule.revision)
                 .await
                 .unwrap(),
-            ScheduledIntentMutation::Conflict { .. }
+            ScheduleMutation::Conflict { .. }
         ));
     }
 
     #[tokio::test]
-    async fn physical_tool_batch_wakes_work_once_with_all_results_then_delivers() {
+    async fn physical_tool_batch_wakes_execution_once_with_all_results_then_delivers() {
         let database = NamedTempFile::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
@@ -3367,7 +3404,7 @@ mod tests {
             coding_eval: true,
         };
 
-        // Process A persisted two completed Work Threads but crashed before a
+        // Process A persisted two completed Threads but crashed before a
         // Delivery Timer could be armed or fired.
         let crashed = MorphzRuntime::builder(config.clone(), Arc::new(ReplyClient))
             .database_path(database.path().to_string_lossy())
@@ -3409,13 +3446,13 @@ mod tests {
             let thread = crashed
                 .inner
                 .store
-                .ensure_work_thread(crate::memory::NewWorkThread {
+                .ensure_thread(crate::memory::NewThread {
                     id: format!("thread-delivery-recovery-{index}"),
                     agent_id: crashed.identity().agent_id.clone(),
                     context_id: crashed.identity().context_id.clone(),
                     session_id: "session-delivery-recovery".to_string(),
                     root_turn_id: format!("root-delivery-recovery-{index}"),
-                    kind: crate::memory::WorkThreadKind::Work,
+                    kind: crate::memory::ThreadKind::Execution,
                     executor_kind: "self".to_string(),
                     executor_id: None,
                 })
@@ -3425,7 +3462,7 @@ mod tests {
                 crashed
                     .inner
                     .store
-                    .update_work_thread(
+                    .update_thread(
                         &thread.id,
                         thread.revision,
                         None,
@@ -3437,7 +3474,7 @@ mod tests {
                     )
                     .await
                     .unwrap(),
-                crate::memory::WorkThreadMutation::Updated(_)
+                crate::memory::ThreadMutation::Updated(_)
             ));
         }
         drop(crashed);
@@ -3532,13 +3569,13 @@ mod tests {
             let thread = seed
                 .inner
                 .store
-                .ensure_work_thread(crate::memory::NewWorkThread {
+                .ensure_thread(crate::memory::NewThread {
                     id: format!("thread-delivery-snapshot-{index}"),
                     agent_id: seed.identity().agent_id.clone(),
                     context_id: seed.identity().context_id.clone(),
                     session_id: "session-delivery-snapshot".to_string(),
                     root_turn_id: format!("root-delivery-snapshot-{index}"),
-                    kind: crate::memory::WorkThreadKind::Work,
+                    kind: crate::memory::ThreadKind::Execution,
                     executor_kind: "self".to_string(),
                     executor_id: None,
                 })
@@ -3546,7 +3583,7 @@ mod tests {
                 .unwrap();
             seed.inner
                 .store
-                .update_work_thread(
+                .update_thread(
                     &thread.id,
                     thread.revision,
                     None,
@@ -3581,13 +3618,13 @@ mod tests {
         let late = runtime
             .inner
             .store
-            .ensure_work_thread(crate::memory::NewWorkThread {
+            .ensure_thread(crate::memory::NewThread {
                 id: "thread-delivery-snapshot-late".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
                 session_id: "session-delivery-snapshot".to_string(),
                 root_turn_id: "root-delivery-snapshot-late".to_string(),
-                kind: crate::memory::WorkThreadKind::Work,
+                kind: crate::memory::ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
             })
@@ -3596,7 +3633,7 @@ mod tests {
         runtime
             .inner
             .store
-            .update_work_thread(
+            .update_thread(
                 &late.id,
                 late.revision,
                 None,
@@ -3619,7 +3656,7 @@ mod tests {
             runtime
                 .inner
                 .store
-                .get_work_thread("thread-delivery-snapshot-late")
+                .get_thread("thread-delivery-snapshot-late")
                 .await
                 .unwrap()
                 .unwrap()
@@ -3632,7 +3669,7 @@ mod tests {
                 runtime
                     .inner
                     .store
-                    .get_work_thread(&format!("thread-delivery-snapshot-{index}"))
+                    .get_thread(&format!("thread-delivery-snapshot-{index}"))
                     .await
                     .unwrap()
                     .unwrap()
@@ -3983,13 +4020,13 @@ mod tests {
         crashed
             .inner
             .store
-            .ensure_work_thread(crate::memory::NewWorkThread {
+            .ensure_thread(crate::memory::NewThread {
                 id: "thread-activation-recovery".to_string(),
                 agent_id: crashed.identity().agent_id.clone(),
                 context_id: crashed.identity().context_id.clone(),
                 session_id: "session-activation-recovery".to_string(),
                 root_turn_id: "root-activation-recovery".to_string(),
-                kind: crate::memory::WorkThreadKind::Work,
+                kind: crate::memory::ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
             })
@@ -4516,16 +4553,16 @@ mod tests {
         let thread = runtime
             .inner
             .store
-            .get_work_thread_by_root(&activation.root_turn_id)
+            .get_thread_by_root(&activation.root_turn_id)
             .await
             .unwrap()
-            .expect("Objective Activation should have a Work Thread");
+            .expect("Objective Activation should have a Thread");
         assert_eq!(
             runtime
                 .inner
                 .objective_supervisor
                 .evaluations()
-                .get_for_work_item(&activation.id)
+                .get_for_activation(&activation.id)
                 .as_ref()
                 .map(|evaluation| evaluation.objective_id.as_str()),
             Some("objective-scoped-a")
@@ -4738,7 +4775,7 @@ mod tests {
                 .inner
                 .objective_supervisor
                 .evaluations()
-                .work_item_ids_for_evaluation("objective-scoped-b", &objective_b_evaluation_id)
+                .activation_ids_for_evaluation("objective-scoped-b", &objective_b_evaluation_id)
                 .is_empty()
             {
                 break;
@@ -4749,7 +4786,7 @@ mod tests {
             .inner
             .objective_supervisor
             .evaluations()
-            .work_item_ids_for_evaluation("objective-scoped-b", &objective_b_evaluation_id)
+            .activation_ids_for_evaluation("objective-scoped-b", &objective_b_evaluation_id)
             .is_empty());
 
         // A continuation persisted or delivered after the control commit must
@@ -4786,7 +4823,7 @@ mod tests {
         let stale_activation = {
             let mut observed = None;
             for _ in 0..100 {
-                observed = runtime
+                let current = runtime
                     .inner
                     .store
                     .list_context_thread_activations(runtime.identity().context_id.as_str(), true)
@@ -4796,12 +4833,16 @@ mod tests {
                     .find(|activation| {
                         activation.trigger_event_id == "objective-scoped-b-stale-continuation"
                     });
-                if observed.is_some() {
-                    break;
+                if let Some(current) = current {
+                    if current.status == crate::memory::ThreadActivationStatus::Cancelled {
+                        observed = Some(current);
+                        break;
+                    }
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            observed.expect("late Objective continuation should still have an audited Activation")
+            observed
+                .expect("late Objective continuation should reach an audited cancelled Activation")
         };
         assert_eq!(
             stale_activation.status,

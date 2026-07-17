@@ -11,7 +11,7 @@ export type ModelStreamEvent =
 
 export interface LiveModelAttempt {
   attemptId: string
-  workItemId: string
+  activationId: string
   threadKind: string
   text: string
   reasoningSummary: string
@@ -31,7 +31,7 @@ export interface LiveModelState {
 
 export interface ModelStreamBatchItem {
   attemptId: string
-  workItemId: string
+  activationId: string
   threadKind: string
   timestamp: string
   stream: ModelStreamEvent
@@ -42,12 +42,12 @@ export type ModelStreamAction =
   | { type: 'stream_batch'; sessionId: string; items: ModelStreamBatchItem[]; nowMs: number }
   | { type: 'resolve'; sessionId: string; causalId: string; nowMs: number }
   | { type: 'persisted'; sessionId: string; causalId: string }
-  | { type: 'reconcile'; sessionId: string; activeWorkItemIds: string[]; cutoffMs: number }
+  | { type: 'reconcile'; sessionId: string; activeActivationIds: string[]; cutoffMs: number }
 
 export interface DurableReasoningSummary {
   eventId: string
   attemptId: string
-  workItemId: string
+  activationId: string
   threadKind: string
   text: string
   complete: boolean
@@ -101,13 +101,13 @@ function reduceAttempt(
   item: ModelStreamBatchItem,
   nowMs: number,
 ): Record<string, LiveModelAttempt> {
-  const { attemptId, workItemId, threadKind, timestamp, stream } = item
+  const { attemptId, activationId, threadKind, timestamp, stream } = item
   if (stream.kind === 'started') {
     return {
       ...previous,
       [attemptId]: {
         attemptId,
-        workItemId,
+        activationId,
         threadKind,
         text: '',
         reasoningSummary: '',
@@ -159,7 +159,7 @@ function reduceAttempt(
 }
 
 function matchesCausalId(attempt: LiveModelAttempt, causalId: string): boolean {
-  return attempt.attemptId === causalId || attempt.workItemId === causalId
+  return attempt.attemptId === causalId || attempt.activationId === causalId
 }
 
 function resolveAttempt(
@@ -223,9 +223,9 @@ export function modelStreamReducer(state: LiveModelState, action: ModelStreamAct
     return attempts === state.attempts ? state : { ...state, attempts }
   }
 
-  const activeWorkItemIds = new Set(action.activeWorkItemIds)
+  const activeActivationIds = new Set(action.activeActivationIds)
   const entries = Object.entries(state.attempts).filter(([, attempt]) => (
-    activeWorkItemIds.has(attempt.workItemId) || attempt.lastEventMs >= action.cutoffMs
+    activeActivationIds.has(attempt.activationId) || attempt.lastEventMs >= action.cutoffMs
   ))
   return entries.length === Object.keys(state.attempts).length
     ? state
@@ -246,14 +246,14 @@ export function selectDurableReasoningSummaries(
   for (const event of events) {
     if (event.topic !== 'runtime/model_reasoning_summary') continue
     const attemptId = typeof event.payload.attempt_id === 'string' ? event.payload.attempt_id : ''
-    const workItemId = typeof event.payload.work_item_id === 'string' ? event.payload.work_item_id : attemptId
-    const threadKind = typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue'
+    const activationId = typeof event.payload.activation_id === 'string' ? event.payload.activation_id : attemptId
+    const threadKind = typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue_turn'
     const text = typeof event.payload.text === 'string' ? event.payload.text : ''
     if (!attemptId || !text.trim()) continue
     byAttempt.set(attemptId, {
       eventId: event.id,
       attemptId,
-      workItemId,
+      activationId,
       threadKind,
       text,
       complete: event.payload.complete !== false,
@@ -269,7 +269,7 @@ export function findReasoningSummaryForPayload(
 ): DurableReasoningSummary | undefined {
   const modelAttemptId = typeof payload.model_attempt_id === 'string' ? payload.model_attempt_id : ''
   const attemptId = typeof payload.attempt_id === 'string' ? payload.attempt_id : ''
-  const workItemId = typeof payload.work_item_id === 'string' ? payload.work_item_id : ''
+  const activationId = typeof payload.activation_id === 'string' ? payload.activation_id : ''
   const newestFirst = [...summaries].reverse()
   if (modelAttemptId) {
     // New Runtime events identify the exact physical Model Attempt which
@@ -281,7 +281,7 @@ export function findReasoningSummaryForPayload(
     ? newestFirst.find(summary => summary.attemptId === attemptId)
     : undefined
   if (exactAttempt) return exactAttempt
-  return workItemId
-    ? newestFirst.find(summary => summary.workItemId === workItemId)
+  return activationId
+    ? newestFirst.find(summary => summary.activationId === activationId)
     : undefined
 }

@@ -38,11 +38,14 @@
 
   "reasoning": {
     "label": "推理",
-    "title": "只影响后续模型请求；默认表示由模型服务决定",
-    "default": "默认",
+    "title": "只影响后续模型请求；关闭会发送 none。GLM-5.2 的模型默认档位是最高，低/中会映射为高",
+    "defaultUnknown": "服务默认（未声明）",
+    "off": "关闭",
     "low": "低",
     "medium": "中",
-    "high": "高"
+    "high": "高",
+    "max": "最高",
+    "maxDefault": "最高（模型默认）"
   },
   "reasoningSummary": {
     "toggle": "推理摘要",
@@ -81,6 +84,9 @@
     "roleWork": "工作",
     "roleRuntime": "Runtime",
     "noText": "（无文本）",
+    "addToChat": "添加到对话",
+    "removeQuote": "删除引用",
+    "commentPlaceholder": "写评论…",
     "copy": "复制消息",
     "copied": "已复制",
     "streaming": "正在生成",
@@ -119,9 +125,9 @@
     "scheduler": {
       "title": "线程调度",
       "subtitle": "{{count}} 条排队 / 定时意图 · Runtime 权威状态",
-      "workThreads": "工作线程",
-      "noWorkThreads": "没有非终态工作线程",
-      "scheduledIntents": "调度意图",
+      "threads": "线程",
+      "noThreads": "没有非终态线程",
+      "schedules": "调度计划",
       "immediate": "立即",
       "every": " · 每 {{seconds}} 秒",
       "waitingThreads": " · 等待 {{count}} 个线程",
@@ -136,7 +142,13 @@
       "empty": "没有活跃激活",
       "dialogueThread": "对话线程",
       "objectiveThread": "目标线程",
-      "workThread": "工作线程"
+      "executionThread": "执行线程"
+    },
+    "threadKind": {
+      "dialogue_turn": "对话轮次",
+      "execution": "执行线程",
+      "objective": "目标线程",
+      "delivery": "交付线程"
     },
     "attention": {
       "title": "需要关注",

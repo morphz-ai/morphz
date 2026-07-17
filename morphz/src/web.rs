@@ -3,10 +3,9 @@ use crate::event::Event;
 use crate::llm::ReasoningEffort;
 use crate::memory::{
     DelegationStatus, NewAgent, NewCognitiveContext, NewSession, ObjectiveMutation,
-    ObjectiveStatus, QueryFilter, ScheduledIntentMutation, SessionMountKind, SessionStatus,
-    SessionUpdate,
+    ObjectiveStatus, QueryFilter, ScheduleMutation, SessionMountKind, SessionStatus, SessionUpdate,
 };
-use crate::runtime::MorphzRuntime;
+use crate::runtime::{MorphzRuntime, SchedulerQuery};
 use axum::{
     body::Body,
     extract::{
@@ -163,10 +162,11 @@ struct EventQuery {
 }
 
 #[derive(Default, serde::Deserialize)]
-struct SchedulerSnapshotQuery {
+struct SchedulerSnapshotHttpQuery {
     token: Option<String>,
     #[serde(default)]
     include_terminal: bool,
+    #[serde(default)]
     limit: Option<usize>,
 }
 
@@ -490,7 +490,7 @@ async fn handle_update_inference(
             None => {
                 return error_response(
                     StatusCode::BAD_REQUEST,
-                    "reasoning_effort 只支持 default、low、medium、high",
+                    "reasoning_effort 只支持 default、none、low、medium、high、max",
                 )
             }
         },
@@ -935,7 +935,7 @@ async fn handle_get_scheduler_snapshot(
     State(state): State<Arc<AppState>>,
     Path(context_id): Path<String>,
     headers: HeaderMap,
-    Query(query): Query<SchedulerSnapshotQuery>,
+    Query(query): Query<SchedulerSnapshotHttpQuery>,
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -944,8 +944,10 @@ async fn handle_get_scheduler_snapshot(
         .runtime
         .scheduler_snapshot(
             &context_id,
-            query.include_terminal,
-            query.limit.unwrap_or(200),
+            SchedulerQuery {
+                include_terminal: query.include_terminal,
+                limit: query.limit.unwrap_or(200),
+            },
         )
         .await
     {
@@ -1006,12 +1008,12 @@ async fn handle_mutate_schedule(
         }
     };
     match mutation {
-        Ok(ScheduledIntentMutation::Updated(schedule)) => Json(json!({
+        Ok(ScheduleMutation::Updated(schedule)) => Json(json!({
             "outcome": "updated",
             "schedule": schedule,
         }))
         .into_response(),
-        Ok(ScheduledIntentMutation::Conflict { current }) => (
+        Ok(ScheduleMutation::Conflict { current }) => (
             StatusCode::CONFLICT,
             Json(json!({
                 "error": "Schedule revision 已被其他写者更新",
@@ -1020,7 +1022,7 @@ async fn handle_mutate_schedule(
             })),
         )
             .into_response(),
-        Ok(ScheduledIntentMutation::Rejected { current, reason }) => (
+        Ok(ScheduleMutation::Rejected { current, reason }) => (
             StatusCode::CONFLICT,
             Json(json!({
                 "error": reason,
@@ -1029,9 +1031,7 @@ async fn handle_mutate_schedule(
             })),
         )
             .into_response(),
-        Ok(ScheduledIntentMutation::NotFound) => {
-            error_response(StatusCode::NOT_FOUND, "Schedule 不存在")
-        }
+        Ok(ScheduleMutation::NotFound) => error_response(StatusCode::NOT_FOUND, "Schedule 不存在"),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
@@ -1845,14 +1845,14 @@ mod tests {
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(UpdateInferenceRequest {
-                reasoning_effort: Some("high".to_string()),
+                reasoning_effort: Some("none".to_string()),
             }),
         )
         .await
         .into_response();
 
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(runtime.reasoning_effort(), Some(ReasoningEffort::High));
+        assert_eq!(runtime.reasoning_effort(), Some(ReasoningEffort::Off));
         assert_eq!(runtime.config().llm.reasoning_effort, None);
     }
 
@@ -1946,7 +1946,7 @@ mod tests {
         let mut stream_kinds = Vec::new();
         let mut streamed_text = String::new();
         let mut streamed_reasoning_summary = String::new();
-        let mut stable_work_item_id = None;
+        let mut stable_activation_id = None;
         let mut reply_seen = false;
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !reply_seen {
@@ -1955,15 +1955,15 @@ mod tests {
                     .await
                     .expect("runtime event stream closed");
                 if event.topic == "runtime/model_stream" {
-                    let work_item_id = event
+                    let activation_id = event
                         .payload
-                        .get("work_item_id")
+                        .get("activation_id")
                         .and_then(|value| value.as_str())
-                        .expect("model stream route must include work_item_id");
-                    if let Some(expected) = stable_work_item_id.as_deref() {
-                        assert_eq!(work_item_id, expected);
+                        .expect("model stream route must include activation_id");
+                    if let Some(expected) = stable_activation_id.as_deref() {
+                        assert_eq!(activation_id, expected);
                     } else {
-                        stable_work_item_id = Some(work_item_id.to_string());
+                        stable_activation_id = Some(activation_id.to_string());
                     }
                     let stream_kind = event
                         .payload
@@ -1995,9 +1995,9 @@ mod tests {
                     assert_eq!(
                         event
                             .payload
-                            .get("work_item_id")
+                            .get("activation_id")
                             .and_then(|value| value.as_str()),
-                        stable_work_item_id.as_deref()
+                        stable_activation_id.as_deref()
                     );
                     reply_seen = true;
                 }
@@ -2055,16 +2055,16 @@ mod tests {
         assert_eq!(
             summary
                 .payload
-                .get("work_item_id")
+                .get("activation_id")
                 .and_then(|value| value.as_str()),
-            stable_work_item_id.as_deref()
+            stable_activation_id.as_deref()
         );
         assert_eq!(
             summary
                 .payload
                 .get("thread_kind")
                 .and_then(|value| value.as_str()),
-            Some("dialogue")
+            Some("dialogue_turn")
         );
         assert_eq!(
             summary.payload.get("text").and_then(|value| value.as_str()),
@@ -2237,7 +2237,7 @@ mod tests {
             State(Arc::clone(&state)),
             Path("context-test".to_string()),
             HeaderMap::new(),
-            Query(SchedulerSnapshotQuery {
+            Query(SchedulerSnapshotHttpQuery {
                 token: None,
                 include_terminal: true,
                 limit: Some(100),
@@ -2273,7 +2273,7 @@ mod tests {
     #[tokio::test]
     async fn schedule_control_endpoint_is_revision_fenced() {
         use crate::memory::sqlite::SqliteStore;
-        use crate::memory::{NewScheduledIntent, NewWorkThread, SessionStore, WorkThreadKind};
+        use crate::memory::{NewSchedule, NewThread, SessionStore, ThreadKind};
 
         let (state, runtime) = test_state().await;
         runtime
@@ -2289,20 +2289,20 @@ mod tests {
             .unwrap();
         let store = SqliteStore::new(runtime.database_path()).await.unwrap();
         let thread = store
-            .ensure_work_thread(NewWorkThread {
+            .ensure_thread(NewThread {
                 id: "api-schedule-thread".to_string(),
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
                 session_id: "api-schedule-session".to_string(),
                 root_turn_id: "api-schedule-turn".to_string(),
-                kind: WorkThreadKind::Work,
+                kind: ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
             })
             .await
             .unwrap();
         let schedule = store
-            .ensure_scheduled_intent(NewScheduledIntent {
+            .ensure_schedule(NewSchedule {
                 id: "api-schedule".to_string(),
                 thread_id: thread.id,
                 source_turn_id: "api-schedule-turn".to_string(),

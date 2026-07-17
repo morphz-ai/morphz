@@ -1838,6 +1838,26 @@ mod tests {
         assert_eq!(responses["reasoning"]["effort"], "high");
         assert!(responses.get("reasoning_effort").is_none());
 
+        let responses_off = build_request(
+            ModelProtocol::OpenaiResponses,
+            "model",
+            None,
+            Some(ReasoningEffort::Off),
+            &messages,
+            &tools,
+        );
+        assert_eq!(responses_off["reasoning"]["effort"], "none");
+
+        let responses_max = build_request(
+            ModelProtocol::OpenaiResponses,
+            "model",
+            None,
+            Some(ReasoningEffort::Max),
+            &messages,
+            &tools,
+        );
+        assert_eq!(responses_max["reasoning"]["effort"], "max");
+
         let anthropic = build_request(
             ModelProtocol::AnthropicMessages,
             "model",

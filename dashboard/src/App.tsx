@@ -47,14 +47,14 @@ import {
 import { findTurnSettlement } from './turnSettlement'
 import type {
   ApprovalRecord,
-  ScheduledIntentRecord,
+  ScheduleRecord,
   SchedulerActivationSnapshot,
   SchedulerJobSnapshot,
   SchedulerSnapshot,
   SchedulerThreadSnapshot,
   ThreadActivationRecord,
   ThreadSignalRecord,
-  WorkThreadRecord,
+  ThreadRecord,
 } from './scheduler/types'
 
 const configuredHttpUrl = import.meta.env.VITE_MORPHZ_HTTP_URL as string | undefined
@@ -182,13 +182,20 @@ interface SessionRecord {
   last_activity_at: string
 }
 
+type ReasoningEffortSetting = 'none' | 'low' | 'medium' | 'high' | 'max'
+
 interface RuntimeStatus {
   agent_id: string
   context_id: string
   model: string
   provider?: string
-  reasoning_effort?: 'low' | 'medium' | 'high'
+  reasoning_effort?: ReasoningEffortSetting | null
   tool_count: number
+}
+
+function inferredProviderReasoningEffort(model?: string): ReasoningEffortSetting | 'default' {
+  const normalized = model?.trim().toLowerCase() ?? ''
+  return normalized === 'glm-5.2' || normalized.endsWith('/glm-5.2') ? 'max' : 'default'
 }
 
 interface EventPayload {
@@ -213,6 +220,24 @@ interface MorphzEvent {
 interface PendingTurnState {
   startedAt: number
   rootTurnId: string | null
+}
+
+interface QuoteItem {
+  id: string
+  text: string
+  eventId: string
+  eventActor: string
+  eventTime: string
+  comment: string
+}
+
+interface SelectionPopup {
+  x: number
+  y: number
+  text: string
+  eventId: string
+  eventActor: string
+  eventTime: string
 }
 
 interface ContextFrame {
@@ -306,10 +331,10 @@ interface ContextViewResponse {
   sessions: ProjectedSession[]
   session_working_set: SessionWorkingSet
   active_activations: ThreadActivationRecord[]
-  work_threads: WorkThreadRecord[]
+  threads: ThreadRecord[]
   thread_signals: ThreadSignalRecord[]
   thread_phases: Record<string, 'idle' | 'runnable' | 'running' | 'waiting'>
-  scheduled_intents: ScheduledIntentRecord[]
+  schedules: ScheduleRecord[]
   objectives: ObjectiveRecord[]
   state: MindState
   observations: ContextObservation[]
@@ -403,6 +428,10 @@ function statusLabel(value: string, t: TFunction) {
   return translated === key ? value : translated
 }
 
+function threadKindLabel(kind: ThreadRecord['kind'], t: TFunction) {
+  return t(`work.threadKind.${kind}`)
+}
+
 function summarizeToolCall(name: string, rawArguments: string, t: TFunction): ToolCallSummary {
   const argumentsValue = objectFromJson(rawArguments)
   const path = stringField(argumentsValue, 'path', 'file_path', 'file')
@@ -467,7 +496,7 @@ function summarizeActivation(
     const input = typeof trigger?.payload.text === 'string' ? trigger.payload.text.trim() : ''
     return {
       title: input ? t('activation.processDialogue', { text: input }) : t('activation.processCurrentMessage'),
-      threadKind: 'dialogue',
+      threadKind: 'dialogue_turn',
       threadId: item.session_id,
       threadDetail: `turn ${shortId(item.root_turn_id, 22)}`,
     }
@@ -487,14 +516,14 @@ function summarizeActivation(
     const summary = summarizeToolCall(name, call?.arguments ?? '{}', t)
     return {
       title: t('activation.processToolResult', { tool: summary.title, target: summary.target }),
-      threadKind: 'work',
+      threadKind: 'execution',
       threadId: item.root_turn_id,
       threadDetail: `from dialogue ${shortId(item.session_id, 18)}`,
     }
   }
   return {
     title: t('activation.processRuntimeEvent', { kind: item.trigger_kind }),
-    threadKind: 'work',
+    threadKind: 'execution',
     threadId: item.root_turn_id,
     threadDetail: `from dialogue ${shortId(item.session_id, 18)}`,
   }
@@ -503,8 +532,8 @@ function summarizeActivation(
 function eventKind(event: MorphzEvent) {
   if (event.topic === 'chat/user_message') return 'user'
   if (event.topic === 'chat/reply') {
-    const threadKind = typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue'
-    return threadKind === 'dialogue' ? 'agent' : 'background'
+    const threadKind = typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue_turn'
+    return threadKind === 'dialogue_turn' ? 'agent' : 'background'
   }
   if (event.topic === 'chat/outbound_message') return 'agent'
   if (event.topic === 'chat/progress') return 'progress'
@@ -630,7 +659,7 @@ function ThreadCausalCard({
   decidingApprovalId: string
   mutatingScheduleId: string
   onApproval: (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => void
-  onSchedule: (schedule: ScheduledIntentRecord, action: 'pause' | 'resume' | 'reschedule' | 'cancel') => void
+  onSchedule: (schedule: ScheduleRecord, action: 'pause' | 'resume' | 'reschedule' | 'cancel') => void
 }) {
   const { thread } = snapshot
   const active = snapshot.phase !== 'idle' || thread.lifecycle === 'open'
@@ -638,7 +667,7 @@ function ThreadCausalCard({
     <details className={`causal-thread ${snapshot.phase}`} open={active}>
       <summary>
         <span className={`status-pill ${snapshot.phase}`}>{statusLabel(snapshot.phase, t)}</span>
-        <div><strong>{thread.kind} thread</strong><small>{shortId(thread.id, 30)} · {t('header.session')} {shortId(thread.session_id, 18)}</small></div>
+        <div><strong>{threadKindLabel(thread.kind, t)}</strong><small>{shortId(thread.id, 30)} · {t('header.session')} {shortId(thread.session_id, 18)}</small></div>
         <span className="causal-counts">{snapshot.activations.length}A · {snapshot.activations.reduce((sum, item) => sum + item.jobs.length, 0)}J</span>
         <em>{thread.delivery_status}</em>
         <ChevronDown size={14} />
@@ -713,6 +742,8 @@ export default function App() {
   const [copiedMessageId, setCopiedMessageId] = useState('')
   const [pendingTurn, setPendingTurn] = useState<PendingTurnState | null>(null)
   const [error, setError] = useState('')
+  const [quotes, setQuotes] = useState<QuoteItem[]>([])
+  const [selectionPopup, setSelectionPopup] = useState<SelectionPopup | null>(null)
   const conversationEnd = useRef<HTMLDivElement>(null)
   const composerInputRef = useRef<HTMLTextAreaElement>(null)
   const wasSending = useRef(false)
@@ -804,7 +835,7 @@ export default function App() {
       setContextView(nextContext)
       if (!schedulerResponse.ok) throw new Error(t('errors.schedulerHttp', { status: schedulerResponse.status }))
       setSchedulerSnapshot(await schedulerResponse.json() as SchedulerSnapshot)
-      const activeWorkItems = new Set(nextContext.active_activations.map(item => item.id))
+      const activeActivations = new Set(nextContext.active_activations.map(item => item.id))
       const reconcileCutoffMs = Date.now() - 10_000
       // Keep drafts that are still actively streaming. Snapshot rows can lag
       // behind the live stream, so filtering purely by the snapshot kills
@@ -812,7 +843,7 @@ export default function App() {
       dispatchModelStream({
         type: 'reconcile',
         sessionId,
-        activeWorkItemIds: [...activeWorkItems],
+        activeActivationIds: [...activeActivations],
         cutoffMs: reconcileCutoffMs,
       })
       if (delegationsResponse.ok) {
@@ -925,11 +956,11 @@ export default function App() {
           const event = JSON.parse(messageEvent.data) as MorphzEvent
           if (event.topic === 'runtime/model_stream') {
             const attemptId = typeof event.payload.attempt_id === 'string' ? event.payload.attempt_id : ''
-            const workItemId = typeof event.payload.work_item_id === 'string' ? event.payload.work_item_id : attemptId
-            const threadKind = typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue'
+            const activationId = typeof event.payload.activation_id === 'string' ? event.payload.activation_id : attemptId
+            const threadKind = typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue_turn'
             const stream = event.payload.stream
             if (attemptId && isModelStreamEvent(stream)) {
-              queueStreamEvent({ attemptId, workItemId, threadKind, timestamp: event.timestamp, stream })
+              queueStreamEvent({ attemptId, activationId, threadKind, timestamp: event.timestamp, stream })
             }
             return
           }
@@ -938,8 +969,8 @@ export default function App() {
             if (previous.some(item => item.id === event.id)) return previous
             return [...previous, event].slice(-1000)
           })
-          const causalId = typeof event.payload.work_item_id === 'string'
-            ? event.payload.work_item_id
+          const causalId = typeof event.payload.activation_id === 'string'
+            ? event.payload.activation_id
             : typeof event.payload.attempt_id === 'string' ? event.payload.attempt_id : ''
           const resolvesLiveAttempt = event.topic === 'chat/reply'
             || event.topic === 'chat/no_reply'
@@ -953,10 +984,10 @@ export default function App() {
             || (event.topic === 'chat/assistant_call' && event.payload.terminal_outcome !== true)
           if (event.topic === 'runtime/model_reasoning_summary' && causalId) {
             const matchingStreamEvents = pendingStreamEvents.filter(item => (
-              item.attemptId === causalId || item.workItemId === causalId
+              item.attemptId === causalId || item.activationId === causalId
             ))
             pendingStreamEvents = pendingStreamEvents.filter(item => (
-              item.attemptId !== causalId && item.workItemId !== causalId
+              item.attemptId !== causalId && item.activationId !== causalId
             ))
             if (matchingStreamEvents.length > 0) {
               dispatchModelStream({
@@ -969,7 +1000,7 @@ export default function App() {
             dispatchModelStream({ type: 'persisted', sessionId: selectedSessionId, causalId })
           } else if (causalId && resolvesLiveAttempt) {
             pendingStreamEvents = pendingStreamEvents.filter(item => (
-              item.attemptId !== causalId && item.workItemId !== causalId
+              item.attemptId !== causalId && item.activationId !== causalId
             ))
             if (pendingStreamEvents.length === 0 && streamFrame !== undefined) {
               window.cancelAnimationFrame(streamFrame)
@@ -1079,7 +1110,7 @@ export default function App() {
     // user-visible reply for the active Session. Work evaluations only
     // produce internal Thread results; rendering those here would expose an
     // intermediate draft as if it were the final answer.
-    () => streamingAttempts.filter(attempt => ['dialogue', 'objective', 'delivery'].includes(attempt.threadKind)),
+    () => streamingAttempts.filter(attempt => ['dialogue_turn', 'objective', 'delivery'].includes(attempt.threadKind)),
     [streamingAttempts],
   )
   const liveWorkStreamingAttempts = useMemo(
@@ -1149,12 +1180,12 @@ export default function App() {
   const blockedObjectives = activeObjectives.filter(item => item.status === 'blocked')
   const pausedObjectives = activeObjectives.filter(item => item.status === 'paused')
   const schedulerThreads = schedulerSnapshot?.threads ?? []
-  const workItems = schedulerThreads.flatMap(thread => thread.activations.map(item => item.activation))
+  const activations = schedulerThreads.flatMap(thread => thread.activations.map(item => item.activation))
   const threadSignals = schedulerThreads.flatMap(thread => [
     ...thread.pending_signals,
     ...thread.activations.flatMap(activation => activation.signals),
   ])
-  const scheduledIntents = schedulerSchedules(schedulerSnapshot)
+  const schedules = schedulerSchedules(schedulerSnapshot)
   const schedulerJobRows = schedulerJobs(schedulerSnapshot)
   const pendingApprovals = pendingHumanApprovals(schedulerSnapshot)
   const attentionCount = schedulerAttentionCount(schedulerSnapshot)
@@ -1164,7 +1195,7 @@ export default function App() {
     && item.thread.delivery_status !== 'none'
     && item.thread.delivery_status !== 'delivered'
   ))
-  const runningWorkItems = workItems.filter(item => item.status === 'queued' || item.status === 'running')
+  const runningActivations = activations.filter(item => item.status === 'queued' || item.status === 'running')
   const contextDelegations = delegations.filter(item => item.parent_context_id === selectedContextId)
   const liveDelegations = contextDelegations.filter(item => !terminalTaskStatuses.has(item.status))
   const runningDelegations = liveDelegations.filter(item => item.status === 'queued' || item.status === 'running')
@@ -1251,9 +1282,88 @@ export default function App() {
     }
   }
 
+  // Selection detection for quote popup
+  useEffect(() => {
+    const handleSelectionChange = () => {
+      const selection = window.getSelection()
+      if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+        setSelectionPopup(null)
+        return
+      }
+      const selectedText = selection.toString().trim()
+      if (!selectedText || selectedText.length < 2) {
+        setSelectionPopup(null)
+        return
+      }
+      let node: Node | null = selection.anchorNode
+      let messageBody: Element | null = null
+      while (node) {
+        if (node.nodeType === Node.ELEMENT_NODE && (node as Element).classList?.contains('message-body')) {
+          messageBody = node as Element
+          break
+        }
+        node = node.parentNode
+      }
+      if (!messageBody) {
+        setSelectionPopup(null)
+        return
+      }
+      const article = messageBody.closest('article')
+      if (!article) {
+        setSelectionPopup(null)
+        return
+      }
+      const eventId = article.getAttribute('data-event-id') || ''
+      const eventActor = article.getAttribute('data-event-actor') || ''
+      const eventTime = article.getAttribute('data-event-time') || ''
+      const range = selection.getRangeAt(0)
+      const rect = range.getBoundingClientRect()
+      setSelectionPopup({
+        x: rect.left + rect.width / 2,
+        y: rect.top,
+        text: selectedText,
+        eventId,
+        eventActor,
+        eventTime,
+      })
+    }
+    document.addEventListener('selectionchange', handleSelectionChange)
+    return () => document.removeEventListener('selectionchange', handleSelectionChange)
+  }, [])
+
+  const addQuote = (popup: SelectionPopup) => {
+    setQuotes(prev => [...prev, {
+      id: `quote-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      text: popup.text,
+      eventId: popup.eventId,
+      eventActor: popup.eventActor,
+      eventTime: popup.eventTime,
+      comment: '',
+    }])
+    setSelectionPopup(null)
+    window.getSelection()?.removeAllRanges()
+    composerInputRef.current?.focus()
+  }
+
+  const removeQuote = (quoteId: string) => {
+    setQuotes(prev => prev.filter(q => q.id !== quoteId))
+  }
+
+  const updateQuoteComment = (quoteId: string, comment: string) => {
+    setQuotes(prev => prev.map(q => q.id === quoteId ? { ...q, comment } : q))
+  }
+
   const sendMessage = async () => {
+    const hasQuotes = quotes.length > 0
     const text = message.trim()
-    if (!text || !selectedSessionId || sending) return
+    if (!text && !hasQuotes) return
+    if (!selectedSessionId || sending) return
+    const composedText = hasQuotes
+      ? quotes.map((q, i) => {
+          const block = `> [${i + 1}] ${q.text.replace(/\n/g, '\n> ')}\n> — ${q.eventActor}, ${q.eventTime}, ${q.eventId}`
+          return q.comment.trim() ? `${block}\n\n${q.comment.trim()}` : block
+        }).join('\n\n') + (text ? `\n\n${text}` : '')
+      : text
     setSending(true)
     const startedAt = Date.now()
     setPendingTurn({ startedAt, rootTurnId: null })
@@ -1263,7 +1373,7 @@ export default function App() {
         method: 'POST',
         headers: apiHeaders(true),
         body: JSON.stringify({
-          text,
+          text: composedText,
           client_message_id: `dashboard-${Date.now()}-${Math.random().toString(16).slice(2)}`,
         }),
       })
@@ -1273,6 +1383,7 @@ export default function App() {
         ? { ...current, rootTurnId: receipt.event_id ?? null }
         : current)
       setMessage('')
+      setQuotes([])
       setError('')
       window.setTimeout(() => void loadSession(selectedSessionId, selectedContextId), 120)
     } catch (reason) {
@@ -1304,7 +1415,7 @@ export default function App() {
         }),
       })
       if (!response.ok) throw new Error(t('errors.reasoning', { status: response.status }))
-      const inference = await response.json() as { reasoning_effort?: 'low' | 'medium' | 'high' }
+      const inference = await response.json() as { reasoning_effort?: ReasoningEffortSetting | null }
       setStatus(current => current ? { ...current, reasoning_effort: inference.reasoning_effort } : current)
       setError('')
     } catch (reason) {
@@ -1392,7 +1503,7 @@ export default function App() {
   }
 
   const mutateSchedule = async (
-    schedule: ScheduledIntentRecord,
+    schedule: ScheduleRecord,
     action: 'pause' | 'resume' | 'reschedule' | 'cancel',
   ) => {
     if (action === 'cancel' && !window.confirm(t('dialog.cancelSchedule'))) return
@@ -1452,7 +1563,7 @@ export default function App() {
     }
   }
 
-  const leadingActivation = runningWorkItems[0]
+  const leadingActivation = runningActivations[0]
   const activationSummary = leadingActivation
     ? summarizeActivation(leadingActivation, sessionEvents, toolTimeline, t).title
     : ''
@@ -1484,7 +1595,7 @@ export default function App() {
           : runningDelegations[0]
         ? { state: 'running', label: t('composer.status.delegating'), summary: runningDelegations[0].task }
         : waitingCount > 0
-          ? { state: 'waiting', label: t('composer.status.running'), summary: scheduledIntents[0]?.intent ?? runningObjectives.find(item => item.wait_condition)?.stated_objective ?? t('composer.status.waitingEvent') }
+          ? { state: 'waiting', label: t('composer.status.running'), summary: schedules[0]?.intent ?? runningObjectives.find(item => item.wait_condition)?.stated_objective ?? t('composer.status.waitingEvent') }
           : blockedObjectives[0]
             ? { state: 'blocked', label: t('composer.status.blocked'), summary: blockedObjectives[0].stated_objective }
             : pausedObjectives[0]
@@ -1595,13 +1706,15 @@ export default function App() {
               <select
                 aria-label={t('reasoning.label')}
                 disabled={changingReasoning}
-                value={status?.reasoning_effort ?? 'default'}
+                value={status?.reasoning_effort ?? inferredProviderReasoningEffort(status?.model)}
                 onChange={event => void changeReasoningEffort(event.target.value)}
               >
-                <option value="default">{t('reasoning.default')}</option>
+                <option value="default">{t('reasoning.defaultUnknown')}</option>
+                <option value="none">{t('reasoning.off')}</option>
                 <option value="low">{t('reasoning.low')}</option>
                 <option value="medium">{t('reasoning.medium')}</option>
                 <option value="high">{t('reasoning.high')}</option>
+                <option value="max">{status?.reasoning_effort == null && inferredProviderReasoningEffort(status?.model) === 'max' ? t('reasoning.maxDefault') : t('reasoning.max')}</option>
               </select>
             </label>
             <button
@@ -1658,7 +1771,7 @@ export default function App() {
                   if (kind === 'progress') {
                     return <div className="progress-note" key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                   }
-                  const threadKind = typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue'
+                  const threadKind = typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue_turn'
                   const persistedReasoningSummary = kind === 'agent' || kind === 'background'
                     ? findReasoningSummaryForPayload(durableReasoningSummaries, event.payload)
                     : undefined
@@ -1671,7 +1784,7 @@ export default function App() {
                         : t('conversation.roleRuntime')
                   const showRole = kind === 'background' || kind === 'system'
                   return (
-                    <article className={`message-row ${kind}`} key={event.id}>
+                    <article className={`message-row ${kind}`} key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
                       {showRole && (
                         <div className="message-role">
                           <strong>{role}</strong>
@@ -1787,7 +1900,7 @@ export default function App() {
                       <article className="model-evaluation-row" key={`work-stream-${attempt.attemptId}`}>
                         <div className="model-evaluation-meta">
                           <span className="status-pill running">{t('reasoningSummary.streaming')}</span>
-                          <strong>{shortId(attempt.workItemId, 28)}</strong>
+                          <strong>{shortId(attempt.activationId, 28)}</strong>
                           <small>{t('reasoningSummary.toolCalls', { count: attempt.toolCallCount })}</small>
                         </div>
                         <ReasoningSummaryBlock
@@ -1817,7 +1930,7 @@ export default function App() {
                       <article className="model-evaluation-row" key={summary.eventId}>
                         <div className="model-evaluation-meta">
                           <span className="status-pill completed">{t('reasoningSummary.persistedShort')}</span>
-                          <strong>{shortId(summary.workItemId, 28)}</strong>
+                          <strong>{shortId(summary.activationId, 28)}</strong>
                           <time>{formatTime(summary.timestamp, i18n.language)}</time>
                         </div>
                         <ReasoningSummaryBlock
@@ -2083,11 +2196,38 @@ export default function App() {
               <span className="connection-status" title={t('nav.connection')}><i className={`status-dot ${wsStatus === 'connected' ? '' : wsStatus === 'connecting' ? 'connecting' : 'disconnected'}`} />{t(`connection.${wsStatus}`)}</span>
             </div>
           </div>
+          {quotes.length > 0 && (
+            <div className="quote-preview">
+              {quotes.map((q, i) => (
+                <div className="quote-item" key={q.id}>
+                  <div className="quote-header">
+                    <span className="quote-number">{i + 1}</span>
+                    <span className="quote-source">{q.eventActor} · {formatTime(q.eventTime, i18n.language)} · {q.eventId}</span>
+                    <button className="quote-delete" type="button" title={t('conversation.removeQuote')} onClick={() => removeQuote(q.id)}>
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                  <div className="quote-text">{q.text}</div>
+                  <textarea
+                    className="quote-comment"
+                    placeholder={t('conversation.commentPlaceholder')}
+                    rows={1}
+                    value={q.comment}
+                    onChange={e => updateQuoteComment(q.id, e.target.value)}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
           <div className="composer">
             <span className="composer-prompt">›</span>
             <textarea
               ref={composerInputRef}
               aria-label={t('composer.inputAriaLabel')}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
               disabled={!selectedSessionId || sending}
               onChange={event => setMessage(event.target.value)}
               onCompositionStart={() => { composingInput.current = true }}
@@ -2108,11 +2248,22 @@ export default function App() {
             {activeWorkCount > 0 ? (
               <button className="cancel-button" type="button" title={t('composer.cancelTitle')} onClick={() => void cancelCurrentSession()}><Square size={14} /></button>
             ) : null}
-            <button className="send-button" disabled={!message.trim() || sending || !selectedSessionId} type="button" onClick={() => void sendMessage()}><Send size={15} /><span>{t('composer.send')}</span></button>
+            <button className="send-button" disabled={(!message.trim() && quotes.length === 0) || sending || !selectedSessionId} type="button" onClick={() => void sendMessage()}><Send size={15} /><span>{t('composer.send')}</span></button>
           </div>
           <div className="shortcut-row"><span>{t('composer.shortcuts.send')}</span><span>{t('composer.shortcuts.newline')}</span><span>{t('composer.shortcuts.tasks')}</span><span>{t('composer.shortcuts.mind')}</span><span>{t('composer.shortcuts.back')}</span></div>
           {error && <div className="error-banner">{error}</div>}
         </footer>
+        {selectionPopup && (
+          <button
+            className="selection-popup"
+            style={{ left: selectionPopup.x, top: selectionPopup.y }}
+            type="button"
+            onClick={() => addQuote(selectionPopup)}
+          >
+            <MessageSquare size={13} />
+            <span>{t('conversation.addToChat')}</span>
+          </button>
+        )}
       </section>
     </main>
   )

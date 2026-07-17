@@ -52,7 +52,7 @@ function fixture(): SchedulerSnapshot {
         context_id: 'context-test',
         session_id: 'session-1',
         root_turn_id: 'turn-1',
-        kind: 'work',
+        kind: 'execution',
         lifecycle: 'open',
         executor_kind: 'self',
         delivery_status: 'none',
@@ -165,7 +165,7 @@ test('scheduler model flattens the authoritative causal projection exactly once'
   assert.deepEqual(activeSchedulerThreads(snapshot).map(item => item.thread.id), ['thread-1'])
 })
 
-test('attention counts pending approval and durable failures, not ordinary work', () => {
+test('attention counts pending approval and durable failures, not ordinary activity', () => {
   assert.equal(schedulerAttentionCount(fixture()), 2)
   assert.equal(schedulerAttentionCount(null), 0)
 })

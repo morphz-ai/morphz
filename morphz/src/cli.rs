@@ -499,6 +499,8 @@ pub fn morphz_command_line_parser() -> CommandLineParser {
         &["context", "show"],
         &["context", "status"],
         &["context", "list"],
+        &["scheduler"],
+        &["scheduler", "show"],
         &["session"],
         &["session", "list"],
         &["session", "show"],
@@ -562,6 +564,7 @@ pub fn morphz_command_line_parser() -> CommandLineParser {
         OptionSpec::switch("last", ["--last"]),
         OptionSpec::switch("include-archived", ["--include-archived"]),
         OptionSpec::switch("include-terminal", ["--include-terminal"]),
+        OptionSpec::value("limit", ["--limit"]),
         OptionSpec::value("reason", ["--reason"]),
         OptionSpec::value("token-budget", ["--token-budget"]),
         OptionSpec::switch("network", ["--network"]),
@@ -859,6 +862,41 @@ mod tests {
         assert_eq!(
             pause.option("reason").unwrap().last_value(),
             Some("等待用户确认范围")
+        );
+    }
+
+    #[test]
+    fn scheduler_command_preserves_the_shared_query_contract() {
+        let invocation = morphz_command_line_parser()
+            .parse([
+                "scheduler",
+                "show",
+                "--context=context-a",
+                "--include-terminal",
+                "--limit=50",
+                "--format=json",
+            ])
+            .unwrap();
+
+        assert_eq!(invocation.command_path(), ["scheduler", "show"]);
+        assert_eq!(
+            invocation
+                .option("context")
+                .and_then(ParsedOption::last_value),
+            Some("context-a")
+        );
+        assert_eq!(
+            invocation
+                .option("limit")
+                .and_then(ParsedOption::last_value),
+            Some("50")
+        );
+        assert!(invocation.has_option("include-terminal"));
+        assert_eq!(
+            invocation
+                .option("format")
+                .and_then(ParsedOption::last_value),
+            Some("json")
         );
     }
 }

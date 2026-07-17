@@ -13,11 +13,31 @@ pub enum NetworkPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxPathPattern {
+    /// Literal filesystem root. Keeping it separate from the glob prevents
+    /// characters in a real pathname from being interpreted as glob syntax.
+    pub root: PathBuf,
+    /// Slash-separated glob relative to `root`.
+    pub glob: String,
+}
+
+impl SandboxPathPattern {
+    pub fn new(root: impl Into<PathBuf>, glob: impl Into<String>) -> Self {
+        Self {
+            root: root.into(),
+            glob: glob.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxPolicy {
     pub read_roots: Vec<PathBuf>,
     pub write_roots: Vec<PathBuf>,
     pub denied_read_paths: Vec<PathBuf>,
     pub denied_write_paths: Vec<PathBuf>,
+    pub denied_read_patterns: Vec<SandboxPathPattern>,
+    pub denied_write_patterns: Vec<SandboxPathPattern>,
     pub network: NetworkPolicy,
     pub fail_closed: bool,
 }
@@ -30,6 +50,8 @@ impl SandboxPolicy {
             write_roots: vec![workspace_root],
             denied_read_paths: Vec::new(),
             denied_write_paths: Vec::new(),
+            denied_read_patterns: Vec::new(),
+            denied_write_patterns: Vec::new(),
             network: NetworkPolicy::Deny,
             fail_closed: true,
         }
@@ -49,6 +71,11 @@ impl SandboxPolicy {
         let path = path.into();
         push_unique(&mut self.denied_read_paths, path.clone());
         push_unique(&mut self.denied_write_paths, path);
+    }
+
+    pub fn deny_pattern(&mut self, pattern: SandboxPathPattern) {
+        push_unique_pattern(&mut self.denied_read_patterns, pattern.clone());
+        push_unique_pattern(&mut self.denied_write_patterns, pattern);
     }
 }
 
@@ -207,6 +234,12 @@ impl NativeSandbox {
 fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
     if !paths.iter().any(|existing| existing == &path) {
         paths.push(path);
+    }
+}
+
+fn push_unique_pattern(patterns: &mut Vec<SandboxPathPattern>, pattern: SandboxPathPattern) {
+    if !patterns.iter().any(|existing| existing == &pattern) {
+        patterns.push(pattern);
     }
 }
 
@@ -421,6 +454,10 @@ mod macos {
         let write_roots = canonical_roots(&policy.write_roots, "write")?;
         let protected_reads = denied_roots(&policy.denied_read_paths, "denied read")?;
         let protected_writes = denied_roots(&policy.denied_write_paths, "denied write")?;
+        let protected_read_patterns =
+            denied_pattern_regexes(&policy.denied_read_patterns, "denied read pattern")?;
+        let protected_write_patterns =
+            denied_pattern_regexes(&policy.denied_write_patterns, "denied write pattern")?;
         if write_roots.is_empty() {
             return Err(SandboxError::new(
                 "macOS Seatbelt policy 至少需要一个 write root",
@@ -447,6 +484,11 @@ mod macos {
             .map(|path| format!("(deny file-read* (subpath {}))", sbpl_quote(path)))
             .collect::<Vec<_>>()
             .join("\n");
+        let denied_read_pattern_rules = protected_read_patterns
+            .iter()
+            .map(|pattern| format!("(deny file-read* (regex #\"{}\"))", sbpl_regex(pattern)))
+            .collect::<Vec<_>>()
+            .join("\n");
         let allowed_read_rules = allowed_read_roots
             .iter()
             .filter(|path| path.exists())
@@ -463,6 +505,11 @@ mod macos {
             .map(|path| format!("(deny file-write* (subpath {}))", sbpl_quote(path)))
             .collect::<Vec<_>>()
             .join("\n");
+        let denied_write_pattern_rules = protected_write_patterns
+            .iter()
+            .map(|pattern| format!("(deny file-write* (regex #\"{}\"))", sbpl_regex(pattern)))
+            .collect::<Vec<_>>()
+            .join("\n");
         let read_rules = read_roots
             .iter()
             .chain(write_roots.iter())
@@ -477,7 +524,9 @@ mod macos {
              (deny file-write*)\n\
              (allow file-write* {write_rules} (literal \"/dev/null\"))\n\
              {denied_write_rules}\n\
+             {denied_write_pattern_rules}\n\
              {denied_read_rules}\n\
+             {denied_read_pattern_rules}\n\
              (allow file-read* {allowed_read_rules})\n\
              (allow file-read* {read_rules})\n"
         ))
@@ -486,6 +535,112 @@ mod macos {
     fn sbpl_quote(path: &Path) -> String {
         let value = path.to_string_lossy();
         format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    }
+
+    fn sbpl_regex(value: &str) -> String {
+        value.replace('"', "\\\"")
+    }
+
+    fn denied_pattern_regexes(
+        patterns: &[SandboxPathPattern],
+        kind: &str,
+    ) -> Result<Vec<String>, SandboxError> {
+        let mut regexes = Vec::with_capacity(patterns.len());
+        for pattern in patterns {
+            let root = std::fs::canonicalize(&pattern.root).map_err(|error| {
+                SandboxError::new(format!(
+                    "无法解析沙箱 {kind} root '{}': {error}",
+                    pattern.root.display()
+                ))
+            })?;
+            let root = regex_literal(&root.to_string_lossy().replace('\\', "/"));
+            let glob = glob_regex(&pattern.glob)?;
+            let separator = if root == "/" { "" } else { "/" };
+            regexes.push(format!("^{root}{separator}{glob}$"));
+        }
+        Ok(regexes)
+    }
+
+    fn regex_literal(value: &str) -> String {
+        let mut escaped = String::with_capacity(value.len());
+        for character in value.chars() {
+            if matches!(
+                character,
+                '.' | '+' | '(' | ')' | '|' | '^' | '$' | '{' | '}' | '[' | ']' | '\\'
+            ) {
+                escaped.push('\\');
+            }
+            escaped.push(character);
+        }
+        escaped
+    }
+
+    /// Convert the validated Permission glob vocabulary into the regular
+    /// expression accepted by Seatbelt. `**/` may consume zero or more path
+    /// components; a lone `*` and `?` never cross a path separator.
+    fn glob_regex(glob: &str) -> Result<String, SandboxError> {
+        let normalized = glob.replace('\\', "/");
+        let characters = normalized.chars().collect::<Vec<_>>();
+        let mut index = 0usize;
+        let mut regex = String::with_capacity(normalized.len().saturating_mul(2));
+        while index < characters.len() {
+            match characters[index] {
+                '*' if characters.get(index + 1) == Some(&'*') => {
+                    index += 2;
+                    if characters.get(index) == Some(&'/') {
+                        regex.push_str("(.*/)?");
+                        index += 1;
+                    } else {
+                        regex.push_str(".*");
+                    }
+                }
+                '*' => {
+                    regex.push_str("[^/]*");
+                    index += 1;
+                }
+                '?' => {
+                    regex.push_str("[^/]");
+                    index += 1;
+                }
+                '[' => {
+                    let start = index;
+                    index += 1;
+                    let mut class = String::new();
+                    if characters.get(index) == Some(&'!') {
+                        class.push('^');
+                        index += 1;
+                    }
+                    while index < characters.len() && characters[index] != ']' {
+                        if characters[index] == '\\' {
+                            class.push('\\');
+                        }
+                        class.push(characters[index]);
+                        index += 1;
+                    }
+                    if index == characters.len() {
+                        return Err(SandboxError::new(format!(
+                            "沙箱 protected path glob 存在未闭合字符组：{glob}"
+                        )));
+                    }
+                    regex.push('[');
+                    regex.push_str(&class);
+                    regex.push(']');
+                    index += 1;
+                    debug_assert!(index > start);
+                }
+                character => {
+                    if matches!(
+                        character,
+                        '.' | '+' | '(' | ')' | '|' | '^' | '$' | '{' | '}' | '\\'
+                    ) {
+                        regex.push('\\');
+                    }
+                    regex.push(character);
+                    index += 1;
+                }
+            }
+        }
+        Ok(regex)
     }
 }
 
@@ -546,6 +701,17 @@ mod tests {
     }
 
     #[test]
+    fn denied_patterns_are_kept_as_symbolic_policy() {
+        let mut policy = SandboxPolicy::workspace("workspace");
+        let pattern = SandboxPathPattern::new("workspace", "**/.git/**");
+        policy.deny_pattern(pattern.clone());
+        policy.deny_pattern(pattern.clone());
+
+        assert_eq!(policy.denied_read_patterns, vec![pattern.clone()]);
+        assert_eq!(policy.denied_write_patterns, vec![pattern]);
+    }
+
+    #[test]
     fn missing_allow_root_still_fails_closed() {
         let temp = tempfile::TempDir::new().unwrap();
         let missing = temp.path().join("missing-workspace");
@@ -573,6 +739,25 @@ mod tests {
         assert!(profile.contains("(deny network*)"));
         assert!(profile.contains("(deny file-write*)"));
         assert!(profile.contains(&workspace.to_string_lossy().to_string()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_profile_compiles_symbolic_protected_globs() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace.with+regex[chars]");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let mut policy = SandboxPolicy::workspace(&workspace);
+        policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.git/**"));
+        policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.env.*"));
+
+        let profile = macos::build_profile(&policy).unwrap();
+
+        assert!(profile.contains("(deny file-read* (regex #\""));
+        assert!(profile.contains("[^/]*"));
+        assert!(profile.contains("\\.git"));
+        assert!(profile.contains("\\.env"));
+        assert!(profile.contains("workspace\\.with\\+regex\\[chars\\]"));
     }
 
     #[cfg(target_os = "macos")]
@@ -643,7 +828,37 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_backend_denies_protected_path_inside_writable_root() {
+    fn macos_backend_denies_workspace_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, workspace.join("alias")).unwrap();
+        let escaped = outside.join("escape.txt");
+        let sandbox = NativeSandbox::for_current_platform();
+        let prepared = sandbox
+            .prepare_shell(&ShellRequest {
+                command: "printf escaped > alias/escape.txt".to_string(),
+                cwd: workspace.clone(),
+                policy: SandboxPolicy::workspace(&workspace),
+            })
+            .unwrap();
+        let status = std::process::Command::new(&prepared.program)
+            .args(&prepared.arguments)
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+
+        assert!(!status.success());
+        assert!(!escaped.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_backend_denies_symbolic_protected_path_inside_writable_root() {
         let temp = tempfile::TempDir::new().unwrap();
         let workspace = temp.path().join("workspace");
         let protected = workspace.join(".git");
@@ -651,7 +866,9 @@ mod tests {
         std::fs::write(protected.join("config"), "secret").unwrap();
         let sandbox = NativeSandbox::for_current_platform();
         let mut policy = SandboxPolicy::workspace(&workspace);
-        policy.deny_path(&protected);
+        policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.git"));
+        policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.git/**"));
+        let profile = macos::build_profile(&policy).unwrap();
 
         let prepared = sandbox
             .prepare_shell(&ShellRequest {
@@ -666,11 +883,40 @@ mod tests {
             .current_dir(&workspace)
             .status()
             .unwrap();
-        assert!(!status.success());
+        assert!(!status.success(), "generated profile:\n{profile}");
         assert_eq!(
             std::fs::read_to_string(protected.join("config")).unwrap(),
             "secret"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_backend_denies_future_protected_match_without_discovery() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        let nested = workspace.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let future_secret = nested.join(".env.local");
+        let sandbox = NativeSandbox::for_current_platform();
+        let mut policy = SandboxPolicy::workspace(&workspace);
+        policy.deny_pattern(SandboxPathPattern::new(&workspace, "**/.env.*"));
+
+        let prepared = sandbox
+            .prepare_shell(&ShellRequest {
+                command: "printf secret > nested/.env.local".to_string(),
+                cwd: workspace.clone(),
+                policy,
+            })
+            .unwrap();
+        let status = std::process::Command::new(&prepared.program)
+            .args(&prepared.arguments)
+            .current_dir(&workspace)
+            .status()
+            .unwrap();
+
+        assert!(!status.success());
+        assert!(!future_secret.exists());
     }
 
     #[cfg(target_os = "macos")]

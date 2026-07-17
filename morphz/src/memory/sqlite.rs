@@ -11,19 +11,19 @@ use crate::memory::{
     ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
     ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim, NewAgent,
     NewApprovalRequest, NewCognitiveContext, NewDelegation, NewExecutionJob, NewObjective,
-    NewRuntimeTimer, NewScheduledIntent, NewSession, NewThreadActivation, NewThreadSignal,
-    NewWorkThread, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus,
-    ScheduledIntentMutation, ScheduledIntentRecord, ScheduledIntentStatus, SessionAttentionState,
-    SessionAttentionUpdate, SessionMountKind, SessionRecord, SessionStatus, SessionStore,
-    SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadLifecycle, ThreadSignalRecord,
-    ThreadSignalStatus, TimerStore, WorkThreadKind, WorkThreadMutation, WorkThreadRecord,
+    NewRuntimeTimer, NewSchedule, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
+    ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
+    QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation,
+    ScheduleRecord, ScheduleStatus, SessionAttentionState, SessionAttentionUpdate,
+    SessionMountKind, SessionRecord, SessionStatus, SessionStore, SessionUpdate,
+    SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord,
+    ThreadSignalRecord, ThreadSignalStatus, TimerStore,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::{QueryBuilder, Row, SqlitePool};
+use sqlx::{Acquire, QueryBuilder, Row, SqlitePool};
 
 pub struct SqliteStore {
     pool: SqlitePool,
@@ -98,6 +98,89 @@ impl SqliteStore {
                 .await?;
             }
         }
+
+        for (legacy, canonical) in [
+            ("work_threads", "threads"),
+            ("work_thread_outcomes", "thread_outcomes"),
+            ("scheduled_intents", "schedules"),
+            ("scheduled_intent_dependencies", "schedule_dependencies"),
+        ] {
+            let has_legacy = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+            )
+            .bind(legacy)
+            .fetch_one(&pool)
+            .await?
+                > 0;
+            let has_canonical = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+            )
+            .bind(canonical)
+            .fetch_one(&pool)
+            .await?
+                > 0;
+            if has_legacy && has_canonical {
+                return Err(
+                    format!("SQLite 同时存在 {legacy} 与 {canonical}，拒绝猜测迁移来源").into(),
+                );
+            }
+            if has_legacy {
+                sqlx::query(&format!("ALTER TABLE {legacy} RENAME TO {canonical}"))
+                    .execute(&pool)
+                    .await?;
+            }
+        }
+
+        let has_schedule_dependencies = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schedule_dependencies'",
+        )
+        .fetch_one(&pool)
+        .await?
+            > 0;
+        if has_schedule_dependencies {
+            let dependency_columns = sqlx::query("PRAGMA table_info(schedule_dependencies)")
+                .fetch_all(&pool)
+                .await?
+                .into_iter()
+                .map(|row| row.get::<String, _>("name"))
+                .collect::<std::collections::HashSet<_>>();
+            if dependency_columns.contains("scheduled_intent_id")
+                && !dependency_columns.contains("schedule_id")
+            {
+                sqlx::query(
+                    "ALTER TABLE schedule_dependencies RENAME COLUMN scheduled_intent_id TO schedule_id",
+                )
+                .execute(&pool)
+                .await?;
+            }
+        }
+
+        for table in ["evaluation_outcomes", "thread_outcomes"] {
+            let exists = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+            )
+            .bind(table)
+            .fetch_one(&pool)
+            .await?
+                > 0;
+            if !exists {
+                continue;
+            }
+            let columns = sqlx::query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(&pool)
+                .await?
+                .into_iter()
+                .map(|row| row.get::<String, _>("name"))
+                .collect::<std::collections::HashSet<_>>();
+            if columns.contains("work_item_id") && !columns.contains("activation_id") {
+                sqlx::query(&format!(
+                    "ALTER TABLE {table} RENAME COLUMN work_item_id TO activation_id"
+                ))
+                .execute(&pool)
+                .await?;
+            }
+        }
+        migrate_threads_to_canonical_domain(&pool).await?;
 
         // 初始化建表 DDL
         let ddl = r#"
@@ -295,24 +378,24 @@ impl SqliteStore {
             ON thread_activations(root_turn_id, updated_at);
 
         CREATE TABLE IF NOT EXISTS evaluation_outcomes (
-            work_item_id TEXT NOT NULL PRIMARY KEY,
+            activation_id TEXT NOT NULL PRIMARY KEY,
             session_id TEXT NOT NULL,
             disposition TEXT NOT NULL,
             event_id TEXT NOT NULL UNIQUE,
             created_at TEXT NOT NULL,
-            FOREIGN KEY(work_item_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
+            FOREIGN KEY(activation_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
 
-        CREATE TABLE IF NOT EXISTS work_threads (
+        CREATE TABLE IF NOT EXISTS threads (
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
             agent_id TEXT NOT NULL,
             context_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
             root_turn_id TEXT NOT NULL UNIQUE,
-            kind TEXT NOT NULL CHECK(kind IN ('dialogue', 'work', 'objective', 'delegation', 'delivery')),
-            status TEXT NOT NULL CHECK(status IN ('active', 'completed', 'failed', 'cancelled')),
+            kind TEXT NOT NULL CHECK(kind IN ('dialogue_turn', 'execution', 'objective', 'delivery')),
+            status TEXT NOT NULL CHECK(status IN ('open', 'completed', 'failed', 'cancelled')),
             executor_kind TEXT NOT NULL,
             executor_id TEXT,
             result_text TEXT,
@@ -323,10 +406,10 @@ impl SqliteStore {
             updated_at TEXT NOT NULL,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
-        CREATE INDEX IF NOT EXISTS idx_work_threads_context_status
-            ON work_threads(context_id, status, updated_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_work_threads_session_delivery
-            ON work_threads(session_id, delivery_status, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_threads_context_status
+            ON threads(context_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_threads_session_delivery
+            ON threads(session_id, delivery_status, updated_at);
 
         CREATE TABLE IF NOT EXISTS execution_jobs (
             id TEXT PRIMARY KEY,
@@ -365,7 +448,7 @@ impl SqliteStore {
             finished_at TEXT,
             UNIQUE(activation_id, tool_call_id),
             FOREIGN KEY(activation_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
-            FOREIGN KEY(thread_id) REFERENCES work_threads(id) ON DELETE CASCADE,
+            FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_execution_jobs_queue
@@ -443,7 +526,7 @@ impl SqliteStore {
             created_at TEXT NOT NULL,
             claimed_at TEXT,
             acknowledged_at TEXT,
-            FOREIGN KEY(thread_id) REFERENCES work_threads(id) ON DELETE CASCADE,
+            FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE,
             FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE,
             FOREIGN KEY(parent_activation_id) REFERENCES thread_activations(id)
         );
@@ -461,7 +544,7 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_activation_signals_signal
             ON activation_signals(signal_id);
 
-        CREATE TABLE IF NOT EXISTS scheduled_intents (
+        CREATE TABLE IF NOT EXISTS schedules (
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
             thread_id TEXT NOT NULL,
@@ -473,73 +556,66 @@ impl SqliteStore {
             dependency_thread_ids_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            FOREIGN KEY(thread_id) REFERENCES work_threads(id) ON DELETE CASCADE
+            FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
         );
-        CREATE INDEX IF NOT EXISTS idx_scheduled_intents_due
-            ON scheduled_intents(status, not_before, created_at);
-        CREATE TRIGGER IF NOT EXISTS scheduled_intents_terminal_status_is_irreversible
-        BEFORE UPDATE OF status ON scheduled_intents
+        CREATE INDEX IF NOT EXISTS idx_schedules_due
+            ON schedules(status, not_before, created_at);
+        CREATE TRIGGER IF NOT EXISTS schedules_terminal_status_is_irreversible
+        BEFORE UPDATE OF status ON schedules
         WHEN OLD.status IN ('completed', 'cancelled') AND NEW.status <> OLD.status
         BEGIN
             SELECT RAISE(ABORT, 'scheduled intent terminal status is irreversible');
         END;
 
-        CREATE TABLE IF NOT EXISTS scheduled_intent_dependencies (
-            scheduled_intent_id TEXT NOT NULL,
+        CREATE TABLE IF NOT EXISTS schedule_dependencies (
+            schedule_id TEXT NOT NULL,
             dependency_thread_id TEXT NOT NULL,
-            PRIMARY KEY(scheduled_intent_id, dependency_thread_id),
-            FOREIGN KEY(scheduled_intent_id) REFERENCES scheduled_intents(id) ON DELETE CASCADE,
-            FOREIGN KEY(dependency_thread_id) REFERENCES work_threads(id) ON DELETE CASCADE
+            PRIMARY KEY(schedule_id, dependency_thread_id),
+            FOREIGN KEY(schedule_id) REFERENCES schedules(id) ON DELETE CASCADE,
+            FOREIGN KEY(dependency_thread_id) REFERENCES threads(id) ON DELETE CASCADE
         );
-        CREATE INDEX IF NOT EXISTS idx_scheduled_intent_dependencies_thread
-            ON scheduled_intent_dependencies(dependency_thread_id, scheduled_intent_id);
+        CREATE INDEX IF NOT EXISTS idx_schedule_dependencies_thread
+            ON schedule_dependencies(dependency_thread_id, schedule_id);
 
-        CREATE TABLE IF NOT EXISTS work_thread_outcomes (
+        CREATE TABLE IF NOT EXISTS thread_outcomes (
             thread_id TEXT PRIMARY KEY,
             root_turn_id TEXT NOT NULL UNIQUE,
-            work_item_id TEXT NOT NULL,
+            activation_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
             disposition TEXT NOT NULL,
             event_id TEXT NOT NULL UNIQUE,
             created_at TEXT NOT NULL,
-            FOREIGN KEY(thread_id) REFERENCES work_threads(id) ON DELETE CASCADE,
-            FOREIGN KEY(work_item_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
+            FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE,
+            FOREIGN KEY(activation_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
             FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
         );
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
         migrate_runtime_timer_delivery_flush_kind(&pool).await?;
-        migrate_scheduled_intent_paused_status(&pool).await?;
+        migrate_schedule_paused_status(&pool).await?;
         // Backfill databases created before the reverse dependency index was
         // introduced. JSON remains on the owner row as the public record; the
         // index only makes terminal dependency wakes deterministic and cheap.
-        let dependency_rows =
-            sqlx::query("SELECT id, dependency_thread_ids_json FROM scheduled_intents")
-                .fetch_all(&pool)
-                .await?;
+        let dependency_rows = sqlx::query("SELECT id, dependency_thread_ids_json FROM schedules")
+            .fetch_all(&pool)
+            .await?;
         let mut dependency_tx = pool.begin().await?;
         for row in dependency_rows {
-            let scheduled_intent_id: String = row.get("id");
+            let schedule_id: String = row.get("id");
             let encoded: String = row.get("dependency_thread_ids_json");
             let dependency_ids: Vec<String> = serde_json::from_str(&encoded)?;
             for dependency_thread_id in dependency_ids {
                 sqlx::query(
-                    "INSERT OR IGNORE INTO scheduled_intent_dependencies (scheduled_intent_id, dependency_thread_id) VALUES (?, ?)",
+                    "INSERT OR IGNORE INTO schedule_dependencies (schedule_id, dependency_thread_id) VALUES (?, ?)",
                 )
-                .bind(&scheduled_intent_id)
+                .bind(&schedule_id)
                 .bind(dependency_thread_id)
                 .execute(&mut *dependency_tx)
                 .await?;
             }
         }
         dependency_tx.commit().await?;
-        // v1 Scheduler Kernel no longer persists `waiting` as Thread state.
-        // Existing rows are a one-way data migration to lifecycle=open; phase
-        // is derived from Signal, Activation, Schedule and Job facts.
-        sqlx::query("UPDATE work_threads SET status = 'active' WHERE status = 'waiting'")
-            .execute(&pool)
-            .await?;
         sqlx::query(
             "UPDATE thread_activations SET status = 'completed' WHERE status IN ('waiting_tool', 'waiting_external')",
         )
@@ -592,6 +668,122 @@ impl SqliteStore {
 
         Ok(Self { pool })
     }
+}
+
+/// Replace the pre-release Thread discriminator and state vocabulary in one
+/// transaction. Public and persistence layers intentionally share the same
+/// canonical values; old spellings exist only as migration input.
+async fn migrate_threads_to_canonical_domain(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let table_sql = sqlx::query_scalar::<_, String>(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'threads'",
+    )
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or_default();
+    if table_sql.is_empty()
+        || (table_sql.contains("'dialogue_turn'")
+            && table_sql.contains("'execution'")
+            && table_sql.contains("'open'"))
+    {
+        return Ok(());
+    }
+
+    let unknown_rows = sqlx::query_scalar::<_, i64>(
+        r#"SELECT COUNT(*) FROM threads
+           WHERE kind NOT IN ('dialogue', 'dialogue_turn', 'work', 'execution', 'objective', 'delegation', 'delivery')
+              OR status NOT IN ('active', 'waiting', 'open', 'completed', 'failed', 'cancelled')"#,
+    )
+    .fetch_one(pool)
+    .await?;
+    if unknown_rows != 0 {
+        return Err(
+            format!("threads 中存在 {unknown_rows} 条无法映射到规范 Thread 领域的记录").into(),
+        );
+    }
+
+    // Rebuilding a parent table is SQLite's documented way to change CHECK
+    // constraints. Foreign keys are disabled only on this initialization
+    // connection, then verified before it is returned to the pool.
+    let mut connection = pool.acquire().await?;
+    sqlx::query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *connection)
+        .await?;
+    let migration = async {
+        let mut tx = connection.begin().await?;
+        sqlx::query("DROP TABLE IF EXISTS threads_canonical_migration")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            r#"CREATE TABLE threads_canonical_migration (
+                id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+                agent_id TEXT NOT NULL,
+                context_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                root_turn_id TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL CHECK(kind IN ('dialogue_turn', 'execution', 'objective', 'delivery')),
+                status TEXT NOT NULL CHECK(status IN ('open', 'completed', 'failed', 'cancelled')),
+                executor_kind TEXT NOT NULL,
+                executor_id TEXT,
+                result_text TEXT,
+                result_event_id TEXT,
+                delivery_status TEXT NOT NULL DEFAULT 'none' CHECK(delivery_status IN ('none', 'pending', 'deferred', 'delivered')),
+                delivery_event_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO threads_canonical_migration
+               (id, revision, agent_id, context_id, session_id, root_turn_id,
+                kind, status, executor_kind, executor_id, result_text,
+                result_event_id, delivery_status, delivery_event_id,
+                created_at, updated_at)
+               SELECT id, revision, agent_id, context_id, session_id, root_turn_id,
+                      CASE kind
+                          WHEN 'dialogue' THEN 'dialogue_turn'
+                          WHEN 'work' THEN 'execution'
+                          WHEN 'delegation' THEN 'execution'
+                          ELSE kind
+                      END,
+                      CASE status
+                          WHEN 'active' THEN 'open'
+                          WHEN 'waiting' THEN 'open'
+                          ELSE status
+                      END,
+                      executor_kind, executor_id, result_text, result_event_id,
+                      delivery_status, delivery_event_id, created_at, updated_at
+               FROM threads"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DROP TABLE threads")
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("ALTER TABLE threads_canonical_migration RENAME TO threads")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+    }
+    .await;
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&mut *connection)
+        .await?;
+    migration?;
+
+    let violations = sqlx::query("PRAGMA foreign_key_check")
+        .fetch_all(&mut *connection)
+        .await?;
+    if !violations.is_empty() {
+        return Err(format!("Thread 领域迁移后发现 {} 条外键违规", violations.len()).into());
+    }
+    Ok(())
 }
 
 /// SQLite cannot widen a CHECK constraint in place. Preserve every Timer row
@@ -665,11 +857,11 @@ async fn migrate_runtime_timer_delivery_flush_kind(
 /// owner table and its reverse dependency index so pre-Phase-4 databases can
 /// persist `paused` without dropping either the Schedule rows or dependency
 /// routing. The whole migration is transactional.
-async fn migrate_scheduled_intent_paused_status(
+async fn migrate_schedule_paused_status(
     pool: &SqlitePool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let table_sql = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_intents'",
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'schedules'",
     )
     .fetch_one(pool)
     .await?
@@ -679,24 +871,24 @@ async fn migrate_scheduled_intent_paused_status(
     }
 
     let mut tx = pool.begin().await?;
-    sqlx::query("DROP TABLE IF EXISTS scheduled_intent_dependencies_migration")
+    sqlx::query("DROP TABLE IF EXISTS schedule_dependencies_migration")
         .execute(&mut *tx)
         .await?;
     sqlx::query(
-        r#"CREATE TEMP TABLE scheduled_intent_dependencies_migration AS
-           SELECT scheduled_intent_id, dependency_thread_id
-           FROM scheduled_intent_dependencies"#,
+        r#"CREATE TEMP TABLE schedule_dependencies_migration AS
+           SELECT schedule_id, dependency_thread_id
+           FROM schedule_dependencies"#,
     )
     .execute(&mut *tx)
     .await?;
-    sqlx::query("DROP TABLE scheduled_intent_dependencies")
+    sqlx::query("DROP TABLE schedule_dependencies")
         .execute(&mut *tx)
         .await?;
-    sqlx::query("ALTER TABLE scheduled_intents RENAME TO scheduled_intents_legacy")
+    sqlx::query("ALTER TABLE schedules RENAME TO schedules_legacy")
         .execute(&mut *tx)
         .await?;
     sqlx::query(
-        r#"CREATE TABLE scheduled_intents (
+        r#"CREATE TABLE schedules (
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
             thread_id TEXT NOT NULL,
@@ -708,32 +900,30 @@ async fn migrate_scheduled_intent_paused_status(
             dependency_thread_ids_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            FOREIGN KEY(thread_id) REFERENCES work_threads(id) ON DELETE CASCADE
+            FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
         )"#,
     )
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        r#"INSERT INTO scheduled_intents
+        r#"INSERT INTO schedules
            (id, revision, thread_id, source_turn_id, intent, status, not_before,
             interval_seconds, dependency_thread_ids_json, created_at, updated_at)
            SELECT id, revision, thread_id, source_turn_id, intent, status, not_before,
                   interval_seconds, dependency_thread_ids_json, created_at, updated_at
-           FROM scheduled_intents_legacy"#,
+           FROM schedules_legacy"#,
     )
     .execute(&mut *tx)
     .await?;
-    sqlx::query("DROP TABLE scheduled_intents_legacy")
+    sqlx::query("DROP TABLE schedules_legacy")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("CREATE INDEX idx_schedules_due ON schedules(status, not_before, created_at)")
         .execute(&mut *tx)
         .await?;
     sqlx::query(
-        "CREATE INDEX idx_scheduled_intents_due ON scheduled_intents(status, not_before, created_at)",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        r#"CREATE TRIGGER scheduled_intents_terminal_status_is_irreversible
-           BEFORE UPDATE OF status ON scheduled_intents
+        r#"CREATE TRIGGER schedules_terminal_status_is_irreversible
+           BEFORE UPDATE OF status ON schedules
            WHEN OLD.status IN ('completed', 'cancelled') AND NEW.status <> OLD.status
            BEGIN
                SELECT RAISE(ABORT, 'scheduled intent terminal status is irreversible');
@@ -742,30 +932,30 @@ async fn migrate_scheduled_intent_paused_status(
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        r#"CREATE TABLE scheduled_intent_dependencies (
-            scheduled_intent_id TEXT NOT NULL,
+        r#"CREATE TABLE schedule_dependencies (
+            schedule_id TEXT NOT NULL,
             dependency_thread_id TEXT NOT NULL,
-            PRIMARY KEY(scheduled_intent_id, dependency_thread_id),
-            FOREIGN KEY(scheduled_intent_id) REFERENCES scheduled_intents(id) ON DELETE CASCADE,
-            FOREIGN KEY(dependency_thread_id) REFERENCES work_threads(id) ON DELETE CASCADE
+            PRIMARY KEY(schedule_id, dependency_thread_id),
+            FOREIGN KEY(schedule_id) REFERENCES schedules(id) ON DELETE CASCADE,
+            FOREIGN KEY(dependency_thread_id) REFERENCES threads(id) ON DELETE CASCADE
         )"#,
     )
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        "CREATE INDEX idx_scheduled_intent_dependencies_thread ON scheduled_intent_dependencies(dependency_thread_id, scheduled_intent_id)",
+        "CREATE INDEX idx_schedule_dependencies_thread ON schedule_dependencies(dependency_thread_id, schedule_id)",
     )
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        r#"INSERT INTO scheduled_intent_dependencies
-           (scheduled_intent_id, dependency_thread_id)
-           SELECT scheduled_intent_id, dependency_thread_id
-           FROM scheduled_intent_dependencies_migration"#,
+        r#"INSERT INTO schedule_dependencies
+           (schedule_id, dependency_thread_id)
+           SELECT schedule_id, dependency_thread_id
+           FROM schedule_dependencies_migration"#,
     )
     .execute(&mut *tx)
     .await?;
-    sqlx::query("DROP TABLE scheduled_intent_dependencies_migration")
+    sqlx::query("DROP TABLE schedule_dependencies_migration")
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -847,16 +1037,13 @@ fn parse_thread_signal_status(
     }
 }
 
-fn parse_work_thread_kind(
-    value: &str,
-) -> Result<WorkThreadKind, Box<dyn std::error::Error + Send + Sync>> {
+fn parse_thread_kind(value: &str) -> Result<ThreadKind, Box<dyn std::error::Error + Send + Sync>> {
     match value {
-        "dialogue" => Ok(WorkThreadKind::Dialogue),
-        "work" => Ok(WorkThreadKind::Work),
-        "objective" => Ok(WorkThreadKind::Objective),
-        "delegation" => Ok(WorkThreadKind::Delegation),
-        "delivery" => Ok(WorkThreadKind::Delivery),
-        other => Err(format!("未知 Work Thread kind：'{other}'").into()),
+        "dialogue_turn" => Ok(ThreadKind::DialogueTurn),
+        "execution" => Ok(ThreadKind::Execution),
+        "objective" => Ok(ThreadKind::Objective),
+        "delivery" => Ok(ThreadKind::Delivery),
+        other => Err(format!("未知 Thread kind：'{other}'").into()),
     }
 }
 
@@ -864,9 +1051,7 @@ fn parse_thread_lifecycle(
     value: &str,
 ) -> Result<ThreadLifecycle, Box<dyn std::error::Error + Send + Sync>> {
     match value {
-        // Old rows used active/waiting to mix lifecycle and scheduler phase.
-        // Both represent the same non-terminal lifecycle fact.
-        "active" | "waiting" | "open" => Ok(ThreadLifecycle::Open),
+        "open" => Ok(ThreadLifecycle::Open),
         "completed" => Ok(ThreadLifecycle::Completed),
         "failed" => Ok(ThreadLifecycle::Failed),
         "cancelled" => Ok(ThreadLifecycle::Cancelled),
@@ -882,20 +1067,20 @@ fn parse_delivery_status(
         "pending" => Ok(DeliveryStatus::Pending),
         "deferred" => Ok(DeliveryStatus::Deferred),
         "delivered" => Ok(DeliveryStatus::Delivered),
-        other => Err(format!("未知 Work Thread delivery status：'{other}'").into()),
+        other => Err(format!("未知 Thread delivery status：'{other}'").into()),
     }
 }
 
-fn parse_scheduled_intent_status(
+fn parse_schedule_status(
     value: &str,
-) -> Result<ScheduledIntentStatus, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<ScheduleStatus, Box<dyn std::error::Error + Send + Sync>> {
     match value {
-        "queued" => Ok(ScheduledIntentStatus::Queued),
-        "paused" => Ok(ScheduledIntentStatus::Paused),
-        "dispatched" => Ok(ScheduledIntentStatus::Dispatched),
-        "completed" => Ok(ScheduledIntentStatus::Completed),
-        "cancelled" => Ok(ScheduledIntentStatus::Cancelled),
-        other => Err(format!("未知 Scheduled Intent status：'{other}'").into()),
+        "queued" => Ok(ScheduleStatus::Queued),
+        "paused" => Ok(ScheduleStatus::Paused),
+        "dispatched" => Ok(ScheduleStatus::Dispatched),
+        "completed" => Ok(ScheduleStatus::Completed),
+        "cancelled" => Ok(ScheduleStatus::Cancelled),
+        other => Err(format!("未知 Schedule status：'{other}'").into()),
     }
 }
 
@@ -1040,17 +1225,17 @@ fn thread_signal_from_row(
     })
 }
 
-fn work_thread_from_row(
+fn thread_from_row(
     row: &sqlx::sqlite::SqliteRow,
-) -> Result<WorkThreadRecord, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(WorkThreadRecord {
+) -> Result<ThreadRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ThreadRecord {
         id: row.get("id"),
         revision: sqlite_u64(row, "revision")?,
         agent_id: row.get("agent_id"),
         context_id: row.get("context_id"),
         session_id: row.get("session_id"),
         root_turn_id: row.get("root_turn_id"),
-        kind: parse_work_thread_kind(&row.get::<String, _>("kind"))?,
+        kind: parse_thread_kind(&row.get::<String, _>("kind"))?,
         lifecycle: parse_thread_lifecycle(&row.get::<String, _>("status"))?,
         executor_kind: row.get("executor_kind"),
         executor_id: row.get("executor_id"),
@@ -1063,18 +1248,18 @@ fn work_thread_from_row(
     })
 }
 
-fn scheduled_intent_from_row(
+fn schedule_from_row(
     row: &sqlx::sqlite::SqliteRow,
-) -> Result<ScheduledIntentRecord, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<ScheduleRecord, Box<dyn std::error::Error + Send + Sync>> {
     let dependency_thread_ids =
         serde_json::from_str::<Vec<String>>(&row.get::<String, _>("dependency_thread_ids_json"))?;
-    Ok(ScheduledIntentRecord {
+    Ok(ScheduleRecord {
         id: row.get("id"),
         revision: sqlite_u64(row, "revision")?,
         thread_id: row.get("thread_id"),
         source_turn_id: row.get("source_turn_id"),
         intent: row.get("intent"),
-        status: parse_scheduled_intent_status(&row.get::<String, _>("status"))?,
+        status: parse_schedule_status(&row.get::<String, _>("status"))?,
         not_before: row
             .get::<Option<String>, _>("not_before")
             .map(|value| parse_time(&value)),
@@ -1085,21 +1270,21 @@ fn scheduled_intent_from_row(
     })
 }
 
-async fn scheduled_intent_mutation_failure(
+async fn schedule_mutation_failure(
     store: &SqliteStore,
     id: &str,
     expected_revision: u64,
     reason: impl Into<String>,
-) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
-    Ok(match store.get_scheduled_intent(id).await? {
+) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(match store.get_schedule(id).await? {
         Some(current) if current.revision != expected_revision => {
-            ScheduledIntentMutation::Conflict { current }
+            ScheduleMutation::Conflict { current }
         }
-        Some(current) => ScheduledIntentMutation::Rejected {
+        Some(current) => ScheduleMutation::Rejected {
             current,
             reason: reason.into(),
         },
-        None => ScheduledIntentMutation::NotFound,
+        None => ScheduleMutation::NotFound,
     })
 }
 
@@ -2075,11 +2260,11 @@ impl SessionStore for SqliteStore {
             return Ok(Some(existing));
         }
 
-        let thread = sqlx::query("SELECT * FROM work_threads WHERE id = ?")
+        let thread = sqlx::query("SELECT * FROM threads WHERE id = ?")
             .bind(&signal.thread_id)
             .fetch_one(&mut *tx)
             .await?;
-        let thread = work_thread_from_row(&thread)?;
+        let thread = thread_from_row(&thread)?;
         if thread.agent_id != activation.agent_id
             || thread.context_id != activation.context_id
             || thread.session_id != activation.session_id
@@ -2257,7 +2442,7 @@ impl SessionStore for SqliteStore {
         let rows = if let Some(status) = status {
             sqlx::query(
                 r#"SELECT signals.* FROM thread_signals signals
-                   JOIN work_threads threads ON threads.id = signals.thread_id
+                   JOIN threads threads ON threads.id = signals.thread_id
                    WHERE threads.context_id = ? AND signals.status = ?
                    ORDER BY signals.sequence, signals.id"#,
             )
@@ -2268,7 +2453,7 @@ impl SessionStore for SqliteStore {
         } else {
             sqlx::query(
                 r#"SELECT signals.* FROM thread_signals signals
-                   JOIN work_threads threads ON threads.id = signals.thread_id
+                   JOIN threads threads ON threads.id = signals.thread_id
                    WHERE threads.context_id = ?
                    ORDER BY signals.sequence, signals.id"#,
             )
@@ -2312,9 +2497,9 @@ impl SessionStore for SqliteStore {
 
     async fn ensure_thread_activation(
         &self,
-        work_item: NewThreadActivation,
+        activation: NewThreadActivation,
     ) -> Result<ThreadActivationRecord, Box<dyn std::error::Error + Send + Sync>> {
-        let trigger_sequence = i64::try_from(work_item.trigger_sequence)
+        let trigger_sequence = i64::try_from(activation.trigger_sequence)
             .map_err(|_| "Thread Activation trigger sequence 超出 SQLite INTEGER 范围")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         sqlx::query(
@@ -2324,31 +2509,31 @@ impl SessionStore for SqliteStore {
                 status, created_at, updated_at)
                VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
         )
-        .bind(&work_item.id)
-        .bind(&work_item.agent_id)
-        .bind(&work_item.context_id)
-        .bind(&work_item.session_id)
-        .bind(&work_item.trigger_event_id)
+        .bind(&activation.id)
+        .bind(&activation.agent_id)
+        .bind(&activation.context_id)
+        .bind(&activation.session_id)
+        .bind(&activation.trigger_event_id)
         .bind(trigger_sequence)
-        .bind(&work_item.trigger_kind)
-        .bind(&work_item.parent_activation_id)
-        .bind(&work_item.root_turn_id)
+        .bind(&activation.trigger_kind)
+        .bind(&activation.parent_activation_id)
+        .bind(&activation.root_turn_id)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
         .await?;
         let row = sqlx::query("SELECT * FROM thread_activations WHERE trigger_event_id = ?")
-            .bind(&work_item.trigger_event_id)
+            .bind(&activation.trigger_event_id)
             .fetch_one(&self.pool)
             .await?;
         let existing = thread_activation_from_row(&row)?;
-        if existing.context_id != work_item.context_id
-            || existing.session_id != work_item.session_id
-            || existing.root_turn_id != work_item.root_turn_id
+        if existing.context_id != activation.context_id
+            || existing.session_id != activation.session_id
+            || existing.root_turn_id != activation.root_turn_id
         {
             return Err(format!(
                 "Trigger Event '{}' 已被不同 Thread Activation 占用",
-                work_item.trigger_event_id
+                activation.trigger_event_id
             )
             .into());
         }
@@ -2554,7 +2739,7 @@ impl SessionStore for SqliteStore {
 
     async fn commit_activation_outcome(
         &self,
-        work_item_id: &str,
+        activation_id: &str,
         event: &Event,
     ) -> Result<ActivationOutcomeCommit, Box<dyn std::error::Error + Send + Sync>> {
         let session_id = event
@@ -2574,17 +2759,17 @@ impl SessionStore for SqliteStore {
             .ok_or("Evaluation outcome Event 缺少 root_turn_id")?;
         let thread_id = event
             .payload
-            .get("work_thread_id")
+            .get("thread_id")
             .and_then(JsonValue::as_str)
-            .ok_or("Evaluation outcome Event 缺少 work_thread_id")?;
+            .ok_or("Evaluation outcome Event 缺少 thread_id")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
-            "INSERT INTO work_thread_outcomes (thread_id, root_turn_id, work_item_id, session_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(root_turn_id) DO NOTHING",
+            "INSERT INTO thread_outcomes (thread_id, root_turn_id, activation_id, session_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(root_turn_id) DO NOTHING",
         )
         .bind(thread_id)
         .bind(root_turn_id)
-        .bind(work_item_id)
+        .bind(activation_id)
         .bind(session_id)
         .bind(disposition)
         .bind(&event.id)
@@ -2593,7 +2778,7 @@ impl SessionStore for SqliteStore {
         .await?;
         if result.rows_affected() == 0 {
             let existing =
-                sqlx::query("SELECT event_id FROM work_thread_outcomes WHERE root_turn_id = ?")
+                sqlx::query("SELECT event_id FROM thread_outcomes WHERE root_turn_id = ?")
                     .bind(root_turn_id)
                     .fetch_one(&mut *tx)
                     .await?;
@@ -2609,7 +2794,7 @@ impl SessionStore for SqliteStore {
             _ => ("none", None),
         };
         let terminal = sqlx::query(
-            r#"UPDATE work_threads
+            r#"UPDATE threads
                SET revision = revision + 1,
                    status = 'completed',
                    result_text = COALESCE(?, result_text),
@@ -2632,7 +2817,7 @@ impl SessionStore for SqliteStore {
         .await?;
         if terminal.rows_affected() != 1 {
             return Err(format!(
-                "Evaluation outcome 无法原子提交 Work Thread '{}' 终态",
+                "Evaluation outcome 无法原子提交 Thread '{}' 终态",
                 thread_id
             )
             .into());
@@ -2640,7 +2825,7 @@ impl SessionStore for SqliteStore {
         if let Some(covers) = event.payload.get("covers").and_then(JsonValue::as_array) {
             for thread_id in covers.iter().filter_map(JsonValue::as_str) {
                 let updated = sqlx::query(
-                    "UPDATE work_threads SET revision = revision + 1, delivery_status = 'delivered', delivery_event_id = ?, updated_at = ? WHERE id = ? AND session_id = ? AND delivery_status IN ('pending', 'deferred')",
+                    "UPDATE threads SET revision = revision + 1, delivery_status = 'delivered', delivery_event_id = ?, updated_at = ? WHERE id = ? AND session_id = ? AND delivery_status IN ('pending', 'deferred')",
                 )
                 .bind(&event.id)
                 .bind(&now)
@@ -2664,7 +2849,7 @@ impl SessionStore for SqliteStore {
         {
             for thread_id in covers.iter().filter_map(JsonValue::as_str) {
                 sqlx::query(
-                    "UPDATE work_threads SET revision = revision + 1, delivery_status = 'deferred', updated_at = ? WHERE id = ? AND session_id = ? AND delivery_status = 'pending'",
+                    "UPDATE threads SET revision = revision + 1, delivery_status = 'deferred', updated_at = ? WHERE id = ? AND session_id = ? AND delivery_status = 'pending'",
                 )
                 .bind(&now)
                 .bind(thread_id)
@@ -2674,9 +2859,9 @@ impl SessionStore for SqliteStore {
             }
         }
         sqlx::query(
-            "INSERT OR IGNORE INTO evaluation_outcomes (work_item_id, session_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO evaluation_outcomes (activation_id, session_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?)",
         )
-        .bind(work_item_id)
+        .bind(activation_id)
         .bind(session_id)
         .bind(disposition)
         .bind(&event.id)
@@ -2697,17 +2882,17 @@ impl SessionStore for SqliteStore {
         Ok(ActivationOutcomeCommit::Committed)
     }
 
-    async fn ensure_work_thread(
+    async fn ensure_thread(
         &self,
-        thread: NewWorkThread,
-    ) -> Result<WorkThreadRecord, Box<dyn std::error::Error + Send + Sync>> {
+        thread: NewThread,
+    ) -> Result<ThreadRecord, Box<dyn std::error::Error + Send + Sync>> {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         sqlx::query(
-            r#"INSERT OR IGNORE INTO work_threads
+            r#"INSERT OR IGNORE INTO threads
                (id, revision, agent_id, context_id, session_id, root_turn_id,
                 kind, status, executor_kind, executor_id, delivery_status,
                 created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, 'active', ?, ?, 'none', ?, ?)"#,
+               VALUES (?, 1, ?, ?, ?, ?, ?, 'open', ?, ?, 'none', ?, ?)"#,
         )
         .bind(&thread.id)
         .bind(&thread.agent_id)
@@ -2721,90 +2906,86 @@ impl SessionStore for SqliteStore {
         .bind(&now)
         .execute(&self.pool)
         .await?;
-        let row = sqlx::query("SELECT * FROM work_threads WHERE root_turn_id = ?")
+        let row = sqlx::query("SELECT * FROM threads WHERE root_turn_id = ?")
             .bind(&thread.root_turn_id)
             .fetch_one(&self.pool)
             .await?;
-        let existing = work_thread_from_row(&row)?;
+        let existing = thread_from_row(&row)?;
         if existing.context_id != thread.context_id
             || existing.session_id != thread.session_id
             || existing.agent_id != thread.agent_id
         {
-            return Err(format!(
-                "Root Turn '{}' 已被不同 Work Thread 占用",
-                thread.root_turn_id
-            )
-            .into());
+            return Err(format!("Root Turn '{}' 已被不同 Thread 占用", thread.root_turn_id).into());
         }
         Ok(existing)
     }
 
-    async fn get_work_thread(
+    async fn get_thread(
         &self,
         id: &str,
-    ) -> Result<Option<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        sqlx::query("SELECT * FROM work_threads WHERE id = ?")
+    ) -> Result<Option<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM threads WHERE id = ?")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?
             .as_ref()
-            .map(work_thread_from_row)
+            .map(thread_from_row)
             .transpose()
     }
 
-    async fn get_work_thread_by_root(
+    async fn get_thread_by_root(
         &self,
         root_turn_id: &str,
-    ) -> Result<Option<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        sqlx::query("SELECT * FROM work_threads WHERE root_turn_id = ?")
+    ) -> Result<Option<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM threads WHERE root_turn_id = ?")
             .bind(root_turn_id)
             .fetch_optional(&self.pool)
             .await?
             .as_ref()
-            .map(work_thread_from_row)
+            .map(thread_from_row)
             .transpose()
     }
 
-    async fn list_context_work_threads(
+    async fn list_context_threads(
         &self,
         context_id: &str,
         include_terminal: bool,
-    ) -> Result<Vec<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = if include_terminal {
-            sqlx::query("SELECT * FROM work_threads WHERE context_id = ? ORDER BY created_at, id")
+            sqlx::query("SELECT * FROM threads WHERE context_id = ? ORDER BY created_at, id")
                 .bind(context_id)
                 .fetch_all(&self.pool)
                 .await?
         } else {
-            sqlx::query("SELECT * FROM work_threads WHERE context_id = ? AND status NOT IN ('completed', 'failed', 'cancelled') ORDER BY created_at, id")
+            sqlx::query("SELECT * FROM threads WHERE context_id = ? AND status NOT IN ('completed', 'failed', 'cancelled') ORDER BY created_at, id")
                 .bind(context_id)
                 .fetch_all(&self.pool)
                 .await?
         };
-        rows.iter().map(work_thread_from_row).collect()
+        rows.iter().map(thread_from_row).collect()
     }
 
     async fn list_session_delivery_threads(
         &self,
         session_id: &str,
         include_deferred: bool,
-    ) -> Result<Vec<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = if include_deferred {
             sqlx::query(
-                "SELECT * FROM work_threads WHERE session_id = ? AND delivery_status IN ('pending', 'deferred') ORDER BY updated_at, id",
+                "SELECT * FROM threads WHERE session_id = ? AND delivery_status IN ('pending', 'deferred') ORDER BY updated_at, id",
             )
             .bind(session_id)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query(
-                "SELECT * FROM work_threads WHERE session_id = ? AND delivery_status = 'pending' ORDER BY updated_at, id",
+                "SELECT * FROM threads WHERE session_id = ? AND delivery_status = 'pending' ORDER BY updated_at, id",
             )
             .bind(session_id)
             .fetch_all(&self.pool)
             .await?
         };
-        rows.iter().map(work_thread_from_row).collect()
+        rows.iter().map(thread_from_row).collect()
     }
 
     async fn list_pending_delivery_sessions(
@@ -2812,7 +2993,7 @@ impl SessionStore for SqliteStore {
     ) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
         Ok(sqlx::query_scalar::<_, String>(
             r#"SELECT DISTINCT pending.session_id
-               FROM work_threads AS pending
+               FROM threads AS pending
                WHERE pending.delivery_status = 'pending'
                  AND NOT EXISTS (
                    SELECT 1
@@ -2824,7 +3005,7 @@ impl SessionStore for SqliteStore {
                  )
                  AND NOT EXISTS (
                    SELECT 1
-                   FROM work_threads AS delivery
+                   FROM threads AS delivery
                    WHERE delivery.session_id = pending.session_id
                      AND delivery.kind = 'delivery'
                      AND delivery.status NOT IN ('completed', 'failed', 'cancelled')
@@ -2869,7 +3050,7 @@ impl SessionStore for SqliteStore {
             let aggregate = sqlx::query(
                 r#"SELECT MIN(updated_at) AS first_pending_at,
                           MAX(updated_at) AS latest_pending_at
-                   FROM work_threads
+                   FROM threads
                    WHERE session_id = ?
                      AND delivery_status = 'pending'"#,
             )
@@ -2888,7 +3069,7 @@ impl SessionStore for SqliteStore {
             let latest_pending = parse_time(&latest_pending_at);
             let due_at = std::cmp::min(latest_pending + merge_window, first_pending + max_wait);
             let delivery_rows = sqlx::query(
-                "SELECT id, result_event_id FROM work_threads WHERE session_id = ? AND delivery_status IN ('pending', 'deferred') ORDER BY updated_at, id",
+                "SELECT id, result_event_id FROM threads WHERE session_id = ? AND delivery_status IN ('pending', 'deferred') ORDER BY updated_at, id",
             )
             .bind(session_id)
             .fetch_all(&mut *connection)
@@ -3006,7 +3187,7 @@ impl SessionStore for SqliteStore {
             return Ok(DeliveryFlushCommit::Stale);
         }
         let has_pending = sqlx::query_scalar::<_, i64>(
-            "SELECT EXISTS(SELECT 1 FROM work_threads WHERE session_id = ? AND delivery_status = 'pending')",
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE session_id = ? AND delivery_status = 'pending')",
         )
         .bind(session_id)
         .fetch_one(&mut *tx)
@@ -3029,22 +3210,22 @@ impl SessionStore for SqliteStore {
         })
     }
 
-    async fn update_work_thread(
+    async fn update_thread(
         &self,
         id: &str,
         expected_revision: u64,
-        kind: Option<WorkThreadKind>,
+        kind: Option<ThreadKind>,
         lifecycle: Option<ThreadLifecycle>,
         result_text: Option<&str>,
         result_event_id: Option<&str>,
         delivery_status: Option<DeliveryStatus>,
         delivery_event_id: Option<&str>,
-    ) -> Result<WorkThreadMutation, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>> {
         let expected_revision = i64::try_from(expected_revision)
-            .map_err(|_| "Work Thread revision 超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Thread revision 超出 SQLite INTEGER 范围")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let result = sqlx::query(
-            r#"UPDATE work_threads
+            r#"UPDATE threads
                SET revision = revision + 1,
                    kind = COALESCE(?, kind),
                    status = COALESCE(?, status),
@@ -3055,13 +3236,8 @@ impl SessionStore for SqliteStore {
                    updated_at = ?
                WHERE id = ? AND revision = ?"#,
         )
-        .bind(kind.map(WorkThreadKind::as_str))
-        // The physical column is retained until the one-way schema rebuild,
-        // but its value now stores lifecycle only.
-        .bind(lifecycle.map(|value| match value {
-            ThreadLifecycle::Open => "active",
-            other => other.as_str(),
-        }))
+        .bind(kind.map(ThreadKind::as_str))
+        .bind(lifecycle.map(ThreadLifecycle::as_str))
         .bind(result_text)
         .bind(result_event_id)
         .bind(delivery_status.map(DeliveryStatus::as_str))
@@ -3072,27 +3248,25 @@ impl SessionStore for SqliteStore {
         .execute(&self.pool)
         .await?;
         if result.rows_affected() == 1 {
-            return Ok(WorkThreadMutation::Updated(
-                self.get_work_thread(id)
-                    .await?
-                    .ok_or("Work Thread 更新后无法读取")?,
+            return Ok(ThreadMutation::Updated(
+                self.get_thread(id).await?.ok_or("Thread 更新后无法读取")?,
             ));
         }
-        Ok(match self.get_work_thread(id).await? {
-            Some(current) => WorkThreadMutation::Conflict { current },
-            None => WorkThreadMutation::NotFound,
+        Ok(match self.get_thread(id).await? {
+            Some(current) => ThreadMutation::Conflict { current },
+            None => ThreadMutation::NotFound,
         })
     }
 
-    async fn ensure_scheduled_intent(
+    async fn ensure_schedule(
         &self,
-        intent: NewScheduledIntent,
-    ) -> Result<ScheduledIntentRecord, Box<dyn std::error::Error + Send + Sync>> {
+        intent: NewSchedule,
+    ) -> Result<ScheduleRecord, Box<dyn std::error::Error + Send + Sync>> {
         let interval_seconds = intent
             .interval_seconds
             .map(i64::try_from)
             .transpose()
-            .map_err(|_| "Scheduled Intent interval 超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Schedule interval 超出 SQLite INTEGER 范围")?;
         let not_before = intent
             .not_before
             .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
@@ -3100,7 +3274,7 @@ impl SessionStore for SqliteStore {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
         sqlx::query(
-            r#"INSERT OR IGNORE INTO scheduled_intents
+            r#"INSERT OR IGNORE INTO schedules
                (id, revision, thread_id, source_turn_id, intent, status,
                 not_before, interval_seconds, dependency_thread_ids_json,
                 created_at, updated_at)
@@ -3119,11 +3293,11 @@ impl SessionStore for SqliteStore {
         .await?;
         for dependency_thread_id in &intent.dependency_thread_ids {
             sqlx::query(
-                r#"INSERT OR IGNORE INTO scheduled_intent_dependencies
-                   (scheduled_intent_id, dependency_thread_id)
+                r#"INSERT OR IGNORE INTO schedule_dependencies
+                   (schedule_id, dependency_thread_id)
                    SELECT ?, ?
                    WHERE EXISTS (
-                     SELECT 1 FROM scheduled_intents
+                     SELECT 1 FROM schedules
                      WHERE id = ? AND dependency_thread_ids_json = ?
                    )"#,
             )
@@ -3135,43 +3309,43 @@ impl SessionStore for SqliteStore {
             .await?;
         }
         tx.commit().await?;
-        let row = sqlx::query("SELECT * FROM scheduled_intents WHERE id = ?")
+        let row = sqlx::query("SELECT * FROM schedules WHERE id = ?")
             .bind(&intent.id)
             .fetch_one(&self.pool)
             .await?;
-        scheduled_intent_from_row(&row)
+        schedule_from_row(&row)
     }
 
-    async fn get_scheduled_intent(
+    async fn get_schedule(
         &self,
         id: &str,
-    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        sqlx::query("SELECT * FROM scheduled_intents WHERE id = ?")
+    ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM schedules WHERE id = ?")
             .bind(id)
             .fetch_optional(&self.pool)
             .await?
             .as_ref()
-            .map(scheduled_intent_from_row)
+            .map(schedule_from_row)
             .transpose()
     }
 
-    async fn inspect_scheduled_intent(
+    async fn inspect_schedule(
         &self,
         id: &str,
-    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        self.get_scheduled_intent(id).await
+    ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        self.get_schedule(id).await
     }
 
-    async fn pause_scheduled_intent(
+    async fn pause_schedule(
         &self,
         id: &str,
         expected_revision: u64,
-    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>> {
         let revision = i64::try_from(expected_revision)
-            .map_err(|_| "Scheduled Intent revision 超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Schedule revision 超出 SQLite INTEGER 范围")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut rows = sqlx::query(
-            r#"UPDATE scheduled_intents
+            r#"UPDATE schedules
                SET status = 'paused', revision = revision + 1, updated_at = ?
                WHERE id = ? AND revision = ? AND status = 'queued'
                RETURNING *"#,
@@ -3182,29 +3356,22 @@ impl SessionStore for SqliteStore {
         .fetch_all(&self.pool)
         .await?;
         if let Some(row) = rows.pop() {
-            return Ok(ScheduledIntentMutation::Updated(scheduled_intent_from_row(
-                &row,
-            )?));
+            return Ok(ScheduleMutation::Updated(schedule_from_row(&row)?));
         }
-        scheduled_intent_mutation_failure(
-            self,
-            id,
-            expected_revision,
-            "只有 queued Schedule 可以暂停",
-        )
-        .await
+        schedule_mutation_failure(self, id, expected_revision, "只有 queued Schedule 可以暂停")
+            .await
     }
 
-    async fn resume_scheduled_intent(
+    async fn resume_schedule(
         &self,
         id: &str,
         expected_revision: u64,
-    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>> {
         let revision = i64::try_from(expected_revision)
-            .map_err(|_| "Scheduled Intent revision 超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Schedule revision 超出 SQLite INTEGER 范围")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut rows = sqlx::query(
-            r#"UPDATE scheduled_intents
+            r#"UPDATE schedules
                SET status = 'queued', revision = revision + 1, updated_at = ?
                WHERE id = ? AND revision = ? AND status = 'paused'
                RETURNING *"#,
@@ -3215,34 +3382,27 @@ impl SessionStore for SqliteStore {
         .fetch_all(&self.pool)
         .await?;
         if let Some(row) = rows.pop() {
-            return Ok(ScheduledIntentMutation::Updated(scheduled_intent_from_row(
-                &row,
-            )?));
+            return Ok(ScheduleMutation::Updated(schedule_from_row(&row)?));
         }
-        scheduled_intent_mutation_failure(
-            self,
-            id,
-            expected_revision,
-            "只有 paused Schedule 可以恢复",
-        )
-        .await
+        schedule_mutation_failure(self, id, expected_revision, "只有 paused Schedule 可以恢复")
+            .await
     }
 
-    async fn reschedule_scheduled_intent(
+    async fn reschedule_schedule(
         &self,
         id: &str,
         expected_revision: u64,
         not_before: Option<DateTime<Utc>>,
         interval_seconds: Option<u64>,
-    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>> {
         let revision = i64::try_from(expected_revision)
-            .map_err(|_| "Scheduled Intent revision 超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Schedule revision 超出 SQLite INTEGER 范围")?;
         let interval_seconds = interval_seconds
             .map(i64::try_from)
             .transpose()
-            .map_err(|_| "Scheduled Intent interval 超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Schedule interval 超出 SQLite INTEGER 范围")?;
         if interval_seconds == Some(0) {
-            return Err("Scheduled Intent interval 必须大于 0".into());
+            return Err("Schedule interval 必须大于 0".into());
         }
         let not_before =
             not_before.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
@@ -3254,7 +3414,7 @@ impl SessionStore for SqliteStore {
         // this timing-only CAS, hence they cannot diverge through partial
         // writes.
         let mut rows = sqlx::query(
-            r#"UPDATE scheduled_intents
+            r#"UPDATE schedules
                SET not_before = ?, interval_seconds = ?,
                    revision = revision + 1, updated_at = ?
                WHERE id = ? AND revision = ?
@@ -3269,11 +3429,9 @@ impl SessionStore for SqliteStore {
         .fetch_all(&self.pool)
         .await?;
         if let Some(row) = rows.pop() {
-            return Ok(ScheduledIntentMutation::Updated(scheduled_intent_from_row(
-                &row,
-            )?));
+            return Ok(ScheduleMutation::Updated(schedule_from_row(&row)?));
         }
-        scheduled_intent_mutation_failure(
+        schedule_mutation_failure(
             self,
             id,
             expected_revision,
@@ -3282,16 +3440,16 @@ impl SessionStore for SqliteStore {
         .await
     }
 
-    async fn cancel_scheduled_intent(
+    async fn cancel_schedule(
         &self,
         id: &str,
         expected_revision: u64,
-    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>> {
         let revision = i64::try_from(expected_revision)
-            .map_err(|_| "Scheduled Intent revision 超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Schedule revision 超出 SQLite INTEGER 范围")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut rows = sqlx::query(
-            r#"UPDATE scheduled_intents
+            r#"UPDATE schedules
                SET status = 'cancelled', revision = revision + 1, updated_at = ?
                WHERE id = ? AND revision = ?
                  AND status IN ('queued', 'paused')
@@ -3303,11 +3461,9 @@ impl SessionStore for SqliteStore {
         .fetch_all(&self.pool)
         .await?;
         if let Some(row) = rows.pop() {
-            return Ok(ScheduledIntentMutation::Updated(scheduled_intent_from_row(
-                &row,
-            )?));
+            return Ok(ScheduleMutation::Updated(schedule_from_row(&row)?));
         }
-        scheduled_intent_mutation_failure(
+        schedule_mutation_failure(
             self,
             id,
             expected_revision,
@@ -3318,18 +3474,18 @@ impl SessionStore for SqliteStore {
 
     async fn commit_schedule_transaction(
         &self,
-        threads: &[NewWorkThread],
-        intents: &[NewScheduledIntent],
-    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        threads: &[NewThread],
+        intents: &[NewSchedule],
+    ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
         for thread in threads {
             sqlx::query(
-                r#"INSERT OR IGNORE INTO work_threads
+                r#"INSERT OR IGNORE INTO threads
                    (id, revision, agent_id, context_id, session_id, root_turn_id,
                     kind, status, executor_kind, executor_id, delivery_status,
                     created_at, updated_at)
-                   VALUES (?, 1, ?, ?, ?, ?, ?, 'active', ?, ?, 'none', ?, ?)"#,
+                   VALUES (?, 1, ?, ?, ?, ?, ?, 'open', ?, ?, 'none', ?, ?)"#,
             )
             .bind(&thread.id)
             .bind(&thread.agent_id)
@@ -3345,15 +3501,15 @@ impl SessionStore for SqliteStore {
             .await?;
         }
         for intent in intents {
-            let target = sqlx::query("SELECT status FROM work_threads WHERE id = ?")
+            let target = sqlx::query("SELECT status FROM threads WHERE id = ?")
                 .bind(&intent.thread_id)
                 .fetch_optional(&mut *tx)
                 .await?
-                .ok_or_else(|| format!("Scheduled Intent '{}' 的目标 Thread 不存在", intent.id))?;
+                .ok_or_else(|| format!("Schedule '{}' 的目标 Thread 不存在", intent.id))?;
             let target_status: String = target.get("status");
             if matches!(target_status.as_str(), "failed" | "cancelled") {
                 return Err(format!(
-                    "Scheduled Intent '{}' 不能写入状态为 '{}' 的 Thread",
+                    "Schedule '{}' 不能写入状态为 '{}' 的 Thread",
                     intent.id, target_status
                 )
                 .into());
@@ -3362,13 +3518,13 @@ impl SessionStore for SqliteStore {
                 .interval_seconds
                 .map(i64::try_from)
                 .transpose()
-                .map_err(|_| "Scheduled Intent interval 超出 SQLite INTEGER 范围")?;
+                .map_err(|_| "Schedule interval 超出 SQLite INTEGER 范围")?;
             let not_before = intent
                 .not_before
                 .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
             let dependencies = serde_json::to_string(&intent.dependency_thread_ids)?;
             sqlx::query(
-                r#"INSERT INTO scheduled_intents
+                r#"INSERT INTO schedules
                    (id, revision, thread_id, source_turn_id, intent, status,
                     not_before, interval_seconds, dependency_thread_ids_json,
                     created_at, updated_at)
@@ -3388,11 +3544,11 @@ impl SessionStore for SqliteStore {
             .await?;
             for dependency_thread_id in &intent.dependency_thread_ids {
                 sqlx::query(
-                    r#"INSERT OR IGNORE INTO scheduled_intent_dependencies
-                       (scheduled_intent_id, dependency_thread_id)
+                    r#"INSERT OR IGNORE INTO schedule_dependencies
+                       (schedule_id, dependency_thread_id)
                        SELECT ?, ?
                        WHERE EXISTS (
-                         SELECT 1 FROM scheduled_intents
+                         SELECT 1 FROM schedules
                          WHERE id = ? AND dependency_thread_ids_json = ?
                        )"#,
                 )
@@ -3408,71 +3564,71 @@ impl SessionStore for SqliteStore {
         let mut records = Vec::with_capacity(intents.len());
         for intent in intents {
             records.push(
-                self.get_scheduled_intent(&intent.id)
+                self.get_schedule(&intent.id)
                     .await?
-                    .ok_or_else(|| format!("Scheduled Intent '{}' 提交后不存在", intent.id))?,
+                    .ok_or_else(|| format!("Schedule '{}' 提交后不存在", intent.id))?,
             );
         }
         Ok(records)
     }
 
-    async fn list_scheduled_intents(
+    async fn list_schedules(
         &self,
         thread_id: Option<&str>,
-        status: Option<ScheduledIntentStatus>,
-    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        status: Option<ScheduleStatus>,
+    ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = match (thread_id, status) {
             (Some(thread_id), Some(status)) => {
-                sqlx::query("SELECT * FROM scheduled_intents WHERE thread_id = ? AND status = ? ORDER BY COALESCE(not_before, created_at), id")
+                sqlx::query("SELECT * FROM schedules WHERE thread_id = ? AND status = ? ORDER BY COALESCE(not_before, created_at), id")
                     .bind(thread_id)
                     .bind(status.as_str())
                     .fetch_all(&self.pool)
                     .await?
             }
             (Some(thread_id), None) => {
-                sqlx::query("SELECT * FROM scheduled_intents WHERE thread_id = ? ORDER BY COALESCE(not_before, created_at), id")
+                sqlx::query("SELECT * FROM schedules WHERE thread_id = ? ORDER BY COALESCE(not_before, created_at), id")
                     .bind(thread_id)
                     .fetch_all(&self.pool)
                     .await?
             }
             (None, Some(status)) => {
-                sqlx::query("SELECT * FROM scheduled_intents WHERE status = ? ORDER BY COALESCE(not_before, created_at), id")
+                sqlx::query("SELECT * FROM schedules WHERE status = ? ORDER BY COALESCE(not_before, created_at), id")
                     .bind(status.as_str())
                     .fetch_all(&self.pool)
                     .await?
             }
             (None, None) => {
-                sqlx::query("SELECT * FROM scheduled_intents ORDER BY COALESCE(not_before, created_at), id")
+                sqlx::query("SELECT * FROM schedules ORDER BY COALESCE(not_before, created_at), id")
                     .fetch_all(&self.pool)
                     .await?
             }
         };
-        rows.iter().map(scheduled_intent_from_row).collect()
+        rows.iter().map(schedule_from_row).collect()
     }
 
-    async fn list_context_scheduled_intents(
+    async fn list_context_schedules(
         &self,
         context_id: &str,
-    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = sqlx::query(
-            r#"SELECT scheduled_intents.*
-               FROM scheduled_intents
-               INNER JOIN work_threads
-                 ON work_threads.id = scheduled_intents.thread_id
-               WHERE work_threads.context_id = ?
-               ORDER BY COALESCE(scheduled_intents.not_before, scheduled_intents.created_at),
-                        scheduled_intents.id"#,
+            r#"SELECT schedules.*
+               FROM schedules
+               INNER JOIN threads
+                 ON threads.id = schedules.thread_id
+               WHERE threads.context_id = ?
+               ORDER BY COALESCE(schedules.not_before, schedules.created_at),
+                        schedules.id"#,
         )
         .bind(context_id)
         .fetch_all(&self.pool)
         .await?;
-        rows.iter().map(scheduled_intent_from_row).collect()
+        rows.iter().map(schedule_from_row).collect()
     }
 
-    async fn wake_scheduled_intents_for_dependency(
+    async fn wake_schedules_for_dependency(
         &self,
         dependency_thread_id: &str,
-    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         // One write statement avoids the deferred-transaction read/write
         // upgrade race (`SQLITE_BUSY`) when multiple workers observe the same
@@ -3480,11 +3636,11 @@ impl SessionStore for SqliteStore {
         // distinct revision generation; Timer/owner fencing suppresses all
         // but the newest occurrence.
         let rows = sqlx::query(
-            r#"UPDATE scheduled_intents
+            r#"UPDATE schedules
                SET revision = revision + 1, updated_at = ?
                WHERE status = 'queued' AND id IN (
-                 SELECT scheduled_intent_id
-                 FROM scheduled_intent_dependencies
+                 SELECT schedule_id
+                 FROM schedule_dependencies
                  WHERE dependency_thread_id = ?
                )
                RETURNING *"#,
@@ -3495,30 +3651,30 @@ impl SessionStore for SqliteStore {
         .await?;
         let mut records = rows
             .iter()
-            .map(scheduled_intent_from_row)
+            .map(schedule_from_row)
             .collect::<Result<Vec<_>, _>>()?;
         records.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(records)
     }
 
-    async fn claim_scheduled_intent(
+    async fn claim_schedule(
         &self,
         id: &str,
         expected_revision: u64,
         next_not_before: Option<DateTime<Utc>>,
-    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let expected_revision = i64::try_from(expected_revision)
-            .map_err(|_| "Scheduled Intent revision 超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Schedule revision 超出 SQLite INTEGER 范围")?;
         let next_not_before =
             next_not_before.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
         let next_status = if next_not_before.is_some() {
-            ScheduledIntentStatus::Queued
+            ScheduleStatus::Queued
         } else {
-            ScheduledIntentStatus::Dispatched
+            ScheduleStatus::Dispatched
         };
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let result = sqlx::query(
-            "UPDATE scheduled_intents SET revision = revision + 1, status = ?, not_before = COALESCE(?, not_before), updated_at = ? WHERE id = ? AND revision = ? AND status = 'queued'",
+            "UPDATE schedules SET revision = revision + 1, status = ?, not_before = COALESCE(?, not_before), updated_at = ? WHERE id = ? AND revision = ? AND status = 'queued'",
         )
         .bind(next_status.as_str())
         .bind(next_not_before)
@@ -3530,11 +3686,11 @@ impl SessionStore for SqliteStore {
         if result.rows_affected() == 0 {
             return Ok(None);
         }
-        let row = sqlx::query("SELECT * FROM scheduled_intents WHERE id = ?")
+        let row = sqlx::query("SELECT * FROM schedules WHERE id = ?")
             .bind(id)
             .fetch_one(&self.pool)
             .await?;
-        Ok(Some(scheduled_intent_from_row(&row)?))
+        Ok(Some(schedule_from_row(&row)?))
     }
 
     async fn commit_scheduled_dispatch(
@@ -3543,20 +3699,20 @@ impl SessionStore for SqliteStore {
         expected_revision: u64,
         next_not_before: Option<DateTime<Utc>>,
         event: &Event,
-    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let expected_revision = i64::try_from(expected_revision)
-            .map_err(|_| "Scheduled Intent revision 超出 SQLite INTEGER 范围")?;
+            .map_err(|_| "Schedule revision 超出 SQLite INTEGER 范围")?;
         let next_not_before =
             next_not_before.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
         let next_status = if next_not_before.is_some() {
-            ScheduledIntentStatus::Queued
+            ScheduleStatus::Queued
         } else {
-            ScheduledIntentStatus::Dispatched
+            ScheduleStatus::Dispatched
         };
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
         let result = sqlx::query(
-            "UPDATE scheduled_intents SET revision = revision + 1, status = ?, not_before = COALESCE(?, not_before), updated_at = ? WHERE id = ? AND revision = ? AND status = 'queued'",
+            "UPDATE schedules SET revision = revision + 1, status = ?, not_before = COALESCE(?, not_before), updated_at = ? WHERE id = ? AND revision = ? AND status = 'queued'",
         )
         .bind(next_status.as_str())
         .bind(next_not_before)
@@ -3572,7 +3728,7 @@ impl SessionStore for SqliteStore {
         append_event_in_transaction(&mut tx, event).await?;
         append_signal_outbox_in_transaction(&mut tx, event).await?;
         tx.commit().await?;
-        self.get_scheduled_intent(id).await
+        self.get_schedule(id).await
     }
 
     async fn commit_thread_delivery(
@@ -3592,7 +3748,7 @@ impl SessionStore for SqliteStore {
         let mut tx = self.pool.begin().await?;
         for thread_id in thread_ids {
             let result = sqlx::query(
-                "UPDATE work_threads SET revision = revision + 1, delivery_status = 'delivered', delivery_event_id = ?, updated_at = ? WHERE id = ? AND session_id = ? AND delivery_status IN ('pending', 'deferred')",
+                "UPDATE threads SET revision = revision + 1, delivery_status = 'delivered', delivery_event_id = ?, updated_at = ? WHERE id = ? AND session_id = ? AND delivery_status IN ('pending', 'deferred')",
             )
             .bind(&event.id)
             .bind(&now)
@@ -4660,7 +4816,7 @@ async fn ensure_execution_job_in_transaction(
                   threads.context_id AS thread_context_id,
                   threads.session_id AS thread_session_id,
                   threads.root_turn_id AS thread_root_turn_id
-           FROM thread_activations activations, work_threads threads
+           FROM thread_activations activations, threads threads
            WHERE activations.id = ? AND threads.id = ?"#,
     )
     .bind(&job.activation_id)
@@ -5222,12 +5378,9 @@ impl ExecutionJobStore for SqliteStore {
         let event_tool_name = event.payload.get("tool_name").and_then(JsonValue::as_str);
         let event_activation_id = event
             .payload
-            .get("work_item_id")
+            .get("activation_id")
             .and_then(JsonValue::as_str);
-        let event_thread_id = event
-            .payload
-            .get("work_thread_id")
-            .and_then(JsonValue::as_str);
+        let event_thread_id = event.payload.get("thread_id").and_then(JsonValue::as_str);
         if event_context_id != Some(current.context_id.as_str())
             || event_session_id != Some(current.session_id.as_str())
             || event_tool_call_id != Some(current.tool_call_id.as_str())
@@ -6347,7 +6500,7 @@ mod tests {
     use std::sync::Arc;
     use tempfile::NamedTempFile;
 
-    async fn seed_scheduled_intent(store: &SqliteStore, suffix: &str) -> ScheduledIntentRecord {
+    async fn seed_schedule(store: &SqliteStore, suffix: &str) -> ScheduleRecord {
         let context_id = format!("schedule-context-{suffix}");
         let session_id = format!("schedule-session-{suffix}");
         let target_thread_id = format!("schedule-thread-{suffix}");
@@ -6379,13 +6532,13 @@ mod tests {
             ),
         ] {
             store
-                .ensure_work_thread(NewWorkThread {
+                .ensure_thread(NewThread {
                     id: thread_id.clone(),
                     agent_id: "schedule-agent".to_string(),
                     context_id: context_id.clone(),
                     session_id: session_id.clone(),
                     root_turn_id,
-                    kind: WorkThreadKind::Work,
+                    kind: ThreadKind::Execution,
                     executor_kind: "self".to_string(),
                     executor_id: None,
                 })
@@ -6393,7 +6546,7 @@ mod tests {
                 .unwrap();
         }
         store
-            .ensure_scheduled_intent(NewScheduledIntent {
+            .ensure_schedule(NewSchedule {
                 id: format!("schedule-{suffix}"),
                 thread_id: target_thread_id,
                 source_turn_id: format!("schedule-source-{suffix}"),
@@ -6410,7 +6563,7 @@ mod tests {
         store: &SqliteStore,
         suffix: &str,
         thread_count: usize,
-    ) -> (String, String, Vec<WorkThreadRecord>) {
+    ) -> (String, String, Vec<ThreadRecord>) {
         let context_id = format!("delivery-context-{suffix}");
         let session_id = format!("delivery-session-{suffix}");
         store
@@ -6436,13 +6589,13 @@ mod tests {
         for index in 0..thread_count {
             threads.push(
                 store
-                    .ensure_work_thread(NewWorkThread {
+                    .ensure_thread(NewThread {
                         id: format!("delivery-thread-{suffix}-{index}"),
                         agent_id: "delivery-agent".to_string(),
                         context_id: context_id.clone(),
                         session_id: session_id.clone(),
                         root_turn_id: format!("delivery-root-{suffix}-{index}"),
-                        kind: WorkThreadKind::Work,
+                        kind: ThreadKind::Execution,
                         executor_kind: "self".to_string(),
                         executor_id: None,
                     })
@@ -6455,13 +6608,13 @@ mod tests {
 
     async fn mark_delivery_pending(
         store: &SqliteStore,
-        thread: &WorkThreadRecord,
+        thread: &ThreadRecord,
         text: &str,
         event_id: &str,
         at: DateTime<Utc>,
-    ) -> WorkThreadRecord {
+    ) -> ThreadRecord {
         let updated = match store
-            .update_work_thread(
+            .update_thread(
                 &thread.id,
                 thread.revision,
                 None,
@@ -6474,60 +6627,60 @@ mod tests {
             .await
             .unwrap()
         {
-            WorkThreadMutation::Updated(thread) => thread,
-            other => panic!("unexpected Work Thread mutation: {other:?}"),
+            ThreadMutation::Updated(thread) => thread,
+            other => panic!("unexpected Thread mutation: {other:?}"),
         };
-        sqlx::query("UPDATE work_threads SET updated_at = ? WHERE id = ?")
+        sqlx::query("UPDATE threads SET updated_at = ? WHERE id = ?")
             .bind(at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
             .bind(&thread.id)
             .execute(&store.pool)
             .await
             .unwrap();
-        store.get_work_thread(&updated.id).await.unwrap().unwrap()
+        store.get_thread(&updated.id).await.unwrap().unwrap()
     }
 
     #[tokio::test]
-    async fn scheduled_intent_control_plane_is_revision_fenced_and_atomic() {
+    async fn schedule_control_plane_is_revision_fenced_and_atomic() {
         let tmp_file = NamedTempFile::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let store = SqliteStore::new(path).await.unwrap();
-        let created = seed_scheduled_intent(&store, "control").await;
-        assert_eq!(created.status, ScheduledIntentStatus::Queued);
+        let created = seed_schedule(&store, "control").await;
+        assert_eq!(created.status, ScheduleStatus::Queued);
         assert_eq!(created.revision, 1);
 
         assert!(matches!(
-            store.pause_scheduled_intent(&created.id, 0).await.unwrap(),
-            ScheduledIntentMutation::Conflict {
-                current: ScheduledIntentRecord { revision: 1, .. }
+            store.pause_schedule(&created.id, 0).await.unwrap(),
+            ScheduleMutation::Conflict {
+                current: ScheduleRecord { revision: 1, .. }
             }
         ));
         let paused = match store
-            .pause_scheduled_intent(&created.id, created.revision)
+            .pause_schedule(&created.id, created.revision)
             .await
             .unwrap()
         {
-            ScheduledIntentMutation::Updated(record) => record,
+            ScheduleMutation::Updated(record) => record,
             other => panic!("unexpected pause result: {other:?}"),
         };
-        assert_eq!(paused.status, ScheduledIntentStatus::Paused);
+        assert_eq!(paused.status, ScheduleStatus::Paused);
         assert!(matches!(
             store
-                .pause_scheduled_intent(&created.id, paused.revision)
+                .pause_schedule(&created.id, paused.revision)
                 .await
                 .unwrap(),
-            ScheduledIntentMutation::Rejected { .. }
+            ScheduleMutation::Rejected { .. }
         ));
 
         let next_due = Utc::now() + chrono::Duration::days(2);
         let rescheduled = match store
-            .reschedule_scheduled_intent(&created.id, paused.revision, Some(next_due), Some(300))
+            .reschedule_schedule(&created.id, paused.revision, Some(next_due), Some(300))
             .await
             .unwrap()
         {
-            ScheduledIntentMutation::Updated(record) => record,
+            ScheduleMutation::Updated(record) => record,
             other => panic!("unexpected reschedule result: {other:?}"),
         };
-        assert_eq!(rescheduled.status, ScheduledIntentStatus::Paused);
+        assert_eq!(rescheduled.status, ScheduleStatus::Paused);
         assert_eq!(rescheduled.interval_seconds, Some(300));
         assert_eq!(rescheduled.not_before, Some(next_due));
         assert_eq!(
@@ -6535,7 +6688,7 @@ mod tests {
             created.dependency_thread_ids
         );
         let dependency_count = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM scheduled_intent_dependencies WHERE scheduled_intent_id = ?",
+            "SELECT COUNT(*) FROM schedule_dependencies WHERE schedule_id = ?",
         )
         .bind(&created.id)
         .fetch_one(&store.pool)
@@ -6544,143 +6697,129 @@ mod tests {
         assert_eq!(dependency_count, 1);
 
         let resumed = match store
-            .resume_scheduled_intent(&created.id, rescheduled.revision)
+            .resume_schedule(&created.id, rescheduled.revision)
             .await
             .unwrap()
         {
-            ScheduledIntentMutation::Updated(record) => record,
+            ScheduleMutation::Updated(record) => record,
             other => panic!("unexpected resume result: {other:?}"),
         };
-        assert_eq!(resumed.status, ScheduledIntentStatus::Queued);
+        assert_eq!(resumed.status, ScheduleStatus::Queued);
         assert_eq!(
-            store
-                .inspect_scheduled_intent(&created.id)
-                .await
-                .unwrap()
-                .unwrap(),
+            store.inspect_schedule(&created.id).await.unwrap().unwrap(),
             resumed
         );
     }
 
     #[tokio::test]
-    async fn scheduled_intent_terminal_states_are_irreversible_and_paused_state_persists() {
+    async fn schedule_terminal_states_are_irreversible_and_paused_state_persists() {
         let tmp_file = NamedTempFile::new().unwrap();
         let path = tmp_file.path().to_str().unwrap();
         let store = SqliteStore::new(path).await.unwrap();
 
-        let cancelled_source = seed_scheduled_intent(&store, "cancelled").await;
+        let cancelled_source = seed_schedule(&store, "cancelled").await;
         let cancelled = match store
-            .cancel_scheduled_intent(&cancelled_source.id, cancelled_source.revision)
+            .cancel_schedule(&cancelled_source.id, cancelled_source.revision)
             .await
             .unwrap()
         {
-            ScheduledIntentMutation::Updated(record) => record,
+            ScheduleMutation::Updated(record) => record,
             other => panic!("unexpected cancel result: {other:?}"),
         };
-        assert_eq!(cancelled.status, ScheduledIntentStatus::Cancelled);
+        assert_eq!(cancelled.status, ScheduleStatus::Cancelled);
         assert!(matches!(
             store
-                .reschedule_scheduled_intent(
-                    &cancelled.id,
-                    cancelled.revision,
-                    Some(Utc::now()),
-                    None,
-                )
+                .reschedule_schedule(&cancelled.id, cancelled.revision, Some(Utc::now()), None,)
                 .await
                 .unwrap(),
-            ScheduledIntentMutation::Rejected { .. }
+            ScheduleMutation::Rejected { .. }
         ));
         assert!(matches!(
             store
-                .cancel_scheduled_intent(&cancelled.id, cancelled.revision)
+                .cancel_schedule(&cancelled.id, cancelled.revision)
                 .await
                 .unwrap(),
-            ScheduledIntentMutation::Rejected { .. }
+            ScheduleMutation::Rejected { .. }
         ));
         assert!(
-            sqlx::query("UPDATE scheduled_intents SET status = 'queued' WHERE id = ?")
+            sqlx::query("UPDATE schedules SET status = 'queued' WHERE id = ?")
                 .bind(&cancelled.id)
                 .execute(&store.pool)
                 .await
                 .is_err()
         );
 
-        let completed_source = seed_scheduled_intent(&store, "completed").await;
+        let completed_source = seed_schedule(&store, "completed").await;
         sqlx::query(
-            "UPDATE scheduled_intents SET status = 'completed', revision = revision + 1 WHERE id = ?",
+            "UPDATE schedules SET status = 'completed', revision = revision + 1 WHERE id = ?",
         )
         .bind(&completed_source.id)
         .execute(&store.pool)
         .await
         .unwrap();
         let completed = store
-            .get_scheduled_intent(&completed_source.id)
+            .get_schedule(&completed_source.id)
             .await
             .unwrap()
             .unwrap();
         assert!(completed.status.is_terminal());
         assert!(matches!(
             store
-                .pause_scheduled_intent(&completed.id, completed.revision)
+                .pause_schedule(&completed.id, completed.revision)
                 .await
                 .unwrap(),
-            ScheduledIntentMutation::Rejected { .. }
+            ScheduleMutation::Rejected { .. }
         ));
         assert!(matches!(
             store
-                .cancel_scheduled_intent(&completed.id, completed.revision)
+                .cancel_schedule(&completed.id, completed.revision)
                 .await
                 .unwrap(),
-            ScheduledIntentMutation::Rejected { .. }
+            ScheduleMutation::Rejected { .. }
         ));
         assert!(
-            sqlx::query("UPDATE scheduled_intents SET status = 'queued' WHERE id = ?")
+            sqlx::query("UPDATE schedules SET status = 'queued' WHERE id = ?")
                 .bind(&completed.id)
                 .execute(&store.pool)
                 .await
                 .is_err()
         );
 
-        let dispatched_source = seed_scheduled_intent(&store, "dispatched").await;
+        let dispatched_source = seed_schedule(&store, "dispatched").await;
         sqlx::query(
-            "UPDATE scheduled_intents SET status = 'dispatched', revision = revision + 1 WHERE id = ?",
+            "UPDATE schedules SET status = 'dispatched', revision = revision + 1 WHERE id = ?",
         )
         .bind(&dispatched_source.id)
         .execute(&store.pool)
         .await
         .unwrap();
         let dispatched = store
-            .get_scheduled_intent(&dispatched_source.id)
+            .get_schedule(&dispatched_source.id)
             .await
             .unwrap()
             .unwrap();
         assert!(matches!(
             store
-                .reschedule_scheduled_intent(
-                    &dispatched.id,
-                    dispatched.revision,
-                    Some(Utc::now()),
-                    None,
-                )
+                .reschedule_schedule(&dispatched.id, dispatched.revision, Some(Utc::now()), None,)
                 .await
                 .unwrap(),
-            ScheduledIntentMutation::Rejected { .. }
+            ScheduleMutation::Rejected { .. }
         ));
         assert!(matches!(
             store
-                .cancel_scheduled_intent(&dispatched.id, dispatched.revision)
+                .cancel_schedule(&dispatched.id, dispatched.revision)
                 .await
                 .unwrap(),
-            ScheduledIntentMutation::Rejected { .. }
+            ScheduleMutation::Rejected { .. }
         ));
 
-        let persistent_source = seed_scheduled_intent(&store, "persistent").await;
+        let persistent_source = seed_schedule(&store, "persistent").await;
         let persistent_paused = match store
-            .pause_scheduled_intent(&persistent_source.id, persistent_source.revision)
+            .pause_schedule(&persistent_source.id, persistent_source.revision)
             .await
             .unwrap()
         {
-            ScheduledIntentMutation::Updated(record) => record,
+            ScheduleMutation::Updated(record) => record,
             other => panic!("unexpected persistent pause result: {other:?}"),
         };
         store.pool.close().await;
@@ -6689,7 +6828,7 @@ mod tests {
         let reopened = SqliteStore::new(path).await.unwrap();
         assert_eq!(
             reopened
-                .inspect_scheduled_intent(&persistent_paused.id)
+                .inspect_schedule(&persistent_paused.id)
                 .await
                 .unwrap()
                 .unwrap(),
@@ -6697,21 +6836,21 @@ mod tests {
         );
         assert_eq!(
             reopened
-                .get_scheduled_intent(&cancelled.id)
+                .get_schedule(&cancelled.id)
                 .await
                 .unwrap()
                 .unwrap()
                 .status,
-            ScheduledIntentStatus::Cancelled
+            ScheduleStatus::Cancelled
         );
         assert_eq!(
             reopened
-                .get_scheduled_intent(&completed.id)
+                .get_schedule(&completed.id)
                 .await
                 .unwrap()
                 .unwrap()
                 .status,
-            ScheduledIntentStatus::Completed
+            ScheduleStatus::Completed
         );
     }
 
@@ -6831,31 +6970,49 @@ mod tests {
 
         let migrated = SqliteStore::new(path).await.unwrap();
         let schedule = migrated
-            .get_scheduled_intent("legacy-schedule")
+            .get_schedule("legacy-schedule")
             .await
             .unwrap()
             .unwrap();
         assert_eq!(schedule.revision, 11);
-        assert_eq!(schedule.status, ScheduledIntentStatus::Queued);
+        assert_eq!(schedule.status, ScheduleStatus::Queued);
         assert_eq!(schedule.interval_seconds, Some(90));
         assert_eq!(
             schedule.dependency_thread_ids,
             vec!["legacy-dependency".to_string()]
         );
         let reverse_index = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM scheduled_intent_dependencies WHERE scheduled_intent_id = 'legacy-schedule' AND dependency_thread_id = 'legacy-dependency'",
+            "SELECT COUNT(*) FROM schedule_dependencies WHERE schedule_id = 'legacy-schedule' AND dependency_thread_id = 'legacy-dependency'",
         )
         .fetch_one(&migrated.pool)
         .await
         .unwrap();
         assert_eq!(reverse_index, 1);
+        let dependency_columns = sqlx::query("PRAGMA table_info(schedule_dependencies)")
+            .fetch_all(&migrated.pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<std::collections::HashSet<_>>();
+        assert!(dependency_columns.contains("schedule_id"));
+        assert!(!dependency_columns.contains("scheduled_intent_id"));
+        let migrated_thread = migrated.get_thread("legacy-target").await.unwrap().unwrap();
+        assert_eq!(migrated_thread.kind, ThreadKind::Execution);
+        assert_eq!(migrated_thread.lifecycle, ThreadLifecycle::Open);
+        let raw_thread = sqlx::query("SELECT kind, status FROM threads WHERE id = 'legacy-target'")
+            .fetch_one(&migrated.pool)
+            .await
+            .unwrap();
+        assert_eq!(raw_thread.get::<String, _>("kind"), "execution");
+        assert_eq!(raw_thread.get::<String, _>("status"), "open");
         let foreign_key_errors = sqlx::query("PRAGMA foreign_key_check")
             .fetch_all(&migrated.pool)
             .await
             .unwrap();
         assert!(foreign_key_errors.is_empty());
         let table_sql = sqlx::query_scalar::<_, String>(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'scheduled_intents'",
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'schedules'",
         )
         .fetch_one(&migrated.pool)
         .await
@@ -6894,13 +7051,13 @@ mod tests {
             .await
             .unwrap();
         store
-            .ensure_work_thread(NewWorkThread {
+            .ensure_thread(NewThread {
                 id: thread_id.clone(),
                 agent_id: "job-agent".to_string(),
                 context_id: context_id.clone(),
                 session_id: session_id.clone(),
                 root_turn_id: root_turn_id.clone(),
-                kind: WorkThreadKind::Work,
+                kind: ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
             })
@@ -8242,11 +8399,11 @@ mod tests {
                     serde_json::json!(created.session_id),
                 ),
                 (
-                    "work_item_id".to_string(),
+                    "activation_id".to_string(),
                     serde_json::json!(created.activation_id),
                 ),
                 (
-                    "work_thread_id".to_string(),
+                    "thread_id".to_string(),
                     serde_json::json!(created.thread_id),
                 ),
                 (
@@ -8269,10 +8426,9 @@ mod tests {
         };
 
         let mut misrouted = result_event.clone();
-        misrouted.payload.insert(
-            "work_thread_id".to_string(),
-            serde_json::json!("another-thread"),
-        );
+        misrouted
+            .payload
+            .insert("thread_id".to_string(), serde_json::json!("another-thread"));
         assert!(store
             .finish_execution_job_with_event(
                 &created.id,
@@ -8420,13 +8576,10 @@ mod tests {
                     serde_json::json!(created.session_id),
                 ),
                 (
-                    "work_item_id".to_string(),
+                    "activation_id".to_string(),
                     serde_json::json!(created.activation_id),
                 ),
-                (
-                    "work_thread_id".to_string(),
-                    serde_json::json!("wrong-thread"),
-                ),
+                ("thread_id".to_string(), serde_json::json!("wrong-thread")),
                 (
                     "tool_call_id".to_string(),
                     serde_json::json!(created.tool_call_id),
@@ -8927,6 +9080,22 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(
+            r#"CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL,
+                context_id TEXT NOT NULL,
+                parent_session_id TEXT,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_activity_at TEXT NOT NULL
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
             r#"CREATE TABLE evaluation_work_items (
                 id TEXT PRIMARY KEY,
                 revision INTEGER NOT NULL,
@@ -8962,7 +9131,55 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE work_threads (
+                id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL,
+                agent_id TEXT NOT NULL,
+                context_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                root_turn_id TEXT NOT NULL UNIQUE,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                executor_kind TEXT NOT NULL,
+                executor_id TEXT,
+                result_text TEXT,
+                result_event_id TEXT,
+                delivery_status TEXT NOT NULL,
+                delivery_event_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE work_thread_outcomes (
+                thread_id TEXT PRIMARY KEY,
+                root_turn_id TEXT NOT NULL UNIQUE,
+                work_item_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                disposition TEXT NOT NULL,
+                event_id TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(thread_id) REFERENCES work_threads(id) ON DELETE CASCADE,
+                FOREIGN KEY(work_item_id) REFERENCES evaluation_work_items(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO sessions (id, agent_id, context_id, title, status, created_at, updated_at, last_activity_at) VALUES ('session', 'agent', 'context', 'legacy', 'active', ?, ?, ?)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query(
             r#"INSERT INTO evaluation_work_items
                (id, revision, agent_id, context_id, session_id, trigger_event_id,
@@ -8973,6 +9190,21 @@ mod tests {
                        'waiting_tool', ?, ?)"#,
         )
         .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO work_threads (id, revision, agent_id, context_id, session_id, root_turn_id, kind, status, executor_kind, delivery_status, created_at, updated_at) VALUES ('legacy-thread', 1, 'agent', 'context', 'session', 'root', 'work', 'active', 'self', 'none', ?, ?)",
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO work_thread_outcomes (thread_id, root_turn_id, work_item_id, session_id, disposition, event_id, created_at) VALUES ('legacy-thread', 'root', 'legacy-activation', 'session', 'deliver', 'legacy-result', ?)",
+        )
         .bind(&now)
         .execute(&pool)
         .await
@@ -9002,6 +9234,34 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(legacy_table, 0);
+        for legacy in ["work_threads", "work_thread_outcomes"] {
+            let count = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+            )
+            .bind(legacy)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+            assert_eq!(count, 0);
+        }
+        assert_eq!(
+            store
+                .get_thread("legacy-thread")
+                .await
+                .unwrap()
+                .unwrap()
+                .kind,
+            ThreadKind::Execution
+        );
+        let outcome_columns = sqlx::query("PRAGMA table_info(thread_outcomes)")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<std::collections::HashSet<_>>();
+        assert!(outcome_columns.contains("activation_id"));
+        assert!(!outcome_columns.contains("work_item_id"));
         let outcome_foreign_keys = sqlx::query("PRAGMA foreign_key_list(evaluation_outcomes)")
             .fetch_all(&store.pool)
             .await
@@ -9143,13 +9403,13 @@ mod tests {
             .unwrap();
         let sequence = stored_event.sequence.unwrap();
         let thread = store
-            .ensure_work_thread(NewWorkThread {
+            .ensure_thread(NewThread {
                 id: "outbox-thread".to_string(),
                 agent_id: "outbox-agent".to_string(),
                 context_id: "outbox-context".to_string(),
                 session_id: "outbox-session".to_string(),
                 root_turn_id: event.id.clone(),
-                kind: WorkThreadKind::Dialogue,
+                kind: ThreadKind::DialogueTurn,
                 executor_kind: "self".to_string(),
                 executor_id: None,
             })
@@ -9358,13 +9618,13 @@ mod tests {
                 .sequence
                 .unwrap();
             let thread = store
-                .ensure_work_thread(NewWorkThread {
+                .ensure_thread(NewThread {
                     id: format!("admission-thread-{name}"),
                     agent_id: "admission-agent".to_string(),
                     context_id: "admission-context".to_string(),
                     session_id: "admission-session".to_string(),
                     root_turn_id: root_turn_id.clone(),
-                    kind: WorkThreadKind::Work,
+                    kind: ThreadKind::Execution,
                     executor_kind: "self".to_string(),
                     executor_id: None,
                 })
@@ -9623,13 +9883,13 @@ mod tests {
             .await
             .unwrap();
         let thread = store
-            .ensure_work_thread(NewWorkThread {
+            .ensure_thread(NewThread {
                 id: "signal-thread".to_string(),
                 agent_id: "signal-agent".to_string(),
                 context_id: "signal-context".to_string(),
                 session_id: "signal-session".to_string(),
                 root_turn_id: "signal-root".to_string(),
-                kind: WorkThreadKind::Work,
+                kind: ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
             })

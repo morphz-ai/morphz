@@ -12,13 +12,13 @@ import {
 
 function stream(
   attemptId: string,
-  workItemId: string,
+  activationId: string,
   kind: ModelStreamBatchItem['stream'],
 ): ModelStreamBatchItem {
   return {
     attemptId,
-    workItemId,
-    threadKind: workItemId.startsWith('work') ? 'work' : 'dialogue',
+    activationId,
+    threadKind: activationId.startsWith('work') ? 'execution' : 'dialogue_turn',
     timestamp: '2026-07-17T00:00:00Z',
     stream: kind,
   }
@@ -47,7 +47,7 @@ test('stream attempts are bucketed independently by attempt id', () => {
   assert.deepEqual(Object.keys(state.attempts).sort(), ['attempt-a', 'attempt-b'])
   assert.equal(state.attempts['attempt-a'].text, 'hello')
   assert.equal(state.attempts['attempt-b'].text, 'internal')
-  assert.equal(state.attempts['attempt-b'].threadKind, 'work')
+  assert.equal(state.attempts['attempt-b'].threadKind, 'execution')
 })
 
 test('reasoning summary deltas never enter public response text', () => {
@@ -174,8 +174,8 @@ test('durable summaries are rebuilt from runtime events without becoming reply t
       topic: 'runtime/model_reasoning_summary',
       payload: {
         attempt_id: 'attempt-a',
-        work_item_id: 'work-a',
-        thread_kind: 'work',
+        activation_id: 'work-a',
+        thread_kind: 'execution',
         text: 'durable summary',
         complete: true,
       },
@@ -184,10 +184,10 @@ test('durable summaries are rebuilt from runtime events without becoming reply t
 
   assert.equal(summaries.length, 1)
   assert.equal(summaries[0].text, 'durable summary')
-  assert.equal(summaries[0].threadKind, 'work')
+  assert.equal(summaries[0].threadKind, 'execution')
 })
 
-test('reasoning summary prefers an exact attempt over a newer work-item fallback', () => {
+test('reasoning summary prefers an exact attempt over a newer activation fallback', () => {
   const summaries = selectDurableReasoningSummaries([
     {
       id: 'exact-older',
@@ -195,8 +195,8 @@ test('reasoning summary prefers an exact attempt over a newer work-item fallback
       topic: 'runtime/model_reasoning_summary',
       payload: {
         attempt_id: 'attempt-a',
-        work_item_id: 'work-shared',
-        thread_kind: 'work',
+        activation_id: 'work-shared',
+        thread_kind: 'execution',
         text: 'exact attempt',
       },
     },
@@ -206,8 +206,8 @@ test('reasoning summary prefers an exact attempt over a newer work-item fallback
       topic: 'runtime/model_reasoning_summary',
       payload: {
         attempt_id: 'attempt-b',
-        work_item_id: 'work-shared',
-        thread_kind: 'work',
+        activation_id: 'work-shared',
+        thread_kind: 'execution',
         text: 'newer retry',
       },
     },
@@ -216,14 +216,14 @@ test('reasoning summary prefers an exact attempt over a newer work-item fallback
   assert.equal(
     findReasoningSummaryForPayload(summaries, {
       attempt_id: 'attempt-a',
-      work_item_id: 'work-shared',
+      activation_id: 'work-shared',
     })?.text,
     'exact attempt',
   )
   assert.equal(
     findReasoningSummaryForPayload(summaries, {
       attempt_id: 'missing-attempt',
-      work_item_id: 'work-shared',
+      activation_id: 'work-shared',
     })?.text,
     'newer retry',
   )
@@ -237,8 +237,8 @@ test('reasoning summary follows the exact terminal model attempt across protocol
       topic: 'runtime/model_reasoning_summary',
       payload: {
         attempt_id: 'activation-a',
-        work_item_id: 'activation-a',
-        thread_kind: 'dialogue',
+        activation_id: 'activation-a',
+        thread_kind: 'dialogue_turn',
         text: 'summary from invalid response',
       },
     },
@@ -248,8 +248,8 @@ test('reasoning summary follows the exact terminal model attempt across protocol
       topic: 'runtime/model_reasoning_summary',
       payload: {
         attempt_id: 'activation-a_response_retry_1',
-        work_item_id: 'activation-a',
-        thread_kind: 'dialogue',
+        activation_id: 'activation-a',
+        thread_kind: 'dialogue_turn',
         text: 'summary from terminal response',
       },
     },
@@ -259,7 +259,7 @@ test('reasoning summary follows the exact terminal model attempt across protocol
     findReasoningSummaryForPayload(summaries, {
       attempt_id: 'activation-a',
       model_attempt_id: 'activation-a_response_retry_1',
-      work_item_id: 'activation-a',
+      activation_id: 'activation-a',
     })?.text,
     'summary from terminal response',
   )
@@ -267,7 +267,7 @@ test('reasoning summary follows the exact terminal model attempt across protocol
     findReasoningSummaryForPayload(summaries, {
       attempt_id: 'activation-a',
       model_attempt_id: 'activation-a_response_retry_2',
-      work_item_id: 'activation-a',
+      activation_id: 'activation-a',
     }),
     undefined,
   )

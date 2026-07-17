@@ -304,7 +304,7 @@ impl Default for OrchestratorConfig {
 /// Runtime 的通用持久调度策略。
 ///
 /// Delivery 窗口只合并同一 Session 内相邻的完成通知；它不会延迟或合并
-/// Work Thread 本身的物理执行结果。
+/// Thread 本身的物理执行结果。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct SchedulerConfig {
@@ -1352,7 +1352,7 @@ impl AppConfig {
             } else {
                 Some(ReasoningEffort::parse(value).ok_or_else(|| {
                     format!(
-                        "MORPHZ_LLM_REASONING_EFFORT 只支持 default、low、medium、high: {value}"
+                        "MORPHZ_LLM_REASONING_EFFORT 只支持 default、none、low、medium、high、max: {value}"
                     )
                 })?)
             };
@@ -1852,8 +1852,11 @@ mod tests {
     }
 
     #[test]
-    fn reasoning_effort_rejects_non_portable_native_levels() {
+    fn reasoning_effort_supports_off_and_max_but_rejects_unknown_levels() {
+        let off = toml::from_str::<AppConfig>("[llm]\nreasoning_effort='none'\n").unwrap();
+        assert_eq!(off.llm.reasoning_effort, Some(ReasoningEffort::Off));
+        let max = toml::from_str::<AppConfig>("[llm]\nreasoning_effort='max'\n").unwrap();
+        assert_eq!(max.llm.reasoning_effort, Some(ReasoningEffort::Max));
         assert!(toml::from_str::<AppConfig>("[llm]\nreasoning_effort='xhigh'\n").is_err());
-        assert!(toml::from_str::<AppConfig>("[llm]\nreasoning_effort='max'\n").is_err());
     }
 }

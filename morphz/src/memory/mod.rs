@@ -721,27 +721,25 @@ pub struct ActivationSignalRecord {
     pub ordinal: u64,
 }
 
-/// Durable causal lane owned by one Agent. A Work Thread survives all model
+/// Durable causal lane owned by one Agent. A Thread survives all model
 /// attempts and tool wakeups produced while completing the same root turn.
 /// Attempts are replaceable execution records; this is the stable scheduling
 /// and delivery identity.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum WorkThreadKind {
-    Dialogue,
-    Work,
+pub enum ThreadKind {
+    DialogueTurn,
+    Execution,
     Objective,
-    Delegation,
     Delivery,
 }
 
-impl WorkThreadKind {
+impl ThreadKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Dialogue => "dialogue",
-            Self::Work => "work",
+            Self::DialogueTurn => "dialogue_turn",
+            Self::Execution => "execution",
             Self::Objective => "objective",
-            Self::Delegation => "delegation",
             Self::Delivery => "delivery",
         }
     }
@@ -813,14 +811,14 @@ impl DeliveryStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WorkThreadRecord {
+pub struct ThreadRecord {
     pub id: String,
     pub revision: u64,
     pub agent_id: String,
     pub context_id: String,
     pub session_id: String,
     pub root_turn_id: String,
-    pub kind: WorkThreadKind,
+    pub kind: ThreadKind,
     pub lifecycle: ThreadLifecycle,
     pub executor_kind: String,
     pub executor_id: Option<String>,
@@ -833,27 +831,27 @@ pub struct WorkThreadRecord {
 }
 
 #[derive(Debug, Clone)]
-pub struct NewWorkThread {
+pub struct NewThread {
     pub id: String,
     pub agent_id: String,
     pub context_id: String,
     pub session_id: String,
     pub root_turn_id: String,
-    pub kind: WorkThreadKind,
+    pub kind: ThreadKind,
     pub executor_kind: String,
     pub executor_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkThreadMutation {
-    Updated(WorkThreadRecord),
-    Conflict { current: WorkThreadRecord },
+pub enum ThreadMutation {
+    Updated(ThreadRecord),
+    Conflict { current: ThreadRecord },
     NotFound,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ScheduledIntentStatus {
+pub enum ScheduleStatus {
     Queued,
     Paused,
     Dispatched,
@@ -861,7 +859,7 @@ pub enum ScheduledIntentStatus {
     Cancelled,
 }
 
-impl ScheduledIntentStatus {
+impl ScheduleStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Queued => "queued",
@@ -878,13 +876,13 @@ impl ScheduledIntentStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ScheduledIntentRecord {
+pub struct ScheduleRecord {
     pub id: String,
     pub revision: u64,
     pub thread_id: String,
     pub source_turn_id: String,
     pub intent: String,
-    pub status: ScheduledIntentStatus,
+    pub status: ScheduleStatus,
     pub not_before: Option<DateTime<Utc>>,
     pub interval_seconds: Option<u64>,
     pub dependency_thread_ids: Vec<String>,
@@ -893,7 +891,7 @@ pub struct ScheduledIntentRecord {
 }
 
 #[derive(Debug, Clone)]
-pub struct NewScheduledIntent {
+pub struct NewSchedule {
     pub id: String,
     pub thread_id: String,
     pub source_turn_id: String,
@@ -907,13 +905,13 @@ pub struct NewScheduledIntent {
 /// means the caller held the current revision, but the requested lifecycle
 /// transition was not legal; `Conflict` means a newer writer already won.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ScheduledIntentMutation {
-    Updated(ScheduledIntentRecord),
+pub enum ScheduleMutation {
+    Updated(ScheduleRecord),
     Conflict {
-        current: ScheduledIntentRecord,
+        current: ScheduleRecord,
     },
     Rejected {
-        current: ScheduledIntentRecord,
+        current: ScheduleRecord,
         reason: String,
     },
     NotFound,
@@ -1478,7 +1476,7 @@ pub trait SessionStore: Send + Sync {
     ) -> Result<Option<ThreadSignalRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn ensure_thread_activation(
         &self,
-        work_item: NewThreadActivation,
+        activation: NewThreadActivation,
     ) -> Result<ThreadActivationRecord, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_thread_activation(
         &self,
@@ -1518,33 +1516,33 @@ pub trait SessionStore: Send + Sync {
     /// it in the same SQLite transaction.
     async fn commit_activation_outcome(
         &self,
-        work_item_id: &str,
+        activation_id: &str,
         event: &crate::event::Event,
     ) -> Result<ActivationOutcomeCommit, Box<dyn std::error::Error + Send + Sync>>;
-    async fn ensure_work_thread(
+    async fn ensure_thread(
         &self,
-        thread: NewWorkThread,
-    ) -> Result<WorkThreadRecord, Box<dyn std::error::Error + Send + Sync>>;
-    async fn get_work_thread(
+        thread: NewThread,
+    ) -> Result<ThreadRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_thread(
         &self,
         id: &str,
-    ) -> Result<Option<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
-    async fn get_work_thread_by_root(
+    ) -> Result<Option<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_thread_by_root(
         &self,
         root_turn_id: &str,
-    ) -> Result<Option<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
-    async fn list_context_work_threads(
+    ) -> Result<Option<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_context_threads(
         &self,
         context_id: &str,
         include_terminal: bool,
-    ) -> Result<Vec<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Narrow indexed read for completion delivery; avoids scanning every
     /// Thread in a shared Cognitive Context.
     async fn list_session_delivery_threads(
         &self,
         session_id: &str,
         include_deferred: bool,
-    ) -> Result<Vec<WorkThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Vec<ThreadRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Sessions with recoverable pending/deferred completion results.
     async fn list_pending_delivery_sessions(
         &self,
@@ -1569,92 +1567,92 @@ pub trait SessionStore: Send + Sync {
         event: &crate::event::Event,
     ) -> Result<DeliveryFlushCommit, Box<dyn std::error::Error + Send + Sync>>;
     #[allow(clippy::too_many_arguments)]
-    async fn update_work_thread(
+    async fn update_thread(
         &self,
         id: &str,
         expected_revision: u64,
-        kind: Option<WorkThreadKind>,
+        kind: Option<ThreadKind>,
         lifecycle: Option<ThreadLifecycle>,
         result_text: Option<&str>,
         result_event_id: Option<&str>,
         delivery_status: Option<DeliveryStatus>,
         delivery_event_id: Option<&str>,
-    ) -> Result<WorkThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
-    async fn ensure_scheduled_intent(
+    ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn ensure_schedule(
         &self,
-        intent: NewScheduledIntent,
-    ) -> Result<ScheduledIntentRecord, Box<dyn std::error::Error + Send + Sync>>;
-    async fn get_scheduled_intent(
+        intent: NewSchedule,
+    ) -> Result<ScheduleRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_schedule(
         &self,
         id: &str,
-    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Control-plane read used by `schedule inspect`. It deliberately returns
     /// the revision token required by every subsequent Schedule mutation.
-    async fn inspect_scheduled_intent(
+    async fn inspect_schedule(
         &self,
         id: &str,
-    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
-    async fn pause_scheduled_intent(
-        &self,
-        id: &str,
-        expected_revision: u64,
-    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>>;
-    async fn resume_scheduled_intent(
+    ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn pause_schedule(
         &self,
         id: &str,
         expected_revision: u64,
-    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn resume_schedule(
+        &self,
+        id: &str,
+        expected_revision: u64,
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Replaces the timing rule as one CAS operation. Dependency ownership and
     /// its reverse index are intentionally left untouched, so a timing-only
     /// reschedule cannot partially rewrite dependency routing. A one-shot rule
     /// that already reached `dispatched` cannot be rewound: its Signal is an
     /// immutable physical fact, and replay must use a new Schedule identity.
-    async fn reschedule_scheduled_intent(
+    async fn reschedule_schedule(
         &self,
         id: &str,
         expected_revision: u64,
         not_before: Option<DateTime<Utc>>,
         interval_seconds: Option<u64>,
-    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>>;
-    async fn cancel_scheduled_intent(
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn cancel_schedule(
         &self,
         id: &str,
         expected_revision: u64,
-    ) -> Result<ScheduledIntentMutation, Box<dyn std::error::Error + Send + Sync>>;
-    /// Atomically creates any new Work Threads and their queued intents.
+    ) -> Result<ScheduleMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically creates any new Threads and their queued intents.
     /// Validation happens before commit, so a failed multi-operation
     /// schedule_tx never leaves a partially-created scheduling plan.
     async fn commit_schedule_transaction(
         &self,
-        threads: &[NewWorkThread],
-        intents: &[NewScheduledIntent],
-    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
-    async fn list_scheduled_intents(
+        threads: &[NewThread],
+        intents: &[NewSchedule],
+    ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_schedules(
         &self,
         thread_id: Option<&str>,
-        status: Option<ScheduledIntentStatus>,
-    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+        status: Option<ScheduleStatus>,
+    ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Context-scoped schedule projection used by observability surfaces.
     /// The ownership join belongs in SQLite so one Context never scans every
     /// other Agent's scheduled work.
-    async fn list_context_scheduled_intents(
+    async fn list_context_schedules(
         &self,
         context_id: &str,
-    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Advance every queued schedule which names `dependency_thread_id` in
     /// the persistent reverse dependency index. The revision bump fences any
     /// timer generation that may already be claimed while the dependency
     /// crosses its terminal boundary.
-    async fn wake_scheduled_intents_for_dependency(
+    async fn wake_schedules_for_dependency(
         &self,
         dependency_thread_id: &str,
-    ) -> Result<Vec<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
-    async fn claim_scheduled_intent(
+    ) -> Result<Vec<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn claim_schedule(
         &self,
         id: &str,
         expected_revision: u64,
         next_not_before: Option<DateTime<Utc>>,
-    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Atomically advances a due schedule occurrence and appends the wake Event.
     /// The caller must use EventBus::dispatch_persisted after commit.
     async fn commit_scheduled_dispatch(
@@ -1663,7 +1661,7 @@ pub trait SessionStore: Send + Sync {
         expected_revision: u64,
         next_not_before: Option<DateTime<Utc>>,
         event: &crate::event::Event,
-    ) -> Result<Option<ScheduledIntentRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
     /// Atomically append one user-visible delivery and mark every covered
     /// completion delivered. A completion can therefore never be delivered by
     /// two concurrent Delivery evaluations.

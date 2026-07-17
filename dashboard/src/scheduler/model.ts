@@ -1,6 +1,6 @@
 import type {
   ApprovalRecord,
-  ScheduledIntentRecord,
+  ScheduleRecord,
   SchedulerJobSnapshot,
   SchedulerSnapshot,
   SchedulerThreadSnapshot,
@@ -27,7 +27,7 @@ export function pendingHumanApprovals(snapshot: SchedulerSnapshot | null): Appro
   return schedulerApprovals(snapshot).filter(approval => approval.status === 'pending_human')
 }
 
-export function schedulerSchedules(snapshot: SchedulerSnapshot | null): ScheduledIntentRecord[] {
+export function schedulerSchedules(snapshot: SchedulerSnapshot | null): ScheduleRecord[] {
   if (!snapshot) return []
   return snapshot.threads.flatMap(thread => thread.schedules)
 }

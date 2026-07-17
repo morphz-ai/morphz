@@ -981,23 +981,23 @@ orchestrator.activation_admission.aging_promotion_interval
 
 ## 13. 当前实现映射
 
-当前代码已经形成了 Scheduler Kernel 的主要骨架，但命名和状态仍处于过渡阶段。
+当前代码已经形成 Scheduler Kernel 的主要骨架，并完成公开领域命名收口。
 
 | 当前实现 | 目标领域对象 | 说明 |
 |---|---|---|
 | Session Dialogue Gate | `DialogueLane` | 已提供同 Session 首次求值顺序，但尚无独立持久 Lane 记录 |
-| 每条 User Message 的 `WorkThreadRecord(kind=dialogue)` | `DialogueTurn Thread` | 当前按 `root_turn_id` 创建有限因果边界，方向与新决策一致 |
-| `WorkThreadRecord` | `ThreadRecord` | 已具备稳定 `root_turn_id`、权威 lifecycle、derived phase 和 Delivery 信息；类型与物理表名尚待迁移 |
+| 每条 User Message 的 `ThreadRecord(kind=dialogue_turn)` | `DialogueTurn Thread` | 按 `root_turn_id` 创建有限因果边界 |
+| `ThreadRecord` | `Thread` | 稳定 `root_turn_id`、权威 lifecycle、derived phase 和 Delivery 信息均已收口 |
 | `ThreadActivationRecord` | `ThreadActivationRecord` | 领域类型与状态已经收口，SQLite 物理表已迁移为 `thread_activations` |
 | `ThreadSignalRecord` + Event | `ThreadSignal` | Event 保存不可变事实，Signal 保存 mailbox 消费状态 |
 | `signal_outbox` | Durable Signal Outbox | Event 与投递意图同事务提交；dispatcher 幂等物化 Signal |
-| `ScheduledIntentRecord` | `ScheduleRecord` | 已有 inspect/pause/resume/reschedule/cancel CAS 控制；rule、intent 和 occurrence 仍在同一记录 |
+| `ScheduleRecord` | `Schedule` | 已有 inspect/pause/resume/reschedule/cancel CAS 控制；rule、intent 和 occurrence 仍在同一记录 |
 | `ExecutionJobRecord` | `ExecutionJob` | 已持久化普通物理 Action 与后台进程生命周期；进程内 BackgroundTask 只保留 live 句柄/输出缓存 |
 | `ApprovalRecord` + `ExecutionApprovalStore` | `ExecutionApproval` | exact request/policy binding、单次 grant 与 Job claim 原子消费 |
 | Tool Call | `Action` | 已有标准 Function Calling 表达 |
 | ObjectiveRecord | `Objective` | 保留；Supervisor 已通过 continuation Event/Outbox 生产 Signal |
 | DelegationRecord | `Delegation` | 保留，逐步改为 Executor 关系 |
-| `work_thread_outcomes` | `ThreadOutcome` | 已具备唯一终态事务边界 |
+| `thread_outcomes` | `ThreadOutcome` | 已具备唯一终态事务边界 |
 | Completion Inbox + Delivery Thread | `Delivery` | 方向正确，继续保留 |
 | `runtime_timers(kind=delivery_flush)` + Trigger Snapshot | Delivery merge window | 同 Session 合并、first-result max wait、generation fencing、不可变交付范围与重启恢复 |
 | `ActivationAdmissionController` | Activation admission | 单机固定 class、分层公平、aging、保留容量与 bounded refill |
@@ -1032,7 +1032,7 @@ orchestrator.activation_admission.aging_promotion_interval
 当前单机收口仍保留的边界：
 
 - Thread、Objective、Delegation 和 Schedule 仍存在部分 UI/审计缓存投影；BackgroundTask live handle/cache 必须继续保持非权威；
-- `work_threads` 等少量 SQLite 物理名称仍沿用迁移前术语；
+- SQLite 物理表已收口为 `threads`、`thread_activations`、`thread_outcomes`、`schedules` 与 `schedule_dependencies`；启动迁移只负责保存开发期数据库事实，旧名称不进入公开接口；
 - 缺少通用的父子 Thread/Action Group、组合 Wait Reason 和每 Agent/Context/Session/Thread 数字配额；
 - 取消不能回滚已经提交到外部系统的副作用；对无法证明结果的跨重启 Job 仍必须进入 `lost`，具体工具若需要更强语义，应提供幂等键、reconcile 或专用 cancel hook；
 - Approval 的 durable authority 已建立，但人工交互 UI/adapter 的产品体验仍可继续完善；
@@ -1182,6 +1182,17 @@ Delivery 是结果路由
 
 ## 18. 实现进度
 
+### 2026-07-17：统一 Scheduler 领域接口
+
+已经实现：
+
+- Rust SDK、CLI、HTTP API 与 Dashboard 统一消费 `SchedulerQuery -> SchedulerSnapshot`；任何界面都不得从 Event 数量或进程内缓存猜测 Runtime 状态；
+- `WorkThread*` 完整迁移为 `Thread*`，Thread kind 固定为 `dialogue_turn | execution | objective | delivery`；Delegation 保留为 Executor 关系，不再伪装成独立 Thread kind；
+- `work_item_id` 迁移为 `activation_id`，`ScheduledIntent*` 迁移为 `Schedule*`；Context Encoding 与模型事件使用相同领域词汇；
+- HTTP `GET /api/contexts/:context_id/scheduler` 与 CLI `morphz scheduler show` 返回同一 `SchedulerSnapshot`；`--format=json` 是 SDK/HTTP 契约的直接 JSON 表达；
+- Dashboard 的 Scheduler Causality 视图按 Thread kind 显示“对话轮次 / 执行线程 / 目标线程 / 交付线程”，不再拼接原始存储值；
+- SQLite 在启动时一次性迁移开发期的 `work_threads`、`work_thread_outcomes`、`scheduled_intents`、`scheduled_intent_dependencies` 与旧 activation 列名；Thread 的持久 discriminator/lifecycle 同时规范为 `dialogue_turn | execution | objective | delivery` 与 `open | completed | failed | cancelled`，保留历史事实但不保留双语存储或旧产品 API。
+
 ### 2026-07-16：Phase 1 第一条完整纵切
 
 已经实现：
@@ -1200,7 +1211,7 @@ Delivery 是结果路由
 
 - 当前 Event 先跨过 Ledger 持久化边界，Orchestrator 随后才物化 Thread Signal；“状态变更 + Signal”尚未对所有生产者统一为一个数据库事务。已持久化 Signal 可以恢复，但 Event 已提交而 Signal 尚未生成的极窄崩溃窗口仍需由 durable outbox/dispatcher 收口；
 - Schedule、Objective、Delegation 和后台任务仍各自拥有部分唤醒路径，尚未全部改为统一 Signal producer；
-- `work_threads`、`evaluation_outcomes` 等少量 SQLite 物理名称仍待后续迁移为最终领域名称；
+- 当时遗留的 SQLite 物理名称已在 2026-07-17 的统一领域接口迁移中完成收口；
 - 通用 Wait Condition、统一 Timer Engine 和持久 Execution Job 属于 Phase 2/3，不在本次纵切范围内。
 
 因此，本阶段证明了 Signal → Activation → Context Encoding → 终态 acknowledge 的内核闭环，但不把尚未统一的生产者事务边界误报为完成。
@@ -1287,7 +1298,7 @@ Phase 1 至此完成。当时仍然保留的独立 timer/sleep、依赖轮询和
 
 已经实现：
 
-- 新增 `scheduled_intent_dependencies(scheduled_intent_id, dependency_thread_id)` 持久反向索引；Schedule 创建与更新会在同一数据库事务内维护索引，旧数据在数据库启动时幂等回填；
+- 新增 `schedule_dependencies(schedule_id, dependency_thread_id)` 持久反向索引；Schedule 创建与更新会在同一数据库事务内维护索引，旧数据在数据库启动时幂等回填；
 - Thread 进入终态后，Orchestrator 通过 `dependency_completed(thread_id)` 一次定位所有仍为 queued 的依赖 Schedule。SQLite 使用单条 `UPDATE … RETURNING` 原子推进各 owner revision，避免并发通知时的 deferred-transaction upgrade 竞争；
 - 每个被唤醒的 Schedule 使用新 revision 注册新 Timer generation。此前因依赖未满足而触发的旧 generation 直接进入 `fired`，不再在两秒后或其他固定间隔重新检查；
 - Runtime 启动时会把 queued Schedule 引用的已终态 dependency 重新通过反向索引回放，关闭“依赖终态已经提交、进程内通知尚未发送便崩溃”的窗口；
@@ -1366,10 +1377,10 @@ Phase 3 的单机 Execution Job、Durable Approval 与物理取消控制面至�
 
 已经实现：
 
-- Objective evaluation registry 以 Objective ID、evaluation ID 和 Activation/work-item ID 建立精确绑定；pause/cancel 只通知这一 Evaluation 的 Activation，并持久请求取消它物化的非终态 Job；
+- Objective evaluation registry 以 Objective ID、evaluation ID 和 Activation ID 建立精确绑定；pause/cancel 只通知这一 Evaluation 的 Activation，并持久请求取消它物化的非终态 Job；
 - Objective 控制不再调用 Session-wide cancel/resume，因此同一 Session 的普通 Dialogue 和兄弟 Objective 不会因为一个 Objective 暂停而被抑制；
 - 迟到的 Objective 结果仍需通过 Objective revision/status fence，不能在 pause/cancel 已生效后提交为新的权威进展；
-- Work Thread 完成不再立即为每条结果唤醒 Delivery。Runtime 为 Session 持久维护一个 `delivery_flush` Timer：`due_at = min(latest + merge_window, first + max_wait)`；
+- Execution Thread 完成不再立即为每条结果唤醒 Delivery。Runtime 为 Session 持久维护一个 `delivery_flush` Timer：`due_at = min(latest + merge_window, first + max_wait)`；
 - 新结果推进 generation 并刷新短窗口，但不能越过第一条 pending 结果的最大等待边界；旧 generation、重复 claim 和 Runtime 重启均不能产生第二条 completion-ready wake；
 - Timer handler 冻结本 generation 的 `completed_thread_ids/result_event_ids`，使用 Timer ID + generation 生成确定性 `chat/thread_completion_ready` Event，并在一个事务内追加 Event + Signal Outbox；
 - Context Encoding 只向这次 Delivery Activation 呈现 Trigger Snapshot 内仍为 pending/deferred 的结果；`chat/reply.covers` 与 `chat/no_reply.defer_covers` 也只能确认同一组 ID，求值期间新完成的 Thread 留给下一次 Delivery；

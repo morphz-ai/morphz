@@ -1,31 +1,39 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-/// Cross-provider reasoning depth supported by every first-class Morphz
+/// Normalized reasoning control forwarded by every first-class Morphz
 /// protocol adapter. `None` is intentionally represented by `Option`: when
 /// unset, Morphz omits the native field and preserves the model's own default.
+/// Providers may still reject levels unsupported by a particular model.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ReasoningEffort {
+    #[serde(rename = "none", alias = "off", alias = "disabled")]
+    Off,
     Low,
     Medium,
     High,
+    Max,
 }
 
 impl ReasoningEffort {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Off => "none",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::Max => "max",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
+            "none" | "off" | "disabled" => Some(Self::Off),
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
+            "max" | "maximum" => Some(Self::Max),
             _ => None,
         }
     }
