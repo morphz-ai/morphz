@@ -12,8 +12,7 @@ use crate::memory::{
     EventAppend, EventStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
     MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer, ObjectiveMutation,
     ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionState,
-    SessionAttentionUpdate, TimerStore,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate, TimerStore,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -24,6 +23,7 @@ type StoreError = Box<dyn std::error::Error + Send + Sync>;
 
 mod approval;
 mod execution;
+mod session;
 
 pub struct PostgresStore {
     pool: PgPool,
@@ -185,58 +185,6 @@ impl PostgresStore {
         Ok(())
     }
 
-    /// Minimal deterministic fixture used by the cross-backend conformance
-    /// suite until the complete PostgreSQL SessionStore is implemented.
-    #[doc(hidden)]
-    pub async fn bootstrap_context_for_conformance(
-        &self,
-        agent_id: &str,
-        context_id: &str,
-        session_id: &str,
-    ) -> Result<(), StoreError> {
-        let now = now_text();
-        let mut tx = self.pool.begin().await?;
-        sqlx::query(
-            r#"INSERT INTO agents
-               (id, title, status, root_context_id, created_at, updated_at)
-               VALUES ($1, $2, 'active', $3, $4, $4)"#,
-        )
-        .bind(agent_id)
-        .bind("Conformance Agent")
-        .bind(context_id)
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            r#"INSERT INTO cognitive_contexts
-               (id, agent_id, title, status, created_at, updated_at)
-               VALUES ($1, $2, $3, 'active', $4, $4)"#,
-        )
-        .bind(context_id)
-        .bind(agent_id)
-        .bind("Conformance Context")
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            r#"INSERT INTO sessions
-               (id, agent_id, context_id, parent_session_id, title, status,
-                created_at, updated_at, last_activity_at, attention_state,
-                attention_revision, mount_kind)
-               VALUES ($1, $2, $3, NULL, $4, 'active', $5, $5, $5,
-                       'active', 0, 'new_blank_context')"#,
-        )
-        .bind(session_id)
-        .bind(agent_id)
-        .bind(context_id)
-        .bind("Conformance Session")
-        .bind(&now)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        Ok(())
-    }
-
     /// Adds the smallest immutable causal Thread/Activation fixture required
     /// by the cross-backend Execution Job conformance suite.
     #[doc(hidden)]
@@ -254,30 +202,6 @@ impl PostgresStore {
             activation_id,
         )
         .await
-    }
-
-    #[doc(hidden)]
-    pub async fn session_attention_for_conformance(
-        &self,
-        session_id: &str,
-    ) -> Result<Option<(SessionAttentionState, u64, Option<String>)>, StoreError> {
-        let row = sqlx::query(
-            "SELECT attention_state, attention_revision, attention_event_id FROM sessions WHERE id = $1",
-        )
-        .bind(session_id)
-        .fetch_optional(&self.pool)
-        .await?;
-        row.map(|row| {
-            let state = match row.get::<String, _>("attention_state").as_str() {
-                "active" => SessionAttentionState::Active,
-                "retired" => SessionAttentionState::Retired,
-                other => return Err(format!("未知 Session attention_state '{other}'").into()),
-            };
-            let revision = u64::try_from(row.get::<i64, _>("attention_revision"))
-                .map_err(|_| "Session attention revision 不能为负数")?;
-            Ok((state, revision, row.get("attention_event_id")))
-        })
-        .transpose()
     }
 }
 

@@ -2,7 +2,7 @@ use morphz::approval_authority::stable_approval_identity;
 use morphz::event::Event;
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
-use morphz::memory::{ActivationStore as _, SessionDirectoryStore as _, ThreadStore as _};
+use morphz::memory::{ActivationStore as _, SessionDirectoryStore, ThreadStore as _};
 use morphz::memory::{
     ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore, EventAppend, EventStore,
     ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobMutation, ExecutionJobStatus,
@@ -11,7 +11,7 @@ use morphz::memory::{
     NewMindProjection, NewObjective, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation,
     ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
     RuntimeTimerKind, RuntimeTimerStatus, SessionAttentionState, SessionAttentionUpdate,
-    SessionMountKind, ThreadKind, TimerStore,
+    SessionMountKind, SessionStatus, SessionUpdate, ThreadKind, TimerStore,
 };
 use serde_json::json;
 use std::future::Future;
@@ -39,6 +39,161 @@ fn context_event(id: &str, context_id: &str) -> Event {
             .unwrap()
             .clone(),
     )
+}
+
+async fn assert_session_directory_conformance<S>(store: Arc<S>)
+where
+    S: SessionDirectoryStore + Send + Sync + 'static,
+{
+    let agent = store.get_agent("conformance-agent").await.unwrap().unwrap();
+    assert_eq!(agent.root_context_id, "conformance-context");
+    assert!(store
+        .ensure_agent(NewAgent {
+            id: agent.id.clone(),
+            title: "ignored idempotent title".to_string(),
+            root_context_id: "wrong-context".to_string(),
+        })
+        .await
+        .is_err());
+
+    let other_context = store
+        .create_context(NewCognitiveContext {
+            id: "conformance-other-context".to_string(),
+            agent_id: agent.id.clone(),
+            title: "Other Context".to_string(),
+        })
+        .await
+        .unwrap();
+    store
+        .set_context_seed(
+            &other_context.id,
+            "conformance-context",
+            7,
+            "seed-hash",
+            "seed-projection",
+        )
+        .await
+        .unwrap();
+    let seeded = store.get_context(&other_context.id).await.unwrap().unwrap();
+    assert_eq!(seeded.seed_context_version, Some(7));
+    assert_eq!(seeded.seed_snapshot_hash.as_deref(), Some("seed-hash"));
+
+    assert!(store
+        .create_session(NewSession {
+            id: "invalid-cross-context-child".to_string(),
+            agent_id: agent.id.clone(),
+            context_id: other_context.id.clone(),
+            parent_session_id: Some("conformance-session".to_string()),
+            title: "Invalid".to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await
+        .is_err());
+
+    let race_session = NewSession {
+        id: "conformance-directory-race".to_string(),
+        agent_id: agent.id.clone(),
+        context_id: "conformance-context".to_string(),
+        parent_session_id: Some("conformance-session".to_string()),
+        title: "Concurrent Session".to_string(),
+        mount_kind: SessionMountKind::ExistingContext,
+    };
+    let first = {
+        let store = Arc::clone(&store);
+        let session = race_session.clone();
+        tokio::spawn(async move { store.ensure_session(session).await })
+    };
+    let second = {
+        let store = Arc::clone(&store);
+        let session = race_session.clone();
+        tokio::spawn(async move { store.ensure_session(session).await })
+    };
+    let first = first.await.unwrap().unwrap();
+    let second = second.await.unwrap().unwrap();
+    assert_eq!(first.id, second.id);
+    assert_eq!(first.context_id, "conformance-context");
+
+    let changed_at = chrono::Utc::now();
+    let first_attention = {
+        let store = Arc::clone(&store);
+        let session_id = race_session.id.clone();
+        tokio::spawn(async move {
+            store
+                .update_session_attention(SessionAttentionUpdate {
+                    session_id,
+                    context_id: "conformance-context".to_string(),
+                    expected_revision: 0,
+                    state: SessionAttentionState::Retired,
+                    reason: Some("first".to_string()),
+                    changed_at,
+                    event_id: "directory-attention-a".to_string(),
+                })
+                .await
+        })
+    };
+    let second_attention = {
+        let store = Arc::clone(&store);
+        let session_id = race_session.id.clone();
+        tokio::spawn(async move {
+            store
+                .update_session_attention(SessionAttentionUpdate {
+                    session_id,
+                    context_id: "conformance-context".to_string(),
+                    expected_revision: 0,
+                    state: SessionAttentionState::Active,
+                    reason: Some("second".to_string()),
+                    changed_at,
+                    event_id: "directory-attention-b".to_string(),
+                })
+                .await
+        })
+    };
+    let attention_results = [
+        first_attention.await.unwrap().unwrap(),
+        second_attention.await.unwrap().unwrap(),
+    ];
+    assert_eq!(
+        attention_results
+            .iter()
+            .filter(|result| result.is_some())
+            .count(),
+        1,
+        "Session attention revision must admit one concurrent writer"
+    );
+    assert_eq!(
+        store
+            .get_session(&race_session.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .attention_revision,
+        1
+    );
+
+    let archived = store
+        .update_session(
+            &race_session.id,
+            SessionUpdate {
+                title: Some("Archived Session".to_string()),
+                status: Some(SessionStatus::Archived),
+            },
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(archived.status, SessionStatus::Archived);
+    assert!(!store
+        .list_context_sessions("conformance-context", false)
+        .await
+        .unwrap()
+        .iter()
+        .any(|session| session.id == race_session.id));
+    assert!(store
+        .list_context_sessions("conformance-context", true)
+        .await
+        .unwrap()
+        .iter()
+        .any(|session| session.id == race_session.id));
 }
 
 /// Database-independent contract for the Context transaction boundary. A new
@@ -920,6 +1075,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         )
         .await
         .unwrap();
+    assert_session_directory_conformance(Arc::clone(&store)).await;
     assert_context_transaction_conformance(Arc::clone(&store), |store, session_id| {
         Box::pin(async move {
             Ok(store.get_session(session_id).await?.map(|session| {
@@ -972,15 +1128,39 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     };
     let store = Arc::new(PostgresStore::new(&database_url, 8).await.unwrap());
     store
-        .bootstrap_context_for_conformance(
-            "conformance-agent",
-            "conformance-context",
-            "conformance-session",
+        .create_agent_bundle(
+            NewAgent {
+                id: "conformance-agent".to_string(),
+                title: "Conformance Agent".to_string(),
+                root_context_id: "conformance-context".to_string(),
+            },
+            NewCognitiveContext {
+                id: "conformance-context".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                title: "Conformance Context".to_string(),
+            },
+            NewSession {
+                id: "conformance-session".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                parent_session_id: None,
+                title: "Conformance Session".to_string(),
+                mount_kind: SessionMountKind::NewBlankContext,
+            },
         )
         .await
         .unwrap();
+    assert_session_directory_conformance(Arc::clone(&store)).await;
     assert_context_transaction_conformance(Arc::clone(&store), |store, session_id| {
-        Box::pin(async move { store.session_attention_for_conformance(session_id).await })
+        Box::pin(async move {
+            Ok(store.get_session(session_id).await?.map(|session| {
+                (
+                    session.attention_state,
+                    session.attention_revision,
+                    session.attention_event_id,
+                )
+            }))
+        })
     })
     .await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
