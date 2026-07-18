@@ -22,6 +22,8 @@ use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 
 type StoreError = Box<dyn std::error::Error + Send + Sync>;
 
+mod execution;
+
 pub struct PostgresStore {
     pool: PgPool,
 }
@@ -34,6 +36,7 @@ impl PostgresStore {
             .await?;
         let store = Self { pool };
         store.migrate_supported_capabilities().await?;
+        execution::migrate(&store.pool).await?;
         Ok(store)
     }
 
@@ -230,6 +233,25 @@ impl PostgresStore {
         .await?;
         tx.commit().await?;
         Ok(())
+    }
+
+    /// Adds the smallest immutable causal Thread/Activation fixture required
+    /// by the cross-backend Execution Job conformance suite.
+    #[doc(hidden)]
+    pub async fn bootstrap_execution_causality_for_conformance(
+        &self,
+        thread_id: &str,
+        activation_id: &str,
+    ) -> Result<(), StoreError> {
+        execution::bootstrap_causality(
+            &self.pool,
+            "conformance-agent",
+            "conformance-context",
+            "conformance-session",
+            thread_id,
+            activation_id,
+        )
+        .await
     }
 
     #[doc(hidden)]

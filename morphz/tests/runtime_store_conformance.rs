@@ -2,11 +2,13 @@ use morphz::event::Event;
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    EventAppend, EventStore, MindProjectionCommit, MindProjectionStore, NewAgent,
-    NewCognitiveContext, NewMindProjection, NewObjective, NewRuntimeTimer, NewSession,
-    ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
-    RuntimeTimerKind, RuntimeTimerStatus, SessionAttentionState, SessionAttentionUpdate,
-    SessionMountKind, SessionStore, TimerStore,
+    EventAppend, EventStore, ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionJobTerminal, ExecutionRetrySafety, MindProjectionCommit, MindProjectionStore,
+    NewAgent, NewCognitiveContext, NewExecutionJob, NewMindProjection, NewObjective,
+    NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, ObjectiveMutation,
+    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind,
+    RuntimeTimerStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
+    SessionStore, ThreadKind, TimerStore,
 };
 use serde_json::json;
 use std::future::Future;
@@ -489,6 +491,200 @@ where
     );
 }
 
+fn execution_job(id: &str, tool_call_id: &str) -> NewExecutionJob {
+    NewExecutionJob {
+        id: id.to_string(),
+        activation_id: "conformance-activation".to_string(),
+        thread_id: "conformance-thread".to_string(),
+        agent_id: "conformance-agent".to_string(),
+        context_id: "conformance-context".to_string(),
+        session_id: "conformance-session".to_string(),
+        tool_call_id: tool_call_id.to_string(),
+        tool_name: "read".to_string(),
+        request: json!({"path": "README.md"}),
+        retry_safety: ExecutionRetrySafety::Idempotent,
+        requires_approval: false,
+    }
+}
+
+async fn assert_execution_job_conformance<S>(store: Arc<S>)
+where
+    S: EventStore + ExecutionJobStore + Send + Sync + 'static,
+{
+    let created = store
+        .create_execution_job(execution_job("conformance-job", "tool-call-a"))
+        .await
+        .unwrap();
+    assert_eq!(created.revision, 1);
+    assert_eq!(
+        store
+            .create_execution_job(execution_job("conformance-job", "tool-call-a"))
+            .await
+            .unwrap(),
+        created,
+        "exact causal replay must be idempotent"
+    );
+
+    let lease = chrono::Utc::now() + chrono::Duration::seconds(30);
+    let first = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            store
+                .claim_execution_job("conformance-job", 1, "worker-a", "claim-a", lease, None)
+                .await
+        })
+    };
+    let second = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            store
+                .claim_execution_job("conformance-job", 1, "worker-b", "claim-b", lease, None)
+                .await
+        })
+    };
+    let mutations = [
+        first.await.unwrap().unwrap(),
+        second.await.unwrap().unwrap(),
+    ];
+    assert_eq!(
+        mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, ExecutionJobMutation::Updated(_)))
+            .count(),
+        1
+    );
+    let claimed = mutations
+        .into_iter()
+        .find_map(|mutation| match mutation {
+            ExecutionJobMutation::Updated(job) => Some(job),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(claimed.status, ExecutionJobStatus::Running);
+    assert!(matches!(
+        store
+            .heartbeat_execution_job(
+                &claimed.id,
+                claimed.revision,
+                "stale-claim",
+                lease,
+                None,
+                None,
+            )
+            .await
+            .unwrap(),
+        ExecutionJobMutation::Rejected { .. }
+    ));
+    let heartbeat = match store
+        .heartbeat_execution_job(
+            &claimed.id,
+            claimed.revision,
+            claimed.claim_token.as_deref().unwrap(),
+            lease,
+            None,
+            Some("progress://conformance"),
+        )
+        .await
+        .unwrap()
+    {
+        ExecutionJobMutation::Updated(job) => job,
+        mutation => panic!("unexpected heartbeat mutation: {mutation:?}"),
+    };
+
+    let result_event = Event::new(
+        "conformance-tool-output".to_string(),
+        "Store-Conformance".to_string(),
+        morphz::event::TYPE_TOOL_OUTPUT.to_string(),
+        "chat/tool_output".to_string(),
+        json!({
+            "context_id": heartbeat.context_id,
+            "session_id": heartbeat.session_id,
+            "activation_id": heartbeat.activation_id,
+            "thread_id": heartbeat.thread_id,
+            "tool_call_id": heartbeat.tool_call_id,
+            "tool_name": heartbeat.tool_name,
+            "output": ""
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let terminal = ExecutionJobTerminal {
+        status: ExecutionJobStatus::Succeeded,
+        result_event_id: Some(result_event.id.clone()),
+        result_refs: Vec::new(),
+        error: None,
+        exit_code: Some(0),
+    };
+    let finished = match store
+        .finish_execution_job_with_event(
+            &heartbeat.id,
+            heartbeat.revision,
+            heartbeat.claim_token.as_deref(),
+            terminal.clone(),
+            &result_event,
+        )
+        .await
+        .unwrap()
+    {
+        ExecutionJobMutation::Updated(job) => job,
+        mutation => panic!("unexpected terminal mutation: {mutation:?}"),
+    };
+    assert_eq!(finished.status, ExecutionJobStatus::Succeeded);
+    assert!(matches!(
+        store
+            .finish_execution_job_with_event(
+                &finished.id,
+                finished.revision,
+                heartbeat.claim_token.as_deref(),
+                terminal,
+                &result_event,
+            )
+            .await
+            .unwrap(),
+        ExecutionJobMutation::Existing(_)
+    ));
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(result_event.id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "terminal Job and result Event must be committed exactly once"
+    );
+
+    let recoverable = store
+        .create_execution_job(execution_job("conformance-requeue", "tool-call-b"))
+        .await
+        .unwrap();
+    let claimed = match store
+        .claim_execution_job(
+            &recoverable.id,
+            recoverable.revision,
+            "worker-c",
+            "claim-c",
+            lease,
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ExecutionJobMutation::Updated(job) => job,
+        mutation => panic!("unexpected recovery claim: {mutation:?}"),
+    };
+    assert!(matches!(
+        store
+            .requeue_execution_job(&claimed.id, claimed.revision)
+            .await
+            .unwrap(),
+        ExecutionJobMutation::Updated(job) if job.status == ExecutionJobStatus::Queued
+    ));
+}
+
 #[tokio::test]
 async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     let database = NamedTempFile::new().unwrap();
@@ -533,7 +729,35 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     })
     .await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
-    assert_objective_lease_conformance(store).await;
+    assert_objective_lease_conformance(Arc::clone(&store)).await;
+    store
+        .ensure_thread(NewThread {
+            id: "conformance-thread".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-session".to_string(),
+            root_turn_id: "root-conformance-thread".to_string(),
+            kind: ThreadKind::Execution,
+            executor_kind: "runtime".to_string(),
+            executor_id: None,
+        })
+        .await
+        .unwrap();
+    store
+        .ensure_thread_activation(NewThreadActivation {
+            id: "conformance-activation".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-session".to_string(),
+            trigger_event_id: "trigger-conformance-activation".to_string(),
+            trigger_sequence: 1,
+            trigger_kind: "conformance".to_string(),
+            parent_activation_id: None,
+            root_turn_id: "root-conformance-thread".to_string(),
+        })
+        .await
+        .unwrap();
+    assert_execution_job_conformance(store).await;
 }
 
 #[tokio::test]
@@ -555,5 +779,13 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     })
     .await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
-    assert_objective_lease_conformance(store).await;
+    assert_objective_lease_conformance(Arc::clone(&store)).await;
+    store
+        .bootstrap_execution_causality_for_conformance(
+            "conformance-thread",
+            "conformance-activation",
+        )
+        .await
+        .unwrap();
+    assert_execution_job_conformance(store).await;
 }
