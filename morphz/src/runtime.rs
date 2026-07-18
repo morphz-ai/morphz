@@ -16,10 +16,10 @@ use crate::memory::{
     EventStore, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
     ExecutionJobStore, MessageClaim, MindProjectionStore, NewAgent, NewCognitiveContext,
     NewDelegation, NewObjective, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, QueryFilter, ScheduleMutation, ScheduleRecord,
-    ScheduleStatus, SessionRecord, SessionStore, SessionUpdate, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
-    TimerStore,
+    ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeStore, ScheduleMutation,
+    ScheduleRecord, ScheduleStatus, SessionRecord, SessionStore, SessionUpdate,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadPhase, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -177,6 +177,8 @@ pub struct MorphzRuntimeBuilder {
     config: AppConfig,
     client: Arc<dyn Client>,
     database_path: Option<String>,
+    store: Option<Arc<dyn RuntimeStore>>,
+    storage_label: Option<String>,
     identity: RuntimeIdentity,
     tool_policy: RuntimeToolPolicy,
     approval_provider: Option<Arc<dyn ApprovalProvider>>,
@@ -186,6 +188,8 @@ impl MorphzRuntimeBuilder {
     pub fn new(config: AppConfig, client: Arc<dyn Client>) -> Self {
         Self {
             database_path: None,
+            store: None,
+            storage_label: None,
             identity: RuntimeIdentity::default(),
             tool_policy: RuntimeToolPolicy::from_environment(),
             approval_provider: None,
@@ -196,6 +200,14 @@ impl MorphzRuntimeBuilder {
 
     pub fn database_path(mut self, path: impl Into<String>) -> Self {
         self.database_path = Some(path.into());
+        self
+    }
+
+    /// Inject one complete durable authority. The label is safe operator-facing
+    /// identity (for example `postgres:production`), never a credential URL.
+    pub fn store(mut self, label: impl Into<String>, store: Arc<dyn RuntimeStore>) -> Self {
+        self.store = Some(store);
+        self.storage_label = Some(label.into());
         self
     }
 
@@ -219,7 +231,7 @@ impl MorphzRuntimeBuilder {
             .database_path
             .unwrap_or_else(|| self.config.server.database_path.clone());
         let mut permission_config = self.config.permissions.clone();
-        if database_path != ":memory:" {
+        if self.store.is_none() && database_path != ":memory:" {
             let database_path = absolute_runtime_path(&database_path);
             for protected in [
                 database_path.clone(),
@@ -233,8 +245,23 @@ impl MorphzRuntimeBuilder {
             }
         }
         let bus = Arc::new(InMemoryEventBus::new());
-        let store =
-            Arc::new(SqliteStore::new_with_config(&database_path, &self.config.memory).await?);
+        let (store, sqlite_database_path, storage_label): (
+            Arc<dyn RuntimeStore>,
+            Option<String>,
+            String,
+        ) = match self.store {
+            Some(store) => (
+                store,
+                None,
+                self.storage_label
+                    .unwrap_or_else(|| "injected-runtime-store".to_string()),
+            ),
+            None => (
+                Arc::new(SqliteStore::new_with_config(&database_path, &self.config.memory).await?),
+                Some(database_path.clone()),
+                format!("sqlite:{database_path}"),
+            ),
+        };
         let context_engine = Arc::new(
             ContextEngine::new(
                 Arc::clone(&store) as Arc<dyn EventStore>,
@@ -344,7 +371,8 @@ impl MorphzRuntimeBuilder {
             inner: Arc::new(RuntimeInner {
                 config: self.config,
                 identity: self.identity,
-                database_path,
+                sqlite_database_path,
+                storage_label,
                 client: runtime_client,
                 bus,
                 store,
@@ -462,10 +490,11 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
 struct RuntimeInner {
     config: AppConfig,
     identity: RuntimeIdentity,
-    database_path: String,
+    sqlite_database_path: Option<String>,
+    storage_label: String,
     client: Arc<dyn Client>,
     bus: Arc<InMemoryEventBus>,
-    store: Arc<SqliteStore>,
+    store: Arc<dyn RuntimeStore>,
     registry: Arc<Registry>,
     orchestrator: Arc<Orchestrator>,
     objective_supervisor: Arc<ObjectiveSupervisor>,
@@ -601,8 +630,12 @@ impl MorphzRuntime {
             .await
     }
 
-    pub fn database_path(&self) -> &str {
-        &self.inner.database_path
+    pub fn sqlite_database_path(&self) -> Option<&str> {
+        self.inner.sqlite_database_path.as_deref()
+    }
+
+    pub fn storage_label(&self) -> &str {
+        &self.inner.storage_label
     }
 
     /// Process-local model reasoning override used by subsequent evaluations.
@@ -1980,6 +2013,36 @@ mod tests {
         ) -> Result<Response, RuntimeError> {
             Ok(text_response("runtime-ok"))
         }
+    }
+
+    #[tokio::test]
+    async fn runtime_builder_accepts_one_injected_complete_store() {
+        let database = NamedTempFile::new().unwrap();
+        let sqlite = Arc::new(
+            SqliteStore::new(database.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .store(
+                "sqlite:injected-test",
+                Arc::clone(&sqlite) as Arc<dyn RuntimeStore>,
+            )
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(runtime.storage_label(), "sqlite:injected-test");
+        assert_eq!(runtime.sqlite_database_path(), None);
+        runtime
+            .ensure_agent(NewAgent {
+                id: "injected-agent".to_string(),
+                title: "Injected Agent".to_string(),
+                root_context_id: "injected-context".to_string(),
+            })
+            .await
+            .unwrap();
+        assert!(sqlite.get_agent("injected-agent").await.unwrap().is_some());
     }
 
     #[async_trait::async_trait]

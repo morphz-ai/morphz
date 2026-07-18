@@ -2011,7 +2011,7 @@ async fn cancel_job(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<
 
 fn doctor(runtime: &MorphzRuntime, app_config: &config::AppConfig) -> Result<(), AppError> {
     let workspace = std::fs::canonicalize(&app_config.permissions.workspace_root)?;
-    println!("[ok] database: {}", runtime.database_path());
+    println!("[ok] storage: {}", runtime.storage_label());
     println!("[ok] workspace: {}", workspace.display());
     println!(
         "[ok] sandbox: {:?}, approval: {:?}",

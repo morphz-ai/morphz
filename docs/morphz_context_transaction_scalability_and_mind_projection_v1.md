@@ -29,6 +29,8 @@
 - 已增加可复现的 `context_scalability_benchmark`，首份 release 基线见 [Context Scalability Baseline — 2026-07-18](./benchmarks/context_scalability_baseline_2026-07-18.md)。
 - 完整 Activation 准入与模型 Provider 配额已经解耦：默认最多运行 16 个 Activation、同时占用 4 个模型请求槽位；等待工具、定时器或审批不会错误占用 Provider 槽位。
 - Provider 的 queued、in-flight、max-in-flight 与累计取得槽位次数已进入统一 Scheduler Snapshot；CLI、HTTP API、Rust SDK 与 Dashboard 使用同一事实源。
+- Runtime 持久层已从具体 `Arc<SqliteStore>` 解耦为一份完整的 `RuntimeStore` capability composition；SDK 可以显式注入后端，所有原子能力必须由同一个 Store 提供，禁止把一次因果提交拆到互不相关的数据库。
+- 已建立数据库无关的 Context transaction conformance suite；SQLite 已通过并发 revision CAS、Projection/Event/Session attention 原子一致和失败 Batch 全回滚测试。未来 PostgreSQL 必须通过同一套契约后才允许进入产品配置。
 
 仍待实施：
 
@@ -612,10 +614,14 @@ acknowledge Activation
 
 ### Phase 4：数据库级 CAS 与多 Worker（SQLite CAS 已完成，服务型 Store 待实施）
 
+- Runtime 依赖完整 `RuntimeStore` 而非具体 SQLite 类型（已完成）；
+- 建立可由多个后端复用的 Context transaction conformance suite（已完成首组核心契约）；
 - PostgreSQL 或其他支持事务 CAS 的 Store；
 - Activation lease、Worker recovery 与幂等 Outcome；
 - Runtime 横向扩展；
 - SQLite 继续作为默认单机后端。
+
+后端选择必须是显式配置：SQLite 永远不会因为检测到 URL、环境变量或运行规模而自动切换到 PostgreSQL。产品配置最终提供 `sqlite | postgres`；默认仍为 SQLite。PostgreSQL 连接凭证只通过命名凭证源/环境变量取得，不把含密码的连接 URL 写入普通配置或 `storage_label`。在 PostgreSQL 实现尚未通过 conformance suite 前，不暴露一个表面可选、实际不完整的配置值。
 
 ### Phase 5：按数据决定是否引入 Frame 级 MVCC
 

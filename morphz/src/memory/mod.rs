@@ -1894,3 +1894,36 @@ pub trait ObjectiveStore: Send + Sync {
         time_used_seconds: u64,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
 }
+
+/// Complete durable authority required by one Morphz Runtime worker.
+///
+/// This capability composition keeps Runtime assembly independent from a
+/// concrete database. One implementation must provide every capability so
+/// atomic commits never cross unrelated persistence systems.
+pub trait RuntimeStore:
+    EventStore
+    + TimerStore
+    + ExecutionJobStore
+    + ApprovalStore
+    + ExecutionApprovalStore
+    + SessionStore
+    + ObjectiveStore
+    + MindProjectionStore
+    + Send
+    + Sync
+{
+}
+
+impl<T> RuntimeStore for T where
+    T: EventStore
+        + TimerStore
+        + ExecutionJobStore
+        + ApprovalStore
+        + ExecutionApprovalStore
+        + SessionStore
+        + ObjectiveStore
+        + MindProjectionStore
+        + Send
+        + Sync
+{
+}

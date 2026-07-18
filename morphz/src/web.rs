@@ -2288,7 +2288,9 @@ mod tests {
             })
             .await
             .unwrap();
-        let store = SqliteStore::new(runtime.database_path()).await.unwrap();
+        let store = SqliteStore::new(runtime.sqlite_database_path().unwrap())
+            .await
+            .unwrap();
         let thread = store
             .ensure_thread(NewThread {
                 id: "api-schedule-thread".to_string(),
