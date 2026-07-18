@@ -196,6 +196,12 @@ impl PostgresStore {
     }
 }
 
+impl crate::memory::RuntimeStore for PostgresStore {
+    fn worker_coordination_mode(&self) -> crate::memory::WorkerCoordinationMode {
+        crate::memory::WorkerCoordinationMode::SharedLeases
+    }
+}
+
 fn now_text() -> String {
     Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
 }

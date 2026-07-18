@@ -8466,7 +8466,10 @@ mod tests {
         .unwrap();
         assert_eq!(parent_terminal.status, ExecutionJobStatus::Succeeded);
 
-        let recovery = manager.reconcile_restart().await.unwrap();
+        let recovery = manager
+            .reconcile_startup(crate::memory::WorkerCoordinationMode::ExclusiveProcess)
+            .await
+            .unwrap();
         assert_eq!(recovery.lost_receipts.len(), 1);
         assert_eq!(
             scheduler

@@ -706,6 +706,12 @@ impl SqliteStore {
     }
 }
 
+impl crate::memory::RuntimeStore for SqliteStore {
+    fn worker_coordination_mode(&self) -> crate::memory::WorkerCoordinationMode {
+        crate::memory::WorkerCoordinationMode::ExclusiveProcess
+    }
+}
+
 /// Replace the pre-release Thread discriminator and state vocabulary in one
 /// transaction. Public and persistence layers intentionally share the same
 /// canonical values; old spellings exist only as migration input.

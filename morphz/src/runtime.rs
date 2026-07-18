@@ -577,7 +577,11 @@ impl MorphzRuntime {
                 .orchestrator
                 .register_session_context(&session.id, &session.context_id);
         }
-        let execution_recovery = self.inner.execution_jobs.reconcile_restart().await?;
+        let execution_recovery = self
+            .inner
+            .execution_jobs
+            .reconcile_startup(self.inner.store.worker_coordination_mode())
+            .await?;
         let recovered_background_outboxes = self
             .inner
             .background_scheduler

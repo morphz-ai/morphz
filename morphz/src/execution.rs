@@ -14,6 +14,7 @@ use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
     ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
     ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, NewExecutionJob,
+    WorkerCoordinationMode,
 };
 
 pub type ExecutionResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -309,6 +310,29 @@ pub fn restart_plan(job: &ExecutionJobRecord) -> RestartPlan {
     }
 }
 
+/// Startup recovery must distinguish an exclusive local Store from a shared
+/// leased Store. In the latter case, a live future lease may belong to another
+/// healthy Runtime process and is therefore authoritative evidence to wait.
+pub fn startup_recovery_plan(
+    job: &ExecutionJobRecord,
+    coordination: WorkerCoordinationMode,
+    now: chrono::DateTime<chrono::Utc>,
+) -> RestartPlan {
+    if coordination == WorkerCoordinationMode::SharedLeases
+        && job.status == ExecutionJobStatus::Running
+        && job
+            .lease_expires_at
+            .is_some_and(|expires_at| expires_at > now)
+    {
+        return RestartPlan {
+            job_id: job.id.clone(),
+            expected_revision: job.revision,
+            action: RestartAction::Preserve,
+        };
+    }
+    restart_plan(job)
+}
+
 fn restart_lost_reason(job: &ExecutionJobRecord) -> String {
     if job.cancel_requested_at.is_some() {
         return "runtime restarted after cancellation was requested, but physical termination was not proven".to_string();
@@ -461,21 +485,25 @@ where
         Ok(JobReceipt::from_mutation(JobOperation::Finish, mutation))
     }
 
-    /// Reconciles all non-terminal Jobs after a single-node Runtime restart.
+    /// Reconciles non-terminal Jobs when one Runtime process starts.
     ///
-    /// Queued and approval-waiting Jobs remain durable. A clean idempotent Job
-    /// is fenced back to queued; every other uncertain running Job is closed as
-    /// `lost` together with an immutable result Event. This method therefore
-    /// never silently repeats a non-idempotent external action.
-    pub async fn reconcile_restart(&self) -> ExecutionResult<RestartReconcileReport> {
+    /// An exclusive Store knows every previously running worker disappeared.
+    /// A shared Store may still have healthy peers, so only expired/unleased
+    /// running Jobs cross the recovery boundary. Queued and approval-waiting
+    /// Jobs remain durable in both modes.
+    pub async fn reconcile_startup(
+        &self,
+        coordination: WorkerCoordinationMode,
+    ) -> ExecutionResult<RestartReconcileReport> {
         let jobs = self
             .store
             .list_execution_jobs(ExecutionJobFilter::default())
             .await?;
         let mut report = RestartReconcileReport::default();
+        let now = chrono::Utc::now();
 
         for job in jobs {
-            let plan = restart_plan(&job);
+            let plan = startup_recovery_plan(&job, coordination, now);
             match &plan.action {
                 RestartAction::Preserve => report.preserved_job_ids.push(job.id),
                 RestartAction::Requeue { .. } => {
@@ -667,6 +695,38 @@ mod tests {
         assert!(matches!(
             restart_plan(&job).action,
             RestartAction::MarkLost { .. }
+        ));
+    }
+
+    #[test]
+    fn shared_worker_startup_preserves_another_workers_live_lease() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 17, 8, 0, 0).single().unwrap();
+        let mut job = sample_job(
+            ExecutionJobStatus::Running,
+            ExecutionRetrySafety::Idempotent,
+        );
+        job.lease_expires_at = Some(now + chrono::Duration::seconds(30));
+        assert_eq!(
+            startup_recovery_plan(&job, WorkerCoordinationMode::SharedLeases, now).action,
+            RestartAction::Preserve
+        );
+        assert!(matches!(
+            startup_recovery_plan(&job, WorkerCoordinationMode::ExclusiveProcess, now).action,
+            RestartAction::Requeue { .. }
+        ));
+    }
+
+    #[test]
+    fn shared_worker_startup_recovers_only_after_the_lease_expires() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 17, 8, 0, 0).single().unwrap();
+        let mut job = sample_job(
+            ExecutionJobStatus::Running,
+            ExecutionRetrySafety::Idempotent,
+        );
+        job.lease_expires_at = Some(now - chrono::Duration::milliseconds(1));
+        assert!(matches!(
+            startup_recovery_plan(&job, WorkerCoordinationMode::SharedLeases, now).action,
+            RestartAction::Requeue { .. }
         ));
     }
 

@@ -1,5 +1,8 @@
 use morphz::approval_authority::stable_approval_identity;
+use morphz::config::AppConfig;
 use morphz::event::Event;
+use morphz::execution::ExecutionJobManager;
+use morphz::llm::{Client, Message, Response, ToolDefinition};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
@@ -17,9 +20,12 @@ use morphz::memory::{
     ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
 };
 use morphz::memory::{ActivationStore, SessionDirectoryStore};
+use morphz::permission::{PermissionMode, ReviewerKind};
+use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
 use serde_json::json;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tempfile::NamedTempFile;
 
@@ -33,6 +39,26 @@ type AttentionFuture<'a> = Pin<
 >;
 
 fn assert_complete_runtime_store<T: morphz::memory::RuntimeStore>() {}
+
+#[derive(Default)]
+struct MultiRuntimeReplyClient {
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl Client for MultiRuntimeReplyClient {
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, TestError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Response {
+            content: "multi-runtime-ok".to_string(),
+            tool_calls: Vec::new(),
+        })
+    }
+}
 
 fn context_event(id: &str, context_id: &str) -> Event {
     Event::new(
@@ -1991,6 +2017,476 @@ where
     ));
 }
 
+/// Verifies that PostgreSQL authority is carried by the database rather than
+/// by one `PostgresStore` value or one connection pool. The two stores below
+/// are independently constructed, matching two Runtime processes connected to
+/// the same service database.
+async fn assert_independent_postgres_instances_share_fenced_authority(
+    first: Arc<PostgresStore>,
+    second: Arc<PostgresStore>,
+) {
+    let suffix = chrono::Utc::now()
+        .timestamp_nanos_opt()
+        .expect("current timestamp must fit i64");
+    let agent_id = format!("multi-worker-agent-{suffix}");
+    let context_id = format!("multi-worker-context-{suffix}");
+    let session_id = format!("multi-worker-session-{suffix}");
+
+    first
+        .create_agent_bundle(
+            NewAgent {
+                id: agent_id.clone(),
+                title: "Multi-worker Agent".to_string(),
+                root_context_id: context_id.clone(),
+            },
+            NewCognitiveContext {
+                id: context_id.clone(),
+                agent_id: agent_id.clone(),
+                title: "Multi-worker Context".to_string(),
+            },
+            NewSession {
+                id: session_id.clone(),
+                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
+                parent_session_id: None,
+                title: "Multi-worker Session".to_string(),
+                mount_kind: SessionMountKind::NewBlankContext,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(second.get_session(&session_id).await.unwrap().is_some());
+
+    first
+        .initialize_mind_projection(NewMindProjection {
+            context_id: context_id.clone(),
+            revision: 0,
+            state: json!({"version": 0}),
+            state_hash: format!("multi-worker-hash-0-{suffix}"),
+            head_event_id: None,
+        })
+        .await
+        .unwrap();
+    let event_a = context_event(&format!("multi-worker-tx-a-{suffix}"), &context_id);
+    let event_b = context_event(&format!("multi-worker-tx-b-{suffix}"), &context_id);
+    let (projection_a, projection_b) = tokio::join!(
+        first.commit_mind_projection_transaction(
+            &event_a,
+            &[],
+            0,
+            NewMindProjection {
+                context_id: context_id.clone(),
+                revision: 1,
+                state: json!({"version": 1, "worker": "a"}),
+                state_hash: format!("multi-worker-hash-a-{suffix}"),
+                head_event_id: Some(event_a.id.clone()),
+            },
+        ),
+        second.commit_mind_projection_transaction(
+            &event_b,
+            &[],
+            0,
+            NewMindProjection {
+                context_id: context_id.clone(),
+                revision: 1,
+                state: json!({"version": 1, "worker": "b"}),
+                state_hash: format!("multi-worker-hash-b-{suffix}"),
+                head_event_id: Some(event_b.id.clone()),
+            },
+        )
+    );
+    let projections = [projection_a.unwrap(), projection_b.unwrap()];
+    assert_eq!(
+        projections
+            .iter()
+            .filter(|mutation| matches!(mutation, MindProjectionCommit::Committed { .. }))
+            .count(),
+        1,
+        "independent Runtime instances must admit one Context CAS writer"
+    );
+    assert_eq!(
+        projections
+            .iter()
+            .filter(|mutation| matches!(mutation, MindProjectionCommit::Conflict { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        second
+            .get_mind_projection(&context_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .revision,
+        1
+    );
+
+    let thread_id = format!("multi-worker-thread-{suffix}");
+    first
+        .ensure_thread(NewThread {
+            id: thread_id.clone(),
+            agent_id: agent_id.clone(),
+            context_id: context_id.clone(),
+            session_id: session_id.clone(),
+            root_turn_id: format!("multi-worker-root-{suffix}"),
+            kind: ThreadKind::Execution,
+            executor_kind: "runtime".to_string(),
+            executor_id: None,
+        })
+        .await
+        .unwrap();
+    let activation_id = format!("multi-worker-activation-{suffix}");
+    let activation = first
+        .ensure_thread_activation(NewThreadActivation {
+            id: activation_id.clone(),
+            agent_id: agent_id.clone(),
+            context_id: context_id.clone(),
+            session_id: session_id.clone(),
+            trigger_event_id: format!("multi-worker-trigger-{suffix}"),
+            trigger_sequence: 1,
+            trigger_kind: "conformance".to_string(),
+            parent_activation_id: None,
+            root_turn_id: format!("multi-worker-root-{suffix}"),
+        })
+        .await
+        .unwrap();
+    let lease = chrono::Utc::now() + chrono::Duration::seconds(30);
+    let (activation_a, activation_b) = tokio::join!(
+        first.update_thread_activation(
+            &activation.id,
+            activation.revision,
+            ThreadActivationStatus::Running,
+            Some("runtime-a"),
+            Some(lease),
+            Some(1),
+        ),
+        second.update_thread_activation(
+            &activation.id,
+            activation.revision,
+            ThreadActivationStatus::Running,
+            Some("runtime-b"),
+            Some(lease),
+            Some(1),
+        )
+    );
+    let activation_mutations = [activation_a.unwrap(), activation_b.unwrap()];
+    assert_eq!(
+        activation_mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, ThreadActivationMutation::Updated(_)))
+            .count(),
+        1,
+        "independent Runtime instances must not both own one Activation"
+    );
+
+    let job_id = format!("multi-worker-job-{suffix}");
+    let created_job = first
+        .create_execution_job(NewExecutionJob {
+            id: job_id.clone(),
+            activation_id,
+            thread_id,
+            agent_id: agent_id.clone(),
+            context_id: context_id.clone(),
+            session_id: session_id.clone(),
+            tool_call_id: format!("multi-worker-tool-call-{suffix}"),
+            tool_name: "read".to_string(),
+            request: json!({"path": "README.md"}),
+            retry_safety: ExecutionRetrySafety::Idempotent,
+            requires_approval: false,
+        })
+        .await
+        .unwrap();
+    let (job_a, job_b) = tokio::join!(
+        first.claim_execution_job(
+            &created_job.id,
+            created_job.revision,
+            "runtime-a",
+            "multi-worker-claim-a",
+            lease,
+            None,
+        ),
+        second.claim_execution_job(
+            &created_job.id,
+            created_job.revision,
+            "runtime-b",
+            "multi-worker-claim-b",
+            lease,
+            None,
+        )
+    );
+    let job_mutations = [job_a.unwrap(), job_b.unwrap()];
+    assert_eq!(
+        job_mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, ExecutionJobMutation::Updated(_)))
+            .count(),
+        1,
+        "one physical Execution Job must have one worker owner"
+    );
+    let claimed_job = job_mutations
+        .into_iter()
+        .find_map(|mutation| match mutation {
+            ExecutionJobMutation::Updated(job) => Some(job),
+            _ => None,
+        })
+        .unwrap();
+    let shared_recovery = ExecutionJobManager::new(Arc::clone(&second));
+    let live_report = shared_recovery
+        .reconcile_startup(morphz::memory::WorkerCoordinationMode::SharedLeases)
+        .await
+        .unwrap();
+    assert!(live_report.preserved_job_ids.contains(&claimed_job.id));
+    assert!(live_report.requeue_receipts.iter().all(|receipt| receipt
+        .applied_job()
+        .is_none_or(|job| job.id != claimed_job.id)));
+    assert!(matches!(
+        second
+            .requeue_execution_job(&claimed_job.id, claimed_job.revision)
+            .await
+            .unwrap(),
+        ExecutionJobMutation::Updated(job) if job.status == ExecutionJobStatus::Queued
+    ));
+
+    let expired_job = first
+        .create_execution_job(NewExecutionJob {
+            id: format!("multi-worker-expired-job-{suffix}"),
+            activation_id: created_job.activation_id.clone(),
+            thread_id: created_job.thread_id.clone(),
+            agent_id: agent_id.clone(),
+            context_id: context_id.clone(),
+            session_id: session_id.clone(),
+            tool_call_id: format!("multi-worker-expired-tool-call-{suffix}"),
+            tool_name: "read".to_string(),
+            request: json!({"path": "README.md"}),
+            retry_safety: ExecutionRetrySafety::Idempotent,
+            requires_approval: false,
+        })
+        .await
+        .unwrap();
+    let short_lease = chrono::Utc::now() + chrono::Duration::milliseconds(150);
+    let expired_job = match first
+        .claim_execution_job(
+            &expired_job.id,
+            expired_job.revision,
+            "runtime-a",
+            "multi-worker-expiring-claim",
+            short_lease,
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ExecutionJobMutation::Updated(job) => job,
+        mutation => panic!("unexpected expiring Job claim: {mutation:?}"),
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let expired_report = shared_recovery
+        .reconcile_startup(morphz::memory::WorkerCoordinationMode::SharedLeases)
+        .await
+        .unwrap();
+    assert!(expired_report.requeue_receipts.iter().any(|receipt| receipt
+        .applied_job()
+        .is_some_and(|job| job.id == expired_job.id)));
+
+    let objective = first
+        .create_objective(NewObjective {
+            id: format!("multi-worker-objective-{suffix}"),
+            agent_id,
+            context_id: context_id.clone(),
+            coordinator_session_id: session_id.clone(),
+            delivery_session_id: session_id,
+            parent_objective_id: None,
+            source_event_id: format!("multi-worker-objective-source-{suffix}"),
+            stated_objective: "verify independent Runtime leases".to_string(),
+            token_budget: None,
+        })
+        .await
+        .unwrap();
+    let (objective_a, objective_b) = tokio::join!(
+        first.claim_objective_evaluation(
+            &objective.id,
+            objective.revision,
+            "multi-worker-evaluation-a",
+            lease,
+        ),
+        second.claim_objective_evaluation(
+            &objective.id,
+            objective.revision,
+            "multi-worker-evaluation-b",
+            lease,
+        )
+    );
+    let objective_mutations = [objective_a.unwrap(), objective_b.unwrap()];
+    assert_eq!(
+        objective_mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, ObjectiveMutation::Updated(_)))
+            .count(),
+        1,
+        "one Objective evaluation lease must have one owner"
+    );
+
+    let due_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+    for index in 0..8 {
+        first
+            .upsert_runtime_timer(NewRuntimeTimer {
+                id: format!("multi-worker-timer-{suffix}-{index}"),
+                generation: 1,
+                kind: RuntimeTimerKind::ActivationLease,
+                owner_id: format!("multi-worker-timer-owner-{suffix}-{index}"),
+                due_at,
+                payload: json!({"index": index}),
+            })
+            .await
+            .unwrap();
+    }
+    let (timers_a, timers_b) = tokio::join!(
+        first.claim_due_runtime_timers(chrono::Utc::now(), "multi-worker-timer-claim-a", lease, 8,),
+        second
+            .claim_due_runtime_timers(chrono::Utc::now(), "multi-worker-timer-claim-b", lease, 8,)
+    );
+    let timers_a = timers_a.unwrap();
+    let timers_b = timers_b.unwrap();
+    let mut claimed_timer_ids = timers_a
+        .iter()
+        .chain(&timers_b)
+        .map(|timer| timer.id.clone())
+        .collect::<Vec<_>>();
+    let claimed_count = claimed_timer_ids.len();
+    claimed_timer_ids.sort();
+    claimed_timer_ids.dedup();
+    assert_eq!(claimed_timer_ids.len(), 8);
+    assert_eq!(claimed_count, 8, "Timer claims must never overlap");
+}
+
+async fn assert_two_postgres_runtimes_deliver_one_dialogue_once(
+    database_url: &str,
+    administration_store: &PostgresStore,
+) {
+    let suffix = chrono::Utc::now()
+        .timestamp_nanos_opt()
+        .expect("current timestamp must fit i64");
+    let schema = format!("runtime_worker_{suffix}");
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(administration_store.pool())
+        .await
+        .unwrap();
+    let separator = if database_url.contains('?') { '&' } else { '?' };
+    let scoped_url = format!("{database_url}{separator}options=-csearch_path%3D{schema}");
+    let first = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
+    let second = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
+    let agent_id = format!("runtime-worker-agent-{suffix}");
+    let context_id = format!("runtime-worker-context-{suffix}");
+    let session_id = format!("runtime-worker-session-{suffix}");
+    first
+        .create_agent_bundle(
+            NewAgent {
+                id: agent_id.clone(),
+                title: "Runtime Worker Agent".to_string(),
+                root_context_id: context_id.clone(),
+            },
+            NewCognitiveContext {
+                id: context_id.clone(),
+                agent_id: agent_id.clone(),
+                title: "Runtime Worker Context".to_string(),
+            },
+            NewSession {
+                id: session_id.clone(),
+                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
+                parent_session_id: None,
+                title: "Runtime Worker Session".to_string(),
+                mount_kind: SessionMountKind::NewBlankContext,
+            },
+        )
+        .await
+        .unwrap();
+
+    let mut config = AppConfig::default();
+    config.permissions.mode = PermissionMode::Custom;
+    config.permissions.reviewer = ReviewerKind::Deny;
+    let client = Arc::new(MultiRuntimeReplyClient::default());
+    let identity = RuntimeIdentity {
+        agent_id,
+        context_id: context_id.clone(),
+    };
+    let policy = RuntimeToolPolicy {
+        context_only: true,
+        coding_eval: true,
+    };
+    let runtime_a = MorphzRuntime::builder(config.clone(), client.clone())
+        .store(
+            "postgres:test-runtime-a",
+            Arc::clone(&first) as Arc<dyn morphz::memory::RuntimeStore>,
+        )
+        .identity(identity.clone())
+        .tool_policy(policy)
+        .build()
+        .await
+        .unwrap();
+    let runtime_b = MorphzRuntime::builder(config, client.clone())
+        .store(
+            "postgres:test-runtime-b",
+            Arc::clone(&second) as Arc<dyn morphz::memory::RuntimeStore>,
+        )
+        .identity(identity)
+        .tool_policy(policy)
+        .build()
+        .await
+        .unwrap();
+    runtime_a.start().await.unwrap();
+    runtime_b.start().await.unwrap();
+
+    let mut replies_a = runtime_a.subscribe("chat/reply", 4);
+    let mut replies_b = runtime_b.subscribe("chat/reply", 4);
+    runtime_a
+        .session(&session_id)
+        .send(
+            "hello from a shared PostgreSQL Context",
+            "Store-Conformance",
+            Some(format!("runtime-worker-message-{suffix}")),
+        )
+        .await
+        .unwrap();
+
+    let reply = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::select! {
+            event = replies_a.recv() => event,
+            event = replies_b.recv() => event,
+        }
+    })
+    .await
+    .expect("one Runtime must deliver the dialogue")
+    .expect("reply subscription must remain open");
+    assert_eq!(reply.payload["text"], "multi-runtime-ok");
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(500), async {
+            tokio::select! {
+                event = replies_a.recv() => event,
+                event = replies_b.recv() => event,
+            }
+        })
+        .await
+        .is_err(),
+        "the competing Runtime must not produce a duplicate reply"
+    );
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        first
+            .query(QueryFilter {
+                context_id: Some(context_id),
+                session_id: Some(session_id),
+                topic: Some("chat/reply".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the shared Ledger must contain one reply fact"
+    );
+}
+
 #[tokio::test]
 async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     let database = NamedTempFile::new().unwrap();
@@ -2125,5 +2621,12 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         .await
         .unwrap();
     assert_execution_job_conformance(Arc::clone(&store)).await;
-    assert_approval_grant_conformance(store).await;
+    assert_approval_grant_conformance(Arc::clone(&store)).await;
+    let independent_store = Arc::new(PostgresStore::new(&database_url, 8).await.unwrap());
+    assert_independent_postgres_instances_share_fenced_authority(
+        Arc::clone(&store),
+        Arc::clone(&independent_store),
+    )
+    .await;
+    assert_two_postgres_runtimes_deliver_one_dialogue_once(&database_url, &store).await;
 }

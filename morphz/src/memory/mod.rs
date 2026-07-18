@@ -1948,6 +1948,16 @@ pub trait ObjectiveStore: Send + Sync {
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
 }
 
+/// Whether one Store is owned by exactly one Runtime process or coordinates
+/// multiple independent Runtime workers. Startup recovery depends on this
+/// physical fact: a shared worker must never treat another worker's live lease
+/// as evidence of a crash merely because it has just started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerCoordinationMode {
+    ExclusiveProcess,
+    SharedLeases,
+}
+
 /// Complete durable authority required by one Morphz Runtime worker.
 ///
 /// This capability composition keeps Runtime assembly independent from a
@@ -1965,18 +1975,5 @@ pub trait RuntimeStore:
     + Send
     + Sync
 {
-}
-
-impl<T> RuntimeStore for T where
-    T: EventStore
-        + TimerStore
-        + ExecutionJobStore
-        + ApprovalStore
-        + ExecutionApprovalStore
-        + SessionStore
-        + ObjectiveStore
-        + MindProjectionStore
-        + Send
-        + Sync
-{
+    fn worker_coordination_mode(&self) -> WorkerCoordinationMode;
 }
