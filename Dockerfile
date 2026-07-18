@@ -63,7 +63,7 @@ RUN mkdir -p /home/morphz/data /home/morphz/.config/morphz && chown -R morphz:mo
 USER morphz
 
 ENV RUST_LOG=info,morphz=debug \
-    MORPHZ_DB_PATH=/home/morphz/data/morphz.db \
+    MORPHZ_STORAGE_SQLITE_PATH=/home/morphz/data/morphz.db \
     MORPHZ_BIND=0.0.0.0:8080
 
 EXPOSE 8080

@@ -110,8 +110,8 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    npm run dev
    ```
 
-`morphz serve` 默认监听 `127.0.0.1:8080`。可通过 `--bind`、`MORPHZ_BIND` 和
-`MORPHZ_DB_PATH` 覆盖数据库路径；监听地址可用 `--bind` 或 `MORPHZ_BIND` 设置。新项目的
+`morphz serve` 默认监听 `127.0.0.1:8080`。SQLite 路径通过 `[storage.sqlite].path` 或
+`MORPHZ_STORAGE_SQLITE_PATH` 覆盖；监听地址可用 `--bind` 或 `MORPHZ_BIND` 设置。新项目的
 非敏感配置放在 `.morphz/config.toml`，Provider、Credential、权限和监听地址属于用户或
 系统控制面，项目配置不能修改。完整分层设计见
 [CLI 产品化 v1](docs/morphz_cli_productization_v1.md)。

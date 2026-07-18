@@ -2,13 +2,14 @@ use crate::approval::{
     AiAutoReviewProvider, ApprovalDecision, ApprovalProvider, DenyAllApprovalProvider,
     EscalatingApprovalProvider, HumanApprovalHub, HumanApprovalProvider, PendingHumanApproval,
 };
-use crate::config::AppConfig;
+use crate::config::{AppConfig, StorageBackend};
 use crate::context_tools::{ContextTxTool, RecallTool};
 #[cfg(test)]
 use crate::event::TYPE_TOOL_OUTPUT;
 use crate::event::{Event, InMemoryEventBus, TYPE_USER_MESSAGE};
 use crate::execution::ExecutionJobManager;
 use crate::llm::{Client, ReasoningEffort};
+use crate::memory::postgres::PostgresStore;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalRecord,
@@ -229,9 +230,12 @@ impl MorphzRuntimeBuilder {
     pub async fn build(self) -> Result<MorphzRuntime, RuntimeError> {
         let database_path = self
             .database_path
-            .unwrap_or_else(|| self.config.server.database_path.clone());
+            .unwrap_or_else(|| self.config.storage.sqlite.path.clone());
         let mut permission_config = self.config.permissions.clone();
-        if self.store.is_none() && database_path != ":memory:" {
+        if self.store.is_none()
+            && self.config.storage.backend == StorageBackend::Sqlite
+            && database_path != ":memory:"
+        {
             let database_path = absolute_runtime_path(&database_path);
             for protected in [
                 database_path.clone(),
@@ -256,11 +260,33 @@ impl MorphzRuntimeBuilder {
                 self.storage_label
                     .unwrap_or_else(|| "injected-runtime-store".to_string()),
             ),
-            None => (
-                Arc::new(SqliteStore::new_with_config(&database_path, &self.config.memory).await?),
-                Some(database_path.clone()),
-                format!("sqlite:{database_path}"),
-            ),
+            None => match self.config.storage.backend {
+                StorageBackend::Sqlite => (
+                    Arc::new(
+                        SqliteStore::new_with_config(&database_path, &self.config.storage.sqlite)
+                            .await?,
+                    ),
+                    Some(database_path.clone()),
+                    format!("sqlite:{database_path}"),
+                ),
+                StorageBackend::Postgres => {
+                    let url_env = self.config.storage.postgres.url_env.trim();
+                    if url_env.is_empty() {
+                        return Err("storage.postgres.url_env 不能为空".into());
+                    }
+                    let database_url = std::env::var(url_env).map_err(|_| {
+                        format!(
+                            "已选择 PostgreSQL Storage，但环境变量 '{url_env}' 不存在或不是有效 Unicode"
+                        )
+                    })?;
+                    let store = PostgresStore::new(
+                        &database_url,
+                        self.config.storage.postgres.max_connections,
+                    )
+                    .await?;
+                    (Arc::new(store), None, format!("postgres:env:{url_env}"))
+                }
+            },
         };
         let context_engine = Arc::new(
             ContextEngine::new(
@@ -2044,6 +2070,42 @@ mod tests {
             .await
             .unwrap();
         assert!(sqlite.get_agent("injected-agent").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn postgres_storage_requires_an_explicit_named_environment_credential() {
+        let mut config = AppConfig::default();
+        config.storage.backend = StorageBackend::Postgres;
+        config.storage.postgres.url_env =
+            "MORPHZ_TEST_INTENTIONALLY_MISSING_POSTGRES_URL_7E6C5F".to_string();
+        let error = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .build()
+            .await
+            .err()
+            .expect("missing named PostgreSQL credential must fail closed");
+        assert!(error
+            .to_string()
+            .contains("MORPHZ_TEST_INTENTIONALLY_MISSING_POSTGRES_URL_7E6C5F"));
+    }
+
+    #[tokio::test]
+    async fn runtime_builder_selects_postgres_only_when_explicitly_configured() {
+        let Ok(_) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
+            return;
+        };
+        let mut config = AppConfig::default();
+        config.storage.backend = StorageBackend::Postgres;
+        config.storage.postgres.url_env = "MORPHZ_TEST_POSTGRES_URL".to_string();
+        config.storage.postgres.max_connections = 4;
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime.storage_label(),
+            "postgres:env:MORPHZ_TEST_POSTGRES_URL"
+        );
+        assert_eq!(runtime.sqlite_database_path(), None);
     }
 
     #[async_trait::async_trait]

@@ -2189,7 +2189,7 @@ fn runtime_environment(manifest: &LongHorizonEvalManifest) -> BTreeMap<String, S
             },
         ),
         (
-            "MORPHZ_DB_PATH".to_string(),
+            "MORPHZ_STORAGE_SQLITE_PATH".to_string(),
             manifest.database_path.to_string_lossy().to_string(),
         ),
         (

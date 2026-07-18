@@ -150,7 +150,7 @@ pub fn create_coding_eval_v1(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
             workspace_root.to_string_lossy().to_string(),
         ),
         (
-            "MORPHZ_DB_PATH".to_string(),
+            "MORPHZ_STORAGE_SQLITE_PATH".to_string(),
             database_path.to_string_lossy().to_string(),
         ),
         (
@@ -227,7 +227,7 @@ pub fn create_coding_eval_v2(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
             workspace_root.to_string_lossy().to_string(),
         ),
         (
-            "MORPHZ_DB_PATH".to_string(),
+            "MORPHZ_STORAGE_SQLITE_PATH".to_string(),
             database_path.to_string_lossy().to_string(),
         ),
         (

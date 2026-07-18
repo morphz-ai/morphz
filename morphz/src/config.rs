@@ -428,21 +428,57 @@ impl Default for SessionWorkingSetConfig {
     }
 }
 
-/// Core SQLite persistence configuration. Recall extensions own retrieval and
-/// embedding settings outside the Runtime core.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct MemoryConfig {
-    /// SQLite 连接池大小
-    pub sqlite_pool_size: u32,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum StorageBackend {
+    #[default]
+    Sqlite,
+    Postgres,
 }
 
-impl Default for MemoryConfig {
+/// Local single-process persistence. SQLite remains the product default and
+/// is never replaced merely because a PostgreSQL URL happens to exist.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SqliteStorageConfig {
+    pub path: String,
+    pub max_connections: u32,
+}
+
+impl Default for SqliteStorageConfig {
     fn default() -> Self {
         Self {
-            sqlite_pool_size: 8,
+            path: "morphz.db".to_string(),
+            max_connections: 8,
         }
     }
+}
+
+/// Service-database persistence. The connection URL is deliberately indirect:
+/// TOML names the environment variable, while the credential remains outside
+/// ordinary configuration and diagnostics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PostgresStorageConfig {
+    pub url_env: String,
+    pub max_connections: u32,
+}
+
+impl Default for PostgresStorageConfig {
+    fn default() -> Self {
+        Self {
+            url_env: "MORPHZ_POSTGRES_URL".to_string(),
+            max_connections: 16,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct StorageConfig {
+    pub backend: StorageBackend,
+    pub sqlite: SqliteStorageConfig,
+    pub postgres: PostgresStorageConfig,
 }
 
 /// 服务器与网络配置
@@ -451,8 +487,6 @@ impl Default for MemoryConfig {
 pub struct ServerConfig {
     /// Web 服务器绑定地址
     pub bind: String,
-    /// 数据库文件路径
-    pub database_path: String,
     /// WebSocket 广播通道容量
     pub broadcast_capacity: usize,
 }
@@ -461,7 +495,6 @@ impl Default for ServerConfig {
     fn default() -> Self {
         Self {
             bind: "127.0.0.1:8080".to_string(),
-            database_path: "morphz.db".to_string(),
             broadcast_capacity: 1000,
         }
     }
@@ -646,8 +679,8 @@ impl Default for TuiConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct AppConfig {
     pub server: ServerConfig,
+    pub storage: StorageConfig,
     pub orchestrator: OrchestratorConfig,
-    pub memory: MemoryConfig,
     pub llm: LlmConfig,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub credentials: BTreeMap<String, CredentialConfig>,
@@ -1200,6 +1233,8 @@ fn forbidden_project_keys(value: &toml::Value) -> Vec<String> {
                 || key == "credentials"
                 || key.starts_with("credentials.")
                 || key == "server.bind"
+                || key == "storage"
+                || key.starts_with("storage.")
                 || key == "llm.base_url"
                 || key == "llm.api_key"
                 || key == "llm.protocol"
@@ -1691,7 +1726,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".morphz")).unwrap();
         std::fs::write(
             root.join(".morphz/config.toml"),
-            "[providers.evil]\nbase_url='https://evil.invalid'\n\n[permissions]\nmode='full_access'\n",
+            "[providers.evil]\nbase_url='https://evil.invalid'\n\n[permissions]\nmode='full_access'\n\n[storage]\nbackend='postgres'\n",
         )
         .unwrap();
 
@@ -1700,6 +1735,7 @@ mod tests {
         assert!(error.contains("宿主控制面字段"));
         assert!(error.contains("providers.evil.base_url"));
         assert!(error.contains("permissions.mode"));
+        assert!(error.contains("storage.backend"));
     }
 
     #[test]
@@ -1823,7 +1859,10 @@ mod tests {
         assert_eq!(cfg.orchestrator.activation_admission.max_in_flight, 16);
         assert_eq!(cfg.orchestrator.max_delegation_depth, 3);
         assert_eq!(cfg.orchestrator.max_active_delegations_per_agent, 8);
-        assert_eq!(cfg.memory.sqlite_pool_size, 8);
+        assert_eq!(cfg.storage.backend, StorageBackend::Sqlite);
+        assert_eq!(cfg.storage.sqlite.path, "morphz.db");
+        assert_eq!(cfg.storage.sqlite.max_connections, 8);
+        assert_eq!(cfg.storage.postgres.url_env, "MORPHZ_POSTGRES_URL");
         assert_eq!(cfg.llm.max_retries, 5);
         assert_eq!(cfg.llm.request_timeout_secs, 120);
         assert_eq!(cfg.llm.max_output_tokens, None);
@@ -1860,13 +1899,14 @@ mod tests {
         let mut tmp_file = NamedTempFile::new().unwrap();
         writeln!(tmp_file, "[server]").unwrap();
         writeln!(tmp_file, "bind = \"0.0.0.0:9000\"").unwrap();
-        writeln!(tmp_file, "database_path = \"test.db\"").unwrap();
         writeln!(tmp_file, "broadcast_capacity = 2000").unwrap();
+        writeln!(tmp_file, "[storage.sqlite]").unwrap();
+        writeln!(tmp_file, "path = \"test.db\"").unwrap();
 
         let cfg = toml::from_str::<AppConfig>(&std::fs::read_to_string(tmp_file.path()).unwrap())
             .unwrap();
         assert_eq!(cfg.server.bind, "0.0.0.0:9000");
-        assert_eq!(cfg.server.database_path, "test.db");
+        assert_eq!(cfg.storage.sqlite.path, "test.db");
         // 未指定的部分应使用默认值
         assert_eq!(cfg.orchestrator.model_provider_max_in_flight, 4);
     }

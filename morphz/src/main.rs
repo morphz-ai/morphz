@@ -262,6 +262,9 @@ async fn main() -> Result<(), AppError> {
         .map(Path::to_path_buf)
         .collect::<Vec<_>>();
     let mut app_config = resolved.config;
+    if let Ok(path) = std::env::var("MORPHZ_STORAGE_SQLITE_PATH") {
+        app_config.storage.sqlite.path = path;
+    }
     protect_runtime_files(&mut app_config, &protected_config_paths);
 
     let default_agent_id =
@@ -274,10 +277,7 @@ async fn main() -> Result<(), AppError> {
     };
     let needs_workers = command_needs_llm(&invocation);
     let client = build_client(&invocation, &app_config, needs_workers)?;
-    let database_path =
-        std::env::var("MORPHZ_DB_PATH").unwrap_or_else(|_| app_config.server.database_path.clone());
     let runtime = MorphzRuntime::builder(app_config.clone(), client)
-        .database_path(database_path)
         .identity(identity)
         .build()
         .await?;

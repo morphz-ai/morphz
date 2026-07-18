@@ -1218,7 +1218,7 @@ fn runtime_environment(manifest: &MetacognitionEvalManifest) -> BTreeMap<String,
             manifest_context_id(manifest).to_string(),
         ),
         (
-            "MORPHZ_DB_PATH".to_string(),
+            "MORPHZ_STORAGE_SQLITE_PATH".to_string(),
             manifest.database_path.to_string_lossy().to_string(),
         ),
         (

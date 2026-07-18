@@ -44,7 +44,7 @@ cargo run -p morphz-evals --bin coding_eval_env -- create v2 /private/tmp/morphz
 输出 JSON 包含启动所需环境变量：
 
 - `MORPHZ_WORKSPACE_ROOT`
-- `MORPHZ_DB_PATH`
+- `MORPHZ_STORAGE_SQLITE_PATH`
 - `MORPHZ_ARTIFACT_DIR`
 - `MORPHZ_PERMISSION_MODE=auto_review`
 - `MORPHZ_EXEC_NETWORK=false`

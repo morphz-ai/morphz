@@ -624,7 +624,7 @@ acknowledge Activation
 - Event Writer 与 Provider 的有界背压和排队可观察性（已完成）；
 - 依据基准测试分别调整 Runtime 执行容量和模型并发，不再共用一个全局数字（已完成首个默认值，后续按部署负载调优）。
 
-### Phase 4：数据库级 CAS 与多 Worker（Context Authority 已落地，完整控制平面待实施）
+### Phase 4：数据库级 CAS 与多 Worker（完整 PostgreSQL Authority 已落地，部署验证待实施）
 
 - Runtime 依赖完整 `RuntimeStore` 而非具体 SQLite 类型（已完成）；
 - 建立可由多个后端复用的 Context transaction conformance suite（已完成首组核心契约）；
@@ -634,11 +634,34 @@ acknowledge Activation
 - PostgreSQL Execution Job claim/heartbeat/recovery/terminal authority（已完成并通过 PostgreSQL 15 实测）；
 - PostgreSQL Approval decision/one-use grant authority（已完成并通过 PostgreSQL 15 实测）；
 - PostgreSQL Session/Scheduler 六项 capability 与完整 `RuntimeStore`（已完成）；
+- 显式 `sqlite | postgres` 后端配置，SQLite 默认且绝不自动切换（已完成）；
 - 跨进程 Worker 的故障恢复与部署验证；
 - Runtime 横向扩展；
 - SQLite 继续作为默认单机后端。
 
-后端选择必须是显式配置：SQLite 永远不会因为检测到 URL、环境变量或运行规模而自动切换到 PostgreSQL。产品配置最终提供 `sqlite | postgres`；默认仍为 SQLite。PostgreSQL 连接凭证只通过命名凭证源/环境变量取得，不把含密码的连接 URL 写入普通配置或 `storage_label`。在 PostgreSQL 实现尚未通过 conformance suite 前，不暴露一个表面可选、实际不完整的配置值。
+后端选择必须是显式配置：SQLite 永远不会因为检测到 URL、环境变量或运行规模而自动切换到 PostgreSQL。默认配置等价于：
+
+```toml
+[storage]
+backend = "sqlite"
+
+[storage.sqlite]
+path = "morphz.db"
+max_connections = 8
+```
+
+只有明确选择 PostgreSQL 才连接服务数据库：
+
+```toml
+[storage]
+backend = "postgres"
+
+[storage.postgres]
+url_env = "MORPHZ_POSTGRES_URL"
+max_connections = 16
+```
+
+连接 URL 只从 `url_env` 指定的环境变量读取；不把含密码的 URL 写入普通配置、错误日志或 `storage_label`。项目级 `.morphz/config.toml` 不能改变 `storage.*`，避免工作区代码静默改变宿主持久层。
 
 ### Phase 5：按数据决定是否引入 Frame 级 MVCC
 

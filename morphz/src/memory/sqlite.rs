@@ -1,7 +1,7 @@
 use crate::approval_authority::{
     approval_decision_event, stable_approval_identity, stable_grant_id,
 };
-use crate::config::MemoryConfig;
+use crate::config::SqliteStorageConfig;
 use crate::event::Event;
 use crate::memory::{
     ActivationOutcomeCommit, ActivationStore, AgentBootstrapRecord, AgentRecord,
@@ -33,12 +33,12 @@ pub struct SqliteStore {
 
 impl SqliteStore {
     pub async fn new(db_path: &str) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        Self::new_with_config(db_path, &MemoryConfig::default()).await
+        Self::new_with_config(db_path, &SqliteStorageConfig::default()).await
     }
 
     pub async fn new_with_config(
         db_path: &str,
-        config: &MemoryConfig,
+        config: &SqliteStorageConfig,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let options = SqliteConnectOptions::new()
             .filename(db_path)
@@ -48,7 +48,7 @@ impl SqliteStore {
 
         // 启用连接池并发，利用 WAL 模式的单写多读优势。
         let pool = SqlitePoolOptions::new()
-            .max_connections(config.sqlite_pool_size.max(1))
+            .max_connections(config.max_connections.max(1))
             .connect_with(options)
             .await?;
 

@@ -162,7 +162,7 @@ pub async fn create_context_pressure_eval(
         ("MORPHZ_SESSION_ID".to_string(), session_id),
         ("MORPHZ_CONTEXT_ID".to_string(), context_id),
         (
-            "MORPHZ_DB_PATH".to_string(),
+            "MORPHZ_STORAGE_SQLITE_PATH".to_string(),
             database_path.to_string_lossy().to_string(),
         ),
         (
