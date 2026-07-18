@@ -4,16 +4,16 @@ use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     ActivationOutcomeCommit, ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore,
-    DeliveryFlushCommit, DeliveryStatus, EventAppend, EventStore, ExecutionApprovalMutation,
-    ExecutionApprovalStore, ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionJobTerminal, ExecutionRetrySafety, MindProjectionCommit, MindProjectionStore,
-    NewAgent, NewApprovalRequest, NewCognitiveContext, NewExecutionJob, NewMindProjection,
-    NewObjective, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
-    ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
-    RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation, ScheduleStatus, ScheduleStore,
-    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionUpdate,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationStatus, ThreadKind,
-    ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
+    DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, EventAppend, EventStore,
+    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobMutation, ExecutionJobStatus,
+    ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim,
+    MindProjectionCommit, MindProjectionStore, NewAgent, NewApprovalRequest, NewCognitiveContext,
+    NewExecutionJob, NewMindProjection, NewObjective, NewRuntimeTimer, NewSession, NewThread,
+    NewThreadActivation, NewThreadSignal, ObjectiveMutation, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation,
+    ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
+    SessionStatus, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
+    ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
 };
 use morphz::memory::{ActivationStore, SessionDirectoryStore};
 use serde_json::json;
@@ -826,6 +826,186 @@ where
         .unwrap()
         .iter()
         .any(|schedule| schedule.id == "conformance-schedule-dispatch"));
+}
+
+async fn assert_delivery_ingress_conformance<S>(store: Arc<S>)
+where
+    S: DeliveryIngressStore
+        + EventStore
+        + SessionDirectoryStore
+        + ThreadStore
+        + Send
+        + Sync
+        + 'static,
+{
+    let session = store
+        .get_session("conformance-session")
+        .await
+        .unwrap()
+        .unwrap();
+    if session.attention_state != SessionAttentionState::Retired {
+        store
+            .update_session_attention(SessionAttentionUpdate {
+                session_id: session.id.clone(),
+                context_id: session.context_id.clone(),
+                expected_revision: session.attention_revision,
+                state: SessionAttentionState::Retired,
+                reason: Some("delivery ingress conformance".to_string()),
+                changed_at: chrono::Utc::now(),
+                event_id: "conformance-ingress-retire".to_string(),
+            })
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    let message = Event::new(
+        "conformance-ingress-message".to_string(),
+        "user".to_string(),
+        "user_message".to_string(),
+        "chat/user".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "text": "hello"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let first_claim = {
+        let store = Arc::clone(&store);
+        let event = message.clone();
+        tokio::spawn(async move {
+            store
+                .claim_message("conformance-session", "client-message-a", &event)
+                .await
+        })
+    };
+    let second_claim = {
+        let store = Arc::clone(&store);
+        let event = message.clone();
+        tokio::spawn(async move {
+            store
+                .claim_message("conformance-session", "client-message-a", &event)
+                .await
+        })
+    };
+    let claims = [
+        first_claim.await.unwrap().unwrap(),
+        second_claim.await.unwrap().unwrap(),
+    ];
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| matches!(claim, MessageClaim::Accepted))
+            .count(),
+        1
+    );
+    assert_eq!(
+        claims
+            .iter()
+            .filter(|claim| matches!(claim, MessageClaim::Existing { event_id } if event_id == &message.id))
+            .count(),
+        1
+    );
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(message.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let restored = store
+        .get_session("conformance-session")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.attention_state, SessionAttentionState::Active);
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(format!("runtime_session_restored_{}", message.id)),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let delivery_thread = store
+        .ensure_thread(NewThread {
+            id: "conformance-ingress-delivery-thread".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-session".to_string(),
+            root_turn_id: "root-conformance-ingress-delivery".to_string(),
+            kind: ThreadKind::Delivery,
+            executor_kind: "runtime".to_string(),
+            executor_id: None,
+        })
+        .await
+        .unwrap();
+    let pending = match store
+        .update_thread(
+            &delivery_thread.id,
+            delivery_thread.revision,
+            None,
+            Some(ThreadLifecycle::Completed),
+            Some("delivered once"),
+            Some("conformance-ingress-result"),
+            Some(DeliveryStatus::Pending),
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        ThreadMutation::Updated(thread) => thread,
+        mutation => panic!("unexpected pending delivery mutation: {mutation:?}"),
+    };
+    let delivery = Event::new(
+        "conformance-ingress-delivery".to_string(),
+        "Store-Conformance".to_string(),
+        "agent_reply".to_string(),
+        "chat/assistant".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "text": "delivered once"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let thread_ids = vec![pending.id.clone()];
+    let first_delivery = {
+        let store = Arc::clone(&store);
+        let event = delivery.clone();
+        let ids = thread_ids.clone();
+        tokio::spawn(async move { store.commit_thread_delivery(&ids, &event).await })
+    };
+    let second_delivery = {
+        let store = Arc::clone(&store);
+        let event = delivery.clone();
+        let ids = thread_ids.clone();
+        tokio::spawn(async move { store.commit_thread_delivery(&ids, &event).await })
+    };
+    let deliveries = [
+        first_delivery.await.unwrap().unwrap(),
+        second_delivery.await.unwrap().unwrap(),
+    ];
+    assert_eq!(deliveries.iter().filter(|delivered| **delivered).count(), 1);
+    let delivered = store.get_thread(&pending.id).await.unwrap().unwrap();
+    assert_eq!(delivered.delivery_status, DeliveryStatus::Delivered);
+    assert_eq!(
+        delivered.delivery_event_id.as_deref(),
+        Some(delivery.id.as_str())
+    );
 }
 
 /// Database-independent contract for the Context transaction boundary. A new
@@ -1723,6 +1903,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
+    assert_delivery_ingress_conformance(Arc::clone(&store)).await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
     assert_objective_lease_conformance(Arc::clone(&store)).await;
     store
@@ -1788,6 +1969,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
+    assert_delivery_ingress_conformance(Arc::clone(&store)).await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
     assert_objective_lease_conformance(Arc::clone(&store)).await;
     store
