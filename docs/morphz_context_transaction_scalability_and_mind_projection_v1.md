@@ -30,7 +30,7 @@
 - 完整 Activation 准入与模型 Provider 配额已经解耦：默认最多运行 16 个 Activation、同时占用 4 个模型请求槽位；等待工具、定时器或审批不会错误占用 Provider 槽位。
 - Provider 的 queued、in-flight、max-in-flight 与累计取得槽位次数已进入统一 Scheduler Snapshot；CLI、HTTP API、Rust SDK 与 Dashboard 使用同一事实源。
 - Runtime 持久层已从具体 `Arc<SqliteStore>` 解耦为一份完整的 `RuntimeStore` capability composition；SDK 可以显式注入后端，所有原子能力必须由同一个 Store 提供，禁止把一次因果提交拆到互不相关的数据库。
-- 已建立数据库无关的 Context transaction conformance suite；SQLite 已通过并发 revision CAS、Projection/Event/Session attention 原子一致和失败 Batch 全回滚测试。未来 PostgreSQL 必须通过同一套契约后才允许进入产品配置。
+- 已建立数据库无关的完整 RuntimeStore conformance suite；SQLite/PostgreSQL 均已通过 Context revision CAS、Projection/Event/Session attention 原子一致、Scheduler authority 和失败 Batch 全回滚测试。
 - PostgreSQL Context Authority 已实现 Event Ledger/query、原子 Batch/outbox、Mind Projection/head revision CAS、Snapshot、seed provenance 和 Session attention 同事务更新；已在临时 PostgreSQL 15 实例上与 SQLite 运行同一套 Context transaction conformance suite 并通过。
 - PostgreSQL 物理 Timer Store 已实现 generation fence、leased claim、retry/complete/cancel；到期领取使用 `FOR UPDATE SKIP LOCKED`，两个并发 Worker 已通过同一套无重复 claim 测试。
 - PostgreSQL Objective Store 已实现生命周期 revision CAS、等待条件、求值 lease、用量记账，以及“求值 lease + continuation Event/outbox”原子提交；SQLite/PostgreSQL 已通过同版本双写只允许一个胜者和 Event 冲突整笔回滚测试。
@@ -46,11 +46,13 @@
 - `RuntimeStore` 现在显式声明 `ExclusiveProcess | SharedLeases` Worker 协调模式：SQLite 启动时可以立即恢复本机遗留的运行中 Job；PostgreSQL 新 Worker 不得把其他 Worker 的有效 lease 误判成崩溃，只在 lease 到期后执行 revision-fenced requeue/lost reconciliation。
 - 已在临时 PostgreSQL 15 上以两个独立 `PostgresStore` 连接池竞争同一 Context、Activation、Execution Job、Objective 和 Timer；Context CAS、所有权 claim 与 lease 均只有一个胜者，过期 Execution lease 可由另一实例恢复。
 - 已在同一 PostgreSQL schema 中启动两个完整 Morphz Runtime，并向共享 Context/Session 提交一条消息；实测只发生一次模型求值、只持久化一条 `chat/reply`，证明调度 single-flight 不依赖单个 Runtime 对象的进程内状态。
+- PostgreSQL schema migration 使用数据库级 advisory lock 串行化；两个 Runtime 进程可同时首次启动同一新 schema，不再因并发 DDL 产生 `tuple concurrently updated`。
+- 已增加可复现的 `postgres_multi_process_probe`：父进程启动两个真实子 Runtime 进程竞争同一条消息，并额外强制终止一个持有短 Execution lease 的进程。实测 `ready_workers=2`、`model_calls=1`、`replies=1`，且到期 Job 被另一新进程安全重排。首份结果见 [PostgreSQL Multi-Process Probe — 2026-07-18](./benchmarks/postgres_multi_process_probe_2026-07-18.md)。
 
 仍待实施：
 
 - 面向真实公网负载的容量持续采样，以及按 Provider/Agent/Context 的进一步分层配额；
-- 真正双 OS 进程/跨主机的故障注入与部署验证；
+- 跨主机和生产编排环境的故障注入与容量验证；
 - 只有真实冲突数据证明有必要时，才评估 Frame 级 MVCC。
 
 ## 1. 本文结论
@@ -64,13 +66,13 @@ Morphz 已经具备一套成立的 Context 并发语义：
 - Mind 可以通过 Ledger 确定性重放，退役内容仍可恢复；
 - `session_working_set.max_sessions = 1` 时，每次模型求值只完整投影当前 Session，同时继续读取共享 Mind。
 
-因此，当前实现作为单进程、单 SQLite 数据库的本地 Agent Runtime 是足够的。数据库级 CAS 已经消除了同一数据库上多个 Runtime 实例发生 lost update 的可能，PostgreSQL 双 Runtime 也完成了首轮同进程部署级验证；在真正双 OS 进程/跨主机故障注入完成前，仍不宣称完整生产级横向扩展。
+因此，当前实现作为单进程、单 SQLite 数据库的本地 Agent Runtime 是足够的。数据库级 CAS 已经消除了同一数据库上多个 Runtime 实例发生 lost update 的可能，PostgreSQL 已完成双 Runtime、双 OS 进程和进程终止后的 lease 恢复验证；在跨主机、数据库故障切换和生产编排环境验证完成前，仍不宣称完整生产级横向扩展。
 
 但它还不是高性能分布式服务实现。主要缺口不是 DSL 表达能力，而是：
 
 1. SQLite WAL 仍然是单物理写者；
 2. Event Writer 已能 group commit 并有首份目标硬件吞吐基线，但尚缺真实公网负载的持续尾延迟数据；
-3. 多 Runtime Worker 已通过独立连接池和双完整 Runtime 验证，尚缺双 OS 进程/跨主机故障注入；
+3. 多 Runtime Worker 已通过独立连接池、双完整 Runtime、双 OS 进程和进程崩溃恢复验证，尚缺跨主机与生产编排故障注入；
 4. 容量指标和基准数据尚不足以决定是否需要 Frame 级 MVCC。
 
 目标架构不是取消 Event Ledger，也不是让 Runtime 接管 Frame 语义，而是增加一个可验证、可重建的在线 `Mind Projection`，把高频服务路径与完整历史审计路径分开。
@@ -627,7 +629,7 @@ acknowledge Activation
 - Event Writer 与 Provider 的有界背压和排队可观察性（已完成）；
 - 依据基准测试分别调整 Runtime 执行容量和模型并发，不再共用一个全局数字（已完成首个默认值，后续按部署负载调优）。
 
-### Phase 4：数据库级 CAS 与多 Worker（完整 PostgreSQL Authority 与首轮双 Runtime 验证已落地）
+### Phase 4：数据库级 CAS 与多 Worker（首个可部署版本已完成）
 
 - Runtime 依赖完整 `RuntimeStore` 而非具体 SQLite 类型（已完成）；
 - 建立可由多个后端复用的 Context transaction conformance suite（已完成首组核心契约）；
@@ -641,8 +643,10 @@ acknowledge Activation
 - 独立 Store/连接池的 Context、Activation、Execution、Objective、Timer 仲裁（已完成）；
 - 两个完整 Runtime 共享 PostgreSQL 的 single-flight 求值与精确一次回复（已完成）；
 - Shared lease 启动恢复不抢占存活 Worker、到期后允许接管（已完成）；
-- 真正双 OS 进程/跨主机 Worker 的故障注入与部署验证；
-- 生产级 Runtime 横向扩展；
+- PostgreSQL migration 跨进程互斥（已完成）；
+- 双 OS 进程 single-flight 与 Worker crash/lease 到期恢复（已完成）；
+- 跨主机、数据库故障切换和生产编排环境验证；
+- 生产级 Runtime 横向扩展与容量调优；
 - SQLite 继续作为默认单机后端。
 
 后端选择必须是显式配置：SQLite 永远不会因为检测到 URL、环境变量或运行规模而自动切换到 PostgreSQL。默认配置等价于：

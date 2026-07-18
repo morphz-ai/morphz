@@ -2,10 +2,10 @@
 //!
 //! This module is growing from the Context transaction authority outward:
 //! immutable Events, Mind Projection/head CAS, snapshots, Session attention,
-//! physical Timer leases and Objective evaluation leases already have complete
-//! PostgreSQL semantics. The Runtime does not select this backend yet; it
-//! becomes selectable only after the remaining scheduler control-plane traits
-//! pass the shared Store conformance suite.
+//! physical Timer leases, scheduler control-plane state and Objective
+//! evaluation leases have complete PostgreSQL semantics. Selection remains an
+//! explicit product configuration; merely defining a PostgreSQL URL never
+//! changes the active backend.
 
 use crate::event::Event;
 use crate::memory::{
@@ -16,10 +16,15 @@ use crate::memory::{
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
-use sqlx::postgres::{PgPoolOptions, PgRow};
-use sqlx::{PgPool, Postgres, QueryBuilder, Row};
+use sqlx::postgres::{PgConnection, PgPoolOptions, PgRow};
+use sqlx::{Connection, PgPool, Postgres, QueryBuilder, Row};
 
 type StoreError = Box<dyn std::error::Error + Send + Sync>;
+
+// Stable database-scoped lock for schema installation. It is held on a
+// dedicated connection so a Store configured with a one-connection pool can
+// still migrate without deadlocking itself.
+const SCHEMA_MIGRATION_LOCK: i64 = 0x4D4F_5250_485A_0001_i64;
 
 mod activation;
 mod approval;
@@ -36,19 +41,34 @@ pub struct PostgresStore {
 
 impl PostgresStore {
     pub async fn new(database_url: &str, max_connections: u32) -> Result<Self, StoreError> {
+        let mut migration_lock = PgConnection::connect(database_url).await?;
+        sqlx::query("SELECT pg_advisory_lock($1)")
+            .bind(SCHEMA_MIGRATION_LOCK)
+            .execute(&mut migration_lock)
+            .await?;
         let pool = PgPoolOptions::new()
             .max_connections(max_connections.max(1))
             .connect(database_url)
             .await?;
         let store = Self { pool };
-        store.migrate_supported_capabilities().await?;
-        execution::migrate(&store.pool).await?;
-        approval::migrate(&store.pool).await?;
-        thread::migrate(&store.pool).await?;
-        activation::migrate(&store.pool).await?;
-        schedule::migrate(&store.pool).await?;
-        delivery::migrate(&store.pool).await?;
-        delegation::migrate(&store.pool).await?;
+        let migrations = async {
+            store.migrate_supported_capabilities().await?;
+            execution::migrate(&store.pool).await?;
+            approval::migrate(&store.pool).await?;
+            thread::migrate(&store.pool).await?;
+            activation::migrate(&store.pool).await?;
+            schedule::migrate(&store.pool).await?;
+            delivery::migrate(&store.pool).await?;
+            delegation::migrate(&store.pool).await?;
+            Ok::<(), StoreError>(())
+        }
+        .await;
+        let unlock = sqlx::query("SELECT pg_advisory_unlock($1)")
+            .bind(SCHEMA_MIGRATION_LOCK)
+            .execute(&mut migration_lock)
+            .await;
+        migrations?;
+        unlock?;
         Ok(store)
     }
 
