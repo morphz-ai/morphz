@@ -1,6 +1,7 @@
 use morphz::config::OrchestratorConfig;
 use morphz::event::Event;
 use morphz::memory::sqlite::SqliteStore;
+use morphz::memory::SessionDirectoryStore as _;
 use morphz::memory::{
     EventAppend, EventStore, MindProjectionStore, NewCognitiveContext, NewSession, QueryFilter,
     SessionMountKind, SessionStore,

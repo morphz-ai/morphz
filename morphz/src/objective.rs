@@ -1796,7 +1796,8 @@ mod tests {
     use super::*;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        NewAgent, NewCognitiveContext, NewSession, SessionMountKind, SessionStore, TimerStore,
+        NewAgent, NewCognitiveContext, NewSession, SessionDirectoryStore as _, SessionMountKind,
+        TimerStore,
     };
     use tempfile::NamedTempFile;
 

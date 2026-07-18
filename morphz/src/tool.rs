@@ -5778,8 +5778,9 @@ mod tests {
     use crate::approval::{ApprovalDecision, ApprovalRequest};
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        NewAgent, NewCognitiveContext, NewSchedule, NewSession, NewThreadActivation,
-        SessionMountKind, SessionStore, ThreadLifecycle, TimerStore,
+        ActivationStore as _, NewAgent, NewCognitiveContext, NewSchedule, NewSession,
+        NewThreadActivation, ScheduleStore as _, SessionDirectoryStore as _, SessionMountKind,
+        SessionStore, ThreadLifecycle, ThreadStore as _, TimerStore,
     };
     use crate::permission::PermissionMode;
     #[cfg(target_os = "macos")]

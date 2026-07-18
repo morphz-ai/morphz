@@ -3,6 +3,7 @@ use chrono::Utc;
 use morphz::config::OrchestratorConfig;
 use morphz::event::Event;
 use morphz::memory::sqlite::SqliteStore;
+use morphz::memory::SessionDirectoryStore as _;
 use morphz::memory::{EventStore, QueryFilter, SessionStore};
 use morphz::orchestrator::context::CONTEXT_PROTOCOL_VERSION;
 use morphz::orchestrator::context::{

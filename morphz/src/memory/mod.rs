@@ -1465,7 +1465,7 @@ pub trait ExecutionApprovalStore: Send + Sync {
 /// Persistent product-level Session directory. It deliberately owns routing and
 /// lifecycle metadata only; Mind semantics remain in the Context event stream.
 #[async_trait::async_trait]
-pub trait SessionStore: Send + Sync {
+pub trait SessionDirectoryStore: Send + Sync {
     async fn create_agent_bundle(
         &self,
         agent: NewAgent,
@@ -1547,6 +1547,12 @@ pub trait SessionStore: Send + Sync {
         &self,
         update: SessionAttentionUpdate,
     ) -> Result<Option<SessionRecord>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Durable Signal/Activation scheduler boundary. This owns runnable work and
+/// its lease-fenced outcome, not product-level Session metadata.
+#[async_trait::async_trait]
+pub trait ActivationStore: Send + Sync {
     /// Atomically append a Context transaction event and update all affected
     /// Session mount attention rows.
     async fn commit_context_transaction(
@@ -1625,12 +1631,17 @@ pub trait SessionStore: Send + Sync {
         context_snapshot_version: Option<u64>,
     ) -> Result<ThreadActivationMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Claim the one terminal outcome for a Thread Activation and append
-    /// it in the same SQLite transaction.
+    /// it in the same Store transaction.
     async fn commit_activation_outcome(
         &self,
         activation_id: &str,
         event: &crate::event::Event,
     ) -> Result<ActivationOutcomeCommit, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Stable Thread lifecycle and completion-delivery projection.
+#[async_trait::async_trait]
+pub trait ThreadStore: Send + Sync {
     async fn ensure_thread(
         &self,
         thread: NewThread,
@@ -1700,6 +1711,11 @@ pub trait SessionStore: Send + Sync {
         delivery_status: Option<DeliveryStatus>,
         delivery_event_id: Option<&str>,
     ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Durable scheduling intentions and their revision-fenced dispatches.
+#[async_trait::async_trait]
+pub trait ScheduleStore: Send + Sync {
     async fn ensure_schedule(
         &self,
         intent: NewSchedule,
@@ -1784,6 +1800,11 @@ pub trait SessionStore: Send + Sync {
         next_not_before: Option<DateTime<Utc>>,
         event: &crate::event::Event,
     ) -> Result<Option<ScheduleRecord>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Atomic user-message ingress and user-visible Thread delivery boundary.
+#[async_trait::async_trait]
+pub trait DeliveryIngressStore: Send + Sync {
     /// Atomically append one user-visible delivery and mark every covered
     /// completion delivered. A completion can therefore never be delivered by
     /// two concurrent Delivery evaluations.
@@ -1798,6 +1819,11 @@ pub trait SessionStore: Send + Sync {
         client_message_id: &str,
         event: &crate::event::Event,
     ) -> Result<MessageClaim, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Parent/child delegation routing and result handoff.
+#[async_trait::async_trait]
+pub trait DelegationStore: Send + Sync {
     async fn create_delegation(
         &self,
         delegation: NewDelegation,
@@ -1826,6 +1852,32 @@ pub trait SessionStore: Send + Sync {
         id: &str,
         event: &crate::event::Event,
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Complete Session and scheduler authority required by a Runtime backend.
+///
+/// The capability traits above let a new physical backend land and verify one
+/// coherent boundary at a time. This composition remains the product-facing
+/// contract, so a partially implemented backend can never be selected by the
+/// Runtime.
+pub trait SessionStore:
+    SessionDirectoryStore
+    + ActivationStore
+    + ThreadStore
+    + ScheduleStore
+    + DeliveryIngressStore
+    + DelegationStore
+{
+}
+
+impl<T> SessionStore for T where
+    T: SessionDirectoryStore
+        + ActivationStore
+        + ThreadStore
+        + ScheduleStore
+        + DeliveryIngressStore
+        + DelegationStore
+{
 }
 
 /// Persistent Objective control plane. Implementations enforce lifecycle and

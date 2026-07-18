@@ -1938,6 +1938,7 @@ fn env_flag_enabled(name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::llm::{Message, Response, ToolCallRepr, ToolDefinition};
+    use crate::memory::SessionDirectoryStore as _;
     use crate::permission::PermissionMode;
     use tempfile::NamedTempFile;
 

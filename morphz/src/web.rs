@@ -1672,6 +1672,7 @@ mod tests {
         Client, Message, ModelStreamEvent, ModelStreamSender, PromptTokenCount, ReasoningEffort,
         Response, ToolDefinition,
     };
+    use crate::memory::{ScheduleStore as _, ThreadStore as _};
     use crate::runtime::{RuntimeIdentity, RuntimeToolPolicy};
     use tempfile::NamedTempFile;
 
@@ -2274,7 +2275,7 @@ mod tests {
     #[tokio::test]
     async fn schedule_control_endpoint_is_revision_fenced() {
         use crate::memory::sqlite::SqliteStore;
-        use crate::memory::{NewSchedule, NewThread, SessionStore, ThreadKind};
+        use crate::memory::{NewSchedule, NewThread, ThreadKind};
 
         let (state, runtime) = test_state().await;
         runtime

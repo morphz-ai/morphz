@@ -2,6 +2,7 @@ use morphz::approval_authority::stable_approval_identity;
 use morphz::event::Event;
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
+use morphz::memory::{ActivationStore as _, SessionDirectoryStore as _, ThreadStore as _};
 use morphz::memory::{
     ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore, EventAppend, EventStore,
     ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobMutation, ExecutionJobStatus,
@@ -10,7 +11,7 @@ use morphz::memory::{
     NewMindProjection, NewObjective, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation,
     ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
     RuntimeTimerKind, RuntimeTimerStatus, SessionAttentionState, SessionAttentionUpdate,
-    SessionMountKind, SessionStore, ThreadKind, TimerStore,
+    SessionMountKind, ThreadKind, TimerStore,
 };
 use serde_json::json;
 use std::future::Future;

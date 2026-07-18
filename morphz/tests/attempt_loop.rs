@@ -8,9 +8,11 @@ use morphz::llm::{
 };
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    DelegationStatus, EventStore, NewAgent, NewCognitiveContext, NewSession, NewThread,
-    NewThreadActivation, QueryFilter, SessionMountKind, SessionStore, ThreadActivationMutation,
-    ThreadActivationStatus, ThreadKind, ThreadLifecycle, TimerStore,
+    ActivationStore as _, DelegationStatus, DelegationStore as _, EventStore, NewAgent,
+    NewCognitiveContext, NewSession, NewThread, NewThreadActivation, QueryFilter,
+    SessionDirectoryStore as _, SessionMountKind, SessionStore,
+    ThreadActivationMutation, ThreadActivationStatus, ThreadKind, ThreadLifecycle,
+    ThreadStore as _, TimerStore,
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;

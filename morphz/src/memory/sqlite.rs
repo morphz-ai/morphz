@@ -4,22 +4,23 @@ use crate::approval_authority::{
 use crate::config::MemoryConfig;
 use crate::event::Event;
 use crate::memory::{
-    ActivationOutcomeCommit, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit,
-    ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus,
-    ApprovalStore, CognitiveContextRecord, DelegationRecord, DelegationStatus, DeliveryFlushCommit,
-    DeliveryStatus, EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
-    ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim,
-    MindProjectionCommit, MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewAgent,
-    NewApprovalRequest, NewCognitiveContext, NewDelegation, NewExecutionJob, NewMindProjection,
-    NewObjective, NewRuntimeTimer, NewSchedule, NewSession, NewThread, NewThreadActivation,
-    NewThreadSignal, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus,
-    ScheduleMutation, ScheduleRecord, ScheduleStatus, SessionAttentionState,
-    SessionAttentionUpdate, SessionMountKind, SessionRecord, SessionStatus, SessionStore,
-    SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, TimerStore,
+    ActivationOutcomeCommit, ActivationStore, AgentBootstrapRecord, AgentRecord,
+    ApprovalAuditCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
+    ApprovalStatus, ApprovalStore, CognitiveContextRecord, DelegationRecord, DelegationStatus,
+    DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, EventAppend,
+    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
+    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim, MindProjectionCommit,
+    MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewAgent, NewApprovalRequest,
+    NewCognitiveContext, NewDelegation, NewExecutionJob, NewMindProjection, NewObjective,
+    NewRuntimeTimer, NewSchedule, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
+    ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
+    QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation,
+    ScheduleRecord, ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate,
+    SessionDirectoryStore, SessionMountKind, SessionRecord, SessionStatus, SessionUpdate,
+    SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord,
+    ThreadSignalRecord, ThreadSignalStatus, ThreadStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -2163,7 +2164,7 @@ impl MindProjectionStore for SqliteStore {
 }
 
 #[async_trait::async_trait]
-impl SessionStore for SqliteStore {
+impl SessionDirectoryStore for SqliteStore {
     async fn create_agent_bundle(
         &self,
         agent: NewAgent,
@@ -2650,7 +2651,10 @@ impl SessionStore for SqliteStore {
         }
         self.get_session(&update.session_id).await
     }
+}
 
+#[async_trait::async_trait]
+impl ActivationStore for SqliteStore {
     async fn commit_context_transaction(
         &self,
         event: &Event,
@@ -3398,7 +3402,10 @@ impl SessionStore for SqliteStore {
         tx.commit().await?;
         Ok(ActivationOutcomeCommit::Committed)
     }
+}
 
+#[async_trait::async_trait]
+impl ThreadStore for SqliteStore {
     async fn ensure_thread(
         &self,
         thread: NewThread,
@@ -3862,7 +3869,10 @@ impl SessionStore for SqliteStore {
             None => ThreadMutation::NotFound,
         })
     }
+}
 
+#[async_trait::async_trait]
+impl ScheduleStore for SqliteStore {
     async fn ensure_schedule(
         &self,
         intent: NewSchedule,
@@ -4335,7 +4345,10 @@ impl SessionStore for SqliteStore {
         tx.commit().await?;
         self.get_schedule(id).await
     }
+}
 
+#[async_trait::async_trait]
+impl DeliveryIngressStore for SqliteStore {
     async fn commit_thread_delivery(
         &self,
         thread_ids: &[String],
@@ -4498,7 +4511,10 @@ impl SessionStore for SqliteStore {
             event_id: existing.get("event_id"),
         })
     }
+}
 
+#[async_trait::async_trait]
+impl DelegationStore for SqliteStore {
     async fn create_delegation(
         &self,
         delegation: NewDelegation,

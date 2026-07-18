@@ -5358,7 +5358,8 @@ mod tests {
     use super::*;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        NewAgent, NewCognitiveContext, NewSession, ObjectiveStatus, SessionMountKind, SessionStore,
+        DeliveryIngressStore as _, NewAgent, NewCognitiveContext, NewSession, ObjectiveStatus,
+        SessionDirectoryStore as _, SessionMountKind, SessionStore,
     };
     use tempfile::TempDir;
 
