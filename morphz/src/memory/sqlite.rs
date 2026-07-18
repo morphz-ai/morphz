@@ -6763,6 +6763,15 @@ impl ExecutionApprovalStore for SqliteStore {
         }
 
         let mut tx = self.pool.begin().await?;
+        // Acquire SQLite's single-writer slot before creating a deferred read
+        // snapshot. Two Runtime workers may race to consume the same one-use
+        // Grant; serializing this aggregate boundary makes the loser observe a
+        // typed revision conflict instead of SQLITE_BUSY during read-to-write
+        // snapshot upgrade.
+        sqlx::query("UPDATE execution_jobs SET revision = revision WHERE id = ?")
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
         let job_row = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
             .bind(job_id)
             .fetch_optional(&mut *tx)

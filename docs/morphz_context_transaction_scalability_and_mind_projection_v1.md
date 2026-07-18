@@ -35,6 +35,7 @@
 - PostgreSQL 物理 Timer Store 已实现 generation fence、leased claim、retry/complete/cancel；到期领取使用 `FOR UPDATE SKIP LOCKED`，两个并发 Worker 已通过同一套无重复 claim 测试。
 - PostgreSQL Objective Store 已实现生命周期 revision CAS、等待条件、求值 lease、用量记账，以及“求值 lease + continuation Event/outbox”原子提交；SQLite/PostgreSQL 已通过同版本双写只允许一个胜者和 Event 冲突整笔回滚测试。
 - PostgreSQL Execution Job Store 已实现因果路由验证、revision/claim-token 双重 fence、heartbeat、requeue/cancel、不可逆终态，以及“物理终态 + tool-output Event”原子且幂等提交；并发 Worker claim 与陈旧 claim 拒绝已通过跨后端契约测试。
+- PostgreSQL Approval Authority 已实现稳定请求身份、决策/取消 revision fence、不可逆审计 Event、一次性 Grant，以及“消费 Grant + claim Execution Job”跨聚合原子提交；并发消费只有一个 Worker 获胜。相同测试还发现并修复了 SQLite 在 Grant 竞争中由 deferred snapshot 升级引发的 `SQLITE_BUSY`。
 
 仍待实施：
 
@@ -624,7 +625,8 @@ acknowledge Activation
 - PostgreSQL Timer lease 与跨 Worker `SKIP LOCKED` claim（已完成并通过 PostgreSQL 15 实测）；
 - PostgreSQL Objective lifecycle/evaluation lease（已完成并通过 PostgreSQL 15 实测）；
 - PostgreSQL Execution Job claim/heartbeat/recovery/terminal authority（已完成并通过 PostgreSQL 15 实测）；
-- PostgreSQL Session/Scheduler/Approval 完整 `RuntimeStore`；
+- PostgreSQL Approval decision/one-use grant authority（已完成并通过 PostgreSQL 15 实测）；
+- PostgreSQL Session/Scheduler 完整 `RuntimeStore`；
 - Activation lease、Worker recovery 与幂等 Outcome；
 - Runtime 横向扩展；
 - SQLite 继续作为默认单机后端。

@@ -188,7 +188,7 @@ fn parse_retry_safety(value: &str) -> Result<ExecutionRetrySafety, StoreError> {
     }
 }
 
-fn execution_job_from_row(row: &PgRow) -> Result<ExecutionJobRecord, StoreError> {
+pub(super) fn execution_job_from_row(row: &PgRow) -> Result<ExecutionJobRecord, StoreError> {
     Ok(ExecutionJobRecord {
         id: row.get("id"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,
@@ -229,7 +229,7 @@ fn optional_time(row: &PgRow, column: &str) -> Result<Option<DateTime<Utc>>, Sto
         .transpose()
 }
 
-fn validate_new_job(job: &NewExecutionJob) -> Result<(), StoreError> {
+pub(super) fn validate_new_job(job: &NewExecutionJob) -> Result<(), StoreError> {
     for (field, value) in [
         ("id", job.id.as_str()),
         ("activation_id", job.activation_id.as_str()),
@@ -247,10 +247,10 @@ fn validate_new_job(job: &NewExecutionJob) -> Result<(), StoreError> {
     Ok(())
 }
 
-async fn ensure_job_in_tx(
+pub(super) async fn ensure_job_in_tx(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     job: &NewExecutionJob,
-) -> Result<ExecutionJobRecord, StoreError> {
+) -> Result<(ExecutionJobRecord, bool), StoreError> {
     validate_new_job(job)?;
     let status = if job.requires_approval {
         ExecutionJobStatus::WaitingApproval
@@ -285,7 +285,7 @@ async fn ensure_job_in_tx(
     {
         return Err("Execution Job 的 Agent/Context/Session/Root Turn 因果边界不一致".into());
     }
-    sqlx::query(
+    let inserted = sqlx::query(
         r#"INSERT INTO execution_jobs
            (id, revision, activation_id, thread_id, agent_id, context_id,
             session_id, tool_call_id, tool_name, request_json, status,
@@ -336,7 +336,7 @@ async fn ensure_job_in_tx(
         )
         .into());
     }
-    Ok(existing)
+    Ok((existing, inserted.rows_affected() == 1))
 }
 
 async fn mutation_failure(
@@ -400,7 +400,7 @@ impl ExecutionJobStore for PostgresStore {
         job: NewExecutionJob,
     ) -> Result<ExecutionJobRecord, StoreError> {
         let mut tx = self.pool.begin().await?;
-        let job = ensure_job_in_tx(&mut tx, &job).await?;
+        let (job, _) = ensure_job_in_tx(&mut tx, &job).await?;
         tx.commit().await?;
         Ok(job)
     }

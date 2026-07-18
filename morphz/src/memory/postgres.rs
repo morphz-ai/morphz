@@ -22,6 +22,7 @@ use sqlx::{PgPool, Postgres, QueryBuilder, Row};
 
 type StoreError = Box<dyn std::error::Error + Send + Sync>;
 
+mod approval;
 mod execution;
 
 pub struct PostgresStore {
@@ -37,6 +38,7 @@ impl PostgresStore {
         let store = Self { pool };
         store.migrate_supported_capabilities().await?;
         execution::migrate(&store.pool).await?;
+        approval::migrate(&store.pool).await?;
         Ok(store)
     }
 

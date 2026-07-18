@@ -1,14 +1,16 @@
+use morphz::approval_authority::stable_approval_identity;
 use morphz::event::Event;
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    EventAppend, EventStore, ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionJobTerminal, ExecutionRetrySafety, MindProjectionCommit, MindProjectionStore,
-    NewAgent, NewCognitiveContext, NewExecutionJob, NewMindProjection, NewObjective,
-    NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, ObjectiveMutation,
-    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind,
-    RuntimeTimerStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
-    SessionStore, ThreadKind, TimerStore,
+    ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore, EventAppend, EventStore,
+    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobMutation, ExecutionJobStatus,
+    ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, MindProjectionCommit,
+    MindProjectionStore, NewAgent, NewApprovalRequest, NewCognitiveContext, NewExecutionJob,
+    NewMindProjection, NewObjective, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation,
+    ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
+    RuntimeTimerKind, RuntimeTimerStatus, SessionAttentionState, SessionAttentionUpdate,
+    SessionMountKind, SessionStore, ThreadKind, TimerStore,
 };
 use serde_json::json;
 use std::future::Future;
@@ -685,6 +687,207 @@ where
     ));
 }
 
+fn approval_bundle(
+    job_id: &str,
+    tool_call_id: &str,
+) -> (NewExecutionJob, NewApprovalRequest, Event) {
+    let mut job = execution_job(job_id, tool_call_id);
+    job.requires_approval = true;
+    job.tool_name = "exec".to_string();
+    job.request = json!({"command": "curl https://example.com"});
+    let action = json!({"tool": "exec", "command": "curl https://example.com"});
+    let requested = json!({"network": true, "write_roots": []});
+    let identity = stable_approval_identity(job_id, &action, &requested, "policy-v1").unwrap();
+    let approval = NewApprovalRequest {
+        id: identity.approval_id,
+        job_id: job_id.to_string(),
+        request_digest: identity.request_digest,
+        policy_digest: identity.policy_digest,
+        action,
+        requested,
+        justification: "network access is required".to_string(),
+        pending_status: ApprovalStatus::PendingAuto,
+    };
+    let event = Event::new(
+        format!("approval-request-{job_id}"),
+        "Store-Conformance".to_string(),
+        "approval_requested".to_string(),
+        "runtime/approval_requested".to_string(),
+        json!({
+            "approval_id": approval.id,
+            "job_id": job.id,
+            "request_digest": approval.request_digest,
+            "policy_digest": approval.policy_digest,
+            "activation_id": job.activation_id,
+            "thread_id": job.thread_id,
+            "context_id": job.context_id,
+            "session_id": job.session_id,
+            "tool_call_id": job.tool_call_id,
+            "action": approval.action,
+            "requested": approval.requested,
+            "justification": approval.justification
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    (job, approval, event)
+}
+
+async fn assert_approval_grant_conformance<S>(store: Arc<S>)
+where
+    S: ApprovalStore
+        + EventStore
+        + ExecutionApprovalStore
+        + ExecutionJobStore
+        + Send
+        + Sync
+        + 'static,
+{
+    let (job, approval, request_event) = approval_bundle("approval-job", "tool-call-approval");
+    let created = store
+        .ensure_execution_job_with_approval(job.clone(), approval.clone(), &request_event)
+        .await
+        .unwrap();
+    let (job_record, approval_record) = match created {
+        ExecutionApprovalMutation::Created { job, approval } => (job, approval),
+        mutation => panic!("unexpected approval creation: {mutation:?}"),
+    };
+    assert_eq!(job_record.status, ExecutionJobStatus::WaitingApproval);
+    assert!(matches!(
+        store
+            .ensure_execution_job_with_approval(job, approval, &request_event)
+            .await
+            .unwrap(),
+        ExecutionApprovalMutation::Existing { .. }
+    ));
+    let decision = ApprovalResolution::Allow {
+        rationale: "conformance allow".to_string(),
+        risk_tags: vec!["network".to_string()],
+    };
+    let audit = store
+        .commit_approval_decision(
+            &approval_record.id,
+            approval_record.revision,
+            decision.clone(),
+        )
+        .await
+        .unwrap();
+    let allowed = match audit.mutation {
+        ApprovalMutation::Updated(approval) => approval,
+        mutation => panic!("unexpected approval decision: {mutation:?}"),
+    };
+    assert!(audit.event_created);
+    assert_eq!(allowed.status, ApprovalStatus::Allowed);
+    assert!(matches!(
+        store
+            .commit_approval_decision(&allowed.id, allowed.revision, decision)
+            .await
+            .unwrap()
+            .mutation,
+        ApprovalMutation::Existing(_)
+    ));
+
+    let lease = chrono::Utc::now() + chrono::Duration::seconds(30);
+    let job_id = job_record.id.clone();
+    let approval_id = allowed.id.clone();
+    let job_revision = job_record.revision;
+    let approval_revision = allowed.revision;
+    let first = {
+        let store = Arc::clone(&store);
+        let job_id = job_id.clone();
+        let approval_id = approval_id.clone();
+        tokio::spawn(async move {
+            store
+                .claim_execution_job_with_grant(
+                    &job_id,
+                    job_revision,
+                    &approval_id,
+                    approval_revision,
+                    "approval-worker-a",
+                    "approval-claim-a",
+                    lease,
+                )
+                .await
+        })
+    };
+    let second = {
+        let store = Arc::clone(&store);
+        let job_id = job_id.clone();
+        let approval_id = approval_id.clone();
+        tokio::spawn(async move {
+            store
+                .claim_execution_job_with_grant(
+                    &job_id,
+                    job_revision,
+                    &approval_id,
+                    approval_revision,
+                    "approval-worker-b",
+                    "approval-claim-b",
+                    lease,
+                )
+                .await
+        })
+    };
+    let mutations = [
+        first.await.unwrap().unwrap(),
+        second.await.unwrap().unwrap(),
+    ];
+    assert_eq!(
+        mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, ExecutionApprovalMutation::Updated { .. }))
+            .count(),
+        1,
+        "one-use Grant must be consumed by one worker only"
+    );
+    let (claimed_job, consumed) = mutations
+        .into_iter()
+        .find_map(|mutation| match mutation {
+            ExecutionApprovalMutation::Updated { job, approval } => Some((job, approval)),
+            _ => None,
+        })
+        .unwrap();
+    assert!(consumed.grant_consumed_at.is_some());
+    assert_eq!(
+        claimed_job.claim_token.as_deref(),
+        consumed.consumed_by_claim_token.as_deref()
+    );
+    assert!(matches!(
+        store
+            .claim_execution_job_with_grant(
+                &claimed_job.id,
+                job_revision,
+                &consumed.id,
+                approval_revision,
+                claimed_job.claimed_by.as_deref().unwrap(),
+                claimed_job.claim_token.as_deref().unwrap(),
+                lease,
+            )
+            .await
+            .unwrap(),
+        ExecutionApprovalMutation::Existing { .. }
+    ));
+
+    let (job, approval, request_event) = approval_bundle("cancel-job", "tool-call-cancel");
+    let created = store
+        .ensure_execution_job_with_approval(job, approval, &request_event)
+        .await
+        .unwrap();
+    let approval = match created {
+        ExecutionApprovalMutation::Created { approval, .. } => approval,
+        mutation => panic!("unexpected cancellable approval creation: {mutation:?}"),
+    };
+    let cancelled = store
+        .commit_approval_cancellation(&approval.id, approval.revision, "user cancelled")
+        .await
+        .unwrap();
+    assert!(matches!(
+        cancelled.mutation,
+        ApprovalMutation::Updated(record) if record.status == ApprovalStatus::Cancelled
+    ));
+}
+
 #[tokio::test]
 async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     let database = NamedTempFile::new().unwrap();
@@ -757,7 +960,8 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         })
         .await
         .unwrap();
-    assert_execution_job_conformance(store).await;
+    assert_execution_job_conformance(Arc::clone(&store)).await;
+    assert_approval_grant_conformance(store).await;
 }
 
 #[tokio::test]
@@ -787,5 +991,6 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         )
         .await
         .unwrap();
-    assert_execution_job_conformance(store).await;
+    assert_execution_job_conformance(Arc::clone(&store)).await;
+    assert_approval_grant_conformance(store).await;
 }
