@@ -67,6 +67,43 @@ pub struct DurableEventWriterMetricsSnapshot {
     pub largest_batch: usize,
 }
 
+#[derive(Default)]
+struct ModelProviderMetrics {
+    queued: AtomicUsize,
+    in_flight: AtomicUsize,
+    acquired_total: AtomicU64,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ModelProviderMetricsSnapshot {
+    pub max_in_flight: usize,
+    pub queued: usize,
+    pub in_flight: usize,
+    pub acquired_total: u64,
+}
+
+impl ModelProviderMetrics {
+    fn snapshot(&self, max_in_flight: usize) -> ModelProviderMetricsSnapshot {
+        ModelProviderMetricsSnapshot {
+            max_in_flight,
+            queued: self.queued.load(Ordering::Relaxed),
+            in_flight: self.in_flight.load(Ordering::Relaxed),
+            acquired_total: self.acquired_total.load(Ordering::Relaxed),
+        }
+    }
+}
+
+struct ModelProviderPermit {
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    metrics: Arc<ModelProviderMetrics>,
+}
+
+impl Drop for ModelProviderPermit {
+    fn drop(&mut self) {
+        self.metrics.in_flight.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 impl DurableEventWriterMetrics {
     fn snapshot(&self) -> DurableEventWriterMetricsSnapshot {
         DurableEventWriterMetricsSnapshot {
@@ -807,7 +844,9 @@ pub struct Orchestrator {
     context_engine: Arc<ContextEngine>,
     orchestrator_config: OrchestratorConfig,
     event_writer_metrics: Arc<DurableEventWriterMetrics>,
-    pub concurrency_semaphore: Arc<tokio::sync::Semaphore>,
+    model_provider_metrics: Arc<ModelProviderMetrics>,
+    #[doc(hidden)]
+    pub model_provider_semaphore: Arc<tokio::sync::Semaphore>,
     activation_admission: ActivationAdmissionController,
     /// One ordered Dialogue Lane per Session. Tool/objective continuations do
     /// not take this lock: after a dialogue turn launches an Execution Thread, later
@@ -932,6 +971,41 @@ impl Orchestrator {
         self.event_writer_metrics.snapshot()
     }
 
+    pub fn model_provider_metrics(&self) -> ModelProviderMetricsSnapshot {
+        self.model_provider_metrics
+            .snapshot(self.orchestrator_config.model_provider_max_in_flight.max(1))
+    }
+
+    async fn acquire_model_provider_slot(
+        &self,
+        deadline: tokio::time::Instant,
+    ) -> Result<ModelProviderPermit, DynError> {
+        self.model_provider_metrics
+            .queued
+            .fetch_add(1, Ordering::Relaxed);
+        let acquired = tokio::time::timeout_at(
+            deadline,
+            Arc::clone(&self.model_provider_semaphore).acquire_owned(),
+        )
+        .await;
+        self.model_provider_metrics
+            .queued
+            .fetch_sub(1, Ordering::Relaxed);
+        let permit = acquired
+            .map_err(|error| Box::new(error) as DynError)?
+            .map_err(|error| Box::new(error) as DynError)?;
+        self.model_provider_metrics
+            .in_flight
+            .fetch_add(1, Ordering::Relaxed);
+        self.model_provider_metrics
+            .acquired_total
+            .fetch_add(1, Ordering::Relaxed);
+        Ok(ModelProviderPermit {
+            _permit: permit,
+            metrics: Arc::clone(&self.model_provider_metrics),
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn assemble_with_scheduler_kernel(
         bus: Arc<InMemoryEventBus>,
@@ -948,11 +1022,11 @@ impl Orchestrator {
         background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
         durable_approvals: Option<DurableApprovalServices>,
     ) -> Result<Arc<Self>, DynError> {
-        let concurrency_semaphore = Arc::new(tokio::sync::Semaphore::new(
-            orchestrator_config.concurrency_limit.max(1),
+        let model_provider_semaphore = Arc::new(tokio::sync::Semaphore::new(
+            orchestrator_config.model_provider_max_in_flight.max(1),
         ));
         let activation_admission = ActivationAdmissionController::new(ActivationAdmissionLimits {
-            total_slots: orchestrator_config.concurrency_limit,
+            total_slots: orchestrator_config.activation_admission.max_in_flight,
             dialogue_delivery_slots: orchestrator_config
                 .activation_admission
                 .dialogue_delivery_reserved_slots,
@@ -976,7 +1050,8 @@ impl Orchestrator {
             context_engine,
             orchestrator_config,
             event_writer_metrics: Arc::new(DurableEventWriterMetrics::default()),
-            concurrency_semaphore,
+            model_provider_metrics: Arc::new(ModelProviderMetrics::default()),
+            model_provider_semaphore,
             activation_admission,
             dialogue_thread_gates: DashMap::new(),
             thread_gates: DashMap::new(),
@@ -3083,19 +3158,10 @@ impl Orchestrator {
         // Attempt watchdog was removed, or consume one full timeout before
         // starting another full timeout for the request itself.
         let model_deadline = tokio::time::Instant::now() + deadline;
-        let _permit =
-            match tokio::time::timeout_at(model_deadline, self.concurrency_semaphore.acquire())
-                .await
-            {
-                Ok(permit) => permit.map_err(|error| {
-                    ModelCompletionError::without_summary(Box::new(error) as DynError)
-                })?,
-                Err(error) => {
-                    return Err(ModelCompletionError::without_summary(
-                        Box::new(error) as DynError
-                    ))
-                }
-            };
+        let _provider_slot = self
+            .acquire_model_provider_slot(model_deadline)
+            .await
+            .map_err(ModelCompletionError::without_summary)?;
         let client = Arc::clone(&self.client);
         let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel();
         let stream_bus = Arc::clone(&self.bus);
@@ -3323,7 +3389,6 @@ impl Orchestrator {
         let measurement_deadline = tokio::time::Instant::now() + deadline;
         let token_scope = format!("{}:{}", context.context_id, context.active_session_id);
         let measurement = tokio::time::timeout_at(measurement_deadline, async {
-            let _permit = self.concurrency_semaphore.acquire().await?;
             self.client
                 .count_prompt_tokens(&token_scope, messages, tools)
                 .await

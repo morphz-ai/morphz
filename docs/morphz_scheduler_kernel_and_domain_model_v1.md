@@ -927,12 +927,13 @@ class 由 Runtime 根据持久 Trigger Event 推导，不接受模型提供任�
 
 ### 11.3 保留通道与有界背压
 
-总运行槽位由 Runtime `concurrency_limit` 控制，并为 Dialogue/Delivery 保留可配置容量。内存调度窗口也为这两类延迟敏感工作保留位置；普通队列溢出仍留在 SQLite 的 `queued` Activation 中，通过无丢失 Notify 驱动的 refill 再进入窗口，不生成假失败回复，也不扫描整个 Event Ledger。
+完整 Activation 的总运行槽位由 Runtime `activation_admission.max_in_flight` 控制，并为 Dialogue/Delivery 保留可配置容量。模型 Provider 的物理请求额度由独立的 `model_provider_max_in_flight` 控制；等待工具、定时器或审批的 Activation 不会占用模型请求槽位。内存调度窗口也为延迟敏感工作保留位置；普通队列溢出仍留在 SQLite 的 `queued` Activation 中，通过无丢失 Notify 驱动的 refill 再进入窗口，不生成假失败回复，也不扫描整个 Event Ledger。
 
 当前配置项包括：
 
 ```text
-orchestrator.concurrency_limit
+orchestrator.model_provider_max_in_flight
+orchestrator.activation_admission.max_in_flight
 orchestrator.activation_admission.max_queued
 orchestrator.activation_admission.dialogue_delivery_reserved_slots
 orchestrator.activation_admission.dialogue_delivery_reserved_queue_slots
@@ -941,7 +942,7 @@ orchestrator.activation_admission.aging_promotion_interval
 
 ### 11.4 已实现与尚未实现的边界
 
-已经实现的是单机 Activation 层的固定 class、分层公平、aging、保留容量和持久 overflow backpressure。尚未实现的是每 Agent/Context/Session/Thread 的独立**数字并发配额**、每 Objective 的吞吐预算，以及跨进程的全局公平游标。Provider 调用仍受全局并发限制；Execution Job/Action 的更细粒度资源池仍应作为后续单机策略扩展，而不是在本文中误报为已经完成。
+已经实现的是单机 Activation 层的固定 class、分层公平、aging、保留容量和持久 overflow backpressure，以及与 Activation 解耦的全局 Provider 请求池及其 queued/in-flight 指标。尚未实现的是每 Provider/Agent/Context/Session/Thread 的独立**数字并发配额**、每 Objective 的吞吐预算，以及跨进程的全局公平游标。Execution Job/Action 的更细粒度资源池仍应作为后续单机策略扩展，而不是在本文中误报为已经完成。
 
 ### 11.5 瞬时展示流的背压边界
 

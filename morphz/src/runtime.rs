@@ -117,6 +117,7 @@ pub struct SchedulerSnapshot {
     pub summary: SchedulerSummary,
     pub admission: SchedulerAdmissionSnapshot,
     pub event_writer: crate::orchestrator::orchestrator::DurableEventWriterMetricsSnapshot,
+    pub model_provider: crate::orchestrator::orchestrator::ModelProviderMetricsSnapshot,
     pub threads: Vec<SchedulerThreadSnapshot>,
     pub orphan_activations: Vec<SchedulerActivationSnapshot>,
     pub orphan_signals: Vec<ThreadSignalRecord>,
@@ -1579,6 +1580,7 @@ impl MorphzRuntime {
                 context_deferred,
             },
             event_writer: self.inner.orchestrator.durable_event_writer_metrics(),
+            model_provider: self.inner.orchestrator.model_provider_metrics(),
             threads,
             orphan_activations,
             orphan_signals,
@@ -4897,7 +4899,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
-        config.orchestrator.concurrency_limit = 8;
+        config.orchestrator.activation_admission.max_in_flight = 8;
         let client = Arc::new(ObjectiveScopedCancellationClient {
             objective_a_started: tokio::sync::Notify::new(),
             objective_a_cancelled: tokio::sync::Notify::new(),

@@ -1560,7 +1560,7 @@ async fn test_orchestrator_deadline_covers_waiting_for_concurrency_permit() {
         tool_calls: Vec::new(),
     }]));
     let config = morphz::config::OrchestratorConfig {
-        concurrency_limit: 1,
+        model_provider_max_in_flight: 1,
         model_attempt_timeout_secs: 1,
         ..Default::default()
     };
@@ -1578,7 +1578,7 @@ async fn test_orchestrator_deadline_covers_waiting_for_concurrency_permit() {
     );
     orchestrator.clone().start().await.unwrap();
     let held_permit = orchestrator
-        .concurrency_semaphore
+        .model_provider_semaphore
         .clone()
         .acquire_owned()
         .await
@@ -1591,6 +1591,15 @@ async fn test_orchestrator_deadline_covers_waiting_for_concurrency_permit() {
     assert_eq!(replies.len(), 1);
     assert_eq!(failures.len(), 1);
     assert!(client.tools_seen().is_empty());
+    let provider = orchestrator.model_provider_metrics();
+    assert_eq!(provider.max_in_flight, 1);
+    assert_eq!(provider.queued, 0);
+    assert_eq!(provider.in_flight, 0);
+    assert_eq!(
+        orchestrator.activation_admission_snapshot().total_slots,
+        16,
+        "Activation slots must remain independent from the one-slot Provider"
+    );
     drop(held_permit);
 }
 

@@ -241,8 +241,11 @@ pub fn host_env_path() -> Option<PathBuf> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct OrchestratorConfig {
-    /// 并发信号量限制
-    pub concurrency_limit: usize,
+    /// 同时占用模型 Provider 的物理请求上限。
+    ///
+    /// 这只约束模型调用，不约束等待工具、定时器或审批的 Activation。
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub model_provider_max_in_flight: usize,
     /// Durable Session/Event Ledger 的单机有界写入与 group commit 策略。
     pub event_writer: EventWriterConfig,
     /// Runtime 通用调度策略。这里只定义物理调度窗口，不承载任务语义。
@@ -283,7 +286,7 @@ pub struct OrchestratorConfig {
 impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
-            concurrency_limit: 4,
+            model_provider_max_in_flight: 4,
             event_writer: EventWriterConfig::default(),
             scheduler: SchedulerConfig::default(),
             activation_admission: ActivationAdmissionConfig::default(),
@@ -361,11 +364,16 @@ impl Default for SchedulerConfig {
 
 /// 单机持久 Activation 准入配置。
 ///
-/// `concurrency_limit` 仍是总物理并发上限；本节只定义排队、保留容量和
-/// aging。所有值都是 Runtime policy，不接受模型提供任意数字优先级。
+/// `max_in_flight` 是完整 Activation 的单机运行上限，与模型 Provider
+/// 请求配额相互独立。其余字段定义排队、保留容量和 aging。所有值都是
+/// Runtime policy，不接受模型提供任意数字优先级。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct ActivationAdmissionConfig {
+    /// 同时处于 running 的完整 Activation 上限。Activation 等待工具、
+    /// 定时器或审批时仍属于该执行单元，但不会占用模型 Provider 槽位。
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub max_in_flight: usize,
     /// Runtime 内存中允许等待的 durable queued Activation 总数。
     #[serde(deserialize_with = "deserialize_positive_usize")]
     pub max_queued: usize,
@@ -380,6 +388,7 @@ pub struct ActivationAdmissionConfig {
 impl Default for ActivationAdmissionConfig {
     fn default() -> Self {
         Self {
+            max_in_flight: 16,
             max_queued: 256,
             dialogue_delivery_reserved_slots: 1,
             dialogue_delivery_reserved_queue_slots: 16,
@@ -1649,7 +1658,7 @@ mod tests {
             .starts_with("profile:"));
         assert_eq!(resolved.layers.len(), 5);
         assert_eq!(
-            resolved.source_for("orchestrator.concurrency_limit"),
+            resolved.source_for("orchestrator.model_provider_max_in_flight"),
             "built-in-default"
         );
     }
@@ -1810,7 +1819,8 @@ mod tests {
     fn test_app_config_defaults() {
         let cfg = AppConfig::default();
         assert_eq!(cfg.server.bind, "127.0.0.1:8080");
-        assert_eq!(cfg.orchestrator.concurrency_limit, 4);
+        assert_eq!(cfg.orchestrator.model_provider_max_in_flight, 4);
+        assert_eq!(cfg.orchestrator.activation_admission.max_in_flight, 16);
         assert_eq!(cfg.orchestrator.max_delegation_depth, 3);
         assert_eq!(cfg.orchestrator.max_active_delegations_per_agent, 8);
         assert_eq!(cfg.memory.sqlite_pool_size, 8);
@@ -1858,18 +1868,21 @@ mod tests {
         assert_eq!(cfg.server.bind, "0.0.0.0:9000");
         assert_eq!(cfg.server.database_path, "test.db");
         // 未指定的部分应使用默认值
-        assert_eq!(cfg.orchestrator.concurrency_limit, 4);
+        assert_eq!(cfg.orchestrator.model_provider_max_in_flight, 4);
     }
 
     #[test]
     fn test_partial_section_uses_field_defaults() {
         let mut tmp_file = NamedTempFile::new().unwrap();
         writeln!(tmp_file, "[orchestrator]").unwrap();
-        writeln!(tmp_file, "concurrency_limit = 2").unwrap();
+        writeln!(tmp_file, "model_provider_max_in_flight = 2").unwrap();
+        writeln!(tmp_file, "[orchestrator.activation_admission]").unwrap();
+        writeln!(tmp_file, "max_in_flight = 7").unwrap();
 
         let cfg = toml::from_str::<AppConfig>(&std::fs::read_to_string(tmp_file.path()).unwrap())
             .unwrap();
-        assert_eq!(cfg.orchestrator.concurrency_limit, 2);
+        assert_eq!(cfg.orchestrator.model_provider_max_in_flight, 2);
+        assert_eq!(cfg.orchestrator.activation_admission.max_in_flight, 7);
         assert_eq!(cfg.orchestrator.tool_timeout_secs, 30);
         assert_eq!(cfg.server.bind, "127.0.0.1:8080");
     }
@@ -1883,6 +1896,8 @@ mod tests {
             "[orchestrator]\nreply_timeout_secs=7\nmax_attempts_per_turn=11\n",
         );
         assert!(old_fields.is_err());
+        let coupled_limit = toml::from_str::<AppConfig>("[orchestrator]\nconcurrency_limit=4\n");
+        assert!(coupled_limit.is_err());
     }
 
     #[test]

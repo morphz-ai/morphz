@@ -1,6 +1,6 @@
 # Morphz Context 事务、Mind Projection 与分布式扩展设计 v1
 
-> 状态：Phase 1–2 已完成；Phase 3 已完成有界 Event Writer 与 SQLite group commit，容量阈值待基准数据收口；Phase 4 服务型 Store 待实施
+> 状态：Phase 1–3 已完成首个单机可用版本与容量基线；Phase 4 服务型 Store 待实施
 >
 > 日期：2026-07-18
 >
@@ -27,10 +27,12 @@
 - Runtime durable Event 已进入有界 Event Writer；并发发布者在可配置微窗口内 group commit，Signal Outbox 与 Event 同事务提交；
 - Event Writer 的 queue depth、累计 Event/Batch、失败 Batch 与最大 Batch 已进入统一 Scheduler Snapshot，CLI、HTTP API 与 Rust SDK 共享同一读模型。
 - 已增加可复现的 `context_scalability_benchmark`，首份 release 基线见 [Context Scalability Baseline — 2026-07-18](./benchmarks/context_scalability_baseline_2026-07-18.md)。
+- 完整 Activation 准入与模型 Provider 配额已经解耦：默认最多运行 16 个 Activation、同时占用 4 个模型请求槽位；等待工具、定时器或审批不会错误占用 Provider 槽位。
+- Provider 的 queued、in-flight、max-in-flight 与累计取得槽位次数已进入统一 Scheduler Snapshot；CLI、HTTP API、Rust SDK 与 Dashboard 使用同一事实源。
 
 仍待实施：
 
-- 面向真实负载的容量指标、基准阈值与 provider 分层配额收口；
+- 面向真实公网负载的容量持续采样，以及按 Provider/Agent/Context 的进一步分层配额；
 - PostgreSQL Store 和跨进程 Worker 部署验证；
 - 只有真实冲突数据证明有必要时，才评估 Frame 级 MVCC。
 
@@ -50,7 +52,7 @@ Morphz 已经具备一套成立的 Context 并发语义：
 但它还不是高性能分布式服务实现。主要缺口不是 DSL 表达能力，而是：
 
 1. SQLite WAL 仍然是单物理写者；
-2. Event Writer 已能 group commit，但尚缺真实目标硬件上的持续吞吐/尾延迟基准；
+2. Event Writer 已能 group commit 并有首份目标硬件吞吐基线，但尚缺真实公网负载的持续尾延迟数据；
 3. 多 Runtime Worker 尚未在 PostgreSQL 等服务型数据库上完成部署验证；
 4. 容量指标和基准数据尚不足以决定是否需要 Frame 级 MVCC。
 
@@ -520,6 +522,13 @@ SQLite WAL
 - 一个 Batch 内任一 Event 冲突或 Outbox 写入失败时整批回滚；
 - 普通 `subscribe_durable` 仍保持串行契约，只有声明自身拥有顺序/背压的 Runtime Event Writer 可并发进入聚合窗口。
 
+执行资源分成两个独立池：
+
+- `orchestrator.activation_admission.max_in_flight`：完整 Activation 的运行上限，默认 16；
+- `orchestrator.model_provider_max_in_flight`：模型 Provider 的物理请求上限，默认 4。
+
+Activation 可以在工具、定时器或审批期间继续占有自己的执行身份，但只在实际请求模型时短暂取得 Provider 槽位。Scheduler Snapshot 直接报告 Provider 的排队和占用状态，界面不得再用 Activation 数量推断模型负载。
+
 可复现基准命令：
 
 ```bash
@@ -594,12 +603,12 @@ acknowledge Activation
 - 明确 v1 非破坏性历史保留策略，冷归档待真实容量数据驱动；
 - 取消每事务完整 `state_after` 的生产默认写入。
 
-### Phase 3：单机高并发（group commit 已完成，阈值待基准收口）
+### Phase 3：单机高并发（首个可用版本已完成）
 
 - Session Event 有界 Event Writer 与 group commit（已完成）；
-- 分层 admission 与 provider 配额；
-- 有界背压和排队可观察性；
-- 依据基准测试调高模型并发，而不是只修改一个全局数字。
+- 分层 Activation admission 与独立 Provider 配额（已完成）；
+- Event Writer 与 Provider 的有界背压和排队可观察性（已完成）；
+- 依据基准测试分别调整 Runtime 执行容量和模型并发，不再共用一个全局数字（已完成首个默认值，后续按部署负载调优）。
 
 ### Phase 4：数据库级 CAS 与多 Worker（SQLite CAS 已完成，服务型 Store 待实施）
 
