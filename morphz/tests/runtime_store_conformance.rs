@@ -3,7 +3,8 @@ use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     EventAppend, EventStore, MindProjectionCommit, MindProjectionStore, NewAgent,
-    NewCognitiveContext, NewMindProjection, NewRuntimeTimer, NewSession, QueryFilter,
+    NewCognitiveContext, NewMindProjection, NewObjective, NewRuntimeTimer, NewSession,
+    ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
     RuntimeTimerKind, RuntimeTimerStatus, SessionAttentionState, SessionAttentionUpdate,
     SessionMountKind, SessionStore, TimerStore,
 };
@@ -270,6 +271,224 @@ where
     );
 }
 
+async fn assert_objective_lease_conformance<S>(store: Arc<S>)
+where
+    S: EventStore + ObjectiveStore + Send + Sync + 'static,
+{
+    let created = store
+        .create_objective(NewObjective {
+            id: "conformance-objective".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            coordinator_session_id: "conformance-session".to_string(),
+            delivery_session_id: "conformance-session".to_string(),
+            parent_objective_id: None,
+            source_event_id: "conformance-objective-source".to_string(),
+            stated_objective: "verify objective fencing".to_string(),
+            token_budget: Some(10_000),
+        })
+        .await
+        .unwrap();
+    assert_eq!(created.revision, 1);
+
+    let waiting = match store
+        .update_objective_state(
+            &created.id,
+            created.revision,
+            ObjectiveStatus::Active,
+            Some(ObjectiveWaitCondition::ResourceAvailable {
+                resource: "conformance-resource".to_string(),
+            }),
+            Some("conformance wait"),
+        )
+        .await
+        .unwrap()
+    {
+        ObjectiveMutation::Updated(objective) => objective,
+        mutation => panic!("unexpected wait mutation: {mutation:?}"),
+    };
+    assert!(matches!(
+        store
+            .claim_objective_evaluation(
+                &waiting.id,
+                waiting.revision,
+                "blocked-evaluation",
+                chrono::Utc::now() + chrono::Duration::seconds(30),
+            )
+            .await
+            .unwrap(),
+        ObjectiveMutation::Conflict { .. }
+    ));
+    let ready = match store
+        .update_objective_state(
+            &waiting.id,
+            waiting.revision,
+            ObjectiveStatus::Active,
+            None,
+            Some("resource available"),
+        )
+        .await
+        .unwrap()
+    {
+        ObjectiveMutation::Updated(objective) => objective,
+        mutation => panic!("unexpected ready mutation: {mutation:?}"),
+    };
+
+    let expires = chrono::Utc::now() + chrono::Duration::seconds(30);
+    let first = {
+        let store = Arc::clone(&store);
+        let id = ready.id.clone();
+        tokio::spawn(async move {
+            store
+                .claim_objective_evaluation(&id, ready.revision, "evaluation-a", expires)
+                .await
+        })
+    };
+    let second = {
+        let store = Arc::clone(&store);
+        let id = ready.id.clone();
+        tokio::spawn(async move {
+            store
+                .claim_objective_evaluation(&id, ready.revision, "evaluation-b", expires)
+                .await
+        })
+    };
+    let first = first.await.unwrap().unwrap();
+    let second = second.await.unwrap().unwrap();
+    let mutations = [first, second];
+    assert_eq!(
+        mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, ObjectiveMutation::Updated(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, ObjectiveMutation::Conflict { .. }))
+            .count(),
+        1
+    );
+    let winner = mutations
+        .into_iter()
+        .find_map(|mutation| match mutation {
+            ObjectiveMutation::Updated(objective) => Some(objective),
+            _ => None,
+        })
+        .expect("exactly one Objective evaluation must win the revision fence");
+    assert!(winner.active_evaluation_id.is_some());
+
+    let usage = match store
+        .record_objective_evaluation_usage(
+            &winner.id,
+            winner.active_evaluation_id.as_deref().unwrap(),
+            7,
+        )
+        .await
+        .unwrap()
+    {
+        ObjectiveMutation::Updated(objective) => objective,
+        mutation => panic!("unexpected usage mutation: {mutation:?}"),
+    };
+    assert_eq!(usage.revision, winner.revision);
+    let finished = match store
+        .finish_objective_evaluation(
+            &usage.id,
+            usage.active_evaluation_id.as_deref().unwrap(),
+            5,
+            3,
+        )
+        .await
+        .unwrap()
+    {
+        ObjectiveMutation::Updated(objective) => objective,
+        mutation => panic!("unexpected finish mutation: {mutation:?}"),
+    };
+    assert_eq!(finished.tokens_used, 12);
+    assert_eq!(finished.time_used_seconds, 3);
+
+    let occupied_event = Event::new(
+        "conformance-objective-conflict".to_string(),
+        "Store-Conformance".to_string(),
+        "audit".to_string(),
+        "runtime/conformance".to_string(),
+        json!({"value": "occupied"}).as_object().unwrap().clone(),
+    );
+    store.append(occupied_event).await.unwrap();
+    let conflicting_signal = Event::new(
+        "conformance-objective-conflict".to_string(),
+        "Store-Conformance".to_string(),
+        "runtime_control".to_string(),
+        "runtime/objective_continue".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "objective_id": finished.id,
+            "objective_evaluation_id": "rolled-back-evaluation"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(store
+        .claim_objective_evaluation_with_signal(
+            &finished.id,
+            finished.revision,
+            "rolled-back-evaluation",
+            expires,
+            &conflicting_signal,
+        )
+        .await
+        .is_err());
+    assert_eq!(
+        store.get_objective(&finished.id).await.unwrap().unwrap(),
+        finished,
+        "Event conflict must roll back the Objective lease"
+    );
+
+    let event = Event::new(
+        "conformance-objective-signal".to_string(),
+        "Store-Conformance".to_string(),
+        "runtime_control".to_string(),
+        "runtime/objective_continue".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "objective_id": finished.id,
+            "objective_evaluation_id": "evaluation-with-signal"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(matches!(
+        store
+            .claim_objective_evaluation_with_signal(
+                &finished.id,
+                finished.revision,
+                "evaluation-with-signal",
+                expires,
+                &event,
+            )
+            .await
+            .unwrap(),
+        ObjectiveMutation::Updated(_)
+    ));
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(event.id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "Objective lease and continuation Event must commit atomically"
+    );
+}
+
 #[tokio::test]
 async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     let database = NamedTempFile::new().unwrap();
@@ -313,7 +532,8 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         })
     })
     .await;
-    assert_timer_lease_conformance(store).await;
+    assert_timer_lease_conformance(Arc::clone(&store)).await;
+    assert_objective_lease_conformance(store).await;
 }
 
 #[tokio::test]
@@ -334,5 +554,6 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         Box::pin(async move { store.session_attention_for_conformance(session_id).await })
     })
     .await;
-    assert_timer_lease_conformance(store).await;
+    assert_timer_lease_conformance(Arc::clone(&store)).await;
+    assert_objective_lease_conformance(store).await;
 }

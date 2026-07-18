@@ -1,17 +1,19 @@
 //! PostgreSQL service-store foundation.
 //!
-//! This module intentionally starts at the Context transaction authority:
-//! immutable Events, Mind Projection/head CAS, snapshots and Session attention
-//! participate in one PostgreSQL transaction. The Runtime does not select this
-//! backend yet; it becomes selectable only after the remaining scheduler
-//! control-plane traits pass the shared Store conformance suite.
+//! This module is growing from the Context transaction authority outward:
+//! immutable Events, Mind Projection/head CAS, snapshots, Session attention,
+//! physical Timer leases and Objective evaluation leases already have complete
+//! PostgreSQL semantics. The Runtime does not select this backend yet; it
+//! becomes selectable only after the remaining scheduler control-plane traits
+//! pass the shared Store conformance suite.
 
 use crate::event::Event;
 use crate::memory::{
     EventAppend, EventStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
-    MindSnapshotRecord, NewMindProjection, NewRuntimeTimer, QueryFilter, RuntimeTimerKind,
-    RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionState, SessionAttentionUpdate,
-    TimerStore,
+    MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer, ObjectiveMutation,
+    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionState,
+    SessionAttentionUpdate, TimerStore,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -146,6 +148,32 @@ impl PostgresStore {
             )"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_runtime_timers_due
                ON runtime_timers(status, due_at, claim_expires_at, id)"#,
+            r#"CREATE TABLE IF NOT EXISTS objectives (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL REFERENCES agents(id),
+                context_id TEXT NOT NULL REFERENCES cognitive_contexts(id),
+                coordinator_session_id TEXT NOT NULL REFERENCES sessions(id),
+                delivery_session_id TEXT NOT NULL REFERENCES sessions(id),
+                parent_objective_id TEXT REFERENCES objectives(id),
+                source_event_id TEXT NOT NULL,
+                stated_objective TEXT NOT NULL,
+                revision BIGINT NOT NULL,
+                status TEXT NOT NULL,
+                status_reason TEXT,
+                wait_condition_json JSONB,
+                active_evaluation_id TEXT,
+                evaluation_lease_expires_at TEXT,
+                continuation_sequence BIGINT NOT NULL DEFAULT 0,
+                token_budget BIGINT,
+                tokens_used BIGINT NOT NULL DEFAULT 0,
+                time_used_seconds BIGINT NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_objectives_context_status_updated
+               ON objectives(context_id, status, updated_at DESC)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_objectives_recovery
+               ON objectives(status, evaluation_lease_expires_at, updated_at)"#,
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }
@@ -290,6 +318,65 @@ fn timer_from_row(row: &PgRow) -> Result<RuntimeTimerRecord, StoreError> {
             .map(parse_time)
             .transpose()?,
     })
+}
+
+fn parse_objective_status(value: &str) -> Result<ObjectiveStatus, StoreError> {
+    match value {
+        "active" => Ok(ObjectiveStatus::Active),
+        "paused" => Ok(ObjectiveStatus::Paused),
+        "blocked" => Ok(ObjectiveStatus::Blocked),
+        "completed" => Ok(ObjectiveStatus::Completed),
+        "cancelled" => Ok(ObjectiveStatus::Cancelled),
+        "failed" => Ok(ObjectiveStatus::Failed),
+        other => Err(format!("未知 Objective 状态: {other}").into()),
+    }
+}
+
+fn objective_from_row(row: &PgRow) -> Result<ObjectiveRecord, StoreError> {
+    let wait_condition = row
+        .get::<Option<JsonValue>, _>("wait_condition_json")
+        .map(serde_json::from_value::<ObjectiveWaitCondition>)
+        .transpose()?;
+    Ok(ObjectiveRecord {
+        id: row.get("id"),
+        agent_id: row.get("agent_id"),
+        context_id: row.get("context_id"),
+        coordinator_session_id: row.get("coordinator_session_id"),
+        delivery_session_id: row.get("delivery_session_id"),
+        parent_objective_id: row.get("parent_objective_id"),
+        source_event_id: row.get("source_event_id"),
+        stated_objective: row.get("stated_objective"),
+        revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        status: parse_objective_status(&row.get::<String, _>("status"))?,
+        status_reason: row.get("status_reason"),
+        wait_condition,
+        active_evaluation_id: row.get("active_evaluation_id"),
+        evaluation_lease_expires_at: row
+            .get::<Option<String>, _>("evaluation_lease_expires_at")
+            .as_deref()
+            .map(parse_time)
+            .transpose()?,
+        continuation_sequence: u64::try_from(row.get::<i64, _>("continuation_sequence"))?,
+        token_budget: row
+            .get::<Option<i64>, _>("token_budget")
+            .map(u64::try_from)
+            .transpose()?,
+        tokens_used: u64::try_from(row.get::<i64, _>("tokens_used"))?,
+        time_used_seconds: u64::try_from(row.get::<i64, _>("time_used_seconds"))?,
+        created_at: parse_time(&row.get::<String, _>("created_at"))?,
+        updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
+    })
+}
+
+fn validate_stated_objective(stated_objective: &str) -> Result<&str, StoreError> {
+    let stated_objective = stated_objective.trim();
+    if stated_objective.is_empty() {
+        return Err("Objective 目标不能为空".into());
+    }
+    if stated_objective.chars().count() > 1_000_000 {
+        return Err("Objective 目标超过 1,000,000 字符上限".into());
+    }
+    Ok(stated_objective)
 }
 
 async fn get_projection<'e, E>(
@@ -612,6 +699,429 @@ impl EventStore for PostgresStore {
             events.reverse();
         }
         Ok(events)
+    }
+}
+
+const OBJECTIVE_SELECT: &str = r#"SELECT id, agent_id, context_id,
+    coordinator_session_id, delivery_session_id, parent_objective_id, source_event_id,
+    stated_objective, revision, status, status_reason, wait_condition_json, active_evaluation_id,
+    evaluation_lease_expires_at, continuation_sequence, token_budget, tokens_used,
+    time_used_seconds, created_at, updated_at
+    FROM objectives"#;
+
+#[async_trait::async_trait]
+impl ObjectiveStore for PostgresStore {
+    async fn create_objective(
+        &self,
+        objective: NewObjective,
+    ) -> Result<ObjectiveRecord, StoreError> {
+        let stated_objective = validate_stated_objective(&objective.stated_objective)?;
+        let context_agent = sqlx::query_scalar::<_, String>(
+            "SELECT agent_id FROM cognitive_contexts WHERE id = $1",
+        )
+        .bind(&objective.context_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| format!("Objective Context '{}' 不存在", objective.context_id))?;
+        let coordinator = sqlx::query("SELECT agent_id, context_id FROM sessions WHERE id = $1")
+            .bind(&objective.coordinator_session_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Objective 协调 Session '{}' 不存在",
+                    objective.coordinator_session_id
+                )
+            })?;
+        let delivery = sqlx::query("SELECT agent_id, context_id FROM sessions WHERE id = $1")
+            .bind(&objective.delivery_session_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "Objective 交付 Session '{}' 不存在",
+                    objective.delivery_session_id
+                )
+            })?;
+        if context_agent != objective.agent_id
+            || coordinator.get::<String, _>("agent_id") != objective.agent_id
+            || delivery.get::<String, _>("agent_id") != objective.agent_id
+            || coordinator.get::<String, _>("context_id") != objective.context_id
+            || delivery.get::<String, _>("context_id") != objective.context_id
+        {
+            return Err("Objective 的 Agent/Context/Session 路由不一致".into());
+        }
+        if let Some(parent_id) = objective.parent_objective_id.as_deref() {
+            let parent_agent =
+                sqlx::query_scalar::<_, String>("SELECT agent_id FROM objectives WHERE id = $1")
+                    .bind(parent_id)
+                    .fetch_optional(&self.pool)
+                    .await?
+                    .ok_or_else(|| format!("父 Objective '{parent_id}' 不存在"))?;
+            if parent_agent != objective.agent_id {
+                return Err(format!(
+                    "父 Objective '{parent_id}' 属于 Agent '{parent_agent}'，不能挂到 Agent '{}'",
+                    objective.agent_id
+                )
+                .into());
+            }
+        }
+        let now = now_text();
+        sqlx::query(
+            r#"INSERT INTO objectives
+               (id, agent_id, context_id, coordinator_session_id, delivery_session_id,
+                parent_objective_id, source_event_id, stated_objective, revision, status,
+                wait_condition_json, active_evaluation_id, evaluation_lease_expires_at,
+                continuation_sequence, token_budget, tokens_used, time_used_seconds,
+                created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, 'active',
+                       NULL, NULL, NULL, 0, $9, 0, 0, $10, $10)"#,
+        )
+        .bind(&objective.id)
+        .bind(&objective.agent_id)
+        .bind(&objective.context_id)
+        .bind(&objective.coordinator_session_id)
+        .bind(&objective.delivery_session_id)
+        .bind(&objective.parent_objective_id)
+        .bind(&objective.source_event_id)
+        .bind(stated_objective)
+        .bind(objective.token_budget.map(i64::try_from).transpose()?)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.get_objective(&objective.id)
+            .await?
+            .ok_or_else(|| "Objective 创建后无法读取".into())
+    }
+
+    async fn get_objective(&self, id: &str) -> Result<Option<ObjectiveRecord>, StoreError> {
+        sqlx::query(&format!("{OBJECTIVE_SELECT} WHERE id = $1"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(objective_from_row)
+            .transpose()
+    }
+
+    async fn list_context_objectives(
+        &self,
+        context_id: &str,
+        include_terminal: bool,
+    ) -> Result<Vec<ObjectiveRecord>, StoreError> {
+        let sql = if include_terminal {
+            format!("{OBJECTIVE_SELECT} WHERE context_id = $1 ORDER BY updated_at DESC")
+        } else {
+            format!(
+                "{OBJECTIVE_SELECT} WHERE context_id = $1 AND status NOT IN ('completed', 'cancelled', 'failed') ORDER BY updated_at DESC"
+            )
+        };
+        let rows = sqlx::query(&sql)
+            .bind(context_id)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(objective_from_row).collect()
+    }
+
+    async fn list_recoverable_objectives(&self) -> Result<Vec<ObjectiveRecord>, StoreError> {
+        let rows = sqlx::query(&format!(
+            "{OBJECTIVE_SELECT} WHERE status IN ('active', 'paused', 'blocked') OR active_evaluation_id IS NOT NULL ORDER BY updated_at"
+        ))
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(objective_from_row).collect()
+    }
+
+    async fn edit_objective(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        stated_objective: &str,
+    ) -> Result<ObjectiveMutation, StoreError> {
+        let stated_objective = validate_stated_objective(stated_objective)?;
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if current.revision != expected_revision {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        if current.status.is_terminal() {
+            return Err(format!("终态 Objective '{id}' 不能再修改目标").into());
+        }
+        let result = sqlx::query(
+            r#"UPDATE objectives SET stated_objective = $1,
+               revision = revision + 1, updated_at = $2
+               WHERE id = $3 AND revision = $4"#,
+        )
+        .bind(stated_objective)
+        .bind(now_text())
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective 更新后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
+    async fn update_objective_state(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        status: ObjectiveStatus,
+        wait_condition: Option<ObjectiveWaitCondition>,
+        reason: Option<&str>,
+    ) -> Result<ObjectiveMutation, StoreError> {
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if current.revision != expected_revision {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        if !current.status.can_transition_to(status) {
+            return Err(format!(
+                "Objective '{id}' 不允许从 '{}' 迁移到 '{}'",
+                current.status.as_str(),
+                status.as_str()
+            )
+            .into());
+        }
+        if status != ObjectiveStatus::Active && wait_condition.is_some() {
+            return Err("只有 active Objective 可以携带等待条件".into());
+        }
+        let wait_condition = wait_condition.map(serde_json::to_value).transpose()?;
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET status = $1, status_reason = $2, wait_condition_json = $3,
+                   revision = revision + 1, updated_at = $4
+               WHERE id = $5 AND revision = $6"#,
+        )
+        .bind(status.as_str())
+        .bind(reason)
+        .bind(wait_condition)
+        .bind(now_text())
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective 状态更新后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
+    async fn claim_objective_evaluation(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<ObjectiveMutation, StoreError> {
+        if evaluation_id.trim().is_empty() {
+            return Err("Objective Evaluation ID 不能为空".into());
+        }
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if current.revision != expected_revision
+            || current.status != ObjectiveStatus::Active
+            || current.wait_condition.is_some()
+            || current
+                .evaluation_lease_expires_at
+                .is_some_and(|expires_at| expires_at > Utc::now())
+        {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        let now = now_text();
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET active_evaluation_id = $1, evaluation_lease_expires_at = $2,
+                   continuation_sequence = continuation_sequence + 1,
+                   revision = revision + 1, updated_at = $3
+               WHERE id = $4 AND revision = $5 AND status = 'active'
+                 AND wait_condition_json IS NULL
+                 AND (active_evaluation_id IS NULL OR evaluation_lease_expires_at <= $3)"#,
+        )
+        .bind(evaluation_id)
+        .bind(lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .bind(&now)
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective Evaluation 租约提交后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
+    async fn claim_objective_evaluation_with_signal(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+        event: &Event,
+    ) -> Result<ObjectiveMutation, StoreError> {
+        if evaluation_id.trim().is_empty() {
+            return Err("Objective Evaluation ID 不能为空".into());
+        }
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if current.revision != expected_revision
+            || current.status != ObjectiveStatus::Active
+            || current.wait_condition.is_some()
+            || current
+                .evaluation_lease_expires_at
+                .is_some_and(|expires_at| expires_at > Utc::now())
+        {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        let event_context_id = event.payload.get("context_id").and_then(JsonValue::as_str);
+        let event_session_id = event.payload.get("session_id").and_then(JsonValue::as_str);
+        let event_objective_id = event
+            .payload
+            .get("objective_id")
+            .and_then(JsonValue::as_str);
+        let event_evaluation_id = event
+            .payload
+            .get("objective_evaluation_id")
+            .and_then(JsonValue::as_str);
+        if event_context_id != Some(current.context_id.as_str())
+            || event_session_id != Some(current.coordinator_session_id.as_str())
+            || event_objective_id != Some(id)
+            || event_evaluation_id != Some(evaluation_id)
+        {
+            return Err(format!("Objective '{id}' continuation Event 路由不一致").into());
+        }
+        let now = now_text();
+        let mut tx = self.pool.begin().await?;
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET active_evaluation_id = $1, evaluation_lease_expires_at = $2,
+                   continuation_sequence = continuation_sequence + 1,
+                   revision = revision + 1, updated_at = $3
+               WHERE id = $4 AND revision = $5 AND status = 'active'
+                 AND wait_condition_json IS NULL
+                 AND (active_evaluation_id IS NULL OR evaluation_lease_expires_at <= $3)"#,
+        )
+        .bind(evaluation_id)
+        .bind(lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .bind(&now)
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(match self.get_objective(id).await? {
+                Some(current) => ObjectiveMutation::Conflict { current },
+                None => ObjectiveMutation::NotFound,
+            });
+        }
+        append_event_in_tx(&mut tx, event).await?;
+        append_signal_outbox_in_tx(&mut tx, event).await?;
+        tx.commit().await?;
+        Ok(ObjectiveMutation::Updated(
+            self.get_objective(id)
+                .await?
+                .ok_or("Objective Evaluation + Signal 提交后无法读取")?,
+        ))
+    }
+
+    async fn record_objective_evaluation_usage(
+        &self,
+        id: &str,
+        evaluation_id: &str,
+        prompt_tokens_used: u64,
+    ) -> Result<ObjectiveMutation, StoreError> {
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET tokens_used = tokens_used + $1, updated_at = $2
+               WHERE id = $3 AND status = 'active' AND active_evaluation_id = $4"#,
+        )
+        .bind(i64::try_from(prompt_tokens_used)?)
+        .bind(now_text())
+        .bind(id)
+        .bind(evaluation_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective Evaluation 记账后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
+    async fn finish_objective_evaluation(
+        &self,
+        id: &str,
+        evaluation_id: &str,
+        tokens_used: u64,
+        time_used_seconds: u64,
+    ) -> Result<ObjectiveMutation, StoreError> {
+        let Some(current) = self.get_objective(id).await? else {
+            return Ok(ObjectiveMutation::NotFound);
+        };
+        if current.active_evaluation_id.as_deref() != Some(evaluation_id) {
+            return Ok(ObjectiveMutation::Conflict { current });
+        }
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET active_evaluation_id = NULL, evaluation_lease_expires_at = NULL,
+                   tokens_used = tokens_used + $1,
+                   time_used_seconds = time_used_seconds + $2,
+                   revision = revision + 1, updated_at = $3
+               WHERE id = $4 AND revision = $5 AND active_evaluation_id = $6"#,
+        )
+        .bind(i64::try_from(tokens_used)?)
+        .bind(i64::try_from(time_used_seconds)?)
+        .bind(now_text())
+        .bind(id)
+        .bind(i64::try_from(current.revision)?)
+        .bind(evaluation_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective Evaluation 结束后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
     }
 }
 

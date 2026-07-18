@@ -1,6 +1,6 @@
 # Morphz Context 事务、Mind Projection 与分布式扩展设计 v1
 
-> 状态：Phase 1–3 已完成首个单机可用版本与容量基线；Phase 4 服务型 Store 待实施
+> 状态：Phase 1–3 已完成首个单机可用版本与容量基线；Phase 4 服务型 Store 正在实施
 >
 > 日期：2026-07-18
 >
@@ -33,6 +33,7 @@
 - 已建立数据库无关的 Context transaction conformance suite；SQLite 已通过并发 revision CAS、Projection/Event/Session attention 原子一致和失败 Batch 全回滚测试。未来 PostgreSQL 必须通过同一套契约后才允许进入产品配置。
 - PostgreSQL Context Authority 已实现 Event Ledger/query、原子 Batch/outbox、Mind Projection/head revision CAS、Snapshot、seed provenance 和 Session attention 同事务更新；已在临时 PostgreSQL 15 实例上与 SQLite 运行同一套 Context transaction conformance suite 并通过。
 - PostgreSQL 物理 Timer Store 已实现 generation fence、leased claim、retry/complete/cancel；到期领取使用 `FOR UPDATE SKIP LOCKED`，两个并发 Worker 已通过同一套无重复 claim 测试。
+- PostgreSQL Objective Store 已实现生命周期 revision CAS、等待条件、求值 lease、用量记账，以及“求值 lease + continuation Event/outbox”原子提交；SQLite/PostgreSQL 已通过同版本双写只允许一个胜者和 Event 冲突整笔回滚测试。
 
 仍待实施：
 
@@ -620,7 +621,8 @@ acknowledge Activation
 - 建立可由多个后端复用的 Context transaction conformance suite（已完成首组核心契约）；
 - PostgreSQL Event/Mind/Context transaction authority（已完成并通过 PostgreSQL 15 实测）；
 - PostgreSQL Timer lease 与跨 Worker `SKIP LOCKED` claim（已完成并通过 PostgreSQL 15 实测）；
-- PostgreSQL Session/Scheduler/Objective/Approval/Execution 完整 `RuntimeStore`；
+- PostgreSQL Objective lifecycle/evaluation lease（已完成并通过 PostgreSQL 15 实测）；
+- PostgreSQL Session/Scheduler/Approval/Execution 完整 `RuntimeStore`；
 - Activation lease、Worker recovery 与幂等 Outcome；
 - Runtime 横向扩展；
 - SQLite 继续作为默认单机后端。
