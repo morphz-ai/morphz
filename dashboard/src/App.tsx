@@ -497,6 +497,7 @@ function summarizeToolCall(name: string, rawArguments: string, t: TFunction): To
       return { title: t('toolCall.contextTx'), target: 'Context Transaction', detail: name }
     case 'delegate':
       return { title: t('toolCall.delegate'), target: task || t('toolCall.subAgent'), detail: name }
+    case 'check_task_after':
     case 'wait_task':
       return { title: t('toolCall.waitTask'), target: taskId || t('toolCall.backgroundTask'), detail: name }
     case 'task_status':

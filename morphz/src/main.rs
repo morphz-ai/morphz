@@ -285,22 +285,9 @@ async fn main() -> Result<(), AppError> {
         runtime.start().await?;
     } else {
         // Read-only and registry-management commands do not need Event Bus
-        // subscribers or model evaluation. Initializing only the root records
+        // subscribers or model evaluation. Initializing only the identity records
         // keeps the lack of an API key harmless and avoids background workers.
-        runtime
-            .ensure_agent(NewAgent {
-                id: default_agent_id.clone(),
-                title: "默认 Agent".to_string(),
-                root_context_id: default_context_id.clone(),
-            })
-            .await?;
-        runtime
-            .ensure_context(NewCognitiveContext {
-                id: default_context_id.clone(),
-                agent_id: default_agent_id.clone(),
-                title: "默认认知 Context".to_string(),
-            })
-            .await?;
+        ensure_cli_identity_records(&runtime, &default_agent_id, &default_context_id).await?;
     }
 
     dispatch_runtime_command(
@@ -312,6 +299,33 @@ async fn main() -> Result<(), AppError> {
         tui_mode,
     )
     .await
+}
+
+async fn ensure_cli_identity_records(
+    runtime: &MorphzRuntime,
+    agent_id: &str,
+    active_context_id: &str,
+) -> Result<(), AppError> {
+    let root_context_id = runtime
+        .get_agent(agent_id)
+        .await?
+        .map(|agent| agent.root_context_id)
+        .unwrap_or_else(|| active_context_id.to_string());
+    runtime
+        .ensure_agent(NewAgent {
+            id: agent_id.to_string(),
+            title: "默认 Agent".to_string(),
+            root_context_id,
+        })
+        .await?;
+    runtime
+        .ensure_context(NewCognitiveContext {
+            id: active_context_id.to_string(),
+            agent_id: agent_id.to_string(),
+            title: "默认认知 Context".to_string(),
+        })
+        .await?;
+    Ok(())
 }
 
 fn option_value<'a>(invocation: &'a Invocation, name: &str) -> Option<&'a str> {
@@ -2737,17 +2751,18 @@ async fn shutdown_signal() {
 mod tests {
     use super::{
         apply_cli_config, command_needs_llm, console_message_from_event, create_session_command,
-        dashboard_browser_url, format_tool_call_activity, generate_dashboard_token, help_for,
-        parse_terminal_approval_input, read_console_input, resolve_resumed_session,
-        select_or_create_console_session, should_run_first_time_setup_with_terminal,
-        should_use_tui_with_terminal, wait_for_session_reply, ConsoleInput, ConsoleMessageKind,
-        OfflineClient,
+        dashboard_browser_url, ensure_cli_identity_records, format_tool_call_activity,
+        generate_dashboard_token, help_for, parse_terminal_approval_input, read_console_input,
+        resolve_resumed_session, select_or_create_console_session,
+        should_run_first_time_setup_with_terminal, should_use_tui_with_terminal,
+        wait_for_session_reply, ConsoleInput, ConsoleMessageKind, OfflineClient,
     };
     use morphz::approval::ApprovalDecision;
     use morphz::cli::morphz_command_line_parser;
     use morphz::config::{AppConfig, TuiTheme};
     use morphz::event::Event;
     use morphz::llm::{Client, ReasoningEffort};
+    use morphz::memory::{NewAgent, NewCognitiveContext, NewSession, SessionMountKind};
     use morphz::permission::{ApprovalPolicy, PermissionMode, ReviewerKind, SandboxMode};
     use morphz::runtime::{MorphzRuntime, RuntimeIdentity};
     use std::io::Cursor;
@@ -3083,6 +3098,90 @@ mod tests {
         assert!(!command_needs_llm(
             &parser.parse(["agent", "create", "--id=a1"]).unwrap()
         ));
+    }
+
+    #[tokio::test]
+    async fn cli_preserves_an_existing_agents_root_without_switching_context() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.workspace_root = workspace.path().to_string_lossy().into_owned();
+        let database_path = workspace.path().join("morphz.db");
+        let persisted_context_id = "session_1782276906";
+
+        let seed_runtime =
+            MorphzRuntime::builder(config.clone(), Arc::new(OfflineClient) as Arc<dyn Client>)
+                .database_path(database_path.to_string_lossy())
+                .identity(RuntimeIdentity {
+                    agent_id: "default-agent".to_string(),
+                    context_id: persisted_context_id.to_string(),
+                })
+                .build()
+                .await
+                .unwrap();
+        seed_runtime
+            .ensure_agent(NewAgent {
+                id: "default-agent".to_string(),
+                title: "默认 Agent".to_string(),
+                root_context_id: persisted_context_id.to_string(),
+            })
+            .await
+            .unwrap();
+        seed_runtime
+            .ensure_context(NewCognitiveContext {
+                id: persisted_context_id.to_string(),
+                agent_id: "default-agent".to_string(),
+                title: "既有 Root Context".to_string(),
+            })
+            .await
+            .unwrap();
+        seed_runtime
+            .ensure_session(NewSession {
+                id: "session-visible".to_string(),
+                agent_id: "default-agent".to_string(),
+                context_id: persisted_context_id.to_string(),
+                parent_session_id: None,
+                title: "Visible Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        drop(seed_runtime);
+
+        let runtime = MorphzRuntime::builder(config, Arc::new(OfflineClient) as Arc<dyn Client>)
+            .database_path(database_path.to_string_lossy())
+            .identity(RuntimeIdentity {
+                agent_id: "default-agent".to_string(),
+                context_id: "context-default".to_string(),
+            })
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(runtime.identity().context_id, "context-default");
+        ensure_cli_identity_records(
+            &runtime,
+            &runtime.identity().agent_id,
+            &runtime.identity().context_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            runtime
+                .get_agent("default-agent")
+                .await
+                .unwrap()
+                .unwrap()
+                .root_context_id,
+            persisted_context_id
+        );
+        assert!(runtime
+            .get_context("context-default")
+            .await
+            .unwrap()
+            .is_some());
+        let sessions = runtime.list_sessions(false).await.unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, "session-visible");
     }
 
     #[tokio::test]

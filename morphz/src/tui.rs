@@ -60,7 +60,7 @@ struct Theme {
 
 impl Theme {
     fn from_kind(kind: TuiTheme) -> Self {
-        let base = Self {
+        let terminal_native = Self {
             // Named ANSI colors are resolved by the user's terminal theme.
             // Morphz deliberately never paints a background.
             border_subtle: Color::DarkGray,
@@ -76,27 +76,50 @@ impl Theme {
             warning: Color::Yellow,
             error: Color::Red,
         };
+        // These true-color values are the same semantic tokens used by the
+        // Dashboard. Backgrounds remain untouched; `system` is available for
+        // terminals whose own light/dark palette should stay authoritative.
+        let dashboard = Self {
+            border_subtle: Color::Rgb(42, 46, 61),     // --line
+            border_strong: Color::Rgb(58, 64, 85),     // --line-strong
+            text_primary: Color::Rgb(240, 239, 245),   // --text
+            text_secondary: Color::Rgb(200, 198, 208), // --text-soft
+            text_muted: Color::Rgb(154, 158, 176),     // --muted
+            brand: Color::Rgb(165, 140, 255),
+            focus: Color::Rgb(165, 140, 255),
+            user: Color::Rgb(212, 200, 255),
+            tool: Color::Rgb(106, 212, 223),    // --cyan
+            success: Color::Rgb(92, 224, 153),  // --green
+            warning: Color::Rgb(240, 193, 100), // --yellow
+            error: Color::Rgb(255, 138, 146),   // --red
+        };
         match kind {
             // "system" intentionally resolves to the conservative terminal-
-            // native mono palette. It remains stable across light/dark themes.
-            TuiTheme::System | TuiTheme::Mono => base,
+            // native palette. It remains stable across light/dark themes.
+            TuiTheme::System => terminal_native,
             TuiTheme::Iris => Self {
-                brand: Color::LightMagenta,
-                focus: Color::Magenta,
-                user: Color::LightMagenta,
-                ..base
+                brand: Color::Rgb(165, 140, 255),
+                focus: Color::Rgb(165, 140, 255),
+                user: Color::Rgb(212, 200, 255),
+                ..dashboard
             },
             TuiTheme::Cyan => Self {
-                brand: Color::LightCyan,
-                focus: Color::Cyan,
-                user: Color::LightCyan,
-                ..base
+                brand: Color::Rgb(86, 208, 222),
+                focus: Color::Rgb(86, 208, 222),
+                user: Color::Rgb(168, 238, 245),
+                ..dashboard
             },
             TuiTheme::Coral => Self {
-                brand: Color::LightRed,
-                focus: Color::Red,
-                user: Color::LightRed,
-                ..base
+                brand: Color::Rgb(240, 138, 126),
+                focus: Color::Rgb(240, 138, 126),
+                user: Color::Rgb(255, 196, 189),
+                ..dashboard
+            },
+            TuiTheme::Mono => Self {
+                brand: Color::Rgb(210, 211, 218),
+                focus: Color::Rgb(210, 211, 218),
+                user: Color::Rgb(255, 255, 255),
+                ..dashboard
             },
             TuiTheme::NoColor => Self {
                 border_subtle: Color::Reset,
@@ -106,7 +129,7 @@ impl Theme {
                 success: Color::Reset,
                 warning: Color::Reset,
                 error: Color::Reset,
-                ..base
+                ..terminal_native
             },
         }
     }
@@ -147,6 +170,7 @@ struct LiveToolCall {
 struct LiveAttempt {
     activation_id: String,
     thread_kind: String,
+    reasoning_summary: String,
     text: String,
     tools: BTreeMap<usize, LiveToolCall>,
 }
@@ -156,6 +180,7 @@ impl LiveAttempt {
         Self {
             activation_id,
             thread_kind,
+            reasoning_summary: String::new(),
             text: String::new(),
             tools: BTreeMap::new(),
         }
@@ -251,6 +276,7 @@ struct UiState {
     session_id: String,
     session_title: Option<String>,
     model: String,
+    working_directory: String,
     entries: Vec<TranscriptEntry>,
     composer: Composer,
     live_attempts: BTreeMap<String, LiveAttempt>,
@@ -267,7 +293,9 @@ struct UiState {
     spinner: usize,
     pending_approval: Option<PendingApproval>,
     show_help: bool,
+    show_theme_picker: bool,
     show_tool_details: bool,
+    show_work_details: bool,
     show_objectives: bool,
     objective_scroll: u16,
     theme_kind: TuiTheme,
@@ -288,6 +316,7 @@ impl UiState {
             session_id: session.id().to_string(),
             session_title: None,
             model: runtime.config().llm.model.clone(),
+            working_directory: display_working_directory(),
             entries: Vec::new(),
             composer: Composer::new(),
             live_attempts: BTreeMap::new(),
@@ -304,7 +333,9 @@ impl UiState {
             spinner: 0,
             pending_approval: None,
             show_help: false,
+            show_theme_picker: false,
             show_tool_details: false,
+            show_work_details: false,
             show_objectives: false,
             objective_scroll: 0,
             theme_kind,
@@ -648,10 +679,14 @@ impl UiState {
                     attempt.text.push_str(&text);
                 }
             }
-            // The TUI currently renders only public answer text. Provider
-            // reasoning summaries remain available on runtime/model_stream
-            // for clients that expose an explicit opt-in presentation.
-            ModelStreamEvent::ReasoningSummaryDelta { .. } => {}
+            // This is the provider-authored, presentation-safe summary channel,
+            // not hidden chain-of-thought. Keeping it transient makes long
+            // operations understandable without persisting it as conversation.
+            ModelStreamEvent::ReasoningSummaryDelta { text } => {
+                if let Some(attempt) = self.live_attempts.get_mut(attempt_id) {
+                    attempt.reasoning_summary.push_str(&text);
+                }
+            }
             ModelStreamEvent::ToolCallStarted { index, name, .. } => {
                 if let Some(attempt) = self.live_attempts.get_mut(attempt_id) {
                     attempt.tools.entry(index).or_default().name = name.clone();
@@ -702,36 +737,50 @@ impl UiState {
         let size = frame.area();
         frame.render_widget(Block::default(), size);
         let input_lines = self.composer.text().split('\n').count().clamp(1, 5) as u16;
-        let compact = size.width < 88 || size.height < 18;
-        let header_height = if compact { 3 } else { 4 };
-        let status_height = if compact { 1 } else { 3 };
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(header_height),
-                Constraint::Length(status_height),
-                Constraint::Min(4),
-                Constraint::Length(input_lines + 3),
-                Constraint::Length(1),
-            ])
-            .split(size);
-
-        self.render_header(frame, chunks[0]);
         if self.active_view == UiView::Conversation {
-            self.render_work_status(frame, chunks[1]);
-            self.render_transcript(frame, chunks[2]);
+            // The default surface is intentionally only the conversation and
+            // its execution stream. Morphz-specific control planes stay one
+            // shortcut away instead of permanently taking over the viewport.
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Min(3),
+                    Constraint::Length(input_lines + 2),
+                    Constraint::Length(1),
+                ])
+                .split(size);
+            self.render_transcript(frame, chunks[0]);
+            self.render_composer(frame, chunks[1]);
+            self.render_footer(frame, chunks[2]);
         } else {
+            let compact = size.width < 88 || size.height < 18;
+            let header_height = if compact { 3 } else { 4 };
+            let status_height = if compact { 1 } else { 3 };
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(header_height),
+                    Constraint::Length(status_height),
+                    Constraint::Min(4),
+                    Constraint::Length(input_lines + 2),
+                    Constraint::Length(1),
+                ])
+                .split(size);
+            self.render_header(frame, chunks[0]);
             self.render_chat_status(frame, chunks[1]);
             match self.active_view {
                 UiView::Work => self.render_work_view(frame, chunks[2]),
                 UiView::Mind => self.render_mind_view(frame, chunks[2]),
                 UiView::Conversation => unreachable!(),
             }
+            self.render_composer(frame, chunks[3]);
+            self.render_footer(frame, chunks[4]);
         }
-        self.render_composer(frame, chunks[3]);
-        self.render_footer(frame, chunks[4]);
         if self.show_help {
             self.render_help(frame, centered_rect(72, 70, size));
+        }
+        if self.show_theme_picker {
+            self.render_theme_picker(frame, centered_rect(60, 70, size));
         }
         if self.show_objectives {
             self.render_objectives(frame, centered_rect(84, 78, size));
@@ -739,21 +788,6 @@ impl UiState {
         if self.pending_approval.is_some() {
             self.render_approval(frame, centered_rect(78, 62, size));
         }
-    }
-
-    fn primary_objective(&self) -> Option<&ObjectiveRecord> {
-        self.objectives
-            .iter()
-            .find(|objective| {
-                objective.coordinator_session_id == self.session_id
-                    || objective.delivery_session_id == self.session_id
-            })
-            .or_else(|| {
-                self.objectives
-                    .iter()
-                    .find(|objective| objective.status == ObjectiveStatus::Active)
-            })
-            .or_else(|| self.objectives.first())
     }
 
     fn render_header(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -958,110 +992,6 @@ impl UiState {
         (evaluations, objectives, background, delegations)
     }
 
-    fn render_work_status(&self, frame: &mut Frame<'_>, area: Rect) {
-        let (evaluations, objectives, background, delegations) = self.runtime_work_counts();
-        let total = evaluations + objectives + background + delegations;
-        let marker = if total == 0 { "○" } else { "◒" };
-        let marker_color = if total == 0 {
-            self.theme.text_muted
-        } else {
-            self.theme.success
-        };
-        let current = self
-            .primary_objective()
-            .map(|objective| {
-                format!(
-                    "Objective · {}",
-                    truncate(&objective.stated_objective.replace('\n', " "), 60)
-                )
-            })
-            .or_else(|| {
-                self.live_attempts
-                    .values()
-                    .flat_map(|attempt| attempt.tools.values())
-                    .next()
-                    .map(|tool| tool_title(&tool.name).to_string())
-            })
-            .unwrap_or_else(|| {
-                if self.busy {
-                    self.status.clone()
-                } else {
-                    "idle".to_string()
-                }
-            });
-        if area.height < 3 {
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        " WORK  ",
-                        Style::default()
-                            .fg(self.theme.warning)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!("{marker} "), Style::default().fg(marker_color)),
-                    Span::styled(current, Style::default().fg(self.theme.text_secondary)),
-                    Span::styled("  ·  Ctrl+W", Style::default().fg(self.theme.text_muted)),
-                ])),
-                area,
-            );
-            return;
-        }
-        let strip = Block::default()
-            .borders(Borders::TOP | Borders::BOTTOM)
-            .border_style(Style::default().fg(self.theme.border_subtle));
-        let inner = inset_rect(strip.inner(area), if area.width >= 100 { 4 } else { 2 }, 0);
-        frame.render_widget(strip, area);
-        let columns = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(55),
-                Constraint::Percentage(32),
-                Constraint::Percentage(13),
-            ])
-            .split(inner);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    "WORK  ",
-                    Style::default()
-                        .fg(self.theme.focus)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(format!("{marker} "), Style::default().fg(marker_color)),
-                Span::styled(current, Style::default().fg(self.theme.text_primary)),
-            ])),
-            columns[0],
-        );
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    format!("{evaluations}"),
-                    Style::default().fg(self.theme.text_secondary),
-                ),
-                Span::styled(" eval  ·  ", Style::default().fg(self.theme.text_muted)),
-                Span::styled(
-                    format!("{objectives}"),
-                    Style::default().fg(self.theme.text_secondary),
-                ),
-                Span::styled(" goals  ·  ", Style::default().fg(self.theme.text_muted)),
-                Span::styled(
-                    format!("{} tasks", background + delegations),
-                    Style::default().fg(self.theme.text_secondary),
-                ),
-            ]))
-            .alignment(Alignment::Right),
-            columns[1],
-        );
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("工作台 ", Style::default().fg(self.theme.focus)),
-                Span::styled("Ctrl W", Style::default().fg(self.theme.text_secondary)),
-            ]))
-            .alignment(Alignment::Right),
-            columns[2],
-        );
-    }
-
     fn render_chat_status(&self, frame: &mut Frame<'_>, area: Rect) {
         if area.height < 3 {
             frame.render_widget(
@@ -1114,6 +1044,191 @@ impl UiState {
             .alignment(Alignment::Right),
             inner,
         );
+    }
+
+    fn work_overview_lines(&self) -> Vec<Line<'static>> {
+        const MAX_ITEMS_PER_SECTION: usize = 4;
+        let (evaluations, objectives, background_count, delegations) = self.runtime_work_counts();
+        let total = evaluations + objectives + background_count + delegations;
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled(
+                    "WORK OVERVIEW",
+                    Style::default()
+                        .fg(self.theme.focus)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "  {evaluations} eval  ·  {objectives} goals  ·  {background_count} tasks  ·  {delegations} agents"
+                    ),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ]),
+            Line::from(Span::styled(
+                "只显示当前可执行事实；Tab 展开诊断详情。",
+                Style::default().fg(self.theme.text_muted),
+            )),
+            Line::from(""),
+        ];
+        if total == 0 {
+            lines.push(Line::from(vec![
+                Span::styled("○  ", Style::default().fg(self.theme.text_muted)),
+                Span::styled(
+                    "当前没有活跃任务",
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+            ]));
+            return lines;
+        }
+
+        if let Some(view) = self.context_view.as_ref() {
+            if !view.active_activations.is_empty() {
+                lines.push(section_title(
+                    "MODEL",
+                    view.active_activations.len(),
+                    self.theme.tool,
+                    self.theme.text_muted,
+                ));
+                for item in view.active_activations.iter().take(MAX_ITEMS_PER_SECTION) {
+                    lines.push(Line::from(vec![
+                        Span::styled("  ◒  ", Style::default().fg(self.theme.tool)),
+                        Span::styled(
+                            item.status.as_str().to_uppercase(),
+                            Style::default()
+                                .fg(work_status_color(item.status.as_str(), &self.theme))
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(
+                                "  {} · session/{}",
+                                item.trigger_kind,
+                                short_id(&item.session_id)
+                            ),
+                            Style::default().fg(self.theme.text_muted),
+                        ),
+                    ]));
+                }
+                push_more_hint(
+                    &mut lines,
+                    view.active_activations.len(),
+                    MAX_ITEMS_PER_SECTION,
+                    self.theme.text_muted,
+                );
+                lines.push(Line::from(""));
+            }
+        }
+
+        let active_objectives = self
+            .objectives
+            .iter()
+            .filter(|objective| !objective.status.is_terminal())
+            .collect::<Vec<_>>();
+        if !active_objectives.is_empty() {
+            lines.push(section_title(
+                "OBJECTIVES",
+                active_objectives.len(),
+                self.theme.warning,
+                self.theme.text_muted,
+            ));
+            for objective in active_objectives.iter().take(MAX_ITEMS_PER_SECTION) {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  {}  ", objective_status_marker(objective.status)),
+                        Style::default().fg(objective_status_color(objective.status, &self.theme)),
+                    ),
+                    Span::styled(
+                        truncate(&objective.stated_objective.replace('\n', " "), 110),
+                        Style::default().fg(self.theme.text_primary),
+                    ),
+                    Span::styled(
+                        format!("  ·  {}", objective.status.as_str()),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                ]));
+            }
+            push_more_hint(
+                &mut lines,
+                active_objectives.len(),
+                MAX_ITEMS_PER_SECTION,
+                self.theme.text_muted,
+            );
+            lines.push(Line::from(""));
+        }
+
+        let tasks = get_tasks_map();
+        let background = tasks
+            .iter()
+            .filter(|task| task.context_id == self.context_id && !task.status.is_terminal())
+            .collect::<Vec<_>>();
+        if !background.is_empty() {
+            lines.push(section_title(
+                "BACKGROUND",
+                background.len(),
+                self.theme.success,
+                self.theme.text_muted,
+            ));
+            for task in background.iter().take(MAX_ITEMS_PER_SECTION) {
+                lines.push(Line::from(vec![
+                    Span::styled("  ●  ", Style::default().fg(self.theme.success)),
+                    Span::styled(
+                        truncate(&task.cmd_str.replace('\n', " "), 110),
+                        Style::default().fg(self.theme.text_primary),
+                    ),
+                    Span::styled(
+                        format!("  ·  {}", background_status_str(task.status)),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                ]));
+            }
+            push_more_hint(
+                &mut lines,
+                background.len(),
+                MAX_ITEMS_PER_SECTION,
+                self.theme.text_muted,
+            );
+            lines.push(Line::from(""));
+        }
+
+        let active_delegations = self
+            .delegations
+            .iter()
+            .filter(|job| {
+                job.parent_context_id == self.context_id
+                    && matches!(
+                        job.status,
+                        DelegationStatus::Queued | DelegationStatus::Running
+                    )
+            })
+            .collect::<Vec<_>>();
+        if !active_delegations.is_empty() {
+            lines.push(section_title(
+                "DELEGATIONS",
+                active_delegations.len(),
+                self.theme.focus,
+                self.theme.text_muted,
+            ));
+            for job in active_delegations.iter().take(MAX_ITEMS_PER_SECTION) {
+                lines.push(Line::from(vec![
+                    Span::styled("  ◇  ", Style::default().fg(self.theme.focus)),
+                    Span::styled(
+                        truncate(&job.task.replace('\n', " "), 110),
+                        Style::default().fg(self.theme.text_primary),
+                    ),
+                    Span::styled(
+                        format!("  ·  {}", job.status.as_str()),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                ]));
+            }
+            push_more_hint(
+                &mut lines,
+                active_delegations.len(),
+                MAX_ITEMS_PER_SECTION,
+                self.theme.text_muted,
+            );
+        }
+        lines
     }
 
     fn work_lines(&self) -> Vec<Line<'static>> {
@@ -1451,7 +1566,7 @@ impl UiState {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!(
-                "RETIRED {}  ·  PROTECTED {}  ·  CHECKPOINTS {}  ·  Ctrl+M / Esc 返回对话",
+                "RETIRED {}  ·  PROTECTED {}  ·  CHECKPOINTS {}  ·  Ctrl+K / Esc 返回对话",
                 view.state.retired.len(),
                 view.state.protected.len(),
                 view.state.checkpoints.len()
@@ -1752,6 +1867,11 @@ impl UiState {
     }
 
     fn render_work_view(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        if !self.show_work_details {
+            let lines = self.work_overview_lines();
+            self.render_view_lines(frame, area, lines);
+            return;
+        }
         if area.width < 94 || area.height < 16 {
             let lines = self.work_lines();
             self.render_view_lines(frame, area, lines);
@@ -2103,53 +2223,104 @@ impl UiState {
     }
 
     fn transcript_lines(&self) -> Vec<Line<'static>> {
-        const ROLE_WIDTH: usize = 14;
-        let mut lines = Vec::new();
+        let mut lines = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("  ◆  ", Style::default().fg(self.theme.brand)),
+                Span::styled(
+                    "Morphz",
+                    Style::default()
+                        .fg(self.theme.brand)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "  persistent coding agent",
+                    Style::default().fg(self.theme.text_muted),
+                ),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled(
+                    "     Directory  ",
+                    Style::default().fg(self.theme.text_muted),
+                ),
+                Span::styled(
+                    self.working_directory.clone(),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "     Session    ",
+                    Style::default().fg(self.theme.text_muted),
+                ),
+                Span::styled(
+                    self.session_title
+                        .as_deref()
+                        .filter(|title| !title.trim().is_empty())
+                        .map(|title| {
+                            format!("{} · {}", truncate(title, 36), short_id(&self.session_id))
+                        })
+                        .unwrap_or_else(|| short_id(&self.session_id)),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "     Model      ",
+                    Style::default().fg(self.theme.text_muted),
+                ),
+                Span::styled(
+                    self.model.clone(),
+                    Style::default().fg(self.theme.text_secondary),
+                ),
+            ]),
+            Line::from(""),
+        ];
         for entry in &self.entries {
             if entry.kind == EntryKind::Tool {
-                for (index, body_line) in entry.body.lines().enumerate() {
-                    lines.push(Line::from(vec![
-                        Span::styled("  │  ", Style::default().fg(self.theme.focus)),
-                        Span::styled(
-                            body_line.to_string(),
-                            Style::default().fg(if index == 0 {
-                                self.theme.tool
-                            } else {
-                                self.theme.text_muted
-                            }),
-                        ),
-                    ]));
-                }
-                if self.show_tool_details {
-                    if let Some(detail) = entry.detail.as_deref() {
-                        for detail_line in truncate(detail, 1_600).lines() {
-                            lines.push(Line::from(vec![
-                                Span::styled("  │  ", Style::default().fg(self.theme.focus)),
-                                Span::styled(
-                                    detail_line.to_string(),
-                                    Style::default().fg(self.theme.text_muted),
-                                ),
-                            ]));
-                        }
-                    }
-                }
-                lines.push(Line::from(""));
+                lines.extend(self.tool_activity_lines(&entry.body, entry.detail.as_deref()));
                 continue;
             }
-            let (label, color) = entry_style(entry.kind, &self.theme);
+            let (marker, marker_color, body_color, modifier) = match entry.kind {
+                EntryKind::User => (
+                    "❯ ",
+                    self.theme.user,
+                    self.theme.text_primary,
+                    Modifier::BOLD,
+                ),
+                EntryKind::Assistant => (
+                    "● ",
+                    self.theme.brand,
+                    self.theme.text_primary,
+                    Modifier::empty(),
+                ),
+                EntryKind::Progress => (
+                    "✦ ",
+                    self.theme.brand,
+                    self.theme.text_primary,
+                    Modifier::empty(),
+                ),
+                EntryKind::System => (
+                    "• ",
+                    self.theme.text_muted,
+                    self.theme.text_muted,
+                    Modifier::empty(),
+                ),
+                EntryKind::Error => ("! ", self.theme.error, self.theme.error, Modifier::empty()),
+                EntryKind::Tool => unreachable!(),
+            };
             for (index, body_line) in entry.body.lines().enumerate() {
                 lines.push(Line::from(vec![
                     Span::styled(
-                        if index == 0 {
-                            format!("{label:<ROLE_WIDTH$}")
-                        } else {
-                            " ".repeat(ROLE_WIDTH)
-                        },
-                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        if index == 0 { marker } else { "  " },
+                        Style::default()
+                            .fg(marker_color)
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
                         body_line.to_string(),
-                        Style::default().fg(self.theme.text_primary),
+                        Style::default().fg(body_color).add_modifier(modifier),
                     ),
                 ]));
             }
@@ -2160,18 +2331,55 @@ impl UiState {
             .values()
             .filter(|attempt| attempt.is_conversation())
         {
+            let activity = ["◐", "◓", "◑", "◒"][self.spinner % 4];
+            if attempt.reasoning_summary.trim().is_empty()
+                && attempt.text.trim().is_empty()
+                && attempt.tools.is_empty()
+            {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{activity} "),
+                        Style::default().fg(self.theme.brand),
+                    ),
+                    Span::styled(
+                        "Thinking…",
+                        Style::default()
+                            .fg(self.theme.text_muted)
+                            .add_modifier(Modifier::ITALIC),
+                    ),
+                ]));
+                lines.push(Line::from(""));
+            }
+            if !attempt.reasoning_summary.trim().is_empty() {
+                for (index, summary_line) in truncate(&attempt.reasoning_summary, 1_600)
+                    .lines()
+                    .enumerate()
+                {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            if index == 0 {
+                                format!("{activity} ")
+                            } else {
+                                "  ".to_string()
+                            },
+                            Style::default().fg(self.theme.brand),
+                        ),
+                        Span::styled(
+                            summary_line.to_string(),
+                            Style::default()
+                                .fg(self.theme.text_muted)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
+                    ]));
+                }
+                lines.push(Line::from(""));
+            }
             if !attempt.text.trim().is_empty() {
                 for (index, body_line) in attempt.text.lines().enumerate() {
                     lines.push(Line::from(vec![
                         Span::styled(
-                            if index == 0 {
-                                format!("{:<ROLE_WIDTH$}", "Morphz")
-                            } else {
-                                " ".repeat(ROLE_WIDTH)
-                            },
-                            Style::default()
-                                .fg(self.theme.brand)
-                                .add_modifier(Modifier::BOLD),
+                            if index == 0 { "● " } else { "  " },
+                            Style::default().fg(self.theme.brand),
                         ),
                         Span::styled(
                             body_line.to_string(),
@@ -2183,73 +2391,108 @@ impl UiState {
             }
             for tool in attempt.tools.values() {
                 let activity = summarize_tool_call(&tool.name, &tool.arguments, None);
-                let marker = if tool.completed { "✓" } else { "◇" };
-                lines.push(Line::from(vec![
-                    Span::styled("  │  ", Style::default().fg(self.theme.focus)),
-                    Span::styled(
-                        format!("{marker} {}", activity.title),
-                        Style::default()
-                            .fg(if tool.completed {
-                                self.theme.success
-                            } else {
-                                self.theme.tool
-                            })
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]));
+                let mut body = format!("Using {}", activity.title);
                 if !activity.target.is_empty() {
-                    lines.push(Line::from(vec![
-                        Span::styled("  │  ", Style::default().fg(self.theme.focus)),
-                        Span::styled(activity.target, Style::default().fg(self.theme.text_muted)),
-                    ]));
+                    body.push('\n');
+                    body.push_str("  ");
+                    body.push_str(&activity.target);
                 }
-                if self.show_tool_details && !tool.arguments.is_empty() {
-                    lines.push(Line::from(vec![
-                        Span::styled("  │  ", Style::default().fg(self.theme.focus)),
-                        Span::styled(
-                            truncate(&pretty_json(&tool.arguments), 800),
-                            Style::default().fg(self.theme.text_muted),
-                        ),
-                    ]));
-                }
-                lines.push(Line::from(""));
+                lines.extend(self.tool_activity_lines(
+                    &body,
+                    (!tool.arguments.is_empty()).then_some(tool.arguments.as_str()),
+                ));
             }
         }
         lines
     }
 
+    fn tool_activity_lines(&self, body: &str, detail: Option<&str>) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        let mut starts_activity = true;
+        for body_line in body.lines() {
+            if body_line.trim().is_empty() {
+                lines.push(Line::from(""));
+                starts_activity = true;
+                continue;
+            }
+            let trimmed = body_line.trim_start();
+            let cleaned = trimmed
+                .strip_prefix('◇')
+                .or_else(|| trimmed.strip_prefix('✓'))
+                .or_else(|| trimmed.strip_prefix('!'))
+                .unwrap_or(trimmed)
+                .trim_start();
+            let completed = cleaned.starts_with("Used ") || trimmed.starts_with('✓');
+            let failed = cleaned.starts_with("Failed ") || trimmed.starts_with('!');
+            let color = if failed {
+                self.theme.error
+            } else if completed {
+                self.theme.success
+            } else {
+                self.theme.tool
+            };
+            if starts_activity {
+                let (verb, title) = cleaned
+                    .split_once(' ')
+                    .filter(|(verb, _)| matches!(*verb, "Using" | "Used" | "Failed"))
+                    .unwrap_or(("", cleaned));
+                let mut spans = vec![Span::styled("● ", Style::default().fg(color))];
+                if !verb.is_empty() {
+                    spans.push(Span::styled(
+                        format!("{verb} "),
+                        Style::default().fg(self.theme.text_secondary),
+                    ));
+                }
+                spans.push(Span::styled(
+                    title.to_string(),
+                    Style::default()
+                        .fg(if failed {
+                            self.theme.error
+                        } else {
+                            self.theme.tool
+                        })
+                        .add_modifier(Modifier::BOLD),
+                ));
+                lines.push(Line::from(spans));
+                starts_activity = false;
+            } else {
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(
+                        cleaned.to_string(),
+                        Style::default().fg(self.theme.text_muted),
+                    ),
+                ]));
+            }
+        }
+        if self.show_tool_details {
+            if let Some(detail) = detail {
+                for detail_line in truncate(detail, 1_600).lines() {
+                    lines.push(Line::from(vec![
+                        Span::styled("  │ ", Style::default().fg(self.theme.border_subtle)),
+                        Span::styled(
+                            detail_line.to_string(),
+                            Style::default().fg(self.theme.text_muted),
+                        ),
+                    ]));
+                }
+            }
+        }
+        lines.push(Line::from(""));
+        lines
+    }
+
     fn render_transcript(&mut self, frame: &mut Frame<'_>, area: Rect) {
         let lines = self.transcript_lines();
-        let horizontal_margin = (area.width / 14).clamp(3, 14);
+        let horizontal_margin = (area.width / 24).clamp(2, 8);
         let inner = inset_rect(area, horizontal_margin, 0);
-        let heading_height = if inner.height >= 6 { 2 } else { 1 };
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(heading_height), Constraint::Min(1)])
-            .split(inner);
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("SESSION  ·  ", Style::default().fg(self.theme.text_muted)),
-                Span::styled(
-                    short_id(&self.session_id),
-                    Style::default().fg(self.theme.text_secondary),
-                ),
-            ])),
-            rows[0],
-        );
-        frame.render_widget(
-            Paragraph::new("对话与执行互不阻塞")
-                .style(Style::default().fg(self.theme.success))
-                .alignment(Alignment::Right),
-            rows[0],
-        );
         let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
         // Use Ratatui's own word-wrapping implementation. Dividing the display
         // width by the viewport width undercounts lines whenever wrapping leaves
         // unused cells at a word boundary (especially in mixed CJK/Markdown
         // text), which can leave the newest transcript entry behind the composer.
-        let visual_lines = paragraph.line_count(rows[1].width);
-        let viewport = rows[1].height as usize;
+        let visual_lines = paragraph.line_count(inner.width);
+        let viewport = inner.height as usize;
         let max_scroll = visual_lines.saturating_sub(viewport).min(u16::MAX as usize) as u16;
         if self.follow_tail {
             self.scroll = max_scroll;
@@ -2257,7 +2500,7 @@ impl UiState {
             self.scroll = self.scroll.min(max_scroll);
         }
         let paragraph = paragraph.scroll((self.scroll, 0));
-        frame.render_widget(paragraph, rows[1]);
+        frame.render_widget(paragraph, inner);
     }
 
     fn render_composer(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -2265,15 +2508,12 @@ impl UiState {
         let content = if text.is_empty() {
             vec![Line::from(vec![
                 Span::styled(
-                    "› ",
+                    "❯ ",
                     Style::default()
                         .fg(self.theme.focus)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    "输入消息，Enter 发送…",
-                    Style::default().fg(self.theme.text_muted),
-                ),
+                Span::styled("输入消息…", Style::default().fg(self.theme.text_muted)),
             ])]
         } else {
             text.split('\n')
@@ -2281,7 +2521,7 @@ impl UiState {
                 .map(|(index, line)| {
                     Line::from(vec![
                         Span::styled(
-                            if index == 0 { "› " } else { "  " },
+                            if index == 0 { "❯ " } else { "  " },
                             Style::default()
                                 .fg(self.theme.focus)
                                 .add_modifier(Modifier::BOLD),
@@ -2294,44 +2534,21 @@ impl UiState {
                 })
                 .collect::<Vec<_>>()
         };
-        let rows = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(3)])
-            .split(area);
-        let horizontal_margin = (area.width / 14).clamp(3, 14);
-        let status_area = inset_rect(rows[0], horizontal_margin, 0);
-        let status = if self.busy {
-            "Agent 正在工作，仍可追加消息"
-        } else {
-            "ready"
-        };
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    if self.busy { "●  " } else { "○  " },
-                    Style::default().fg(if self.busy {
-                        self.theme.success
-                    } else {
-                        self.theme.text_muted
-                    }),
-                ),
-                Span::styled(status, Style::default().fg(self.theme.text_muted)),
-            ])),
-            status_area,
-        );
-        frame.render_widget(
-            Paragraph::new(format!("当前 Session · {}", short_id(&self.session_id)))
-                .style(Style::default().fg(self.theme.text_muted))
-                .alignment(Alignment::Right),
-            status_area,
-        );
-        let separator = Block::default()
-            .borders(Borders::TOP | Borders::BOTTOM)
-            .border_style(Style::default().fg(self.theme.border_subtle));
-        let inner = inset_rect(separator.inner(rows[1]), horizontal_margin, 0);
-        frame.render_widget(separator, rows[1]);
+        let horizontal_margin = (area.width / 24).clamp(2, 8);
+        let box_area = inset_rect(area, horizontal_margin, 0);
+        let composer_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(self.theme.border_strong))
+            .padding(ratatui::widgets::Padding::horizontal(1));
+        let inner = composer_block.inner(box_area);
+        frame.render_widget(composer_block, box_area);
         frame.render_widget(Paragraph::new(content), inner);
-        if self.pending_approval.is_none() && !self.show_help && !self.show_objectives {
+        if self.pending_approval.is_none()
+            && !self.show_help
+            && !self.show_theme_picker
+            && !self.show_objectives
+        {
             let (row, column) = self.composer.row_col();
             let x = inner
                 .x
@@ -2347,29 +2564,55 @@ impl UiState {
     }
 
     fn render_footer(&self, frame: &mut Frame<'_>, area: Rect) {
-        let tool_hint = if self.show_tool_details {
-            " · Ctrl+T details on"
+        let marker = "●";
+        let marker_color = if self.busy {
+            self.theme.warning
         } else {
-            ""
+            self.theme.success
         };
-        let objective_hint = if self.objectives.is_empty() {
-            ""
+        let horizontal_margin = (area.width / 24).clamp(2, 8);
+        let inner = inset_rect(area, horizontal_margin, 0);
+        let columns = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+            .split(inner);
+        let mut left = vec![
+            Span::styled(format!("{marker} "), Style::default().fg(marker_color)),
+            Span::styled(
+                self.status.clone(),
+                Style::default().fg(self.theme.text_secondary),
+            ),
+            Span::styled("  ·  ", Style::default().fg(self.theme.border_subtle)),
+            Span::styled(
+                self.model.clone(),
+                Style::default().fg(self.theme.text_muted),
+            ),
+        ];
+        if area.width >= 100 {
+            left.push(Span::styled(
+                format!("  ·  {}", self.working_directory),
+                Style::default().fg(self.theme.text_muted),
+            ));
+        }
+        frame.render_widget(Paragraph::new(Line::from(left)), columns[0]);
+        let hints = if area.width < 78 {
+            "F1 shortcuts"
+        } else if self.active_view == UiView::Work {
+            if self.show_work_details {
+                "Tab overview  ·  Esc conversation  ·  F1 shortcuts"
+            } else {
+                "Tab details  ·  Esc conversation  ·  F1 shortcuts"
+            }
+        } else if self.active_view == UiView::Conversation {
+            "Ctrl+W work  ·  Ctrl+K mind  ·  F1 shortcuts"
         } else {
-            " · Ctrl+O goals"
+            "Esc conversation  ·  F1 shortcuts"
         };
-        let left = format!(
-            " Enter 发送  ·  Ctrl+J 换行  ·  Ctrl+W 工作  ·  Ctrl+M 认知{objective_hint}{tool_hint}  ·  Ctrl+D 退出  ·  F1 帮助"
-        );
-        let style = Style::default().fg(self.theme.text_muted);
         frame.render_widget(
-            Paragraph::new(left)
-                .style(style)
-                .block(
-                    Block::default().padding(ratatui::widgets::Padding::horizontal(
-                        (area.width / 14).clamp(3, 14),
-                    )),
-                ),
-            area,
+            Paragraph::new(hints)
+                .style(Style::default().fg(self.theme.text_muted))
+                .alignment(Alignment::Right),
+            columns[1],
         );
     }
 
@@ -2381,7 +2624,8 @@ impl UiState {
             Line::from("  Shift+Enter           Insert newline (enhanced terminals)"),
             Line::from("  Ctrl+J                Insert newline (portable fallback)"),
             Line::from("  Ctrl+W                Toggle Runtime Work view"),
-            Line::from("  Ctrl+M                Toggle Mind / Frame view"),
+            Line::from("  Ctrl+M / Ctrl+K       Toggle Mind / Frame view"),
+            Line::from("  Tab                   Toggle Work overview/details"),
             Line::from("  Esc                   Return to Conversation view"),
             Line::from("  Ctrl+O                Expand/collapse Objectives"),
             Line::from("  Ctrl+T                Toggle raw tool details"),
@@ -2404,6 +2648,53 @@ impl UiState {
         )
         .style(Style::default().fg(self.theme.text_primary));
         frame.render_widget(help, area);
+    }
+
+    fn render_theme_picker(&self, frame: &mut Frame<'_>, area: Rect) {
+        frame.render_widget(Clear, area);
+        let mut lines = vec![
+            Line::from(Span::styled(
+                "与 Dashboard 共用同一组强调色 token。",
+                Style::default().fg(self.theme.text_muted),
+            )),
+            Line::from(""),
+        ];
+        for (index, kind, label, description) in [
+            ("1", TuiTheme::Cyan, "电光青", "清晰、技术感"),
+            ("2", TuiTheme::Iris, "鸢尾紫", "克制、认知感"),
+            ("3", TuiTheme::Coral, "暖珊瑚", "温和、有生命力"),
+            ("4", TuiTheme::Mono, "纯单色", "中性、低干扰"),
+        ] {
+            let palette = Theme::from_kind(kind);
+            let selected = self.theme_kind == kind;
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {index}  {} ", if selected { "●" } else { "○" }),
+                    Style::default().fg(palette.brand),
+                ),
+                Span::styled(
+                    format!("{label}  "),
+                    Style::default()
+                        .fg(palette.brand)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(description, Style::default().fg(self.theme.text_muted)),
+            ]));
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            "按 1–4 选择  ·  Esc 关闭  ·  /theme system 使用终端原生色",
+            Style::default().fg(self.theme.text_muted),
+        )));
+        let picker = Paragraph::new(lines).block(
+            Block::default()
+                .title(" Theme · 主题 ")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(self.theme.focus))
+                .padding(ratatui::widgets::Padding::uniform(1)),
+        );
+        frame.render_widget(picker, area);
     }
 
     fn render_objectives(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -2734,19 +3025,14 @@ async fn handle_command(
 ) -> Result<bool, TuiError> {
     let command = input.trim();
     if command == "/theme" {
-        state.push(
-            EntryKind::System,
-            format!(
-                "当前主题：{}。可用：system、mono、iris、cyan、coral、no-color。",
-                state.theme_kind.as_str()
-            ),
-        );
+        state.show_theme_picker = true;
         return Ok(true);
     }
     if let Some(value) = command.strip_prefix("/theme ") {
         match TuiTheme::parse(value) {
             Some(theme_kind) => {
                 state.set_theme(theme_kind);
+                state.show_theme_picker = false;
                 state.push(
                     EntryKind::System,
                     format!(
@@ -2837,6 +3123,24 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
             _ => UiAction::None,
         };
     }
+    if state.show_theme_picker {
+        let selected = match key.code {
+            KeyCode::Char('1') => Some(TuiTheme::Cyan),
+            KeyCode::Char('2') => Some(TuiTheme::Iris),
+            KeyCode::Char('3') => Some(TuiTheme::Coral),
+            KeyCode::Char('4') => Some(TuiTheme::Mono),
+            KeyCode::Esc => {
+                state.show_theme_picker = false;
+                None
+            }
+            _ => None,
+        };
+        if let Some(theme) = selected {
+            state.set_theme(theme);
+            state.show_theme_picker = false;
+        }
+        return UiAction::None;
+    }
     if state.show_help {
         if matches!(key.code, KeyCode::Esc | KeyCode::F(1)) {
             state.show_help = false;
@@ -2876,13 +3180,27 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
         state.set_active_view(next);
         return UiAction::None;
     }
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('m') {
+    if key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(
+            key.code,
+            KeyCode::Char('m')
+                | KeyCode::Char('M')
+                | KeyCode::Char('k')
+                | KeyCode::Char('K')
+                | KeyCode::Enter
+        )
+    {
         let next = if state.active_view == UiView::Mind {
             UiView::Conversation
         } else {
             UiView::Mind
         };
         state.set_active_view(next);
+        return UiAction::None;
+    }
+    if key.code == KeyCode::Tab && state.active_view == UiView::Work {
+        state.show_work_details = !state.show_work_details;
+        state.view_scroll = 0;
         return UiAction::None;
     }
     if key.code == KeyCode::Esc && state.active_view != UiView::Conversation {
@@ -2946,17 +3264,6 @@ fn key_action(state: &mut UiState, key: KeyEvent) -> UiAction {
     UiAction::None
 }
 
-fn entry_style(kind: EntryKind, theme: &Theme) -> (&'static str, Color) {
-    match kind {
-        EntryKind::User => ("You", theme.user),
-        EntryKind::Assistant => ("Morphz", theme.brand),
-        EntryKind::Progress => ("Morphz · working", theme.brand),
-        EntryKind::Tool => ("Tool", theme.tool),
-        EntryKind::System => ("System", theme.text_muted),
-        EntryKind::Error => ("Error", theme.error),
-    }
-}
-
 fn section_title(
     title: &'static str,
     count: usize,
@@ -2972,6 +3279,15 @@ fn section_title(
         ),
         Span::styled(format!("  {count}"), Style::default().fg(count_color)),
     ])
+}
+
+fn push_more_hint(lines: &mut Vec<Line<'static>>, total: usize, shown: usize, color: Color) {
+    if total > shown {
+        lines.push(Line::from(Span::styled(
+            format!("     … 另有 {} 项，按 Tab 查看详情", total - shown),
+            Style::default().fg(color),
+        )));
+    }
 }
 
 fn empty_state_line(message: impl Into<String>, color: Color) -> Line<'static> {
@@ -3143,6 +3459,21 @@ fn format_duration(seconds: u64) -> String {
     }
 }
 
+fn display_working_directory() -> String {
+    let current = std::env::current_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".to_string());
+    let Some(home) = std::env::var_os("HOME") else {
+        return current;
+    };
+    let home = home.to_string_lossy();
+    current
+        .strip_prefix(home.as_ref())
+        .filter(|suffix| suffix.is_empty() || suffix.starts_with(std::path::MAIN_SEPARATOR))
+        .map(|suffix| format!("~{suffix}"))
+        .unwrap_or(current)
+}
+
 #[derive(Debug, Clone)]
 struct ToolActivity {
     compact: String,
@@ -3189,7 +3520,7 @@ fn format_tool_activity(payload: &serde_json::Map<String, Value>) -> Option<Tool
             .and_then(Value::as_str)
             .unwrap_or("{}");
         let summary = summarize_tool_call(name, arguments, Some(id));
-        let mut lines = vec![format!("◇ {}", summary.title)];
+        let mut lines = vec![format!("Using {}", summary.title)];
         if !summary.target.is_empty() {
             lines.push(format!("   {}", summary.target));
         }
@@ -3240,7 +3571,6 @@ fn format_tool_result(payload: &serde_json::Map<String, Value>) -> Option<ToolAc
             .and_then(|value| value.get("process_status"))
             .and_then(Value::as_str)
             == Some("failed");
-    let marker = if failed { "!" } else { "✓" };
     let mut facts = Vec::new();
     if let Some(value) = &parsed {
         if let Some(execution) = value.get("execution").and_then(Value::as_str) {
@@ -3262,7 +3592,11 @@ fn format_tool_result(payload: &serde_json::Map<String, Value>) -> Option<ToolAc
         facts.push(status.to_string());
     }
     let title = tool_title(name);
-    let compact = format!("{marker} {title}\n   {}", facts.join("  ·  "));
+    let compact = if failed {
+        format!("Failed {title}  ·  {}", facts.join("  ·  "))
+    } else {
+        format!("Used {title}  ·  {}", facts.join("  ·  "))
+    };
     let call_id = payload
         .get("tool_call_id")
         .and_then(Value::as_str)
@@ -3337,7 +3671,7 @@ fn summarize_tool_call(name: &str, arguments: &str, _call_id: Option<&str>) -> T
         "list_files" => string("path"),
         "recall" => string("query"),
         "delegate" => string("task"),
-        "wait_task" | "task_status" | "kill_task" => string("task_id"),
+        "check_task_after" | "wait_task" | "task_status" | "kill_task" => string("task_id"),
         "context_tx" => "Mind / Frame transaction".to_string(),
         "send_message" => format!("{} · {}", string("session_id"), string("content")),
         "no_reply" => "No message to active Session".to_string(),
@@ -3382,7 +3716,7 @@ fn tool_title(name: &str) -> &'static str {
         "context_tx" => "Update context",
         "delegate" => "Delegate work",
         "list_tasks" => "List background tasks",
-        "wait_task" => "Schedule task wakeup",
+        "check_task_after" | "wait_task" => "Schedule task checkpoint",
         "task_status" => "Inspect background task",
         "kill_task" => "Stop background task",
         "send_message" => "Send Session message",
@@ -3483,6 +3817,7 @@ mod tests {
             session_id: "s".to_string(),
             session_title: Some("main".to_string()),
             model: "m".to_string(),
+            working_directory: "~/Codes/Morphz".to_string(),
             entries: Vec::new(),
             composer,
             live_attempts: BTreeMap::new(),
@@ -3499,7 +3834,9 @@ mod tests {
             spinner: 0,
             pending_approval: None,
             show_help: false,
+            show_theme_picker: false,
             show_tool_details: false,
+            show_work_details: false,
             show_objectives: false,
             objective_scroll: 0,
             theme_kind: TuiTheme::Mono,
@@ -3663,6 +4000,60 @@ mod tests {
         ));
         assert!(state.live_attempts.is_empty());
         assert!(!state.busy);
+    }
+
+    #[test]
+    fn provider_reasoning_summary_is_transiently_visible_only_for_conversation_work() {
+        let mut state = test_state(Composer::new());
+        state.on_runtime_event(stream_runtime_event(
+            "attempt-chat",
+            "work-chat",
+            "dialogue_turn",
+            ModelStreamEvent::Started,
+        ));
+        let first_frame = transcript_text(&state);
+        assert!(first_frame.contains("◐ "));
+        assert!(first_frame.contains("Thinking…"));
+        state.spinner = 1;
+        let next_frame = transcript_text(&state);
+        assert!(next_frame.contains("◓ "));
+        assert!(next_frame.contains("Thinking…"));
+        state.on_runtime_event(stream_runtime_event(
+            "attempt-chat",
+            "work-chat",
+            "dialogue_turn",
+            ModelStreamEvent::ReasoningSummaryDelta {
+                text: "Checking the event contract before editing.".to_string(),
+            },
+        ));
+        state.on_runtime_event(stream_runtime_event(
+            "attempt-hidden",
+            "work-hidden",
+            "execution",
+            ModelStreamEvent::Started,
+        ));
+        state.on_runtime_event(stream_runtime_event(
+            "attempt-hidden",
+            "work-hidden",
+            "execution",
+            ModelStreamEvent::ReasoningSummaryDelta {
+                text: "private execution summary".to_string(),
+            },
+        ));
+
+        let rendered = transcript_text(&state);
+        assert!(rendered.contains("Checking the event contract before editing."));
+        assert!(!rendered.contains("private execution summary"));
+
+        state.on_runtime_event(terminal_runtime_event(
+            "chat/reply",
+            "attempt-chat",
+            "work-chat",
+            "Done",
+        ));
+        let rendered = transcript_text(&state);
+        assert!(!rendered.contains("Checking the event contract before editing."));
+        assert!(rendered.contains("Done"));
     }
 
     #[test]
@@ -3932,7 +4323,7 @@ mod tests {
             "text": r#"{"execution":"sandboxed","exit_code":0,"output_empty":true}"#
         });
         let activity = format_tool_result(payload.as_object().unwrap()).unwrap();
-        assert!(activity.compact.contains("✓ Run command"));
+        assert!(activity.compact.contains("Used Run command"));
         assert!(activity.compact.contains("sandboxed"));
         assert!(activity.compact.contains("exit 0"));
         assert!(activity.compact.contains("no output"));
@@ -3943,7 +4334,7 @@ mod tests {
         let mut state = test_state(Composer::new());
         state.objectives.push(test_objective());
         state.push_tool(
-            "◇ Run command\n   cargo test\n   network  ·  approval required",
+            "Using Run command\n   cargo test\n   network  ·  approval required",
             r#"exec · call_1
 {
   "requested_permissions": { "network": true }
@@ -3960,12 +4351,13 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(screen.contains("Morphz"));
-        assert!(screen.contains("SESSION"));
-        assert!(screen.contains("WORK"));
+        assert!(screen.contains("Directory"));
+        assert!(screen.contains("Session"));
+        assert!(screen.contains("Using"));
         assert!(screen.contains("Run command"));
         assert!(screen.contains("cargo test"));
-        assert!(screen.contains("Objective"));
-        assert!(screen.contains("Win TankWar and keep improving strategy"));
+        assert!(!screen.contains("RUNTIME WORK"));
+        assert!(!screen.contains("Win TankWar and keep improving strategy"));
         assert!(!screen.contains("requested_permissions"));
         assert!(terminal.backend().cursor_visible());
     }
@@ -3984,7 +4376,13 @@ mod tests {
             EntryKind::Assistant,
             "我会先对照三套适配器的事件边界，再运行已有契约测试。工作已经启动，你可以继续给我消息。",
         );
-        state.push_tool("◇ Run command\n   cargo test --workspace", "");
+        state.push_tool("Using Run command\n   cargo test --workspace", "");
+        state.on_runtime_event(stream_runtime_event(
+            "attempt-thinking",
+            "work-thinking",
+            "dialogue_turn",
+            ModelStreamEvent::Started,
+        ));
         let width = 160usize;
         let mut terminal = Terminal::new(TestBackend::new(width as u16, 40)).unwrap();
         terminal.draw(|frame| state.render(frame)).unwrap();
@@ -4038,17 +4436,54 @@ mod tests {
         let coral = Theme::from_kind(TuiTheme::Coral);
         let no_color = Theme::from_kind(TuiTheme::NoColor);
 
-        assert_eq!(mono.brand, Color::Reset);
-        assert_eq!(iris.brand, Color::LightMagenta);
-        assert_eq!(cyan.brand, Color::LightCyan);
-        assert_eq!(coral.brand, Color::LightRed);
+        assert_eq!(mono.brand, Color::Rgb(210, 211, 218));
+        assert_eq!(iris.brand, Color::Rgb(165, 140, 255));
+        assert_eq!(cyan.brand, Color::Rgb(86, 208, 222));
+        assert_eq!(coral.brand, Color::Rgb(240, 138, 126));
+        assert_eq!(cyan.success, Color::Rgb(92, 224, 153));
+        assert_eq!(cyan.warning, Color::Rgb(240, 193, 100));
+        assert_eq!(cyan.error, Color::Rgb(255, 138, 146));
         assert_eq!(no_color.brand, Color::Reset);
         assert_eq!(no_color.success, Color::Reset);
     }
 
     #[test]
-    fn ctrl_w_and_ctrl_m_switch_full_views_while_escape_returns_to_chat() {
+    fn theme_picker_exposes_the_four_dashboard_palettes() {
         let mut state = test_state(Composer::new());
+        state.show_theme_picker = true;
+        let mut terminal = Terminal::new(TestBackend::new(100, 28)).unwrap();
+        terminal.draw(|frame| state.render(frame)).unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        let compact_screen = screen
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        for label in ["电光青", "鸢尾紫", "暖珊瑚", "纯单色"] {
+            assert!(compact_screen.contains(label));
+        }
+        assert!(!terminal.backend().cursor_visible());
+
+        assert!(matches!(
+            key_action(
+                &mut state,
+                KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE)
+            ),
+            UiAction::None
+        ));
+        assert_eq!(state.theme_kind, TuiTheme::Cyan);
+        assert!(!state.show_theme_picker);
+    }
+
+    #[test]
+    fn work_density_and_mind_shortcuts_are_terminal_compatible() {
+        let mut state = test_state(Composer::new());
+        state.objectives.push(test_objective());
         assert_eq!(state.active_view, UiView::Conversation);
 
         assert!(matches!(
@@ -4068,17 +4503,33 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(work_screen.contains("RUNTIME WORK"));
-        assert!(work_screen.contains("ACTIVATIONS"));
+        assert!(work_screen.contains("WORK OVERVIEW"));
         assert!(work_screen.contains("OBJECTIVES"));
-        assert!(work_screen.contains("BACKGROUND TASKS"));
-        assert!(work_screen.contains("DELEGATIONS"));
+        assert!(work_screen.contains("Win TankWar and keep improving strategy"));
+        assert!(!work_screen.contains("RUNTIME WORK"));
         assert!(work_screen.contains("CHAT"));
         assert!(terminal.backend().cursor_visible());
 
+        key_action(&mut state, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(state.show_work_details);
+        terminal.draw(|frame| state.render(frame)).unwrap();
+        let detailed_work_screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(detailed_work_screen.contains("RUNTIME WORK"));
+        assert!(detailed_work_screen.contains("ACTIVATIONS"));
+        assert!(detailed_work_screen.contains("OBJECTIVES"));
+        assert!(detailed_work_screen.contains("BACKGROUND TASKS"));
+        assert!(detailed_work_screen.contains("DELEGATIONS"));
+
+        // Ctrl+M is encoded as Ctrl+Enter by some terminal protocols.
         key_action(
             &mut state,
-            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
         );
         assert_eq!(state.active_view, UiView::Mind);
         terminal.draw(|frame| state.render(frame)).unwrap();
@@ -4091,6 +4542,18 @@ mod tests {
             .collect::<String>();
         assert!(mind_screen.contains("MIND"));
 
+        // Ctrl+K is the portable fallback for terminals where Ctrl+M is
+        // indistinguishable from an unmodified carriage return.
+        key_action(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.active_view, UiView::Conversation);
+        key_action(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::CONTROL),
+        );
+        assert_eq!(state.active_view, UiView::Mind);
         key_action(&mut state, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(state.active_view, UiView::Conversation);
     }

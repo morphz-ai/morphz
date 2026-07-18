@@ -65,9 +65,10 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    加入不可覆盖保护，Agent 不能通过文件工具、Shell 或自动审批修改 Runtime 自身；
    `.env`、`.git`、`.ssh` 同样默认受保护。
 
-   交互式 TTY 默认进入 Ratatui 界面：Enter 发送，Shift/Alt+Enter 换行；`/ctx`、
-   `/jobs`、`/cancel`、`/help` 可检查或控制当前运行。Provider 返回的模型正文和工具参数按统一流式事件
-   展示；无工具正文完整返回后会提交为持久化 Session 消息。`--plain` 可选择
+   交互式 TTY 默认进入 Ratatui 界面：Enter 发送，Shift/Alt+Enter 换行，Ctrl+W 打开任务概览，
+   Tab 按需展开任务诊断，Ctrl+K 打开 Mind；`/ctx`、`/jobs`、`/cancel`、`/help` 可检查或控制当前运行。Provider 返回的模型正文和工具参数按统一流式事件
+   展示；无工具正文完整返回后会提交为持久化 Session 消息。`/theme` 可在与 Dashboard
+   一致的电光青、鸢尾紫、暖珊瑚和纯单色四套主题间切换。`--plain` 可选择
    行式界面；非 TTY 与 `morphz exec` 自动使用纯文本，适合脚本和管道。
 
    CLI 也可以直接携带提示词；未被已注册命令和选项消费的文本都会交给 Agent：
