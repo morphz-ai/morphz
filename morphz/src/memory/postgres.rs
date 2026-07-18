@@ -9,8 +9,9 @@
 use crate::event::Event;
 use crate::memory::{
     EventAppend, EventStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
-    MindSnapshotRecord, NewMindProjection, QueryFilter, SessionAttentionState,
-    SessionAttentionUpdate,
+    MindSnapshotRecord, NewMindProjection, NewRuntimeTimer, QueryFilter, RuntimeTimerKind,
+    RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionState, SessionAttentionUpdate,
+    TimerStore,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -30,7 +31,7 @@ impl PostgresStore {
             .connect(database_url)
             .await?;
         let store = Self { pool };
-        store.migrate_context_authority().await?;
+        store.migrate_supported_capabilities().await?;
         Ok(store)
     }
 
@@ -38,7 +39,7 @@ impl PostgresStore {
         &self.pool
     }
 
-    async fn migrate_context_authority(&self) -> Result<(), StoreError> {
+    async fn migrate_supported_capabilities(&self) -> Result<(), StoreError> {
         // Phase 4 introduces only tables whose complete atomic semantics are
         // implemented below. Scheduler tables will be added together with
         // their Store traits, not as decorative schema.
@@ -128,6 +129,23 @@ impl PostgresStore {
                 created_at TEXT NOT NULL,
                 UNIQUE(context_id, revision)
             )"#,
+            r#"CREATE TABLE IF NOT EXISTS runtime_timers (
+                id TEXT PRIMARY KEY,
+                generation BIGINT NOT NULL,
+                kind TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                due_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload_json JSONB NOT NULL,
+                claimed_by TEXT,
+                claim_expires_at TEXT,
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                fired_at TEXT
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_runtime_timers_due
+               ON runtime_timers(status, due_at, claim_expires_at, id)"#,
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }
@@ -228,6 +246,49 @@ fn projection_from_row(row: &PgRow) -> Result<MindProjectionRecord, StoreError> 
         state_hash: row.get("state_hash"),
         head_event_id: row.get("head_event_id"),
         updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
+    })
+}
+
+fn timer_from_row(row: &PgRow) -> Result<RuntimeTimerRecord, StoreError> {
+    let kind = match row.get::<String, _>("kind").as_str() {
+        "schedule" => RuntimeTimerKind::Schedule,
+        "objective_wait" => RuntimeTimerKind::ObjectiveWait,
+        "objective_lease" => RuntimeTimerKind::ObjectiveLease,
+        "background_wake" => RuntimeTimerKind::BackgroundWake,
+        "activation_lease" => RuntimeTimerKind::ActivationLease,
+        "delivery_flush" => RuntimeTimerKind::DeliveryFlush,
+        other => return Err(format!("未知 Runtime Timer kind: {other}").into()),
+    };
+    let status = match row.get::<String, _>("status").as_str() {
+        "pending" => RuntimeTimerStatus::Pending,
+        "claimed" => RuntimeTimerStatus::Claimed,
+        "fired" => RuntimeTimerStatus::Fired,
+        "cancelled" => RuntimeTimerStatus::Cancelled,
+        other => return Err(format!("未知 Runtime Timer status: {other}").into()),
+    };
+    Ok(RuntimeTimerRecord {
+        id: row.get("id"),
+        generation: u64::try_from(row.get::<i64, _>("generation"))
+            .map_err(|_| "Runtime Timer generation 不能为负数")?,
+        kind,
+        owner_id: row.get("owner_id"),
+        due_at: parse_time(&row.get::<String, _>("due_at"))?,
+        status,
+        payload: row.get("payload_json"),
+        claimed_by: row.get("claimed_by"),
+        claim_expires_at: row
+            .get::<Option<String>, _>("claim_expires_at")
+            .as_deref()
+            .map(parse_time)
+            .transpose()?,
+        last_error: row.get("last_error"),
+        created_at: parse_time(&row.get::<String, _>("created_at"))?,
+        updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
+        fired_at: row
+            .get::<Option<String>, _>("fired_at")
+            .as_deref()
+            .map(parse_time)
+            .transpose()?,
     })
 }
 
@@ -551,6 +612,210 @@ impl EventStore for PostgresStore {
             events.reverse();
         }
         Ok(events)
+    }
+}
+
+#[async_trait::async_trait]
+impl TimerStore for PostgresStore {
+    async fn upsert_runtime_timer(
+        &self,
+        timer: NewRuntimeTimer,
+    ) -> Result<RuntimeTimerRecord, StoreError> {
+        if timer.id.trim().is_empty() || timer.owner_id.trim().is_empty() {
+            return Err("Runtime Timer id/owner_id 不能为空".into());
+        }
+        let now = now_text();
+        sqlx::query(
+            r#"INSERT INTO runtime_timers
+               (id, generation, kind, owner_id, due_at, status, payload_json,
+                created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $7)
+               ON CONFLICT(id) DO UPDATE SET
+                 generation = EXCLUDED.generation,
+                 kind = EXCLUDED.kind,
+                 owner_id = EXCLUDED.owner_id,
+                 due_at = EXCLUDED.due_at,
+                 status = 'pending',
+                 payload_json = EXCLUDED.payload_json,
+                 claimed_by = NULL,
+                 claim_expires_at = NULL,
+                 last_error = NULL,
+                 updated_at = EXCLUDED.updated_at,
+                 fired_at = NULL
+               WHERE EXCLUDED.generation > runtime_timers.generation
+                  OR (EXCLUDED.generation = runtime_timers.generation
+                      AND runtime_timers.status = 'cancelled')"#,
+        )
+        .bind(&timer.id)
+        .bind(i64::try_from(timer.generation)?)
+        .bind(timer.kind.as_str())
+        .bind(&timer.owner_id)
+        .bind(
+            timer
+                .due_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        )
+        .bind(&timer.payload)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        self.get_runtime_timer(&timer.id)
+            .await?
+            .ok_or_else(|| format!("Runtime Timer '{}' upsert 后不存在", timer.id).into())
+    }
+
+    async fn get_runtime_timer(&self, id: &str) -> Result<Option<RuntimeTimerRecord>, StoreError> {
+        sqlx::query("SELECT * FROM runtime_timers WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(timer_from_row)
+            .transpose()
+    }
+
+    async fn list_runtime_timers(
+        &self,
+        status: Option<RuntimeTimerStatus>,
+    ) -> Result<Vec<RuntimeTimerRecord>, StoreError> {
+        let rows = if let Some(status) = status {
+            sqlx::query("SELECT * FROM runtime_timers WHERE status = $1 ORDER BY due_at, id")
+                .bind(status.as_str())
+                .fetch_all(&self.pool)
+                .await?
+        } else {
+            sqlx::query("SELECT * FROM runtime_timers ORDER BY due_at, id")
+                .fetch_all(&self.pool)
+                .await?
+        };
+        rows.iter().map(timer_from_row).collect()
+    }
+
+    async fn next_runtime_timer_due_at(&self) -> Result<Option<DateTime<Utc>>, StoreError> {
+        let due_at = sqlx::query_scalar::<_, Option<String>>(
+            r#"SELECT MIN(CASE WHEN status = 'pending' THEN due_at ELSE claim_expires_at END)
+               FROM runtime_timers
+               WHERE status = 'pending'
+                  OR (status = 'claimed' AND claim_expires_at IS NOT NULL)"#,
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        due_at.as_deref().map(parse_time).transpose()
+    }
+
+    async fn claim_due_runtime_timers(
+        &self,
+        now: DateTime<Utc>,
+        claim_token: &str,
+        claim_expires_at: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<RuntimeTimerRecord>, StoreError> {
+        if claim_token.trim().is_empty() {
+            return Err("Runtime Timer claim token 不能为空".into());
+        }
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let now = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let expires = claim_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        // SKIP LOCKED is the cross-worker ownership boundary. Competing
+        // workers never wait behind or double-claim the same timer row.
+        let rows = sqlx::query(
+            r#"WITH due AS (
+                 SELECT id FROM runtime_timers
+                 WHERE (status = 'pending' AND due_at <= $1)
+                    OR (status = 'claimed' AND claim_expires_at <= $1)
+                 ORDER BY CASE WHEN status = 'pending' THEN due_at ELSE claim_expires_at END, id
+                 FOR UPDATE SKIP LOCKED
+                 LIMIT $2
+               )
+               UPDATE runtime_timers timer
+               SET status = 'claimed', claimed_by = $3,
+                   claim_expires_at = $4, updated_at = $1
+               FROM due
+               WHERE timer.id = due.id
+               RETURNING timer.*"#,
+        )
+        .bind(&now)
+        .bind(i64::try_from(limit)?)
+        .bind(claim_token)
+        .bind(&expires)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut records = rows
+            .iter()
+            .map(timer_from_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        records.sort_by(|left, right| {
+            left.due_at
+                .cmp(&right.due_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(records)
+    }
+
+    async fn complete_runtime_timer(
+        &self,
+        id: &str,
+        generation: u64,
+        claim_token: &str,
+    ) -> Result<bool, StoreError> {
+        let now = now_text();
+        let result = sqlx::query(
+            r#"UPDATE runtime_timers
+               SET status = 'fired', claimed_by = NULL, claim_expires_at = NULL,
+                   last_error = NULL, updated_at = $1, fired_at = $1
+               WHERE id = $2 AND generation = $3
+                 AND status = 'claimed' AND claimed_by = $4"#,
+        )
+        .bind(&now)
+        .bind(id)
+        .bind(i64::try_from(generation)?)
+        .bind(claim_token)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn retry_runtime_timer(
+        &self,
+        id: &str,
+        generation: u64,
+        claim_token: &str,
+        due_at: DateTime<Utc>,
+        error: Option<&str>,
+    ) -> Result<bool, StoreError> {
+        let error = error.map(|value| value.chars().take(10_000).collect::<String>());
+        let result = sqlx::query(
+            r#"UPDATE runtime_timers
+               SET status = 'pending', due_at = $1, claimed_by = NULL,
+                   claim_expires_at = NULL, last_error = $2, updated_at = $3
+               WHERE id = $4 AND generation = $5
+                 AND status = 'claimed' AND claimed_by = $6"#,
+        )
+        .bind(due_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .bind(error)
+        .bind(now_text())
+        .bind(id)
+        .bind(i64::try_from(generation)?)
+        .bind(claim_token)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn cancel_runtime_timer(&self, id: &str) -> Result<bool, StoreError> {
+        let result = sqlx::query(
+            r#"UPDATE runtime_timers
+               SET status = 'cancelled', claimed_by = NULL,
+                   claim_expires_at = NULL, updated_at = $1
+               WHERE id = $2 AND status = 'pending'"#,
+        )
+        .bind(now_text())
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 }
 

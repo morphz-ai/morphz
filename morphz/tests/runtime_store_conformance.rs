@@ -3,8 +3,9 @@ use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     EventAppend, EventStore, MindProjectionCommit, MindProjectionStore, NewAgent,
-    NewCognitiveContext, NewMindProjection, NewSession, QueryFilter, SessionAttentionState,
-    SessionAttentionUpdate, SessionMountKind, SessionStore,
+    NewCognitiveContext, NewMindProjection, NewRuntimeTimer, NewSession, QueryFilter,
+    RuntimeTimerKind, RuntimeTimerStatus, SessionAttentionState, SessionAttentionUpdate,
+    SessionMountKind, SessionStore, TimerStore,
 };
 use serde_json::json;
 use std::future::Future;
@@ -190,6 +191,85 @@ where
         .is_empty());
 }
 
+async fn assert_timer_lease_conformance<S>(store: Arc<S>)
+where
+    S: TimerStore + Send + Sync + 'static,
+{
+    let due_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+    for index in 0..4 {
+        store
+            .upsert_runtime_timer(NewRuntimeTimer {
+                id: format!("conformance-timer-{index}"),
+                generation: 1,
+                kind: RuntimeTimerKind::ActivationLease,
+                owner_id: format!("activation-{index}"),
+                due_at,
+                payload: json!({"index": index}),
+            })
+            .await
+            .unwrap();
+    }
+    let expires = chrono::Utc::now() + chrono::Duration::seconds(30);
+    let first = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            store
+                .claim_due_runtime_timers(chrono::Utc::now(), "worker-a", expires, 4)
+                .await
+        })
+    };
+    let second = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            store
+                .claim_due_runtime_timers(chrono::Utc::now(), "worker-b", expires, 4)
+                .await
+        })
+    };
+    let first = first.await.unwrap().unwrap();
+    let second = second.await.unwrap().unwrap();
+    let mut claimed = first
+        .iter()
+        .chain(&second)
+        .map(|timer| timer.id.clone())
+        .collect::<Vec<_>>();
+    claimed.sort();
+    claimed.dedup();
+    assert_eq!(claimed.len(), 4, "every due timer must be claimed once");
+    assert_eq!(first.len() + second.len(), 4, "workers must not overlap");
+
+    for timer in first.iter().chain(&second) {
+        assert!(!store
+            .complete_runtime_timer(&timer.id, timer.generation, "wrong-worker")
+            .await
+            .unwrap());
+        assert!(store
+            .complete_runtime_timer(
+                &timer.id,
+                timer.generation,
+                timer.claimed_by.as_deref().unwrap(),
+            )
+            .await
+            .unwrap());
+        assert!(!store
+            .complete_runtime_timer(
+                &timer.id,
+                timer.generation,
+                timer.claimed_by.as_deref().unwrap(),
+            )
+            .await
+            .unwrap());
+    }
+    assert_eq!(
+        store
+            .list_runtime_timers(Some(RuntimeTimerStatus::Fired))
+            .await
+            .unwrap()
+            .len(),
+        4
+    );
+}
+
 #[tokio::test]
 async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     let database = NamedTempFile::new().unwrap();
@@ -221,7 +301,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         )
         .await
         .unwrap();
-    assert_context_transaction_conformance(store, |store, session_id| {
+    assert_context_transaction_conformance(Arc::clone(&store), |store, session_id| {
         Box::pin(async move {
             Ok(store.get_session(session_id).await?.map(|session| {
                 (
@@ -233,10 +313,11 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         })
     })
     .await;
+    assert_timer_lease_conformance(store).await;
 }
 
 #[tokio::test]
-async fn postgres_context_authority_satisfies_the_same_conformance_suite_when_configured() {
+async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when_configured() {
     let Ok(database_url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
         return;
     };
@@ -249,8 +330,9 @@ async fn postgres_context_authority_satisfies_the_same_conformance_suite_when_co
         )
         .await
         .unwrap();
-    assert_context_transaction_conformance(store, |store, session_id| {
+    assert_context_transaction_conformance(Arc::clone(&store), |store, session_id| {
         Box::pin(async move { store.session_attention_for_conformance(session_id).await })
     })
     .await;
+    assert_timer_lease_conformance(store).await;
 }

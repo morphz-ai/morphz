@@ -32,6 +32,7 @@
 - Runtime 持久层已从具体 `Arc<SqliteStore>` 解耦为一份完整的 `RuntimeStore` capability composition；SDK 可以显式注入后端，所有原子能力必须由同一个 Store 提供，禁止把一次因果提交拆到互不相关的数据库。
 - 已建立数据库无关的 Context transaction conformance suite；SQLite 已通过并发 revision CAS、Projection/Event/Session attention 原子一致和失败 Batch 全回滚测试。未来 PostgreSQL 必须通过同一套契约后才允许进入产品配置。
 - PostgreSQL Context Authority 已实现 Event Ledger/query、原子 Batch/outbox、Mind Projection/head revision CAS、Snapshot、seed provenance 和 Session attention 同事务更新；已在临时 PostgreSQL 15 实例上与 SQLite 运行同一套 Context transaction conformance suite 并通过。
+- PostgreSQL 物理 Timer Store 已实现 generation fence、leased claim、retry/complete/cancel；到期领取使用 `FOR UPDATE SKIP LOCKED`，两个并发 Worker 已通过同一套无重复 claim 测试。
 
 仍待实施：
 
@@ -618,6 +619,7 @@ acknowledge Activation
 - Runtime 依赖完整 `RuntimeStore` 而非具体 SQLite 类型（已完成）；
 - 建立可由多个后端复用的 Context transaction conformance suite（已完成首组核心契约）；
 - PostgreSQL Event/Mind/Context transaction authority（已完成并通过 PostgreSQL 15 实测）；
+- PostgreSQL Timer lease 与跨 Worker `SKIP LOCKED` claim（已完成并通过 PostgreSQL 15 实测）；
 - PostgreSQL Session/Scheduler/Objective/Approval/Execution 完整 `RuntimeStore`；
 - Activation lease、Worker recovery 与幂等 Outcome；
 - Runtime 横向扩展；
