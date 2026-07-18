@@ -1,13 +1,25 @@
 use morphz::event::Event;
+use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    EventAppend, MindProjectionCommit, NewAgent, NewCognitiveContext, NewMindProjection,
-    NewSession, QueryFilter, RuntimeStore, SessionAttentionState, SessionAttentionUpdate,
-    SessionMountKind,
+    EventAppend, EventStore, MindProjectionCommit, MindProjectionStore, NewAgent,
+    NewCognitiveContext, NewMindProjection, NewSession, QueryFilter, SessionAttentionState,
+    SessionAttentionUpdate, SessionMountKind, SessionStore,
 };
 use serde_json::json;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tempfile::NamedTempFile;
+
+type TestError = Box<dyn std::error::Error + Send + Sync>;
+type AttentionFuture<'a> = Pin<
+    Box<
+        dyn Future<Output = Result<Option<(SessionAttentionState, u64, Option<String>)>, TestError>>
+            + Send
+            + 'a,
+    >,
+>;
 
 fn context_event(id: &str, context_id: &str) -> Event {
     Event::new(
@@ -25,33 +37,13 @@ fn context_event(id: &str, context_id: &str) -> Event {
 /// Database-independent contract for the Context transaction boundary. A new
 /// service Store must pass this exact suite before it can be selected by the
 /// Runtime configuration.
-async fn assert_context_transaction_conformance(store: Arc<dyn RuntimeStore>) {
+async fn assert_context_transaction_conformance<S, F>(store: Arc<S>, read_attention: F)
+where
+    S: EventStore + MindProjectionStore + Send + Sync + 'static,
+    F: for<'a> Fn(&'a S, &'a str) -> AttentionFuture<'a>,
+{
     let context_id = "conformance-context";
     let session_id = "conformance-session";
-    store
-        .create_agent_bundle(
-            NewAgent {
-                id: "conformance-agent".to_string(),
-                title: "Conformance Agent".to_string(),
-                root_context_id: context_id.to_string(),
-            },
-            NewCognitiveContext {
-                id: context_id.to_string(),
-                agent_id: "conformance-agent".to_string(),
-                title: "Conformance Context".to_string(),
-            },
-            NewSession {
-                id: session_id.to_string(),
-                agent_id: "conformance-agent".to_string(),
-                context_id: context_id.to_string(),
-                parent_session_id: None,
-                title: "Conformance Session".to_string(),
-                mount_kind: SessionMountKind::NewBlankContext,
-            },
-        )
-        .await
-        .unwrap();
-
     let initial = store
         .initialize_mind_projection(NewMindProjection {
             context_id: context_id.to_string(),
@@ -161,9 +153,10 @@ async fn assert_context_transaction_conformance(store: Arc<dyn RuntimeStore>) {
         Some(committed_events[0].id.as_str())
     );
 
-    let session = store.get_session(session_id).await.unwrap().unwrap();
-    assert_eq!(session.attention_revision, 1);
-    assert_eq!(session.attention_event_id, projection.head_event_id);
+    let (_, attention_revision, attention_event_id) =
+        read_attention(&store, session_id).await.unwrap().unwrap();
+    assert_eq!(attention_revision, 1);
+    assert_eq!(attention_event_id, projection.head_event_id);
 
     let duplicate_a = Event::new(
         "conformance-batch-duplicate".to_string(),
@@ -205,5 +198,59 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
             .await
             .unwrap(),
     );
-    assert_context_transaction_conformance(store as Arc<dyn RuntimeStore>).await;
+    store
+        .create_agent_bundle(
+            NewAgent {
+                id: "conformance-agent".to_string(),
+                title: "Conformance Agent".to_string(),
+                root_context_id: "conformance-context".to_string(),
+            },
+            NewCognitiveContext {
+                id: "conformance-context".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                title: "Conformance Context".to_string(),
+            },
+            NewSession {
+                id: "conformance-session".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                parent_session_id: None,
+                title: "Conformance Session".to_string(),
+                mount_kind: SessionMountKind::NewBlankContext,
+            },
+        )
+        .await
+        .unwrap();
+    assert_context_transaction_conformance(store, |store, session_id| {
+        Box::pin(async move {
+            Ok(store.get_session(session_id).await?.map(|session| {
+                (
+                    session.attention_state,
+                    session.attention_revision,
+                    session.attention_event_id,
+                )
+            }))
+        })
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn postgres_context_authority_satisfies_the_same_conformance_suite_when_configured() {
+    let Ok(database_url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
+        return;
+    };
+    let store = Arc::new(PostgresStore::new(&database_url, 8).await.unwrap());
+    store
+        .bootstrap_context_for_conformance(
+            "conformance-agent",
+            "conformance-context",
+            "conformance-session",
+        )
+        .await
+        .unwrap();
+    assert_context_transaction_conformance(store, |store, session_id| {
+        Box::pin(async move { store.session_attention_for_conformance(session_id).await })
+    })
+    .await;
 }

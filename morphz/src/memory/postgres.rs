@@ -1,0 +1,865 @@
+//! PostgreSQL service-store foundation.
+//!
+//! This module intentionally starts at the Context transaction authority:
+//! immutable Events, Mind Projection/head CAS, snapshots and Session attention
+//! participate in one PostgreSQL transaction. The Runtime does not select this
+//! backend yet; it becomes selectable only after the remaining scheduler
+//! control-plane traits pass the shared Store conformance suite.
+
+use crate::event::Event;
+use crate::memory::{
+    EventAppend, EventStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
+    MindSnapshotRecord, NewMindProjection, QueryFilter, SessionAttentionState,
+    SessionAttentionUpdate,
+};
+use chrono::{DateTime, Utc};
+use serde_json::Value as JsonValue;
+use sqlx::postgres::{PgPoolOptions, PgRow};
+use sqlx::{PgPool, Postgres, QueryBuilder, Row};
+
+type StoreError = Box<dyn std::error::Error + Send + Sync>;
+
+pub struct PostgresStore {
+    pool: PgPool,
+}
+
+impl PostgresStore {
+    pub async fn new(database_url: &str, max_connections: u32) -> Result<Self, StoreError> {
+        let pool = PgPoolOptions::new()
+            .max_connections(max_connections.max(1))
+            .connect(database_url)
+            .await?;
+        let store = Self { pool };
+        store.migrate_context_authority().await?;
+        Ok(store)
+    }
+
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
+    async fn migrate_context_authority(&self) -> Result<(), StoreError> {
+        // Phase 4 introduces only tables whose complete atomic semantics are
+        // implemented below. Scheduler tables will be added together with
+        // their Store traits, not as decorative schema.
+        for statement in [
+            r#"CREATE TABLE IF NOT EXISTS agents (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                root_context_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS cognitive_contexts (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL REFERENCES agents(id),
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                seed_context_id TEXT,
+                seed_context_version BIGINT,
+                seed_snapshot_hash TEXT,
+                seed_projection TEXT
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS sessions (
+                id TEXT PRIMARY KEY,
+                agent_id TEXT NOT NULL REFERENCES agents(id),
+                context_id TEXT NOT NULL REFERENCES cognitive_contexts(id),
+                parent_session_id TEXT,
+                title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_activity_at TEXT NOT NULL,
+                attention_state TEXT NOT NULL DEFAULT 'active',
+                attention_revision BIGINT NOT NULL DEFAULT 0,
+                attention_reason TEXT,
+                attention_changed_at TEXT,
+                attention_event_id TEXT,
+                mount_kind TEXT NOT NULL
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_sessions_context_activity
+               ON sessions(context_id, last_activity_at DESC, id)"#,
+            r#"CREATE TABLE IF NOT EXISTS events (
+                sequence BIGSERIAL PRIMARY KEY,
+                id TEXT NOT NULL UNIQUE,
+                timestamp TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                type TEXT NOT NULL,
+                topic TEXT NOT NULL,
+                context_id TEXT,
+                session_id TEXT,
+                payload JSONB NOT NULL
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_events_context_sequence
+               ON events(context_id, sequence)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_events_session_sequence
+               ON events(session_id, sequence)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_events_topic_sequence
+               ON events(topic, sequence)"#,
+            r#"CREATE TABLE IF NOT EXISTS signal_outbox (
+                event_id TEXT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS context_heads (
+                context_id TEXT PRIMARY KEY REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+                revision BIGINT NOT NULL,
+                projection_hash TEXT NOT NULL,
+                head_event_id TEXT,
+                updated_at TEXT NOT NULL
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS mind_projections (
+                context_id TEXT PRIMARY KEY REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+                revision BIGINT NOT NULL,
+                state_json JSONB NOT NULL,
+                state_hash TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS mind_snapshots (
+                id TEXT PRIMARY KEY,
+                context_id TEXT NOT NULL REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+                revision BIGINT NOT NULL,
+                state_json JSONB NOT NULL,
+                state_hash TEXT NOT NULL,
+                head_event_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(context_id, revision)
+            )"#,
+        ] {
+            sqlx::query(statement).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    /// Minimal deterministic fixture used by the cross-backend conformance
+    /// suite until the complete PostgreSQL SessionStore is implemented.
+    #[doc(hidden)]
+    pub async fn bootstrap_context_for_conformance(
+        &self,
+        agent_id: &str,
+        context_id: &str,
+        session_id: &str,
+    ) -> Result<(), StoreError> {
+        let now = now_text();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"INSERT INTO agents
+               (id, title, status, root_context_id, created_at, updated_at)
+               VALUES ($1, $2, 'active', $3, $4, $4)"#,
+        )
+        .bind(agent_id)
+        .bind("Conformance Agent")
+        .bind(context_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO cognitive_contexts
+               (id, agent_id, title, status, created_at, updated_at)
+               VALUES ($1, $2, $3, 'active', $4, $4)"#,
+        )
+        .bind(context_id)
+        .bind(agent_id)
+        .bind("Conformance Context")
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO sessions
+               (id, agent_id, context_id, parent_session_id, title, status,
+                created_at, updated_at, last_activity_at, attention_state,
+                attention_revision, mount_kind)
+               VALUES ($1, $2, $3, NULL, $4, 'active', $5, $5, $5,
+                       'active', 0, 'new_blank_context')"#,
+        )
+        .bind(session_id)
+        .bind(agent_id)
+        .bind(context_id)
+        .bind("Conformance Session")
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub async fn session_attention_for_conformance(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(SessionAttentionState, u64, Option<String>)>, StoreError> {
+        let row = sqlx::query(
+            "SELECT attention_state, attention_revision, attention_event_id FROM sessions WHERE id = $1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            let state = match row.get::<String, _>("attention_state").as_str() {
+                "active" => SessionAttentionState::Active,
+                "retired" => SessionAttentionState::Retired,
+                other => return Err(format!("未知 Session attention_state '{other}'").into()),
+            };
+            let revision = u64::try_from(row.get::<i64, _>("attention_revision"))
+                .map_err(|_| "Session attention revision 不能为负数")?;
+            Ok((state, revision, row.get("attention_event_id")))
+        })
+        .transpose()
+    }
+}
+
+fn now_text() -> String {
+    Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+}
+
+fn parse_time(value: &str) -> Result<DateTime<Utc>, StoreError> {
+    Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
+}
+
+fn projection_from_row(row: &PgRow) -> Result<MindProjectionRecord, StoreError> {
+    Ok(MindProjectionRecord {
+        context_id: row.get("context_id"),
+        revision: u64::try_from(row.get::<i64, _>("revision"))
+            .map_err(|_| "Mind Projection revision 不能为负数")?,
+        state: row.get("state_json"),
+        state_hash: row.get("state_hash"),
+        head_event_id: row.get("head_event_id"),
+        updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
+    })
+}
+
+async fn get_projection<'e, E>(
+    executor: E,
+    context_id: &str,
+) -> Result<Option<MindProjectionRecord>, StoreError>
+where
+    E: sqlx::Executor<'e, Database = Postgres>,
+{
+    sqlx::query(
+        r#"SELECT projection.context_id, projection.revision,
+                  projection.state_json, projection.state_hash,
+                  head.head_event_id, projection.updated_at
+           FROM mind_projections projection
+           JOIN context_heads head ON head.context_id = projection.context_id
+           WHERE projection.context_id = $1
+             AND projection.revision = head.revision
+             AND projection.state_hash = head.projection_hash"#,
+    )
+    .bind(context_id)
+    .fetch_optional(executor)
+    .await?
+    .as_ref()
+    .map(projection_from_row)
+    .transpose()
+}
+
+async fn append_event_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    event: &Event,
+) -> Result<bool, StoreError> {
+    let timestamp = event
+        .timestamp
+        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let session_id = event.payload.get("session_id").and_then(JsonValue::as_str);
+    let context_id = event
+        .payload
+        .get("context_id")
+        .and_then(JsonValue::as_str)
+        .or(session_id);
+    let inserted = sqlx::query(
+        r#"INSERT INTO events
+           (id, timestamp, actor, type, topic, context_id, session_id, payload)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT(id) DO NOTHING"#,
+    )
+    .bind(&event.id)
+    .bind(&timestamp)
+    .bind(&event.actor)
+    .bind(&event.event_type)
+    .bind(&event.topic)
+    .bind(context_id)
+    .bind(session_id)
+    .bind(JsonValue::Object(event.payload.clone()))
+    .execute(&mut **tx)
+    .await?;
+    if inserted.rows_affected() == 1 {
+        return Ok(true);
+    }
+    let existing = sqlx::query(
+        r#"SELECT timestamp, actor, type, topic, context_id, session_id, payload
+           FROM events WHERE id = $1"#,
+    )
+    .bind(&event.id)
+    .fetch_one(&mut **tx)
+    .await?;
+    let same = existing.get::<String, _>("timestamp") == timestamp
+        && existing.get::<String, _>("actor") == event.actor
+        && existing.get::<String, _>("type") == event.event_type
+        && existing.get::<String, _>("topic") == event.topic
+        && existing.get::<Option<String>, _>("context_id").as_deref() == context_id
+        && existing.get::<Option<String>, _>("session_id").as_deref() == session_id
+        && existing.get::<JsonValue, _>("payload") == JsonValue::Object(event.payload.clone());
+    if !same {
+        return Err(format!("Event ID '{}' 已被不同内容占用", event.id).into());
+    }
+    Ok(false)
+}
+
+async fn append_signal_outbox_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    event: &Event,
+) -> Result<(), StoreError> {
+    if event
+        .payload
+        .get("session_id")
+        .and_then(JsonValue::as_str)
+        .is_none()
+        || event
+            .payload
+            .get("context_id")
+            .and_then(JsonValue::as_str)
+            .is_none()
+    {
+        return Err(format!(
+            "Signal Outbox Event '{}' 缺少 context_id/session_id 路由",
+            event.id
+        )
+        .into());
+    }
+    sqlx::query(
+        r#"INSERT INTO signal_outbox (event_id, status, created_at)
+           VALUES ($1, 'pending', $2) ON CONFLICT(event_id) DO NOTHING"#,
+    )
+    .bind(&event.id)
+    .bind(
+        event
+            .timestamp
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn insert_snapshot_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    projection: &NewMindProjection,
+    head_event_id: &str,
+    created_at: &str,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        r#"INSERT INTO mind_snapshots
+           (id, context_id, revision, state_json, state_hash, head_event_id, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT(context_id, revision) DO UPDATE SET
+             id = EXCLUDED.id,
+             state_json = EXCLUDED.state_json,
+             state_hash = EXCLUDED.state_hash,
+             head_event_id = EXCLUDED.head_event_id,
+             created_at = EXCLUDED.created_at"#,
+    )
+    .bind(format!(
+        "mind_snapshot_{}_{}",
+        projection.context_id, projection.revision
+    ))
+    .bind(&projection.context_id)
+    .bind(i64::try_from(projection.revision)?)
+    .bind(&projection.state)
+    .bind(&projection.state_hash)
+    .bind(head_event_id)
+    .bind(created_at)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+fn requires_snapshot(event: &Event, revision: u64) -> bool {
+    revision.is_multiple_of(64)
+        || event
+            .payload
+            .get("changes")
+            .and_then(JsonValue::as_array)
+            .is_some_and(|changes| {
+                changes.iter().any(|change| {
+                    matches!(
+                        change.get("operation").and_then(JsonValue::as_str),
+                        Some("checkpoint" | "rollback")
+                    )
+                })
+            })
+}
+
+#[async_trait::async_trait]
+impl EventStore for PostgresStore {
+    async fn append(&self, event: Event) -> Result<(), StoreError> {
+        self.append_batch(vec![EventAppend {
+            event,
+            signal_outbox: false,
+        }])
+        .await
+    }
+
+    async fn append_with_signal_outbox(&self, event: Event) -> Result<(), StoreError> {
+        self.append_batch(vec![EventAppend {
+            event,
+            signal_outbox: true,
+        }])
+        .await
+    }
+
+    async fn append_batch(&self, entries: Vec<EventAppend>) -> Result<(), StoreError> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        for entry in &entries {
+            append_event_in_tx(&mut tx, &entry.event).await?;
+            if entry.signal_outbox {
+                append_signal_outbox_in_tx(&mut tx, &entry.event).await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    async fn query(&self, filter: QueryFilter) -> Result<Vec<Event>, StoreError> {
+        let mut builder = QueryBuilder::<Postgres>::new(
+            "SELECT sequence, id, timestamp, actor, type, topic, payload FROM events WHERE TRUE",
+        );
+        if let Some(event_id) = filter.event_id {
+            builder.push(" AND id = ").push_bind(event_id);
+        }
+        if let Some(sequence) = filter.sequence {
+            builder
+                .push(" AND sequence = ")
+                .push_bind(i64::try_from(sequence).unwrap_or(i64::MAX));
+        }
+        if let Some(context_id) = filter.context_id {
+            builder.push(" AND context_id = ").push_bind(context_id);
+        }
+        if let Some(session_id) = filter.session_id {
+            builder.push(" AND session_id = ").push_bind(session_id);
+        } else if !filter.session_ids.is_empty() {
+            builder.push(" AND (");
+            if filter.include_context_wide {
+                builder.push("session_id IS NULL OR ");
+            }
+            builder.push("session_id IN (");
+            let mut separated = builder.separated(", ");
+            for session_id in &filter.session_ids {
+                separated.push_bind(session_id);
+            }
+            builder.push("))");
+        } else if filter.include_context_wide {
+            builder.push(" AND session_id IS NULL");
+        }
+        if let Some(after) = filter.after_sequence {
+            builder
+                .push(" AND sequence > ")
+                .push_bind(i64::try_from(after).unwrap_or(i64::MAX));
+        }
+        if let Some(start) = filter.start_time {
+            builder
+                .push(" AND timestamp >= ")
+                .push_bind(start.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        }
+        if let Some(end) = filter.end_time {
+            builder
+                .push(" AND timestamp <= ")
+                .push_bind(end.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        }
+        if !filter.actors.is_empty() {
+            builder.push(" AND actor IN (");
+            let mut separated = builder.separated(", ");
+            for actor in &filter.actors {
+                separated.push_bind(actor);
+            }
+            builder.push(")");
+        }
+        if !filter.types.is_empty() {
+            builder.push(" AND type IN (");
+            let mut separated = builder.separated(", ");
+            for event_type in &filter.types {
+                separated.push_bind(event_type);
+            }
+            builder.push(")");
+        }
+        if let Some(topic) = filter.topic {
+            if topic != "*" {
+                if let Some(prefix) = topic.strip_suffix("/*") {
+                    builder
+                        .push(" AND topic LIKE ")
+                        .push_bind(format!("{prefix}/%"));
+                } else {
+                    builder.push(" AND topic = ").push_bind(topic);
+                }
+            }
+        }
+        for topic in filter.excluded_topics {
+            if topic == "*" {
+                builder.push(" AND FALSE");
+            } else if let Some(prefix) = topic.strip_suffix("/*") {
+                builder
+                    .push(" AND topic NOT LIKE ")
+                    .push_bind(format!("{prefix}/%"));
+            } else {
+                builder.push(" AND topic != ").push_bind(topic);
+            }
+        }
+        if let Some(search) = filter.search_query {
+            builder
+                .push(" AND (payload::text ILIKE ")
+                .push_bind(format!("%{search}%"))
+                .push(" OR topic ILIKE ")
+                .push_bind(format!("%{search}%"))
+                .push(")");
+        }
+        let latest_k = filter.latest_k;
+        if latest_k.is_some() {
+            builder.push(" ORDER BY timestamp DESC, sequence DESC");
+        } else {
+            builder.push(" ORDER BY timestamp ASC, sequence ASC");
+        }
+        if let Some(limit) = latest_k.or(filter.top_k) {
+            builder
+                .push(" LIMIT ")
+                .push_bind(i64::try_from(limit).unwrap_or(i64::MAX));
+        }
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        let mut events = rows
+            .into_iter()
+            .map(|row| {
+                let payload = row.get::<JsonValue, _>("payload");
+                Ok(Event {
+                    id: row.get("id"),
+                    sequence: u64::try_from(row.get::<i64, _>("sequence")).ok(),
+                    timestamp: parse_time(&row.get::<String, _>("timestamp"))?,
+                    actor: row.get("actor"),
+                    event_type: row.get("type"),
+                    topic: row.get("topic"),
+                    payload: payload
+                        .as_object()
+                        .cloned()
+                        .ok_or("PostgreSQL Event payload 必须是 JSON object")?,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        if latest_k.is_some() {
+            events.reverse();
+        }
+        Ok(events)
+    }
+}
+
+#[async_trait::async_trait]
+impl MindProjectionStore for PostgresStore {
+    async fn get_mind_projection(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<MindProjectionRecord>, StoreError> {
+        let projection = get_projection(&self.pool, context_id).await?;
+        if projection.is_none() {
+            let row = sqlx::query(
+                r#"SELECT EXISTS(SELECT 1 FROM context_heads WHERE context_id = $1) AS head,
+                          EXISTS(SELECT 1 FROM mind_projections WHERE context_id = $1) AS projection"#,
+            )
+            .bind(context_id)
+            .fetch_one(&self.pool)
+            .await?;
+            if row.get::<bool, _>("head") || row.get::<bool, _>("projection") {
+                return Err(format!(
+                    "Context '{context_id}' 的 Mind Projection 不完整或 head/hash/revision 不一致"
+                )
+                .into());
+            }
+        }
+        Ok(projection)
+    }
+
+    async fn get_latest_mind_snapshot(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<MindSnapshotRecord>, StoreError> {
+        let row = sqlx::query(
+            r#"SELECT id, context_id, revision, state_json, state_hash,
+                      head_event_id, created_at
+               FROM mind_snapshots WHERE context_id = $1
+               ORDER BY revision DESC LIMIT 1"#,
+        )
+        .bind(context_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| {
+            Ok(MindSnapshotRecord {
+                id: row.get("id"),
+                context_id: row.get("context_id"),
+                revision: u64::try_from(row.get::<i64, _>("revision"))
+                    .map_err(|_| "Mind Snapshot revision 不能为负数")?,
+                state: row.get("state_json"),
+                state_hash: row.get("state_hash"),
+                head_event_id: row.get("head_event_id"),
+                created_at: parse_time(&row.get::<String, _>("created_at"))?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn initialize_mind_projection(
+        &self,
+        projection: NewMindProjection,
+    ) -> Result<MindProjectionRecord, StoreError> {
+        let revision = i64::try_from(projection.revision)?;
+        let now = now_text();
+        let mut tx = self.pool.begin().await?;
+        let context = sqlx::query("SELECT id FROM cognitive_contexts WHERE id = $1 FOR UPDATE")
+            .bind(&projection.context_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if context.is_none() {
+            return Err(format!("Context '{}' 不存在", projection.context_id).into());
+        }
+        let counts = sqlx::query(
+            r#"SELECT (SELECT COUNT(*) FROM context_heads WHERE context_id = $1) AS heads,
+                      (SELECT COUNT(*) FROM mind_projections WHERE context_id = $1) AS projections"#,
+        )
+        .bind(&projection.context_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let heads = counts.get::<i64, _>("heads");
+        let projections = counts.get::<i64, _>("projections");
+        if heads != projections {
+            return Err(format!(
+                "Context '{}' 的 Mind Projection 仅存在部分记录，拒绝自动修补",
+                projection.context_id
+            )
+            .into());
+        }
+        if heads == 0 {
+            sqlx::query(
+                r#"INSERT INTO context_heads
+                   (context_id, revision, projection_hash, head_event_id, updated_at)
+                   VALUES ($1, $2, $3, $4, $5)"#,
+            )
+            .bind(&projection.context_id)
+            .bind(revision)
+            .bind(&projection.state_hash)
+            .bind(&projection.head_event_id)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"INSERT INTO mind_projections
+                   (context_id, revision, state_json, state_hash, updated_at)
+                   VALUES ($1, $2, $3, $4, $5)"#,
+            )
+            .bind(&projection.context_id)
+            .bind(revision)
+            .bind(&projection.state)
+            .bind(&projection.state_hash)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        let installed = get_projection(&mut *tx, &projection.context_id)
+            .await?
+            .ok_or("安装后的 PostgreSQL Mind Projection 不完整")?;
+        tx.commit().await?;
+        Ok(installed)
+    }
+
+    async fn commit_mind_projection_transaction(
+        &self,
+        event: &Event,
+        attention_updates: &[SessionAttentionUpdate],
+        expected_revision: u64,
+        next_projection: NewMindProjection,
+    ) -> Result<MindProjectionCommit, StoreError> {
+        if next_projection.head_event_id.as_deref() != Some(event.id.as_str()) {
+            return Err(
+                "Mind Projection head_event_id 必须指向本次 Context transaction Event".into(),
+            );
+        }
+        if next_projection.revision != expected_revision.saturating_add(1) {
+            return Err("Mind Projection 下一 revision 必须等于 expected_revision + 1".into());
+        }
+        if event.payload.get("context_id").and_then(JsonValue::as_str)
+            != Some(next_projection.context_id.as_str())
+        {
+            return Err("Context transaction Event 与 Mind Projection 的 context_id 不一致".into());
+        }
+        let expected = i64::try_from(expected_revision)?;
+        let next = i64::try_from(next_projection.revision)?;
+        let now = now_text();
+        let mut tx = self.pool.begin().await?;
+        let head = sqlx::query(
+            r#"UPDATE context_heads SET revision = $1, projection_hash = $2,
+                      head_event_id = $3, updated_at = $4
+               WHERE context_id = $5 AND revision = $6"#,
+        )
+        .bind(next)
+        .bind(&next_projection.state_hash)
+        .bind(&event.id)
+        .bind(&now)
+        .bind(&next_projection.context_id)
+        .bind(expected)
+        .execute(&mut *tx)
+        .await?;
+        if head.rows_affected() != 1 {
+            tx.rollback().await?;
+            let current = sqlx::query_scalar::<_, i64>(
+                "SELECT revision FROM context_heads WHERE context_id = $1",
+            )
+            .bind(&next_projection.context_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(u64::try_from)
+            .transpose()?;
+            return Ok(MindProjectionCommit::Conflict {
+                current_revision: current,
+            });
+        }
+        let materialized = sqlx::query(
+            r#"UPDATE mind_projections SET revision = $1, state_json = $2,
+                      state_hash = $3, updated_at = $4
+               WHERE context_id = $5 AND revision = $6"#,
+        )
+        .bind(next)
+        .bind(&next_projection.state)
+        .bind(&next_projection.state_hash)
+        .bind(&now)
+        .bind(&next_projection.context_id)
+        .bind(expected)
+        .execute(&mut *tx)
+        .await?;
+        if materialized.rows_affected() != 1 {
+            return Err(format!(
+                "Context '{}' 的 Mind Projection revision 与 head 不一致",
+                next_projection.context_id
+            )
+            .into());
+        }
+        for update in attention_updates {
+            let changed = sqlx::query(
+                r#"UPDATE sessions SET attention_state = $1, attention_revision = attention_revision + 1,
+                          attention_reason = $2, attention_changed_at = $3, attention_event_id = $4,
+                          updated_at = $3
+                   WHERE id = $5 AND context_id = $6 AND attention_revision = $7"#,
+            )
+            .bind(update.state.as_str())
+            .bind(&update.reason)
+            .bind(update.changed_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .bind(&update.event_id)
+            .bind(&update.session_id)
+            .bind(&update.context_id)
+            .bind(i64::try_from(update.expected_revision)?)
+            .execute(&mut *tx)
+            .await?;
+            if changed.rows_affected() != 1 {
+                return Err(format!(
+                    "Session '{}' attention revision 冲突或 Context 不匹配",
+                    update.session_id
+                )
+                .into());
+            }
+        }
+        append_event_in_tx(&mut tx, event).await?;
+        if requires_snapshot(event, next_projection.revision) {
+            insert_snapshot_in_tx(&mut tx, &next_projection, &event.id, &now).await?;
+        }
+        let committed = get_projection(&mut *tx, &next_projection.context_id)
+            .await?
+            .ok_or("提交后 PostgreSQL Mind Projection 不完整")?;
+        tx.commit().await?;
+        Ok(MindProjectionCommit::Committed {
+            projection: committed,
+        })
+    }
+
+    async fn commit_mind_seed_projection(
+        &self,
+        event: &Event,
+        source_context_id: &str,
+        source_version: u64,
+        snapshot_hash: &str,
+        projection_kind: &str,
+        next_projection: NewMindProjection,
+    ) -> Result<MindProjectionCommit, StoreError> {
+        if next_projection.revision != 0
+            || next_projection.head_event_id.as_deref() != Some(event.id.as_str())
+        {
+            return Err("Seed Mind Projection revision/head_event_id 非法".into());
+        }
+        if event.payload.get("context_id").and_then(JsonValue::as_str)
+            != Some(next_projection.context_id.as_str())
+        {
+            return Err("Seed Event 与 Mind Projection 的 context_id 不一致".into());
+        }
+        let now = now_text();
+        let mut tx = self.pool.begin().await?;
+        let head = sqlx::query(
+            r#"UPDATE context_heads SET projection_hash = $1, head_event_id = $2, updated_at = $3
+               WHERE context_id = $4 AND revision = 0 AND head_event_id IS NULL"#,
+        )
+        .bind(&next_projection.state_hash)
+        .bind(&event.id)
+        .bind(&now)
+        .bind(&next_projection.context_id)
+        .execute(&mut *tx)
+        .await?;
+        if head.rows_affected() != 1 {
+            tx.rollback().await?;
+            let current = sqlx::query_scalar::<_, i64>(
+                "SELECT revision FROM context_heads WHERE context_id = $1",
+            )
+            .bind(&next_projection.context_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(u64::try_from)
+            .transpose()?;
+            return Ok(MindProjectionCommit::Conflict {
+                current_revision: current,
+            });
+        }
+        let projection = sqlx::query(
+            r#"UPDATE mind_projections SET state_json = $1, state_hash = $2, updated_at = $3
+               WHERE context_id = $4 AND revision = 0"#,
+        )
+        .bind(&next_projection.state)
+        .bind(&next_projection.state_hash)
+        .bind(&now)
+        .bind(&next_projection.context_id)
+        .execute(&mut *tx)
+        .await?;
+        if projection.rows_affected() != 1 {
+            return Err("Seed Mind Projection 与 Context head 不一致".into());
+        }
+        let context = sqlx::query(
+            r#"UPDATE cognitive_contexts SET seed_context_id = $1, seed_context_version = $2,
+                      seed_snapshot_hash = $3, seed_projection = $4, updated_at = $5
+               WHERE id = $6 AND seed_context_id IS NULL"#,
+        )
+        .bind(source_context_id)
+        .bind(i64::try_from(source_version)?)
+        .bind(snapshot_hash)
+        .bind(projection_kind)
+        .bind(&now)
+        .bind(&next_projection.context_id)
+        .execute(&mut *tx)
+        .await?;
+        if context.rows_affected() != 1 {
+            return Err("目标 Context 已存在 seed provenance，拒绝覆盖".into());
+        }
+        append_event_in_tx(&mut tx, event).await?;
+        insert_snapshot_in_tx(&mut tx, &next_projection, &event.id, &now).await?;
+        let committed = get_projection(&mut *tx, &next_projection.context_id)
+            .await?
+            .ok_or("Seed 提交后 PostgreSQL Mind Projection 不完整")?;
+        tx.commit().await?;
+        Ok(MindProjectionCommit::Committed {
+            projection: committed,
+        })
+    }
+}
