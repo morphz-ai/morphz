@@ -243,6 +243,8 @@ pub fn host_env_path() -> Option<PathBuf> {
 pub struct OrchestratorConfig {
     /// 并发信号量限制
     pub concurrency_limit: usize,
+    /// Durable Session/Event Ledger 的单机有界写入与 group commit 策略。
+    pub event_writer: EventWriterConfig,
     /// Runtime 通用调度策略。这里只定义物理调度窗口，不承载任务语义。
     pub scheduler: SchedulerConfig,
     /// 持久 Thread Activation 从 queued 进入 running 前的单机准入策略。
@@ -282,6 +284,7 @@ impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
             concurrency_limit: 4,
+            event_writer: EventWriterConfig::default(),
             scheduler: SchedulerConfig::default(),
             activation_admission: ActivationAdmissionConfig::default(),
             max_delegation_depth: 3,
@@ -297,6 +300,29 @@ impl Default for OrchestratorConfig {
             max_context_transactions_per_turn: 6,
             session_working_set: SessionWorkingSetConfig::default(),
             persist_full_context_inspect: false,
+        }
+    }
+}
+
+/// SQLite WAL 的单写者批量提交窗口。所有生产者在事件真正提交前都会
+/// 等待确认；队列满时施加背压，绝不静默丢弃 durable Event。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct EventWriterConfig {
+    /// 等待 durable commit 的最大进程内请求数。
+    pub queue_capacity: usize,
+    /// 一个 SQLite transaction 最多提交的 Event 数。
+    pub max_batch_size: usize,
+    /// 首条 Event 到达后允许聚合相邻写入的微小时间窗口。
+    pub flush_interval_ms: u64,
+}
+
+impl Default for EventWriterConfig {
+    fn default() -> Self {
+        Self {
+            queue_capacity: 1_024,
+            max_batch_size: 64,
+            flush_interval_ms: 2,
         }
     }
 }

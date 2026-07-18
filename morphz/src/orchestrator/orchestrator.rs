@@ -13,7 +13,7 @@ use crate::execution::{
 use crate::llm::{Client, Message, PromptTokenCount};
 use crate::memory::{
     ActivationOutcomeCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
-    ApprovalStatus, ApprovalStore, DelegationStatus, DeliveryFlushCommit, EventStore,
+    ApprovalStatus, ApprovalStore, DelegationStatus, DeliveryFlushCommit, EventAppend, EventStore,
     ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
     ExecutionJobStatus, ExecutionJobStore, NewApprovalRequest, NewCognitiveContext, NewDelegation,
     NewExecutionJob, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
@@ -38,11 +38,135 @@ use dashmap::DashMap;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use tokio::sync::{watch, Mutex, Notify};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
+
+struct DurableEventWriteRequest {
+    entry: EventAppend,
+    committed: oneshot::Sender<Result<(), String>>,
+}
+
+#[derive(Default)]
+struct DurableEventWriterMetrics {
+    queue_depth: AtomicUsize,
+    committed_events: AtomicU64,
+    committed_batches: AtomicU64,
+    failed_batches: AtomicU64,
+    largest_batch: AtomicUsize,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct DurableEventWriterMetricsSnapshot {
+    pub queue_depth: usize,
+    pub committed_events: u64,
+    pub committed_batches: u64,
+    pub failed_batches: u64,
+    pub largest_batch: usize,
+}
+
+impl DurableEventWriterMetrics {
+    fn snapshot(&self) -> DurableEventWriterMetricsSnapshot {
+        DurableEventWriterMetricsSnapshot {
+            queue_depth: self.queue_depth.load(Ordering::Relaxed),
+            committed_events: self.committed_events.load(Ordering::Relaxed),
+            committed_batches: self.committed_batches.load(Ordering::Relaxed),
+            failed_batches: self.failed_batches.load(Ordering::Relaxed),
+            largest_batch: self.largest_batch.load(Ordering::Relaxed),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct DurableEventWriter {
+    sender: mpsc::Sender<DurableEventWriteRequest>,
+    metrics: Arc<DurableEventWriterMetrics>,
+}
+
+impl DurableEventWriter {
+    fn spawn(
+        store: Arc<dyn EventStore>,
+        config: &crate::config::EventWriterConfig,
+        metrics: Arc<DurableEventWriterMetrics>,
+    ) -> Self {
+        let queue_capacity = config.queue_capacity.max(1);
+        let max_batch_size = config.max_batch_size.max(1);
+        let flush_interval = std::time::Duration::from_millis(config.flush_interval_ms);
+        let (sender, mut receiver) = mpsc::channel::<DurableEventWriteRequest>(queue_capacity);
+        let writer_metrics = Arc::clone(&metrics);
+        tokio::spawn(async move {
+            while let Some(first) = receiver.recv().await {
+                let mut requests = vec![first];
+                let deadline = tokio::time::Instant::now() + flush_interval;
+                while requests.len() < max_batch_size {
+                    match tokio::time::timeout_at(deadline, receiver.recv()).await {
+                        Ok(Some(request)) => requests.push(request),
+                        Ok(None) | Err(_) => break,
+                    }
+                }
+                let mut entries = Vec::with_capacity(requests.len());
+                let mut completions = Vec::with_capacity(requests.len());
+                for request in requests {
+                    entries.push(request.entry);
+                    completions.push(request.committed);
+                }
+                let batch_size = entries.len();
+                let result = store
+                    .append_batch(entries)
+                    .await
+                    .map_err(|error| error.to_string());
+                writer_metrics
+                    .queue_depth
+                    .fetch_sub(batch_size, Ordering::Relaxed);
+                match &result {
+                    Ok(()) => {
+                        writer_metrics
+                            .committed_events
+                            .fetch_add(batch_size as u64, Ordering::Relaxed);
+                        writer_metrics
+                            .committed_batches
+                            .fetch_add(1, Ordering::Relaxed);
+                        writer_metrics
+                            .largest_batch
+                            .fetch_max(batch_size, Ordering::Relaxed);
+                        tracing::debug!(batch_size, "Durable Event group commit 完成");
+                    }
+                    Err(error) => {
+                        writer_metrics
+                            .failed_batches
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::error!(batch_size, error, "Durable Event group commit 失败");
+                    }
+                }
+                for committed in completions {
+                    let _ = committed.send(result.clone());
+                }
+            }
+        });
+        Self { sender, metrics }
+    }
+
+    async fn append(&self, entry: EventAppend) -> Result<(), DynError> {
+        let (committed, receiver) = oneshot::channel();
+        self.metrics.queue_depth.fetch_add(1, Ordering::Relaxed);
+        if self
+            .sender
+            .send(DurableEventWriteRequest { entry, committed })
+            .await
+            .is_err()
+        {
+            self.metrics.queue_depth.fetch_sub(1, Ordering::Relaxed);
+            return Err(std::io::Error::other("Durable Event Writer 已停止").into());
+        }
+        match receiver.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(std::io::Error::other(error).into()),
+            Err(_) => Err(std::io::Error::other("Durable Event Writer 未返回提交结果").into()),
+        }
+    }
+}
 const MAX_ACTIVATION_SIGNAL_BATCH: usize = 32;
 const SIGNAL_OUTBOX_DISPATCH_BATCH: usize = 128;
 const SIGNAL_OUTBOX_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
@@ -682,6 +806,7 @@ pub struct Orchestrator {
     tool_definitions: Vec<crate::llm::ToolDefinition>,
     context_engine: Arc<ContextEngine>,
     orchestrator_config: OrchestratorConfig,
+    event_writer_metrics: Arc<DurableEventWriterMetrics>,
     pub concurrency_semaphore: Arc<tokio::sync::Semaphore>,
     activation_admission: ActivationAdmissionController,
     /// One ordered Dialogue Lane per Session. Tool/objective continuations do
@@ -803,6 +928,10 @@ impl Orchestrator {
         self.activation_admission.snapshot()
     }
 
+    pub fn durable_event_writer_metrics(&self) -> DurableEventWriterMetricsSnapshot {
+        self.event_writer_metrics.snapshot()
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn assemble_with_scheduler_kernel(
         bus: Arc<InMemoryEventBus>,
@@ -846,6 +975,7 @@ impl Orchestrator {
             tool_definitions,
             context_engine,
             orchestrator_config,
+            event_writer_metrics: Arc::new(DurableEventWriterMetrics::default()),
             concurrency_semaphore,
             activation_admission,
             dialogue_thread_gates: DashMap::new(),
@@ -1078,21 +1208,27 @@ impl Orchestrator {
 
     pub async fn start(self: Arc<Self>) -> Result<(), DynError> {
         let store = Arc::clone(&self.store);
+        let event_writer = DurableEventWriter::spawn(
+            store,
+            &self.orchestrator_config.event_writer,
+            Arc::clone(&self.event_writer_metrics),
+        );
         let persist_full_context_inspect = self.orchestrator_config.persist_full_context_inspect;
-        self.bus.subscribe_durable(
+        self.bus.subscribe_durable_writer(
             "*".to_string(),
             Arc::new(move |mut event| {
-                let store = Arc::clone(&store);
+                let event_writer = event_writer.clone();
                 Box::pin(async move {
                     if !persist_full_context_inspect {
                         compact_context_inspect_for_persistence(&mut event);
                     }
-                    if event_needs_signal_outbox(&event) {
-                        store.append_with_signal_outbox(event).await?;
-                    } else {
-                        store.append(event).await?;
-                    }
-                    Ok(())
+                    let signal_outbox = event_needs_signal_outbox(&event);
+                    event_writer
+                        .append(EventAppend {
+                            event,
+                            signal_outbox,
+                        })
+                        .await
                 })
             }),
         );
@@ -7375,14 +7511,80 @@ mod tests {
         cognitive_sexpr_vm_system_prompt, compact_context_inspect_for_persistence,
         compose_system_prompt, event_needs_signal_outbox, extend_exec_output_facts,
         persist_model_reasoning_summary, render_system_contract, semantic_sexpr_vm_system_prompt,
-        should_force_final_for_maintenance, tool_call_activity_preview,
-        ModelReasoningSummaryAccumulator, ReadTurnGuard, SystemPromptMode, TerminalDecision,
-        AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        should_force_final_for_maintenance, tool_call_activity_preview, DurableEventWriter,
+        DurableEventWriterMetrics, ModelReasoningSummaryAccumulator, ReadTurnGuard,
+        SystemPromptMode, TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
+    use crate::config::EventWriterConfig;
     use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
+    use crate::memory::sqlite::SqliteStore;
+    use crate::memory::{EventAppend, EventStore, QueryFilter};
     use std::sync::Arc;
-    use tokio::sync::Mutex;
+    use tempfile::TempDir;
+    use tokio::sync::{Barrier, Mutex};
+
+    #[tokio::test]
+    async fn durable_event_writer_groups_concurrent_publishers_and_reports_capacity() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("writer.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let metrics = Arc::new(DurableEventWriterMetrics::default());
+        let writer = DurableEventWriter::spawn(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            &EventWriterConfig {
+                queue_capacity: 32,
+                max_batch_size: 32,
+                flush_interval_ms: 100,
+            },
+            Arc::clone(&metrics),
+        );
+        let barrier = Arc::new(Barrier::new(13));
+        let mut publishers = Vec::new();
+        for index in 0..12 {
+            let writer = writer.clone();
+            let barrier = Arc::clone(&barrier);
+            publishers.push(tokio::spawn(async move {
+                barrier.wait().await;
+                writer
+                    .append(EventAppend {
+                        event: Event::new(
+                            format!("writer-{index}"),
+                            "fixture".to_string(),
+                            "fixture".to_string(),
+                            "runtime/writer_fixture".to_string(),
+                            serde_json::Map::new(),
+                        ),
+                        signal_outbox: false,
+                    })
+                    .await
+                    .unwrap();
+            }));
+        }
+        barrier.wait().await;
+        for publisher in publishers {
+            publisher.await.unwrap();
+        }
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.queue_depth, 0);
+        assert_eq!(snapshot.committed_events, 12);
+        assert!(snapshot.committed_batches < 12);
+        assert!(snapshot.largest_batch > 1);
+        assert_eq!(
+            store
+                .query(QueryFilter {
+                    topic: Some("runtime/writer_fixture".to_string()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            12
+        );
+    }
 
     #[tokio::test]
     async fn partial_reasoning_summary_is_persisted_once_with_stable_attempt_identity() {

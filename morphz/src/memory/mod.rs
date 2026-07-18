@@ -1213,6 +1213,12 @@ pub struct QueryFilter {
 }
 
 // EventStore 定义事件历史物理存储的接口
+#[derive(Debug, Clone)]
+pub struct EventAppend {
+    pub event: crate::event::Event,
+    pub signal_outbox: bool,
+}
+
 #[async_trait::async_trait]
 pub trait EventStore: Send + Sync {
     async fn append(
@@ -1224,6 +1230,13 @@ pub trait EventStore: Send + Sync {
     async fn append_with_signal_outbox(
         &self,
         ev: crate::event::Event,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically commits an ordered group of immutable Events. Entries which
+    /// need scheduler delivery create their signal outbox row in the same
+    /// database transaction. A failure rolls back the complete group.
+    async fn append_batch(
+        &self,
+        entries: Vec<EventAppend>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     async fn query(
         &self,

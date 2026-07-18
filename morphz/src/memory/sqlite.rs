@@ -7,7 +7,7 @@ use crate::memory::{
     ActivationOutcomeCommit, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit,
     ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus,
     ApprovalStore, CognitiveContextRecord, DelegationRecord, DelegationStatus, DeliveryFlushCommit,
-    DeliveryStatus, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
+    DeliveryStatus, EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
     ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
     ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim,
     MindProjectionCommit, MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewAgent,
@@ -6936,19 +6936,38 @@ async fn approval_mutation_failure(
 #[async_trait::async_trait]
 impl EventStore for SqliteStore {
     async fn append(&self, ev: Event) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut tx = self.pool.begin().await?;
-        append_event_idempotent_in_transaction(&mut tx, &ev).await?;
-        tx.commit().await?;
-        Ok(())
+        self.append_batch(vec![EventAppend {
+            event: ev,
+            signal_outbox: false,
+        }])
+        .await
     }
 
     async fn append_with_signal_outbox(
         &self,
         ev: Event,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.append_batch(vec![EventAppend {
+            event: ev,
+            signal_outbox: true,
+        }])
+        .await
+    }
+
+    async fn append_batch(
+        &self,
+        entries: Vec<EventAppend>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if entries.is_empty() {
+            return Ok(());
+        }
         let mut tx = self.pool.begin().await?;
-        append_event_idempotent_in_transaction(&mut tx, &ev).await?;
-        append_signal_outbox_in_transaction(&mut tx, &ev).await?;
+        for entry in &entries {
+            append_event_idempotent_in_transaction(&mut tx, &entry.event).await?;
+            if entry.signal_outbox {
+                append_signal_outbox_in_transaction(&mut tx, &entry.event).await?;
+            }
+        }
         tx.commit().await?;
         Ok(())
     }
@@ -10025,6 +10044,92 @@ mod tests {
             .await
             .unwrap();
         assert!(other_session.is_empty());
+    }
+
+    #[tokio::test]
+    async fn event_batch_is_ordered_atomic_and_commits_signal_outbox_together() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let event = |id: &str, value: &str| {
+            Event::new(
+                id.to_string(),
+                "batch-writer".to_string(),
+                "user_message".to_string(),
+                "chat/user_message".to_string(),
+                [
+                    ("context_id".to_string(), serde_json::json!("batch-context")),
+                    ("session_id".to_string(), serde_json::json!("batch-session")),
+                    ("text".to_string(), serde_json::json!(value)),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        };
+        store
+            .append_batch(vec![
+                EventAppend {
+                    event: event("batch-1", "one"),
+                    signal_outbox: false,
+                },
+                EventAppend {
+                    event: event("batch-2", "two"),
+                    signal_outbox: true,
+                },
+                EventAppend {
+                    event: event("batch-3", "three"),
+                    signal_outbox: false,
+                },
+            ])
+            .await
+            .unwrap();
+        let stored = store
+            .query(QueryFilter {
+                context_id: Some("batch-context".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            stored
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["batch-1", "batch-2", "batch-3"]
+        );
+        let outbox_ids = sqlx::query("SELECT event_id FROM signal_outbox ORDER BY event_id")
+            .fetch_all(&store.pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("event_id"))
+            .collect::<Vec<_>>();
+        assert_eq!(outbox_ids, vec!["batch-2"]);
+
+        let conflicting = event("batch-2", "different");
+        let error = store
+            .append_batch(vec![
+                EventAppend {
+                    event: event("batch-rollback", "must not survive"),
+                    signal_outbox: false,
+                },
+                EventAppend {
+                    event: conflicting,
+                    signal_outbox: false,
+                },
+            ])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("已被不同内容占用"));
+        assert!(store
+            .query(QueryFilter {
+                event_id: Some("batch-rollback".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

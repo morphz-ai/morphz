@@ -1392,7 +1392,7 @@ async fn show_scheduler(
     }
 
     println!(
-        "Scheduler context={} threads={} signals={} activations={}/{} jobs={} approvals={} schedules={}",
+        "Scheduler context={} threads={} signals={} activations={}/{} jobs={} approvals={} schedules={} event_writer=queue:{}/events:{}/batches:{}/failed:{}/largest:{}",
         snapshot.context_id,
         snapshot.summary.open_threads,
         snapshot.summary.pending_signals,
@@ -1401,6 +1401,11 @@ async fn show_scheduler(
         snapshot.summary.active_jobs,
         snapshot.summary.pending_approvals,
         snapshot.summary.active_schedules,
+        snapshot.event_writer.queue_depth,
+        snapshot.event_writer.committed_events,
+        snapshot.event_writer.committed_batches,
+        snapshot.event_writer.failed_batches,
+        snapshot.event_writer.largest_batch,
     );
     for item in snapshot.threads {
         println!(

@@ -64,6 +64,7 @@ pub struct Subscription {
     topic_pattern: String,
     handler: EventHandler,
     durable: bool,
+    serialize_durable: bool,
 }
 
 impl Subscription {
@@ -120,14 +121,26 @@ impl InMemoryEventBus {
     }
 
     pub fn subscribe(&self, topic_pattern: String, handler: EventHandler) -> String {
-        self.add_subscription(topic_pattern, handler, false)
+        self.add_subscription(topic_pattern, handler, false, false)
     }
 
     /// Register a persistence boundary that must complete successfully before an event is
     /// dispatched to business subscribers. Durable handlers are serialized across concurrent
     /// publishers and are deliberately not subject to the best-effort audit timeout.
     pub fn subscribe_durable(&self, topic_pattern: String, handler: EventHandler) -> String {
-        self.add_subscription(topic_pattern, handler, true)
+        self.add_subscription(topic_pattern, handler, true, true)
+    }
+
+    /// Register a durable boundary whose handler owns ordering and bounded
+    /// backpressure itself. This is used by the Runtime Event Writer so
+    /// concurrent publishers can enter one group-commit window. General
+    /// durable subscribers should keep using `subscribe_durable`.
+    pub(crate) fn subscribe_durable_writer(
+        &self,
+        topic_pattern: String,
+        handler: EventHandler,
+    ) -> String {
+        self.add_subscription(topic_pattern, handler, true, false)
     }
 
     fn add_subscription(
@@ -135,6 +148,7 @@ impl InMemoryEventBus {
         topic_pattern: String,
         handler: EventHandler,
         durable: bool,
+        serialize_durable: bool,
     ) -> String {
         let id_val = self.sub_counter.fetch_add(1, Ordering::SeqCst) + 1;
         let sub_id = format!("sub_{}", id_val);
@@ -144,6 +158,7 @@ impl InMemoryEventBus {
             topic_pattern,
             handler,
             durable,
+            serialize_durable,
         });
 
         self.subscriptions.insert(sub_id.clone(), sub);
@@ -185,6 +200,7 @@ impl InMemoryEventBus {
         durable: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut durable_subs = Vec::new();
+        let mut durable_writer_subs = Vec::new();
         let mut sync_subs = Vec::new();
         let mut async_subs = Vec::new();
 
@@ -192,7 +208,11 @@ impl InMemoryEventBus {
             let sub = entry.value();
             if match_topic(&sub.topic_pattern, &ev.topic) {
                 if sub.durable {
-                    durable_subs.push(Arc::clone(sub));
+                    if sub.serialize_durable {
+                        durable_subs.push(Arc::clone(sub));
+                    } else {
+                        durable_writer_subs.push(Arc::clone(sub));
+                    }
                 } else if sub.topic_pattern == "*" {
                     sync_subs.push(Arc::clone(sub));
                 } else {
@@ -205,6 +225,11 @@ impl InMemoryEventBus {
         if durable && !durable_subs.is_empty() {
             let _durable_guard = self.durable_lock.lock().await;
             for sub in durable_subs {
+                (sub.handler)(ev.clone()).await?;
+            }
+        }
+        if durable {
+            for sub in durable_writer_subs {
                 (sub.handler)(ev.clone()).await?;
             }
         }

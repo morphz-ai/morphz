@@ -1,6 +1,6 @@
 # Morphz Context 事务、Mind Projection 与分布式扩展设计 v1
 
-> 状态：Phase 1 已完成；Phase 2 的 Projection、增量恢复与 Ledger 热路径分流已完成，历史归档策略待实现；Phase 3–4 待基准数据驱动
+> 状态：Phase 1–2 已完成；Phase 3 已完成有界 Event Writer 与 SQLite group commit，容量阈值待基准数据收口；Phase 4 服务型 Store 待实施
 >
 > 日期：2026-07-18
 >
@@ -23,12 +23,12 @@
 - 新事务默认记录规范化 SExpr、Diff、`before_hash` 与 `after_hash`，Projection Profile 不再复制完整 `state_after`；
 - Projection 缺失时优先从最近可信 Snapshot + 后续 Mind Transactions 增量重建；Snapshot、事务 hash chain 与 Ledger 游标任一不一致都会显式失败；
 - `morphz context audit [CONTEXT_ID]` 同时执行 Genesis 全量重放、Snapshot 增量重放并比对在线 Projection；
-- 两个独立 ContextEngine 对同一 Context 的并发同版本写入，已由 SQLite CAS 验证为仅一个成功。
+- 两个独立 ContextEngine 对同一 Context 的并发同版本写入，已由 SQLite CAS 验证为仅一个成功；
+- Runtime durable Event 已进入有界 Event Writer；并发发布者在可配置微窗口内 group commit，Signal Outbox 与 Event 同事务提交；
+- Event Writer 的 queue depth、累计 Event/Batch、失败 Batch 与最大 Batch 已进入统一 Scheduler Snapshot，CLI、HTTP API 与 Rust SDK 共享同一读模型。
 
 仍待实施：
 
-- 历史归档/保留策略；
-- Session Event 有界写队列与 group commit；
 - 面向真实负载的容量指标、基准阈值与 provider 分层配额收口；
 - PostgreSQL Store 和跨进程 Worker 部署验证；
 - 只有真实冲突数据证明有必要时，才评估 Frame 级 MVCC。
@@ -49,10 +49,9 @@ Morphz 已经具备一套成立的 Context 并发语义：
 但它还不是高性能分布式服务实现。主要缺口不是 DSL 表达能力，而是：
 
 1. SQLite WAL 仍然是单物理写者；
-2. Session Event 尚未通过有界队列做 group commit；
-3. Snapshot 已支持增量恢复，但历史归档尚未收口；
-4. 多 Runtime Worker 尚未在 PostgreSQL 等服务型数据库上完成部署验证；
-5. 容量指标和基准数据尚不足以决定是否需要 Frame 级 MVCC。
+2. Event Writer 已能 group commit，但尚缺真实目标硬件上的持续吞吐/尾延迟基准；
+3. 多 Runtime Worker 尚未在 PostgreSQL 等服务型数据库上完成部署验证；
+4. 容量指标和基准数据尚不足以决定是否需要 Frame 级 MVCC。
 
 目标架构不是取消 Event Ledger，也不是让 Runtime 接管 Frame 语义，而是增加一个可验证、可重建的在线 `Mind Projection`，把高频服务路径与完整历史审计路径分开。
 
@@ -483,6 +482,18 @@ Runtime 重启时：
 
 如果保留 `state_after`，应设置只在 Checkpoint、审计模式或小型单机 Profile 中启用，而不是所有生产事务默认复制完整 Mind。
 
+### 8.5 v1 历史保留策略
+
+v1 采取“语义 Ledger 永久保留、在线读取有界、诊断大对象先压缩”的保守策略：
+
+- Context Seed、Mind Transaction、用户/Agent 消息、工具事实及其稳定 Event ID/sequence 不做自动删除；
+- Snapshot 是加速恢复的派生物，不构成删除其之前 Ledger 的授权；
+- Context Encoding 与 Snapshot 增量恢复都使用有界 SQL 查询，历史增长不再等价于每轮 Prompt 或热路径扫描增长；
+- `context_inspect` 等可重建诊断对象默认只持久化 hash/尺寸等紧凑事实，避免再次出现大 Prompt 副本撑大数据库；
+- 将来引入冷存储时必须保持 Event ID、原始 sequence、context/session 路由和 `find_event` 语义，并先由完整审计证明冷热两层联合重放一致。
+
+在尚无冷存储实现和真实容量数据前，Runtime 不进行“按时间删除旧消息”或“Snapshot 后截断 Ledger”。这是一项明确的安全策略，而不是遗漏的 GC。
+
 ## 9. Session Event 高并发写入
 
 Session Event 不存在共享认知语义冲突，但仍需要物理写入策略。
@@ -498,6 +509,15 @@ Session Event 不存在共享认知语义冲突，但仍需要物理写入策略
         ↓
 SQLite WAL
 ```
+
+当前实现已经提供：
+
+- `orchestrator.event_writer.queue_capacity`：有界进程内等待队列，默认 1024；
+- `orchestrator.event_writer.max_batch_size`：单事务最大 Event 数，默认 64；
+- `orchestrator.event_writer.flush_interval_ms`：首条写入后的聚合窗口，默认 2ms；
+- 每个发布者等待自己的 durable commit 回执，队列满时等待形成背压；
+- 一个 Batch 内任一 Event 冲突或 Outbox 写入失败时整批回滚；
+- 普通 `subscribe_durable` 仍保持串行契约，只有声明自身拥有顺序/背压的 Runtime Event Writer 可并发进入聚合窗口。
 
 必须保持：
 
@@ -555,18 +575,18 @@ acknowledge Activation
 - 正常路径不再完整重放；
 - 保留显式完整审计命令。
 
-### Phase 2：Ledger 分流、增量恢复与按需引用验证（除历史归档外已完成）
+### Phase 2：Ledger 分流、增量恢复与按需引用验证（已完成）
 
 - 区分 Session Events 与 Mind Transactions 的查询路径；
 - Context Encoding 只读取当前有界 Session Working Set（隔离模式下即当前 Session）；
 - `@eN` 只验证事务实际引用的 Observation；
 - 增加 Snapshot、hash chain 和 Snapshot + 后续事务增量恢复；
-- 增加历史归档策略（待实现）；
+- 明确 v1 非破坏性历史保留策略，冷归档待真实容量数据驱动；
 - 取消每事务完整 `state_after` 的生产默认写入。
 
-### Phase 3：单机高并发（待基准驱动实施）
+### Phase 3：单机高并发（group commit 已完成，阈值待基准收口）
 
-- Session Event group commit；
+- Session Event 有界 Event Writer 与 group commit（已完成）；
 - 分层 admission 与 provider 配额；
 - 有界背压和排队可观察性；
 - 依据基准测试调高模型并发，而不是只修改一个全局数字。
