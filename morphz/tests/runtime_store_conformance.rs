@@ -2,18 +2,19 @@ use morphz::approval_authority::stable_approval_identity;
 use morphz::event::Event;
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
-use morphz::memory::{ActivationStore as _, SessionDirectoryStore};
 use morphz::memory::{
-    ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore, DeliveryFlushCommit,
-    DeliveryStatus, EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
-    ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
-    ExecutionRetrySafety, MindProjectionCommit, MindProjectionStore, NewAgent, NewApprovalRequest,
-    NewCognitiveContext, NewExecutionJob, NewMindProjection, NewObjective, NewRuntimeTimer,
-    NewSession, NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerStatus,
-    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionUpdate,
-    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
+    ActivationOutcomeCommit, ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore,
+    DeliveryFlushCommit, DeliveryStatus, EventAppend, EventStore, ExecutionApprovalMutation,
+    ExecutionApprovalStore, ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionJobTerminal, ExecutionRetrySafety, MindProjectionCommit, MindProjectionStore,
+    NewAgent, NewApprovalRequest, NewCognitiveContext, NewExecutionJob, NewMindProjection,
+    NewObjective, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
+    ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
+    RuntimeTimerKind, RuntimeTimerStatus, SessionAttentionState, SessionAttentionUpdate,
+    SessionMountKind, SessionStatus, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
+    ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
 };
+use morphz::memory::{ActivationStore, SessionDirectoryStore};
 use serde_json::json;
 use std::future::Future;
 use std::pin::Pin;
@@ -364,6 +365,231 @@ where
             .len(),
         1
     );
+}
+
+async fn assert_activation_store_conformance<S>(store: Arc<S>)
+where
+    S: ActivationStore + EventStore + ThreadStore + Send + Sync + 'static,
+{
+    let thread = store
+        .ensure_thread(NewThread {
+            id: "conformance-signal-thread".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-session".to_string(),
+            root_turn_id: "root-conformance-signal-thread".to_string(),
+            kind: ThreadKind::DialogueTurn,
+            executor_kind: "model".to_string(),
+            executor_id: None,
+        })
+        .await
+        .unwrap();
+    let event = Event::new(
+        "conformance-signal-event-a".to_string(),
+        "user".to_string(),
+        "user_message".to_string(),
+        "chat/user".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    store
+        .append_with_signal_outbox(event.clone())
+        .await
+        .unwrap();
+    let sequence = store
+        .query(QueryFilter {
+            event_id: Some(event.id.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()[0]
+        .sequence
+        .unwrap();
+    let signal = NewThreadSignal {
+        id: "conformance-signal-a".to_string(),
+        thread_id: thread.id.clone(),
+        event_id: event.id.clone(),
+        sequence,
+        kind: event.topic.clone(),
+        parent_activation_id: None,
+    };
+    let activation = NewThreadActivation {
+        id: "conformance-signal-activation-a".to_string(),
+        agent_id: thread.agent_id.clone(),
+        context_id: thread.context_id.clone(),
+        session_id: thread.session_id.clone(),
+        trigger_event_id: event.id.clone(),
+        trigger_sequence: sequence,
+        trigger_kind: event.topic.clone(),
+        parent_activation_id: None,
+        root_turn_id: thread.root_turn_id.clone(),
+    };
+    let first = {
+        let store = Arc::clone(&store);
+        let signal = signal.clone();
+        let activation = activation.clone();
+        tokio::spawn(async move { store.claim_thread_signal_batch(signal, activation, 8).await })
+    };
+    let second = {
+        let store = Arc::clone(&store);
+        let signal = signal.clone();
+        let activation = activation.clone();
+        tokio::spawn(async move { store.claim_thread_signal_batch(signal, activation, 8).await })
+    };
+    let first = first.await.unwrap().unwrap().unwrap();
+    let second = second.await.unwrap().unwrap().unwrap();
+    assert_eq!(first.id, second.id);
+    assert_eq!(
+        store
+            .list_signal_outbox(SignalOutboxStatus::Materialized, 16)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|outbox| outbox.event_id == event.id)
+            .count(),
+        1
+    );
+    assert_eq!(
+        store
+            .list_activation_signals(&first.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let admission = store
+        .list_queued_thread_activations_for_admission(8, 2, 60_000)
+        .await
+        .unwrap();
+    assert!(admission.iter().any(|(record, class)| {
+        record.id == first.id && *class == morphz::admission::AdmissionClass::InteractiveControl
+    }));
+
+    let first_revision = first.revision;
+    let second_revision = second.revision;
+    let first_update = {
+        let store = Arc::clone(&store);
+        let id = first.id.clone();
+        tokio::spawn(async move {
+            store
+                .update_thread_activation(
+                    &id,
+                    first_revision,
+                    ThreadActivationStatus::Running,
+                    Some("worker-a"),
+                    Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+                    Some(1),
+                )
+                .await
+        })
+    };
+    let second_update = {
+        let store = Arc::clone(&store);
+        let id = second.id.clone();
+        tokio::spawn(async move {
+            store
+                .update_thread_activation(
+                    &id,
+                    second_revision,
+                    ThreadActivationStatus::Running,
+                    Some("worker-b"),
+                    Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+                    Some(1),
+                )
+                .await
+        })
+    };
+    let updates = [
+        first_update.await.unwrap().unwrap(),
+        second_update.await.unwrap().unwrap(),
+    ];
+    assert_eq!(
+        updates
+            .iter()
+            .filter(|mutation| matches!(mutation, ThreadActivationMutation::Updated(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        updates
+            .iter()
+            .filter(|mutation| matches!(mutation, ThreadActivationMutation::Conflict { .. }))
+            .count(),
+        1
+    );
+
+    let outcome_thread = store
+        .ensure_thread(NewThread {
+            id: "conformance-outcome-thread".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-session".to_string(),
+            root_turn_id: "root-conformance-outcome-thread".to_string(),
+            kind: ThreadKind::Execution,
+            executor_kind: "runtime".to_string(),
+            executor_id: None,
+        })
+        .await
+        .unwrap();
+    let outcome_activation = store
+        .ensure_thread_activation(NewThreadActivation {
+            id: "conformance-outcome-activation".to_string(),
+            agent_id: outcome_thread.agent_id.clone(),
+            context_id: outcome_thread.context_id.clone(),
+            session_id: outcome_thread.session_id.clone(),
+            trigger_event_id: "conformance-outcome-trigger".to_string(),
+            trigger_sequence: 99,
+            trigger_kind: "conformance".to_string(),
+            parent_activation_id: None,
+            root_turn_id: outcome_thread.root_turn_id.clone(),
+        })
+        .await
+        .unwrap();
+    let outcome_event = Event::new(
+        "conformance-activation-outcome".to_string(),
+        "Store-Conformance".to_string(),
+        "agent_reply".to_string(),
+        "runtime/thread_result".to_string(),
+        json!({
+            "context_id": outcome_thread.context_id,
+            "session_id": outcome_thread.session_id,
+            "thread_id": outcome_thread.id,
+            "root_turn_id": outcome_thread.root_turn_id,
+            "disposition": "deliver",
+            "text": "outcome"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert_eq!(
+        store
+            .commit_activation_outcome(&outcome_activation.id, &outcome_event)
+            .await
+            .unwrap(),
+        ActivationOutcomeCommit::Committed
+    );
+    assert_eq!(
+        store
+            .commit_activation_outcome(&outcome_activation.id, &outcome_event)
+            .await
+            .unwrap(),
+        ActivationOutcomeCommit::Existing {
+            event_id: outcome_event.id.clone()
+        }
+    );
+    let completed = store
+        .get_thread("conformance-outcome-thread")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(completed.lifecycle, ThreadLifecycle::Completed);
+    assert_eq!(completed.delivery_status, DeliveryStatus::Pending);
 }
 
 /// Database-independent contract for the Context transaction boundary. A new
@@ -1259,6 +1485,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     })
     .await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
+    assert_activation_store_conformance(Arc::clone(&store)).await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
     assert_objective_lease_conformance(Arc::clone(&store)).await;
     store
@@ -1322,13 +1549,21 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     })
     .await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
+    assert_activation_store_conformance(Arc::clone(&store)).await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
     assert_objective_lease_conformance(Arc::clone(&store)).await;
     store
-        .bootstrap_execution_causality_for_conformance(
-            "conformance-thread",
-            "conformance-activation",
-        )
+        .ensure_thread_activation(NewThreadActivation {
+            id: "conformance-activation".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-session".to_string(),
+            trigger_event_id: "trigger-conformance-activation".to_string(),
+            trigger_sequence: 1,
+            trigger_kind: "conformance".to_string(),
+            parent_activation_id: None,
+            root_turn_id: "root-conformance-thread".to_string(),
+        })
         .await
         .unwrap();
     assert_execution_job_conformance(Arc::clone(&store)).await;

@@ -120,53 +120,6 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     Ok(())
 }
 
-pub(super) async fn bootstrap_causality(
-    pool: &PgPool,
-    agent_id: &str,
-    context_id: &str,
-    session_id: &str,
-    thread_id: &str,
-    activation_id: &str,
-) -> Result<(), StoreError> {
-    let now = now_text();
-    let root_turn_id = format!("root-{thread_id}");
-    let mut tx = pool.begin().await?;
-    sqlx::query(
-        r#"INSERT INTO threads
-           (id, revision, agent_id, context_id, session_id, root_turn_id,
-            kind, status, executor_kind, delivery_status, created_at, updated_at)
-           VALUES ($1, 1, $2, $3, $4, $5, 'execution', 'open',
-                   'runtime', 'none', $6, $6)
-           ON CONFLICT DO NOTHING"#,
-    )
-    .bind(thread_id)
-    .bind(agent_id)
-    .bind(context_id)
-    .bind(session_id)
-    .bind(&root_turn_id)
-    .bind(&now)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        r#"INSERT INTO thread_activations
-           (id, revision, agent_id, context_id, session_id, trigger_event_id,
-            trigger_sequence, trigger_kind, root_turn_id, status, created_at, updated_at)
-           VALUES ($1, 1, $2, $3, $4, $5, 1, 'conformance', $6,
-                   'running', $7, $7)"#,
-    )
-    .bind(activation_id)
-    .bind(agent_id)
-    .bind(context_id)
-    .bind(session_id)
-    .bind(format!("trigger-{activation_id}"))
-    .bind(root_turn_id)
-    .bind(now)
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(())
-}
-
 fn parse_status(value: &str) -> Result<ExecutionJobStatus, StoreError> {
     match value {
         "queued" => Ok(ExecutionJobStatus::Queued),

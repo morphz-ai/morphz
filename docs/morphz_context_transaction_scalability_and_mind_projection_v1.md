@@ -39,6 +39,7 @@
 - 原先过大的 `SessionStore` 已按因果职责拆分为 `SessionDirectoryStore`、`ActivationStore`、`ThreadStore`、`ScheduleStore`、`DeliveryIngressStore` 和 `DelegationStore` 六项 capability；`SessionStore` 只作为完整组合边界。这样可以逐项实现和验证 PostgreSQL 能力，但 Runtime 仍只接受完整组合，避免半套后端进入生产路径。
 - PostgreSQL `SessionDirectoryStore` 已实现 Agent/Context/Session 创建与查询、原子 Agent bundle、Mind seed provenance、生命周期、activity 和 attention revision fence；SQLite/PostgreSQL 已通过同一套并发 Session 创建、路由约束、归档过滤和 attention CAS 契约测试。
 - PostgreSQL `ThreadStore` 已实现稳定 Thread identity、revision CAS、Context/Session 查询、pending delivery 投影、聚合 Delivery Flush Timer，以及 Fast Path/Event/outbox 原子交付；SQLite/PostgreSQL 已通过同一套并发 ensure、Thread CAS 与交付定时器契约测试。
+- PostgreSQL `ActivationStore` 已实现 Signal Outbox 物化、按 Thread 跨 Worker single-flight、Signal batch 归并、Activation admission、revision/lease fence，以及“Activation outcome + Thread 终态 + Delivery Event”原子且幂等提交；SQLite/PostgreSQL 已通过同一套并发 claim、陈旧 revision 冲突和精确一次 outcome 契约测试。
 
 仍待实施：
 
@@ -629,8 +630,8 @@ acknowledge Activation
 - PostgreSQL Objective lifecycle/evaluation lease（已完成并通过 PostgreSQL 15 实测）；
 - PostgreSQL Execution Job claim/heartbeat/recovery/terminal authority（已完成并通过 PostgreSQL 15 实测）；
 - PostgreSQL Approval decision/one-use grant authority（已完成并通过 PostgreSQL 15 实测）；
-- PostgreSQL Session/Scheduler 六项 capability 与完整 `RuntimeStore`（Session Directory、Thread 已完成，其余四项进行中）；
-- Activation lease、Worker recovery 与幂等 Outcome；
+- PostgreSQL Session/Scheduler 六项 capability 与完整 `RuntimeStore`（Session Directory、Thread、Activation 已完成，其余 Schedule、Delivery Ingress、Delegation 三项进行中）；
+- 跨进程 Worker 的故障恢复与部署验证；
 - Runtime 横向扩展；
 - SQLite 继续作为默认单机后端。
 
