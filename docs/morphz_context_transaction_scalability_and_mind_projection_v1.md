@@ -42,6 +42,7 @@
 - PostgreSQL `ActivationStore` 已实现 Signal Outbox 物化、按 Thread 跨 Worker single-flight、Signal batch 归并、Activation admission、revision/lease fence，以及“Activation outcome + Thread 终态 + Delivery Event”原子且幂等提交；SQLite/PostgreSQL 已通过同一套并发 claim、陈旧 revision 冲突和精确一次 outcome 契约测试。
 - PostgreSQL `ScheduleStore` 已实现 Schedule revision fence、暂停/恢复/重排/取消、反向依赖唤醒，以及“到期 occurrence + Event + Signal Outbox”原子提交；批量 `schedule_tx` 在任一目标 Thread 无效时整笔回滚，SQLite/PostgreSQL 已通过同一套并发控制和精确一次派发契约测试。
 - PostgreSQL `DeliveryIngressStore` 已实现 Client Message 幂等 claim、消息 Event/Signal Outbox/Session activity/attention 自动恢复的原子入口，以及多个已完成 Thread 的单次可见交付；并发重复消息和重复交付均只有一个提交者获胜，SQLite/PostgreSQL 已通过同一套契约测试。
+- PostgreSQL `DelegationStore` 已实现 Parent/Child 路由验证、子 Session 唯一委派、状态查询，以及“Delegation completed + Parent Result Event + Signal Outbox”原子提交；错误父路由会整笔回滚，并发重复结果只有一个 Worker 获胜。至此 PostgreSQL 已在类型层满足完整 `RuntimeStore` capability composition，并通过与 SQLite 相同的全部 Store 契约测试。
 
 仍待实施：
 
@@ -632,7 +633,7 @@ acknowledge Activation
 - PostgreSQL Objective lifecycle/evaluation lease（已完成并通过 PostgreSQL 15 实测）；
 - PostgreSQL Execution Job claim/heartbeat/recovery/terminal authority（已完成并通过 PostgreSQL 15 实测）；
 - PostgreSQL Approval decision/one-use grant authority（已完成并通过 PostgreSQL 15 实测）；
-- PostgreSQL Session/Scheduler 六项 capability 与完整 `RuntimeStore`（Session Directory、Thread、Activation、Schedule、Delivery Ingress 已完成，Delegation 进行中）；
+- PostgreSQL Session/Scheduler 六项 capability 与完整 `RuntimeStore`（已完成）；
 - 跨进程 Worker 的故障恢复与部署验证；
 - Runtime 横向扩展；
 - SQLite 继续作为默认单机后端。

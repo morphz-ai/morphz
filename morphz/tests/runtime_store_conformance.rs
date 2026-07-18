@@ -4,16 +4,17 @@ use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     ActivationOutcomeCommit, ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore,
-    DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, EventAppend, EventStore,
-    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobMutation, ExecutionJobStatus,
-    ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim,
-    MindProjectionCommit, MindProjectionStore, NewAgent, NewApprovalRequest, NewCognitiveContext,
-    NewExecutionJob, NewMindProjection, NewObjective, NewRuntimeTimer, NewSession, NewThread,
-    NewThreadActivation, NewThreadSignal, ObjectiveMutation, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation,
-    ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
-    SessionStatus, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
+    DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
+    EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
+    ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
+    ExecutionRetrySafety, MessageClaim, MindProjectionCommit, MindProjectionStore, NewAgent,
+    NewApprovalRequest, NewCognitiveContext, NewDelegation, NewExecutionJob, NewMindProjection,
+    NewObjective, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
+    ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
+    RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation, ScheduleStatus, ScheduleStore,
+    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionUpdate,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationStatus, ThreadKind,
+    ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
 };
 use morphz::memory::{ActivationStore, SessionDirectoryStore};
 use serde_json::json;
@@ -30,6 +31,8 @@ type AttentionFuture<'a> = Pin<
             + 'a,
     >,
 >;
+
+fn assert_complete_runtime_store<T: morphz::memory::RuntimeStore>() {}
 
 fn context_event(id: &str, context_id: &str) -> Event {
     Event::new(
@@ -1008,6 +1011,138 @@ where
     );
 }
 
+async fn assert_delegation_store_conformance<S>(store: Arc<S>)
+where
+    S: DelegationStore + EventStore + SessionDirectoryStore + Send + Sync + 'static,
+{
+    let child = store
+        .create_session(NewSession {
+            id: "conformance-delegation-child-session".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-other-context".to_string(),
+            parent_session_id: None,
+            title: "Delegation Child".to_string(),
+            mount_kind: SessionMountKind::NewBlankContext,
+        })
+        .await
+        .unwrap();
+    let created = store
+        .create_delegation(NewDelegation {
+            id: "conformance-delegation".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            parent_context_id: "conformance-context".to_string(),
+            parent_session_id: "conformance-session".to_string(),
+            child_context_id: child.context_id.clone(),
+            child_session_id: child.id.clone(),
+            task: "perform delegated conformance work".to_string(),
+            success_when: Some("result reaches parent exactly once".to_string()),
+            context_scope: "child_session_only".to_string(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(created.status, DelegationStatus::Queued);
+    assert_eq!(
+        store
+            .get_delegation_by_child_session(&child.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        created.id
+    );
+    assert!(store
+        .list_delegations()
+        .await
+        .unwrap()
+        .iter()
+        .any(|delegation| delegation.id == created.id));
+    let running = store
+        .update_delegation_status(&created.id, DelegationStatus::Running, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(running.status, DelegationStatus::Running);
+
+    let wrong_route = Event::new(
+        "conformance-delegation-wrong-route".to_string(),
+        "Store-Conformance".to_string(),
+        "delegation_result".to_string(),
+        "runtime/delegation_result".to_string(),
+        json!({
+            "context_id": "conformance-other-context",
+            "session_id": child.id,
+            "delegation_id": running.id
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert!(store
+        .commit_delegation_result(&running.id, &wrong_route)
+        .await
+        .is_err());
+    assert_eq!(
+        store
+            .get_delegation(&running.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        DelegationStatus::Running,
+        "route validation failure must roll back the lifecycle update"
+    );
+
+    let result = Event::new(
+        "conformance-delegation-result".to_string(),
+        "Store-Conformance".to_string(),
+        "delegation_result".to_string(),
+        "runtime/delegation_result".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "delegation_id": running.id,
+            "text": "delegated result"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let first = {
+        let store = Arc::clone(&store);
+        let event = result.clone();
+        let id = running.id.clone();
+        tokio::spawn(async move { store.commit_delegation_result(&id, &event).await })
+    };
+    let second = {
+        let store = Arc::clone(&store);
+        let event = result.clone();
+        let id = running.id.clone();
+        tokio::spawn(async move { store.commit_delegation_result(&id, &event).await })
+    };
+    let commits = [
+        first.await.unwrap().unwrap(),
+        second.await.unwrap().unwrap(),
+    ];
+    assert_eq!(commits.iter().filter(|committed| **committed).count(), 1);
+    let completed = store.get_delegation(&running.id).await.unwrap().unwrap();
+    assert_eq!(completed.status, DelegationStatus::Completed);
+    assert_eq!(
+        completed.result_event_id.as_deref(),
+        Some(result.id.as_str())
+    );
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(result.id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
 /// Database-independent contract for the Context transaction boundary. A new
 /// service Store must pass this exact suite before it can be selected by the
 /// Runtime configuration.
@@ -1904,6 +2039,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     assert_activation_store_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
     assert_delivery_ingress_conformance(Arc::clone(&store)).await;
+    assert_delegation_store_conformance(Arc::clone(&store)).await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
     assert_objective_lease_conformance(Arc::clone(&store)).await;
     store
@@ -1929,6 +2065,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     let Ok(database_url) = std::env::var("MORPHZ_TEST_POSTGRES_URL") else {
         return;
     };
+    assert_complete_runtime_store::<PostgresStore>();
     let store = Arc::new(PostgresStore::new(&database_url, 8).await.unwrap());
     store
         .create_agent_bundle(
@@ -1970,6 +2107,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     assert_activation_store_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
     assert_delivery_ingress_conformance(Arc::clone(&store)).await;
+    assert_delegation_store_conformance(Arc::clone(&store)).await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
     assert_objective_lease_conformance(Arc::clone(&store)).await;
     store
