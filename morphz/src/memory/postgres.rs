@@ -24,6 +24,7 @@ type StoreError = Box<dyn std::error::Error + Send + Sync>;
 mod activation;
 mod approval;
 mod execution;
+mod schedule;
 mod session;
 mod thread;
 
@@ -43,6 +44,7 @@ impl PostgresStore {
         approval::migrate(&store.pool).await?;
         thread::migrate(&store.pool).await?;
         activation::migrate(&store.pool).await?;
+        schedule::migrate(&store.pool).await?;
         Ok(store)
     }
 

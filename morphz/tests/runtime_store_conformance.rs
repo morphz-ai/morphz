@@ -10,9 +10,10 @@ use morphz::memory::{
     NewAgent, NewApprovalRequest, NewCognitiveContext, NewExecutionJob, NewMindProjection,
     NewObjective, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
     ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
-    RuntimeTimerKind, RuntimeTimerStatus, SessionAttentionState, SessionAttentionUpdate,
-    SessionMountKind, SessionStatus, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
+    RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation, ScheduleStatus, ScheduleStore,
+    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionUpdate,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationStatus, ThreadKind,
+    ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
 };
 use morphz::memory::{ActivationStore, SessionDirectoryStore};
 use serde_json::json;
@@ -590,6 +591,241 @@ where
         .unwrap();
     assert_eq!(completed.lifecycle, ThreadLifecycle::Completed);
     assert_eq!(completed.delivery_status, DeliveryStatus::Pending);
+}
+
+async fn assert_schedule_store_conformance<S>(store: Arc<S>)
+where
+    S: ScheduleStore + ThreadStore + EventStore + Send + Sync + 'static,
+{
+    for (id, kind) in [
+        ("conformance-schedule-thread", ThreadKind::Execution),
+        ("conformance-dependency-thread", ThreadKind::Execution),
+        ("conformance-dispatch-thread", ThreadKind::Execution),
+    ] {
+        store
+            .ensure_thread(NewThread {
+                id: id.to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                session_id: "conformance-session".to_string(),
+                root_turn_id: format!("root-{id}"),
+                kind,
+                executor_kind: "runtime".to_string(),
+                executor_id: None,
+            })
+            .await
+            .unwrap();
+    }
+
+    let controlled = store
+        .ensure_schedule(morphz::memory::NewSchedule {
+            id: "conformance-schedule-control".to_string(),
+            thread_id: "conformance-schedule-thread".to_string(),
+            source_turn_id: "root-conformance-schedule-thread".to_string(),
+            intent: "control-plane conformance".to_string(),
+            not_before: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+            interval_seconds: None,
+            dependency_thread_ids: vec!["conformance-dependency-thread".to_string()],
+        })
+        .await
+        .unwrap();
+    let first_pause = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            store
+                .pause_schedule("conformance-schedule-control", controlled.revision)
+                .await
+        })
+    };
+    let second_pause = {
+        let store = Arc::clone(&store);
+        tokio::spawn(async move {
+            store
+                .pause_schedule("conformance-schedule-control", controlled.revision)
+                .await
+        })
+    };
+    let mutations = [
+        first_pause.await.unwrap().unwrap(),
+        second_pause.await.unwrap().unwrap(),
+    ];
+    assert_eq!(
+        mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, ScheduleMutation::Updated(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, ScheduleMutation::Conflict { .. }))
+            .count(),
+        1
+    );
+    let paused = mutations
+        .into_iter()
+        .find_map(|mutation| match mutation {
+            ScheduleMutation::Updated(schedule) => Some(schedule),
+            _ => None,
+        })
+        .unwrap();
+    let resumed = match store
+        .resume_schedule(&paused.id, paused.revision)
+        .await
+        .unwrap()
+    {
+        ScheduleMutation::Updated(schedule) => schedule,
+        mutation => panic!("unexpected resume mutation: {mutation:?}"),
+    };
+    let rescheduled = match store
+        .reschedule_schedule(
+            &resumed.id,
+            resumed.revision,
+            Some(chrono::Utc::now() + chrono::Duration::hours(2)),
+            Some(120),
+        )
+        .await
+        .unwrap()
+    {
+        ScheduleMutation::Updated(schedule) => schedule,
+        mutation => panic!("unexpected reschedule mutation: {mutation:?}"),
+    };
+    assert_eq!(rescheduled.interval_seconds, Some(120));
+    assert!(matches!(
+        store
+            .cancel_schedule(&rescheduled.id, rescheduled.revision)
+            .await
+            .unwrap(),
+        ScheduleMutation::Updated(schedule) if schedule.status == ScheduleStatus::Cancelled
+    ));
+
+    let dependency_schedule = store
+        .ensure_schedule(morphz::memory::NewSchedule {
+            id: "conformance-schedule-dependency".to_string(),
+            thread_id: "conformance-schedule-thread".to_string(),
+            source_turn_id: "root-conformance-schedule-thread".to_string(),
+            intent: "wake after dependency".to_string(),
+            not_before: None,
+            interval_seconds: None,
+            dependency_thread_ids: vec!["conformance-dependency-thread".to_string()],
+        })
+        .await
+        .unwrap();
+    let woken = store
+        .wake_schedules_for_dependency("conformance-dependency-thread")
+        .await
+        .unwrap();
+    assert!(woken.iter().any(|schedule| {
+        schedule.id == dependency_schedule.id && schedule.revision > dependency_schedule.revision
+    }));
+
+    let dispatch = store
+        .ensure_schedule(morphz::memory::NewSchedule {
+            id: "conformance-schedule-dispatch".to_string(),
+            thread_id: "conformance-dispatch-thread".to_string(),
+            source_turn_id: "root-conformance-dispatch-thread".to_string(),
+            intent: "dispatch once".to_string(),
+            not_before: None,
+            interval_seconds: None,
+            dependency_thread_ids: Vec::new(),
+        })
+        .await
+        .unwrap();
+    let dispatch_event = Event::new(
+        "conformance-schedule-due-event".to_string(),
+        "Store-Conformance".to_string(),
+        "runtime_control".to_string(),
+        "chat/schedule_due".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "schedule_id": dispatch.id
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let first_dispatch = {
+        let store = Arc::clone(&store);
+        let event = dispatch_event.clone();
+        tokio::spawn(async move {
+            store
+                .commit_scheduled_dispatch(
+                    "conformance-schedule-dispatch",
+                    dispatch.revision,
+                    None,
+                    &event,
+                )
+                .await
+        })
+    };
+    let second_dispatch = {
+        let store = Arc::clone(&store);
+        let event = dispatch_event.clone();
+        tokio::spawn(async move {
+            store
+                .commit_scheduled_dispatch(
+                    "conformance-schedule-dispatch",
+                    dispatch.revision,
+                    None,
+                    &event,
+                )
+                .await
+        })
+    };
+    let dispatches = [
+        first_dispatch.await.unwrap().unwrap(),
+        second_dispatch.await.unwrap().unwrap(),
+    ];
+    assert_eq!(dispatches.iter().filter(|value| value.is_some()).count(), 1);
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(dispatch_event.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let failed = store
+        .commit_schedule_transaction(
+            &[NewThread {
+                id: "conformance-schedule-rolled-back-thread".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                session_id: "conformance-session".to_string(),
+                root_turn_id: "root-conformance-schedule-rolled-back".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "runtime".to_string(),
+                executor_id: None,
+            }],
+            &[morphz::memory::NewSchedule {
+                id: "conformance-invalid-schedule".to_string(),
+                thread_id: "missing-conformance-thread".to_string(),
+                source_turn_id: "missing-root".to_string(),
+                intent: "must roll back".to_string(),
+                not_before: None,
+                interval_seconds: None,
+                dependency_thread_ids: Vec::new(),
+            }],
+        )
+        .await;
+    assert!(failed.is_err());
+    assert!(store
+        .get_thread("conformance-schedule-rolled-back-thread")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .list_context_schedules("conformance-context")
+        .await
+        .unwrap()
+        .iter()
+        .any(|schedule| schedule.id == "conformance-schedule-dispatch"));
 }
 
 /// Database-independent contract for the Context transaction boundary. A new
@@ -1486,6 +1722,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     .await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
+    assert_schedule_store_conformance(Arc::clone(&store)).await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
     assert_objective_lease_conformance(Arc::clone(&store)).await;
     store
@@ -1550,6 +1787,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     .await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
+    assert_schedule_store_conformance(Arc::clone(&store)).await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
     assert_objective_lease_conformance(Arc::clone(&store)).await;
     store
