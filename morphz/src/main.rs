@@ -1332,7 +1332,7 @@ async fn audit_context(
         println!("{}", serde_json::to_string_pretty(&audit)?);
     } else {
         println!(
-            "{}  matches={}  ledger=r{}:{}  projection={}:{}  events_scanned={}",
+            "{}  matches={}  ledger=r{}:{}  projection={}:{}  full_events={}  snapshot={}  incremental_transactions={}  incremental_matches={}",
             audit.context_id,
             audit.matches,
             audit.ledger_revision,
@@ -1342,7 +1342,19 @@ async fn audit_context(
                 .map(|revision| format!("r{revision}"))
                 .unwrap_or_else(|| "missing".to_string()),
             audit.projection_hash.as_deref().unwrap_or("missing"),
-            audit.events_scanned
+            audit.events_scanned,
+            audit
+                .snapshot_revision
+                .map(|revision| format!("r{revision}"))
+                .unwrap_or_else(|| "missing".to_string()),
+            audit
+                .incremental_transactions_scanned
+                .map(|count| count.to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
+            audit
+                .incremental_matches
+                .map(|matches| matches.to_string())
+                .unwrap_or_else(|| "n/a".to_string())
         );
     }
     if !audit.matches {

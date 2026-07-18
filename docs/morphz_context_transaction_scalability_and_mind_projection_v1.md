@@ -1,6 +1,6 @@
 # Morphz Context 事务、Mind Projection 与分布式扩展设计 v1
 
-> 状态：Phase 1 已完成；Phase 2 核心路径已完成，历史归档策略待实现；Phase 3–4 待基准数据驱动
+> 状态：Phase 1 已完成；Phase 2 的 Projection、增量恢复与 Ledger 热路径分流已完成，历史归档策略待实现；Phase 3–4 待基准数据驱动
 >
 > 日期：2026-07-18
 >
@@ -21,12 +21,13 @@
 - Context Encoding 先计算有界 Session Working Set，再只查询这些 Session 与 Context-wide Event；
 - `context_tx` 只按 SExpr 实际涉及的标识查询、验证 Observation，不再扫描全 Context 来解析少量 `@eN`；
 - 新事务默认记录规范化 SExpr、Diff、`before_hash` 与 `after_hash`，Projection Profile 不再复制完整 `state_after`；
-- `morphz context audit [CONTEXT_ID]` 显式执行 Genesis 全量重放并比对 Projection；
+- Projection 缺失时优先从最近可信 Snapshot + 后续 Mind Transactions 增量重建；Snapshot、事务 hash chain 与 Ledger 游标任一不一致都会显式失败；
+- `morphz context audit [CONTEXT_ID]` 同时执行 Genesis 全量重放、Snapshot 增量重放并比对在线 Projection；
 - 两个独立 ContextEngine 对同一 Context 的并发同版本写入，已由 SQLite CAS 验证为仅一个成功。
 
 仍待实施：
 
-- Snapshot 增量恢复与历史归档/保留策略；
+- 历史归档/保留策略；
 - Session Event 有界写队列与 group commit；
 - 面向真实负载的容量指标、基准阈值与 provider 分层配额收口；
 - PostgreSQL Store 和跨进程 Worker 部署验证；
@@ -49,7 +50,7 @@ Morphz 已经具备一套成立的 Context 并发语义：
 
 1. SQLite WAL 仍然是单物理写者；
 2. Session Event 尚未通过有界队列做 group commit；
-3. Snapshot 已落盘，但增量恢复和历史归档尚未收口；
+3. Snapshot 已支持增量恢复，但历史归档尚未收口；
 4. 多 Runtime Worker 尚未在 PostgreSQL 等服务型数据库上完成部署验证；
 5. 容量指标和基准数据尚不足以决定是否需要 Frame 级 MVCC。
 
@@ -112,11 +113,11 @@ Phase 0 Runtime 执行：
 | 陈旧 `base-version` 拒绝 | 已支持 |
 | Context 历史版本保留 | 已支持 |
 | 单进程 Context 提交串行化 | 已支持 |
-| 数据库行级原子 `revision CAS` | 未支持 |
-| 多 Runtime Worker 共享同一 Context 提交 | 未形成一致性闭环 |
+| 数据库行级原子 `revision CAS` | SQLite 已支持 |
+| 多 Runtime Worker 共享同一 SQLite Context 提交 | 已防止 lost update；跨主机部署未验证 |
 | Frame 级独立冲突检测 | 未支持 |
 
-当前的 Context Mutex 只存在于一个 Runtime 进程。两个 Worker 可以各自读取版本 18，并各自在自己的进程内通过检查。SQLite 会串行执行两次物理追加，但不会替第二个 Worker重新执行“数据库当前 Head 仍为 18”的语义判断。因此多 Worker 需要持久 Context Head 和数据库级 CAS。
+Phase 0 的 Context Mutex 只存在于一个 Runtime 进程，因而无法防止两个 Worker 同时基于版本 18 提交。Phase 1 已增加持久 `context_heads` 和 SQLite transaction 内的 revision CAS：第二个提交会在数据库边界被拒绝。跨主机部署仍需要把相同 Store 契约落到 PostgreSQL 等服务型数据库，并完成 lease、故障恢复和容量验证。
 
 ### 2.3 Frame revision 与 Context version
 
@@ -451,6 +452,14 @@ Runtime 重启时：
 恢复在线 Projection
 ```
 
+当前实现把“Projection 与 Context Head 同时缺失”视为可重建状态：优先选择最新 Snapshot，验证 Snapshot state/revision/hash 与其 head Event，再仅查询该 Ledger sequence 之后的 `chat/context_tx_committed`，逐个验证 `before_hash`、`after_hash`、Diff 与 SExpr 确定性，最后通过数据库初始化边界安装 Projection。并发初始化者会收敛到同一已提交行。
+
+如果只有 Projection 或 Context Head 单边缺失，或者二者 revision/hash 不一致，则视为损坏并显式报错，不会自动覆盖。显式审计同时比较：
+
+- Genesis 全量重放结果；
+- Snapshot 增量重放结果；
+- 当前在线 Projection。
+
 ### 8.3 完整审计
 
 完整 Genesis 重放保留为显式命令或后台低优先级任务，用于：
@@ -546,12 +555,13 @@ acknowledge Activation
 - 正常路径不再完整重放；
 - 保留显式完整审计命令。
 
-### Phase 2：Ledger 分流与按需引用验证（核心路径已完成）
+### Phase 2：Ledger 分流、增量恢复与按需引用验证（除历史归档外已完成）
 
 - 区分 Session Events 与 Mind Transactions 的查询路径；
 - Context Encoding 只读取当前有界 Session Working Set（隔离模式下即当前 Session）；
 - `@eN` 只验证事务实际引用的 Observation；
-- 增加 Snapshot、hash chain 和历史归档策略；
+- 增加 Snapshot、hash chain 和 Snapshot + 后续事务增量恢复；
+- 增加历史归档策略（待实现）；
 - 取消每事务完整 `state_after` 的生产默认写入。
 
 ### Phase 3：单机高并发（待基准驱动实施）

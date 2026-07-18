@@ -258,10 +258,20 @@ pub struct MindProjectionAudit {
     pub context_id: String,
     pub ledger_revision: u64,
     pub projection_revision: Option<u64>,
+    pub snapshot_revision: Option<u64>,
     pub ledger_hash: String,
     pub projection_hash: Option<String>,
     pub events_scanned: usize,
+    pub incremental_transactions_scanned: Option<usize>,
+    pub incremental_matches: Option<bool>,
     pub matches: bool,
+}
+
+struct SnapshotMindRecovery {
+    state: MindState,
+    snapshot_revision: u64,
+    transactions_replayed: usize,
+    head_event_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -715,6 +725,105 @@ impl ContextEngine {
         Ok(state)
     }
 
+    async fn recover_mind_from_latest_snapshot(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<SnapshotMindRecovery>, DynError> {
+        let Some(store) = &self.mind_projection_store else {
+            return Ok(None);
+        };
+        let Some(snapshot) = store.get_latest_mind_snapshot(context_id).await? else {
+            return Ok(None);
+        };
+        if snapshot.context_id != context_id {
+            return Err(format!(
+                "Mind Snapshot '{}' 的 context_id '{}' 与请求 Context '{}' 不一致",
+                snapshot.id, snapshot.context_id, context_id
+            )
+            .into());
+        }
+        let mut state: MindState =
+            serde_json::from_value(snapshot.state.clone()).map_err(|error| {
+                format!("Mind Snapshot '{}' 的 state 无法解析: {error}", snapshot.id)
+            })?;
+        if state.version != snapshot.revision {
+            return Err(format!(
+                "Mind Snapshot '{}' revision 不一致：state={}，snapshot={}",
+                snapshot.id, state.version, snapshot.revision
+            )
+            .into());
+        }
+        let actual_snapshot_hash = mind_state_hash(&state)?;
+        if actual_snapshot_hash != snapshot.state_hash {
+            return Err(format!(
+                "Mind Snapshot '{}' hash 不一致：stored={}，actual={actual_snapshot_hash}",
+                snapshot.id, snapshot.state_hash
+            )
+            .into());
+        }
+
+        let snapshot_head = self
+            .store
+            .query(QueryFilter {
+                event_id: Some(snapshot.head_event_id.clone()),
+                context_id: Some(context_id.to_string()),
+                top_k: Some(1),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                format!(
+                    "Mind Snapshot '{}' 指向的 head Event '{}' 不存在",
+                    snapshot.id, snapshot.head_event_id
+                )
+            })?;
+        let snapshot_head_sequence = snapshot_head.sequence.ok_or_else(|| {
+            format!(
+                "Mind Snapshot '{}' 指向的 head Event '{}' 没有持久化 Ledger sequence",
+                snapshot.id, snapshot.head_event_id
+            )
+        })?;
+        let transactions = self
+            .store
+            .query(QueryFilter {
+                context_id: Some(context_id.to_string()),
+                after_sequence: Some(snapshot_head_sequence),
+                topic: Some("chat/context_tx_committed".to_string()),
+                ..Default::default()
+            })
+            .await?;
+        let mut head_event_id = snapshot.head_event_id.clone();
+        for event in &transactions {
+            if event.event_type != TYPE_CONTEXT_TRANSACTION || event.actor != "Agent-Context" {
+                return Err(format!(
+                    "Snapshot 增量恢复遇到非法 Mind transaction Event '{}'",
+                    event.id
+                )
+                .into());
+            }
+            let transaction = event
+                .payload
+                .get("transaction")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| format!("Context transaction '{}' 缺少 transaction", event.id))?;
+            let parsed = parse_transaction(transaction).map_err(|error| {
+                format!("Context transaction '{}' 无法增量重放: {error}", event.id)
+            })?;
+            let observations = self.transaction_observations(context_id, &parsed).await?;
+            state =
+                replay_context_transaction_event(&state, event, &observation_ids(&observations))?;
+            head_event_id = event.id.clone();
+        }
+        Ok(Some(SnapshotMindRecovery {
+            state,
+            snapshot_revision: snapshot.revision,
+            transactions_replayed: transactions.len(),
+            head_event_id,
+        }))
+    }
+
     /// Reads the online Projection. Existing Ledgers are replayed exactly once
     /// for lazy migration, then every hot-path read uses the materialized Mind.
     async fn load_current_mind(
@@ -731,6 +840,20 @@ impl ContextEngine {
         };
         if let Some(projection) = store.get_mind_projection(context_id).await? {
             return Self::validate_mind_projection(context_id, projection);
+        }
+
+        if let Some(recovery) = self.recover_mind_from_latest_snapshot(context_id).await? {
+            let state_hash = mind_state_hash(&recovery.state)?;
+            let installed = store
+                .initialize_mind_projection(NewMindProjection {
+                    context_id: context_id.to_string(),
+                    revision: recovery.state.version,
+                    state: serde_json::to_value(&recovery.state)?,
+                    state_hash,
+                    head_event_id: Some(recovery.head_event_id),
+                })
+                .await?;
+            return Self::validate_mind_projection(context_id, installed);
         }
 
         let owned_events;
@@ -1739,14 +1862,29 @@ impl ContextEngine {
             }
             None => (None, None, false),
         };
+        let incremental = self.recover_mind_from_latest_snapshot(context_id).await?;
+        let (snapshot_revision, incremental_transactions_scanned, incremental_matches) =
+            match incremental {
+                Some(recovery) => (
+                    Some(recovery.snapshot_revision),
+                    Some(recovery.transactions_replayed),
+                    Some(recovery.state == ledger),
+                ),
+                None => (None, None, None),
+            };
         Ok(MindProjectionAudit {
             context_id: context_id.to_string(),
             ledger_revision: ledger.version,
             projection_revision,
+            snapshot_revision,
             ledger_hash: ledger_hash.clone(),
             projection_hash: projection_hash.clone(),
             events_scanned: events.len(),
-            matches: valid_projection && projection_hash.as_deref() == Some(ledger_hash.as_str()),
+            incremental_transactions_scanned,
+            incremental_matches,
+            matches: valid_projection
+                && projection_hash.as_deref() == Some(ledger_hash.as_str())
+                && incremental_matches.unwrap_or(true),
         })
     }
 
@@ -4488,6 +4626,83 @@ fn mind_state_hash(state: &MindState) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+fn replay_context_transaction_event(
+    state: &MindState,
+    event: &Event,
+    seen_observations: &HashSet<String>,
+) -> Result<MindState, String> {
+    let transaction = event
+        .payload
+        .get("transaction")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("Context transaction '{}' 缺少 transaction", event.id))?;
+    let parsed = parse_transaction(transaction)
+        .map_err(|error| format!("Context transaction '{}' 无法重放: {}", event.id, error))?;
+    let actual_before_hash = mind_state_hash(state)?;
+    if let Some(recorded_before_hash) = event
+        .payload
+        .get("before_hash")
+        .and_then(|value| value.as_str())
+    {
+        if recorded_before_hash != actual_before_hash {
+            return Err(format!(
+                "Context transaction '{}' 的 before_hash 不一致",
+                event.id
+            ));
+        }
+    }
+    let (candidate, replayed_changes) = apply_parsed_transaction(state, &parsed, seen_observations)
+        .map_err(|error| {
+            format!(
+                "Context transaction '{}' 确定性重放失败: {}",
+                event.id, error
+            )
+        })?;
+
+    let actual_after_hash = mind_state_hash(&candidate)?;
+    match event
+        .payload
+        .get("after_hash")
+        .and_then(|value| value.as_str())
+    {
+        Some(recorded_after_hash) if recorded_after_hash != actual_after_hash => {
+            return Err(format!(
+                "Context transaction '{}' 的 after_hash 不一致",
+                event.id
+            ));
+        }
+        None if !event.payload.contains_key("state_after") => {
+            return Err(format!(
+                "Context transaction '{}' 同时缺少 after_hash 与 legacy state_after",
+                event.id
+            ));
+        }
+        _ => {}
+    }
+    if let Some(recorded_state) = event.payload.get("state_after") {
+        let recorded_state: MindState = serde_json::from_value(recorded_state.clone())
+            .map_err(|error| format!("Context transaction '{}' 状态损坏: {}", event.id, error))?;
+        if recorded_state != candidate {
+            return Err(format!(
+                "Context transaction '{}' 的 state_after 与 SExpr 重放结果不一致: {}",
+                event.id,
+                mind_state_mismatch(&recorded_state, &candidate)
+            ));
+        }
+    }
+    if let Some(recorded_changes) = event.payload.get("changes") {
+        let recorded_changes: Vec<ContextChange> = serde_json::from_value(recorded_changes.clone())
+            .map_err(|error| format!("Context transaction '{}' Diff 损坏: {}", event.id, error))?;
+        if recorded_changes != replayed_changes {
+            return Err(format!(
+                "Context transaction '{}' 的 Diff 与 SExpr 重放结果不一致",
+                event.id
+            ));
+        }
+    }
+    Ok(candidate)
+}
+
 fn load_mind_from_events(events: &[Event]) -> Result<MindState, String> {
     let mut state = MindState::default();
     let mut seen_observations = HashSet::new();
@@ -4560,80 +4775,7 @@ fn load_mind_from_events(events: &[Event]) -> Result<MindState, String> {
             continue;
         }
 
-        let transaction = event
-            .payload
-            .get("transaction")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| format!("Context transaction '{}' 缺少 transaction", event.id))?;
-        let parsed = parse_transaction(transaction)
-            .map_err(|error| format!("Context transaction '{}' 无法重放: {}", event.id, error))?;
-        let actual_before_hash = mind_state_hash(&state)?;
-        if let Some(recorded_before_hash) = event
-            .payload
-            .get("before_hash")
-            .and_then(|value| value.as_str())
-        {
-            if recorded_before_hash != actual_before_hash {
-                return Err(format!(
-                    "Context transaction '{}' 的 before_hash 不一致",
-                    event.id
-                ));
-            }
-        }
-        let (candidate, replayed_changes) =
-            apply_parsed_transaction(&state, &parsed, &seen_observations).map_err(|error| {
-                format!(
-                    "Context transaction '{}' 确定性重放失败: {}",
-                    event.id, error
-                )
-            })?;
-
-        let actual_after_hash = mind_state_hash(&candidate)?;
-        match event
-            .payload
-            .get("after_hash")
-            .and_then(|value| value.as_str())
-        {
-            Some(recorded_after_hash) if recorded_after_hash != actual_after_hash => {
-                return Err(format!(
-                    "Context transaction '{}' 的 after_hash 不一致",
-                    event.id
-                ));
-            }
-            None if !event.payload.contains_key("state_after") => {
-                return Err(format!(
-                    "Context transaction '{}' 同时缺少 after_hash 与 legacy state_after",
-                    event.id
-                ));
-            }
-            _ => {}
-        }
-        if let Some(recorded_state) = event.payload.get("state_after") {
-            let recorded_state: MindState = serde_json::from_value(recorded_state.clone())
-                .map_err(|error| {
-                    format!("Context transaction '{}' 状态损坏: {}", event.id, error)
-                })?;
-            if recorded_state != candidate {
-                return Err(format!(
-                    "Context transaction '{}' 的 state_after 与 SExpr 重放结果不一致: {}",
-                    event.id,
-                    mind_state_mismatch(&recorded_state, &candidate)
-                ));
-            }
-        }
-        if let Some(recorded_changes) = event.payload.get("changes") {
-            let recorded_changes: Vec<ContextChange> =
-                serde_json::from_value(recorded_changes.clone()).map_err(|error| {
-                    format!("Context transaction '{}' Diff 损坏: {}", event.id, error)
-                })?;
-            if recorded_changes != replayed_changes {
-                return Err(format!(
-                    "Context transaction '{}' 的 Diff 与 SExpr 重放结果不一致",
-                    event.id
-                ));
-            }
-        }
-        state = candidate;
+        state = replay_context_transaction_event(&state, event, &seen_observations)?;
     }
     Ok(state)
 }
@@ -7004,6 +7146,32 @@ mod tests {
             .iter()
             .any(|frame| frame.id == "child-only"));
 
+        // Simulate a rebuildable Projection being deliberately removed while
+        // retaining the immutable Ledger and its latest Snapshot. A new
+        // Runtime must install r1 from Snapshot@0 plus exactly one transaction.
+        let maintenance_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(&db)
+                    .create_if_missing(false),
+            )
+            .await
+            .unwrap();
+        let mut maintenance = maintenance_pool.begin().await.unwrap();
+        sqlx::query("DELETE FROM mind_projections WHERE context_id = ?")
+            .bind("seed-target")
+            .execute(&mut *maintenance)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM context_heads WHERE context_id = ?")
+            .bind("seed-target")
+            .execute(&mut *maintenance)
+            .await
+            .unwrap();
+        maintenance.commit().await.unwrap();
+        maintenance_pool.close().await;
+
         let restarted = ContextEngine::new(
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
@@ -7020,13 +7188,22 @@ mod tests {
             .frames
             .iter()
             .any(|frame| frame.id == "child-only"));
-        assert!(
-            restarted
-                .audit_mind_projection("seed-target")
-                .await
-                .unwrap()
-                .matches
-        );
+        let incremental = restarted
+            .recover_mind_from_latest_snapshot("seed-target")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(incremental.snapshot_revision, 0);
+        assert_eq!(incremental.transactions_replayed, 1);
+        assert_eq!(incremental.state, restored.state);
+        let audit = restarted
+            .audit_mind_projection("seed-target")
+            .await
+            .unwrap();
+        assert!(audit.matches);
+        assert_eq!(audit.snapshot_revision, Some(0));
+        assert_eq!(audit.incremental_transactions_scanned, Some(1));
+        assert_eq!(audit.incremental_matches, Some(true));
     }
 
     #[tokio::test]
