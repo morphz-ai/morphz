@@ -14,11 +14,12 @@ use crate::memory::{
     AgentBootstrapRecord, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalRecord,
     ApprovalResolution, ApprovalStore, CognitiveContextRecord, DelegationRecord, DelegationStatus,
     EventStore, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionJobStore, MessageClaim, NewAgent, NewCognitiveContext, NewDelegation, NewObjective,
-    NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, ScheduleMutation, ScheduleRecord, ScheduleStatus,
-    SessionRecord, SessionStore, SessionUpdate, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, TimerStore,
+    ExecutionJobStore, MessageClaim, MindProjectionStore, NewAgent, NewCognitiveContext,
+    NewDelegation, NewObjective, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, QueryFilter, ScheduleMutation, ScheduleRecord,
+    ScheduleStatus, SessionRecord, SessionStore, SessionUpdate, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
+    TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -238,6 +239,7 @@ impl MorphzRuntimeBuilder {
                 self.config.orchestrator.clone(),
             )
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
             .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>),
         );
         let execution_jobs = Arc::new(ExecutionJobManager::new(
@@ -1585,6 +1587,16 @@ impl MorphzRuntime {
 
     pub async fn mind_version(&self, context_id: &str) -> Result<u64, RuntimeError> {
         self.inner.orchestrator.mind_version(context_id).await
+    }
+
+    pub async fn audit_mind_projection(
+        &self,
+        context_id: &str,
+    ) -> Result<crate::orchestrator::context::MindProjectionAudit, RuntimeError> {
+        self.inner
+            .orchestrator
+            .audit_mind_projection(context_id)
+            .await
     }
 
     pub async fn seed_context_from_mind(

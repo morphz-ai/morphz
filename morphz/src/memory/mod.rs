@@ -76,6 +76,98 @@ pub struct NewCognitiveContext {
     pub title: String,
 }
 
+/// Rebuildable online materialization of one Cognitive Context's current Mind.
+///
+/// The persistence layer deliberately treats `state` as opaque canonical JSON:
+/// Frame body semantics belong to the Agent/Context engine, while the Store
+/// owns revision fencing, hashes and atomic durability.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MindProjectionRecord {
+    pub context_id: String,
+    pub revision: u64,
+    pub state: serde_json::Value,
+    pub state_hash: String,
+    pub head_event_id: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewMindProjection {
+    pub context_id: String,
+    pub revision: u64,
+    pub state: serde_json::Value,
+    pub state_hash: String,
+    pub head_event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MindSnapshotRecord {
+    pub id: String,
+    pub context_id: String,
+    pub revision: u64,
+    pub state: serde_json::Value,
+    pub state_hash: String,
+    pub head_event_id: String,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum MindProjectionCommit {
+    Committed { projection: MindProjectionRecord },
+    Conflict { current_revision: Option<u64> },
+}
+
+/// Durable online Mind projection with database-enforced revision fencing.
+///
+/// The immutable Event Ledger remains the source of truth. This store owns the
+/// rebuildable current-state projection and the Context head used for CAS. A
+/// successful Context mutation must persist its Event, Projection and affected
+/// Session attention rows in one database transaction.
+#[async_trait::async_trait]
+pub trait MindProjectionStore: Send + Sync {
+    async fn get_mind_projection(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<MindProjectionRecord>, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn get_latest_mind_snapshot(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<MindSnapshotRecord>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Lazily installs a projection reconstructed from the Ledger. Concurrent
+    /// initializers converge on the already committed row.
+    async fn initialize_mind_projection(
+        &self,
+        projection: NewMindProjection,
+    ) -> Result<MindProjectionRecord, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Atomically CASes the Context head, replaces the current Mind projection,
+    /// updates Session attention and appends the immutable transaction Event.
+    async fn commit_mind_projection_transaction(
+        &self,
+        event: &crate::event::Event,
+        attention_updates: &[SessionAttentionUpdate],
+        expected_revision: u64,
+        next_projection: NewMindProjection,
+    ) -> Result<MindProjectionCommit, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Atomically installs a projected seed Mind, records seed provenance on
+    /// the target Context and appends its immutable seed Event. Seeding keeps
+    /// revision zero but is fenced by the empty Context head.
+    #[allow(clippy::too_many_arguments)]
+    async fn commit_mind_seed_projection(
+        &self,
+        event: &crate::event::Event,
+        source_context_id: &str,
+        source_version: u64,
+        snapshot_hash: &str,
+        projection_kind: &str,
+        next_projection: NewMindProjection,
+    ) -> Result<MindProjectionCommit, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 impl SessionStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -1097,6 +1189,12 @@ pub struct QueryFilter {
     pub sequence: Option<u64>,
     pub context_id: Option<String>,
     pub session_id: Option<String>,
+    /// Bounded multi-Session query used by Context Encoding. This avoids
+    /// scanning every Session attached to a shared Cognitive Context.
+    pub session_ids: Vec<String>,
+    /// When `session_ids` is set, also include Context-wide events whose
+    /// physical `session_id` is NULL.
+    pub include_context_wide: bool,
     /// Only return events physically appended after this sequence (SQLite rowid).
     pub after_sequence: Option<u64>,
     pub start_time: Option<DateTime<Utc>>,

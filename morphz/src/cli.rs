@@ -498,6 +498,7 @@ pub fn morphz_command_line_parser() -> CommandLineParser {
         &["context"],
         &["context", "show"],
         &["context", "status"],
+        &["context", "audit"],
         &["context", "list"],
         &["scheduler"],
         &["scheduler", "show"],

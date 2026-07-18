@@ -6542,6 +6542,13 @@ impl Orchestrator {
         self.context_engine.mind_version(context_id).await
     }
 
+    pub async fn audit_mind_projection(
+        &self,
+        context_id: &str,
+    ) -> Result<crate::orchestrator::context::MindProjectionAudit, DynError> {
+        self.context_engine.audit_mind_projection(context_id).await
+    }
+
     pub async fn import_session_projection(
         &self,
         source_context_id: &str,

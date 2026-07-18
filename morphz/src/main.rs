@@ -45,7 +45,7 @@ CORE COMMANDS:
   provider list|test             Inspect and verify model Providers
   model list|use                 Discover or select models
   profile list|show|use          Inspect or select configuration Profiles
-  context list|show|status       Inspect Cognitive Contexts
+  context list|show|status|audit Inspect Cognitive Contexts and verify Mind Projection
   scheduler show                Inspect the authoritative Scheduler snapshot
   session list|show|create       Manage Sessions
   session resume [ID] [PROMPT...] Reattach ID, or the most recently active Session when omitted
@@ -835,6 +835,7 @@ async fn dispatch_runtime_command(
         "context" | "context list" => list_contexts(&runtime, &invocation).await,
         "context show" => show_context(&runtime, &invocation, &default_context_id, false).await,
         "context status" => show_context(&runtime, &invocation, &default_context_id, true).await,
+        "context audit" => audit_context(&runtime, &invocation, &default_context_id).await,
         "scheduler" | "scheduler show" => {
             show_scheduler(&runtime, &invocation, &default_context_id).await
         }
@@ -1311,6 +1312,41 @@ async fn show_context(
         }
     } else {
         println!("{}", serde_json::to_string_pretty(&record)?);
+    }
+    Ok(())
+}
+
+async fn audit_context(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    default_context_id: &str,
+) -> Result<(), AppError> {
+    let id = invocation
+        .prompt_args()
+        .first()
+        .map(String::as_str)
+        .or_else(|| option_value(invocation, "context"))
+        .unwrap_or(default_context_id);
+    let audit = runtime.audit_mind_projection(id).await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&audit)?);
+    } else {
+        println!(
+            "{}  matches={}  ledger=r{}:{}  projection={}:{}  events_scanned={}",
+            audit.context_id,
+            audit.matches,
+            audit.ledger_revision,
+            audit.ledger_hash,
+            audit
+                .projection_revision
+                .map(|revision| format!("r{revision}"))
+                .unwrap_or_else(|| "missing".to_string()),
+            audit.projection_hash.as_deref().unwrap_or("missing"),
+            audit.events_scanned
+        );
+    }
+    if !audit.matches {
+        return Err(format!("Context '{id}' 的 Mind Projection 与 Ledger 不一致").into());
     }
     Ok(())
 }

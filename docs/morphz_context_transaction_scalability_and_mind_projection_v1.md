@@ -1,6 +1,6 @@
 # Morphz Context 事务、Mind Projection 与分布式扩展设计 v1
 
-> 状态：架构共识与演进设计；当前单机实现可用，Projection、数据库级 CAS 与多 Worker 尚未实现
+> 状态：Phase 1 已完成；Phase 2 核心路径已完成，历史归档策略待实现；Phase 3–4 待基准数据驱动
 >
 > 日期：2026-07-18
 >
@@ -10,33 +10,54 @@
 >
 > 相关实现：[并发 Session 事件循环与认知工作集](./morphz_concurrent_session_working_set_v1.md)、[Scheduler Kernel 与领域命名模型](./morphz_scheduler_kernel_and_domain_model_v1.md)
 
+## 0. 实施进度（2026-07-18）
+
+已经落地：
+
+- SQLite `context_heads`、`mind_projections` 与周期/检查点 `mind_snapshots`；
+- Context transaction 通过数据库 revision CAS 提交，不再只依赖进程内 Mutex；
+- Ledger Event、Mind Projection、Context Head 与 Session attention 在同一 SQLite transaction 中原子提交；
+- Context Encoding、Frame 查询与 Mind version 读取在线 Projection；旧数据库仅在首次访问时完整重放并懒迁移；
+- Context Encoding 先计算有界 Session Working Set，再只查询这些 Session 与 Context-wide Event；
+- `context_tx` 只按 SExpr 实际涉及的标识查询、验证 Observation，不再扫描全 Context 来解析少量 `@eN`；
+- 新事务默认记录规范化 SExpr、Diff、`before_hash` 与 `after_hash`，Projection Profile 不再复制完整 `state_after`；
+- `morphz context audit [CONTEXT_ID]` 显式执行 Genesis 全量重放并比对 Projection；
+- 两个独立 ContextEngine 对同一 Context 的并发同版本写入，已由 SQLite CAS 验证为仅一个成功。
+
+仍待实施：
+
+- Snapshot 增量恢复与历史归档/保留策略；
+- Session Event 有界写队列与 group commit；
+- 面向真实负载的容量指标、基准阈值与 provider 分层配额收口；
+- PostgreSQL Store 和跨进程 Worker 部署验证；
+- 只有真实冲突数据证明有必要时，才评估 Frame 级 MVCC。
+
 ## 1. 本文结论
 
-当前 Morphz 已经具备一套成立的单机 Context 并发语义：
+Morphz 已经具备一套成立的 Context 并发语义：
 
 - Context transaction 显式携带 `base-version`；
-- Runtime 在提交时重建最新 Mind 并拒绝陈旧版本；
+- Runtime 从在线 Mind Projection 读取最新状态并拒绝陈旧版本；
 - Context 内的事务由进程内互斥锁串行提交；
-- 每次事务形成不可变 Ledger Event，并记录事务、Diff 与 `state_after`；
+- 每次事务形成不可变 Ledger Event，并记录事务、Diff 与前后 hash；
 - Mind 可以通过 Ledger 确定性重放，退役内容仍可恢复；
 - `session_working_set.max_sessions = 1` 时，每次模型求值只完整投影当前 Session，同时继续读取共享 Mind。
 
-因此，当前实现作为单进程、单 SQLite 数据库的本地 Agent Runtime 是足够的。它能正确支撑多个 Session 并发求值和少量共享认知修改。
+因此，当前实现作为单进程、单 SQLite 数据库的本地 Agent Runtime 是足够的。数据库级 CAS 也已经消除了同一 SQLite 上多个 Runtime 实例发生 lost update 的可能，但尚未宣称完成跨主机部署能力。
 
 但它还不是高性能分布式服务实现。主要缺口不是 DSL 表达能力，而是：
 
-1. 在线读取仍会扫描当前 Context 的大量历史事件；
-2. 每次 Context 提交仍会重放历史并重建完整 Mind；
-3. 同一 Context 的语义写入只有进程内锁保护；
-4. SQLite WAL 仍然是单物理写者；
-5. 每条事务保存完整 `state_after`，长期存在存储写放大；
-6. 多 Runtime Worker 之间缺少数据库提交边界上的原子版本 CAS。
+1. SQLite WAL 仍然是单物理写者；
+2. Session Event 尚未通过有界队列做 group commit；
+3. Snapshot 已落盘，但增量恢复和历史归档尚未收口；
+4. 多 Runtime Worker 尚未在 PostgreSQL 等服务型数据库上完成部署验证；
+5. 容量指标和基准数据尚不足以决定是否需要 Frame 级 MVCC。
 
 目标架构不是取消 Event Ledger，也不是让 Runtime 接管 Frame 语义，而是增加一个可验证、可重建的在线 `Mind Projection`，把高频服务路径与完整历史审计路径分开。
 
-## 2. 当前实现的准确语义
+## 2. Phase 0 原基线的准确语义
 
-### 2.1 当前 Context Transaction 是什么
+### 2.1 原基线 Context Transaction 是什么
 
 模型提交：
 
@@ -49,7 +70,7 @@
   (retire @e17))
 ```
 
-Runtime 当前执行：
+Phase 0 Runtime 执行：
 
 ```text
 解析 SExpr
@@ -517,7 +538,7 @@ acknowledge Activation
 - 适用于本地 Agent 和受控小规模公开测试；
 - 增加指标，不急于更换数据库。
 
-### Phase 1：SQLite Mind Projection
+### Phase 1：SQLite Mind Projection（已完成）
 
 - 增加 `context_heads` 与 Mind Projection；
 - Context Encoding 直接读取 Projection；
@@ -525,22 +546,22 @@ acknowledge Activation
 - 正常路径不再完整重放；
 - 保留显式完整审计命令。
 
-### Phase 2：Ledger 分流与按需引用验证
+### Phase 2：Ledger 分流与按需引用验证（核心路径已完成）
 
 - 区分 Session Events 与 Mind Transactions 的查询路径；
-- Context Encoding 只读取当前 Session；
+- Context Encoding 只读取当前有界 Session Working Set（隔离模式下即当前 Session）；
 - `@eN` 只验证事务实际引用的 Observation；
 - 增加 Snapshot、hash chain 和历史归档策略；
 - 取消每事务完整 `state_after` 的生产默认写入。
 
-### Phase 3：单机高并发
+### Phase 3：单机高并发（待基准驱动实施）
 
 - Session Event group commit；
 - 分层 admission 与 provider 配额；
 - 有界背压和排队可观察性；
 - 依据基准测试调高模型并发，而不是只修改一个全局数字。
 
-### Phase 4：数据库级 CAS 与多 Worker
+### Phase 4：数据库级 CAS 与多 Worker（SQLite CAS 已完成，服务型 Store 待实施）
 
 - PostgreSQL 或其他支持事务 CAS 的 Store；
 - Activation lease、Worker recovery 与幂等 Outcome；

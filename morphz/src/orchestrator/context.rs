@@ -4,7 +4,8 @@ use crate::event::{
     TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use crate::memory::{
-    DeliveryStatus, EventStore, ObjectiveRecord, ObjectiveStore, QueryFilter, ScheduleRecord,
+    DeliveryStatus, EventStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
+    NewMindProjection, ObjectiveRecord, ObjectiveStore, QueryFilter, ScheduleRecord,
     ScheduleStatus, SessionAttentionState, SessionAttentionUpdate, SessionRecord, SessionStatus,
     SessionStore, ThreadActivationRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
     ThreadSignalStatus,
@@ -250,6 +251,17 @@ pub struct MindSeedReceipt {
     pub snapshot_hash: String,
     pub projected_hash: String,
     pub inherited_frames: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MindProjectionAudit {
+    pub context_id: String,
+    pub ledger_revision: u64,
+    pub projection_revision: Option<u64>,
+    pub ledger_hash: String,
+    pub projection_hash: Option<String>,
+    pub events_scanned: usize,
+    pub matches: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -616,6 +628,7 @@ fn select_session_working_set(
 pub struct ContextEngine {
     store: Arc<dyn EventStore>,
     session_store: Option<Arc<dyn SessionStore>>,
+    mind_projection_store: Option<Arc<dyn MindProjectionStore>>,
     objective_store: Option<Arc<dyn ObjectiveStore>>,
     config: OrchestratorConfig,
     context_locks: DashMap<String, Arc<Mutex<()>>>,
@@ -626,6 +639,7 @@ impl ContextEngine {
         Self {
             store,
             session_store: None,
+            mind_projection_store: None,
             objective_store: None,
             config,
             context_locks: DashMap::new(),
@@ -634,6 +648,14 @@ impl ContextEngine {
 
     pub fn with_session_store(mut self, session_store: Arc<dyn SessionStore>) -> Self {
         self.session_store = Some(session_store);
+        self
+    }
+
+    pub fn with_mind_projection_store(
+        mut self,
+        mind_projection_store: Arc<dyn MindProjectionStore>,
+    ) -> Self {
+        self.mind_projection_store = Some(mind_projection_store);
         self
     }
 
@@ -667,6 +689,84 @@ impl ContextEngine {
             .clamp(4_000, 20_000)
     }
 
+    fn validate_mind_projection(
+        context_id: &str,
+        projection: MindProjectionRecord,
+    ) -> Result<MindState, DynError> {
+        let state: MindState =
+            serde_json::from_value(projection.state.clone()).map_err(|error| {
+                format!("Context '{context_id}' 的 Mind Projection state 无法解析: {error}")
+            })?;
+        if state.version != projection.revision {
+            return Err(format!(
+                "Context '{context_id}' 的 Mind Projection revision 不一致：state={}，head={}",
+                state.version, projection.revision
+            )
+            .into());
+        }
+        let actual_hash = mind_state_hash(&state)?;
+        if actual_hash != projection.state_hash {
+            return Err(format!(
+                "Context '{context_id}' 的 Mind Projection hash 不一致：stored={}，actual={actual_hash}",
+                projection.state_hash
+            )
+            .into());
+        }
+        Ok(state)
+    }
+
+    /// Reads the online Projection. Existing Ledgers are replayed exactly once
+    /// for lazy migration, then every hot-path read uses the materialized Mind.
+    async fn load_current_mind(
+        &self,
+        context_id: &str,
+        known_events: Option<&[Event]>,
+    ) -> Result<MindState, DynError> {
+        let Some(store) = &self.mind_projection_store else {
+            let events = match known_events {
+                Some(events) => events.to_vec(),
+                None => self.context_events(context_id).await?,
+            };
+            return Ok(load_mind_from_events(&events)?);
+        };
+        if let Some(projection) = store.get_mind_projection(context_id).await? {
+            return Self::validate_mind_projection(context_id, projection);
+        }
+
+        let owned_events;
+        let events = match known_events {
+            Some(events) => events,
+            None => {
+                owned_events = self.context_events(context_id).await?;
+                &owned_events
+            }
+        };
+        let replayed = load_mind_from_events(events)?;
+        let state_hash = mind_state_hash(&replayed)?;
+        let head_event_id = events
+            .iter()
+            .rev()
+            .find(|event| {
+                (event.event_type == TYPE_CONTEXT_TRANSACTION
+                    && event.topic == "chat/context_tx_committed"
+                    && event.actor == "Agent-Context")
+                    || (event.event_type == TYPE_CONTEXT_SEED
+                        && event.topic == "runtime/context_seeded"
+                        && event.actor == "System-ContextSeed")
+            })
+            .map(|event| event.id.clone());
+        let installed = store
+            .initialize_mind_projection(NewMindProjection {
+                context_id: context_id.to_string(),
+                revision: replayed.version,
+                state: serde_json::to_value(&replayed)?,
+                state_hash,
+                head_event_id,
+            })
+            .await?;
+        Self::validate_mind_projection(context_id, installed)
+    }
+
     pub async fn apply_context_transaction(
         &self,
         context_id: &str,
@@ -677,12 +777,20 @@ impl ContextEngine {
         let lock = self.context_lock(context_id);
         let _guard = lock.lock().await;
 
-        let events = self.context_events(context_id).await?;
-        let references = ContextReferences::from_events(&events);
+        let referenced_observations = self.transaction_observations(context_id, &parsed).await?;
+        let references = ContextReferences::from_events(&referenced_observations);
         resolve_transaction_references(&mut parsed, &references)?;
+        if let Some(unresolved) = transaction_reference_candidates(&parsed)?
+            .into_iter()
+            .find(|reference| reference.starts_with(EVENT_REFERENCE_PREFIX))
+        {
+            return Err(
+                format!("Context transaction 仍包含未解析短引用 '{unresolved}'，拒绝提交").into(),
+            );
+        }
         let canonical_transaction = render_parsed_transaction(&parsed);
-        let current = load_mind_from_events(&events)?;
-        let observation_ids = observation_ids(&events);
+        let current = self.load_current_mind(context_id, None).await?;
+        let observation_ids = observation_ids(&referenced_observations);
         let (next, changes) = apply_parsed_transaction(&current, &parsed, &observation_ids)?;
 
         let tx_id = format!(
@@ -693,7 +801,9 @@ impl ContextEngine {
         let attention_updates = self
             .prepare_session_attention_updates(context_id, acting_session_id, &parsed, &tx_id)
             .await?;
-        let payload = vec![
+        let before_hash = mind_state_hash(&current)?;
+        let after_hash = mind_state_hash(&next)?;
+        let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(acting_session_id)),
             ("transaction_id".to_string(), json!(tx_id)),
@@ -702,11 +812,18 @@ impl ContextEngine {
             ("after_version".to_string(), json!(next.version)),
             ("reason".to_string(), json!(&parsed.reason)),
             ("changes".to_string(), json!(changes)),
-            ("state_after".to_string(), json!(next)),
+            ("before_hash".to_string(), json!(&before_hash)),
+            ("after_hash".to_string(), json!(&after_hash)),
             ("text".to_string(), json!(&canonical_transaction)),
         ]
         .into_iter()
-        .collect();
+        .collect::<serde_json::Map<_, _>>();
+        // Legacy stores have no durable Projection and therefore retain the
+        // historical full-state receipt. Projection-backed production writes
+        // use hashes plus periodic/explicit snapshots instead.
+        if self.mind_projection_store.is_none() {
+            payload.insert("state_after".to_string(), json!(&next));
+        }
 
         let event = Event::new(
             tx_id.clone(),
@@ -715,7 +832,32 @@ impl ContextEngine {
             "chat/context_tx_committed".to_string(),
             payload,
         );
-        if let Some(session_store) = &self.session_store {
+        if let Some(projection_store) = &self.mind_projection_store {
+            match projection_store
+                .commit_mind_projection_transaction(
+                    &event,
+                    &attention_updates,
+                    current.version,
+                    NewMindProjection {
+                        context_id: context_id.to_string(),
+                        revision: next.version,
+                        state: serde_json::to_value(&next)?,
+                        state_hash: after_hash,
+                        head_event_id: Some(tx_id.clone()),
+                    },
+                )
+                .await?
+            {
+                MindProjectionCommit::Committed { .. } => {}
+                MindProjectionCommit::Conflict { current_revision } => {
+                    return Err(format!(
+                        "Context transaction CAS 冲突：请求 base-version {}，当前 Projection revision {:?}；请基于最新 Context Encoding 重试",
+                        current.version, current_revision
+                    )
+                    .into());
+                }
+            }
+        } else if let Some(session_store) = &self.session_store {
             session_store
                 .commit_context_transaction(&event, &attention_updates)
                 .await?;
@@ -848,6 +990,32 @@ impl ContextEngine {
         Ok(updates)
     }
 
+    async fn transaction_observations(
+        &self,
+        context_id: &str,
+        transaction: &ParsedTransaction,
+    ) -> Result<Vec<Event>, DynError> {
+        let mut events = Vec::new();
+        for reference in transaction_reference_candidates(transaction)? {
+            if events.iter().any(|event: &Event| event.id == reference) {
+                continue;
+            }
+            if let Some(event) = self.find_event(context_id, &reference).await? {
+                if is_observation(&event) {
+                    events.push(event);
+                }
+            } else if reference.starts_with(EVENT_REFERENCE_PREFIX) {
+                return Err(format!(
+                    "Context 短引用 '{}' 不存在；请使用当前 Context Encoding 展示的 ref",
+                    reference
+                )
+                .into());
+            }
+        }
+        events.sort_by_key(|event| event.sequence);
+        Ok(events)
+    }
+
     pub async fn seed_context_from_mind(
         &self,
         source_context_id: &str,
@@ -869,7 +1037,9 @@ impl ContextEngine {
         }
 
         let source_events = self.context_events(source_context_id).await?;
-        let source_state = load_mind_from_events(&source_events)?;
+        let source_state = self
+            .load_current_mind(source_context_id, Some(&source_events))
+            .await?;
         if let Some(expected) = expected_source_version {
             if source_state.version != expected {
                 return Err(format!(
@@ -887,43 +1057,83 @@ impl ContextEngine {
             target_context_id,
             Utc::now().timestamp_nanos_opt().unwrap_or(0)
         );
-        self.store
-            .append(Event::new(
-                seed_id,
-                "System-ContextSeed".to_string(),
-                TYPE_CONTEXT_SEED.to_string(),
-                "runtime/context_seeded".to_string(),
-                vec![
-                    ("context_id".to_string(), json!(target_context_id)),
-                    ("source_context_id".to_string(), json!(source_context_id)),
-                    ("source_version".to_string(), json!(source_state.version)),
-                    ("projection".to_string(), json!("mind_snapshot")),
-                    ("source_state".to_string(), json!(&source_state)),
-                    ("state_after".to_string(), json!(&projected)),
-                    ("snapshot_hash".to_string(), json!(&snapshot_hash)),
-                    ("projected_hash".to_string(), json!(&projected_hash)),
-                    (
-                        "text".to_string(),
-                        json!(format!(
-                            "Context '{}' seeded from Mind snapshot '{}@{}'",
-                            target_context_id, source_context_id, source_state.version
-                        )),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ))
-            .await?;
-        if let Some(session_store) = &self.session_store {
-            session_store
-                .set_context_seed(
-                    target_context_id,
+        let event = Event::new(
+            seed_id.clone(),
+            "System-ContextSeed".to_string(),
+            TYPE_CONTEXT_SEED.to_string(),
+            "runtime/context_seeded".to_string(),
+            vec![
+                ("context_id".to_string(), json!(target_context_id)),
+                ("source_context_id".to_string(), json!(source_context_id)),
+                ("source_version".to_string(), json!(source_state.version)),
+                ("projection".to_string(), json!("mind_snapshot")),
+                ("source_state".to_string(), json!(&source_state)),
+                ("state_after".to_string(), json!(&projected)),
+                ("snapshot_hash".to_string(), json!(&snapshot_hash)),
+                ("projected_hash".to_string(), json!(&projected_hash)),
+                (
+                    "text".to_string(),
+                    json!(format!(
+                        "Context '{}' seeded from Mind snapshot '{}@{}'",
+                        target_context_id, source_context_id, source_state.version
+                    )),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        if let Some(projection_store) = &self.mind_projection_store {
+            let empty = MindState::default();
+            projection_store
+                .initialize_mind_projection(NewMindProjection {
+                    context_id: target_context_id.to_string(),
+                    revision: 0,
+                    state: serde_json::to_value(&empty)?,
+                    state_hash: mind_state_hash(&empty)?,
+                    head_event_id: None,
+                })
+                .await?;
+            match projection_store
+                .commit_mind_seed_projection(
+                    &event,
                     source_context_id,
                     source_state.version,
                     &snapshot_hash,
                     "mind_snapshot",
+                    NewMindProjection {
+                        context_id: target_context_id.to_string(),
+                        revision: 0,
+                        state: serde_json::to_value(&projected)?,
+                        state_hash: projected_hash.clone(),
+                        head_event_id: Some(seed_id),
+                    },
                 )
-                .await?;
+                .await?
+            {
+                MindProjectionCommit::Committed { .. } => {}
+                MindProjectionCommit::Conflict { current_revision } => {
+                    return Err(format!(
+                        "目标 Context '{}' 的 Mind Seed CAS 冲突，当前 revision {:?}",
+                        target_context_id, current_revision
+                    )
+                    .into());
+                }
+            }
+        } else {
+            self.store.append(event).await?;
+        }
+        if self.mind_projection_store.is_none() {
+            if let Some(session_store) = &self.session_store {
+                session_store
+                    .set_context_seed(
+                        target_context_id,
+                        source_context_id,
+                        source_state.version,
+                        &snapshot_hash,
+                        "mind_snapshot",
+                    )
+                    .await?;
+            }
         }
         Ok(MindSeedReceipt {
             source_context_id: source_context_id.to_string(),
@@ -1038,7 +1248,52 @@ impl ContextEngine {
         excluded_observation_ids: &HashSet<String>,
         activation_record: Option<&ThreadActivationRecord>,
     ) -> Result<ContextView, DynError> {
-        let events = self.context_events(context_id).await?;
+        let state = self.load_current_mind(context_id, None).await?;
+        let legacy_events = if self.session_store.is_none() {
+            Some(self.context_events(context_id).await?)
+        } else {
+            None
+        };
+        let registry_sessions = match &self.session_store {
+            Some(store) => store.list_context_sessions(context_id, true).await?,
+            None => {
+                self.context_sessions(context_id, legacy_events.as_deref().unwrap_or_default())
+                    .await?
+            }
+        };
+        let objectives = match &self.objective_store {
+            Some(store) => store.list_context_objectives(context_id, false).await?,
+            None => Vec::new(),
+        };
+        let active_activations = match &self.session_store {
+            Some(store) => {
+                store
+                    .list_context_thread_activations(context_id, false)
+                    .await?
+            }
+            None => Vec::new(),
+        };
+        let current_session_ids = [active_session_id.to_string()];
+        let (mut sessions, mut session_working_set) = select_session_working_set(
+            &registry_sessions,
+            &current_session_ids,
+            Utc::now(),
+            &self.config.session_working_set,
+            &objectives,
+            &active_activations,
+        );
+        let full_session_ids = sessions
+            .iter()
+            .filter(|entry| entry.projection == SessionProjection::Full)
+            .map(|entry| entry.session.id.clone())
+            .collect::<Vec<_>>();
+        let events = match legacy_events {
+            Some(events) => events,
+            None => {
+                self.context_encoding_events(context_id, &full_session_ids)
+                    .await?
+            }
+        };
         let delivery_snapshot_ids = activation_record
             .filter(|activation| activation.trigger_kind == "chat/thread_completion_ready")
             .and_then(|activation| {
@@ -1055,21 +1310,7 @@ impl ContextEngine {
                     .collect::<HashSet<_>>()
             });
         let references = ContextReferences::from_events(&events);
-        let state = load_mind_from_events(&events)?;
         let metadata = observation_metadata(&events, &state);
-        let registry_sessions = self.context_sessions(context_id, &events).await?;
-        let objectives = match &self.objective_store {
-            Some(store) => store.list_context_objectives(context_id, false).await?,
-            None => Vec::new(),
-        };
-        let active_activations = match &self.session_store {
-            Some(store) => {
-                store
-                    .list_context_thread_activations(context_id, false)
-                    .await?
-            }
-            None => Vec::new(),
-        };
         let (threads, schedules, thread_signals) = match &self.session_store {
             Some(store) => {
                 let all_threads = store.list_context_threads(context_id, true).await?;
@@ -1170,15 +1411,6 @@ impl ContextEngine {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        let current_session_ids = [active_session_id.to_string()];
-        let (mut sessions, mut session_working_set) = select_session_working_set(
-            &registry_sessions,
-            &current_session_ids,
-            Utc::now(),
-            &self.config.session_working_set,
-            &objectives,
-            &active_activations,
-        );
         let parent_session_id = registry_sessions
             .iter()
             .find(|session| session.id == active_session_id)
@@ -1467,15 +1699,55 @@ impl ContextEngine {
         context_id: &str,
         frame_id: &str,
     ) -> Result<Option<ContextFrame>, DynError> {
-        let events = self.context_events(context_id).await?;
-        Ok(load_mind_from_events(&events)?
+        Ok(self
+            .load_current_mind(context_id, None)
+            .await?
             .frames
             .into_iter()
             .find(|frame| frame.id == frame_id))
     }
 
     pub async fn mind_version(&self, context_id: &str) -> Result<u64, DynError> {
-        Ok(load_mind_from_events(&self.context_events(context_id).await?)?.version)
+        Ok(self.load_current_mind(context_id, None).await?.version)
+    }
+
+    /// Explicit integrity audit: replay the immutable Ledger and compare it
+    /// with the online Projection. This never runs on the Context hot path.
+    pub async fn audit_mind_projection(
+        &self,
+        context_id: &str,
+    ) -> Result<MindProjectionAudit, DynError> {
+        let projection_store = self
+            .mind_projection_store
+            .as_ref()
+            .ok_or("ContextEngine 未配置 MindProjectionStore，不能执行 Projection 审计")?;
+        let events = self.context_events(context_id).await?;
+        // An old database may not have a materialized row yet. Audit is also
+        // a safe explicit migration boundary, but never repairs a corrupt row.
+        let _ = self.load_current_mind(context_id, Some(&events)).await?;
+        let ledger = load_mind_from_events(&events)?;
+        let ledger_hash = mind_state_hash(&ledger)?;
+        let projection = projection_store.get_mind_projection(context_id).await?;
+        let (projection_revision, projection_hash, valid_projection) = match projection {
+            Some(projection) => {
+                let revision = projection.revision;
+                let stored_hash = projection.state_hash.clone();
+                let valid = Self::validate_mind_projection(context_id, projection)
+                    .map(|state| state == ledger)
+                    .unwrap_or(false);
+                (Some(revision), Some(stored_hash), valid)
+            }
+            None => (None, None, false),
+        };
+        Ok(MindProjectionAudit {
+            context_id: context_id.to_string(),
+            ledger_revision: ledger.version,
+            projection_revision,
+            ledger_hash: ledger_hash.clone(),
+            projection_hash: projection_hash.clone(),
+            events_scanned: events.len(),
+            matches: valid_projection && projection_hash.as_deref() == Some(ledger_hash.as_str()),
+        })
     }
 
     pub async fn search_events(
@@ -1503,6 +1775,46 @@ impl ContextEngine {
             .clone()
     }
 
+    /// Bounded online Ledger read for Context Encoding. Shared Mind state is
+    /// read from the Projection; only the selected Session working set and
+    /// Context-wide observations are materialized here.
+    async fn context_encoding_events(
+        &self,
+        context_id: &str,
+        session_ids: &[String],
+    ) -> Result<Vec<Event>, DynError> {
+        let mut events = self
+            .store
+            .query(QueryFilter {
+                context_id: Some(context_id.to_string()),
+                session_ids: session_ids.to_vec(),
+                include_context_wide: true,
+                topic: Some("chat/*".to_string()),
+                excluded_topics: vec![
+                    "chat/context_inspect".to_string(),
+                    "chat/context_tx_committed".to_string(),
+                ],
+                ..Default::default()
+            })
+            .await?;
+        events.extend(
+            self.store
+                .query(QueryFilter {
+                    context_id: Some(context_id.to_string()),
+                    session_ids: session_ids.to_vec(),
+                    include_context_wide: true,
+                    topic: Some("context/projected_observation".to_string()),
+                    ..Default::default()
+                })
+                .await?,
+        );
+        events.sort_by_key(|event| event.sequence);
+        events.dedup_by(|left, right| left.id == right.id);
+        Ok(events)
+    }
+
+    /// Full Context Ledger read reserved for lazy Projection migration,
+    /// integrity audit, seed export and explicit historical operations.
     async fn context_events(&self, context_id: &str) -> Result<Vec<Event>, DynError> {
         let mut events = self
             .store
@@ -2022,6 +2334,59 @@ fn resolve_transaction_references(
         }
     }
     Ok(())
+}
+
+/// Returns only identifiers that the transaction can semantically read or
+/// collide with. This keeps Observation validation proportional to the actual
+/// SExpr instead of the total Context Ledger size.
+fn transaction_reference_candidates(
+    transaction: &ParsedTransaction,
+) -> Result<BTreeSet<String>, String> {
+    let mut candidates = BTreeSet::new();
+    for operation in &transaction.operations {
+        let items = as_list(operation, "context operation")?;
+        let name = atom_at(items, 0, "operation name")?;
+        match name {
+            "create" | "checkpoint" | "rollback" => {
+                candidates.insert(atom_at(items, 1, "Context ID")?.to_string());
+            }
+            "derive" => {
+                candidates.insert(atom_at(items, 1, "frame ID")?.to_string());
+                let sources = as_list(items.get(2).ok_or("derive 缺少 from")?, "from")?;
+                expect_head(sources, "from")?;
+                for source in sources.iter().skip(1) {
+                    candidates.insert(as_atom(source, "source")?.to_string());
+                }
+            }
+            "revise" => {
+                candidates.insert(atom_at(items, 1, "frame ID")?.to_string());
+                if items.len() == 4 {
+                    let sources = as_list(items.get(2).ok_or("revise 缺少 from")?, "from")?;
+                    expect_head(sources, "from")?;
+                    for source in sources.iter().skip(1) {
+                        candidates.insert(as_atom(source, "source")?.to_string());
+                    }
+                }
+            }
+            "retire" | "restore" | "protect" | "unprotect" | "drop-checkpoint" => {
+                for item in items.iter().skip(1) {
+                    candidates.insert(as_atom(item, "Context ID")?.to_string());
+                }
+            }
+            "relate" | "unrelate" => {
+                candidates.insert(atom_at(items, 1, "relation subject")?.to_string());
+                candidates.insert(atom_at(items, 3, "relation object")?.to_string());
+            }
+            "place" => {
+                candidates.insert(atom_at(items, 1, "frame ID")?.to_string());
+            }
+            // Session attention targets belong to SessionStore, not the Event
+            // Ledger, and therefore must never be interpreted as observations.
+            "retire-session" | "restore-session" => {}
+            _ => {}
+        }
+    }
+    Ok(candidates)
 }
 
 fn resolve_from_references(
@@ -4202,6 +4567,19 @@ fn load_mind_from_events(events: &[Event]) -> Result<MindState, String> {
             .ok_or_else(|| format!("Context transaction '{}' 缺少 transaction", event.id))?;
         let parsed = parse_transaction(transaction)
             .map_err(|error| format!("Context transaction '{}' 无法重放: {}", event.id, error))?;
+        let actual_before_hash = mind_state_hash(&state)?;
+        if let Some(recorded_before_hash) = event
+            .payload
+            .get("before_hash")
+            .and_then(|value| value.as_str())
+        {
+            if recorded_before_hash != actual_before_hash {
+                return Err(format!(
+                    "Context transaction '{}' 的 before_hash 不一致",
+                    event.id
+                ));
+            }
+        }
         let (candidate, replayed_changes) =
             apply_parsed_transaction(&state, &parsed, &seen_observations).map_err(|error| {
                 format!(
@@ -4210,20 +4588,38 @@ fn load_mind_from_events(events: &[Event]) -> Result<MindState, String> {
                 )
             })?;
 
-        let recorded_state: MindState = serde_json::from_value(
-            event
-                .payload
-                .get("state_after")
-                .ok_or_else(|| format!("Context transaction '{}' 缺少 state_after", event.id))?
-                .clone(),
-        )
-        .map_err(|error| format!("Context transaction '{}' 状态损坏: {}", event.id, error))?;
-        if recorded_state != candidate {
-            return Err(format!(
-                "Context transaction '{}' 的 state_after 与 SExpr 重放结果不一致: {}",
-                event.id,
-                mind_state_mismatch(&recorded_state, &candidate)
-            ));
+        let actual_after_hash = mind_state_hash(&candidate)?;
+        match event
+            .payload
+            .get("after_hash")
+            .and_then(|value| value.as_str())
+        {
+            Some(recorded_after_hash) if recorded_after_hash != actual_after_hash => {
+                return Err(format!(
+                    "Context transaction '{}' 的 after_hash 不一致",
+                    event.id
+                ));
+            }
+            None if !event.payload.contains_key("state_after") => {
+                return Err(format!(
+                    "Context transaction '{}' 同时缺少 after_hash 与 legacy state_after",
+                    event.id
+                ));
+            }
+            _ => {}
+        }
+        if let Some(recorded_state) = event.payload.get("state_after") {
+            let recorded_state: MindState = serde_json::from_value(recorded_state.clone())
+                .map_err(|error| {
+                    format!("Context transaction '{}' 状态损坏: {}", event.id, error)
+                })?;
+            if recorded_state != candidate {
+                return Err(format!(
+                    "Context transaction '{}' 的 state_after 与 SExpr 重放结果不一致: {}",
+                    event.id,
+                    mind_state_mismatch(&recorded_state, &candidate)
+                ));
+            }
         }
         if let Some(recorded_changes) = event.payload.get("changes") {
             let recorded_changes: Vec<ContextChange> =
@@ -6188,6 +6584,14 @@ mod tests {
         let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
         let session_id = "persistent-session";
         store
+            .create_context(NewCognitiveContext {
+                id: session_id.to_string(),
+                agent_id: "persistent-agent".to_string(),
+                title: "Persistent Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
             .append(Event::new(
                 "event:constraint".to_string(),
                 "User".to_string(),
@@ -6225,7 +6629,8 @@ mod tests {
         let restarted = ContextEngine::new(
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
-        );
+        )
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
         let view = restarted
             .build_context_encoding(session_id, session_id, &HashSet::new())
             .await
@@ -6239,6 +6644,13 @@ mod tests {
             .await
             .unwrap()
             .is_some());
+        assert!(
+            restarted
+                .audit_mind_projection(session_id)
+                .await
+                .unwrap()
+                .matches
+        );
     }
 
     #[tokio::test]
@@ -6302,7 +6714,8 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         )
-        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>);
+        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
         engine
             .apply_context_transaction(
                 "attention-context",
@@ -6373,13 +6786,31 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("context-concurrency.db");
         let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
-        let engine = Arc::new(ContextEngine::new(
-            Arc::clone(&store) as Arc<dyn EventStore>,
-            OrchestratorConfig::default(),
-        ));
+        store
+            .create_context(NewCognitiveContext {
+                id: "shared-context".to_string(),
+                agent_id: "shared-agent".to_string(),
+                title: "Shared Context".to_string(),
+            })
+            .await
+            .unwrap();
+        let engine_left = Arc::new(
+            ContextEngine::new(
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                OrchestratorConfig::default(),
+            )
+            .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>),
+        );
+        let engine_right = Arc::new(
+            ContextEngine::new(
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                OrchestratorConfig::default(),
+            )
+            .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>),
+        );
 
         let left = {
-            let engine = Arc::clone(&engine);
+            let engine = Arc::clone(&engine_left);
             tokio::spawn(async move {
                 engine
                     .apply_context_transaction(
@@ -6391,7 +6822,7 @@ mod tests {
             })
         };
         let right = {
-            let engine = Arc::clone(&engine);
+            let engine = Arc::clone(&engine_right);
             tokio::spawn(async move {
                 engine
                     .apply_context_transaction(
@@ -6406,12 +6837,19 @@ mod tests {
         let outcomes = [left.await.unwrap(), right.await.unwrap()];
         assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
         assert_eq!(outcomes.iter().filter(|result| result.is_err()).count(), 1);
-        let view = engine
+        let view = engine_left
             .build_context_encoding("shared-context", "session-left", &HashSet::new())
             .await
             .unwrap();
         assert_eq!(view.state.version, 1);
         assert_eq!(view.state.frames.len(), 1);
+        assert!(
+            engine_left
+                .audit_mind_projection("shared-context")
+                .await
+                .unwrap()
+                .matches
+        );
     }
 
     #[tokio::test]
@@ -6471,7 +6909,8 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         )
-        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>);
+        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
         engine
             .apply_context_transaction(
                 "seed-source",
@@ -6491,6 +6930,18 @@ mod tests {
             .build_context_encoding("seed-source", "seed-session-a", &HashSet::new())
             .await
             .unwrap();
+        let source_transactions = store
+            .query(QueryFilter {
+                context_id: Some("seed-source".to_string()),
+                topic: Some("chat/context_tx_committed".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(source_transactions.len(), 1);
+        assert!(!source_transactions[0].payload.contains_key("state_after"));
+        assert!(source_transactions[0].payload.contains_key("before_hash"));
+        assert!(source_transactions[0].payload.contains_key("after_hash"));
         assert!(source_before_seed
             .state
             .protected
@@ -6505,6 +6956,13 @@ mod tests {
             .unwrap();
         assert_eq!(receipt.source_version, 1);
         assert_eq!(receipt.inherited_frames, 2);
+        let seed_snapshot = store
+            .get_latest_mind_snapshot("seed-target")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(seed_snapshot.revision, 0);
+        assert_eq!(seed_snapshot.state_hash, receipt.projected_hash);
         let target_events = engine.context_events("seed-target").await.unwrap();
         assert_eq!(target_events.len(), 1);
         let replayed_seed = load_mind_from_events(&target_events).unwrap();
@@ -6550,7 +7008,8 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         )
-        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>);
+        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
         let restored = restarted
             .build_context_encoding("seed-target", "seed-session-c", &HashSet::new())
             .await
@@ -6561,6 +7020,13 @@ mod tests {
             .frames
             .iter()
             .any(|frame| frame.id == "child-only"));
+        assert!(
+            restarted
+                .audit_mind_projection("seed-target")
+                .await
+                .unwrap()
+                .matches
+        );
     }
 
     #[tokio::test]
