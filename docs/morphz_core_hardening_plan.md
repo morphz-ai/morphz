@@ -496,12 +496,16 @@ TOML：
 
 ```toml
 [background_task]
-timeout_notify_enabled = true
+timeout_notify_enabled = false # 默认只由完成事件唤醒；需要 watchdog 时显式开启
 timeout_notify_secs = 300
 max_output_buffer_bytes = 65536
 ```
 
 ### 6.4 等待检查器
+
+> 当前公开工具名为 `check_task_after(task_id, check_after_secs)`，强调它只注册
+> 一次监督检查点而不代表普通等待。以下 `wait_task(wait_secs)` 是旧协议记录；
+> Runtime 仅以不向新模型展示的别名继续接受持久化旧调用。
 
 任务转后台后启动默认检查点；Agent 也可以通过 `wait_task(task_id, wait_secs)` 重新安排下一次检查：
 

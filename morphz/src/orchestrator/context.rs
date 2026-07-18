@@ -2626,7 +2626,7 @@ fn render_evaluation_directive(
             pair(
                 "tool-gate",
                 atom(if thread_kind == "delivery" {
-                    "delivery thread 只做结果编排与交付，不得调用物理工具；普通文本会原子覆盖本次可见的 pending completion"
+                    "delivery composer 只做复杂结果的语义编排与交付，不得调用物理工具；普通文本会原子覆盖本次可见的 pending completion"
                 } else {
                     "仅当完成 root-input 确实需要尚不存在的新外部结果时调用工具；可由当前 Encoding 直接回答时必须立即返回普通文本，不得为未绑定 Objective 调用工具"
                 }),
@@ -3705,11 +3705,11 @@ fn render_protocol() -> SExpr {
                     ),
                     pair(
                         "completion-inbox",
-                        atom("Thread 的终态文本先成为 delivery=pending 的完成结果；Runtime 启动 Delivery Thread，使模型看到当前 Session 的全部 pending 结果和并发状态后再决定合并或分别交付"),
+                        atom("后台 Thread 的终态文本先成为 delivery=pending 的完成结果；Runtime Delivery Router 对 singleton 原文透传、对受限小批量确定性合并，只有复杂批次才启动 Delivery Composer"),
                     ),
                     pair(
                         "delivery",
-                        atom("Delivery Thread 只能返回普通文本，或独占调用 no_reply 暂缓本批结果；普通文本会原子标记本次可见 pending/deferred 结果为 delivered，重复唤醒不会再次交付"),
+                        atom("Delivery Composer 只能返回普通文本，或独占调用 no_reply 暂缓本批结果；Router fast path 或 Composer 普通文本都会原子标记冻结快照中的 pending/deferred 结果为 delivered，重复唤醒不会再次交付"),
                     ),
                 ],
             ),

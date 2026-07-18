@@ -3210,6 +3210,94 @@ impl SessionStore for SqliteStore {
         })
     }
 
+    async fn commit_delivery_flush_reply(
+        &self,
+        timer_id: &str,
+        generation: u64,
+        event: &Event,
+    ) -> Result<DeliveryFlushCommit, Box<dyn std::error::Error + Send + Sync>> {
+        if event.topic != "chat/reply" {
+            return Err("Delivery Fast Path 只能提交 chat/reply Event".into());
+        }
+        let session_id = event
+            .payload
+            .get("session_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("Delivery Fast Path Event 缺少 session_id")?;
+        let covers = event
+            .payload
+            .get("covers")
+            .and_then(JsonValue::as_array)
+            .ok_or("Delivery Fast Path Event 缺少 covers")?
+            .iter()
+            .filter_map(JsonValue::as_str)
+            .collect::<Vec<_>>();
+        if covers.is_empty() {
+            return Err("Delivery Fast Path 至少覆盖一个 Thread".into());
+        }
+        let generation = i64::try_from(generation)
+            .map_err(|_| "Delivery Fast Path generation 超出 SQLite INTEGER 范围")?;
+        let mut tx = self.pool.begin().await?;
+        let timer = sqlx::query(
+            "SELECT generation, kind, owner_id, status FROM runtime_timers WHERE id = ?",
+        )
+        .bind(timer_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(timer) = timer else {
+            tx.commit().await?;
+            return Ok(DeliveryFlushCommit::Stale);
+        };
+        if timer.get::<i64, _>("generation") != generation
+            || timer.get::<String, _>("kind") != "delivery_flush"
+            || timer.get::<String, _>("owner_id") != session_id
+            || timer.get::<String, _>("status") != "claimed"
+        {
+            tx.commit().await?;
+            return Ok(DeliveryFlushCommit::Stale);
+        }
+        if sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM events WHERE id = ?)")
+            .bind(&event.id)
+            .fetch_one(&mut *tx)
+            .await?
+            != 0
+        {
+            tx.commit().await?;
+            return Ok(DeliveryFlushCommit::Existing {
+                event_id: event.id.clone(),
+            });
+        }
+
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        for thread_id in covers {
+            let updated = sqlx::query(
+                "UPDATE threads SET revision = revision + 1, delivery_status = 'delivered', delivery_event_id = ?, updated_at = ? WHERE id = ? AND session_id = ? AND delivery_status IN ('pending', 'deferred')",
+            )
+            .bind(&event.id)
+            .bind(&now)
+            .bind(thread_id)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+            if updated.rows_affected() != 1 {
+                tx.rollback().await?;
+                return Ok(DeliveryFlushCommit::Stale);
+            }
+        }
+        append_event_in_transaction(&mut tx, event).await?;
+        let activity_at = event
+            .timestamp
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query("UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?")
+            .bind(&activity_at)
+            .bind(&activity_at)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(DeliveryFlushCommit::Committed)
+    }
+
     async fn update_thread(
         &self,
         id: &str,
@@ -8844,6 +8932,97 @@ mod tests {
             .unwrap();
         assert_eq!(outbox.len(), 1);
         assert_eq!(outbox[0].event_id, event.id);
+    }
+
+    #[tokio::test]
+    async fn delivery_flush_reply_atomically_covers_singleton_without_signal_outbox() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let (context_id, session_id, threads) =
+            seed_delivery_fixture(&store, "direct-fence", 1).await;
+        let pending_at = Utc::now();
+        mark_delivery_pending(
+            &store,
+            &threads[0],
+            "direct result",
+            "direct-result-event",
+            pending_at,
+        )
+        .await;
+        let stale = store
+            .arm_delivery_flush_timer("delivery-direct-fence", &session_id, 1, 3)
+            .await
+            .unwrap()
+            .unwrap();
+        let current = store
+            .arm_delivery_flush_timer("delivery-direct-fence", &session_id, 1, 3)
+            .await
+            .unwrap()
+            .unwrap();
+        let claimed = store
+            .claim_due_runtime_timers(
+                Utc::now() + chrono::Duration::seconds(10),
+                "delivery-direct-claim",
+                Utc::now() + chrono::Duration::seconds(40),
+                8,
+            )
+            .await
+            .unwrap();
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].generation, current.generation);
+
+        let mut event = Event::new(
+            "delivery-direct-reply".to_string(),
+            "Runtime-Delivery".to_string(),
+            crate::event::TYPE_AGENT_CALL.to_string(),
+            "chat/reply".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), serde_json::json!(context_id)),
+                ("session_id".to_string(), serde_json::json!(session_id)),
+                ("covers".to_string(), serde_json::json!([threads[0].id])),
+                ("text".to_string(), serde_json::json!("direct result")),
+            ]),
+        );
+        event.timestamp = pending_at;
+        assert_eq!(
+            store
+                .commit_delivery_flush_reply("delivery-direct-fence", stale.generation, &event,)
+                .await
+                .unwrap(),
+            DeliveryFlushCommit::Stale
+        );
+        assert_eq!(
+            store
+                .commit_delivery_flush_reply("delivery-direct-fence", current.generation, &event,)
+                .await
+                .unwrap(),
+            DeliveryFlushCommit::Committed
+        );
+        assert_eq!(
+            store
+                .commit_delivery_flush_reply("delivery-direct-fence", current.generation, &event,)
+                .await
+                .unwrap(),
+            DeliveryFlushCommit::Existing {
+                event_id: event.id.clone()
+            }
+        );
+        assert_eq!(
+            store
+                .get_thread(&threads[0].id)
+                .await
+                .unwrap()
+                .unwrap()
+                .delivery_status,
+            DeliveryStatus::Delivered
+        );
+        assert!(store
+            .list_signal_outbox(SignalOutboxStatus::Pending, 8)
+            .await
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

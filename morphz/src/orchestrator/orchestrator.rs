@@ -20,7 +20,7 @@ use crate::memory::{
     QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, ScheduleStatus, SessionAttentionState,
     SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionStore, SessionUpdate,
     SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{ContextEngine, ContextView};
@@ -95,7 +95,7 @@ Context 的状态分为三个权限域：
 11. kernel.turn-control 描述当前用户回合的模型求值进度。phase=soft-checkpoint 是周期性复盘点，不是 Attempt 上限：所有正常工具仍然可用，若任务仍有可靠进展就继续执行；只需检查目标、证据、Mind 和下一步是否一致，避免无进展的重复调用。一次模型响应里并行调用多个工具只计为一次 Attempt。
 12. kernel.wake 说明本次为何被唤醒。独立 context_tx 成功后的 context-transaction-result 会触发一次冷却：除非仍处于 critical，否则本次不再提供 context_tx，必须返回普通文本、调用 no_reply 或执行必要的物理动作。
 13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。相互独立的文件读取必须在同一响应中并行调用；已经进入 Inbox 且 sha256 未被 file_change 改变的内容不得重复 read。完成必要定位后立即修改并验证，不要在反复扫描与阅读中消耗无进展的模型求值。
-14. exec 回执中的 execution、process_status、exit_code、task_status 和 effective_boundary 是 Runtime 观测到的物理事实；不得用命令意图或自己的预期取代它们。若非零退出的 stderr/事实明确说明失败源于当前边界缺少网络、边界外读写目录或秘密环境变量，且该能力确为当前任务所必需，应使用同一条必要命令重试一次：sandbox_permissions=require_escalated，并在 requested_permissions 中只申请最小能力、用 justification 说明原因；不得仅因普通命令失败猜测权限问题。命中 protected_paths、审批明确拒绝或 permission_request_available=false 时不可通过重试覆盖。exec 转入后台后，用 task_status/list_tasks 做必要的一次查询，或调用 wait_task 并设置合适的 wait_secs 后调用 no_reply 进入事件驱动等待；任务结束或等待时间到达时 Runtime 会主动唤醒，你可自行决定继续等待多长时间或调用 kill_task，不得用 sleep、ps 或重复读取空日志轮询。不得把 token/key 字面量写入命令、进程参数、Mind 或 Ledger；只能由使用者预先配置 Runtime 环境变量，再通过 requested_permissions.secret_env 按变量名申请对单个子进程注入。
+14. exec 回执中的 execution、process_status、exit_code、task_status 和 effective_boundary 是 Runtime 观测到的物理事实；不得用命令意图或自己的预期取代它们。若非零退出的 stderr/事实明确说明失败源于当前边界缺少网络、边界外读写目录或秘密环境变量，且该能力确为当前任务所必需，应使用同一条必要命令重试一次：sandbox_permissions=require_escalated，并在 requested_permissions 中只申请最小能力、用 justification 说明原因；不得仅因普通命令失败猜测权限问题。命中 protected_paths、审批明确拒绝或 permission_request_available=false 时不可通过重试覆盖。exec 转入后台后，普通等待直接调用 no_reply；任务结束会主动唤醒，不要为了等待而调用工具。只有存在明确截止时间或停滞监督需求时，才用 check_task_after 安排一次检查点；届时可调用 task_status、继续安排检查或 kill_task。不得用 sleep、ps 或重复读取空日志轮询。不得把 token/key 字面量写入命令、进程参数、Mind 或 Ledger；只能由使用者预先配置 Runtime 环境变量，再通过 requested_permissions.secret_env 按变量名申请对单个子进程注入。
 15. kernel.objectives 与 evaluate.objective-context 让你看到当前 Session 的 Objective 物理状态，但“可见”不等于“已绑定”。仅当 evaluate.objective-binding 指向某个 Objective 时，本轮才属于它的 Objective Thread 并可推进它；binding=none 时只可用这些状态回答用户的进度问题，不得为其调用工具。绑定的 Objective 仍有工作且不等待时正常交付当前进度，Supervisor 会自动续跑；等待确定事件时先调用 objective_update(status=active, wait_condition=...)；确实无法自动等待或推进时才提交 blocked；只有逐项审计 stated objective 并有真实 Ledger 证据支持时才提交 completed。Objective 状态工具成功后仍需产生普通文本或调用 no_reply 完成本次 IO。
 16. 你可以调用 objective_create，把当前 Session 中确实需要跨多次 Evaluation、异步等待或 Runtime 重启继续推进的工作升级为 First-Class Objective。它不是普通 Todo 或延长思考时间的手段：当前 Evaluation 可以可靠完成的任务不得创建 Objective；创建时完整保留用户范围与完成条件，并说明持久化的必要性。Runtime 自动绑定当前 Agent/Context/Session 并生成 ID；成功或返回 existing 后不得为同一目标重复创建。若指定 parent_objective_id，它必须是当前正在求值的 Objective。创建成功后继续工作，普通文本或 no_reply 只结束被收编后的当前 Evaluation，未完成 Objective 将由 Supervisor 自动续跑。
 17. 调度决策由你负责，Runtime 只执行并发与时序机制。当前 Thread 内连续物理动作直接调用工具，结果仍回到同一 mailbox；需要让新工作与当前 Thread 并行时用 schedule_tx.spawn，需要等待当前或指定 Thread 完成后串行推进时用 schedule_tx.enqueue/after。已有调度的状态先用 schedule_tx.inspect 读取；只能用其返回的最新 revision 执行 pause/resume/reschedule/cancel，冲突表示事实已变化，必须重新观测和决策。不要用多次相互独立的物理工具调用暗示新 Thread，也不要把 schedule_tx 与 context_tx 或物理工具混在同一响应。定时调度到期只是一条新的 observation；必须根据届时的真实 Context 再决策，不得预先声称结果已完成。
@@ -2966,7 +2966,7 @@ impl Orchestrator {
         let stream_session_id = session_id.to_string();
         let stream_context_id = self
             .context_id_for_session(session_id)
-            .map_err(|error| ModelCompletionError::without_summary(error))?;
+            .map_err(ModelCompletionError::without_summary)?;
         let stream_attempt_id = attempt_id.to_string();
         let mut stream_route = Vec::new();
         self.append_activation_route(attempt_id, &mut stream_route);
@@ -3917,9 +3917,13 @@ impl Orchestrator {
                 &decision,
             )
             .await?;
+            let direct_interactive_execution = thread_kind == "execution"
+                && self
+                    .execution_result_is_interactive(&thread, activation)
+                    .await?;
             let result = match decision {
                 TerminalDecision::Deliver(content) => {
-                    if thread_kind == "execution" {
+                    if thread_kind == "execution" && !direct_interactive_execution {
                         self.publish_thread_result(
                             session_id,
                             &attempt_id,
@@ -3992,6 +3996,51 @@ impl Orchestrator {
         }
 
         unreachable!("无工具响应应由终态协议分类、纠错或熔断处理")
+    }
+
+    async fn execution_result_is_interactive(
+        &self,
+        thread: &ThreadRecord,
+        activation: &ThreadActivationRecord,
+    ) -> Result<bool, DynError> {
+        let root = self
+            .context_engine
+            .find_event(&activation.context_id, &activation.root_turn_id)
+            .await?;
+        if root.is_none_or(|event| event.event_type != TYPE_USER_MESSAGE) {
+            return Ok(false);
+        }
+        let store = self
+            .context_engine
+            .session_store()
+            .ok_or("Interactive Execution 路由需要持久化 SessionStore")?;
+        if !store
+            .list_schedules(Some(&thread.id), None)
+            .await?
+            .is_empty()
+        {
+            return Ok(false);
+        }
+        let Some(manager) = &self.execution_jobs else {
+            return Ok(true);
+        };
+        let jobs = manager
+            .store()
+            .list_execution_jobs(ExecutionJobFilter {
+                thread_id: Some(thread.id.clone()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await?;
+        Ok(!jobs.iter().any(|job| {
+            job.tool_name == "exec/background"
+                || job.request.get("mode").and_then(serde_json::Value::as_str) == Some("detached")
+                || job
+                    .request
+                    .get("detached")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+        }))
     }
 
     async fn record_response_protocol_error(
@@ -4376,6 +4425,24 @@ impl Orchestrator {
             .session_store()
             .ok_or("Delivery Flush 需要持久化 SessionStore")?;
         let session_id = timer.owner_id.clone();
+        let direct_event_id = delivery_flush_reply_event_id(&timer.id, timer.generation);
+        if let Some(reply) = self
+            .store
+            .query(QueryFilter {
+                event_id: Some(direct_event_id.clone()),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .find(|event| event.id == direct_event_id && event.topic == "chat/reply")
+        {
+            // The atomic fast-path commit may have succeeded immediately before
+            // a process exit or transient dispatch failure. Covered Threads are
+            // already `delivered`, so recover the stable reply by Event ID before
+            // consulting the live pending set.
+            self.bus.dispatch_persisted(reply).await?;
+            return Ok(TimerDisposition::Complete);
+        }
         let threads = store
             .list_session_delivery_threads(&session_id, true)
             .await?;
@@ -4398,22 +4465,65 @@ impl Orchestrator {
             })
             .filter(|ids| !ids.is_empty())
             .unwrap_or_else(|| threads.iter().map(|thread| thread.id.clone()).collect());
-        let result_event_ids = timer
-            .payload
-            .get("result_event_ids")
-            .and_then(serde_json::Value::as_array)
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .map(ToOwned::to_owned)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_else(|| {
-                threads
-                    .iter()
-                    .filter_map(|thread| thread.result_event_id.clone())
-                    .collect()
-            });
+        let mut live_by_id = threads
+            .into_iter()
+            .map(|thread| (thread.id.clone(), thread))
+            .collect::<HashMap<_, _>>();
+        let snapshot_threads = completed_thread_ids
+            .iter()
+            .filter_map(|thread_id| live_by_id.remove(thread_id))
+            .collect::<Vec<_>>();
+        if snapshot_threads.is_empty() {
+            return Ok(TimerDisposition::Complete);
+        }
+        let completed_thread_ids = snapshot_threads
+            .iter()
+            .map(|thread| thread.id.clone())
+            .collect::<Vec<_>>();
+        let result_event_ids = snapshot_threads
+            .iter()
+            .filter_map(|thread| thread.result_event_id.clone())
+            .collect::<Vec<_>>();
+        if let Some((content, strategy)) = self
+            .render_delivery_without_model(&snapshot_threads)
+            .await?
+        {
+            let mut reply = Event::new(
+                direct_event_id.clone(),
+                "Runtime-Delivery".to_string(),
+                TYPE_AGENT_CALL.to_string(),
+                "chat/reply".to_string(),
+                vec![
+                    ("context_id".to_string(), json!(session.context_id)),
+                    ("session_id".to_string(), json!(session_id)),
+                    ("attempt_id".to_string(), json!(direct_event_id)),
+                    ("root_turn_id".to_string(), json!(direct_event_id)),
+                    ("thread_kind".to_string(), json!("delivery")),
+                    ("disposition".to_string(), json!("deliver")),
+                    ("delivery_strategy".to_string(), json!(strategy)),
+                    (
+                        "delivery_timer_generation".to_string(),
+                        json!(timer.generation),
+                    ),
+                    ("covers".to_string(), json!(completed_thread_ids)),
+                    ("result_event_ids".to_string(), json!(result_event_ids)),
+                    ("text".to_string(), json!(content)),
+                ]
+                .into_iter()
+                .collect(),
+            );
+            reply.timestamp = delivery_flush_timestamp(&timer);
+            match store
+                .commit_delivery_flush_reply(&timer.id, timer.generation, &reply)
+                .await?
+            {
+                DeliveryFlushCommit::Committed | DeliveryFlushCommit::Existing { .. } => {
+                    self.bus.dispatch_persisted(reply).await?;
+                }
+                DeliveryFlushCommit::Stale | DeliveryFlushCommit::Empty => {}
+            }
+            return Ok(TimerDisposition::Complete);
+        }
         let delivery_event_id = delivery_flush_event_id(&timer.id, timer.generation);
         let mut event = Event::new(
             delivery_event_id.clone(),
@@ -4445,16 +4555,7 @@ impl Orchestrator {
         // Retrying one Timer generation must produce byte-identical Event
         // content. The latest pending timestamp is immutable for that
         // generation and survives process restart.
-        if let Some(timestamp) = timer
-            .payload
-            .get("latest_pending_at")
-            .and_then(serde_json::Value::as_str)
-            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-        {
-            event.timestamp = timestamp.with_timezone(&Utc);
-        } else {
-            event.timestamp = timer.created_at;
-        }
+        event.timestamp = delivery_flush_timestamp(&timer);
         match store
             .commit_delivery_flush(&timer.id, timer.generation, &event)
             .await?
@@ -4467,6 +4568,61 @@ impl Orchestrator {
             | DeliveryFlushCommit::Empty => {}
         }
         Ok(TimerDisposition::Complete)
+    }
+
+    async fn render_delivery_without_model(
+        &self,
+        threads: &[ThreadRecord],
+    ) -> Result<Option<(String, &'static str)>, DynError> {
+        if threads.is_empty() {
+            return Ok(None);
+        }
+        let texts = threads
+            .iter()
+            .map(|thread| thread.result_text.as_deref().unwrap_or(""))
+            .collect::<Vec<_>>();
+        if texts.iter().any(|text| text.trim().is_empty()) {
+            return Ok(None);
+        }
+        if threads.len() == 1 {
+            return Ok(Some((texts[0].to_string(), "passthrough")));
+        }
+        let policy = &self.orchestrator_config.scheduler;
+        let total_chars = texts.iter().map(|text| text.chars().count()).sum::<usize>();
+        if threads.len() > policy.delivery_deterministic_batch_max_items
+            || total_chars > policy.delivery_deterministic_batch_max_chars
+            || threads.iter().any(|thread| {
+                thread.kind != ThreadKind::Execution || thread.executor_kind != "self"
+            })
+        {
+            return Ok(None);
+        }
+        for thread in threads {
+            let Some(result_event_id) = thread.result_event_id.as_deref() else {
+                return Ok(None);
+            };
+            let result = self
+                .store
+                .query(QueryFilter {
+                    event_id: Some(result_event_id.to_string()),
+                    ..Default::default()
+                })
+                .await?;
+            if result.iter().any(|event| {
+                event
+                    .payload
+                    .get("delivery_requires_composition")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            }) {
+                return Ok(None);
+            }
+        }
+        let mut content = format!("以下 {} 项工作已完成：", texts.len());
+        for (index, text) in texts.iter().enumerate() {
+            content.push_str(&format!("\n\n{}. {}", index + 1, text.trim()));
+        }
+        Ok(Some((content, "deterministic_batch")))
     }
 
     async fn pending_delivery_threads(&self, session_id: &str) -> Result<Vec<String>, DynError> {
@@ -6449,6 +6605,21 @@ fn delivery_flush_event_id(timer_id: &str, generation: u64) -> String {
     format!("delivery_ready_{digest:x}")
 }
 
+fn delivery_flush_reply_event_id(timer_id: &str, generation: u64) -> String {
+    let digest = Sha256::digest(format!("delivery-reply:{timer_id}:{generation}").as_bytes());
+    format!("delivery_reply_{digest:x}")
+}
+
+fn delivery_flush_timestamp(timer: &RuntimeTimerRecord) -> chrono::DateTime<Utc> {
+    timer
+        .payload
+        .get("latest_pending_at")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+        .unwrap_or(timer.created_at)
+}
+
 fn activation_admission_key(activation: &ThreadActivationRecord, trigger: &Event) -> AdmissionKey {
     activation_admission_key_for_class(activation, activation_admission_class(trigger))
 }
@@ -6478,8 +6649,8 @@ fn activation_admission_class(trigger: &Event) -> AdmissionClass {
         AdmissionClass::ScheduledBackground
     } else {
         // Ordinary tool/background wakes are not interactive merely because
-        // they eventually deliver to a Session. Their completed result gets a
-        // separate Delivery Activation and reserved lane.
+        // they eventually deliver to a Session. Their completed result enters
+        // the Delivery Router; only complex batches use the reserved Composer lane.
         AdmissionClass::ScheduledBackground
     }
 }

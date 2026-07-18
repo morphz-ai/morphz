@@ -308,10 +308,18 @@ impl Default for OrchestratorConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct SchedulerConfig {
-    /// 第一个结果完成后，等待相邻结果一起进入一次 Delivery Evaluation。
+    /// 第一个后台结果完成后，等待相邻结果一起进入一次 Delivery Router 决策。
     pub delivery_merge_window: HumanDuration,
     /// 无论后续结果如何到达，第一个 pending 结果允许等待的最长时间。
     pub delivery_max_wait: HumanDuration,
+    /// Runtime 可以不请求模型而确定性合并的最大完成结果数。单条结果始终
+    /// 原文透传；超过此数量时交给 Delivery Composer 做语义合成。
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub delivery_deterministic_batch_max_items: usize,
+    /// 确定性批量交付允许包含的最大总字符数。较长批次交给模型压缩，避免
+    /// Runtime 把多段已经很长的终态文本机械堆叠给用户。
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub delivery_deterministic_batch_max_chars: usize,
 }
 
 impl Default for SchedulerConfig {
@@ -319,6 +327,8 @@ impl Default for SchedulerConfig {
         Self {
             delivery_merge_window: HumanDuration::from_secs(1),
             delivery_max_wait: HumanDuration::from_secs(3),
+            delivery_deterministic_batch_max_items: 3,
+            delivery_deterministic_batch_max_chars: 6_000,
         }
     }
 }
@@ -529,7 +539,10 @@ pub struct BackgroundTaskConfig {
 impl Default for BackgroundTaskConfig {
     fn default() -> Self {
         Self {
-            timeout_notify_enabled: true,
+            // Completion is the normal wake path. Operators can opt into the
+            // watchdog checkpoint for workloads that need periodic stall
+            // supervision; it is intentionally not a default model wake.
+            timeout_notify_enabled: false,
             timeout_notify_secs: 300,
             max_output_buffer_bytes: 65_536,
             output_event_coalesce_ms: 500,
@@ -547,8 +560,8 @@ impl Default for BackgroundTaskConfig {
 pub enum TuiTheme {
     System,
     Mono,
-    #[default]
     Iris,
+    #[default]
     Cyan,
     Coral,
     NoColor,
@@ -588,7 +601,7 @@ pub struct TuiConfig {
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            theme: TuiTheme::Iris,
+            theme: TuiTheme::Cyan,
         }
     }
 }
@@ -1781,9 +1794,22 @@ mod tests {
         assert_eq!(cfg.llm.reasoning_effort, None);
         assert_eq!(cfg.orchestrator.reply_wait_notice_secs, 120);
         assert_eq!(cfg.orchestrator.attempt_soft_checkpoint_interval, 90);
+        assert_eq!(
+            cfg.orchestrator
+                .scheduler
+                .delivery_deterministic_batch_max_items,
+            3
+        );
+        assert_eq!(
+            cfg.orchestrator
+                .scheduler
+                .delivery_deterministic_batch_max_chars,
+            6_000
+        );
         assert_eq!(cfg.permissions.mode, PermissionMode::AutoReview);
+        assert!(!cfg.background_task.timeout_notify_enabled);
         assert_eq!(cfg.background_task.timeout_notify_secs, 300);
-        assert_eq!(cfg.tui.theme, TuiTheme::Iris);
+        assert_eq!(cfg.tui.theme, TuiTheme::Cyan);
     }
 
     #[test]

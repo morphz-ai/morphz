@@ -2706,8 +2706,8 @@ async fn test_context_budget_exhaustion_preserves_physical_work_budget() {
         .await
         .unwrap();
     assert_eq!(context.state.version, 1);
-    assert_eq!(context.turn_budget.attempt, 5);
-    assert_eq!(context.turn_budget.phase, "work");
+    assert_eq!(context.turn_budget.attempt, 4);
+    assert_eq!(context.turn_budget.phase, "soft-checkpoint");
     assert_eq!(context.turn_budget.context_transactions_used, 2);
     assert!(!context.turn_budget.context_tx_available);
     assert!(context
@@ -2840,7 +2840,7 @@ async fn test_turn_soft_checkpoint_preserves_tools_and_continues() {
     let tool_outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
 
     assert_eq!(replies.len(), 1);
-    assert_eq!(assistant_calls.len(), 5);
+    assert_eq!(assistant_calls.len(), 4);
     assert_eq!(tool_outputs.len(), 3);
     assert_eq!(client.calls.load(Ordering::SeqCst), 4);
     assert_eq!(client.tool_counts.lock().unwrap().as_slice(), &[2, 2, 2, 2]);
@@ -2944,7 +2944,7 @@ async fn test_soft_checkpoint_allows_context_maintenance_without_forcing_final_r
     assert!(tools_seen[3].contains(&"no_reply".to_string()));
 
     let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
-    assert_eq!(assistant_calls.len(), 5);
+    assert_eq!(assistant_calls.len(), 4);
     assert_eq!(
         assistant_calls[2]
             .payload
@@ -2957,7 +2957,7 @@ async fn test_soft_checkpoint_allows_context_maintenance_without_forcing_final_r
         .await
         .unwrap();
     assert_eq!(context.state.version, 1);
-    assert_eq!(context.turn_budget.phase, "soft-checkpoint");
+    assert_eq!(context.turn_budget.phase, "work");
     assert!(context.state.frames[0].body.contains("completed"));
     assert!(context.state.frames[0].body.contains("tests-passed"));
 }
@@ -3036,7 +3036,7 @@ async fn test_failed_context_tx_at_soft_checkpoint_does_not_force_final_reply() 
         .await
         .unwrap();
     assert_eq!(context.state.version, 0);
-    assert_eq!(context.turn_budget.phase, "work");
+    assert_eq!(context.turn_budget.phase, "soft-checkpoint");
 }
 
 #[tokio::test]
@@ -3773,17 +3773,10 @@ async fn same_session_message_is_answered_while_older_tool_is_still_running() {
         .expect("tool A must complete on its execution thread");
     assert_eq!(
         tool_reply.payload.get("thread_kind"),
-        Some(&json!("delivery"))
+        Some(&json!("execution"))
     );
-    assert_eq!(
-        tool_reply
-            .payload
-            .get("covers")
-            .and_then(|value| value.as_array())
-            .map(Vec::len),
-        Some(1)
-    );
-    assert_eq!(client.delivery_calls(), 1);
+    assert!(tool_reply.payload.get("covers").is_none());
+    assert_eq!(client.delivery_calls(), 0);
     let tool_output = store
         .query(QueryFilter {
             session_id: Some("same-session-tool".to_string()),
@@ -4179,14 +4172,34 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
         })
         .await
         .unwrap();
-    assert!((1..=2).contains(&completion_events.len()));
-    let covered_thread_ids = completion_events
+    assert!(completion_events.is_empty());
+    let replies = store
+        .query(QueryFilter {
+            session_id: Some("coalesced-session".to_string()),
+            topic: Some("chat/reply".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let delivery_replies = replies
         .iter()
-        .flat_map(|event| {
+        .filter(|event| event.payload.get("thread_kind") == Some(&json!("delivery")))
+        .collect::<Vec<_>>();
+    assert!((1..=2).contains(&delivery_replies.len()));
+    assert!(delivery_replies.iter().all(|event| {
+        matches!(
             event
                 .payload
-                .get("completed_thread_ids")
-                .and_then(|value| value.as_array())
+                .get("delivery_strategy")
+                .and_then(|value| value.as_str()),
+            Some("passthrough" | "deterministic_batch")
+        )
+    }));
+    let covered_thread_ids = delivery_replies
+        .iter()
+        .flat_map(|event| {
+            event.payload["covers"]
+                .as_array()
                 .into_iter()
                 .flatten()
                 .filter_map(|value| value.as_str())
@@ -4201,26 +4214,19 @@ async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
     );
     assert_eq!(unique_covered_thread_ids, result_thread_ids);
 
-    let replies = wait_for_topic_count(
-        &store,
-        "chat/reply",
-        "coalesced-session",
-        1 + completion_events.len(),
-    )
-    .await;
-    assert_eq!(replies.len(), 1 + completion_events.len());
+    assert_eq!(replies.len(), 1 + delivery_replies.len());
     let activation_records = store
         .list_context_thread_activations("coalesced-session", true)
         .await
         .unwrap();
-    assert_eq!(activation_records.len(), 3 + completion_events.len());
+    assert_eq!(activation_records.len(), 3);
     assert_eq!(
         activation_records
             .iter()
             .filter(|activation| activation.trigger_kind == "chat/thread_completion_ready")
             .count(),
-        completion_events.len(),
-        "each durable completion snapshot must create exactly one delivery activation"
+        0,
+        "deterministic Delivery Router replies must not create Composer activations"
     );
 }
 

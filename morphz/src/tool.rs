@@ -157,6 +157,10 @@ pub enum ToolExecutionClass {
 
 pub struct Registry {
     tools: RwLock<HashMap<String, RegisteredTool>>,
+    /// Execution-only compatibility names. Aliases deliberately do not appear
+    /// in fresh model tool definitions, but persisted calls from an older
+    /// Runtime can still resume safely after a rename.
+    aliases: RwLock<HashMap<String, Arc<dyn Tool>>>,
 }
 
 struct RegisteredTool {
@@ -174,6 +178,7 @@ impl Registry {
     pub fn new() -> Self {
         Self {
             tools: RwLock::new(HashMap::new()),
+            aliases: RwLock::new(HashMap::new()),
         }
     }
 
@@ -186,12 +191,26 @@ impl Registry {
             .insert(name, RegisteredTool { tool, definition });
     }
 
+    pub fn register_alias(&self, alias: impl Into<String>, tool: Arc<dyn Tool>) {
+        self.aliases
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(alias.into(), tool);
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(name)
             .map(|entry| Arc::clone(&entry.tool))
+            .or_else(|| {
+                self.aliases
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(name)
+                    .map(Arc::clone)
+            })
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
@@ -1045,11 +1064,13 @@ impl BackgroundTaskScheduler {
     async fn schedule(
         &self,
         task_id: &str,
-        wait_secs: u64,
+        check_after_secs: u64,
         wake_source: &str,
     ) -> Result<chrono::DateTime<chrono::Utc>, String> {
-        if !(1..=MAX_TASK_WAIT_SECS).contains(&wait_secs) {
-            return Err(format!("wait_secs 必须在 1 到 {MAX_TASK_WAIT_SECS} 秒之间"));
+        if !(1..=MAX_TASK_WAIT_SECS).contains(&check_after_secs) {
+            return Err(format!(
+                "check_after_secs 必须在 1 到 {MAX_TASK_WAIT_SECS} 秒之间"
+            ));
         }
         if self.execution_jobs.is_some() {
             let job = self
@@ -1075,7 +1096,7 @@ impl BackgroundTaskScheduler {
             task.wake_generation = task.wake_generation.wrapping_add(1);
             let generation = task.wake_generation;
             let wakeup_at = chrono::Utc::now()
-                + chrono::Duration::seconds(i64::try_from(wait_secs).unwrap_or(i64::MAX));
+                + chrono::Duration::seconds(i64::try_from(check_after_secs).unwrap_or(i64::MAX));
             task.next_wakeup_at = Some(wakeup_at);
             (generation, wakeup_at)
         };
@@ -1090,7 +1111,7 @@ impl BackgroundTaskScheduler {
                 payload: serde_json::json!({
                     "task_id": task_id,
                     "generation": generation,
-                    "wait_secs": wait_secs,
+                    "check_after_secs": check_after_secs,
                     "wake_source": wake_source,
                 }),
             })
@@ -1121,9 +1142,10 @@ impl BackgroundTaskScheduler {
             .get("generation")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(timer.generation);
-        let wait_secs = timer
+        let check_after_secs = timer
             .payload
-            .get("wait_secs")
+            .get("check_after_secs")
+            .or_else(|| timer.payload.get("wait_secs"))
             .and_then(serde_json::Value::as_u64)
             .unwrap_or_default();
         let wake_source = timer
@@ -1160,7 +1182,7 @@ impl BackgroundTaskScheduler {
                 });
             }
             task.next_wakeup_at = None;
-            background_wait_elapsed_payload(&task, wait_secs, wake_source)
+            background_check_due_payload(&task, check_after_secs, wake_source)
         };
         if let Some(job) = authoritative_job {
             payload.insert(
@@ -1178,7 +1200,7 @@ impl BackgroundTaskScheduler {
             );
         }
         let event = Event::new(
-            format!("task_wait_elapsed_{}_g{}", timer.owner_id, generation),
+            format!("task_check_due_{}_g{}", timer.owner_id, generation),
             "System-TaskMonitor".to_string(),
             TYPE_TOOL_OUTPUT.to_string(),
             "chat/tool_output".to_string(),
@@ -2309,9 +2331,9 @@ pub(crate) fn active_background_task_count_for_root(
 
 const MAX_TASK_WAIT_SECS: u64 = 365 * 24 * 60 * 60;
 
-fn background_wait_elapsed_payload(
+fn background_check_due_payload(
     task: &BackgroundTask,
-    wait_secs: u64,
+    check_after_secs: u64,
     wake_source: &str,
 ) -> serde_json::Map<String, serde_json::Value> {
     let elapsed_secs = (chrono::Utc::now() - task.started_at).num_seconds().max(0);
@@ -2323,14 +2345,25 @@ fn background_wait_elapsed_payload(
     let mut payload = serde_json::Map::new();
     payload.insert("context_id".to_string(), serde_json::json!(task.context_id));
     payload.insert("session_id".to_string(), serde_json::json!(task.session_id));
-    payload.insert("tool_name".to_string(), serde_json::json!("wait_task"));
+    payload.insert(
+        "tool_name".to_string(),
+        serde_json::json!("check_task_after"),
+    );
     payload.insert("task_id".to_string(), serde_json::json!(task.id));
     payload.insert(
         "event".to_string(),
+        serde_json::json!("background_task_check_due"),
+    );
+    payload.insert(
+        "legacy_event".to_string(),
         serde_json::json!("background_task_wait_elapsed"),
     );
     payload.insert("wake_source".to_string(), serde_json::json!(wake_source));
-    payload.insert("wait_secs".to_string(), serde_json::json!(wait_secs));
+    payload.insert(
+        "check_after_secs".to_string(),
+        serde_json::json!(check_after_secs),
+    );
+    payload.insert("wait_secs".to_string(), serde_json::json!(check_after_secs));
     payload.insert("elapsed_secs".to_string(), serde_json::json!(elapsed_secs));
     payload.insert("task_status".to_string(), serde_json::json!(task.status));
     payload.insert(
@@ -2358,8 +2391,8 @@ fn background_wait_elapsed_payload(
         }),
     );
     payload.insert("text".to_string(), serde_json::json!(format!(
-        "为后台任务 {} 安排的 {} 秒等待已经结束；任务仍在运行，Runtime 没有终止它。\n--- 最近输出 ---\n{}\n\n请自行决定：继续等待时调用 wait_task 并设置新的 wait_secs；不应继续时调用 kill_task。",
-        task.id, wait_secs, output_tail
+        "后台任务 {} 的 {} 秒检查点已经到达；任务仍在运行，Runtime 没有终止它。\n--- 最近输出 ---\n{}\n\n请自行决定：若有明确的下一检查期限，调用 check_task_after；否则继续依赖完成事件唤醒；不应继续时调用 kill_task。",
+        task.id, check_after_secs, output_tail
     )));
     extend_causal_route(&mut payload, task.causal_route.as_ref());
     payload
@@ -4787,8 +4820,9 @@ impl Tool for ExecuteCommandTool {
                     task.status = BackgroundTaskStatus::Running;
                 }
 
-                // 后台任务达到默认检查点时只唤醒 LLM，不自动 kill。Agent 后续可以通过
-                // wait_task(wait_secs=...) 覆盖下一次唤醒时间，或调用 kill_task。
+                // 可选 watchdog 检查点只唤醒 LLM，不自动 kill。默认关闭；正常路径
+                // 只依赖任务完成事件。Agent 有明确监督期限时可用 check_task_after
+                // 覆盖下一次检查时间，或调用 kill_task。
                 if self.background_config.timeout_notify_enabled {
                     if let Some(scheduler) = &self.background_scheduler {
                         let _ = scheduler
@@ -4957,7 +4991,7 @@ impl Tool for ExecuteCommandTool {
                     "artifact_path": buffer.archive_path,
                     "output_empty": output_str.is_empty(),
                     "output": output_str,
-                    "guidance": "任务完成或默认检查时间到达会通过 Inbox 主动唤醒；不要用 sleep、ps 或重复读取空日志轮询。可调用 task_status 查看一次，或用 wait_task.wait_secs 安排下一次唤醒；不应继续时调用 kill_task。",
+                    "guidance": "任务完成会通过 Inbox 主动唤醒；普通等待直接 no_reply，不要调用等待工具。只有存在明确截止时间或停滞监督需求时，才用 check_task_after 安排一次检查点；不应继续时调用 kill_task。不要 sleep、ps 或重复读取空日志轮询。",
                 })
                 .to_string())
             }
@@ -4974,22 +5008,27 @@ pub struct ListTasksTool {
 pub struct TaskStatusTool {
     background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
 }
-pub struct WaitTaskTool {
+pub struct CheckTaskAfterTool {
     background_scheduler: Arc<BackgroundTaskScheduler>,
-    default_wait_secs: u64,
+    default_check_after_secs: u64,
 }
 pub struct KillTaskTool {
     background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
 }
 
-impl WaitTaskTool {
+impl CheckTaskAfterTool {
     pub fn new(background_scheduler: Arc<BackgroundTaskScheduler>, default_wait_secs: u64) -> Self {
         Self {
             background_scheduler,
-            default_wait_secs: default_wait_secs.clamp(1, MAX_TASK_WAIT_SECS),
+            default_check_after_secs: default_wait_secs.clamp(1, MAX_TASK_WAIT_SECS),
         }
     }
 }
+
+/// Source-level compatibility for embedders. Fresh Runtime tool definitions
+/// expose `check_task_after`; persisted `wait_task` calls are handled through a
+/// Registry execution alias.
+pub type WaitTaskTool = CheckTaskAfterTool;
 
 impl ListTasksTool {
     pub fn new(background_scheduler: Arc<BackgroundTaskScheduler>) -> Self {
@@ -5149,9 +5188,10 @@ struct TaskStatusArgs {
 }
 
 #[derive(Deserialize)]
-struct WaitTaskArgs {
+struct CheckTaskAfterArgs {
     task_id: String,
-    wait_secs: Option<u64>,
+    #[serde(alias = "wait_secs")]
+    check_after_secs: Option<u64>,
 }
 
 #[async_trait::async_trait]
@@ -5212,9 +5252,9 @@ impl Tool for TaskStatusTool {
 }
 
 #[async_trait::async_trait]
-impl Tool for WaitTaskTool {
+impl Tool for CheckTaskAfterTool {
     fn name(&self) -> &str {
-        "wait_task"
+        "check_task_after"
     }
 
     fn execution_class(&self) -> ToolExecutionClass {
@@ -5224,7 +5264,7 @@ impl Tool for WaitTaskTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "为后台任务安排下一次事件驱动唤醒。该调用不会轮询或占用 LLM，也不会终止任务；wait_secs 到期或任务结束时 Runtime 会主动唤醒。届时可继续设置新的等待时间，或调用 kill_task。".to_string(),
+            description: "仅在确实需要截止时间或停滞监督时，为后台任务安排一次未来检查点。任务完成本来就会主动唤醒，因此普通后台等待不要调用本工具。该调用不轮询、不占用 LLM，也不终止任务；检查点到达后可按事实继续等待或调用 kill_task。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -5232,11 +5272,11 @@ impl Tool for WaitTaskTool {
                         "type": "string",
                         "description": "要等待的后台任务 ID。"
                     },
-                    "wait_secs": {
+                    "check_after_secs": {
                         "type": "integer",
                         "minimum": 1,
                         "maximum": MAX_TASK_WAIT_SECS,
-                        "description": "多久后重新唤醒 Agent 检查该任务。省略时使用 Runtime 的默认后台检查间隔。"
+                        "description": "多久后重新唤醒 Agent 检查该任务。省略时使用 Runtime 配置的监督间隔。"
                     }
                 },
                 "required": ["task_id"],
@@ -5249,7 +5289,7 @@ impl Tool for WaitTaskTool {
         &self,
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let args: WaitTaskArgs = serde_json::from_str(arguments)?;
+        let args: CheckTaskAfterArgs = serde_json::from_str(arguments)?;
         let current_context = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
             .unwrap_or_default();
@@ -5265,7 +5305,8 @@ impl Tool for WaitTaskTool {
             if job.status.is_terminal() {
                 let live = get_tasks_map().get(&args.task_id);
                 return Ok(serde_json::json!({
-                    "kind": "background_task_wait",
+                    "kind": "background_task_check",
+                    "scheduled": false,
                     "waiting": false,
                     "task": background_execution_snapshot(&job, live.as_deref()),
                     "next_action": "任务已经结束，直接根据持久 ExecutionJob 的退出码和结果继续处理。",
@@ -5279,7 +5320,8 @@ impl Tool for WaitTaskTool {
         if terminal {
             let task = require_visible_task(&args.task_id)?;
             return Ok(serde_json::json!({
-                "kind": "background_task_wait",
+                "kind": "background_task_check",
+                "scheduled": false,
                 "waiting": false,
                 "task": background_task_snapshot(&task),
                 "next_action": "任务已经结束，直接根据退出码和输出继续处理。",
@@ -5287,10 +5329,12 @@ impl Tool for WaitTaskTool {
             .to_string());
         }
 
-        let wait_secs = args.wait_secs.unwrap_or(self.default_wait_secs);
+        let check_after_secs = args
+            .check_after_secs
+            .unwrap_or(self.default_check_after_secs);
         let wakeup_at = match self
             .background_scheduler
-            .schedule(&args.task_id, wait_secs, "agent_requested")
+            .schedule(&args.task_id, check_after_secs, "agent_requested")
             .await
         {
             Ok(wakeup_at) => wakeup_at,
@@ -5298,7 +5342,8 @@ impl Tool for WaitTaskTool {
                 if let Ok(task) = require_visible_task(&args.task_id) {
                     if task.status.is_terminal() {
                         return Ok(serde_json::json!({
-                            "kind": "background_task_wait",
+                            "kind": "background_task_check",
+                            "scheduled": false,
                             "waiting": false,
                             "task": background_task_snapshot(&task),
                             "next_action": "任务在安排等待时已经结束，直接根据退出码和输出继续处理。",
@@ -5311,12 +5356,15 @@ impl Tool for WaitTaskTool {
         };
         let task = require_visible_task(&args.task_id)?;
         Ok(serde_json::json!({
-            "kind": "background_task_wait",
+            "kind": "background_task_check",
+            "scheduled": true,
             "waiting": true,
-            "wait_secs": wait_secs,
+            "check_after_secs": check_after_secs,
+            "wait_secs": check_after_secs,
+            "check_at": wakeup_at,
             "wakeup_at": wakeup_at,
             "task": background_task_snapshot(&task),
-            "next_action": "若无需立即发送消息，调用 no_reply 结束当前求值；任务结束或 wait_secs 到期时 Runtime 会主动唤醒。不要 sleep、ps、轮询日志或立即重复调用 wait_task。",
+            "next_action": "若无需立即发送消息，调用 no_reply 结束当前求值；任务结束或检查点到达时 Runtime 会主动唤醒。不要 sleep、ps、轮询日志或立即重复安排检查点。",
         })
         .to_string())
     }
@@ -7025,6 +7073,31 @@ mod tests {
         assert_eq!(registry.definitions()[0].description, "original");
     }
 
+    #[test]
+    fn registry_alias_executes_persisted_name_without_advertising_it() {
+        let registry = Arc::new(Registry::new());
+        let tool: Arc<dyn Tool> = Arc::new(ReentrantDefinitionTool {
+            registry: Arc::downgrade(&registry),
+        });
+        registry.register(Arc::clone(&tool));
+        registry.register_alias("legacy_original", tool);
+
+        assert!(registry.get("legacy_original").is_some());
+        assert_eq!(registry.definitions().len(), 1);
+        assert_eq!(registry.definitions()[0].name, "reentrant-definition");
+    }
+
+    #[test]
+    fn task_check_arguments_accept_legacy_wait_secs() {
+        let args: CheckTaskAfterArgs = serde_json::from_value(serde_json::json!({
+            "task_id": "legacy-task",
+            "wait_secs": 45
+        }))
+        .unwrap();
+        assert_eq!(args.task_id, "legacy-task");
+        assert_eq!(args.check_after_secs, Some(45));
+    }
+
     #[tokio::test]
     async fn test_file_tools() {
         let tmp = TempDir::new().unwrap();
@@ -8117,8 +8190,8 @@ mod tests {
         let waiting = CURRENT_CONTEXT_ID
             .scope(
                 parent.context_id.clone(),
-                WaitTaskTool::new(Arc::clone(&scheduler), 60).execute(
-                    &serde_json::json!({ "task_id": task_id, "wait_secs": 1 }).to_string(),
+                CheckTaskAfterTool::new(Arc::clone(&scheduler), 60).execute(
+                    &serde_json::json!({ "task_id": task_id, "check_after_secs": 1 }).to_string(),
                 ),
             )
             .await
@@ -8128,8 +8201,8 @@ mod tests {
         let replaced_wait = CURRENT_CONTEXT_ID
             .scope(
                 parent.context_id.clone(),
-                WaitTaskTool::new(Arc::clone(&scheduler), 60).execute(
-                    &serde_json::json!({ "task_id": task_id, "wait_secs": 1 }).to_string(),
+                CheckTaskAfterTool::new(Arc::clone(&scheduler), 60).execute(
+                    &serde_json::json!({ "task_id": task_id, "check_after_secs": 1 }).to_string(),
                 ),
             )
             .await
@@ -8140,7 +8213,7 @@ mod tests {
             .await
             .expect("wait timer must wake without polling")
             .expect("wait checkpoint channel must remain open");
-        assert_eq!(checkpoint.payload["event"], "background_task_wait_elapsed");
+        assert_eq!(checkpoint.payload["event"], "background_task_check_due");
         assert_eq!(checkpoint.payload["task_status"], "running");
         assert_eq!(
             store
@@ -8232,16 +8305,16 @@ mod tests {
         let terminal_list: serde_json::Value = serde_json::from_str(&terminal_list).unwrap();
         assert_eq!(terminal_list["count"], 1);
         assert_eq!(terminal_list["tasks"][0]["status"], "cancelled");
-        let terminal_wait = CURRENT_CONTEXT_ID
+        let terminal_check = CURRENT_CONTEXT_ID
             .scope(
                 parent.context_id.clone(),
-                WaitTaskTool::new(Arc::clone(&scheduler), 60)
+                CheckTaskAfterTool::new(Arc::clone(&scheduler), 60)
                     .execute(&serde_json::json!({ "task_id": task_id }).to_string()),
             )
             .await
             .unwrap();
-        let terminal_wait: serde_json::Value = serde_json::from_str(&terminal_wait).unwrap();
-        assert_eq!(terminal_wait["waiting"], false);
+        let terminal_check: serde_json::Value = serde_json::from_str(&terminal_check).unwrap();
+        assert_eq!(terminal_check["scheduled"], false);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(150), receiver.recv())
                 .await
@@ -8456,17 +8529,17 @@ mod tests {
         assert_eq!(listed["count"], 1);
         assert_eq!(listed["tasks"][0]["task_id"], task_id);
 
-        let waited = CURRENT_CONTEXT_ID
+        let checked = CURRENT_CONTEXT_ID
             .scope(
                 parent.context_id.clone(),
-                WaitTaskTool::new(Arc::clone(&scheduler), 60)
+                CheckTaskAfterTool::new(Arc::clone(&scheduler), 60)
                     .execute(&serde_json::json!({ "task_id": task_id }).to_string()),
             )
             .await
             .unwrap();
-        let waited: serde_json::Value = serde_json::from_str(&waited).unwrap();
-        assert_eq!(waited["waiting"], false);
-        assert_eq!(waited["task"]["status"], "lost");
+        let checked: serde_json::Value = serde_json::from_str(&checked).unwrap();
+        assert_eq!(checked["scheduled"], false);
+        assert_eq!(checked["task"]["status"], "lost");
 
         let timer_id = background_wake_timer_id(&task_id);
         timers.start();
@@ -8558,7 +8631,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_task_can_rearm_agent_chosen_wakeups_without_killing_the_task() {
+    async fn check_task_after_can_rearm_agent_chosen_checkpoints_without_killing_the_task() {
         let task_id = format!(
             "wait_rearm_{}",
             chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
@@ -8602,15 +8675,15 @@ mod tests {
         );
         let (background_scheduler, _database) =
             start_test_background_scheduler(Arc::clone(&bus)).await;
-        let wait_tool = WaitTaskTool::new(background_scheduler, 10);
+        let check_tool = CheckTaskAfterTool::new(background_scheduler, 10);
 
         for _ in 0..2 {
             let result: serde_json::Value = serde_json::from_str(
-                &wait_tool
+                &check_tool
                     .execute(
                         &serde_json::json!({
                             "task_id": task_id,
-                            "wait_secs": 1
+                            "check_after_secs": 1
                         })
                         .to_string(),
                     )
@@ -8619,14 +8692,14 @@ mod tests {
             )
             .unwrap();
             assert_eq!(result["waiting"], true);
-            assert_eq!(result["wait_secs"], 1);
+            assert_eq!(result["check_after_secs"], 1);
 
             let event = tokio::time::timeout(tokio::time::Duration::from_secs(2), receiver.recv())
                 .await
                 .unwrap()
                 .unwrap();
-            assert_eq!(event.payload["event"], "background_task_wait_elapsed");
-            assert_eq!(event.payload["wait_secs"], 1);
+            assert_eq!(event.payload["event"], "background_task_check_due");
+            assert_eq!(event.payload["check_after_secs"], 1);
             assert!(event.payload["text"]
                 .as_str()
                 .unwrap()
@@ -8764,17 +8837,19 @@ mod tests {
 
         let (background_scheduler, _database) =
             start_test_background_scheduler(Arc::clone(&bus)).await;
-        let wait_tool = WaitTaskTool::new(background_scheduler, 300);
+        let check_tool = CheckTaskAfterTool::new(background_scheduler, 300);
         let waiting: serde_json::Value = serde_json::from_str(
-            &wait_tool
-                .execute(&serde_json::json!({ "task_id": task_id, "wait_secs": 30 }).to_string())
+            &check_tool
+                .execute(
+                    &serde_json::json!({ "task_id": task_id, "check_after_secs": 30 }).to_string(),
+                )
                 .await
                 .unwrap(),
         )
         .unwrap();
         assert_eq!(waiting["waiting"], true);
-        assert_eq!(waiting["wait_secs"], 30);
-        assert!(waiting["wakeup_at"].is_string());
+        assert_eq!(waiting["check_after_secs"], 30);
+        assert!(waiting["check_at"].is_string());
         assert!(waiting["next_action"].as_str().unwrap().contains("reply"));
 
         let kill_args = serde_json::json!({

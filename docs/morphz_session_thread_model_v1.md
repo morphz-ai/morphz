@@ -46,6 +46,10 @@ Delegation Thread 由 Sub Agent 执行。它拥有独立的执行路由和深度
 
 ### 2.5 Delivery Thread（交付线程）
 
+> 当前实现已进一步拆成始终存在的 Runtime Delivery Router 与按需启动的
+> Delivery Composer。下述“启动 Delivery Thread”只描述需要模型语义合成的路径；
+> singleton、受限小批量与交互式 attached Execution 已有确定性 fast path。
+
 Work、Objective 或 Delegation Thread 的终态文本不会直接伪装成当前对话回复。Runtime 先把它原子写入 Completion Inbox，标记为 `delivery=pending`，再启动只负责结果编排的 Delivery Thread。
 
 Delivery Thread 能同时看到当前 Session 中全部 `pending/deferred` 结果和并发 Thread 的最新物理状态。它只能：

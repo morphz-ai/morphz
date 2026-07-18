@@ -28,9 +28,9 @@ use crate::orchestrator::orchestrator::{DurableApprovalServices, Orchestrator};
 use crate::permission::{PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode};
 use crate::timer::TimerEngine;
 use crate::tool::{
-    BackgroundTaskScheduler, DelegateTool, EditFileTool, ExecuteCommandTool, KillTaskTool,
-    ListFilesTool, ListSkillsTool, ListTasksTool, ReadFileTool, Registry, ScheduleTxTool,
-    SearchTool, SendMessageTool, TaskStatusTool, ThreadScheduler, WaitTaskTool, WriteFileTool,
+    BackgroundTaskScheduler, CheckTaskAfterTool, DelegateTool, EditFileTool, ExecuteCommandTool,
+    KillTaskTool, ListFilesTool, ListSkillsTool, ListTasksTool, ReadFileTool, Registry,
+    ScheduleTxTool, SearchTool, SendMessageTool, TaskStatusTool, ThreadScheduler, WriteFileTool,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -440,10 +440,12 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
     registry.register(Arc::new(TaskStatusTool::new(Arc::clone(
         background_scheduler,
     ))));
-    registry.register(Arc::new(WaitTaskTool::new(
+    let task_check: Arc<dyn crate::tool::Tool> = Arc::new(CheckTaskAfterTool::new(
         Arc::clone(background_scheduler),
         config.background_task.timeout_notify_secs,
-    )));
+    ));
+    registry.register(Arc::clone(&task_check));
+    registry.register_alias("wait_task", task_check);
     registry.register(Arc::new(KillTaskTool::new(Arc::clone(
         background_scheduler,
     ))));
@@ -1900,7 +1902,10 @@ mod tests {
     struct PhysicalBatchClient {
         calls: AtomicU64,
         observed_complete_batch: Arc<AtomicBool>,
-        observed_delivery: Arc<AtomicBool>,
+    }
+
+    struct DetachedExecClient {
+        calls: AtomicU64,
     }
 
     struct RecoveryMergeDeliveryClient {
@@ -1912,6 +1917,10 @@ mod tests {
         calls: AtomicU64,
         entered: tokio::sync::Notify,
         release: tokio::sync::Notify,
+    }
+
+    struct NoDeliveryModelClient {
+        calls: AtomicU64,
     }
 
     struct ApprovalReadClient {
@@ -2026,17 +2035,54 @@ mod tests {
                 }
                 return Ok(text_response("physical-batch-complete"));
             }
-            if call == 2 {
-                let transcript = serde_json::to_string(&messages)?;
-                let delivery = transcript.contains("completion-delivery")
-                    && transcript.contains("physical-batch-complete");
-                self.observed_delivery.store(delivery, Ordering::SeqCst);
-                if !delivery {
-                    return Err("completed work did not enter the delivery thread".into());
+            Err("interactive physical tool batch caused a redundant Delivery evaluation".into())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for DetachedExecClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(tools.iter().any(|tool| tool.name == "exec"));
+                    assert!(tools.iter().any(|tool| tool.name == "check_task_after"));
+                    assert!(!tools.iter().any(|tool| tool.name == "wait_task"));
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "detached-exec".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "exec".to_string(),
+                            arguments: json!({
+                                "command": "sleep 0.2; printf detached-done",
+                                "wait_ms": 1
+                            })
+                            .to_string(),
+                        }],
+                    })
                 }
-                return Ok(text_response("physical-batch-ok"));
+                1 => {
+                    let transcript = serde_json::to_string(&messages)?;
+                    if !transcript.contains("execution") || !transcript.contains("background") {
+                        return Err("exec did not detach before the control yield".into());
+                    }
+                    Ok(no_reply_response("detached-yield"))
+                }
+                2 => {
+                    let transcript = serde_json::to_string(&messages)?;
+                    if !transcript.contains("detached-done") {
+                        return Err(
+                            "background completion did not resume its Execution Thread".into()
+                        );
+                    }
+                    Ok(text_response("detached execution complete"))
+                }
+                _ => Err("detached execution caused a redundant Delivery model call".into()),
             }
-            Err("physical tool batch caused an unexpected extra model evaluation".into())
         }
     }
 
@@ -2091,6 +2137,18 @@ mod tests {
     }
 
     #[async_trait::async_trait]
+    impl Client for NoDeliveryModelClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err("deterministic Delivery route unexpectedly called the model".into())
+        }
+    }
+
+    #[async_trait::async_trait]
     impl Client for ApprovalReadClient {
         async fn create_completion(
             &self,
@@ -2124,8 +2182,7 @@ mod tests {
                     }
                     Ok(text_response("approval-work-complete"))
                 }
-                2 => Ok(text_response("approval-delivery-complete")),
-                _ => Err("审批工具产生了额外模型求值".into()),
+                _ => Err("交互式审批工具产生了冗余 Delivery 模型求值".into()),
             }
         }
     }
@@ -2893,17 +2950,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn physical_tool_batch_wakes_execution_once_with_all_results_then_delivers() {
+    async fn interactive_physical_tool_batch_delivers_its_execution_terminal_directly() {
         let database = NamedTempFile::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
         config.permissions.reviewer = ReviewerKind::Deny;
         let observed_complete_batch = Arc::new(AtomicBool::new(false));
-        let observed_delivery = Arc::new(AtomicBool::new(false));
         let client = Arc::new(PhysicalBatchClient {
             calls: AtomicU64::new(0),
             observed_complete_batch: Arc::clone(&observed_complete_batch),
-            observed_delivery: Arc::clone(&observed_delivery),
         });
         let runtime = MorphzRuntime::builder(config, client.clone())
             .database_path(database.path().to_string_lossy())
@@ -2939,10 +2994,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(reply.payload["text"], "physical-batch-ok");
+        assert_eq!(reply.payload["text"], "physical-batch-complete");
+        assert_eq!(reply.payload["thread_kind"], "execution");
         assert!(observed_complete_batch.load(Ordering::SeqCst));
-        assert!(observed_delivery.load(Ordering::SeqCst));
-        assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
 
         let jobs = runtime
             .inner
@@ -2959,6 +3014,90 @@ mod tests {
             .iter()
             .all(|job| job.status == crate::memory::ExecutionJobStatus::Succeeded));
         assert!(jobs.iter().all(|job| job.result_event_id.is_some()));
+    }
+
+    #[tokio::test]
+    async fn detached_execution_uses_completion_inbox_then_singleton_passthrough() {
+        let database = NamedTempFile::new().unwrap();
+        let artifacts = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
+        let client = Arc::new(DetachedExecClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-detached-delivery".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Detached delivery".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        session
+            .send(
+                "run this past the synchronous budget",
+                "User-Test",
+                Some("client-detached-delivery".to_string()),
+            )
+            .await
+            .unwrap();
+        let reply =
+            match tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv()).await {
+                Ok(Some(reply)) => reply,
+                outcome => {
+                    let events = runtime
+                        .inner
+                        .store
+                        .query(QueryFilter {
+                            session_id: Some(session.id().to_string()),
+                            ..Default::default()
+                        })
+                        .await
+                        .unwrap();
+                    panic!(
+                        "detached reply timeout: outcome={outcome:?}, calls={}, events={:?}",
+                        client.calls.load(Ordering::SeqCst),
+                        events
+                            .iter()
+                            .map(|event| (
+                                event.topic.as_str(),
+                                event.payload.get("text"),
+                                event.payload.get("tool_status")
+                            ))
+                            .collect::<Vec<_>>()
+                    );
+                }
+            };
+        assert_eq!(reply.payload["text"], "detached execution complete");
+        assert_eq!(reply.payload["delivery_strategy"], "passthrough");
+        assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+        let jobs = runtime
+            .inner
+            .store
+            .list_execution_jobs(crate::memory::ExecutionJobFilter {
+                session_id: Some(session.id().to_string()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(jobs.iter().any(|job| job.tool_name == "exec/background"));
     }
 
     async fn run_static_approval_case(
@@ -3026,9 +3165,11 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(reply.payload["text"], "approval-delivery-complete");
+        assert_eq!(reply.payload["text"], "approval-work-complete");
+        assert_eq!(reply.payload["thread_kind"], "execution");
         assert!(observed_result.load(Ordering::SeqCst));
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
 
         let approvals = runtime
             .inner
@@ -3208,7 +3349,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(reply.payload["text"], "approval-delivery-complete");
+        assert_eq!(reply.payload["text"], "approval-work-complete");
+        assert_eq!(reply.payload["thread_kind"], "execution");
         assert!(observed_result.load(Ordering::SeqCst));
         let consumed = runtime
             .inner
@@ -3230,7 +3372,7 @@ mod tests {
             .unwrap();
         assert_eq!(jobs.len(), 1, "one tool call must map to one physical Job");
         assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
-        assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -3389,6 +3531,252 @@ mod tests {
         );
     }
 
+    async fn seed_pending_delivery_results(
+        runtime: &MorphzRuntime,
+        session_id: &str,
+        texts: &[&str],
+    ) {
+        runtime
+            .ensure_agent(NewAgent {
+                id: runtime.identity().agent_id.clone(),
+                title: "Delivery router agent".to_string(),
+                root_context_id: runtime.identity().context_id.clone(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_context(NewCognitiveContext {
+                id: runtime.identity().context_id.clone(),
+                agent_id: runtime.identity().agent_id.clone(),
+                title: "Delivery router context".to_string(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: session_id.to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Delivery router".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        for (index, text) in texts.iter().enumerate() {
+            let thread = runtime
+                .inner
+                .store
+                .ensure_thread(crate::memory::NewThread {
+                    id: format!("thread-{session_id}-{index}"),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: session_id.to_string(),
+                    root_turn_id: format!("root-{session_id}-{index}"),
+                    kind: crate::memory::ThreadKind::Execution,
+                    executor_kind: "self".to_string(),
+                    executor_id: None,
+                })
+                .await
+                .unwrap();
+            runtime
+                .inner
+                .store
+                .update_thread(
+                    &thread.id,
+                    thread.revision,
+                    None,
+                    Some(crate::memory::ThreadLifecycle::Completed),
+                    Some(text),
+                    Some(&format!("result-{session_id}-{index}")),
+                    Some(crate::memory::DeliveryStatus::Pending),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_passthrough_delivers_singleton_without_model_evaluation() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let policy = RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: true,
+        };
+        let seed = MorphzRuntime::builder(config.clone(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(policy)
+            .build()
+            .await
+            .unwrap();
+        seed_pending_delivery_results(
+            &seed,
+            "session-delivery-singleton",
+            &["singleton result is already user-facing"],
+        )
+        .await;
+        drop(seed);
+
+        let client = Arc::new(NoDeliveryModelClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(policy)
+            .build()
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        runtime.start().await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(4), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload["text"],
+            "singleton result is already user-facing"
+        );
+        assert_eq!(reply.payload["delivery_strategy"], "passthrough");
+        assert_eq!(client.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            runtime
+                .inner
+                .store
+                .get_thread("thread-session-delivery-singleton-0")
+                .await
+                .unwrap()
+                .unwrap()
+                .delivery_status,
+            crate::memory::DeliveryStatus::Delivered
+        );
+        assert!(runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                session_id: Some("session-delivery-singleton".to_string()),
+                topic: Some("chat/thread_completion_ready".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn restart_deterministically_batches_small_execution_results_without_model() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let policy = RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: true,
+        };
+        let seed = MorphzRuntime::builder(config.clone(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(policy)
+            .build()
+            .await
+            .unwrap();
+        seed_pending_delivery_results(
+            &seed,
+            "session-delivery-deterministic",
+            &["first concise result", "second concise result"],
+        )
+        .await;
+        drop(seed);
+
+        let client = Arc::new(NoDeliveryModelClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(policy)
+            .build()
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        runtime.start().await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(4), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["delivery_strategy"], "deterministic_batch");
+        assert_eq!(
+            reply.payload["text"],
+            "以下 2 项工作已完成：\n\n1. first concise result\n\n2. second concise result"
+        );
+        assert_eq!(reply.payload["covers"].as_array().unwrap().len(), 2);
+        assert_eq!(client.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn semantic_delivery_hint_routes_a_small_batch_to_the_composer() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let policy = RuntimeToolPolicy {
+            context_only: true,
+            coding_eval: true,
+        };
+        let seed = MorphzRuntime::builder(config.clone(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(policy)
+            .build()
+            .await
+            .unwrap();
+        seed_pending_delivery_results(
+            &seed,
+            "session-delivery-semantic",
+            &["recovered-result-one", "recovered-result-two"],
+        )
+        .await;
+        seed.inner
+            .store
+            .append(Event::new(
+                "result-session-delivery-semantic-0".to_string(),
+                "Runtime-Test".to_string(),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "runtime/test_delivery_result".to_string(),
+                [
+                    ("context_id".to_string(), json!(seed.identity().context_id)),
+                    ("session_id".to_string(), json!("session-delivery-semantic")),
+                    ("delivery_requires_composition".to_string(), json!(true)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await
+            .unwrap();
+        drop(seed);
+
+        let observed_both_results = Arc::new(AtomicBool::new(false));
+        let client = Arc::new(RecoveryMergeDeliveryClient {
+            calls: AtomicU64::new(0),
+            observed_both_results: Arc::clone(&observed_both_results),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(policy)
+            .build()
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        runtime.start().await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(4), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "merged-recovered-delivery");
+        assert!(observed_both_results.load(Ordering::SeqCst));
+        assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+    }
+
     #[tokio::test]
     async fn restart_merges_two_pending_results_into_one_delivery_evaluation() {
         let database = NamedTempFile::new().unwrap();
@@ -3399,6 +3787,10 @@ mod tests {
             crate::config::HumanDuration::from_secs(1);
         config.orchestrator.scheduler.delivery_max_wait =
             crate::config::HumanDuration::from_secs(3);
+        config
+            .orchestrator
+            .scheduler
+            .delivery_deterministic_batch_max_chars = 1;
         let policy = RuntimeToolPolicy {
             context_only: true,
             coding_eval: true,
@@ -3527,6 +3919,10 @@ mod tests {
             crate::config::HumanDuration::from_secs(1);
         config.orchestrator.scheduler.delivery_max_wait =
             crate::config::HumanDuration::from_secs(3);
+        config
+            .orchestrator
+            .scheduler
+            .delivery_deterministic_batch_max_items = 1;
         let policy = RuntimeToolPolicy {
             context_only: true,
             coding_eval: true,

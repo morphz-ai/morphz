@@ -437,7 +437,7 @@ v1 明确不实现：
 
 ### 15.3 事件驱动等待
 
-1. 后台 task 运行时只登记一次 wait，不重复调用 `wait_task`；
+1. 后台 task 普通等待只依赖完成事件；只有明确截止时间或停滞监督需求时才登记一次 `check_task_after`，不重复安排检查点；旧 `wait_task` 仅用于兼容恢复；
 2. task 完成或 wait deadline 到达后精确唤醒对应 Objective；
 3. 等待审批、用户输入和 Delegation 时不产生忙轮询；
 4. 无输出工具也产生明确终态 Observation，并能推进 Objective。

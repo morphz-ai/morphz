@@ -40,7 +40,7 @@ v1 必须同时建立以下语义：
 - 每个 Session 的 Dialogue Thread 顺序锁和 active counter；
 - Context 级 `context_tx` 单写锁与 `base-version` 检查；
 - 标准 Tool Call / Tool Result 身份；
-- 后台任务、`wait_task` 定时唤醒、`kill_task` 和终态事件；
+- 后台任务、`check_task_after` 显式检查点（旧名 `wait_task`）、`kill_task` 和终态事件；
 - Objective continuation；
 - 多 Session 独立并发求值；每个请求只有一个 active Session；
 - Shared Mind、Frame revision、Mind Seed 与 Session Projection 基础。

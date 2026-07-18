@@ -477,7 +477,7 @@ Objective 不应拥有另一套独立 Scheduler。Objective Supervisor 是一种
 completed | failed | cancelled
 ```
 
-Outcome 与“结果是否已经发送给用户”是两个维度。后台 Execution Thread 完成时，应先写入 Completion Inbox，再由 Delivery Thread 决定：
+Outcome 与“结果是否已经发送给用户”是两个维度。后台 Execution Thread 完成时，应先写入 Completion Inbox，再由 Runtime Delivery Router 决定：
 
 - 立即回复当前 Session；
 - 合并多个完成结果后回复；
@@ -485,9 +485,11 @@ Outcome 与“结果是否已经发送给用户”是两个维度。后台 Execu
 - 暂时 `deferred`；
 - 明确不发送用户可见文本。
 
-当前单机 Runtime 已为同一 Session 的相邻完成结果提供持久 Delivery merge window。第一个 pending 结果启动最大等待边界；后续结果只在该边界内重排短合并窗口。到期后由 generation-fenced Timer 原子写入一条确定性的 `chat/thread_completion_ready` Event 与 Signal Outbox，再由一次 Delivery Activation 统一解释和交付。这个窗口只合并完成通知，不改变各 Execution Thread/Job 的物理完成时刻。
+Router 与 Delivery Composer 是两层：Router 是始终存在的确定性控制面；Composer 只是批次确实需要语义合成时才创建的模型 Activation。单条完成结果由 Router 原文透传，受配置限制的小型、短文本、同质 Execution 批次由 Router 生成确定性编号列表；超过数量/字符阈值、包含 Objective/外部 Executor，或结果 Event 显式设置 `delivery_requires_composition=true` 时，才启动 Composer。用户消息直接派生、未 detach 且没有 Schedule 的交互式 Execution 终态更早直接成为 `chat/reply`，不进入合并窗口。
 
-每次 Delivery Activation 的交付范围由其**不可变触发快照**决定：`chat/thread_completion_ready.completed_thread_ids/result_event_ids` 在 Timer generation 触发时冻结，Context Encoding 只把这批 ID 中仍为 `pending/deferred` 的结果呈现为待交付事实，Activation Route 也保存同一组 ID。最终 `chat/reply.covers` 或 `chat/no_reply.defer_covers` 只能确认这批快照；求值开始后新完成的 Thread 保持待交付，并进入下一次 Delivery。Runtime 不能在终态提交时重新扫描 Session 的“当前全部 pending”，否则一次旧求值可能误确认它从未看见的新结果。
+当前单机 Runtime 已为同一 Session 的相邻后台完成结果提供持久 Delivery merge window。第一个 pending 结果启动最大等待边界；后续结果只在该边界内重排短合并窗口。到期后，generation-fenced Timer 冻结本次完成快照。Router 能确定性渲染时，在同一事务写入 `chat/reply` 并把快照中的 `pending/deferred` 标记为 `delivered`；需要 Composer 时才原子写入 `chat/thread_completion_ready` Event 与 Signal Outbox，创建 Delivery Activation。这个窗口只合并完成通知，不改变各 Execution Thread/Job 的物理完成时刻。
+
+每次交付的范围由其**不可变 Timer 快照**决定：Timer generation 中的 `completed_thread_ids/result_event_ids` 在调度时冻结。Router fast path 的 `chat/reply.covers` 与 Composer Activation 最终产生的 `chat/reply.covers` / `chat/no_reply.defer_covers` 都只能确认这批 ID；处理开始后新完成的 Thread 保持待交付，并进入下一次 Delivery。Runtime 不能在终态提交时重新扫描 Session 的“当前全部 pending”，否则一次旧处理可能误确认它从未看见的新结果。
 
 ## 4. 统一执行链
 
@@ -560,7 +562,7 @@ Job J exits
 → result Signal to Thread W
 → Activation W2
 → Thread Outcome
-→ Delivery Thread decides how to notify Session
+→ Delivery Router pass-through/batches, or invokes Composer when needed
 ```
 
 这正是 Morphz 区别于传统顺序 Agent Loop 的关键能力：物理执行与持续对话具有不同的因果线程。
@@ -998,7 +1000,7 @@ orchestrator.activation_admission.aging_promotion_interval
 | ObjectiveRecord | `Objective` | 保留；Supervisor 已通过 continuation Event/Outbox 生产 Signal |
 | DelegationRecord | `Delegation` | 保留，逐步改为 Executor 关系 |
 | `thread_outcomes` | `ThreadOutcome` | 已具备唯一终态事务边界 |
-| Completion Inbox + Delivery Thread | `Delivery` | 方向正确，继续保留 |
+| Completion Inbox + Delivery Router + optional Composer | `Delivery` | Router 负责一致性与确定性 fast path，模型只负责必要的语义合成 |
 | `runtime_timers(kind=delivery_flush)` + Trigger Snapshot | Delivery merge window | 同 Session 合并、first-result max wait、generation fencing、不可变交付范围与重启恢复 |
 | `ActivationAdmissionController` | Activation admission | 单机固定 class、分层公平、aging、保留容量与 bounded refill |
 
@@ -1015,8 +1017,8 @@ orchestrator.activation_admission.aging_promotion_interval
 - `schedule_tx` 的原子提交；
 - Schedule、Objective、Background wake 与 Activation lease 共用持久 Timer Engine；
 - Schedule dependency 由持久反向索引事件驱动唤醒，不再固定间隔轮询；
-- Work completion 与用户 Delivery 分离；
-- 同 Session 并发完成结果通过持久 Delivery Flush Timer 合并，并受 first-result max wait 约束；
+- Work completion 与用户 Delivery 分离；交互式 attached Execution 可以在同一终态事务中直接标记 delivered；
+- 同 Session 后台并发完成结果通过持久 Delivery Flush Timer 合并，并受 first-result max wait 约束；singleton 原文透传，小型同质批次确定性合并，复杂批次才调用 Composer；
 - Delivery Activation 的 Context Encoding 与终态 `covers/defer_covers` 使用 Trigger Event 中冻结的完成 Thread ID；求值期间的新结果不会被旧 Delivery 误确认；
 - Schedule inspect/pause/resume/reschedule/cancel 已使用 expected revision CAS，并通过 Timer generation fencing 阻止旧计划复活；
 - 普通工具 Action 与脱离 Activation 的后台 exec 已物化为持久 Execution Job；空输出也以明确终态表达；
@@ -1281,7 +1283,7 @@ Phase 1 至此完成。当时仍然保留的独立 timer/sleep、依赖轮询和
 
 已经实现：
 
-- `BackgroundTaskScheduler` 注册 `BackgroundWake` handler；`exec` 的默认检查点、`wait_task` 的用户指定检查点以及任务终态取消都通过持久 `runtime_timers` 表达，不再为每次等待创建独立 sleep；
+- `BackgroundTaskScheduler` 注册 `BackgroundWake` handler；后台任务默认只由完成事件唤醒。可选 Runtime watchdog 与 `check_task_after` 的显式检查点、任务终态取消都通过持久 `runtime_timers` 表达，不再为每次等待创建独立 sleep；旧 `wait_task(wait_secs)` 只保留为不向新模型展示的执行兼容别名；
 - Background wake 使用 task `wake_generation` 做 fencing。重排等待会生成更高 generation，旧 claim 不能覆盖新检查点；到期 Event 先以 Event + Signal Outbox 原子提交，再执行进程内投递；
 - 该纵切实现时，`BackgroundTask` 的物理进程所有权尚待 Phase 3 持久化。因此 Runtime 重启后如果 owner 已不存在，遗留 Timer 只会被审计为已消费，不会伪造“任务已完成”或虚假的工具输出；Phase 3 现已将其持久控制面迁移到 `ExecutionJob`；
 - `ThreadActivation` 每次进入 `running` 都注册 `activation-lease:<activation-id>`，以 Activation revision 为 generation；snapshot 推进会续约新 generation，唯一终态提交会取消未 claim 的 lease；
@@ -1380,12 +1382,12 @@ Phase 3 的单机 Execution Job、Durable Approval 与物理取消控制面至�
 - Objective evaluation registry 以 Objective ID、evaluation ID 和 Activation ID 建立精确绑定；pause/cancel 只通知这一 Evaluation 的 Activation，并持久请求取消它物化的非终态 Job；
 - Objective 控制不再调用 Session-wide cancel/resume，因此同一 Session 的普通 Dialogue 和兄弟 Objective 不会因为一个 Objective 暂停而被抑制；
 - 迟到的 Objective 结果仍需通过 Objective revision/status fence，不能在 pause/cancel 已生效后提交为新的权威进展；
-- Execution Thread 完成不再立即为每条结果唤醒 Delivery。Runtime 为 Session 持久维护一个 `delivery_flush` Timer：`due_at = min(latest + merge_window, first + max_wait)`；
+- 后台 Execution Thread 完成不再立即为每条结果唤醒 Composer。Runtime 为 Session 持久维护一个 `delivery_flush` Timer：`due_at = min(latest + merge_window, first + max_wait)`；交互式 attached Execution 直接交付；
 - 新结果推进 generation 并刷新短窗口，但不能越过第一条 pending 结果的最大等待边界；旧 generation、重复 claim 和 Runtime 重启均不能产生第二条 completion-ready wake；
-- Timer handler 冻结本 generation 的 `completed_thread_ids/result_event_ids`，使用 Timer ID + generation 生成确定性 `chat/thread_completion_ready` Event，并在一个事务内追加 Event + Signal Outbox；
-- Context Encoding 只向这次 Delivery Activation 呈现 Trigger Snapshot 内仍为 pending/deferred 的结果；`chat/reply.covers` 与 `chat/no_reply.defer_covers` 也只能确认同一组 ID，求值期间新完成的 Thread 留给下一次 Delivery；
+- Timer handler 冻结本 generation 的 `completed_thread_ids/result_event_ids`，使用 Timer ID + generation 生成稳定 Event ID；Router fast path 在一个事务内追加 `chat/reply` 并标记 covered Thread，复杂批次则原子追加 `chat/thread_completion_ready` Event + Signal Outbox；
+- Router 与可选 Composer 都只处理 Timer Snapshot 内仍为 pending/deferred 的结果；`chat/reply.covers` 与 `chat/no_reply.defer_covers` 只能确认同一组 ID，处理期间新完成的 Thread 留给下一次 Delivery；
 - Runtime 启动扫描仍有 pending/deferred completion 的 Session 并补齐 Delivery Flush Timer，关闭结果已持久化但内存定时器尚未启动的崩溃窗口。
 
-Delivery 验证已经覆盖：同 Session 两条相邻结果只产生一次 Delivery 求值、第一条结果最大等待边界、Runtime 重启恢复、旧 generation 迟到 fencing、Event/Outbox 幂等提交、旧 SQLite Timer CHECK 约束的无损迁移，以及“Trigger 之后到达的新结果不能被旧回复覆盖”的快照竞态。
+Delivery 验证已经覆盖：singleton 零模型透传、小型批次确定性合并、数量/字符/语义提示进入 Composer、第一条结果最大等待边界、Runtime 重启恢复、旧 generation 迟到 fencing、Fast Path 原子提交、Event/Outbox 幂等提交、旧 SQLite Timer CHECK 约束的无损迁移，以及“Trigger 之后到达的新结果不能被旧回复覆盖”的快照竞态。
 
 Phase 4 已经形成单机调度管理闭环。每租户数字配额、跨进程公平、多 Worker claim 与分布式存储仍属于明确排除的 Phase 5 或后续单机策略增强，不属于本阶段完成标准。

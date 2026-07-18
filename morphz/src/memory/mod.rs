@@ -1566,6 +1566,16 @@ pub trait SessionStore: Send + Sync {
         generation: u64,
         event: &crate::event::Event,
     ) -> Result<DeliveryFlushCommit, Box<dyn std::error::Error + Send + Sync>>;
+    /// Generation-fenced fast path for a Delivery Timer whose immutable
+    /// snapshot can be rendered without another model request. The reply Event
+    /// and every covered `pending/deferred -> delivered` transition commit in
+    /// one transaction.
+    async fn commit_delivery_flush_reply(
+        &self,
+        timer_id: &str,
+        generation: u64,
+        event: &crate::event::Event,
+    ) -> Result<DeliveryFlushCommit, Box<dyn std::error::Error + Send + Sync>>;
     #[allow(clippy::too_many_arguments)]
     async fn update_thread(
         &self,

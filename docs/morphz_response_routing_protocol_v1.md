@@ -35,7 +35,7 @@ SExpr VM 中的 `(reply content)` 是对这一行为的语义描述，不是名�
 - 立即结束当前 Evaluation，即使后台任务仍在运行；
 - 不取消后台任务，也不把 Objective 标为完成。
 
-后台任务完成或等待计时到达后，Runtime 投递新的 Thread Signal，并创建后继 Thread Activation 再次唤醒 Agent。
+后台任务完成或显式检查点到达后，Runtime 投递新的 Thread Signal，并创建后继 Thread Activation 再次唤醒 Agent。普通后台等待不需要安排检查点；只有明确截止时间或停滞监督需要时才调用 `check_task_after`。旧 `wait_task(wait_secs)` 仅作为持久调用恢复兼容别名，不出现在新模型的工具定义中。
 
 ### 2.3 其他 Session：`send_message`
 
@@ -65,16 +65,18 @@ evaluation_outcomes.work_item_id  PRIMARY KEY  # 物理字段保存 activation_i
 
 Objective Evaluation 的终态归属同样绑定到具体 Activation，而不是只按 Session 推断。Session 级绑定只负责调度互斥；Objective 标识必须沿该 Activation 的工具结果和因果后继显式传播。同一 Session 的并发用户 Activation 即使先结束，也不能释放或冒领正在运行的 Objective Evaluation。
 
-### 4.1 Delivery 的不可变触发快照
+### 4.1 Delivery Router 与不可变触发快照
 
-Delivery Activation 的可交付范围不是“它结束时 Session 中所有 pending 结果”，而是创建它的 `chat/thread_completion_ready` Event 中冻结的 `completed_thread_ids/result_event_ids`：
+每次交付的范围不是“它结束时 Session 中所有 pending 结果”，而是 Delivery Flush Timer generation 中冻结的 `completed_thread_ids/result_event_ids`。Runtime Delivery Router 先处理这份快照：singleton 原文透传，小型短文本 Execution 批次确定性合并，复杂批次才创建 `chat/thread_completion_ready` 与 Delivery Composer Activation。
+
+对于 Composer：
 
 1. Context Encoding 只把该 Trigger Snapshot 内仍为 `pending/deferred` 的结果呈现为本轮待交付事实；
 2. Activation Route 保存同一组 Thread ID；
 3. 普通回复的 `covers` 与 `no_reply` 的 `defer_covers` 只能确认这组 ID；
 4. 求值开始后新完成的 Thread 保持 pending，并由下一次 Delivery Activation 处理。
 
-因此，Delivery 终态提交不能重新扫描 live pending 集合。这个边界防止一个较慢的旧模型请求误把它从未看见的新结果标记为已经交付。
+Router fast path 同样以 generation fencing 原子提交 `chat/reply` 与 covered Thread 状态。因此无论是否调用模型，Delivery 终态都不能重新扫描 live pending 集合。这个边界防止一个较慢的旧处理误把它从未看见的新结果标记为已经交付。
 
 ## 5. 流式与持久化边界
 
