@@ -26,6 +26,7 @@
 - 两个独立 ContextEngine 对同一 Context 的并发同版本写入，已由 SQLite CAS 验证为仅一个成功；
 - Runtime durable Event 已进入有界 Event Writer；并发发布者在可配置微窗口内 group commit，Signal Outbox 与 Event 同事务提交；
 - Event Writer 的 queue depth、累计 Event/Batch、失败 Batch 与最大 Batch 已进入统一 Scheduler Snapshot，CLI、HTTP API 与 Rust SDK 共享同一读模型。
+- 已增加可复现的 `context_scalability_benchmark`，首份 release 基线见 [Context Scalability Baseline — 2026-07-18](./benchmarks/context_scalability_baseline_2026-07-18.md)。
 
 仍待实施：
 
@@ -518,6 +519,15 @@ SQLite WAL
 - 每个发布者等待自己的 durable commit 回执，队列满时等待形成背压；
 - 一个 Batch 内任一 Event 冲突或 Outbox 写入失败时整批回滚；
 - 普通 `subscribe_durable` 仍保持串行契约，只有声明自身拥有顺序/背压的 Runtime Event Writer 可并发进入聚合窗口。
+
+可复现基准命令：
+
+```bash
+cargo run --release -p morphz-evals \
+  --bin context_scalability_benchmark -- 5000 257 64
+```
+
+2026-07-18 的 Apple M4 Pro release 基线中，5000 条 512B Event 从逐条 commit 的约 11.3k events/s 提升至 batch(64) 的约 76.8k events/s（约 6.8 倍）。该数据仅证明本地存储优化有效，不等于模型请求吞吐或公网用户容量。
 
 必须保持：
 

@@ -1332,7 +1332,7 @@ async fn audit_context(
         println!("{}", serde_json::to_string_pretty(&audit)?);
     } else {
         println!(
-            "{}  matches={}  ledger=r{}:{}  projection={}:{}  full_events={}  snapshot={}  incremental_transactions={}  incremental_matches={}",
+            "{}  matches={}  ledger=r{}:{}  projection={}:{}  full_events={}  snapshot={}  incremental_transactions={}  incremental_matches={}  latency_us=full:{}/incremental:{}/projection:{}",
             audit.context_id,
             audit.matches,
             audit.ledger_revision,
@@ -1354,7 +1354,13 @@ async fn audit_context(
             audit
                 .incremental_matches
                 .map(|matches| matches.to_string())
-                .unwrap_or_else(|| "n/a".to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
+            audit.full_replay_micros,
+            audit
+                .incremental_replay_micros
+                .map(|micros| micros.to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
+            audit.projection_validation_micros,
         );
     }
     if !audit.matches {

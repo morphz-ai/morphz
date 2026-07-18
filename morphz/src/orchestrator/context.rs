@@ -264,6 +264,9 @@ pub struct MindProjectionAudit {
     pub events_scanned: usize,
     pub incremental_transactions_scanned: Option<usize>,
     pub incremental_matches: Option<bool>,
+    pub full_replay_micros: u64,
+    pub incremental_replay_micros: Option<u64>,
+    pub projection_validation_micros: u64,
     pub matches: bool,
 }
 
@@ -1848,8 +1851,11 @@ impl ContextEngine {
         // An old database may not have a materialized row yet. Audit is also
         // a safe explicit migration boundary, but never repairs a corrupt row.
         let _ = self.load_current_mind(context_id, Some(&events)).await?;
+        let full_replay_started = std::time::Instant::now();
         let ledger = load_mind_from_events(&events)?;
+        let full_replay_micros = full_replay_started.elapsed().as_micros() as u64;
         let ledger_hash = mind_state_hash(&ledger)?;
+        let projection_validation_started = std::time::Instant::now();
         let projection = projection_store.get_mind_projection(context_id).await?;
         let (projection_revision, projection_hash, valid_projection) = match projection {
             Some(projection) => {
@@ -1862,7 +1868,13 @@ impl ContextEngine {
             }
             None => (None, None, false),
         };
+        let projection_validation_micros =
+            projection_validation_started.elapsed().as_micros() as u64;
+        let incremental_replay_started = std::time::Instant::now();
         let incremental = self.recover_mind_from_latest_snapshot(context_id).await?;
+        let incremental_replay_micros = incremental
+            .as_ref()
+            .map(|_| incremental_replay_started.elapsed().as_micros() as u64);
         let (snapshot_revision, incremental_transactions_scanned, incremental_matches) =
             match incremental {
                 Some(recovery) => (
@@ -1882,6 +1894,9 @@ impl ContextEngine {
             events_scanned: events.len(),
             incremental_transactions_scanned,
             incremental_matches,
+            full_replay_micros,
+            incremental_replay_micros,
+            projection_validation_micros,
             matches: valid_projection
                 && projection_hash.as_deref() == Some(ledger_hash.as_str())
                 && incremental_matches.unwrap_or(true),
