@@ -136,7 +136,8 @@ pub(super) async fn bootstrap_causality(
            (id, revision, agent_id, context_id, session_id, root_turn_id,
             kind, status, executor_kind, delivery_status, created_at, updated_at)
            VALUES ($1, 1, $2, $3, $4, $5, 'execution', 'open',
-                   'runtime', 'none', $6, $6)"#,
+                   'runtime', 'none', $6, $6)
+           ON CONFLICT DO NOTHING"#,
     )
     .bind(thread_id)
     .bind(agent_id)

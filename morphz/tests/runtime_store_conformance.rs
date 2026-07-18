@@ -2,16 +2,17 @@ use morphz::approval_authority::stable_approval_identity;
 use morphz::event::Event;
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
-use morphz::memory::{ActivationStore as _, SessionDirectoryStore, ThreadStore as _};
+use morphz::memory::{ActivationStore as _, SessionDirectoryStore};
 use morphz::memory::{
-    ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore, EventAppend, EventStore,
-    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobMutation, ExecutionJobStatus,
-    ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, MindProjectionCommit,
-    MindProjectionStore, NewAgent, NewApprovalRequest, NewCognitiveContext, NewExecutionJob,
-    NewMindProjection, NewObjective, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation,
-    ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
-    RuntimeTimerKind, RuntimeTimerStatus, SessionAttentionState, SessionAttentionUpdate,
-    SessionMountKind, SessionStatus, SessionUpdate, ThreadKind, TimerStore,
+    ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore, DeliveryFlushCommit,
+    DeliveryStatus, EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
+    ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
+    ExecutionRetrySafety, MindProjectionCommit, MindProjectionStore, NewAgent, NewApprovalRequest,
+    NewCognitiveContext, NewExecutionJob, NewMindProjection, NewObjective, NewRuntimeTimer,
+    NewSession, NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerStatus,
+    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionUpdate,
+    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
 };
 use serde_json::json;
 use std::future::Future;
@@ -194,6 +195,175 @@ where
         .unwrap()
         .iter()
         .any(|session| session.id == race_session.id));
+}
+
+async fn assert_thread_store_conformance<S>(store: Arc<S>)
+where
+    S: EventStore + ThreadStore + TimerStore + Send + Sync + 'static,
+{
+    let thread = NewThread {
+        id: "conformance-thread".to_string(),
+        agent_id: "conformance-agent".to_string(),
+        context_id: "conformance-context".to_string(),
+        session_id: "conformance-session".to_string(),
+        root_turn_id: "root-conformance-thread".to_string(),
+        kind: ThreadKind::Execution,
+        executor_kind: "runtime".to_string(),
+        executor_id: None,
+    };
+    let first = {
+        let store = Arc::clone(&store);
+        let thread = thread.clone();
+        tokio::spawn(async move { store.ensure_thread(thread).await })
+    };
+    let second = {
+        let store = Arc::clone(&store);
+        let thread = thread.clone();
+        tokio::spawn(async move { store.ensure_thread(thread).await })
+    };
+    assert_eq!(
+        first.await.unwrap().unwrap(),
+        second.await.unwrap().unwrap()
+    );
+    let mut conflicting = thread.clone();
+    conflicting.id = "different-thread-id".to_string();
+    conflicting.context_id = "conformance-other-context".to_string();
+    assert!(store.ensure_thread(conflicting).await.is_err());
+
+    let cas_thread = store
+        .ensure_thread(NewThread {
+            id: "conformance-thread-cas".to_string(),
+            agent_id: "conformance-agent".to_string(),
+            context_id: "conformance-context".to_string(),
+            session_id: "conformance-session".to_string(),
+            root_turn_id: "root-conformance-thread-cas".to_string(),
+            kind: ThreadKind::DialogueTurn,
+            executor_kind: "model".to_string(),
+            executor_id: None,
+        })
+        .await
+        .unwrap();
+    let cas_revision = cas_thread.revision;
+    let first = {
+        let store = Arc::clone(&store);
+        let id = cas_thread.id.clone();
+        tokio::spawn(async move {
+            store
+                .update_thread(
+                    &id,
+                    cas_revision,
+                    None,
+                    Some(ThreadLifecycle::Completed),
+                    Some("first"),
+                    Some("thread-result-a"),
+                    Some(DeliveryStatus::Pending),
+                    None,
+                )
+                .await
+        })
+    };
+    let second = {
+        let store = Arc::clone(&store);
+        let id = cas_thread.id.clone();
+        tokio::spawn(async move {
+            store
+                .update_thread(
+                    &id,
+                    cas_revision,
+                    None,
+                    Some(ThreadLifecycle::Failed),
+                    Some("second"),
+                    Some("thread-result-b"),
+                    Some(DeliveryStatus::Pending),
+                    None,
+                )
+                .await
+        })
+    };
+    let mutations = [
+        first.await.unwrap().unwrap(),
+        second.await.unwrap().unwrap(),
+    ];
+    assert_eq!(
+        mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, ThreadMutation::Updated(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        mutations
+            .iter()
+            .filter(|mutation| matches!(mutation, ThreadMutation::Conflict { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        store
+            .list_session_delivery_threads("conformance-session", false)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let timer = store
+        .arm_delivery_flush_timer("conformance-delivery-timer", "conformance-session", 1, 5)
+        .await
+        .unwrap()
+        .unwrap();
+    let claimed = store
+        .claim_due_runtime_timers(
+            chrono::Utc::now() + chrono::Duration::seconds(10),
+            "delivery-worker",
+            chrono::Utc::now() + chrono::Duration::seconds(30),
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].id, timer.id);
+    let delivery_event = Event::new(
+        "conformance-delivery-ready".to_string(),
+        "Store-Conformance".to_string(),
+        "runtime_control".to_string(),
+        "chat/thread_completion_ready".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "completed_thread_ids": ["conformance-thread-cas"]
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    assert_eq!(
+        store
+            .commit_delivery_flush(&timer.id, timer.generation, &delivery_event)
+            .await
+            .unwrap(),
+        DeliveryFlushCommit::Committed
+    );
+    assert_eq!(
+        store
+            .commit_delivery_flush(&timer.id, timer.generation, &delivery_event)
+            .await
+            .unwrap(),
+        DeliveryFlushCommit::Existing {
+            event_id: delivery_event.id.clone()
+        }
+    );
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(delivery_event.id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 /// Database-independent contract for the Context transaction boundary. A new
@@ -1088,21 +1258,9 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         })
     })
     .await;
+    assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
     assert_objective_lease_conformance(Arc::clone(&store)).await;
-    store
-        .ensure_thread(NewThread {
-            id: "conformance-thread".to_string(),
-            agent_id: "conformance-agent".to_string(),
-            context_id: "conformance-context".to_string(),
-            session_id: "conformance-session".to_string(),
-            root_turn_id: "root-conformance-thread".to_string(),
-            kind: ThreadKind::Execution,
-            executor_kind: "runtime".to_string(),
-            executor_id: None,
-        })
-        .await
-        .unwrap();
     store
         .ensure_thread_activation(NewThreadActivation {
             id: "conformance-activation".to_string(),
@@ -1163,6 +1321,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         })
     })
     .await;
+    assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_timer_lease_conformance(Arc::clone(&store)).await;
     assert_objective_lease_conformance(Arc::clone(&store)).await;
     store

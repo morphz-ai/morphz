@@ -24,6 +24,7 @@ type StoreError = Box<dyn std::error::Error + Send + Sync>;
 mod approval;
 mod execution;
 mod session;
+mod thread;
 
 pub struct PostgresStore {
     pool: PgPool,
@@ -39,6 +40,7 @@ impl PostgresStore {
         store.migrate_supported_capabilities().await?;
         execution::migrate(&store.pool).await?;
         approval::migrate(&store.pool).await?;
+        thread::migrate(&store.pool).await?;
         Ok(store)
     }
 
