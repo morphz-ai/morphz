@@ -976,6 +976,12 @@ impl Orchestrator {
             .snapshot(self.orchestrator_config.model_provider_max_in_flight.max(1))
     }
 
+    pub fn context_capacity_metrics(
+        &self,
+    ) -> crate::orchestrator::context::ContextCapacityMetricsSnapshot {
+        self.context_engine.capacity_metrics()
+    }
+
     async fn acquire_model_provider_slot(
         &self,
         deadline: tokio::time::Instant,
@@ -1586,7 +1592,13 @@ impl Orchestrator {
                     );
                     continue;
                 };
-                if interrupted_dialogue_on_restart(&activation, &events) {
+                let recovery_owns_activation = recovery_owns_activation(
+                    self.context_engine.worker_coordination_mode(),
+                    &activation,
+                    Utc::now(),
+                );
+                if recovery_owns_activation && interrupted_dialogue_on_restart(&activation, &events)
+                {
                     let announce =
                         interrupted_dialogue_roots.insert(activation.root_turn_id.clone());
                     match session_store
@@ -1672,7 +1684,10 @@ impl Orchestrator {
                         }
                     }
                     ThreadActivationStatus::Running => {
-                        if runtime_claimant_is_definitely_dead(activation.claimed_by.as_deref()) {
+                        if self.context_engine.worker_coordination_mode()
+                            == crate::memory::WorkerCoordinationMode::ExclusiveProcess
+                            && runtime_claimant_is_definitely_dead(activation.claimed_by.as_deref())
+                        {
                             tracing::warn!(
                                 activation_id = %activation.id,
                                 claimed_by = ?activation.claimed_by,
@@ -6797,6 +6812,22 @@ fn interrupted_dialogue_on_restart(
     })
 }
 
+fn recovery_owns_activation(
+    mode: crate::memory::WorkerCoordinationMode,
+    activation: &ThreadActivationRecord,
+    now: chrono::DateTime<Utc>,
+) -> bool {
+    match mode {
+        crate::memory::WorkerCoordinationMode::ExclusiveProcess => true,
+        crate::memory::WorkerCoordinationMode::SharedLeases => {
+            activation.status == ThreadActivationStatus::Running
+                && activation
+                    .lease_expires_at
+                    .is_none_or(|expires_at| expires_at <= now)
+        }
+    }
+}
+
 fn stable_thread_id(root_turn_id: &str) -> String {
     let digest = Sha256::digest(root_turn_id.as_bytes());
     let id = format!("thread_{digest:x}");
@@ -7575,19 +7606,75 @@ mod tests {
         activation_admission_class, baseline_system_prompt, classify_terminal_response,
         cognitive_sexpr_vm_system_prompt, compact_context_inspect_for_persistence,
         compose_system_prompt, event_needs_signal_outbox, extend_exec_output_facts,
-        persist_model_reasoning_summary, render_system_contract, semantic_sexpr_vm_system_prompt,
-        should_force_final_for_maintenance, tool_call_activity_preview, DurableEventWriter,
-        DurableEventWriterMetrics, ModelReasoningSummaryAccumulator, ReadTurnGuard,
-        SystemPromptMode, TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        persist_model_reasoning_summary, recovery_owns_activation, render_system_contract,
+        semantic_sexpr_vm_system_prompt, should_force_final_for_maintenance,
+        tool_call_activity_preview, DurableEventWriter, DurableEventWriterMetrics,
+        ModelReasoningSummaryAccumulator, ReadTurnGuard, SystemPromptMode, TerminalDecision,
+        AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
     use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
     use crate::memory::sqlite::SqliteStore;
-    use crate::memory::{EventAppend, EventStore, QueryFilter};
+    use crate::memory::{
+        EventAppend, EventStore, QueryFilter, ThreadActivationRecord, ThreadActivationStatus,
+        WorkerCoordinationMode,
+    };
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::sync::{Barrier, Mutex};
+
+    #[test]
+    fn shared_activation_recovery_respects_live_worker_leases() {
+        let now = chrono::Utc::now();
+        let activation = |status, lease_expires_at| ThreadActivationRecord {
+            id: "activation".to_string(),
+            revision: 1,
+            agent_id: "agent".to_string(),
+            context_id: "context".to_string(),
+            session_id: "session".to_string(),
+            trigger_event_id: "trigger".to_string(),
+            trigger_sequence: 1,
+            trigger_kind: "chat/user_message".to_string(),
+            parent_activation_id: None,
+            root_turn_id: "root".to_string(),
+            context_snapshot_version: None,
+            status,
+            claimed_by: Some("runtime:999".to_string()),
+            lease_expires_at,
+            created_at: now,
+            updated_at: now,
+        };
+        let queued = activation(ThreadActivationStatus::Queued, None);
+        let live = activation(
+            ThreadActivationStatus::Running,
+            Some(now + chrono::Duration::seconds(30)),
+        );
+        let expired = activation(
+            ThreadActivationStatus::Running,
+            Some(now - chrono::Duration::seconds(1)),
+        );
+        assert!(!recovery_owns_activation(
+            WorkerCoordinationMode::SharedLeases,
+            &queued,
+            now
+        ));
+        assert!(!recovery_owns_activation(
+            WorkerCoordinationMode::SharedLeases,
+            &live,
+            now
+        ));
+        assert!(recovery_owns_activation(
+            WorkerCoordinationMode::SharedLeases,
+            &expired,
+            now
+        ));
+        assert!(recovery_owns_activation(
+            WorkerCoordinationMode::ExclusiveProcess,
+            &queued,
+            now
+        ));
+    }
 
     #[tokio::test]
     async fn durable_event_writer_groups_concurrent_publishers_and_reports_capacity() {

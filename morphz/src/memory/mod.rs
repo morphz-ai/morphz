@@ -101,6 +101,15 @@ pub struct NewMindProjection {
     pub head_event_id: Option<String>,
 }
 
+/// Observation membership changes caused by one Context transaction.
+/// IDs which name Frames are harmless: Store implementations only mutate a
+/// Session Projection when the target resolves to an Observation Event.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionProjectionMutation {
+    pub retired_event_ids: Vec<String>,
+    pub restored_event_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MindSnapshotRecord {
     pub id: String,
@@ -123,8 +132,9 @@ pub enum MindProjectionCommit {
 ///
 /// The immutable Event Ledger remains the source of truth. This store owns the
 /// rebuildable current-state projection and the Context head used for CAS. A
-/// successful Context mutation must persist its Event, Projection and affected
-/// Session attention rows in one database transaction.
+/// successful Context mutation must persist its Event, Mind Projection,
+/// Session Projection mutation and affected Session attention rows in one
+/// database transaction.
 #[async_trait::async_trait]
 pub trait MindProjectionStore: Send + Sync {
     async fn get_mind_projection(
@@ -145,11 +155,13 @@ pub trait MindProjectionStore: Send + Sync {
     ) -> Result<MindProjectionRecord, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Atomically CASes the Context head, replaces the current Mind projection,
-    /// updates Session attention and appends the immutable transaction Event.
+    /// mutates active Session observations, updates Session attention and
+    /// appends the immutable transaction Event.
     async fn commit_mind_projection_transaction(
         &self,
         event: &crate::event::Event,
         attention_updates: &[SessionAttentionUpdate],
+        session_projection: &SessionProjectionMutation,
         expected_revision: u64,
         next_projection: NewMindProjection,
     ) -> Result<MindProjectionCommit, Box<dyn std::error::Error + Send + Sync>>;
@@ -1245,6 +1257,19 @@ pub trait EventStore: Send + Sync {
     ) -> Result<Vec<crate::event::Event>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
+/// Current, transactionally maintained Observation set for Session-aware
+/// Context Encoding. The immutable Ledger remains authoritative history;
+/// this Projection contains only observations which have not been retired.
+#[async_trait::async_trait]
+pub trait SessionProjectionStore: Send + Sync {
+    async fn query_session_projections(
+        &self,
+        context_id: &str,
+        session_ids: &[String],
+        include_context_wide: bool,
+    ) -> Result<Vec<crate::event::Event>, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 /// Persistent physical clock queue shared by every scheduler policy. Claiming
 /// is leased so multiple Runtime workers or crash recovery cannot fire one
 /// generation concurrently without a deterministic retry boundary.
@@ -1972,6 +1997,7 @@ pub trait RuntimeStore:
     + SessionStore
     + ObjectiveStore
     + MindProjectionStore
+    + SessionProjectionStore
     + Send
     + Sync
 {

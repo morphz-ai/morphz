@@ -17,10 +17,11 @@ use crate::memory::{
     ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
     QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation,
     ScheduleRecord, ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate,
-    SessionDirectoryStore, SessionMountKind, SessionRecord, SessionStatus, SessionUpdate,
-    SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord,
-    ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord,
-    ThreadSignalRecord, ThreadSignalStatus, ThreadStore, TimerStore,
+    SessionDirectoryStore, SessionMountKind, SessionProjectionMutation, SessionProjectionStore,
+    SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus,
+    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadKind,
+    ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
+    ThreadStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -44,6 +45,7 @@ impl SqliteStore {
             .filename(db_path)
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
+            .foreign_keys(true)
             .busy_timeout(std::time::Duration::from_secs(5)); // 5秒锁重试
 
         // 启用连接池并发，利用 WAL 模式的单写多读优势。
@@ -200,6 +202,20 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic);
         CREATE INDEX IF NOT EXISTS idx_events_session_time ON events(session_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_events_context_time ON events(context_id, timestamp);
+
+        CREATE TABLE IF NOT EXISTS session_projections (
+            event_id TEXT PRIMARY KEY,
+            context_id TEXT NOT NULL,
+            session_id TEXT,
+            FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_projections_context_session
+            ON session_projections(context_id, session_id, event_id);
+
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version TEXT PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );
 
         CREATE TABLE IF NOT EXISTS signal_outbox (
             event_id TEXT PRIMARY KEY,
@@ -702,13 +718,82 @@ impl SqliteStore {
             backfill_objective_status_reasons(&pool).await?;
         }
 
+        migrate_session_projections(&pool).await?;
+
         Ok(Self { pool })
     }
 }
 
+const SESSION_PROJECTION_MIGRATION: &str = "20260719_01_session_projections";
+
+async fn migrate_session_projections(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let applied =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM schema_migrations WHERE version = ?")
+            .bind(SESSION_PROJECTION_MIGRATION)
+            .fetch_one(pool)
+            .await?
+            > 0;
+    if applied {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    let claimed =
+        sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+            .bind(SESSION_PROJECTION_MIGRATION)
+            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .execute(&mut *tx)
+            .await?;
+    if claimed.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(());
+    }
+    sqlx::query(
+        r#"INSERT OR IGNORE INTO session_projections (event_id, context_id, session_id)
+           SELECT id, context_id, session_id
+           FROM events
+           WHERE context_id IS NOT NULL
+             AND (session_id IS NOT NULL
+                  OR (topic = 'chat/context_observation'
+                      AND json_extract(payload, '$.context_wide') = 1))
+             AND type IN ('user_message', 'tool_output', 'agent_call', 'exception', 'file_change')
+             AND topic NOT IN ('chat/assistant_call', 'chat/progress', 'chat/no_reply',
+                               'chat/context_inspect', 'chat/context_tx_committed',
+                               'chat/runtime_error')
+             AND topic NOT LIKE 'runtime/%'
+             AND NOT (
+                 type = 'tool_output'
+                 AND json_extract(payload, '$.tool_name') = 'context_tx'
+                 AND COALESCE(json_extract(payload, '$.text'), '') NOT LIKE '执行失败:%'
+                 AND COALESCE(json_extract(payload, '$.text'), '') NOT LIKE '执行拒绝:%'
+             )"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    let projections = sqlx::query("SELECT state_json FROM mind_projections")
+        .fetch_all(&mut *tx)
+        .await?;
+    for row in projections {
+        let state: JsonValue = serde_json::from_str(&row.get::<String, _>("state_json"))?;
+        if let Some(retired) = state.get("retired").and_then(JsonValue::as_array) {
+            for event_id in retired.iter().filter_map(JsonValue::as_str) {
+                sqlx::query("DELETE FROM session_projections WHERE event_id = ?")
+                    .bind(event_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
 impl crate::memory::RuntimeStore for SqliteStore {
     fn worker_coordination_mode(&self) -> crate::memory::WorkerCoordinationMode {
-        crate::memory::WorkerCoordinationMode::ExclusiveProcess
+        crate::memory::WorkerCoordinationMode::SharedLeases
     }
 }
 
@@ -1601,6 +1686,7 @@ async fn append_event_in_transaction(
     .bind(payload)
     .execute(&mut **tx)
     .await?;
+    project_observation_in_transaction(tx, event).await?;
     Ok(())
 }
 
@@ -1654,6 +1740,60 @@ where
     .fetch_optional(executor)
     .await?;
     row.as_ref().map(mind_projection_from_row).transpose()
+}
+
+/// Read the Projection pair and its consistency markers from one SQLite
+/// statement. Performing a valid JOIN first and separate existence probes
+/// afterwards creates a TOCTOU window: another Runtime may atomically install
+/// the pair between those statements, making a healthy Projection look
+/// one-sided. One statement observes one WAL snapshot and can distinguish the
+/// three real states without that false corruption report.
+async fn get_mind_projection_consistent(
+    pool: &SqlitePool,
+    context_id: &str,
+) -> Result<Option<MindProjectionRecord>, Box<dyn std::error::Error + Send + Sync>> {
+    let row = sqlx::query(
+        r#"SELECT h.context_id AS head_context_id,
+                  h.revision AS head_revision,
+                  h.projection_hash AS head_projection_hash,
+                  p.context_id AS projection_context_id,
+                  p.context_id, p.revision, p.state_json, p.state_hash,
+                  h.head_event_id, p.updated_at
+           FROM (SELECT 1) anchor
+           LEFT JOIN context_heads h ON h.context_id = ?
+           LEFT JOIN mind_projections p ON p.context_id = ?"#,
+    )
+    .bind(context_id)
+    .bind(context_id)
+    .fetch_one(pool)
+    .await?;
+    let head_context_id = row.get::<Option<String>, _>("head_context_id");
+    let projection_context_id = row.get::<Option<String>, _>("projection_context_id");
+    match (head_context_id, projection_context_id) {
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => {
+            let head_revision = row
+                .get::<Option<i64>, _>("head_revision")
+                .ok_or("Context Head 缺少 revision")?;
+            let projection_revision = row
+                .get::<Option<i64>, _>("revision")
+                .ok_or("Mind Projection 缺少 revision")?;
+            let head_hash = row
+                .get::<Option<String>, _>("head_projection_hash")
+                .ok_or("Context Head 缺少 projection_hash")?;
+            let projection_hash = row
+                .get::<Option<String>, _>("state_hash")
+                .ok_or("Mind Projection 缺少 state_hash")?;
+            if head_revision != projection_revision || head_hash != projection_hash {
+                return Err(format!(
+                    "Context '{context_id}' 的 Mind Projection head/hash/revision 不一致"
+                )
+                .into());
+            }
+            mind_projection_from_row(&row).map(Some)
+        }
+        _ => Err(format!("Context '{context_id}' 的 Mind Projection 不完整").into()),
+    }
 }
 
 async fn update_attention_in_transaction(
@@ -1769,6 +1909,7 @@ async fn append_event_idempotent_in_transaction(
     .execute(&mut **tx)
     .await?;
     if inserted.rows_affected() == 1 {
+        project_observation_in_transaction(tx, event).await?;
         return Ok(true);
     }
     let existing = sqlx::query(
@@ -1788,6 +1929,98 @@ async fn append_event_idempotent_in_transaction(
         return Err(format!("Event ID '{}' 已被不同内容占用", event.id).into());
     }
     Ok(false)
+}
+
+fn event_has_projection_route(event: &Event) -> bool {
+    event
+        .payload
+        .get("context_id")
+        .and_then(JsonValue::as_str)
+        .is_some()
+        && (event
+            .payload
+            .get("session_id")
+            .and_then(JsonValue::as_str)
+            .is_some()
+            || (event.topic == "chat/context_observation"
+                && event
+                    .payload
+                    .get("context_wide")
+                    .and_then(JsonValue::as_bool)
+                    == Some(true)))
+}
+
+async fn project_observation_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event: &Event,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if !crate::event::is_context_observation(event) || !event_has_projection_route(event) {
+        return Ok(());
+    }
+    let context_id = event
+        .payload
+        .get("context_id")
+        .and_then(JsonValue::as_str)
+        .expect("event_has_projection_route 已验证 context_id");
+    let session_id = event.payload.get("session_id").and_then(JsonValue::as_str);
+    sqlx::query(
+        r#"INSERT OR IGNORE INTO session_projections (event_id, context_id, session_id)
+           VALUES (?, ?, ?)"#,
+    )
+    .bind(&event.id)
+    .bind(context_id)
+    .bind(session_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn stored_event_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event_id: &str,
+    context_id: &str,
+) -> Result<Option<Event>, Box<dyn std::error::Error + Send + Sync>> {
+    let row = sqlx::query(
+        r#"SELECT rowid AS event_sequence, id, timestamp, actor, type, topic, payload
+           FROM events WHERE id = ? AND context_id = ?"#,
+    )
+    .bind(event_id)
+    .bind(context_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.map(|row| {
+        let payload = serde_json::from_str(&row.get::<String, _>("payload"))?;
+        Ok(Event {
+            id: row.get("id"),
+            sequence: u64::try_from(row.get::<i64, _>("event_sequence")).ok(),
+            timestamp: parse_time(&row.get::<String, _>("timestamp")),
+            actor: row.get("actor"),
+            event_type: row.get("type"),
+            topic: row.get("topic"),
+            payload,
+        })
+    })
+    .transpose()
+}
+
+async fn mutate_session_projection_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    context_id: &str,
+    mutation: &SessionProjectionMutation,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for event_id in &mutation.retired_event_ids {
+        sqlx::query("DELETE FROM session_projections WHERE event_id = ? AND context_id = ?")
+            .bind(event_id)
+            .bind(context_id)
+            .execute(&mut **tx)
+            .await?;
+    }
+    for event_id in &mutation.restored_event_ids {
+        if let Some(event) = stored_event_in_transaction(tx, event_id, context_id).await? {
+            project_observation_in_transaction(tx, &event).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn append_signal_outbox_in_transaction(
@@ -1830,30 +2063,7 @@ impl MindProjectionStore for SqliteStore {
         &self,
         context_id: &str,
     ) -> Result<Option<MindProjectionRecord>, Box<dyn std::error::Error + Send + Sync>> {
-        let projection = get_mind_projection_from_executor(&self.pool, context_id).await?;
-        if projection.is_none() {
-            let head_exists = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM context_heads WHERE context_id = ?",
-            )
-            .bind(context_id)
-            .fetch_one(&self.pool)
-            .await?
-                > 0;
-            let projection_exists = sqlx::query_scalar::<_, i64>(
-                "SELECT COUNT(*) FROM mind_projections WHERE context_id = ?",
-            )
-            .bind(context_id)
-            .fetch_one(&self.pool)
-            .await?
-                > 0;
-            if head_exists || projection_exists {
-                return Err(format!(
-                    "Context '{context_id}' 的 Mind Projection 不完整或 head/hash/revision 不一致"
-                )
-                .into());
-            }
-        }
-        Ok(projection)
+        get_mind_projection_consistent(&self.pool, context_id).await
     }
 
     async fn get_latest_mind_snapshot(
@@ -1957,6 +2167,7 @@ impl MindProjectionStore for SqliteStore {
         &self,
         event: &Event,
         attention_updates: &[SessionAttentionUpdate],
+        session_projection: &SessionProjectionMutation,
         expected_revision: u64,
         next_projection: NewMindProjection,
     ) -> Result<MindProjectionCommit, Box<dyn std::error::Error + Send + Sync>> {
@@ -2031,6 +2242,12 @@ impl MindProjectionStore for SqliteStore {
             update_attention_in_transaction(&mut tx, update).await?;
         }
         append_event_in_transaction(&mut tx, event).await?;
+        mutate_session_projection_in_transaction(
+            &mut tx,
+            &next_projection.context_id,
+            session_projection,
+        )
+        .await?;
         if context_transaction_requires_snapshot(event, next_projection.revision) {
             insert_mind_snapshot_in_transaction(
                 &mut tx,
@@ -4429,21 +4646,10 @@ impl DeliveryIngressStore for SqliteStore {
         .execute(&mut *tx)
         .await?;
         if result.rows_affected() == 1 {
-            let payload = serde_json::to_string(&event.payload)?;
             let timestamp = event
                 .timestamp
                 .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-            sqlx::query("INSERT INTO events (id, timestamp, actor, type, topic, context_id, session_id, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-                .bind(&event.id)
-                .bind(&timestamp)
-                .bind(&event.actor)
-                .bind(&event.event_type)
-                .bind(&event.topic)
-                .bind(event_context_id)
-                .bind(session_id)
-                .bind(payload)
-                .execute(&mut *tx)
-                .await?;
+            append_event_in_transaction(&mut tx, event).await?;
             append_signal_outbox_in_transaction(&mut tx, event).await?;
             sqlx::query("UPDATE sessions SET updated_at = ?, last_activity_at = ? WHERE id = ?")
                 .bind(&timestamp)
@@ -7156,6 +7362,57 @@ impl EventStore for SqliteStore {
         }
 
         Ok(events)
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionProjectionStore for SqliteStore {
+    async fn query_session_projections(
+        &self,
+        context_id: &str,
+        session_ids: &[String],
+        include_context_wide: bool,
+    ) -> Result<Vec<Event>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut builder = QueryBuilder::new(
+            r#"SELECT e.rowid AS event_sequence, e.id, e.timestamp, e.actor,
+                      e.type, e.topic, e.payload
+               FROM session_projections projection
+               JOIN events e ON e.id = projection.event_id
+               WHERE projection.context_id = "#,
+        );
+        builder.push_bind(context_id);
+        builder.push(" AND (");
+        if include_context_wide {
+            builder.push("projection.session_id IS NULL");
+            if !session_ids.is_empty() {
+                builder.push(" OR ");
+            }
+        }
+        if !session_ids.is_empty() {
+            builder.push("projection.session_id IN (");
+            let mut separated = builder.separated(", ");
+            for session_id in session_ids {
+                separated.push_bind(session_id);
+            }
+            builder.push(")");
+        } else if !include_context_wide {
+            builder.push("0");
+        }
+        builder.push(") ORDER BY e.rowid ASC");
+        let rows = builder.build().fetch_all(&self.pool).await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(Event {
+                    id: row.get("id"),
+                    sequence: u64::try_from(row.get::<i64, _>("event_sequence")).ok(),
+                    timestamp: parse_time(&row.get::<String, _>("timestamp")),
+                    actor: row.get("actor"),
+                    event_type: row.get("type"),
+                    topic: row.get("topic"),
+                    payload: serde_json::from_str(&row.get::<String, _>("payload"))?,
+                })
+            })
+            .collect()
     }
 }
 
@@ -11878,6 +12135,7 @@ mod tests {
             .commit_mind_projection_transaction(
                 &event,
                 &[],
+                &SessionProjectionMutation::default(),
                 0,
                 NewMindProjection {
                     context_id: "projection-context".to_string(),
@@ -11910,6 +12168,7 @@ mod tests {
             .commit_mind_projection_transaction(
                 &stale_event,
                 &[],
+                &SessionProjectionMutation::default(),
                 0,
                 NewMindProjection {
                     context_id: "projection-context".to_string(),
@@ -11942,5 +12201,380 @@ mod tests {
             .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].id, event.id);
+    }
+
+    #[tokio::test]
+    async fn session_projection_tracks_append_retire_restore_atomically() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "session-projection-context".to_string(),
+                agent_id: "session-projection-agent".to_string(),
+                title: "Session Projection Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .initialize_mind_projection(NewMindProjection {
+                context_id: "session-projection-context".to_string(),
+                revision: 0,
+                state: serde_json::json!({"version": 0, "frames": [], "retired": []}),
+                state_hash: "session-hash-0".to_string(),
+                head_event_id: None,
+            })
+            .await
+            .unwrap();
+
+        let observation = Event::new(
+            "session-observation-1".to_string(),
+            "User".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            [
+                (
+                    "context_id".to_string(),
+                    serde_json::json!("session-projection-context"),
+                ),
+                (
+                    "session_id".to_string(),
+                    serde_json::json!("session-projection-session"),
+                ),
+                ("text".to_string(), serde_json::json!("keep me")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let other_observation = Event::new(
+            "session-observation-other-context".to_string(),
+            "User".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            [
+                (
+                    "context_id".to_string(),
+                    serde_json::json!("session-projection-other-context"),
+                ),
+                (
+                    "session_id".to_string(),
+                    serde_json::json!("session-projection-other-session"),
+                ),
+                ("text".to_string(), serde_json::json!("other context")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        store.append(observation.clone()).await.unwrap();
+        store.append(other_observation.clone()).await.unwrap();
+        let selected = vec!["session-projection-session".to_string()];
+        assert_eq!(
+            store
+                .query_session_projections("session-projection-context", &selected, true,)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let retire = Event::new(
+            "session-projection-retire".to_string(),
+            "Agent-Context".to_string(),
+            crate::event::TYPE_CONTEXT_TRANSACTION.to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({"context_id": "session-projection-context"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        store
+            .commit_mind_projection_transaction(
+                &retire,
+                &[],
+                &SessionProjectionMutation {
+                    retired_event_ids: vec![observation.id.clone(), other_observation.id.clone()],
+                    restored_event_ids: vec![],
+                },
+                0,
+                NewMindProjection {
+                    context_id: "session-projection-context".to_string(),
+                    revision: 1,
+                    state: serde_json::json!({"version": 1, "retired": [observation.id]}),
+                    state_hash: "session-hash-1".to_string(),
+                    head_event_id: Some(retire.id.clone()),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(store
+            .query_session_projections("session-projection-context", &selected, true)
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .query_session_projections(
+                    "session-projection-other-context",
+                    &["session-projection-other-session".to_string()],
+                    true,
+                )
+                .await
+                .unwrap()
+                .iter()
+                .filter(|event| event.id == other_observation.id)
+                .count(),
+            1,
+            "one Context transaction must not mutate another Context's Projection",
+        );
+
+        // Idempotently writing an already committed Ledger Event must not
+        // implicitly restore an Observation which the Agent retired later.
+        store.append(observation.clone()).await.unwrap();
+        assert!(store
+            .query_session_projections("session-projection-context", &selected, true)
+            .await
+            .unwrap()
+            .is_empty());
+
+        let restore = Event::new(
+            "session-projection-restore".to_string(),
+            "Agent-Context".to_string(),
+            crate::event::TYPE_CONTEXT_TRANSACTION.to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({"context_id": "session-projection-context"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        store
+            .commit_mind_projection_transaction(
+                &restore,
+                &[],
+                &SessionProjectionMutation {
+                    retired_event_ids: vec![],
+                    restored_event_ids: vec![observation.id.clone()],
+                },
+                1,
+                NewMindProjection {
+                    context_id: "session-projection-context".to_string(),
+                    revision: 2,
+                    state: serde_json::json!({"version": 2, "retired": []}),
+                    state_hash: "session-hash-2".to_string(),
+                    head_event_id: Some(restore.id.clone()),
+                },
+            )
+            .await
+            .unwrap();
+        let restored = store
+            .query_session_projections("session-projection-context", &selected, true)
+            .await
+            .unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].id, observation.id);
+    }
+
+    #[tokio::test]
+    async fn session_projection_migration_backfills_active_and_preserves_retired() {
+        let tmp = NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        let context_id = "session-projection-migration-context";
+        let session_id = "session-projection-migration-session";
+        let store = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: context_id.to_string(),
+                agent_id: "session-projection-migration-agent".to_string(),
+                title: "Session Projection Migration".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .initialize_mind_projection(NewMindProjection {
+                context_id: context_id.to_string(),
+                revision: 0,
+                state: serde_json::json!({"version": 0, "retired": []}),
+                state_hash: "migration-hash-0".to_string(),
+                head_event_id: None,
+            })
+            .await
+            .unwrap();
+        let observation = |id: &str, text: &str| {
+            Event::new(
+                id.to_string(),
+                "User".to_string(),
+                crate::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                serde_json::json!({
+                    "context_id": context_id,
+                    "session_id": session_id,
+                    "text": text
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            )
+        };
+        let retired = observation("projection-migration-retired", "retired");
+        let active = observation("projection-migration-active", "active");
+        store.append(retired.clone()).await.unwrap();
+        store.append(active.clone()).await.unwrap();
+        let transaction = Event::new(
+            "projection-migration-tx".to_string(),
+            "Agent-Context".to_string(),
+            crate::event::TYPE_CONTEXT_TRANSACTION.to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({"context_id": context_id})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert!(matches!(
+            store
+                .commit_mind_projection_transaction(
+                    &transaction,
+                    &[],
+                    &SessionProjectionMutation {
+                        retired_event_ids: vec![retired.id.clone()],
+                        restored_event_ids: Vec::new(),
+                    },
+                    0,
+                    NewMindProjection {
+                        context_id: context_id.to_string(),
+                        revision: 1,
+                        state: serde_json::json!({"version": 1, "retired": [retired.id.clone()]}),
+                        state_hash: "migration-hash-1".to_string(),
+                        head_event_id: Some(transaction.id.clone()),
+                    },
+                )
+                .await
+                .unwrap(),
+            MindProjectionCommit::Committed { .. }
+        ));
+
+        // Simulate a pre-migration database: the immutable Ledger and current
+        // Mind Projection exist, while the derived Session Projection does not.
+        sqlx::query("DELETE FROM session_projections")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
+            .bind(SESSION_PROJECTION_MIGRATION)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        store.pool.close().await;
+
+        let reopened = SqliteStore::new(path.to_str().unwrap()).await.unwrap();
+        let projected = reopened
+            .query_session_projections(context_id, &[session_id.to_string()], true)
+            .await
+            .unwrap();
+        assert!(projected.iter().any(|event| event.id == active.id));
+        assert!(projected.iter().all(|event| event.id != retired.id));
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = ?",
+            )
+            .bind(SESSION_PROJECTION_MIGRATION)
+            .fetch_one(&reopened.pool)
+            .await
+            .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn independent_sqlite_stores_share_leases_and_context_cas() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap().to_string();
+        let bootstrap = SqliteStore::new(&path).await.unwrap();
+        bootstrap
+            .create_context(NewCognitiveContext {
+                id: "sqlite-shared-context".to_string(),
+                agent_id: "sqlite-shared-agent".to_string(),
+                title: "SQLite Shared Context".to_string(),
+            })
+            .await
+            .unwrap();
+        bootstrap
+            .initialize_mind_projection(NewMindProjection {
+                context_id: "sqlite-shared-context".to_string(),
+                revision: 0,
+                state: serde_json::json!({"version": 0}),
+                state_hash: "sqlite-shared-0".to_string(),
+                head_event_id: None,
+            })
+            .await
+            .unwrap();
+        bootstrap.pool.close().await;
+
+        let (first, second) = tokio::join!(SqliteStore::new(&path), SqliteStore::new(&path));
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(
+            crate::memory::RuntimeStore::worker_coordination_mode(&first),
+            crate::memory::WorkerCoordinationMode::SharedLeases
+        );
+
+        let event = |id: &str| {
+            Event::new(
+                id.to_string(),
+                "Agent-Context".to_string(),
+                crate::event::TYPE_CONTEXT_TRANSACTION.to_string(),
+                "chat/context_tx_committed".to_string(),
+                serde_json::json!({"context_id": "sqlite-shared-context"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+        };
+        let event_a = event("sqlite-shared-a");
+        let event_b = event("sqlite-shared-b");
+        let mutation_a = SessionProjectionMutation::default();
+        let mutation_b = SessionProjectionMutation::default();
+        let (first_result, second_result) = tokio::join!(
+            first.commit_mind_projection_transaction(
+                &event_a,
+                &[],
+                &mutation_a,
+                0,
+                NewMindProjection {
+                    context_id: "sqlite-shared-context".to_string(),
+                    revision: 1,
+                    state: serde_json::json!({"version": 1, "worker": "a"}),
+                    state_hash: "sqlite-shared-a".to_string(),
+                    head_event_id: Some(event_a.id.clone()),
+                },
+            ),
+            second.commit_mind_projection_transaction(
+                &event_b,
+                &[],
+                &mutation_b,
+                0,
+                NewMindProjection {
+                    context_id: "sqlite-shared-context".to_string(),
+                    revision: 1,
+                    state: serde_json::json!({"version": 1, "worker": "b"}),
+                    state_hash: "sqlite-shared-b".to_string(),
+                    head_event_id: Some(event_b.id.clone()),
+                },
+            )
+        );
+        let results = [first_result.unwrap(), second_result.unwrap()];
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, MindProjectionCommit::Committed { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, MindProjectionCommit::Conflict { .. }))
+                .count(),
+            1
+        );
     }
 }

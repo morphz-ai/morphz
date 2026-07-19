@@ -2255,6 +2255,7 @@ mod tests {
         assert!(scheduler_json["threads"].is_array());
         assert!(scheduler_json["admission"].is_object());
         assert!(scheduler_json["model_provider"].is_object());
+        assert!(scheduler_json["context_capacity"].is_object());
 
         let status = handle_status(
             State(Arc::clone(&state)),

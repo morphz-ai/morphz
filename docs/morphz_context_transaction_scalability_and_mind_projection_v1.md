@@ -1,8 +1,8 @@
 # Morphz Context 事务、Mind Projection 与分布式扩展设计 v1
 
-> 状态：Phase 1–3 已完成首个单机可用版本与容量基线；Phase 4 已完成服务型 Store、多 Runtime 仲裁和首轮部署级验证
+> 状态：Phase 1–4 已完成当前阶段收口；SQLite 与 PostgreSQL 共享同一 Projection/CAS/Lease 契约，生产级跨主机容量验证仍待真实部署
 >
-> 日期：2026-07-18
+> 日期：2026-07-19
 >
 > 适用范围：共享 Mind、Context Transaction、Frame 生命周期、Session 海量并发、Event Ledger、在线状态恢复与多 Runtime Worker
 >
@@ -10,7 +10,7 @@
 >
 > 相关实现：[并发 Session 事件循环与认知工作集](./morphz_concurrent_session_working_set_v1.md)、[Scheduler Kernel 与领域命名模型](./morphz_scheduler_kernel_and_domain_model_v1.md)
 
-## 0. 实施进度（2026-07-18）
+## 0. 实施进度（2026-07-19）
 
 已经落地：
 
@@ -18,10 +18,13 @@
 - Context transaction 通过数据库 revision CAS 提交，不再只依赖进程内 Mutex；
 - Ledger Event、Mind Projection、Context Head 与 Session attention 在同一 SQLite transaction 中原子提交；
 - Context Encoding、Frame 查询与 Mind version 读取在线 Projection；旧数据库仅在首次访问时完整重放并懒迁移；
-- Context Encoding 先计算有界 Session Working Set，再只查询这些 Session 与 Context-wide Event；
+- 已增加 `session_projections`：每条 Agent 可见 Observation 在 Ledger append 的同一数据库事务中进入当前态投影；`retire` 删除投影行、`restore` 从不可变 Ledger 恢复投影行；
+- Session Projection 不引入 projection head、watermark 或 Session Snapshot。Ledger append 与 Projection 更新原子提交，因此查询出的行集本身就是当前完整状态；
+- Context Encoding 先计算有界 Session Working Set，再只读取这些 Session 与 Context-wide Observation 的 Session Projection，不再扫描所选 Session 的完整 Ledger；
 - `context_tx` 只按 SExpr 实际涉及的标识查询、验证 Observation，不再扫描全 Context 来解析少量 `@eN`；
 - 新事务默认记录规范化 SExpr、Diff、`before_hash` 与 `after_hash`，Projection Profile 不再复制完整 `state_after`；
 - Projection 缺失时优先从最近可信 Snapshot + 后续 Mind Transactions 增量重建；Snapshot、事务 hash chain 与 Ledger 游标任一不一致都会显式失败；
+- Context Head 与 Mind Projection 的在线一致性由同一条数据库语句读取；不会因另一 Runtime 恰好在两次查询之间完成原子初始化而把健康状态误报为单边损坏；
 - `morphz context audit [CONTEXT_ID]` 同时执行 Genesis 全量重放、Snapshot 增量重放并比对在线 Projection；
 - 两个独立 ContextEngine 对同一 Context 的并发同版本写入，已由 SQLite CAS 验证为仅一个成功；
 - Runtime durable Event 已进入有界 Event Writer；并发发布者在可配置微窗口内 group commit，Signal Outbox 与 Event 同事务提交；
@@ -43,10 +46,14 @@
 - PostgreSQL `ScheduleStore` 已实现 Schedule revision fence、暂停/恢复/重排/取消、反向依赖唤醒，以及“到期 occurrence + Event + Signal Outbox”原子提交；批量 `schedule_tx` 在任一目标 Thread 无效时整笔回滚，SQLite/PostgreSQL 已通过同一套并发控制和精确一次派发契约测试。
 - PostgreSQL `DeliveryIngressStore` 已实现 Client Message 幂等 claim、消息 Event/Signal Outbox/Session activity/attention 自动恢复的原子入口，以及多个已完成 Thread 的单次可见交付；并发重复消息和重复交付均只有一个提交者获胜，SQLite/PostgreSQL 已通过同一套契约测试。
 - PostgreSQL `DelegationStore` 已实现 Parent/Child 路由验证、子 Session 唯一委派、状态查询，以及“Delegation completed + Parent Result Event + Signal Outbox”原子提交；错误父路由会整笔回滚，并发重复结果只有一个 Worker 获胜。至此 PostgreSQL 已在类型层满足完整 `RuntimeStore` capability composition，并通过与 SQLite 相同的全部 Store 契约测试。
-- `RuntimeStore` 现在显式声明 `ExclusiveProcess | SharedLeases` Worker 协调模式：SQLite 启动时可以立即恢复本机遗留的运行中 Job；PostgreSQL 新 Worker 不得把其他 Worker 的有效 lease 误判成崩溃，只在 lease 到期后执行 revision-fenced requeue/lost reconciliation。
+- `RuntimeStore` 现在显式声明 `ExclusiveProcess | SharedLeases` Worker 协调模式；SQLite 与 PostgreSQL 生产 Store 均使用 `SharedLeases`。任何新 Worker 都不得把其他 Worker 的有效 lease 误判成崩溃，只在 lease 到期后执行 revision-fenced requeue/lost reconciliation；`ExclusiveProcess` 仅保留给明确独占的内存/测试环境。
 - 已在临时 PostgreSQL 15 上以两个独立 `PostgresStore` 连接池竞争同一 Context、Activation、Execution Job、Objective 和 Timer；Context CAS、所有权 claim 与 lease 均只有一个胜者，过期 Execution lease 可由另一实例恢复。
 - 已在同一 PostgreSQL schema 中启动两个完整 Morphz Runtime，并向共享 Context/Session 提交一条消息；实测只发生一次模型求值、只持久化一条 `chat/reply`，证明调度 single-flight 不依赖单个 Runtime 对象的进程内状态。
 - PostgreSQL schema migration 使用数据库级 advisory lock 串行化；两个 Runtime 进程可同时首次启动同一新 schema，不再因并发 DDL 产生 `tuple concurrently updated`。
+- PostgreSQL schema migration 已增加持久版本表；各能力迁移在 advisory lock 内按版本执行，失败不写完成标记，重启可幂等重试；CI 已增加 PostgreSQL 16 conformance job，测试每次使用独立 schema，可在同一个测试数据库中重复或并行执行。
+- SQLite 已切换为 `SharedLeases` 协调模式，并增加两个真实 OS 子进程共享同一 WAL 数据库的 Context CAS 测试；同版本写入严格只有一个成功。
+- SharedLeases 启动恢复只接管已过期的 Running Activation，不再把另一进程的 queued Activation 或有效 lease 误判为本机遗留任务。
+- Scheduler Snapshot 新增 Context 容量计数：事务/提交/冲突、提交延迟、Mind Projection 加载延迟、Encoding 次数及每次物化 Observation 数；Rust SDK、CLI 与 HTTP API 使用同一读模型。
 - 已增加可复现的 `postgres_multi_process_probe`：父进程启动两个真实子 Runtime 进程竞争同一条消息，并额外强制终止一个持有短 Execution lease 的进程。实测 `ready_workers=2`、`model_calls=1`、`replies=1`，且到期 Job 被另一新进程安全重排。首份结果见 [PostgreSQL Multi-Process Probe — 2026-07-18](./benchmarks/postgres_multi_process_probe_2026-07-18.md)。
 
 仍待实施：
@@ -66,7 +73,7 @@ Morphz 已经具备一套成立的 Context 并发语义：
 - Mind 可以通过 Ledger 确定性重放，退役内容仍可恢复；
 - `session_working_set.max_sessions = 1` 时，每次模型求值只完整投影当前 Session，同时继续读取共享 Mind。
 
-因此，当前实现作为单进程、单 SQLite 数据库的本地 Agent Runtime 是足够的。数据库级 CAS 已经消除了同一数据库上多个 Runtime 实例发生 lost update 的可能，PostgreSQL 已完成双 Runtime、双 OS 进程和进程终止后的 lease 恢复验证；在跨主机、数据库故障切换和生产编排环境验证完成前，仍不宣称完整生产级横向扩展。
+因此，当前实现作为单机 SQLite Agent Runtime 已经足够，并且允许同一主机上的多个 Runtime 进程共享数据库：Context CAS 防止 lost update，Activation/Job/Timer 等通过持久 lease 仲裁。SQLite WAL 仍只有一个物理写者，因此这是一种正确的多进程协调能力，不等于高吞吐分布式数据库。PostgreSQL 已完成双 Runtime、双 OS 进程和进程终止后的 lease 恢复验证；在跨主机、数据库故障切换和生产编排环境验证完成前，仍不宣称完整生产级横向扩展。
 
 但它还不是高性能分布式服务实现。主要缺口不是 DSL 表达能力，而是：
 
@@ -151,9 +158,9 @@ Phase 0 的 Context Mutex 只存在于一个 Runtime 进程，因而无法防止
 
 ## 3. 当前 Mind 重放到底做什么
 
-### 3.1 事件选择范围
+### 3.1 历史恢复的事件选择范围
 
-重放不是读取数据库里的一张 Frame 表，也不是扫描所有 Agent 的全部数据库记录。当前实现按 `context_id` 查询：
+完整重放不是读取数据库里的一张 Frame 表，也不是扫描所有 Agent 的全部数据库记录。它只在 Projection 首次迁移、损坏恢复、显式审计和 Seed 导出时按 `context_id` 查询：
 
 - `chat/*`，但排除 `chat/context_inspect`；
 - `runtime/context_seeded`；
@@ -161,7 +168,7 @@ Phase 0 的 Context Mutex 只存在于一个 Runtime 进程，因而无法防止
 
 这些事件按 Ledger sequence 排序后交给 `load_mind_from_events`。
 
-需要特别注意：当前查询按 Context 过滤，但没有先按 Session Working Set 过滤。因此，一个 Context 下挂载大量 Session 时，即使本次 `max_sessions = 1`，Mind 重建路径仍可能遍历该 Context 下其他 Session 的历史 Observation。
+这条路径刻意不受 Session Working Set 限制，因为它是在验证共享 Mind 的完整因果历史；它不再位于普通模型求值热路径。正常 Context Encoding 从 `mind_projections` 和 `session_projections` 读取当前态。
 
 ### 3.2 确定性恢复过程
 
@@ -276,11 +283,11 @@ Stable VM Prefix
 
 只要 Context transaction 相对 Session 对话数量足够少，共享提交可以保持低频。但系统不能只依赖这一行为假设，必须观测真实 `context_tx / dialogue_turn` 比例和冲突率。
 
-## 5. 当前实现的扩展性瓶颈
+## 5. 已消除的热路径读放大与剩余扩展瓶颈
 
-### 5.1 在线全历史扫描
+### 5.1 在线全历史扫描（已消除）
 
-当前正常求值和事务提交可能需要读取 Context 的大量相关事件。复杂度更接近：
+早期实现中，正常求值和事务提交可能读取 Context 的大量相关事件，复杂度接近：
 
 ```text
 O(当前 Context 历史事件总数)
@@ -292,11 +299,11 @@ O(当前 Context 历史事件总数)
 O(当前活跃 Frame 数 + 当前 Session 事件数)
 ```
 
-当同一 Agent 与大量用户对话时，这是最先需要消除的读放大。
+当前普通求值先读取一行 `mind_projections`，再按有界 Working Set 查询 `session_projections`。复杂度现在取决于活跃 Mind 和被选中 Session 的当前有效 Observation，而不取决于整个 Context 的历史事件数。完整 Ledger 扫描只保留在迁移、恢复、审计和显式历史操作中。
 
-### 5.2 Context 锁内重建完整 Mind
+### 5.2 Context 锁内重建完整 Mind（已消除）
 
-当前 Context Mutex 覆盖了事件读取、引用解析、Mind 重建和事务应用。即使最终 SQLite 写入很短，锁的持有时间也会随历史增长。
+早期 Context Mutex 覆盖事件读取、引用解析、Mind 重建和事务应用。当前锁内从在线 Mind Projection 读取状态；Context transaction 只按实际引用的 Event ID 查询 Observation，并通过数据库 revision CAS 提交。锁的成本不再随完整 Ledger 线性增长。
 
 单 Context 串行提交能力近似：
 
@@ -304,21 +311,21 @@ O(当前活跃 Frame 数 + 当前 Session 事件数)
 mind_commit_capacity ≈ 1 / average_context_commit_latency
 ```
 
-如果完整重放耗时从 10ms 增长到 500ms，理论提交能力会从约 100 次/秒下降到约 2 次/秒。
+完整重放耗时已经与在线提交能力解耦。剩余吞吐上限主要来自单 Context 的保守全局 CAS 冲突率和数据库物理写能力。
 
-### 5.3 `state_after` 存储写放大
+### 5.3 `state_after` 存储写放大（已消除生产默认）
 
-当前每条 Context transaction Event 都记录完整 `state_after`。如果 Mind 逐渐增长，而事务数量也增长，存储量可能近似：
+早期每条 Context transaction Event 都记录完整 `state_after`。如果 Mind 逐渐增长，而事务数量也增长，存储量近似：
 
 ```text
 O(transaction_count × average_mind_size)
 ```
 
-它有利于逐事件完整性校验，但不适合作为海量长期运行时唯一表示。
+当前 Projection-backed 写入只记录规范化 SExpr、Diff 与前后 hash，完整状态进入当前 Mind Projection 和周期性 Snapshot；无 Projection 的测试/旧式 Store 才保留兼容性回执。
 
-### 5.4 Observation 引用全量准备
+### 5.4 Observation 引用全量准备（已消除）
 
-当前为了支持 `@eN` 短引用、来源校验和 retire/restore，会从已加载事件构建引用表与 Observation ID 集。海量 Session 下，应改为只验证本事务实际引用的 ID，而不是预先遍历整个 Context 的所有 Observation。
+当前只提取事务实际出现的引用，按稳定 Event ID 或短引用查询对应 Observation，并校验其 Ledger sequence 严格早于 transaction Event。不会为一次小事务预先遍历整个 Context。
 
 ### 5.5 SQLite 单物理写者
 
@@ -326,11 +333,14 @@ WAL 支持并发读和单写，但 Session Event、Signal、Activation、Executi
 
 ## 6. 目标在线状态模型
 
-目标持久模型分为四层：
+目标持久模型分为五层：
 
 ```text
 Session Event Ledger
   每个 Session 的消息、回复、工具与局部因果事实
+
+Session Projection
+  每个 Session 当前仍激活的 Observation 行集；支持 swap in / swap out
 
 Mind Transaction Ledger
   真正修改共享认知的 context_tx 与 Context Seed
@@ -353,6 +363,25 @@ Mind Snapshot / Audit Checkpoint
 
 Projection 不解释 Frame body 的业务语义。Frame body 继续是 Agent 自主维护的开放 SExpr；Runtime 只物化 ID、来源、版本、生命周期、关系和原始 body。
 
+Session Projection 同样不是第二事实源。它的物理结构是一行一个有效 Observation：
+
+```text
+session_projections
+  event_id      PRIMARY KEY → events.id
+  context_id
+  session_id    可空，仅显式 Context-wide Observation 使用 NULL
+```
+
+它没有 `session_projection_heads`，也没有 Session Snapshot：
+
+- 新 Observation 与 Ledger Event 在同一数据库事务中插入 Projection；
+- `retire @event` 与 Mind revision CAS 在同一事务中删除该 Projection 行；
+- `restore @event` 按 Ledger 中不可变 Event 恢复该 Projection 行；
+- 同一个 Event 的幂等 append 不会把已经 retire 的行意外复活；
+- 并发 retire/restore 的最终顺序由 Context transaction revision CAS 和 Ledger sequence 决定。
+
+因此，即使某个 Session 的所有 Observation 都被 retire，空查询结果也明确表示其当前 Projection 为空，而不是“尚未投影”。原子提交保证不存在 Ledger 已成功但 Projection 尚未处理的合法中间状态。
+
 ### 6.2 正常 Context Encoding
 
 目标读取路径：
@@ -360,7 +389,7 @@ Projection 不解释 Frame body 的业务语义。Frame body 继续是 Agent 自
 ```text
 读取 Stable VM / Agent Identity Prefix
   + 读取当前 Mind Projection
-  + 查询当前 Session 的 Working Set 事件
+  + 查询当前 Working Set 的 Session Projection 行
   + 查询当前 Thread、Objective、Tool Transcript
   + 编译 Context Encoding
 ```
@@ -390,24 +419,22 @@ COMMIT
 
 ```text
 context_heads
-  context_id, revision, projection_hash, snapshot_id, updated_at
+  context_id, revision, projection_hash, head_event_id, updated_at
 
-context_transactions
-  id, context_id, base_revision, result_revision,
-  sexpr, changes, before_hash, after_hash, actor, created_at
+events（Mind Transaction Ledger 也是 Event 的一种）
+  id, sequence, context_id, session_id, type, topic, payload
 
-mind_frames
-  context_id, frame_id, frame_revision, lifecycle,
-  body, sources, created_context_revision, updated_context_revision
+mind_projections
+  context_id, revision, state_json, state_hash, updated_at
 
-mind_relations
-  context_id, subject, relation, object, created_context_revision
+session_projections
+  event_id, context_id, session_id
 
 mind_snapshots
   id, context_id, revision, state_blob, state_hash, created_at
 ```
 
-这只是物理投影结构，不是对 Agent Mind body 的固定 schema。
+`mind_projections.state_json` 保存完整、开放的 MindState；当前实现没有把 Frame body 拆成 Runtime 固定的 `mind_frames` 业务表。这样既提供 O(当前状态) 的在线读取，也保留 Agent 自主形成 SExpr 结构的自由。这些都是可由 Ledger 重建的物理投影，不是对 Agent Mind body 的固定业务 schema。
 
 ## 7. 从 Context 级 CAS 演进到 Frame 级 MVCC
 
@@ -616,7 +643,8 @@ acknowledge Activation
 ### Phase 2：Ledger 分流、增量恢复与按需引用验证（已完成）
 
 - 区分 Session Events 与 Mind Transactions 的查询路径；
-- Context Encoding 只读取当前有界 Session Working Set（隔离模式下即当前 Session）；
+- 增加与 Ledger 原子维护的 `session_projections`；不引入 Projection Head、watermark 或 Session Snapshot；
+- Context Encoding 只读取当前有界 Session Working Set 的有效 Projection（隔离模式下即当前 Session）；
 - `@eN` 只验证事务实际引用的 Observation；
 - 增加 Snapshot、hash chain 和 Snapshot + 后续事务增量恢复；
 - 明确 v1 非破坏性历史保留策略，冷归档待真实容量数据驱动；
@@ -644,7 +672,9 @@ acknowledge Activation
 - 两个完整 Runtime 共享 PostgreSQL 的 single-flight 求值与精确一次回复（已完成）；
 - Shared lease 启动恢复不抢占存活 Worker、到期后允许接管（已完成）；
 - PostgreSQL migration 跨进程互斥（已完成）；
+- PostgreSQL migration 持久版本记录与 CI PostgreSQL 16 conformance job（已完成代码收口）；
 - 双 OS 进程 single-flight 与 Worker crash/lease 到期恢复（已完成）；
+- SQLite `SharedLeases`、双 OS 进程 Context CAS 与存活 Activation lease 保护（已完成）；
 - 跨主机、数据库故障切换和生产编排环境验证；
 - 生产级 Runtime 横向扩展与容量调优；
 - SQLite 继续作为默认单机后端。
@@ -684,21 +714,39 @@ max_connections = 16
 
 ## 12. 必须观测的容量指标
 
+当前 `SchedulerSnapshot.context_capacity` 已提供：
+
 ```text
-dialogue_turns_total
 context_transactions_total
-context_tx_per_turn_ratio
+context_commits_total
 context_tx_conflicts_total
-context_tx_conflict_rate
-context_commit_latency
-mind_projection_load_latency
+context_commit_latency_micros_total / max
+mind_projection_loads_total
+mind_projection_load_latency_micros_total / max
+context_encodings_total
+events_scanned_total
+events_scanned_per_encoding_max
+```
+
+`SchedulerSnapshot` 已有的相邻容量事实还包括：
+
+```text
+provider queued / in_flight / max_in_flight / acquired_total
+event_writer queue_depth / committed_events / committed_batches
+event_writer failed_batches / largest_batch
+activation admission queued / running / deferred
+```
+
+平均延迟、每次 Encoding 平均物化数和冲突率可以由同一个 Snapshot 中的 total/count 无歧义计算，Runtime 不重复持久化派生比率。以下指标仍应在生产遥测层补齐，而不是为了本地 Runtime 强行引入新的长期指标数据库：
+
+```text
+dialogue_turns_total 与 context_tx_per_turn_ratio
 full_replay_latency
-events_scanned_per_encoding
-session_event_append_latency
+session_event_append_latency 分位数
 sqlite_busy_total
 ledger_bytes_by_event_type
 snapshot_age_transactions
-provider_in_flight / queued
+按 Provider / Agent / Context 分组的时序与分位数
 ```
 
 扩容决策必须依据这些指标，而不是依据注册用户数。一个拥有十万注册用户、但每秒只有一条消息的 Agent 与一百个同时运行长任务的用户，负载完全不同。
@@ -715,6 +763,9 @@ provider_in_flight / queued
 8. 对话和工具等待不能持有 Context 写锁；
 9. 其他 Session 的原始内容不能因为共享 Context 而自动进入当前 Session 的模型投影；
 10. 完整历史重放失败必须显式暴露，不得静默采用损坏 Projection。
+11. Observation Ledger append 与 Session Projection 插入必须原子；retire/restore 与对应 Mind revision CAS 必须原子。
+12. Session Projection 为空是一个完整当前态，不得依赖 Projection Head 才能区分“空”与“未处理”。
+13. Session Projection 的 retire/restore 必须同时按 `context_id` 约束；任何 Context transaction 都不能修改另一 Context 的投影行。
 
 ## 14. 非目标
 

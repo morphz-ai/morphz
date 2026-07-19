@@ -119,6 +119,7 @@ pub struct SchedulerSnapshot {
     pub admission: SchedulerAdmissionSnapshot,
     pub event_writer: crate::orchestrator::orchestrator::DurableEventWriterMetricsSnapshot,
     pub model_provider: crate::orchestrator::orchestrator::ModelProviderMetricsSnapshot,
+    pub context_capacity: crate::orchestrator::context::ContextCapacityMetricsSnapshot,
     pub threads: Vec<SchedulerThreadSnapshot>,
     pub orphan_activations: Vec<SchedulerActivationSnapshot>,
     pub orphan_signals: Vec<ThreadSignalRecord>,
@@ -295,7 +296,11 @@ impl MorphzRuntimeBuilder {
             )
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
             .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
-            .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>),
+            .with_session_projection_store(
+                Arc::clone(&store) as Arc<dyn crate::memory::SessionProjectionStore>
+            )
+            .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>)
+            .with_worker_coordination_mode(store.worker_coordination_mode()),
         );
         let execution_jobs = Arc::new(ExecutionJobManager::new(
             Arc::clone(&store) as Arc<dyn ExecutionJobStore>
@@ -1644,6 +1649,7 @@ impl MorphzRuntime {
             },
             event_writer: self.inner.orchestrator.durable_event_writer_metrics(),
             model_provider: self.inner.orchestrator.model_provider_metrics(),
+            context_capacity: self.inner.orchestrator.context_capacity_metrics(),
             threads,
             orphan_activations,
             orphan_signals,

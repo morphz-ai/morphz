@@ -1,14 +1,14 @@
 use crate::config::OrchestratorConfig;
 use crate::event::{
-    Event, TYPE_AGENT_CALL, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_EXCEPTION,
-    TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
+    Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use crate::memory::{
     DeliveryStatus, EventStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
-    NewMindProjection, ObjectiveRecord, ObjectiveStore, QueryFilter, ScheduleRecord,
-    ScheduleStatus, SessionAttentionState, SessionAttentionUpdate, SessionRecord, SessionStatus,
-    SessionStore, ThreadActivationRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus,
+    MindSnapshotRecord, NewMindProjection, ObjectiveRecord, ObjectiveStore, QueryFilter,
+    ScheduleRecord, ScheduleStatus, SessionAttentionState, SessionAttentionUpdate,
+    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionStatus, SessionStore,
+    ThreadActivationRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
+    WorkerCoordinationMode,
 };
 use crate::orchestrator::context_contract::{
     render_context_tx_epistemic_guidance, ContractClause, EPISTEMIC_CONTRACT,
@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
@@ -29,6 +30,69 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 pub const CONTEXT_PROTOCOL_VERSION: u64 = 20;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
+
+fn validate_snapshot_head_event(
+    snapshot: &MindSnapshotRecord,
+    head: &Event,
+) -> Result<(), DynError> {
+    let event_context_id = head
+        .payload
+        .get("context_id")
+        .and_then(serde_json::Value::as_str);
+    if event_context_id != Some(snapshot.context_id.as_str()) {
+        return Err(format!(
+            "Mind Snapshot '{}' 的 head Event '{}' 属于错误的 Context {:?}",
+            snapshot.id, head.id, event_context_id
+        )
+        .into());
+    }
+    match (
+        head.event_type.as_str(),
+        head.topic.as_str(),
+        head.actor.as_str(),
+    ) {
+        (TYPE_CONTEXT_TRANSACTION, "chat/context_tx_committed", "Agent-Context") => {
+            let after_version = head
+                .payload
+                .get("after_version")
+                .and_then(serde_json::Value::as_u64);
+            let after_hash = head
+                .payload
+                .get("after_hash")
+                .and_then(serde_json::Value::as_str);
+            if after_version != Some(snapshot.revision)
+                || after_hash != Some(snapshot.state_hash.as_str())
+            {
+                return Err(format!(
+                    "Mind Snapshot '{}' 与 head transaction '{}' 的 after_version/after_hash 不一致",
+                    snapshot.id, head.id
+                )
+                .into());
+            }
+        }
+        (TYPE_CONTEXT_SEED, "runtime/context_seeded", "System-ContextSeed") => {
+            let projected_hash = head
+                .payload
+                .get("projected_hash")
+                .and_then(serde_json::Value::as_str);
+            if snapshot.revision != 0 || projected_hash != Some(snapshot.state_hash.as_str()) {
+                return Err(format!(
+                    "Mind Snapshot '{}' 与 seed head Event '{}' 的 revision/projected_hash 不一致",
+                    snapshot.id, head.id
+                )
+                .into());
+            }
+        }
+        _ => {
+            return Err(format!(
+                "Mind Snapshot '{}' 的 head Event '{}' 不是合法的 Context transaction/seed 锚点",
+                snapshot.id, head.id
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
 
 struct ContextOperationSpec {
     name: &'static str,
@@ -268,6 +332,97 @@ pub struct MindProjectionAudit {
     pub incremental_replay_micros: Option<u64>,
     pub projection_validation_micros: u64,
     pub matches: bool,
+}
+
+/// Hot-path capacity counters for Context transactions and Context Encoding.
+/// These are process-local operational metrics; the Ledger and Projections
+/// remain the durable authority. The snapshot is exposed through the same
+/// Scheduler read model used by the Rust SDK, CLI and HTTP API.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextCapacityMetricsSnapshot {
+    pub context_transactions_total: u64,
+    pub context_commits_total: u64,
+    pub context_tx_conflicts_total: u64,
+    pub context_commit_latency_micros_total: u64,
+    pub context_commit_latency_micros_max: u64,
+    pub mind_projection_loads_total: u64,
+    pub mind_projection_load_latency_micros_total: u64,
+    pub mind_projection_load_latency_micros_max: u64,
+    pub context_encodings_total: u64,
+    pub events_scanned_total: u64,
+    pub events_scanned_per_encoding_max: u64,
+}
+
+#[derive(Default)]
+struct ContextCapacityMetrics {
+    context_transactions_total: AtomicU64,
+    context_commits_total: AtomicU64,
+    context_tx_conflicts_total: AtomicU64,
+    context_commit_latency_micros_total: AtomicU64,
+    context_commit_latency_micros_max: AtomicU64,
+    mind_projection_loads_total: AtomicU64,
+    mind_projection_load_latency_micros_total: AtomicU64,
+    mind_projection_load_latency_micros_max: AtomicU64,
+    context_encodings_total: AtomicU64,
+    events_scanned_total: AtomicU64,
+    events_scanned_per_encoding_max: AtomicU64,
+}
+
+fn record_atomic_max(target: &AtomicU64, value: u64) {
+    let mut current = target.load(Ordering::Relaxed);
+    while value > current {
+        match target.compare_exchange_weak(current, value, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+impl ContextCapacityMetrics {
+    fn record_projection_load(&self, elapsed_micros: u64) {
+        self.mind_projection_loads_total
+            .fetch_add(1, Ordering::Relaxed);
+        self.mind_projection_load_latency_micros_total
+            .fetch_add(elapsed_micros, Ordering::Relaxed);
+        record_atomic_max(
+            &self.mind_projection_load_latency_micros_max,
+            elapsed_micros,
+        );
+    }
+
+    fn record_encoding(&self, event_count: usize) {
+        let event_count = u64::try_from(event_count).unwrap_or(u64::MAX);
+        self.context_encodings_total.fetch_add(1, Ordering::Relaxed);
+        self.events_scanned_total
+            .fetch_add(event_count, Ordering::Relaxed);
+        record_atomic_max(&self.events_scanned_per_encoding_max, event_count);
+    }
+
+    fn snapshot(&self) -> ContextCapacityMetricsSnapshot {
+        ContextCapacityMetricsSnapshot {
+            context_transactions_total: self.context_transactions_total.load(Ordering::Relaxed),
+            context_commits_total: self.context_commits_total.load(Ordering::Relaxed),
+            context_tx_conflicts_total: self.context_tx_conflicts_total.load(Ordering::Relaxed),
+            context_commit_latency_micros_total: self
+                .context_commit_latency_micros_total
+                .load(Ordering::Relaxed),
+            context_commit_latency_micros_max: self
+                .context_commit_latency_micros_max
+                .load(Ordering::Relaxed),
+            mind_projection_loads_total: self.mind_projection_loads_total.load(Ordering::Relaxed),
+            mind_projection_load_latency_micros_total: self
+                .mind_projection_load_latency_micros_total
+                .load(Ordering::Relaxed),
+            mind_projection_load_latency_micros_max: self
+                .mind_projection_load_latency_micros_max
+                .load(Ordering::Relaxed),
+            context_encodings_total: self.context_encodings_total.load(Ordering::Relaxed),
+            events_scanned_total: self.events_scanned_total.load(Ordering::Relaxed),
+            events_scanned_per_encoding_max: self
+                .events_scanned_per_encoding_max
+                .load(Ordering::Relaxed),
+        }
+    }
 }
 
 struct SnapshotMindRecovery {
@@ -642,9 +797,12 @@ pub struct ContextEngine {
     store: Arc<dyn EventStore>,
     session_store: Option<Arc<dyn SessionStore>>,
     mind_projection_store: Option<Arc<dyn MindProjectionStore>>,
+    session_projection_store: Option<Arc<dyn SessionProjectionStore>>,
     objective_store: Option<Arc<dyn ObjectiveStore>>,
+    worker_coordination_mode: WorkerCoordinationMode,
     config: OrchestratorConfig,
     context_locks: DashMap<String, Arc<Mutex<()>>>,
+    capacity_metrics: ContextCapacityMetrics,
 }
 
 impl ContextEngine {
@@ -653,9 +811,12 @@ impl ContextEngine {
             store,
             session_store: None,
             mind_projection_store: None,
+            session_projection_store: None,
             objective_store: None,
+            worker_coordination_mode: WorkerCoordinationMode::ExclusiveProcess,
             config,
             context_locks: DashMap::new(),
+            capacity_metrics: ContextCapacityMetrics::default(),
         }
     }
 
@@ -672,9 +833,30 @@ impl ContextEngine {
         self
     }
 
+    pub fn with_session_projection_store(
+        mut self,
+        session_projection_store: Arc<dyn SessionProjectionStore>,
+    ) -> Self {
+        self.session_projection_store = Some(session_projection_store);
+        self
+    }
+
     pub fn with_objective_store(mut self, objective_store: Arc<dyn ObjectiveStore>) -> Self {
         self.objective_store = Some(objective_store);
         self
+    }
+
+    pub fn with_worker_coordination_mode(mut self, mode: WorkerCoordinationMode) -> Self {
+        self.worker_coordination_mode = mode;
+        self
+    }
+
+    pub fn worker_coordination_mode(&self) -> WorkerCoordinationMode {
+        self.worker_coordination_mode
+    }
+
+    pub fn capacity_metrics(&self) -> ContextCapacityMetricsSnapshot {
+        self.capacity_metrics.snapshot()
     }
 
     pub fn session_store(&self) -> Option<Arc<dyn SessionStore>> {
@@ -788,6 +970,7 @@ impl ContextEngine {
                 snapshot.id, snapshot.head_event_id
             )
         })?;
+        validate_snapshot_head_event(&snapshot, &snapshot_head)?;
         let transactions = self
             .store
             .query(QueryFilter {
@@ -815,6 +998,23 @@ impl ContextEngine {
                 format!("Context transaction '{}' 无法增量重放: {error}", event.id)
             })?;
             let observations = self.transaction_observations(context_id, &parsed).await?;
+            let transaction_sequence = event.sequence.ok_or_else(|| {
+                format!(
+                    "Context transaction '{}' 没有持久化 Ledger sequence",
+                    event.id
+                )
+            })?;
+            if let Some(future) = observations.iter().find(|observation| {
+                observation
+                    .sequence
+                    .is_none_or(|sequence| sequence >= transaction_sequence)
+            }) {
+                return Err(format!(
+                    "Context transaction '{}' 引用了不早于自身的 observation '{}'，拒绝违反因果顺序的 Snapshot 增量恢复",
+                    event.id, future.id
+                )
+                .into());
+            }
             state =
                 replay_context_transaction_event(&state, event, &observation_ids(&observations))?;
             head_event_id = event.id.clone();
@@ -830,6 +1030,18 @@ impl ContextEngine {
     /// Reads the online Projection. Existing Ledgers are replayed exactly once
     /// for lazy migration, then every hot-path read uses the materialized Mind.
     async fn load_current_mind(
+        &self,
+        context_id: &str,
+        known_events: Option<&[Event]>,
+    ) -> Result<MindState, DynError> {
+        let started = std::time::Instant::now();
+        let result = self.load_current_mind_inner(context_id, known_events).await;
+        self.capacity_metrics
+            .record_projection_load(started.elapsed().as_micros() as u64);
+        result
+    }
+
+    async fn load_current_mind_inner(
         &self,
         context_id: &str,
         known_events: Option<&[Event]>,
@@ -899,6 +1111,10 @@ impl ContextEngine {
         acting_session_id: &str,
         transaction: &str,
     ) -> Result<ContextCommit, DynError> {
+        let transaction_started = std::time::Instant::now();
+        self.capacity_metrics
+            .context_transactions_total
+            .fetch_add(1, Ordering::Relaxed);
         let mut parsed = parse_transaction(transaction)?;
         let lock = self.context_lock(context_id);
         let _guard = lock.lock().await;
@@ -916,8 +1132,17 @@ impl ContextEngine {
         }
         let canonical_transaction = render_parsed_transaction(&parsed);
         let current = self.load_current_mind(context_id, None).await?;
+        if current.version != parsed.base_version {
+            self.capacity_metrics
+                .context_tx_conflicts_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
         let observation_ids = observation_ids(&referenced_observations);
         let (next, changes) = apply_parsed_transaction(&current, &parsed, &observation_ids)?;
+        let session_projection = SessionProjectionMutation {
+            retired_event_ids: next.retired.difference(&current.retired).cloned().collect(),
+            restored_event_ids: current.retired.difference(&next.retired).cloned().collect(),
+        };
 
         let tx_id = format!(
             "ctx_tx_{}_{}",
@@ -963,6 +1188,7 @@ impl ContextEngine {
                 .commit_mind_projection_transaction(
                     &event,
                     &attention_updates,
+                    &session_projection,
                     current.version,
                     NewMindProjection {
                         context_id: context_id.to_string(),
@@ -976,6 +1202,9 @@ impl ContextEngine {
             {
                 MindProjectionCommit::Committed { .. } => {}
                 MindProjectionCommit::Conflict { current_revision } => {
+                    self.capacity_metrics
+                        .context_tx_conflicts_total
+                        .fetch_add(1, Ordering::Relaxed);
                     return Err(format!(
                         "Context transaction CAS 冲突：请求 base-version {}，当前 Projection revision {:?}；请基于最新 Context Encoding 重试",
                         current.version, current_revision
@@ -994,6 +1223,18 @@ impl ContextEngine {
                 "ContextEngine 未配置 SessionStore，不能提交 Session attention 修改".into(),
             );
         }
+
+        let commit_micros = transaction_started.elapsed().as_micros() as u64;
+        self.capacity_metrics
+            .context_commits_total
+            .fetch_add(1, Ordering::Relaxed);
+        self.capacity_metrics
+            .context_commit_latency_micros_total
+            .fetch_add(commit_micros, Ordering::Relaxed);
+        record_atomic_max(
+            &self.capacity_metrics.context_commit_latency_micros_max,
+            commit_micros,
+        );
 
         Ok(ContextCommit {
             transaction_id: tx_id,
@@ -1936,33 +2177,41 @@ impl ContextEngine {
         context_id: &str,
         session_ids: &[String],
     ) -> Result<Vec<Event>, DynError> {
-        let mut events = self
-            .store
-            .query(QueryFilter {
-                context_id: Some(context_id.to_string()),
-                session_ids: session_ids.to_vec(),
-                include_context_wide: true,
-                topic: Some("chat/*".to_string()),
-                excluded_topics: vec![
-                    "chat/context_inspect".to_string(),
-                    "chat/context_tx_committed".to_string(),
-                ],
-                ..Default::default()
-            })
-            .await?;
-        events.extend(
-            self.store
+        let mut events = if let Some(store) = &self.session_projection_store {
+            store
+                .query_session_projections(context_id, session_ids, true)
+                .await?
+        } else {
+            let mut events = self
+                .store
                 .query(QueryFilter {
                     context_id: Some(context_id.to_string()),
                     session_ids: session_ids.to_vec(),
                     include_context_wide: true,
-                    topic: Some("context/projected_observation".to_string()),
+                    topic: Some("chat/*".to_string()),
+                    excluded_topics: vec![
+                        "chat/context_inspect".to_string(),
+                        "chat/context_tx_committed".to_string(),
+                    ],
                     ..Default::default()
                 })
-                .await?,
-        );
+                .await?;
+            events.extend(
+                self.store
+                    .query(QueryFilter {
+                        context_id: Some(context_id.to_string()),
+                        session_ids: session_ids.to_vec(),
+                        include_context_wide: true,
+                        topic: Some("context/projected_observation".to_string()),
+                        ..Default::default()
+                    })
+                    .await?,
+            );
+            events
+        };
         events.sort_by_key(|event| event.sequence);
         events.dedup_by(|left, right| left.id == right.id);
+        self.capacity_metrics.record_encoding(events.len());
         Ok(events)
     }
 
@@ -4870,33 +5119,7 @@ fn observation_ids(events: &[Event]) -> HashSet<String> {
 }
 
 fn is_observation(event: &Event) -> bool {
-    if event.topic == "chat/assistant_call"
-        || event.topic == "chat/progress"
-        || event.topic == "chat/no_reply"
-        || event.topic == "chat/context_inspect"
-        || event.topic == "chat/context_tx_committed"
-        || event.topic == "chat/runtime_error"
-        || event.topic.starts_with("runtime/")
-    {
-        return false;
-    }
-    if event.event_type == TYPE_TOOL_OUTPUT
-        && event
-            .payload
-            .get("tool_name")
-            .and_then(|value| value.as_str())
-            == Some("context_tx")
-    {
-        return event
-            .payload
-            .get("text")
-            .and_then(|value| value.as_str())
-            .is_some_and(|text| text.starts_with("执行失败:") || text.starts_with("执行拒绝:"));
-    }
-    matches!(
-        event.event_type.as_str(),
-        TYPE_USER_MESSAGE | TYPE_TOOL_OUTPUT | TYPE_AGENT_CALL | TYPE_EXCEPTION | TYPE_FILE_CHANGE
-    )
+    crate::event::is_context_observation(event)
 }
 
 fn context_wide_observation_allowed(event: &Event) -> bool {
@@ -5356,12 +5579,47 @@ fn list(key: &str, values: Vec<SExpr>) -> SExpr {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::TYPE_AGENT_CALL;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
         DeliveryIngressStore as _, NewAgent, NewCognitiveContext, NewSession, ObjectiveStatus,
         SessionDirectoryStore as _, SessionMountKind, SessionStore,
     };
     use tempfile::TempDir;
+
+    #[test]
+    fn snapshot_head_must_anchor_matching_context_revision_and_hash() {
+        let snapshot = MindSnapshotRecord {
+            id: "snapshot-1".to_string(),
+            context_id: "context-a".to_string(),
+            revision: 7,
+            state: serde_json::json!({"version": 7}),
+            state_hash: "hash-7".to_string(),
+            head_event_id: "tx-7".to_string(),
+            created_at: Utc::now(),
+        };
+        let event = Event::new(
+            "tx-7".to_string(),
+            "Agent-Context".to_string(),
+            TYPE_CONTEXT_TRANSACTION.to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({
+                "context_id": "context-a",
+                "after_version": 7,
+                "after_hash": "hash-7"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        validate_snapshot_head_event(&snapshot, &event).unwrap();
+
+        let mut wrong = event.clone();
+        wrong
+            .payload
+            .insert("after_version".to_string(), serde_json::json!(8));
+        assert!(validate_snapshot_head_event(&snapshot, &wrong).is_err());
+    }
 
     fn observations(ids: &[&str]) -> HashSet<String> {
         ids.iter().map(|id| id.to_string()).collect()
@@ -6756,6 +7014,7 @@ mod tests {
                 TYPE_USER_MESSAGE.to_string(),
                 "chat/user_message".to_string(),
                 vec![
+                    ("context_id".to_string(), json!(session_id)),
                     ("session_id".to_string(), json!(session_id)),
                     ("text".to_string(), json!("Never lose this constraint")),
                 ]
@@ -6768,6 +7027,20 @@ mod tests {
         let engine = ContextEngine::new(
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
+        )
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>);
+        let before = engine
+            .build_context_encoding(session_id, session_id, &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            before
+                .observations
+                .iter()
+                .map(|observation| observation.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["event:constraint"]
         );
         engine
             .apply_context_transaction(
@@ -6788,7 +7061,8 @@ mod tests {
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
         )
-        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>);
         let view = restarted
             .build_context_encoding(session_id, session_id, &HashSet::new())
             .await
@@ -7001,6 +7275,21 @@ mod tests {
             .unwrap();
         assert_eq!(view.state.version, 1);
         assert_eq!(view.state.frames.len(), 1);
+        let left_metrics = engine_left.capacity_metrics();
+        let right_metrics = engine_right.capacity_metrics();
+        assert_eq!(
+            left_metrics.context_transactions_total + right_metrics.context_transactions_total,
+            2
+        );
+        assert_eq!(
+            left_metrics.context_commits_total + right_metrics.context_commits_total,
+            1
+        );
+        assert_eq!(
+            left_metrics.context_tx_conflicts_total + right_metrics.context_tx_conflicts_total,
+            1
+        );
+        assert!(left_metrics.mind_projection_loads_total >= 2);
         assert!(
             engine_left
                 .audit_mind_projection("shared-context")

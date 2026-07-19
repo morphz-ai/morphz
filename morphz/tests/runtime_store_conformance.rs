@@ -15,9 +15,10 @@ use morphz::memory::{
     NewObjective, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
     ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
     RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation, ScheduleStatus, ScheduleStore,
-    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus, SessionUpdate,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationStatus, ThreadKind,
-    ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
+    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionProjectionMutation,
+    SessionProjectionStore, SessionStatus, SessionUpdate, SignalOutboxStatus,
+    ThreadActivationMutation, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadStore, TimerStore,
 };
 use morphz::memory::{ActivationStore, SessionDirectoryStore};
 use morphz::permission::{PermissionMode, ReviewerKind};
@@ -25,9 +26,10 @@ use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
 use serde_json::json;
 use std::future::Future;
 use std::pin::Pin;
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tempfile::NamedTempFile;
+use tempfile::{NamedTempFile, TempDir};
 
 type TestError = Box<dyn std::error::Error + Send + Sync>;
 type AttentionFuture<'a> = Pin<
@@ -39,6 +41,114 @@ type AttentionFuture<'a> = Pin<
 >;
 
 fn assert_complete_runtime_store<T: morphz::memory::RuntimeStore>() {}
+
+#[test]
+fn sqlite_two_process_context_cas_is_fenced() {
+    const ROLE_ENV: &str = "MORPHZ_TEST_SQLITE_PROCESS_ROLE";
+    const DB_ENV: &str = "MORPHZ_TEST_SQLITE_PROCESS_DB";
+    const SYNC_ENV: &str = "MORPHZ_TEST_SQLITE_PROCESS_SYNC";
+    if let Ok(role) = std::env::var(ROLE_ENV) {
+        let db = std::env::var(DB_ENV).unwrap();
+        let sync = std::path::PathBuf::from(std::env::var(SYNC_ENV).unwrap());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = runtime.block_on(async {
+            let store = SqliteStore::new(&db).await.unwrap();
+            std::fs::write(sync.join(format!("ready-{role}")), b"ready").unwrap();
+            while !sync.join("go").exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            let event = context_event(
+                &format!("sqlite-process-event-{role}"),
+                "sqlite-process-context",
+            );
+            store
+                .commit_mind_projection_transaction(
+                    &event,
+                    &[],
+                    &SessionProjectionMutation::default(),
+                    0,
+                    NewMindProjection {
+                        context_id: "sqlite-process-context".to_string(),
+                        revision: 1,
+                        state: json!({"version": 1, "worker": role}),
+                        state_hash: format!("sqlite-process-hash-{role}"),
+                        head_event_id: Some(event.id.clone()),
+                    },
+                )
+                .await
+                .unwrap()
+        });
+        let outcome = match result {
+            MindProjectionCommit::Committed { .. } => "committed",
+            MindProjectionCommit::Conflict { .. } => "conflict",
+        };
+        std::fs::write(sync.join(format!("result-{role}")), outcome).unwrap();
+        return;
+    }
+
+    let temp = TempDir::new().unwrap();
+    let db = temp.path().join("shared.db");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let store = SqliteStore::new(db.to_str().unwrap()).await.unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "sqlite-process-context".to_string(),
+                agent_id: "sqlite-process-agent".to_string(),
+                title: "SQLite Process Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .initialize_mind_projection(NewMindProjection {
+                context_id: "sqlite-process-context".to_string(),
+                revision: 0,
+                state: json!({"version": 0}),
+                state_hash: "sqlite-process-hash-0".to_string(),
+                head_event_id: None,
+            })
+            .await
+            .unwrap();
+    });
+
+    let executable = std::env::current_exe().unwrap();
+    let spawn = |role: &str| {
+        Command::new(&executable)
+            .arg("--exact")
+            .arg("sqlite_two_process_context_cas_is_fenced")
+            .arg("--nocapture")
+            .env(ROLE_ENV, role)
+            .env(DB_ENV, &db)
+            .env(SYNC_ENV, temp.path())
+            .spawn()
+            .unwrap()
+    };
+    let mut first = spawn("a");
+    let mut second = spawn("b");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !(temp.path().join("ready-a").exists() && temp.path().join("ready-b").exists()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "SQLite child processes did not reach the shared barrier"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    std::fs::write(temp.path().join("go"), b"go").unwrap();
+    assert!(first.wait().unwrap().success());
+    assert!(second.wait().unwrap().success());
+    let mut outcomes = [
+        std::fs::read_to_string(temp.path().join("result-a")).unwrap(),
+        std::fs::read_to_string(temp.path().join("result-b")).unwrap(),
+    ];
+    outcomes.sort();
+    assert_eq!(outcomes, ["committed", "conflict"]);
+}
 
 #[derive(Default)]
 struct MultiRuntimeReplyClient {
@@ -862,6 +972,7 @@ where
     S: DeliveryIngressStore
         + EventStore
         + SessionDirectoryStore
+        + SessionProjectionStore
         + ThreadStore
         + Send
         + Sync
@@ -948,6 +1059,21 @@ where
             .unwrap()
             .len(),
         1
+    );
+    assert_eq!(
+        store
+            .query_session_projections(
+                "conformance-context",
+                &["conformance-session".to_string()],
+                true,
+            )
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event.id == message.id)
+            .count(),
+        1,
+        "accepted client message must enter Session Projection atomically",
     );
     let restored = store
         .get_session("conformance-session")
@@ -1209,6 +1335,7 @@ where
                         changed_at: chrono::Utc::now(),
                         event_id: event.id.clone(),
                     }],
+                    &SessionProjectionMutation::default(),
                     0,
                     NewMindProjection {
                         context_id: context_id.to_string(),
@@ -1237,6 +1364,7 @@ where
                         changed_at: chrono::Utc::now(),
                         event_id: event.id.clone(),
                     }],
+                    &SessionProjectionMutation::default(),
                     0,
                     NewMindProjection {
                         context_id: context_id.to_string(),
@@ -1323,6 +1451,122 @@ where
         .await
         .unwrap()
         .is_empty());
+}
+
+/// The online Session Projection is a current active-observation set, not a
+/// second history log. Ledger append and Projection insertion are atomic;
+/// retire/restore follow the Context transaction CAS order. Re-appending an
+/// already persisted Event is idempotent and must not accidentally restore it.
+async fn assert_session_projection_conformance<S>(store: Arc<S>)
+where
+    S: EventStore + MindProjectionStore + SessionProjectionStore + Send + Sync + 'static,
+{
+    let context_id = "conformance-context";
+    let session_id = "conformance-session";
+    let selected = vec![session_id.to_string()];
+    let observation = Event::new(
+        "conformance-session-observation".to_string(),
+        "Store-Conformance".to_string(),
+        morphz::event::TYPE_USER_MESSAGE.to_string(),
+        "chat/user_message".to_string(),
+        json!({
+            "context_id": context_id,
+            "session_id": session_id,
+            "text": "projection conformance"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    store.append(observation.clone()).await.unwrap();
+    assert_eq!(
+        store
+            .query_session_projections(context_id, &selected, true)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event.id == observation.id)
+            .count(),
+        1
+    );
+
+    let current = store
+        .get_mind_projection(context_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let retire_event = context_event("conformance-projection-retire", context_id);
+    let retired = store
+        .commit_mind_projection_transaction(
+            &retire_event,
+            &[],
+            &SessionProjectionMutation {
+                retired_event_ids: vec![observation.id.clone()],
+                restored_event_ids: Vec::new(),
+            },
+            current.revision,
+            NewMindProjection {
+                context_id: context_id.to_string(),
+                revision: current.revision + 1,
+                state: json!({"version": current.revision + 1, "projection": "retired"}),
+                state_hash: "conformance-projection-retired-hash".to_string(),
+                head_event_id: Some(retire_event.id.clone()),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(retired, MindProjectionCommit::Committed { .. }));
+    assert!(store
+        .query_session_projections(context_id, &selected, true)
+        .await
+        .unwrap()
+        .iter()
+        .all(|event| event.id != observation.id));
+
+    store.append(observation.clone()).await.unwrap();
+    assert!(store
+        .query_session_projections(context_id, &selected, true)
+        .await
+        .unwrap()
+        .iter()
+        .all(|event| event.id != observation.id));
+
+    let current = store
+        .get_mind_projection(context_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let restore_event = context_event("conformance-projection-restore", context_id);
+    let restored = store
+        .commit_mind_projection_transaction(
+            &restore_event,
+            &[],
+            &SessionProjectionMutation {
+                retired_event_ids: Vec::new(),
+                restored_event_ids: vec![observation.id.clone()],
+            },
+            current.revision,
+            NewMindProjection {
+                context_id: context_id.to_string(),
+                revision: current.revision + 1,
+                state: json!({"version": current.revision + 1, "projection": "restored"}),
+                state_hash: "conformance-projection-restored-hash".to_string(),
+                head_event_id: Some(restore_event.id.clone()),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(restored, MindProjectionCommit::Committed { .. }));
+    assert_eq!(
+        store
+            .query_session_projections(context_id, &selected, true)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event.id == observation.id)
+            .count(),
+        1
+    );
 }
 
 async fn assert_timer_lease_conformance<S>(store: Arc<S>)
@@ -2069,10 +2313,13 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
         .unwrap();
     let event_a = context_event(&format!("multi-worker-tx-a-{suffix}"), &context_id);
     let event_b = context_event(&format!("multi-worker-tx-b-{suffix}"), &context_id);
+    let projection_mutation_a = SessionProjectionMutation::default();
+    let projection_mutation_b = SessionProjectionMutation::default();
     let (projection_a, projection_b) = tokio::join!(
         first.commit_mind_projection_transaction(
             &event_a,
             &[],
+            &projection_mutation_a,
             0,
             NewMindProjection {
                 context_id: context_id.clone(),
@@ -2085,6 +2332,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
         second.commit_mind_projection_transaction(
             &event_b,
             &[],
+            &projection_mutation_b,
             0,
             NewMindProjection {
                 context_id: context_id.clone(),
@@ -2531,6 +2779,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         })
     })
     .await;
+    assert_session_projection_conformance(Arc::clone(&store)).await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
@@ -2562,7 +2811,44 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         return;
     };
     assert_complete_runtime_store::<PostgresStore>();
-    let store = Arc::new(PostgresStore::new(&database_url, 8).await.unwrap());
+    // One configured PostgreSQL database may run this suite repeatedly or in
+    // parallel. Keep every run in a fresh schema instead of requiring a
+    // destructive cleanup of public tables or colliding on fixed fixture IDs.
+    let suffix = chrono::Utc::now()
+        .timestamp_nanos_opt()
+        .expect("current timestamp must fit i64");
+    let schema = format!("morphz_conformance_{}_{suffix}", std::process::id());
+    let administration_pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&administration_pool)
+        .await
+        .unwrap();
+    let separator = if database_url.contains('?') { '&' } else { '?' };
+    let scoped_url = format!("{database_url}{separator}options=-csearch_path%3D{schema}");
+    let store = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
+    let applied_migrations =
+        sqlx::query_scalar::<_, String>("SELECT version FROM schema_migrations ORDER BY version")
+            .fetch_all(store.pool())
+            .await
+            .unwrap()
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+    for version in [
+        "20260718_01_supported_capabilities",
+        "20260719_01_session_projections",
+        "20260718_02_execution_jobs",
+        "20260718_03_approvals",
+        "20260718_04_threads",
+        "20260718_05_activations",
+        "20260718_06_schedules",
+        "20260718_07_delivery",
+        "20260718_08_delegations",
+    ] {
+        assert!(
+            applied_migrations.contains(version),
+            "missing PostgreSQL migration marker {version}"
+        );
+    }
     store
         .create_agent_bundle(
             NewAgent {
@@ -2599,6 +2885,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         })
     })
     .await;
+    assert_session_projection_conformance(Arc::clone(&store)).await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
@@ -2622,11 +2909,58 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         .unwrap();
     assert_execution_job_conformance(Arc::clone(&store)).await;
     assert_approval_grant_conformance(Arc::clone(&store)).await;
-    let independent_store = Arc::new(PostgresStore::new(&database_url, 8).await.unwrap());
+
+    let migration_observation = Event::new(
+        "postgres-session-projection-migration-observation".to_string(),
+        "Store-Conformance".to_string(),
+        morphz::event::TYPE_USER_MESSAGE.to_string(),
+        "chat/user_message".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "text": "postgres migration backfill"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    store.append(migration_observation.clone()).await.unwrap();
+    let mut migration_reset = store.pool().begin().await.unwrap();
+    sqlx::query("DELETE FROM session_projections WHERE event_id = $1")
+        .bind(&migration_observation.id)
+        .execute(&mut *migration_reset)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM schema_migrations WHERE version = $1")
+        .bind("20260719_01_session_projections")
+        .execute(&mut *migration_reset)
+        .await
+        .unwrap();
+    migration_reset.commit().await.unwrap();
+
+    let independent_store = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
+    assert!(independent_store
+        .query_session_projections(
+            "conformance-context",
+            &["conformance-session".to_string()],
+            true,
+        )
+        .await
+        .unwrap()
+        .iter()
+        .any(|event| event.id == migration_observation.id));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM schema_migrations WHERE version = $1",)
+            .bind("20260719_01_session_projections")
+            .fetch_one(independent_store.pool())
+            .await
+            .unwrap(),
+        1
+    );
     assert_independent_postgres_instances_share_fenced_authority(
         Arc::clone(&store),
         Arc::clone(&independent_store),
     )
     .await;
-    assert_two_postgres_runtimes_deliver_one_dialogue_once(&database_url, &store).await;
+    assert_two_postgres_runtimes_deliver_one_dialogue_once(&scoped_url, &store).await;
 }

@@ -12,12 +12,14 @@ use crate::memory::{
     EventAppend, EventStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
     MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer, ObjectiveMutation,
     ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate, TimerStore,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
+    SessionProjectionMutation, SessionProjectionStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use sqlx::postgres::{PgConnection, PgPoolOptions, PgRow};
 use sqlx::{Connection, PgPool, Postgres, QueryBuilder, Row};
+use std::future::Future;
 
 type StoreError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -52,14 +54,49 @@ impl PostgresStore {
             .await?;
         let store = Self { pool };
         let migrations = async {
-            store.migrate_supported_capabilities().await?;
-            execution::migrate(&store.pool).await?;
-            approval::migrate(&store.pool).await?;
-            thread::migrate(&store.pool).await?;
-            activation::migrate(&store.pool).await?;
-            schedule::migrate(&store.pool).await?;
-            delivery::migrate(&store.pool).await?;
-            delegation::migrate(&store.pool).await?;
+            store.ensure_schema_migrations().await?;
+            store
+                .run_versioned_migration(
+                    "20260718_01_supported_capabilities",
+                    store.migrate_supported_capabilities(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260719_01_session_projections",
+                    store.migrate_session_projections(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260718_02_execution_jobs",
+                    execution::migrate(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration("20260718_03_approvals", approval::migrate(&store.pool))
+                .await?;
+            store
+                .run_versioned_migration("20260718_04_threads", thread::migrate(&store.pool))
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260718_05_activations",
+                    activation::migrate(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration("20260718_06_schedules", schedule::migrate(&store.pool))
+                .await?;
+            store
+                .run_versioned_migration("20260718_07_delivery", delivery::migrate(&store.pool))
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260718_08_delegations",
+                    delegation::migrate(&store.pool),
+                )
+                .await?;
             Ok::<(), StoreError>(())
         }
         .await;
@@ -74,6 +111,45 @@ impl PostgresStore {
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    async fn ensure_schema_migrations(&self) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn run_versioned_migration<F>(
+        &self,
+        version: &str,
+        migration: F,
+    ) -> Result<(), StoreError>
+    where
+        F: Future<Output = Result<(), StoreError>>,
+    {
+        if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM schema_migrations WHERE version = $1")
+            .bind(version)
+            .fetch_one(&self.pool)
+            .await?
+            > 0
+        {
+            return Ok(());
+        }
+        migration.await?;
+        sqlx::query(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES ($1, $2) ON CONFLICT(version) DO NOTHING",
+        )
+        .bind(version)
+        .bind(now_text())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     async fn migrate_supported_capabilities(&self) -> Result<(), StoreError> {
@@ -137,6 +213,17 @@ impl PostgresStore {
                ON events(session_id, sequence)"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_events_topic_sequence
                ON events(topic, sequence)"#,
+            r#"CREATE TABLE IF NOT EXISTS session_projections (
+                event_id TEXT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
+                context_id TEXT NOT NULL,
+                session_id TEXT
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_session_projections_context_session
+               ON session_projections(context_id, session_id, event_id)"#,
+            r#"CREATE TABLE IF NOT EXISTS schema_migrations (
+                version TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )"#,
             r#"CREATE TABLE IF NOT EXISTS signal_outbox (
                 event_id TEXT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
                 status TEXT NOT NULL DEFAULT 'pending',
@@ -212,6 +299,49 @@ impl PostgresStore {
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }
+        Ok(())
+    }
+
+    async fn migrate_session_projections(&self) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"INSERT INTO session_projections (event_id, context_id, session_id)
+               SELECT id, context_id, session_id
+               FROM events
+               WHERE context_id IS NOT NULL
+                 AND (session_id IS NOT NULL
+                      OR (topic = 'chat/context_observation'
+                          AND payload->>'context_wide' = 'true'))
+                 AND type IN ('user_message', 'tool_output', 'agent_call', 'exception', 'file_change')
+                 AND topic NOT IN ('chat/assistant_call', 'chat/progress', 'chat/no_reply',
+                                   'chat/context_inspect', 'chat/context_tx_committed',
+                                   'chat/runtime_error')
+                 AND topic NOT LIKE 'runtime/%'
+                 AND NOT (
+                     type = 'tool_output'
+                     AND payload->>'tool_name' = 'context_tx'
+                     AND COALESCE(payload->>'text', '') NOT LIKE '执行失败:%'
+                     AND COALESCE(payload->>'text', '') NOT LIKE '执行拒绝:%'
+                 )
+               ON CONFLICT(event_id) DO NOTHING"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        let projections = sqlx::query("SELECT state_json FROM mind_projections")
+            .fetch_all(&mut *tx)
+            .await?;
+        for row in projections {
+            let state = row.get::<JsonValue, _>("state_json");
+            if let Some(retired) = state.get("retired").and_then(JsonValue::as_array) {
+                for event_id in retired.iter().filter_map(JsonValue::as_str) {
+                    sqlx::query("DELETE FROM session_projections WHERE event_id = $1")
+                        .bind(event_id)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+            }
+        }
+        tx.commit().await?;
         Ok(())
     }
 }
@@ -369,6 +499,57 @@ where
     .transpose()
 }
 
+/// Observe Context Head and Mind Projection in one PostgreSQL statement.
+/// Under READ COMMITTED, a JOIN followed by a separate existence query can
+/// see two different committed snapshots and falsely report corruption while
+/// another Runtime is atomically installing the pair.
+async fn get_projection_consistent(
+    pool: &PgPool,
+    context_id: &str,
+) -> Result<Option<MindProjectionRecord>, StoreError> {
+    let row = sqlx::query(
+        r#"SELECT h.context_id AS head_context_id,
+                  h.revision AS head_revision,
+                  h.projection_hash AS head_projection_hash,
+                  p.context_id AS projection_context_id,
+                  p.context_id, p.revision, p.state_json, p.state_hash,
+                  h.head_event_id, p.updated_at
+           FROM (SELECT 1) anchor
+           LEFT JOIN context_heads h ON h.context_id = $1
+           LEFT JOIN mind_projections p ON p.context_id = $1"#,
+    )
+    .bind(context_id)
+    .fetch_one(pool)
+    .await?;
+    let head_context_id = row.get::<Option<String>, _>("head_context_id");
+    let projection_context_id = row.get::<Option<String>, _>("projection_context_id");
+    match (head_context_id, projection_context_id) {
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => {
+            let head_revision = row
+                .get::<Option<i64>, _>("head_revision")
+                .ok_or("Context Head 缺少 revision")?;
+            let projection_revision = row
+                .get::<Option<i64>, _>("revision")
+                .ok_or("Mind Projection 缺少 revision")?;
+            let head_hash = row
+                .get::<Option<String>, _>("head_projection_hash")
+                .ok_or("Context Head 缺少 projection_hash")?;
+            let projection_hash = row
+                .get::<Option<String>, _>("state_hash")
+                .ok_or("Mind Projection 缺少 state_hash")?;
+            if head_revision != projection_revision || head_hash != projection_hash {
+                return Err(format!(
+                    "Context '{context_id}' 的 Mind Projection head/hash/revision 不一致"
+                )
+                .into());
+            }
+            projection_from_row(&row).map(Some)
+        }
+        _ => Err(format!("Context '{context_id}' 的 Mind Projection 不完整").into()),
+    }
+}
+
 async fn append_event_in_tx(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     event: &Event,
@@ -399,6 +580,7 @@ async fn append_event_in_tx(
     .execute(&mut **tx)
     .await?;
     if inserted.rows_affected() == 1 {
+        project_observation_in_tx(tx, event).await?;
         return Ok(true);
     }
     let existing = sqlx::query(
@@ -419,6 +601,98 @@ async fn append_event_in_tx(
         return Err(format!("Event ID '{}' 已被不同内容占用", event.id).into());
     }
     Ok(false)
+}
+
+fn event_has_projection_route(event: &Event) -> bool {
+    event
+        .payload
+        .get("context_id")
+        .and_then(JsonValue::as_str)
+        .is_some()
+        && (event
+            .payload
+            .get("session_id")
+            .and_then(JsonValue::as_str)
+            .is_some()
+            || (event.topic == "chat/context_observation"
+                && event
+                    .payload
+                    .get("context_wide")
+                    .and_then(JsonValue::as_bool)
+                    == Some(true)))
+}
+
+async fn project_observation_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    event: &Event,
+) -> Result<(), StoreError> {
+    if !crate::event::is_context_observation(event) || !event_has_projection_route(event) {
+        return Ok(());
+    }
+    let context_id = event
+        .payload
+        .get("context_id")
+        .and_then(JsonValue::as_str)
+        .expect("event_has_projection_route 已验证 context_id");
+    let session_id = event.payload.get("session_id").and_then(JsonValue::as_str);
+    sqlx::query(
+        r#"INSERT INTO session_projections (event_id, context_id, session_id)
+           VALUES ($1, $2, $3) ON CONFLICT(event_id) DO NOTHING"#,
+    )
+    .bind(&event.id)
+    .bind(context_id)
+    .bind(session_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn stored_event_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    event_id: &str,
+    context_id: &str,
+) -> Result<Option<Event>, StoreError> {
+    let row = sqlx::query(
+        r#"SELECT sequence, id, timestamp, actor, type, topic, payload
+           FROM events WHERE id = $1 AND context_id = $2"#,
+    )
+    .bind(event_id)
+    .bind(context_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.map(|row| {
+        let payload = row.get::<JsonValue, _>("payload");
+        Ok(Event {
+            id: row.get("id"),
+            sequence: u64::try_from(row.get::<i64, _>("sequence")).ok(),
+            timestamp: parse_time(&row.get::<String, _>("timestamp"))?,
+            actor: row.get("actor"),
+            event_type: row.get("type"),
+            topic: row.get("topic"),
+            payload: serde_json::from_value(payload)?,
+        })
+    })
+    .transpose()
+}
+
+async fn mutate_session_projection_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    context_id: &str,
+    mutation: &SessionProjectionMutation,
+) -> Result<(), StoreError> {
+    for event_id in &mutation.retired_event_ids {
+        sqlx::query("DELETE FROM session_projections WHERE event_id = $1 AND context_id = $2")
+            .bind(event_id)
+            .bind(context_id)
+            .execute(&mut **tx)
+            .await?;
+    }
+    for event_id in &mutation.restored_event_ids {
+        if let Some(event) = stored_event_in_tx(tx, event_id, context_id).await? {
+            project_observation_in_tx(tx, &event).await?;
+        }
+    }
+    Ok(())
 }
 
 async fn append_signal_outbox_in_tx(
@@ -1091,6 +1365,60 @@ impl ObjectiveStore for PostgresStore {
 }
 
 #[async_trait::async_trait]
+impl SessionProjectionStore for PostgresStore {
+    async fn query_session_projections(
+        &self,
+        context_id: &str,
+        session_ids: &[String],
+        include_context_wide: bool,
+    ) -> Result<Vec<Event>, StoreError> {
+        let mut builder = QueryBuilder::<Postgres>::new(
+            r#"SELECT e.sequence, e.id, e.timestamp, e.actor, e.type, e.topic, e.payload
+               FROM session_projections projection
+               JOIN events e ON e.id = projection.event_id
+               WHERE projection.context_id = "#,
+        );
+        builder.push_bind(context_id);
+        builder.push(" AND (");
+        if include_context_wide {
+            builder.push("projection.session_id IS NULL");
+            if !session_ids.is_empty() {
+                builder.push(" OR ");
+            }
+        }
+        if !session_ids.is_empty() {
+            builder.push("projection.session_id IN (");
+            let mut separated = builder.separated(", ");
+            for session_id in session_ids {
+                separated.push_bind(session_id);
+            }
+            builder.push(")");
+        } else if !include_context_wide {
+            builder.push("FALSE");
+        }
+        builder.push(") ORDER BY e.sequence ASC");
+        builder
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .map(|row| {
+                let payload = row.get::<JsonValue, _>("payload");
+                Ok(Event {
+                    id: row.get("id"),
+                    sequence: u64::try_from(row.get::<i64, _>("sequence")).ok(),
+                    timestamp: parse_time(&row.get::<String, _>("timestamp"))?,
+                    actor: row.get("actor"),
+                    event_type: row.get("type"),
+                    topic: row.get("topic"),
+                    payload: serde_json::from_value(payload)?,
+                })
+            })
+            .collect()
+    }
+}
+
+#[async_trait::async_trait]
 impl TimerStore for PostgresStore {
     async fn upsert_runtime_timer(
         &self,
@@ -1300,23 +1628,7 @@ impl MindProjectionStore for PostgresStore {
         &self,
         context_id: &str,
     ) -> Result<Option<MindProjectionRecord>, StoreError> {
-        let projection = get_projection(&self.pool, context_id).await?;
-        if projection.is_none() {
-            let row = sqlx::query(
-                r#"SELECT EXISTS(SELECT 1 FROM context_heads WHERE context_id = $1) AS head,
-                          EXISTS(SELECT 1 FROM mind_projections WHERE context_id = $1) AS projection"#,
-            )
-            .bind(context_id)
-            .fetch_one(&self.pool)
-            .await?;
-            if row.get::<bool, _>("head") || row.get::<bool, _>("projection") {
-                return Err(format!(
-                    "Context '{context_id}' 的 Mind Projection 不完整或 head/hash/revision 不一致"
-                )
-                .into());
-            }
-        }
-        Ok(projection)
+        get_projection_consistent(&self.pool, context_id).await
     }
 
     async fn get_latest_mind_snapshot(
@@ -1414,6 +1726,7 @@ impl MindProjectionStore for PostgresStore {
         &self,
         event: &Event,
         attention_updates: &[SessionAttentionUpdate],
+        session_projection: &SessionProjectionMutation,
         expected_revision: u64,
         next_projection: NewMindProjection,
     ) -> Result<MindProjectionCommit, StoreError> {
@@ -1506,6 +1819,8 @@ impl MindProjectionStore for PostgresStore {
             }
         }
         append_event_in_tx(&mut tx, event).await?;
+        mutate_session_projection_in_tx(&mut tx, &next_projection.context_id, session_projection)
+            .await?;
         if requires_snapshot(event, next_projection.revision) {
             insert_snapshot_in_tx(&mut tx, &next_projection, &event.id, &now).await?;
         }

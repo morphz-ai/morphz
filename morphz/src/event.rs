@@ -53,6 +53,36 @@ impl Event {
     }
 }
 
+/// Whether one immutable Event is part of the Agent-visible Observation
+/// projection. This predicate is shared by Context Encoding and persistence:
+/// changing it in only one layer would make the online Projection disagree
+/// with a full Ledger rebuild.
+pub fn is_context_observation(event: &Event) -> bool {
+    if event.topic == "chat/assistant_call"
+        || event.topic == "chat/progress"
+        || event.topic == "chat/no_reply"
+        || event.topic == "chat/context_inspect"
+        || event.topic == "chat/context_tx_committed"
+        || event.topic == "chat/runtime_error"
+        || event.topic.starts_with("runtime/")
+    {
+        return false;
+    }
+    if event.event_type == TYPE_TOOL_OUTPUT
+        && event.payload.get("tool_name").and_then(JsonValue::as_str) == Some("context_tx")
+    {
+        return event
+            .payload
+            .get("text")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|text| text.starts_with("执行失败:") || text.starts_with("执行拒绝:"));
+    }
+    matches!(
+        event.event_type.as_str(),
+        TYPE_USER_MESSAGE | TYPE_TOOL_OUTPUT | TYPE_AGENT_CALL | TYPE_EXCEPTION | TYPE_FILE_CHANGE
+    )
+}
+
 pub type EventHandler = Arc<
     dyn Fn(Event) -> BoxFuture<'static, Result<(), Box<dyn std::error::Error + Send + Sync>>>
         + Send
