@@ -202,12 +202,25 @@ impl Tool for ObjectiveCreateTool {
                         == normalized_statement
             })
         {
+            let adopted = if self.supervisor.evaluations.get(&session_id).is_none() {
+                self.supervisor
+                    .claim_routed_evaluation(&existing, &attempt_id, Some(&attempt_id), false)
+                    .await?
+            } else {
+                None
+            };
+            if let Some(claimed) = &adopted {
+                self.supervisor
+                    .publish_state_event("evaluation_started", claimed, Some(&attempt_id))
+                    .await?;
+            }
             return Ok(serde_json::to_string_pretty(&json!({
                 "status": "existing",
                 "created": false,
                 "objective_id": existing.id,
                 "objective_status": existing.status,
-                "revision": existing.revision,
+                "revision": adopted.as_ref().map(|objective| objective.revision).unwrap_or(existing.revision),
+                "activation_adoption": if adopted.is_some() { "current-activation" } else { "already-routed-or-queued" },
                 "guidance": "相同的非终态 Objective 已存在；不要重复创建。继续执行它，或在有权限时更新其状态。"
             }))?);
         }
@@ -894,7 +907,10 @@ impl ObjectiveSupervisor {
             .await?
             .is_some_and(|objective| {
                 (objective.status == ObjectiveStatus::Active
-                    && objective.active_evaluation_id.as_deref() == Some(evaluation_id))
+                    && objective.active_evaluation_id.as_deref() == Some(evaluation_id)
+                    && objective
+                        .evaluation_lease_expires_at
+                        .is_some_and(|expires_at| expires_at > Utc::now()))
                     || (objective_control_receipt
                         && matches!(
                             objective.status,
@@ -903,6 +919,95 @@ impl ObjectiveSupervisor {
                                 | ObjectiveStatus::Failed
                         ))
             }))
+    }
+
+    /// Check the durable Objective fencing token owned by one Activation.
+    /// Activations without an Objective route are not fenced here.
+    pub async fn activation_fence_is_current(&self, activation_id: &str) -> Result<bool, DynError> {
+        let Some(binding) = self.evaluations.get_for_activation(activation_id) else {
+            return Ok(true);
+        };
+        if self.evaluations.evaluation_is_cancelled(&binding) {
+            return Ok(false);
+        }
+        Ok(self
+            .store
+            .get_objective(&binding.objective_id)
+            .await?
+            .is_some_and(|objective| {
+                objective.status == ObjectiveStatus::Active
+                    && objective.wait_condition.is_none()
+                    && objective.active_evaluation_id.as_deref()
+                        == Some(binding.evaluation_id.as_str())
+                    && objective
+                        .evaluation_lease_expires_at
+                        .is_some_and(|expires_at| expires_at > Utc::now())
+            }))
+    }
+
+    /// Keep one exact Evaluation lease alive while its Activation is running.
+    /// A replacement Evaluation changes `active_evaluation_id`; the stale
+    /// heartbeat then loses the fence and returns so Orchestrator can cancel
+    /// the old Activation before it performs more work.
+    pub async fn maintain_activation_lease(
+        &self,
+        activation_id: &str,
+    ) -> Result<ActiveObjectiveEvaluation, DynError> {
+        let binding = self
+            .evaluations
+            .get_for_activation(activation_id)
+            .ok_or_else(|| {
+                format!("Activation '{activation_id}' 缺少 Objective Evaluation 路由")
+            })?;
+        let lease_duration = self
+            .lease_duration
+            .to_std()
+            .unwrap_or_else(|_| std::time::Duration::from_secs(600));
+        let heartbeat = (lease_duration / 3).max(std::time::Duration::from_millis(50));
+        loop {
+            tokio::time::sleep(heartbeat).await;
+            if self.evaluations.evaluation_is_cancelled(&binding) {
+                return Ok(binding);
+            }
+            let lease_expires_at = Utc::now() + self.lease_duration;
+            match self
+                .store
+                .renew_objective_evaluation(
+                    &binding.objective_id,
+                    &binding.evaluation_id,
+                    lease_expires_at,
+                )
+                .await?
+            {
+                ObjectiveMutation::Updated(_) => {
+                    tracing::debug!(
+                        objective_id = %binding.objective_id,
+                        evaluation_id = %binding.evaluation_id,
+                        activation_id,
+                        lease_expires_at = %lease_expires_at,
+                        "Objective Evaluation 运行中续租"
+                    );
+                }
+                ObjectiveMutation::Conflict { current } => {
+                    tracing::warn!(
+                        objective_id = %binding.objective_id,
+                        evaluation_id = %binding.evaluation_id,
+                        activation_id,
+                        active_evaluation_id = ?current.active_evaluation_id,
+                        current_status = ?current.status,
+                        "Objective Evaluation fencing token 已失效"
+                    );
+                    self.evaluations
+                        .cancel_evaluation(&binding.objective_id, &binding.evaluation_id);
+                    return Ok(binding);
+                }
+                ObjectiveMutation::NotFound => {
+                    self.evaluations
+                        .cancel_evaluation(&binding.objective_id, &binding.evaluation_id);
+                    return Ok(binding);
+                }
+            }
+        }
     }
 
     pub async fn list(
@@ -1297,7 +1402,7 @@ impl ObjectiveSupervisor {
                 self.schedule_lease_expiry(&objective, expires_at).await?;
                 return Ok(());
             }
-            self.clear_local_binding(&objective);
+            self.revoke_local_evaluation(&objective);
         }
         self.schedule(objective.id).await
     }
@@ -1584,9 +1689,15 @@ impl ObjectiveSupervisor {
         {
             return Ok(TimerDisposition::Complete);
         }
-        if current.revision != timer.generation || expires_at != timer.due_at {
+        if current.revision != timer.generation {
             self.schedule_lease_expiry(&current, expires_at).await?;
             return Ok(TimerDisposition::Complete);
+        }
+        if expires_at != timer.due_at {
+            return Ok(TimerDisposition::Reschedule {
+                due_at: expires_at,
+                reason: Some("Objective Evaluation 已由运行中的 Activation 续租".to_string()),
+            });
         }
         if expires_at > Utc::now() {
             return Ok(TimerDisposition::Reschedule {
@@ -1594,7 +1705,10 @@ impl ObjectiveSupervisor {
                 reason: Some("Objective evaluation lease 尚未到期".to_string()),
             });
         }
-        self.clear_local_binding(&current);
+        // Revoke the exact expired Evaluation before making the Objective
+        // schedulable again. Its Activation observes the tombstone and stops;
+        // a new claim receives a different evaluation_id fencing token.
+        self.revoke_local_evaluation(&current);
         self.reconcile(current).await?;
         Ok(TimerDisposition::Complete)
     }
@@ -1661,6 +1775,14 @@ impl ObjectiveSupervisor {
                     .unbind(&objective.coordinator_session_id, &active.evaluation_id);
             }
         }
+    }
+
+    fn revoke_local_evaluation(&self, objective: &ObjectiveRecord) {
+        if let Some(evaluation_id) = objective.active_evaluation_id.as_deref() {
+            self.evaluations
+                .cancel_evaluation(&objective.id, evaluation_id);
+        }
+        self.clear_local_binding(objective);
     }
 
     async fn publish_state_event(
@@ -1985,6 +2107,123 @@ mod tests {
         assert!(!registry
             .cancelled_evaluations
             .contains_key("evaluation-never-claimed"));
+    }
+
+    #[tokio::test]
+    async fn stale_evaluation_heartbeat_loses_fence_and_cancels_its_activation() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "agent-fence".to_string(),
+                    title: "Fence Agent".to_string(),
+                    root_context_id: "context-fence".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "context-fence".to_string(),
+                    agent_id: "agent-fence".to_string(),
+                    title: "Fence Context".to_string(),
+                },
+                NewSession {
+                    id: "session-fence".to_string(),
+                    agent_id: "agent-fence".to_string(),
+                    context_id: "context-fence".to_string(),
+                    parent_session_id: None,
+                    title: "Fence Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let created = store
+            .create_objective(NewObjective {
+                id: "objective-fence".to_string(),
+                agent_id: "agent-fence".to_string(),
+                context_id: "context-fence".to_string(),
+                coordinator_session_id: "session-fence".to_string(),
+                delivery_session_id: "session-fence".to_string(),
+                parent_objective_id: None,
+                source_event_id: "source-fence".to_string(),
+                stated_objective: "verify stale evaluation fencing".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        let claimed = match store
+            .claim_objective_evaluation(
+                &created.id,
+                created.revision,
+                "evaluation-old",
+                Utc::now() + Duration::milliseconds(150),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(objective) => objective,
+            mutation => panic!("unexpected claim: {mutation:?}"),
+        };
+        let registry = Arc::new(ObjectiveEvaluationRegistry::default());
+        let binding = ActiveObjectiveEvaluation {
+            objective_id: claimed.id.clone(),
+            evaluation_id: "evaluation-old".to_string(),
+            revision: claimed.revision,
+            started_at: Utc::now(),
+        };
+        registry.try_bind("session-fence", binding.clone()).unwrap();
+        registry.bind_activation("activation-old", binding.clone());
+        let supervisor = Arc::new(ObjectiveSupervisor::new(
+            Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            Arc::new(InMemoryEventBus::new()),
+            Arc::clone(&registry),
+            Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+            std::time::Duration::from_millis(150),
+        ));
+        let heartbeat = {
+            let supervisor = Arc::clone(&supervisor);
+            tokio::spawn(
+                async move { supervisor.maintain_activation_lease("activation-old").await },
+            )
+        };
+
+        let released = match store
+            .finish_objective_evaluation(&claimed.id, "evaluation-old", 0, 0)
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(objective) => objective,
+            mutation => panic!("unexpected finish: {mutation:?}"),
+        };
+        let replacement = store
+            .claim_objective_evaluation(
+                &released.id,
+                released.revision,
+                "evaluation-new",
+                Utc::now() + Duration::seconds(1),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(replacement, ObjectiveMutation::Updated(_)));
+
+        let revoked = tokio::time::timeout(std::time::Duration::from_secs(1), heartbeat)
+            .await
+            .expect("stale heartbeat must stop")
+            .unwrap()
+            .unwrap();
+        assert_eq!(revoked, binding);
+        assert_eq!(
+            registry.cancelled_activation("activation-old"),
+            Some(binding)
+        );
+        assert!(!supervisor
+            .activation_fence_is_current("activation-old")
+            .await
+            .unwrap());
     }
 
     #[test]

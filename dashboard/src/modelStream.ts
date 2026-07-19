@@ -2,6 +2,7 @@ export type ModelStreamEvent =
   | { kind: 'started' }
   | { kind: 'text_delta'; text: string }
   | { kind: 'reasoning_summary_delta'; text: string }
+  | { kind: 'reasoning_summary_completed' }
   | { kind: 'tool_call_started'; index: number; id: string; name: string }
   | { kind: 'tool_arguments_delta'; index: number; delta: string }
   | { kind: 'tool_call_completed'; index: number }
@@ -18,6 +19,7 @@ export interface LiveModelAttempt {
   startedAt: string
   lastEventMs: number
   status: 'streaming' | 'settling' | 'failed'
+  runtimeState: 'queued' | 'streaming' | 'waiting_final_output' | 'settling'
   toolCallCount: number
   reasoningSummaryPersisted: boolean
   responseResolved: boolean
@@ -37,11 +39,23 @@ export interface ModelStreamBatchItem {
   stream: ModelStreamEvent
 }
 
+export interface ModelAttemptStateItem {
+  attemptId: string
+  activationId: string
+  threadKind: string
+  state: string
+  terminal: boolean
+  timestamp: string
+  detail?: string
+}
+
 export type ModelStreamAction =
   | { type: 'reset_session'; sessionId: string }
   | { type: 'stream_batch'; sessionId: string; items: ModelStreamBatchItem[]; nowMs: number }
   | { type: 'resolve'; sessionId: string; causalId: string; nowMs: number }
   | { type: 'persisted'; sessionId: string; causalId: string }
+  | { type: 'attempt_state'; sessionId: string; item: ModelAttemptStateItem; nowMs: number }
+  | { type: 'snapshot'; sessionId: string; items: ModelAttemptStateItem[]; nowMs: number }
   | { type: 'reconcile'; sessionId: string; activeActivationIds: string[]; cutoffMs: number }
 
 export interface DurableReasoningSummary {
@@ -87,6 +101,7 @@ export function isModelStreamEvent(value: unknown): value is ModelStreamEvent {
     'started',
     'text_delta',
     'reasoning_summary_delta',
+    'reasoning_summary_completed',
     'tool_call_started',
     'tool_arguments_delta',
     'tool_call_completed',
@@ -114,6 +129,7 @@ function reduceAttempt(
         startedAt: timestamp,
         lastEventMs: nowMs,
         status: 'streaming',
+        runtimeState: 'streaming',
         toolCallCount: 0,
         reasoningSummaryPersisted: false,
         responseResolved: false,
@@ -143,6 +159,17 @@ function reduceAttempt(
       },
     }
   }
+  if (stream.kind === 'reasoning_summary_completed') {
+    return {
+      ...previous,
+      [attemptId]: {
+        ...current,
+        lastEventMs: nowMs,
+        status: 'settling',
+        runtimeState: 'waiting_final_output',
+      },
+    }
+  }
   if (stream.kind === 'tool_call_started') {
     return {
       ...previous,
@@ -150,12 +177,50 @@ function reduceAttempt(
     }
   }
   if (stream.kind === 'completed') {
-    return { ...previous, [attemptId]: { ...current, lastEventMs: nowMs, status: 'settling' } }
+    return { ...previous, [attemptId]: { ...current, lastEventMs: nowMs, status: 'settling', runtimeState: 'settling' } }
   }
   if (stream.kind === 'failed') {
     return { ...previous, [attemptId]: { ...current, lastEventMs: nowMs, status: 'failed', error: stream.message } }
   }
   return { ...previous, [attemptId]: { ...current, lastEventMs: nowMs } }
+}
+
+function reduceAttemptState(
+  previous: Record<string, LiveModelAttempt>,
+  item: ModelAttemptStateItem,
+  nowMs: number,
+): Record<string, LiveModelAttempt> {
+  if (item.terminal) {
+    if (!previous[item.attemptId]) return previous
+    const next = { ...previous }
+    delete next[item.attemptId]
+    return next
+  }
+  const runtimeState = item.state === 'queued'
+    ? 'queued'
+    : item.state === 'waiting_final_output'
+      ? 'waiting_final_output'
+      : item.state === 'settling'
+        ? 'settling'
+        : 'streaming'
+  const current = previous[item.attemptId]
+  return {
+    ...previous,
+    [item.attemptId]: {
+      attemptId: item.attemptId,
+      activationId: item.activationId,
+      threadKind: item.threadKind,
+      text: current?.text ?? '',
+      reasoningSummary: current?.reasoningSummary ?? '',
+      startedAt: current?.startedAt ?? item.timestamp,
+      lastEventMs: nowMs,
+      status: runtimeState === 'waiting_final_output' || runtimeState === 'settling' ? 'settling' : 'streaming',
+      runtimeState,
+      toolCallCount: current?.toolCallCount ?? 0,
+      reasoningSummaryPersisted: current?.reasoningSummaryPersisted ?? false,
+      responseResolved: current?.responseResolved ?? false,
+    },
+  }
 }
 
 function matchesCausalId(attempt: LiveModelAttempt, causalId: string): boolean {
@@ -221,6 +286,17 @@ export function modelStreamReducer(state: LiveModelState, action: ModelStreamAct
   if (action.type === 'persisted') {
     const attempts = persistAttempt(state.attempts, action.causalId)
     return attempts === state.attempts ? state : { ...state, attempts }
+  }
+  if (action.type === 'attempt_state') {
+    const attempts = reduceAttemptState(state.attempts, action.item, action.nowMs)
+    return attempts === state.attempts ? state : { ...state, attempts }
+  }
+  if (action.type === 'snapshot') {
+    const attempts = action.items.reduce(
+      (next, item) => reduceAttemptState(next, item, action.nowMs),
+      {} as Record<string, LiveModelAttempt>,
+    )
+    return { ...state, attempts }
   }
 
   const activeActivationIds = new Set(action.activeActivationIds)

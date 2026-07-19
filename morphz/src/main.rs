@@ -1,6 +1,6 @@
 use chrono::Utc;
 use morphz::approval::ApprovalDecision;
-use morphz::cli::{morphz_command_line_parser, Invocation};
+use morphz::cli::{morphz_command, morphz_command_line_parser, Invocation};
 use morphz::config;
 use morphz::event::Event;
 use morphz::llm::{Client, Message, ReasoningEffort, Response, ToolDefinition};
@@ -22,135 +22,6 @@ use std::sync::Arc;
 use tracing_subscriber::{fmt, EnvFilter};
 
 type AppError = Box<dyn std::error::Error + Send + Sync>;
-
-const HELP: &str = r#"Morphz — an Agent runtime with Context-owned Sessions
-
-USAGE:
-  morphz [OPTIONS] [PROMPT...]
-  morphz exec [OPTIONS] PROMPT...
-  morphz serve [OPTIONS]
-  morphz dashboard [OPTIONS]
-  morphz <context|session|agent|objective|scheduler|job|config> <COMMAND> [ARGS...]
-
-SESSION SEMANTICS:
-  A bare invocation creates a new Session mounted in the selected shared Context.
-  `resume`, --session=ID and `session resume` reattach the same Session identity.
-
-CORE COMMANDS:
-  exec PROMPT...                 Run one prompt and print the final reply
-  resume [ID] [PROMPT...]        Reattach ID, or the most recently active Session when omitted
-  serve                          Start the HTTP/WebSocket server
-  dashboard                      Start Dashboard with a temporary Token and open a browser
-  setup                          Configure a model Provider interactively
-  provider list|test             Inspect and verify model Providers
-  model list|use                 Discover or select models
-  profile list|show|use          Inspect or select configuration Profiles
-  context list|show|status|audit Inspect Cognitive Contexts and verify Mind Projection
-  scheduler show                Inspect the authoritative Scheduler snapshot
-  session list|show|create       Manage Sessions
-  session resume [ID] [PROMPT...] Reattach ID, or the most recently active Session when omitted
-  agent list|show|create         Manage Agents
-  objective list|show            Inspect persistent Objectives
-  objective create GOAL...       Create and run a long-lived Objective
-  objective edit ID GOAL...      Revise an Objective with CAS protection
-  objective pause|resume|cancel  Control an Objective lifecycle
-  job list|cancel                Inspect or cancel Sub Agent jobs
-  config show|check|path|explain Inspect configuration and value sources
-  doctor                         Check the local Runtime setup
-
-GLOBAL OPTIONS:
-  -C, --cwd=DIR                  Change working directory before loading config
-      --config-file=FILE         Load an explicit trusted config file
-  -m, --model=MODEL              Override the configured model
-      --reasoning-effort=LEVEL   default | none | low | medium | high | max
-      --agent=ID                 Select an Agent
-      --context=ID               Select or mount a Cognitive Context
-      --session=ID               Reattach an existing Session
-  -s, --sandbox=MODE             workspace-write | full-access
-  -a, --approval=MODE            human | auto | never
-      --add-dir=DIR              Add a readable and writable directory
-      --network[=BOOL]           Allow sandboxed command network access
-      --bind=ADDR                Override server bind address
-      --format=human|json        Management-command output format
-      --token-budget=N           Optional Objective token budget
-      --include-terminal         Include terminal Threads and Jobs in scheduler reads
-      --limit=N                  Bound scheduler history (1..=2000)
-      --reason=TEXT              Auditable lifecycle-control reason
-      --log-level=LEVEL          Override the tracing filter
-      --theme=THEME              system | mono | iris | cyan | coral | no-color
-      --tui                      Force the fullscreen terminal UI
-      --plain                    Use the classic line-oriented terminal
-  -h, --help                     Print help
-  -V, --version                  Print version
-
-Use `--` to force every remaining argv token to be prompt text.
-Options that take values support --name=value; this form also removes command/value ambiguity.
-"#;
-
-const SERVE_HELP: &str = r#"Morphz Dashboard Server
-
-USAGE:
-  morphz serve [OPTIONS]
-
-DESCRIPTION:
-  Start the HTTP/WebSocket Runtime service and serve the embedded Dashboard.
-  The Dashboard is available at the server root path `/`; no external web
-  directory, Node.js process, or static-file server is required.
-
-OPTIONS:
-      --bind=ADDR                Listen address, for example 127.0.0.1:8080
-      --reasoning-effort=LEVEL   default | none | low | medium | high | max
-      --config-file=FILE         Load an explicit trusted config file
-  -p, --profile=NAME             Load a named configuration Profile
-      --log-level=LEVEL          Override the tracing filter
-  -h, --help                     Print this help
-
-NETWORK SAFETY:
-  Loopback addresses may run without Dashboard authentication. Binding to a
-  non-loopback address such as 0.0.0.0 requires MORPHZ_DASHBOARD_TOKEN; the
-  same token authenticates HTTP API requests and WebSocket connections.
-
-EXAMPLES:
-  morphz serve
-  morphz serve --bind=127.0.0.1:9090
-  MORPHZ_DASHBOARD_TOKEN=replace-with-a-secret \
-    morphz serve --bind=0.0.0.0:8080
-"#;
-
-const DASHBOARD_HELP: &str = r#"Morphz Dashboard
-
-USAGE:
-  morphz dashboard [OPTIONS]
-
-DESCRIPTION:
-  Generate a cryptographically random Token for this process, start the
-  embedded Dashboard server, and open it in the operating system's default
-  browser. The generated Token is not written to configuration or storage.
-
-OPTIONS:
-      --bind=ADDR                Listen address, for example 127.0.0.1:8080
-      --reasoning-effort=LEVEL   default | none | low | medium | high | max
-      --config-file=FILE         Load an explicit trusted config file
-  -p, --profile=NAME             Load a named configuration Profile
-      --log-level=LEVEL          Override the tracing filter
-  -h, --help                     Print this help
-
-EXAMPLES:
-  morphz dashboard
-  morphz dashboard --bind=0.0.0.0:8080
-
-When ADDR is 0.0.0.0 or [::], the local browser is opened through the
-corresponding loopback address while the server remains reachable on every
-network interface. Remote clients need the generated Token URL.
-"#;
-
-fn help_for(invocation: &Invocation) -> &'static str {
-    match invocation.command_path() {
-        [command] if command == "serve" => SERVE_HELP,
-        [command] if command == "dashboard" => DASHBOARD_HELP,
-        _ => HELP,
-    }
-}
 
 fn init_logging(log_level: Option<&str>, tui_mode: bool) -> Result<(), AppError> {
     let filter = match log_level {
@@ -178,7 +49,19 @@ fn init_logging(log_level: Option<&str>, tui_mode: bool) -> Result<(), AppError>
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
-    let invocation = morphz_command_line_parser().parse(std::env::args().skip(1))?;
+    let invocation = morphz_command_line_parser()
+        .parse(std::env::args_os().skip(1))
+        .unwrap_or_else(|error| error.exit());
+
+    if invocation.command_path() == ["version"] {
+        println!("morphz {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if invocation.command_path() == ["completion"] {
+        generate_completion(&invocation)?;
+        return Ok(());
+    }
+
     let tui_mode = should_use_tui(&invocation)?;
     // Resolve the host-owned environment file before `--cwd` changes the
     // process directory. A project `.env` must never be able to redirect an
@@ -190,15 +73,6 @@ async fn main() -> Result<(), AppError> {
     }
     init_logging(option_value(&invocation, "log-level"), tui_mode)?;
 
-    if invocation.has_option("help") || invocation.command_path() == ["help"] {
-        print!("{}", help_for(&invocation));
-        return Ok(());
-    }
-    if invocation.has_option("version") || invocation.command_path() == ["version"] {
-        println!("morphz {}", env!("CARGO_PKG_VERSION"));
-        return Ok(());
-    }
-
     if let Some(path) = host_env_path {
         if let Err(error) = config::load_env(&path.to_string_lossy()) {
             if error.kind() != std::io::ErrorKind::NotFound {
@@ -209,7 +83,6 @@ async fn main() -> Result<(), AppError> {
         }
     }
 
-    reject_unimplemented_options(&invocation)?;
     let cwd = std::env::current_dir()?;
     let explicit_config_path = selected_config_path(&invocation);
     let active_profile = if invocation.has_option("profile") {
@@ -301,6 +174,18 @@ async fn main() -> Result<(), AppError> {
     .await
 }
 
+fn generate_completion(invocation: &Invocation) -> Result<(), AppError> {
+    let shell = invocation
+        .prompt_args()
+        .first()
+        .ok_or("completion 缺少 SHELL")?
+        .parse::<clap_complete::Shell>()
+        .map_err(|error| format!("无法识别 completion Shell: {error}"))?;
+    let mut command = morphz_command();
+    clap_complete::generate(shell, &mut command, "morphz", &mut std::io::stdout());
+    Ok(())
+}
+
 async fn ensure_cli_identity_records(
     runtime: &MorphzRuntime,
     agent_id: &str,
@@ -373,18 +258,6 @@ fn selected_config_path(invocation: &Invocation) -> Option<PathBuf> {
     option_value(invocation, "config-file")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("MORPHZ_CONFIG_PATH").map(PathBuf::from))
-}
-
-fn reject_unimplemented_options(invocation: &Invocation) -> Result<(), AppError> {
-    for (name, explanation) in [
-        ("output", "输出文件写入尚未接入，请使用 Shell 重定向"),
-        ("schema", "结构化输出 Schema 尚未接入"),
-    ] {
-        if invocation.has_option(name) {
-            return Err(format!("--{name} 当前不可用：{explanation}").into());
-        }
-    }
-    Ok(())
 }
 
 fn resolve_invocation_config(
@@ -547,8 +420,12 @@ fn mark_environment_config_sources(resolved: &mut config::ResolvedConfig) {
             "orchestrator.context_maintenance_reserve_tokens",
         ),
         (
-            "MORPHZ_LLM_REQUEST_TIMEOUT_SECS",
-            "llm.request_timeout_secs",
+            "MORPHZ_LLM_CONNECT_TIMEOUT_SECS",
+            "llm.connect_timeout_secs",
+        ),
+        (
+            "MORPHZ_LLM_STREAM_IDLE_TIMEOUT_SECS",
+            "llm.stream_idle_timeout_secs",
         ),
         ("MORPHZ_LLM_MAX_OUTPUT_TOKENS", "llm.max_output_tokens"),
         ("MORPHZ_LLM_REASONING_EFFORT", "llm.reasoning_effort"),
@@ -867,7 +744,6 @@ async fn dispatch_runtime_command(
         "job" | "job list" => list_jobs(&runtime, &invocation).await,
         "job cancel" => cancel_job(&runtime, &invocation).await,
         "doctor" => doctor(&runtime, &app_config),
-        "completion" => Err("Shell completion 生成器尚未实现".into()),
         command => Err(format!("命令尚未实现: {command}").into()),
     }
 }
@@ -2819,7 +2695,7 @@ mod tests {
     use super::{
         apply_cli_config, command_needs_llm, console_message_from_event, create_session_command,
         dashboard_browser_url, ensure_cli_identity_records, format_tool_call_activity,
-        generate_dashboard_token, help_for, parse_terminal_approval_input, read_console_input,
+        generate_dashboard_token, parse_terminal_approval_input, read_console_input,
         resolve_resumed_session, select_or_create_console_session,
         should_run_first_time_setup_with_terminal, should_use_tui_with_terminal,
         wait_for_session_reply, ConsoleInput, ConsoleMessageKind, OfflineClient,
@@ -2852,10 +2728,7 @@ mod tests {
         assert!(
             !should_use_tui_with_terminal(&parser.parse(["exec", "hello"]).unwrap(), true).unwrap()
         );
-        assert!(
-            should_use_tui_with_terminal(&parser.parse(["--tui", "--plain"]).unwrap(), true)
-                .is_err()
-        );
+        assert!(parser.parse(["--tui", "--plain"]).is_err());
     }
 
     #[test]
@@ -3060,10 +2933,8 @@ mod tests {
         apply_cli_config(&invocation, &mut config).unwrap();
         assert_eq!(config.tui.theme, TuiTheme::Cyan);
 
-        let invalid = morphz_command_line_parser()
-            .parse(["--theme=ultraviolet"])
-            .unwrap();
-        assert!(apply_cli_config(&invalid, &mut config).is_err());
+        let invalid = morphz_command_line_parser().parse(["--theme=ultraviolet"]);
+        assert!(invalid.is_err());
     }
 
     #[test]
@@ -3093,10 +2964,8 @@ mod tests {
         apply_cli_config(&provider_default, &mut config).unwrap();
         assert_eq!(config.llm.reasoning_effort, None);
 
-        let invalid = morphz_command_line_parser()
-            .parse(["--reasoning-effort=ultra"])
-            .unwrap();
-        assert!(apply_cli_config(&invalid, &mut config).is_err());
+        let invalid = morphz_command_line_parser().parse(["--reasoning-effort=ultra"]);
+        assert!(invalid.is_err());
     }
 
     #[test]
@@ -3115,15 +2984,15 @@ mod tests {
 
     #[test]
     fn serve_help_describes_binding_dashboard_and_non_loopback_authentication() {
-        let invocation = morphz_command_line_parser()
+        let error = morphz_command_line_parser()
             .parse(["serve", "--help"])
-            .unwrap();
-        let help = help_for(&invocation);
-        assert!(help.contains("morphz serve [OPTIONS]"));
-        assert!(help.contains("--bind=ADDR"));
+            .unwrap_err();
+        let help = error.to_string();
+        assert!(help.contains("Usage: morphz serve"));
+        assert!(help.contains("--bind <ADDR>"));
         assert!(help.contains("MORPHZ_DASHBOARD_TOKEN"));
         assert!(help.contains("0.0.0.0:8080"));
-        assert!(!help.contains("CORE COMMANDS:"));
+        assert!(!help.contains("Manage Sessions"));
     }
 
     #[test]
@@ -3142,11 +3011,11 @@ mod tests {
             format!("http://[::1]:9090/#token={first}")
         );
 
-        let invocation = morphz_command_line_parser()
+        let error = morphz_command_line_parser()
             .parse(["dashboard", "--help"])
-            .unwrap();
-        let help = help_for(&invocation);
-        assert!(help.contains("cryptographically random Token"));
+            .unwrap_err();
+        let help = error.to_string();
+        assert!(help.contains("cryptographically random temporary authentication token"));
         assert!(help.contains("morphz dashboard --bind=0.0.0.0:8080"));
     }
 

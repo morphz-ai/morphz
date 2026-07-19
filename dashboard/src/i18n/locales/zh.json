@@ -91,6 +91,9 @@
     "copy": "复制消息",
     "copied": "已复制",
     "streaming": "正在生成",
+    "waitingForModel": "等待模型求值",
+    "reasoningCompleted": "推理已结束 · 等待最终输出",
+    "waitingFinalOutput": "推理已经结束，模型尚未产生最终正文或工具调用。",
     "streamFailed": "流式响应失败",
     "pendingHint": "你可以继续发送消息，当前执行不会阻塞对话。"
   },

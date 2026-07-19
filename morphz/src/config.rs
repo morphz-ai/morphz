@@ -262,8 +262,19 @@ pub struct OrchestratorConfig {
     pub reply_wait_notice_secs: u64,
     /// 工具执行超时（秒）
     pub tool_timeout_secs: u64,
-    /// 完整一次 LLM Attempt 的绝对超时（包含 Client 内部重试与响应解析）
-    pub model_attempt_timeout_secs: u64,
+    /// 等待模型 Provider 并发槽位的最长时间。它只限制排队，不限制
+    /// 已经持续产生流式数据的物理请求。
+    pub model_provider_queue_timeout_secs: u64,
+    /// 单次物理模型请求的可选绝对墙钟上限。None 表示不设置 hard
+    /// deadline；流式停滞仍由 Provider 的 idle timeout 检测。
+    pub model_attempt_hard_timeout_secs: Option<u64>,
+    /// reasoning-only continuation 的安全熔断上限。
+    ///
+    /// 这不是正常调度预算：只用于阻止 Provider 或模型异常时无限消耗。
+    /// None 表示完全不按次数熔断；正常且持续产生新进展的 reasoning 不退避。
+    pub reasoning_continuation_safety_limit: Option<usize>,
+    /// 连续多少次收到完全相同的 reasoning 摘要后判定停滞；0 表示关闭停滞检测。
+    pub max_stalled_reasoning_continuations: usize,
     /// Agent-Owned Context 的 warning 软阈值（估算 Token）
     pub context_soft_token_limit: usize,
     /// Agent-Owned Context 的物理硬阈值（估算 Token）
@@ -294,7 +305,10 @@ impl Default for OrchestratorConfig {
             max_active_delegations_per_agent: 8,
             reply_wait_notice_secs: 120,
             tool_timeout_secs: 30,
-            model_attempt_timeout_secs: 180,
+            model_provider_queue_timeout_secs: 180,
+            model_attempt_hard_timeout_secs: None,
+            reasoning_continuation_safety_limit: Some(64),
+            max_stalled_reasoning_continuations: 3,
             context_soft_token_limit: 196_608,
             context_hard_token_limit: 262_144,
             context_maintenance_reserve_tokens: 32_768,
@@ -512,8 +526,11 @@ pub struct LlmConfig {
     pub max_retries: u32,
     /// 初始重试退避秒数
     pub initial_backoff_secs: u64,
-    /// 单次 HTTP 请求（包含响应体读取）的超时秒数
-    pub request_timeout_secs: u64,
+    /// 建立 TCP/TLS 连接的超时秒数。
+    pub connect_timeout_secs: u64,
+    /// 等待响应头或相邻两个流式数据块的最长静默时间。每收到一个
+    /// chunk 都会重新计时，因此持续输出 reasoning 不会被误杀。
+    pub stream_idle_timeout_secs: u64,
     /// 单次 completion 最大输出 Token；None 表示由模型服务决定默认值
     pub max_output_tokens: Option<u32>,
     /// 模型原生推理深度；None 表示不发送控制字段，保留模型默认行为。
@@ -527,7 +544,8 @@ impl Default for LlmConfig {
             model: "gpt-4o-mini".to_string(),
             max_retries: 5,
             initial_backoff_secs: 1,
-            request_timeout_secs: 120,
+            connect_timeout_secs: 30,
+            stream_idle_timeout_secs: 120,
             max_output_tokens: None,
             reasoning_effort: None,
         }
@@ -1397,12 +1415,12 @@ impl AppConfig {
             &mut self.orchestrator.observation_preview_chars,
         )?;
         apply_u64_env(
-            "MORPHZ_LLM_REQUEST_TIMEOUT_SECS",
-            &mut self.llm.request_timeout_secs,
+            "MORPHZ_LLM_CONNECT_TIMEOUT_SECS",
+            &mut self.llm.connect_timeout_secs,
         )?;
         apply_u64_env(
-            "MORPHZ_MODEL_ATTEMPT_TIMEOUT_SECS",
-            &mut self.orchestrator.model_attempt_timeout_secs,
+            "MORPHZ_LLM_STREAM_IDLE_TIMEOUT_SECS",
+            &mut self.llm.stream_idle_timeout_secs,
         )?;
         apply_u64_env(
             "MORPHZ_REPLY_WAIT_NOTICE_SECS",
@@ -1864,7 +1882,8 @@ mod tests {
         assert_eq!(cfg.storage.sqlite.max_connections, 8);
         assert_eq!(cfg.storage.postgres.url_env, "MORPHZ_POSTGRES_URL");
         assert_eq!(cfg.llm.max_retries, 5);
-        assert_eq!(cfg.llm.request_timeout_secs, 120);
+        assert_eq!(cfg.llm.connect_timeout_secs, 30);
+        assert_eq!(cfg.llm.stream_idle_timeout_secs, 120);
         assert_eq!(cfg.llm.max_output_tokens, None);
         assert_eq!(cfg.llm.reasoning_effort, None);
         assert_eq!(cfg.orchestrator.reply_wait_notice_secs, 120);
@@ -1944,14 +1963,16 @@ mod tests {
     fn test_partial_llm_section_configures_request_timeout_and_retries() {
         let mut tmp_file = NamedTempFile::new().unwrap();
         writeln!(tmp_file, "[llm]").unwrap();
-        writeln!(tmp_file, "request_timeout_secs = 7").unwrap();
+        writeln!(tmp_file, "connect_timeout_secs = 7").unwrap();
+        writeln!(tmp_file, "stream_idle_timeout_secs = 11").unwrap();
         writeln!(tmp_file, "max_retries = 1").unwrap();
         writeln!(tmp_file, "max_output_tokens = 131072").unwrap();
         writeln!(tmp_file, "reasoning_effort = 'high'").unwrap();
 
         let cfg = toml::from_str::<AppConfig>(&std::fs::read_to_string(tmp_file.path()).unwrap())
             .unwrap();
-        assert_eq!(cfg.llm.request_timeout_secs, 7);
+        assert_eq!(cfg.llm.connect_timeout_secs, 7);
+        assert_eq!(cfg.llm.stream_idle_timeout_secs, 11);
         assert_eq!(cfg.llm.max_retries, 1);
         assert_eq!(cfg.llm.max_output_tokens, Some(131_072));
         assert_eq!(cfg.llm.reasoning_effort, Some(ReasoningEffort::High));

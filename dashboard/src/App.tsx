@@ -40,6 +40,7 @@ import {
   selectDurableReasoningSummaries,
   selectReasoningContinuationSummaries,
   visibleLiveModelAttempts,
+  type ModelAttemptStateItem,
   type ModelStreamBatchItem,
 } from './modelStream'
 import {
@@ -1198,6 +1199,57 @@ export default function App() {
         if (disposed) return
         try {
           const event = JSON.parse(messageEvent.data) as MorphzEvent
+          if (event.topic === 'runtime/model_attempt_snapshot') {
+            const items = Array.isArray(event.payload.attempts)
+              ? event.payload.attempts.flatMap(value => {
+                  if (!value || typeof value !== 'object') return []
+                  const item = value as Record<string, unknown>
+                  const attemptId = typeof item.attempt_id === 'string' ? item.attempt_id : ''
+                  const activationId = typeof item.activation_id === 'string' ? item.activation_id : attemptId
+                  if (!attemptId || !activationId) return []
+                  return [{
+                    attemptId,
+                    activationId,
+                    threadKind: typeof item.thread_kind === 'string' ? item.thread_kind : 'dialogue_turn',
+                    state: typeof item.state === 'string' ? item.state : 'streaming',
+                    terminal: false,
+                    timestamp: typeof item.timestamp === 'string' ? item.timestamp : event.timestamp,
+                    detail: typeof item.detail === 'string' ? item.detail : undefined,
+                  } satisfies ModelAttemptStateItem]
+                })
+              : []
+            dispatchModelStream({ type: 'snapshot', sessionId: selectedSessionId, items, nowMs: Date.now() })
+            return
+          }
+          if (event.topic === 'runtime/model_attempt_state') {
+            const attemptId = typeof event.payload.attempt_id === 'string' ? event.payload.attempt_id : ''
+            const activationId = typeof event.payload.activation_id === 'string' ? event.payload.activation_id : attemptId
+            if (attemptId && activationId) {
+              const terminal = event.payload.terminal === true
+              if (terminal) {
+                pendingStreamEvents = pendingStreamEvents.filter(item => item.attemptId !== attemptId)
+                if (pendingStreamEvents.length === 0 && streamTimer !== undefined) {
+                  window.clearTimeout(streamTimer)
+                  streamTimer = undefined
+                }
+              }
+              dispatchModelStream({
+                type: 'attempt_state',
+                sessionId: selectedSessionId,
+                nowMs: Date.now(),
+                item: {
+                  attemptId,
+                  activationId,
+                  threadKind: typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue_turn',
+                  state: typeof event.payload.state === 'string' ? event.payload.state : 'streaming',
+                  terminal,
+                  timestamp: event.timestamp,
+                  detail: typeof event.payload.detail === 'string' ? event.payload.detail : undefined,
+                },
+              })
+            }
+            return
+          }
           if (event.topic === 'runtime/model_stream') {
             const attemptId = typeof event.payload.attempt_id === 'string' ? event.payload.attempt_id : ''
             const activationId = typeof event.payload.activation_id === 'string' ? event.payload.activation_id : attemptId
@@ -1374,7 +1426,6 @@ export default function App() {
   }, [durableReasoningSummaries, reasoningContinuationSummaries, visibleEvents])
   const streamingAttempts = useMemo(
     () => Object.values(liveModelAttempts)
-      .filter(attempt => attempt.text.trim() || attempt.reasoningSummary.trim() || attempt.status === 'failed')
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt)),
     [liveModelAttempts],
   )
@@ -1890,7 +1941,7 @@ export default function App() {
     if (latestTurnEvent.topic === 'chat/tool_output') {
       return t('turnStatus.toolResult', { tool: String(latestTurnEvent.payload.tool_name ?? t('toolCall.viewArgs')) })
     }
-    if (latestTurnEvent.topic === 'runtime/model_attempt_started') return t('turnStatus.modelEval')
+    if (latestTurnEvent.topic === 'runtime/model_attempt_state') return t('turnStatus.modelEval')
     return t('turnStatus.waiting')
   }, [latestTurnEvent, t])
 
@@ -2152,11 +2203,22 @@ export default function App() {
                     <div className="message-body">
                       {attempt.text.trim()
                         ? <MarkdownBody text={attempt.text} />
-                        : attempt.error ?? t('conversation.streaming')}
+                        : attempt.error
+                          ?? (attempt.runtimeState === 'waiting_final_output'
+                            ? t('conversation.waitingFinalOutput')
+                            : attempt.runtimeState === 'queued'
+                              ? t('conversation.waitingForModel')
+                              : t('conversation.streaming'))}
                       {attempt.status !== 'failed' && <span className="stream-caret" aria-hidden="true" />}
                     </div>
                     <div className="message-meta stream-meta">
-                      <span>{attempt.status === 'failed' ? t('conversation.streamFailed') : t('conversation.streaming')}</span>
+                      <span>{attempt.status === 'failed'
+                        ? t('conversation.streamFailed')
+                        : attempt.runtimeState === 'waiting_final_output'
+                          ? t('conversation.reasoningCompleted')
+                          : attempt.runtimeState === 'queued'
+                            ? t('conversation.waitingForModel')
+                            : t('conversation.streaming')}</span>
                     </div>
                   </article>
                 ))}

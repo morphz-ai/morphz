@@ -336,7 +336,8 @@ impl MorphzRuntimeBuilder {
         let objective_lease_secs = self
             .config
             .orchestrator
-            .model_attempt_timeout_secs
+            .model_attempt_hard_timeout_secs
+            .unwrap_or(self.config.orchestrator.model_provider_queue_timeout_secs)
             .saturating_mul(4)
             .saturating_add(self.config.orchestrator.tool_timeout_secs.saturating_mul(4))
             .max(600);
@@ -390,6 +391,7 @@ impl MorphzRuntimeBuilder {
             Arc::clone(&timer_engine),
             Some(Arc::clone(&thread_scheduler)),
             Some(Arc::clone(&execution_jobs)),
+            Some(Arc::clone(&store) as Arc<dyn crate::memory::ActionGroupStore>),
             Some(Arc::clone(&background_scheduler)),
             Some(DurableApprovalServices::new(
                 Arc::clone(&permissions),
@@ -3396,7 +3398,7 @@ mod tests {
         // The former whole-Attempt watchdog fired after
         // `model_timeout * (protocol_retries + 1) + 1`, i.e. four seconds for
         // this fixture.  Human authority must not inherit that model deadline.
-        config.orchestrator.model_attempt_timeout_secs = 1;
+        config.orchestrator.model_attempt_hard_timeout_secs = Some(1);
         let runtime = MorphzRuntime::builder(config, Arc::clone(&client) as Arc<dyn Client>)
             .database_path(database.path().to_string_lossy())
             .tool_policy(RuntimeToolPolicy {

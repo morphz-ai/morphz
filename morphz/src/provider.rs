@@ -8,10 +8,11 @@ use crate::llm::{
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 type ProviderError = Box<dyn std::error::Error + Send + Sync>;
@@ -180,8 +181,16 @@ pub struct ProtocolClient {
     headers: HeaderMap,
     max_retries: u32,
     initial_backoff_secs: u64,
+    stream_idle_timeout: Duration,
     max_output_tokens: Option<u32>,
     reasoning_effort: RwLock<Option<ReasoningEffort>>,
+    usage_anchors: Mutex<HashMap<u64, PromptUsageAnchor>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PromptUsageAnchor {
+    base_estimate_tokens: usize,
+    actual_prompt_tokens: usize,
 }
 
 impl ProtocolClient {
@@ -208,7 +217,7 @@ impl ProtocolClient {
         }
         let http = reqwest::Client::builder()
             .no_proxy()
-            .timeout(Duration::from_secs(llm.request_timeout_secs.max(1)))
+            .connect_timeout(Duration::from_secs(llm.connect_timeout_secs.max(1)))
             .build()?;
         Ok(Self {
             http,
@@ -219,8 +228,10 @@ impl ProtocolClient {
             headers,
             max_retries: llm.max_retries.max(1),
             initial_backoff_secs: llm.initial_backoff_secs,
+            stream_idle_timeout: Duration::from_secs(llm.stream_idle_timeout_secs.max(1)),
             max_output_tokens: llm.max_output_tokens,
             reasoning_effort: RwLock::new(llm.reasoning_effort),
+            usage_anchors: Mutex::new(HashMap::new()),
         })
     }
 
@@ -292,11 +303,29 @@ impl ProtocolClient {
         loop {
             attempt += 1;
             let request = self.authorize(self.http.post(&endpoint));
-            match request.json(body).send().await {
+            match tokio::time::timeout(self.stream_idle_timeout, request.json(body).send())
+                .await
+                .map_err(|_| {
+                    format!(
+                        "{} Provider 等待响应头超过 {} 秒 idle timeout",
+                        self.protocol.as_str(),
+                        self.stream_idle_timeout.as_secs()
+                    )
+                })? {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
-                        return Ok(response.json().await?);
+                        let body = tokio::time::timeout(self.stream_idle_timeout, response.json())
+                            .await
+                            .map_err(|_| -> ProviderError {
+                                format!(
+                                    "{} Provider 响应体超过 {} 秒没有完成",
+                                    self.protocol.as_str(),
+                                    self.stream_idle_timeout.as_secs()
+                                )
+                                .into()
+                            })??;
+                        return Ok(body);
                     }
                     let retryable = status.as_u16() == 429 || status.is_server_error();
                     let text = response.text().await.unwrap_or_default();
@@ -337,6 +366,7 @@ impl ProtocolClient {
     async fn send_stream(
         &self,
         body: &Value,
+        measurement: Option<&PromptTokenCount>,
         stream: &ModelStreamSender,
     ) -> Result<Response, ProviderError> {
         let endpoint = self.endpoint_for(true)?;
@@ -356,7 +386,18 @@ impl ProtocolClient {
         let response = loop {
             attempt += 1;
             let request = self.authorize(self.http.post(&endpoint));
-            match request.json(&streaming_body).send().await {
+            match tokio::time::timeout(
+                self.stream_idle_timeout,
+                request.json(&streaming_body).send(),
+            )
+            .await
+            .map_err(|_| {
+                format!(
+                    "{} Provider 流等待响应头超过 {} 秒 idle timeout",
+                    self.protocol.as_str(),
+                    self.stream_idle_timeout.as_secs()
+                )
+            })? {
                 Ok(response) if response.status().is_success() => break response,
                 Ok(response) => {
                     let status = response.status();
@@ -397,7 +438,19 @@ impl ProtocolClient {
         let mut accumulator = StreamAccumulator::default();
         let mut bytes = response.bytes_stream();
         let mut pending = Vec::new();
-        while let Some(chunk) = bytes.next().await {
+        loop {
+            let chunk = tokio::time::timeout(self.stream_idle_timeout, bytes.next())
+                .await
+                .map_err(|_| {
+                    format!(
+                        "{} Provider 流连续 {} 秒没有收到数据块",
+                        self.protocol.as_str(),
+                        self.stream_idle_timeout.as_secs()
+                    )
+                })?;
+            let Some(chunk) = chunk else {
+                break;
+            };
             pending.extend_from_slice(&chunk?);
             while let Some((frame, consumed)) = take_sse_frame(&pending) {
                 pending.drain(..consumed);
@@ -421,12 +474,67 @@ impl ProtocolClient {
                 }
             }
         }
-        accumulator.finish(stream)
+        let actual_prompt_tokens = accumulator.prompt_tokens;
+        let response = accumulator.finish(stream)?;
+        if let (Some(measurement), Some(actual_prompt_tokens)) = (measurement, actual_prompt_tokens)
+        {
+            self.observe_completion_usage(body, measurement, actual_prompt_tokens);
+        }
+        Ok(response)
+    }
+
+    fn observe_completion_usage(
+        &self,
+        body: &Value,
+        measurement: &PromptTokenCount,
+        actual_prompt_tokens: u64,
+    ) {
+        let (Some(calibration_key), Some(calibration_shape)) =
+            (measurement.calibration_key, measurement.calibration_shape)
+        else {
+            return;
+        };
+        let actual_shape = prompt_calibration_shape(self.protocol, &self.model, body);
+        if measurement.accuracy == PromptTokenAccuracy::Exact || calibration_shape != actual_shape {
+            return;
+        }
+
+        let base_estimate_tokens = serialized_request_token_estimate(body);
+        let actual_prompt_tokens = usize::try_from(actual_prompt_tokens).unwrap_or(usize::MAX);
+        if let Ok(mut anchors) = self.usage_anchors.lock() {
+            anchors.insert(
+                calibration_key,
+                PromptUsageAnchor {
+                    base_estimate_tokens,
+                    actual_prompt_tokens,
+                },
+            );
+        }
+        tracing::info!(
+            protocol = self.protocol.as_str(),
+            model = %self.model,
+            predicted_prompt_tokens = measurement.tokens,
+            actual_prompt_tokens,
+            base_estimate_tokens,
+            absolute_error = measurement.tokens.abs_diff(actual_prompt_tokens),
+            "已将 completion usage 反馈给 Prompt Token 校准器"
+        );
     }
 
     pub async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
         let endpoint = format!("{}/models", self.base_url);
-        let response = self.authorize(self.http.get(&endpoint)).send().await?;
+        let response = tokio::time::timeout(
+            self.stream_idle_timeout,
+            self.authorize(self.http.get(&endpoint)).send(),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "{} 模型目录等待响应超过 {} 秒",
+                self.protocol.as_str(),
+                self.stream_idle_timeout.as_secs()
+            )
+        })??;
         let status = response.status();
         if !status.is_success() {
             let text = response.text().await.unwrap_or_default();
@@ -592,21 +700,45 @@ impl Client for ProtocolClient {
 
     async fn count_prompt_tokens(
         &self,
-        _scope: &str,
+        scope: &str,
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<Option<PromptTokenCount>, ProviderError> {
-        let serialized = serde_json::to_string(&self.request(messages, tools))?;
-        let ascii = serialized.chars().filter(char::is_ascii).count();
-        let non_ascii = serialized.chars().count().saturating_sub(ascii);
-        let tokens = (ascii.saturating_add(3) / 4).saturating_add(non_ascii);
+        let body = self.request(messages, tools);
+        let base_estimate_tokens = serialized_request_token_estimate(&body);
+        let calibration_shape = prompt_calibration_shape(self.protocol, &self.model, &body);
+        let calibration_key = prompt_calibration_key(scope, calibration_shape);
+        let anchor = self
+            .usage_anchors
+            .lock()
+            .ok()
+            .and_then(|anchors| anchors.get(&calibration_key).copied());
+        let (tokens, source, accuracy) = match anchor {
+            Some(anchor) => {
+                let delta = signed_token_delta(base_estimate_tokens, anchor.base_estimate_tokens);
+                (
+                    apply_signed_token_delta(anchor.actual_prompt_tokens, delta),
+                    format!(
+                        "{}-serialized-request-estimate+usage-calibration",
+                        self.protocol.as_str()
+                    ),
+                    PromptTokenAccuracy::UsageCalibratedEstimate,
+                )
+            }
+            None => (
+                base_estimate_tokens,
+                format!("{}-serialized-request-estimate", self.protocol.as_str()),
+                PromptTokenAccuracy::HeuristicEstimate,
+            ),
+        };
         Ok(Some(PromptTokenCount {
             tokens,
-            source: format!("{}-serialized-request-estimate", self.protocol.as_str()),
+            source,
             model: self.model.clone(),
-            accuracy: PromptTokenAccuracy::HeuristicEstimate,
-            base_estimate_tokens: tokens,
-            calibration_key: None,
+            accuracy,
+            base_estimate_tokens,
+            calibration_key: Some(calibration_key),
+            calibration_shape: Some(calibration_shape),
         }))
     }
 
@@ -623,12 +755,16 @@ impl Client for ProtocolClient {
         &self,
         messages: Vec<Message>,
         tools: Vec<ToolDefinition>,
-        _measurement: Option<PromptTokenCount>,
+        measurement: Option<PromptTokenCount>,
         stream: ModelStreamSender,
     ) -> Result<Response, ProviderError> {
         let _ = stream.send(ModelStreamEvent::Started);
         match self
-            .send_stream(&self.request(&messages, &tools), &stream)
+            .send_stream(
+                &self.request(&messages, &tools),
+                measurement.as_ref(),
+                &stream,
+            )
             .await
         {
             Ok(response) => {
@@ -645,12 +781,65 @@ impl Client for ProtocolClient {
     }
 }
 
+fn serialized_request_token_estimate(body: &Value) -> usize {
+    let serialized = serde_json::to_string(body).unwrap_or_default();
+    let ascii = serialized.chars().filter(char::is_ascii).count();
+    let non_ascii = serialized.chars().count().saturating_sub(ascii);
+    (ascii.saturating_add(3) / 4).saturating_add(non_ascii)
+}
+
+fn prompt_calibration_shape(protocol: ModelProtocol, model: &str, body: &Value) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    protocol.as_str().hash(&mut hasher);
+    model.hash(&mut hasher);
+    body.get("tools")
+        .unwrap_or(&Value::Null)
+        .to_string()
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
+fn prompt_calibration_key(scope: &str, calibration_shape: u64) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    scope.hash(&mut hasher);
+    calibration_shape.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn apply_signed_token_delta(base: usize, delta: i64) -> usize {
+    if delta >= 0 {
+        base.saturating_add(usize::try_from(delta).unwrap_or(usize::MAX))
+    } else {
+        base.saturating_sub(usize::try_from(delta.unsigned_abs()).unwrap_or(usize::MAX))
+    }
+}
+
+fn signed_token_delta(value: usize, baseline: usize) -> i64 {
+    if value >= baseline {
+        i64::try_from(value - baseline).unwrap_or(i64::MAX)
+    } else {
+        -i64::try_from(baseline - value).unwrap_or(i64::MAX)
+    }
+}
+
+fn anthropic_prompt_tokens(usage: &Value) -> Option<u64> {
+    [
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    ]
+    .into_iter()
+    .filter_map(|field| usage.get(field).and_then(Value::as_u64))
+    .reduce(u64::saturating_add)
+}
+
 #[derive(Debug, Default)]
 struct StreamAccumulator {
     content: String,
     tools: BTreeMap<usize, StreamingToolCall>,
     gemini_tool_index: usize,
     terminal: bool,
+    prompt_tokens: Option<u64>,
 }
 
 #[derive(Debug, Default)]
@@ -754,12 +943,15 @@ impl StreamAccumulator {
     }
 
     fn usage(
-        &self,
+        &mut self,
         prompt_tokens: Option<u64>,
         completion_tokens: Option<u64>,
         total_tokens: Option<u64>,
         stream: &ModelStreamSender,
     ) {
+        if let Some(prompt_tokens) = prompt_tokens {
+            self.prompt_tokens = Some(prompt_tokens);
+        }
         if prompt_tokens.is_some() || completion_tokens.is_some() || total_tokens.is_some() {
             let _ = stream.send(ModelStreamEvent::Usage {
                 prompt_tokens,
@@ -853,6 +1045,9 @@ impl StreamAccumulator {
                 if let Some(delta) = event.get("delta").and_then(Value::as_str) {
                     self.reasoning_summary(delta, stream);
                 }
+            }
+            "response.reasoning_summary_text.done" => {
+                let _ = stream.send(ModelStreamEvent::ReasoningSummaryCompleted);
             }
             "response.output_item.added" => {
                 let item = event.get("item").unwrap_or(&Value::Null);
@@ -953,14 +1148,8 @@ impl StreamAccumulator {
             .unwrap_or_default();
         match kind {
             "message_start" => {
-                self.usage(
-                    event
-                        .pointer("/message/usage/input_tokens")
-                        .and_then(Value::as_u64),
-                    None,
-                    None,
-                    stream,
-                );
+                let usage = event.pointer("/message/usage").unwrap_or(&Value::Null);
+                self.usage(anthropic_prompt_tokens(usage), None, None, stream);
             }
             "content_block_start" => {
                 let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
@@ -1945,6 +2134,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn usage_calibration_is_isolated_by_scope_and_tool_shape() {
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiChat,
+                base_url: "http://127.0.0.1:1".to_string(),
+                ..ProviderConfig::default()
+            },
+            "test-model".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+        let prompt = vec![Message {
+            role: "user".to_string(),
+            content: "hello".to_string(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        }];
+
+        let first = client
+            .count_prompt_tokens("scope-a", &prompt, &[])
+            .await
+            .unwrap()
+            .unwrap();
+        let matching_body = client.request(&prompt, &[]);
+        client.observe_completion_usage(&matching_body, &first, 123);
+
+        let calibrated = client
+            .count_prompt_tokens("scope-a", &prompt, &[])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(calibrated.tokens, 123);
+        assert_eq!(
+            calibrated.accuracy,
+            PromptTokenAccuracy::UsageCalibratedEstimate
+        );
+        assert_eq!(
+            client
+                .count_prompt_tokens("scope-b", &prompt, &[])
+                .await
+                .unwrap()
+                .unwrap()
+                .accuracy,
+            PromptTokenAccuracy::HeuristicEstimate
+        );
+
+        let tool_definitions = tools();
+        let tool_measurement = client
+            .count_prompt_tokens("scope-a", &prompt, &tool_definitions)
+            .await
+            .unwrap()
+            .unwrap();
+        client.observe_completion_usage(&matching_body, &tool_measurement, 999);
+        assert_eq!(
+            client
+                .count_prompt_tokens("scope-a", &prompt, &tool_definitions)
+                .await
+                .unwrap()
+                .unwrap()
+                .accuracy,
+            PromptTokenAccuracy::HeuristicEstimate
+        );
+    }
+
+    #[tokio::test]
     async fn all_protocol_clients_reach_their_native_endpoint() {
         let app = Router::new()
             .route(
@@ -2040,6 +2296,7 @@ mod tests {
                 post(|| async {
                     sse(concat!(
                         "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"summary\"}\n\n",
+                        "data: {\"type\":\"response.reasoning_summary_text.done\"}\n\n",
                         "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
                         "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"reply\"}}\n\n",
                         "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":1,\"delta\":\"{\\\"text\\\":\\\"done\\\"}\"}\n\n",
@@ -2052,7 +2309,7 @@ mod tests {
                 "/messages",
                 post(|| async {
                     sse(concat!(
-                        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\n",
+                        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":4,\"cache_creation_input_tokens\":2,\"cache_read_input_tokens\":4}}}\n\n",
                         "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
                         "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
                         "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
@@ -2104,9 +2361,24 @@ mod tests {
                 &LlmConfig::default(),
             )
             .unwrap();
+            let scope = format!("calibration-{protocol:?}");
+            let initial_measurement = client
+                .count_prompt_tokens(&scope, &prompt, &[])
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                initial_measurement.accuracy,
+                PromptTokenAccuracy::HeuristicEstimate
+            );
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let response = client
-                .create_completion_measured_stream(prompt.clone(), Vec::new(), None, tx)
+                .create_completion_measured_stream(
+                    prompt.clone(),
+                    Vec::new(),
+                    Some(initial_measurement),
+                    tx,
+                )
                 .await
                 .unwrap();
             assert_eq!(response.content, "hello", "protocol={protocol:?}");
@@ -2132,6 +2404,38 @@ mod tests {
             } else {
                 assert!(reasoning_summaries.is_empty(), "protocol={protocol:?}");
             }
+
+            let calibrated = client
+                .count_prompt_tokens(&scope, &prompt, &[])
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(calibrated.tokens, 10, "protocol={protocol:?}");
+            assert_eq!(
+                calibrated.accuracy,
+                PromptTokenAccuracy::UsageCalibratedEstimate,
+                "protocol={protocol:?}"
+            );
+            assert!(calibrated.source.ends_with("+usage-calibration"));
+
+            let mut expanded_prompt = prompt.clone();
+            expanded_prompt[0]
+                .content
+                .push_str(" with enough additional context to grow the local estimate");
+            let expanded = client
+                .count_prompt_tokens(&scope, &expanded_prompt, &[])
+                .await
+                .unwrap()
+                .unwrap();
+            let estimated_growth = signed_token_delta(
+                expanded.base_estimate_tokens,
+                calibrated.base_estimate_tokens,
+            );
+            assert_eq!(
+                expanded.tokens,
+                apply_signed_token_delta(10, estimated_growth),
+                "protocol={protocol:?}"
+            );
         }
     }
 
@@ -2283,6 +2587,75 @@ mod tests {
                 "protocol={protocol:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn streaming_idle_timeout_resets_after_every_received_chunk() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let route_gate = Arc::clone(&gate);
+        let app = Router::new().route(
+            "/chat/completions",
+            post(move || {
+                let gate = Arc::clone(&route_gate);
+                async move {
+                    gated_sse(
+                        vec![
+                            "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n",
+                            "data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n",
+                            concat!(
+                                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                                "data: [DONE]\n\n"
+                            ),
+                        ],
+                        gate,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiChat,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "test-model".to_string(),
+            None,
+            &LlmConfig {
+                max_retries: 1,
+                stream_idle_timeout_secs: 1,
+                ..LlmConfig::default()
+            },
+        )
+        .unwrap();
+        let prompt = vec![Message {
+            role: "user".to_string(),
+            content: "hello".to_string(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        }];
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let request = tokio::spawn(async move {
+            client
+                .create_completion_measured_stream(prompt, Vec::new(), None, tx)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        gate.add_permits(1);
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        gate.add_permits(1);
+
+        let response = tokio::time::timeout(Duration::from_secs(1), request)
+            .await
+            .expect("active stream should outlive one idle window")
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.content, "ab");
     }
 
     #[tokio::test]

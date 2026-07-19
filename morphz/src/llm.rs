@@ -90,6 +90,9 @@ pub enum ModelStreamEvent {
     ReasoningSummaryDelta {
         text: String,
     },
+    /// Provider explicitly closed its reasoning-summary item, while the
+    /// overall response may still be waiting for public text or tool calls.
+    ReasoningSummaryCompleted,
     ToolCallStarted {
         index: usize,
         id: String,
@@ -156,6 +159,10 @@ pub struct PromptTokenCount {
     pub base_estimate_tokens: usize,
     #[serde(default)]
     pub calibration_key: Option<u64>,
+    /// Provider protocol、model 与工具定义构成的校准形状。Client 在收到
+    /// completion usage 时用它确认实际发送请求仍属于预请求计量的同一锚点。
+    #[serde(default)]
+    pub calibration_shape: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

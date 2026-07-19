@@ -737,6 +737,7 @@ impl BackgroundTaskScheduler {
                     job.claim_token.as_deref(),
                     outcome,
                     &event,
+                    true,
                 )
                 .await?
             {

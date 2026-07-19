@@ -8,10 +8,11 @@ use morphz::llm::{
 };
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
-    ActivationStore as _, DelegationStatus, DelegationStore as _, EventStore, NewAgent,
-    NewCognitiveContext, NewSession, NewThread, NewThreadActivation, QueryFilter,
-    SessionDirectoryStore as _, SessionMountKind, SessionStore, ThreadActivationMutation,
-    ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadStore as _, TimerStore,
+    ActionGroupFilter, ActionGroupStatus, ActionGroupStore as _, ActivationStore as _,
+    DelegationStatus, DelegationStore as _, EventStore, NewAgent, NewCognitiveContext, NewSession,
+    NewThread, NewThreadActivation, QueryFilter, SessionDirectoryStore as _, SessionMountKind,
+    SessionStore, ThreadActivationMutation, ThreadActivationStatus, ThreadKind, ThreadLifecycle,
+    ThreadStore as _, TimerStore,
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
@@ -455,7 +456,8 @@ fn new_test_orchestrator(
     let timers = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
     Orchestrator::new_test_with_context_engine(
         bus,
-        store as Arc<dyn EventStore>,
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        store as Arc<dyn morphz::memory::ActionGroupStore>,
         client,
         registry,
         config,
@@ -484,6 +486,7 @@ impl Client for MockClient {
             accuracy: PromptTokenAccuracy::Exact,
             base_estimate_tokens: tokens,
             calibration_key: Some(1),
+            calibration_shape: Some(1),
         }))
     }
 
@@ -1278,7 +1281,10 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
         calls: AtomicUsize::new(0),
         messages_seen: Mutex::new(Vec::new()),
     });
-    let config = morphz::config::OrchestratorConfig::default();
+    let config = morphz::config::OrchestratorConfig {
+        reasoning_continuation_safety_limit: None,
+        ..Default::default()
+    };
     let engine = Arc::new(
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
@@ -1342,6 +1348,54 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
         first_summary.payload.get("completion_tokens"),
         Some(&json!(4_096))
     );
+}
+
+#[tokio::test]
+async fn test_reasoning_continuation_limit_fuses_instead_of_looping_forever() {
+    let session_id = "attempt_reasoning_continuation_fused";
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("reasoning-continuation-fused.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(ReasoningContinuationClient {
+        calls: AtomicUsize::new(0),
+        messages_seen: Mutex::new(Vec::new()),
+    });
+    let config = morphz::config::OrchestratorConfig {
+        reasoning_continuation_safety_limit: Some(1),
+        ..Default::default()
+    };
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, session_id, "do not loop forever").await;
+    let exhausted = wait_for_topic(
+        &store,
+        "runtime/reasoning_continuation_exhausted",
+        session_id,
+    )
+    .await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(exhausted.len(), 1);
+    assert_eq!(
+        exhausted[0].payload.get("requires_operator_attention"),
+        Some(&json!(true))
+    );
+    assert_eq!(replies.len(), 1);
 }
 
 #[tokio::test]
@@ -1499,7 +1553,7 @@ async fn test_orchestrator_deadline_cancels_hanging_client_and_replies() {
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     install_test_session_registry(&bus, &store);
     let config = morphz::config::OrchestratorConfig {
-        model_attempt_timeout_secs: 1,
+        model_attempt_hard_timeout_secs: Some(1),
         ..Default::default()
     };
     let engine = Arc::new(
@@ -1523,7 +1577,11 @@ async fn test_orchestrator_deadline_cancels_hanging_client_and_replies() {
     publish_user(&bus, session_id, "do work").await;
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
     let failures = wait_for_topic(&store, "chat/runtime_error", session_id).await;
-    let starts = wait_for_topic(&store, "runtime/model_attempt_started", session_id).await;
+    let states = wait_for_topic(&store, "runtime/model_attempt_state", session_id).await;
+    let starts = states
+        .iter()
+        .filter(|event| event.payload.get("state") == Some(&json!("queued")))
+        .collect::<Vec<_>>();
 
     assert!(started.elapsed() < std::time::Duration::from_secs(3));
     assert_eq!(replies.len(), 1);
@@ -1536,7 +1594,7 @@ async fn test_orchestrator_deadline_cancels_hanging_client_and_replies() {
     assert_eq!(
         starts[0]
             .payload
-            .get("deadline_secs")
+            .get("hard_deadline_secs")
             .and_then(|value| value.as_u64()),
         Some(1)
     );
@@ -1545,7 +1603,7 @@ async fn test_orchestrator_deadline_cancels_hanging_client_and_replies() {
         .get("error")
         .and_then(|value| value.as_str())
         .unwrap()
-        .contains("deadline has elapsed"));
+        .contains("model hard deadline exceeded after 1s"));
 }
 
 #[tokio::test]
@@ -1562,7 +1620,7 @@ async fn test_orchestrator_deadline_covers_waiting_for_concurrency_permit() {
     }]));
     let config = morphz::config::OrchestratorConfig {
         model_provider_max_in_flight: 1,
-        model_attempt_timeout_secs: 1,
+        model_provider_queue_timeout_secs: 1,
         ..Default::default()
     };
     let engine = Arc::new(
@@ -1613,7 +1671,7 @@ async fn test_orchestrator_deadline_isolates_synchronously_blocking_client() {
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     install_test_session_registry(&bus, &store);
     let config = morphz::config::OrchestratorConfig {
-        model_attempt_timeout_secs: 1,
+        model_attempt_hard_timeout_secs: Some(1),
         ..Default::default()
     };
     let engine = Arc::new(
@@ -1656,7 +1714,7 @@ async fn test_session_cancel_stops_current_attempt_until_new_user_message() {
     let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
     install_test_session_registry(&bus, &store);
     let config = morphz::config::OrchestratorConfig {
-        model_attempt_timeout_secs: 30,
+        model_attempt_hard_timeout_secs: Some(30),
         ..Default::default()
     };
     let engine = Arc::new(
@@ -1676,7 +1734,11 @@ async fn test_session_cancel_stops_current_attempt_until_new_user_message() {
     orchestrator.clone().start().await.unwrap();
 
     publish_user(&bus, session_id, "first hangs").await;
-    let starts = wait_for_topic(&store, "runtime/model_attempt_started", session_id).await;
+    let states = wait_for_topic(&store, "runtime/model_attempt_state", session_id).await;
+    let starts = states
+        .iter()
+        .filter(|event| event.payload.get("state") == Some(&json!("queued")))
+        .collect::<Vec<_>>();
     assert_eq!(starts.len(), 1);
     assert!(orchestrator.cancel_session(session_id));
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1735,7 +1797,7 @@ async fn test_compiled_context_uses_kernel_mind_inbox_without_legacy_schema() {
     assert!(payload.get("pressure").is_some());
     assert_eq!(
         payload
-            .get("model_attempt_timeout_secs")
+            .get("model_provider_queue_timeout_secs")
             .and_then(|value| value.as_u64()),
         Some(180)
     );
@@ -1785,6 +1847,7 @@ async fn test_attempt_loop_preserves_wait_task_shaped_call_id_in_standard_tool_r
     publish_user(&bus, session_id, "read note").await;
     let replies = wait_for_topic(&store, "chat/reply", session_id).await;
     let assistant_calls = wait_for_topic(&store, "chat/assistant_call", session_id).await;
+
     let tool_outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
     let tool_activity = wait_for_topic(&store, "runtime/tool_calls_selected", session_id).await;
 
@@ -2277,7 +2340,8 @@ async fn model_native_prompt_count_drives_pressure_before_completion() {
         context_maintenance_reserve_tokens: 200,
         ..Default::default()
     };
-    let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
+    let restart_config = config.clone();
+    let (bus, store, orchestrator, client, _tmp) = build_orchestrator_with_config(
         vec![Response {
             content: "measured pressure observed".to_string(),
             tool_calls: Vec::new(),
@@ -2305,6 +2369,41 @@ async fn model_native_prompt_count_drives_pressure_before_completion() {
         .content
         .contains("(token-scope full-work-prompt)"));
     assert_eq!(client.tools_seen()[0], vec!["context_tx", "no_reply"]);
+
+    let inspected = orchestrator
+        .get_current_context_view(session_id)
+        .await
+        .unwrap();
+    assert_eq!(inspected.pressure.estimated_tokens, 2_900);
+    assert_eq!(inspected.pressure.token_source, "test-native-tokenizer");
+    assert_eq!(inspected.pressure.token_accuracy, "exact");
+    assert_eq!(inspected.pressure.token_scope, "full-work-prompt");
+    assert_eq!(
+        inspected.pressure.token_model.as_deref(),
+        Some("test-model")
+    );
+
+    let restarted_engine = Arc::new(
+        ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            restart_config.clone(),
+        )
+        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let restarted = new_test_orchestrator(
+        Arc::new(InMemoryEventBus::new()),
+        Arc::clone(&store),
+        Arc::new(MockClient::new(Vec::new())) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        restart_config,
+        restarted_engine,
+    );
+    let restored = restarted
+        .get_context_encoding(session_id, session_id)
+        .await
+        .unwrap();
+    assert_eq!(restored.pressure.estimated_tokens, 2_900);
+    assert_eq!(restored.pressure.token_scope, "full-work-prompt");
 }
 
 #[tokio::test]
@@ -2797,6 +2896,31 @@ async fn test_attempt_loop_parallel_tool_barrier_single_reply() {
         vec!["system", "user", "assistant", "tool", "tool", "tool"]
     );
     assert_eq!(messages[1][2].tool_calls.as_ref().map(Vec::len), Some(3));
+    let groups = store
+        .list_action_groups(ActionGroupFilter {
+            context_id: Some(session_id.to_string()),
+            include_terminal: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].status, ActionGroupStatus::Settled);
+    assert_eq!(groups[0].member_count, 3);
+    assert_eq!(groups[0].terminal_member_count, 3);
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                topic: Some("runtime/action_group_settled".to_string()),
+                session_id: Some(session_id.to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "parallel Actions must create one durable barrier wake"
+    );
     let tool_call_plan = assistant_calls
         .iter()
         .find(|event| event.payload.get("terminal_outcome") != Some(&json!(true)))
@@ -3474,7 +3598,7 @@ async fn delegation_depth_limit_rejects_recursive_spawn_before_creating_child() 
         .unwrap();
     let config = morphz::config::OrchestratorConfig {
         max_delegation_depth: 1,
-        model_attempt_timeout_secs: 5,
+        model_attempt_hard_timeout_secs: Some(5),
         ..Default::default()
     };
     let engine = Arc::new(

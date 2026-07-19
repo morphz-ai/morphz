@@ -62,13 +62,13 @@ SQLite 包含：
 
 当前单进程并发边界如下：
 
-- 同一 Session：用户消息属于一条有序 Dialogue Thread；首次模型决策串行，但旧回合一旦派生 Work Thread，后续对话可与其工具执行并发；
+- 同一 Session：用户消息属于一条有序 Dialogue Lane，每次输入形成独立 DialogueTurn Thread；首次模型决策串行，但旧回合一旦派生 Execution Thread，后续对话可与其工具执行并发；
 - 不同 Session：可以并发调用模型，即使它们属于同一 Context；
 - 读取 Context：多个求值可以并发读取同一个已提交版本；
 - 修改 Mind：`context_tx` 使用 Context 级互斥锁串行提交；
 - 并发事务：提交时检查 `base-version`。先提交者成功，基于旧版本的后提交者收到版本冲突，不会覆盖新状态。
 
-Dialogue Thread 锁只覆盖同一 Session 用户消息的首次模型决策，并在执行工具前释放；物理工具执行和等待不持有该锁。每个 Work Thread 固定 `root_turn_id` 和根事件的 Ledger sequence：同根后续工具事件可见，更晚到达的其他用户回合不会倒灌进旧 Work Item；终态以 `work_item_id` 唯一提交。共享 Mind 的修改仍只在事务提交临界区加 Context 锁。完整模型见 [`morphz_session_thread_model_v1.md`](./morphz_session_thread_model_v1.md)。
+Dialogue Lane 锁只覆盖同一 Session 用户消息的首次模型决策，并在执行物理工具前释放；工具执行和等待不持有该锁。每个 Thread 固定 `root_turn_id` 和根事件的 Ledger sequence：同根后续工具事件可见，更晚到达的其他用户回合不会倒灌进旧 Activation；终态以 `activation_id` 唯一提交。共享 Mind 的修改仍只在事务提交临界区加 Context 锁。完整模型见 [`morphz_session_thread_model_v1.md`](./morphz_session_thread_model_v1.md)。
 
 每个模型请求只编译一个 active Session。多个 Session 即使共享同一个 Context，也各自发起独立且可并行的模型请求；它们共享已提交 Mind，但不会要求模型在一个响应里拆分多个回复。普通无工具文本投递给 active Session；跨 Session 主动消息使用 `send_message`。
 
@@ -79,7 +79,7 @@ Dialogue Thread 锁只覆盖同一 Session 用户消息的首次模型决策，�
 | `GET` | `/api/contexts` | 列出 Cognitive Context |
 | `POST` | `/api/contexts` | 创建 Cognitive Context |
 | `GET` | `/api/contexts/:id/working-set` | 查看当前 Full/metadata-only Session 投影与排除原因 |
-| `GET` | `/api/contexts/:id/work-items` | 查看 Context 内 Evaluation Work Item |
+| `GET` | `/api/contexts/:id/scheduler` | 读取 Context 的权威 Scheduler Snapshot（Thread、Activation、Signal、Job、Schedule、Objective） |
 | `GET` | `/api/sessions` | 列出 Session |
 | `POST` | `/api/sessions` | 在指定 `context_id` 下创建 Session |
 | `GET/PATCH` | `/api/sessions/:id` | 查询、改名、归档或恢复 Session |
@@ -107,7 +107,7 @@ Dashboard 先选择 Cognitive Context，再选择其中的 Session。用户可�
 
 - 两个 Session 在同一 Context 内并发模型求值，最大并发数达到 2；
 - 同一 Session 的新消息可在旧前台工具结束前完成独立求值和回复；
-- 旧 Work Item 的 Context Encoding 不包含后来并发到达的同 Session 用户消息；
+- 旧 Activation 的 Context Encoding 不包含后来并发到达的同 Session 用户消息；
 - Tool Result 与后台 Task completion 始终继承原始 `root_turn_id`；
 - 两条最终回复分别路由到各自 Session；
 - 两条回复 Event 保持同一个 `context_id`；

@@ -642,6 +642,143 @@ pub struct ExecutionJobTerminal {
     pub exit_code: Option<i32>,
 }
 
+/// Durable coordination state for two or more sibling Actions emitted by one
+/// model response. A single Action continues to use its ExecutionJob (when
+/// physical) as the authoritative state and does not create a redundant
+/// one-member group.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionGroupStatus {
+    Running,
+    Settled,
+    Cancelled,
+    Lost,
+}
+
+impl ActionGroupStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Settled => "settled",
+            Self::Cancelled => "cancelled",
+            Self::Lost => "lost",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, Self::Running)
+    }
+}
+
+/// A Group member remains pending until its immutable ToolResult Event is
+/// committed. Physical running/approval detail remains authoritative on the
+/// associated ExecutionJob and is joined at read time instead of duplicated.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionGroupMemberStatus {
+    Pending,
+    Succeeded,
+    Failed,
+    Cancelled,
+    Lost,
+    Skipped,
+}
+
+impl ActionGroupMemberStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Lost => "lost",
+            Self::Skipped => "skipped",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        !matches!(self, Self::Pending)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ActionGroupRecord {
+    pub id: String,
+    pub revision: u64,
+    pub activation_id: String,
+    pub thread_id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub assistant_call_event_id: String,
+    pub objective_id: Option<String>,
+    pub objective_evaluation_id: Option<String>,
+    pub objective_revision: Option<u64>,
+    pub status: ActionGroupStatus,
+    pub member_count: u64,
+    pub terminal_member_count: u64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub settled_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewActionGroup {
+    pub id: String,
+    pub activation_id: String,
+    pub thread_id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub assistant_call_event_id: String,
+    pub objective_id: Option<String>,
+    pub objective_evaluation_id: Option<String>,
+    pub objective_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ActionGroupMemberRecord {
+    pub group_id: String,
+    pub ordinal: u64,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub execution_job_id: Option<String>,
+    pub status: ActionGroupMemberStatus,
+    pub result_event_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewActionGroupMember {
+    pub ordinal: u64,
+    pub tool_call_id: String,
+    pub tool_name: String,
+    pub execution_job_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ActionGroupFilter {
+    pub context_id: Option<String>,
+    pub session_id: Option<String>,
+    pub activation_id: Option<String>,
+    pub status: Option<ActionGroupStatus>,
+    pub include_terminal: bool,
+    pub newest_first: bool,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionGroupMemberCommit {
+    pub group: ActionGroupRecord,
+    pub member: ActionGroupMemberRecord,
+    /// True only for the transaction which moved the final pending member to
+    /// terminal and atomically appended the Group-settled Event + Outbox.
+    pub settled_now: bool,
+    /// Exact replay of an already committed member/result pair.
+    pub existing: bool,
+}
+
 /// Durable authorization state for one exact Execution Job capability request.
 /// Pending human approval has no Runtime timeout and survives process restart.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -1391,9 +1528,9 @@ pub trait ExecutionJobStore: Send + Sync {
         terminal: ExecutionJobTerminal,
     ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Atomically commits the terminal physical fact and its immutable result
-    /// Event. It deliberately does not create a Signal Outbox record: callers
-    /// executing an Action group must first close every Job/result pair, then
-    /// arm exactly one deterministic batch-barrier Event.
+    /// Event. `signal_outbox` is true only for a standalone Action whose own
+    /// result is the continuation boundary. Group members pass false and arm
+    /// exactly one deterministic ActionGroup-settled Event instead.
     #[allow(clippy::too_many_arguments)]
     async fn finish_execution_job_with_event(
         &self,
@@ -1402,7 +1539,46 @@ pub trait ExecutionJobStore: Send + Sync {
         claim_token: Option<&str>,
         terminal: ExecutionJobTerminal,
         event: &crate::event::Event,
+        signal_outbox: bool,
     ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Durable coordination authority for sibling Actions emitted by one model
+/// response. Individual result Events are immutable and immediately visible;
+/// only the final member transition appends the deterministic settled Event
+/// and its Signal Outbox.
+#[async_trait::async_trait]
+pub trait ActionGroupStore: Send + Sync {
+    async fn create_action_group(
+        &self,
+        group: NewActionGroup,
+        members: Vec<NewActionGroupMember>,
+    ) -> Result<ActionGroupRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_action_group(
+        &self,
+        id: &str,
+    ) -> Result<Option<ActionGroupRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_action_groups(
+        &self,
+        filter: ActionGroupFilter,
+    ) -> Result<Vec<ActionGroupRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_action_group_members(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<ActionGroupMemberRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Commits one member's immutable result. The result Event may already
+    /// exist because a physical ExecutionJob commits its terminal fact and
+    /// Event first; exact Event replay is therefore required to be idempotent.
+    /// If this is the final pending member, the Store atomically settles the
+    /// Group and appends `settled_event` with one Signal Outbox record.
+    async fn commit_action_group_member_result(
+        &self,
+        group_id: &str,
+        tool_call_id: &str,
+        status: ActionGroupMemberStatus,
+        result_event: &crate::event::Event,
+        settled_event: &crate::event::Event,
+    ) -> Result<ActionGroupMemberCommit, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Durable approval authority. Audit Events remain immutable facts, while this
@@ -1956,6 +2132,18 @@ pub trait ObjectiveStore: Send + Sync {
         lease_expires_at: DateTime<Utc>,
         event: &crate::event::Event,
     ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Extend the lease owned by one exact Evaluation fencing token.
+    ///
+    /// Lease heartbeats are physical liveness metadata: they deliberately do
+    /// not advance the Objective semantic revision seen by the model. A stale
+    /// worker whose Evaluation ID has already been replaced must receive a
+    /// Conflict and stop before crossing another side-effect boundary.
+    async fn renew_objective_evaluation(
+        &self,
+        id: &str,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// 记录一次已准备提交给模型的完整 Prompt 成本。该记账不改变
     /// Objective 的语义 revision，并以 Evaluation ID 防止串账。
     async fn record_objective_evaluation_usage(
@@ -1992,6 +2180,7 @@ pub trait RuntimeStore:
     EventStore
     + TimerStore
     + ExecutionJobStore
+    + ActionGroupStore
     + ApprovalStore
     + ExecutionApprovalStore
     + SessionStore

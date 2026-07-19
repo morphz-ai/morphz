@@ -4,7 +4,9 @@
 //! per-claim token, so an expired or superseded worker cannot heartbeat or
 //! publish a terminal result.
 
-use super::{append_event_in_tx, now_text, parse_time, PostgresStore, StoreError};
+use super::{
+    append_event_in_tx, append_signal_outbox_in_tx, now_text, parse_time, PostgresStore, StoreError,
+};
 use crate::event::Event;
 use crate::memory::{
     ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
@@ -715,6 +717,7 @@ impl ExecutionJobStore for PostgresStore {
         claim_token: Option<&str>,
         terminal: ExecutionJobTerminal,
         event: &Event,
+        signal_outbox: bool,
     ) -> Result<ExecutionJobMutation, StoreError> {
         if !terminal.status.is_terminal() {
             return Err("Execution Job finish 只能提交终态".into());
@@ -747,6 +750,9 @@ impl ExecutionJobStore for PostgresStore {
                 && current.exit_code == terminal.exit_code;
             if exact_replay {
                 append_event_in_tx(&mut tx, event).await?;
+                if signal_outbox {
+                    append_signal_outbox_in_tx(&mut tx, event).await?;
+                }
                 tx.commit().await?;
                 return Ok(ExecutionJobMutation::Existing(current));
             }
@@ -814,6 +820,9 @@ impl ExecutionJobStore for PostgresStore {
             .await;
         }
         append_event_in_tx(&mut tx, event).await?;
+        if signal_outbox {
+            append_signal_outbox_in_tx(&mut tx, event).await?;
+        }
         let updated = sqlx::query("SELECT * FROM execution_jobs WHERE id = $1")
             .bind(id)
             .fetch_one(&mut *tx)

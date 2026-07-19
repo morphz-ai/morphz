@@ -71,6 +71,57 @@ test('reasoning summary deltas never enter public response text', () => {
   assert.equal(state.attempts['attempt-a'].text, 'final answer')
 })
 
+test('reasoning completion is distinct from final response completion', () => {
+  let state = createLiveModelState('session-a')
+  state = modelStreamReducer(state, {
+    type: 'stream_batch',
+    sessionId: 'session-a',
+    nowMs: 2,
+    items: [
+      stream('attempt-a', 'dialogue-a', { kind: 'started' }),
+      stream('attempt-a', 'dialogue-a', { kind: 'reasoning_summary_delta', text: 'done thinking' }),
+      stream('attempt-a', 'dialogue-a', { kind: 'reasoning_summary_completed' }),
+    ],
+  })
+
+  assert.equal(state.attempts['attempt-a'].runtimeState, 'waiting_final_output')
+  assert.equal(state.attempts['attempt-a'].status, 'settling')
+  assert.equal(state.attempts['attempt-a'].text, '')
+})
+
+test('durable attempt snapshot restores active state and terminal transition clears it', () => {
+  let state = createLiveModelState('session-a')
+  state = modelStreamReducer(state, {
+    type: 'snapshot',
+    sessionId: 'session-a',
+    nowMs: 8,
+    items: [{
+      attemptId: 'attempt-a',
+      activationId: 'dialogue-a',
+      threadKind: 'dialogue_turn',
+      state: 'waiting_final_output',
+      terminal: false,
+      timestamp: '2026-07-17T00:00:00Z',
+    }],
+  })
+  assert.equal(state.attempts['attempt-a'].runtimeState, 'waiting_final_output')
+
+  state = modelStreamReducer(state, {
+    type: 'attempt_state',
+    sessionId: 'session-a',
+    nowMs: 9,
+    item: {
+      attemptId: 'attempt-a',
+      activationId: 'dialogue-a',
+      threadKind: 'dialogue_turn',
+      state: 'completed',
+      terminal: true,
+      timestamp: '2026-07-17T00:00:01Z',
+    },
+  })
+  assert.equal(state.attempts['attempt-a'], undefined)
+})
+
 test('resolve before persistence keeps a summary-only shell, then persistence clears it', () => {
   let state = createLiveModelState('session-a')
   state = modelStreamReducer(state, {

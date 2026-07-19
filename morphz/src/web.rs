@@ -18,6 +18,7 @@ use axum::{
     Json, Router,
 };
 use serde_json::json;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -1611,12 +1612,34 @@ fn dashboard_event_requires_session_touch(event: &Event) -> bool {
     // Dashboard must not make an otherwise inactive Session look active.
     !matches!(
         event.topic.as_str(),
-        "runtime/model_stream" | "runtime/model_reasoning_summary"
+        "runtime/model_stream"
+            | "runtime/model_reasoning_summary"
+            | "runtime/model_attempt_state"
+            | "runtime/model_attempt_snapshot"
     )
 }
 
 async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: Option<String>) {
     let mut rx = state.broadcast_tx.subscribe();
+
+    // Subscribe before reading the durable state. Events committed during the
+    // snapshot query remain queued in `rx`, so the client sees a consistent
+    // snapshot followed by its incremental suffix instead of losing the
+    // transition that raced with reconnect.
+    if let Some(session_id) = session_filter.as_deref() {
+        match model_attempt_snapshot_event(&state.runtime, session_id).await {
+            Ok(snapshot) => {
+                if let Ok(json_str) = serde_json::to_string(&snapshot) {
+                    if socket.send(WsMessage::Text(json_str)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(session_id, %error, "重建 Model Attempt WebSocket 快照失败");
+            }
+        }
+    }
 
     // 将 EventBus 的广播转发至 WebSocket；同时保持连接心跳。
     loop {
@@ -1662,6 +1685,95 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: 
             }
         }
     }
+}
+
+async fn model_attempt_snapshot_event(
+    runtime: &MorphzRuntime,
+    session_id: &str,
+) -> Result<Event, crate::runtime::RuntimeError> {
+    let session = runtime
+        .get_session(session_id)
+        .await?
+        .ok_or_else(|| format!("Session '{session_id}' 不存在"))?;
+    let active_activation_ids = runtime
+        .active_thread_activations(&session.context_id)
+        .await?
+        .into_iter()
+        .map(|activation| activation.id)
+        .collect::<HashSet<_>>();
+    let events = runtime
+        .query_events(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("runtime/model_attempt_state".to_string()),
+            latest_k: Some(4_096),
+            ..Default::default()
+        })
+        .await?;
+    let attempts = fold_active_model_attempts(events, &active_activation_ids);
+    Ok(Event::new(
+        format!(
+            "model_attempt_snapshot_{}",
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ),
+        "Runtime-Web".to_string(),
+        "runtime_ephemeral".to_string(),
+        "runtime/model_attempt_snapshot".to_string(),
+        [
+            ("context_id".to_string(), json!(session.context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempts".to_string(), json!(attempts)),
+        ]
+        .into_iter()
+        .collect(),
+    ))
+}
+
+fn fold_active_model_attempts(
+    events: Vec<Event>,
+    active_activation_ids: &HashSet<String>,
+) -> Vec<serde_json::Value> {
+    let mut latest = HashMap::<String, Event>::new();
+    for event in events {
+        let Some(attempt_id) = event
+            .payload
+            .get("attempt_id")
+            .and_then(serde_json::Value::as_str)
+        else {
+            continue;
+        };
+        latest.insert(attempt_id.to_string(), event);
+    }
+    let mut attempts = latest
+        .into_values()
+        .filter(|event| {
+            !event
+                .payload
+                .get("terminal")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+                && event
+                    .payload
+                    .get("activation_id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| active_activation_ids.contains(id))
+        })
+        .map(|event| {
+            json!({
+                "attempt_id": event.payload.get("attempt_id"),
+                "activation_id": event.payload.get("activation_id"),
+                "thread_kind": event.payload.get("thread_kind"),
+                "state": event.payload.get("state"),
+                "detail": event.payload.get("detail"),
+                "timestamp": event.timestamp,
+            })
+        })
+        .collect::<Vec<_>>();
+    attempts.sort_by(|left, right| {
+        left.get("timestamp")
+            .and_then(serde_json::Value::as_str)
+            .cmp(&right.get("timestamp").and_then(serde_json::Value::as_str))
+    });
+    attempts
 }
 
 #[cfg(test)]
@@ -1807,6 +1919,50 @@ mod tests {
             serde_json::Map::new(),
         );
         assert!(dashboard_event_requires_session_touch(&durable));
+    }
+
+    #[test]
+    fn model_attempt_snapshot_folds_latest_nonterminal_state_for_live_activation() {
+        let state = |id: &str, attempt: &str, activation: &str, value: &str, terminal: bool| {
+            Event::new(
+                id.to_string(),
+                "Runtime-Test".to_string(),
+                "runtime_control".to_string(),
+                "runtime/model_attempt_state".to_string(),
+                [
+                    ("attempt_id".to_string(), json!(attempt)),
+                    ("activation_id".to_string(), json!(activation)),
+                    ("thread_kind".to_string(), json!("dialogue_turn")),
+                    ("state".to_string(), json!(value)),
+                    ("terminal".to_string(), json!(terminal)),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        };
+        let active = HashSet::from(["activation-live".to_string()]);
+        let attempts = fold_active_model_attempts(
+            vec![
+                state("1", "attempt-live", "activation-live", "queued", false),
+                state(
+                    "2",
+                    "attempt-live",
+                    "activation-live",
+                    "waiting_final_output",
+                    false,
+                ),
+                state("3", "attempt-done", "activation-live", "completed", true),
+                state("4", "attempt-stale", "activation-stale", "streaming", false),
+            ],
+            &active,
+        );
+
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0].get("attempt_id"), Some(&json!("attempt-live")));
+        assert_eq!(
+            attempts[0].get("state"),
+            Some(&json!("waiting_final_output"))
+        );
     }
 
     #[test]

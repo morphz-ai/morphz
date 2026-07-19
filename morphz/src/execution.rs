@@ -471,6 +471,7 @@ where
         claim_token: Option<&str>,
         outcome: JobOutcome,
         event: &Event,
+        signal_outbox: bool,
     ) -> ExecutionResult<JobReceipt> {
         let mutation = self
             .store
@@ -480,6 +481,7 @@ where
                 claim_token,
                 outcome.into(),
                 event,
+                signal_outbox,
             )
             .await?;
         Ok(JobReceipt::from_mutation(JobOperation::Finish, mutation))
@@ -525,6 +527,7 @@ where
                             }
                             .into(),
                             &event,
+                            false,
                         )
                         .await?;
                     report.lost_receipts.push(JobReceipt::from_mutation(

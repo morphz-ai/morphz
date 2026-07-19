@@ -4,24 +4,26 @@ use crate::approval_authority::{
 use crate::config::SqliteStorageConfig;
 use crate::event::Event;
 use crate::memory::{
-    ActivationOutcomeCommit, ActivationStore, AgentBootstrapRecord, AgentRecord,
-    ApprovalAuditCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
-    ApprovalStatus, ApprovalStore, CognitiveContextRecord, DelegationRecord, DelegationStatus,
-    DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, EventAppend,
-    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
-    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim, MindProjectionCommit,
-    MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewAgent, NewApprovalRequest,
-    NewCognitiveContext, NewDelegation, NewExecutionJob, NewMindProjection, NewObjective,
-    NewRuntimeTimer, NewSchedule, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
-    ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
-    QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation,
-    ScheduleRecord, ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate,
-    SessionDirectoryStore, SessionMountKind, SessionProjectionMutation, SessionProjectionStore,
-    SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus,
-    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadKind,
-    ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
-    ThreadStore, TimerStore,
+    ActionGroupFilter, ActionGroupMemberCommit, ActionGroupMemberRecord, ActionGroupMemberStatus,
+    ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationOutcomeCommit,
+    ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
+    ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
+    CognitiveContextRecord, DelegationRecord, DelegationStatus, DelegationStore,
+    DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, EventAppend, EventStore,
+    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation,
+    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
+    ExecutionRetrySafety, MessageClaim, MindProjectionCommit, MindProjectionRecord,
+    MindProjectionStore, MindSnapshotRecord, NewActionGroup, NewActionGroupMember, NewAgent,
+    NewApprovalRequest, NewCognitiveContext, NewDelegation, NewExecutionJob, NewMindProjection,
+    NewObjective, NewRuntimeTimer, NewSchedule, NewSession, NewThread, NewThreadActivation,
+    NewThreadSignal, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus,
+    ScheduleMutation, ScheduleRecord, ScheduleStatus, ScheduleStore, SessionAttentionState,
+    SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind, SessionProjectionMutation,
+    SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -518,6 +520,62 @@ impl SqliteStore {
         BEGIN
             SELECT RAISE(ABORT, 'execution job terminal status is irreversible');
         END;
+
+        CREATE TABLE IF NOT EXISTS action_groups (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            activation_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            context_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            assistant_call_event_id TEXT NOT NULL UNIQUE,
+            objective_id TEXT,
+            objective_evaluation_id TEXT,
+            objective_revision INTEGER,
+            status TEXT NOT NULL CHECK(status IN ('running', 'settled', 'cancelled', 'lost')),
+            member_count INTEGER NOT NULL CHECK(member_count >= 2),
+            terminal_member_count INTEGER NOT NULL DEFAULT 0
+                CHECK(terminal_member_count >= 0 AND terminal_member_count <= member_count),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            settled_at TEXT,
+            FOREIGN KEY(activation_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
+            FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY(objective_id) REFERENCES objectives(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_action_groups_context_status
+            ON action_groups(context_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_action_groups_session_status
+            ON action_groups(session_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_action_groups_activation
+            ON action_groups(activation_id, created_at, id);
+
+        CREATE TABLE IF NOT EXISTS action_group_members (
+            group_id TEXT NOT NULL,
+            ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+            tool_call_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            execution_job_id TEXT,
+            status TEXT NOT NULL CHECK(status IN (
+                'pending', 'succeeded', 'failed', 'cancelled', 'lost', 'skipped'
+            )),
+            result_event_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(group_id, tool_call_id),
+            UNIQUE(group_id, ordinal),
+            FOREIGN KEY(group_id) REFERENCES action_groups(id) ON DELETE CASCADE,
+            FOREIGN KEY(execution_job_id) REFERENCES execution_jobs(id),
+            FOREIGN KEY(result_event_id) REFERENCES events(id),
+            CHECK(
+                (status = 'pending' AND result_event_id IS NULL)
+                OR (status <> 'pending' AND result_event_id IS NOT NULL)
+            )
+        );
+        CREATE INDEX IF NOT EXISTS idx_action_group_members_group_status
+            ON action_group_members(group_id, status, ordinal);
 
         CREATE TABLE IF NOT EXISTS approval_requests (
             id TEXT PRIMARY KEY,
@@ -1510,6 +1568,78 @@ fn parse_execution_retry_safety(
         "at_most_once" => Ok(ExecutionRetrySafety::AtMostOnce),
         other => Err(format!("未知 Execution Job retry safety：'{other}'").into()),
     }
+}
+
+fn parse_action_group_status(
+    value: &str,
+) -> Result<ActionGroupStatus, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "running" => Ok(ActionGroupStatus::Running),
+        "settled" => Ok(ActionGroupStatus::Settled),
+        "cancelled" => Ok(ActionGroupStatus::Cancelled),
+        "lost" => Ok(ActionGroupStatus::Lost),
+        other => Err(format!("未知 Action Group status：'{other}'").into()),
+    }
+}
+
+fn parse_action_group_member_status(
+    value: &str,
+) -> Result<ActionGroupMemberStatus, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "pending" => Ok(ActionGroupMemberStatus::Pending),
+        "succeeded" => Ok(ActionGroupMemberStatus::Succeeded),
+        "failed" => Ok(ActionGroupMemberStatus::Failed),
+        "cancelled" => Ok(ActionGroupMemberStatus::Cancelled),
+        "lost" => Ok(ActionGroupMemberStatus::Lost),
+        "skipped" => Ok(ActionGroupMemberStatus::Skipped),
+        other => Err(format!("未知 Action Group member status：'{other}'").into()),
+    }
+}
+
+fn action_group_from_row(
+    row: &SqliteRow,
+) -> Result<ActionGroupRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ActionGroupRecord {
+        id: row.get("id"),
+        revision: sqlite_u64(row, "revision")?,
+        activation_id: row.get("activation_id"),
+        thread_id: row.get("thread_id"),
+        agent_id: row.get("agent_id"),
+        context_id: row.get("context_id"),
+        session_id: row.get("session_id"),
+        assistant_call_event_id: row.get("assistant_call_event_id"),
+        objective_id: row.get("objective_id"),
+        objective_evaluation_id: row.get("objective_evaluation_id"),
+        objective_revision: row
+            .get::<Option<i64>, _>("objective_revision")
+            .map(|value| u64::try_from(value).map_err(|_| "Objective revision 小于零"))
+            .transpose()?,
+        status: parse_action_group_status(&row.get::<String, _>("status"))?,
+        member_count: sqlite_u64(row, "member_count")?,
+        terminal_member_count: sqlite_u64(row, "terminal_member_count")?,
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+        settled_at: row
+            .get::<Option<String>, _>("settled_at")
+            .as_deref()
+            .map(parse_time),
+    })
+}
+
+fn action_group_member_from_row(
+    row: &SqliteRow,
+) -> Result<ActionGroupMemberRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ActionGroupMemberRecord {
+        group_id: row.get("group_id"),
+        ordinal: sqlite_u64(row, "ordinal")?,
+        tool_call_id: row.get("tool_call_id"),
+        tool_name: row.get("tool_name"),
+        execution_job_id: row.get("execution_job_id"),
+        status: parse_action_group_member_status(&row.get::<String, _>("status"))?,
+        result_event_id: row.get("result_event_id"),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    })
 }
 
 fn parse_approval_status(
@@ -5315,6 +5445,45 @@ impl ObjectiveStore for SqliteStore {
         })
     }
 
+    async fn renew_objective_evaluation(
+        &self,
+        id: &str,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<ObjectiveMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if evaluation_id.trim().is_empty() {
+            return Err("Objective Evaluation ID 不能为空".into());
+        }
+        if lease_expires_at <= Utc::now() {
+            return Err("Objective Evaluation 续租时间必须在未来".into());
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let lease_expires_at = lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET evaluation_lease_expires_at = ?, updated_at = ?
+               WHERE id = ? AND status = 'active' AND wait_condition_json IS NULL
+                 AND active_evaluation_id = ?"#,
+        )
+        .bind(lease_expires_at)
+        .bind(now)
+        .bind(id)
+        .bind(evaluation_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective Evaluation 续租后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
     async fn record_objective_evaluation_usage(
         &self,
         id: &str,
@@ -5593,6 +5762,349 @@ impl TimerStore for SqliteStore {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() == 1)
+    }
+}
+
+#[async_trait::async_trait]
+impl ActionGroupStore for SqliteStore {
+    async fn create_action_group(
+        &self,
+        group: NewActionGroup,
+        members: Vec<NewActionGroupMember>,
+    ) -> Result<ActionGroupRecord, Box<dyn std::error::Error + Send + Sync>> {
+        if members.len() < 2 {
+            return Err("Action Group 至少需要两个成员；单 Action 应直接使用 ExecutionJob".into());
+        }
+        for (field, value) in [
+            ("id", group.id.as_str()),
+            ("activation_id", group.activation_id.as_str()),
+            ("thread_id", group.thread_id.as_str()),
+            ("agent_id", group.agent_id.as_str()),
+            ("context_id", group.context_id.as_str()),
+            ("session_id", group.session_id.as_str()),
+            (
+                "assistant_call_event_id",
+                group.assistant_call_event_id.as_str(),
+            ),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!("Action Group {field} 不能为空").into());
+            }
+        }
+        let mut seen_calls = std::collections::HashSet::new();
+        let mut seen_ordinals = std::collections::HashSet::new();
+        for member in &members {
+            if member.tool_call_id.trim().is_empty() || member.tool_name.trim().is_empty() {
+                return Err("Action Group member tool_call_id/tool_name 不能为空".into());
+            }
+            if !seen_calls.insert(member.tool_call_id.as_str())
+                || !seen_ordinals.insert(member.ordinal)
+            {
+                return Err("Action Group member 的 tool_call_id/ordinal 必须唯一".into());
+            }
+        }
+        let member_count = i64::try_from(members.len())
+            .map_err(|_| "Action Group member 数量超出 SQLite INTEGER 范围")?;
+        let objective_revision = group
+            .objective_revision
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| "Action Group Objective revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        let inserted = sqlx::query(
+            r#"INSERT OR IGNORE INTO action_groups
+               (id, revision, activation_id, thread_id, agent_id, context_id, session_id,
+                assistant_call_event_id, objective_id, objective_evaluation_id,
+                objective_revision, status, member_count, terminal_member_count,
+                created_at, updated_at, settled_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, 0, ?, ?, NULL)"#,
+        )
+        .bind(&group.id)
+        .bind(&group.activation_id)
+        .bind(&group.thread_id)
+        .bind(&group.agent_id)
+        .bind(&group.context_id)
+        .bind(&group.session_id)
+        .bind(&group.assistant_call_event_id)
+        .bind(&group.objective_id)
+        .bind(&group.objective_evaluation_id)
+        .bind(objective_revision)
+        .bind(member_count)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        if inserted.rows_affected() == 1 {
+            for member in &members {
+                let ordinal = i64::try_from(member.ordinal)
+                    .map_err(|_| "Action Group ordinal 超出 SQLite INTEGER 范围")?;
+                sqlx::query(
+                    r#"INSERT INTO action_group_members
+                       (group_id, ordinal, tool_call_id, tool_name, execution_job_id,
+                        status, result_event_id, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, 'pending', NULL, ?, ?)"#,
+                )
+                .bind(&group.id)
+                .bind(ordinal)
+                .bind(&member.tool_call_id)
+                .bind(&member.tool_name)
+                .bind(&member.execution_job_id)
+                .bind(&now)
+                .bind(&now)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+        let row = sqlx::query("SELECT * FROM action_groups WHERE id = ?")
+            .bind(&group.id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let current = action_group_from_row(&row)?;
+        let current_members = sqlx::query(
+            "SELECT * FROM action_group_members WHERE group_id = ? ORDER BY ordinal, tool_call_id",
+        )
+        .bind(&group.id)
+        .fetch_all(&mut *tx)
+        .await?
+        .iter()
+        .map(action_group_member_from_row)
+        .collect::<Result<Vec<_>, _>>()?;
+        let exact_group = current.activation_id == group.activation_id
+            && current.thread_id == group.thread_id
+            && current.agent_id == group.agent_id
+            && current.context_id == group.context_id
+            && current.session_id == group.session_id
+            && current.assistant_call_event_id == group.assistant_call_event_id
+            && current.objective_id == group.objective_id
+            && current.objective_evaluation_id == group.objective_evaluation_id
+            && current.objective_revision == group.objective_revision;
+        let exact_members = current_members.len() == members.len()
+            && current_members
+                .iter()
+                .zip(members.iter())
+                .all(|(current, requested)| {
+                    current.ordinal == requested.ordinal
+                        && current.tool_call_id == requested.tool_call_id
+                        && current.tool_name == requested.tool_name
+                        && current.execution_job_id == requested.execution_job_id
+                });
+        if !exact_group || !exact_members {
+            tx.rollback().await?;
+            return Err(format!("Action Group '{}' 的确定性身份被不同内容复用", group.id).into());
+        }
+        tx.commit().await?;
+        Ok(current)
+    }
+
+    async fn get_action_group(
+        &self,
+        id: &str,
+    ) -> Result<Option<ActionGroupRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM action_groups WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(action_group_from_row)
+            .transpose()
+    }
+
+    async fn list_action_groups(
+        &self,
+        filter: ActionGroupFilter,
+    ) -> Result<Vec<ActionGroupRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut query = QueryBuilder::new("SELECT * FROM action_groups WHERE 1=1");
+        if let Some(context_id) = filter.context_id {
+            query.push(" AND context_id = ").push_bind(context_id);
+        }
+        if let Some(session_id) = filter.session_id {
+            query.push(" AND session_id = ").push_bind(session_id);
+        }
+        if let Some(activation_id) = filter.activation_id {
+            query.push(" AND activation_id = ").push_bind(activation_id);
+        }
+        if let Some(status) = filter.status {
+            query.push(" AND status = ").push_bind(status.as_str());
+        } else if !filter.include_terminal {
+            query.push(" AND status = 'running'");
+        }
+        query.push(if filter.newest_first {
+            " ORDER BY created_at DESC, id DESC"
+        } else {
+            " ORDER BY created_at, id"
+        });
+        if let Some(limit) = filter.limit {
+            query.push(" LIMIT ").push_bind(i64::try_from(limit)?);
+        }
+        query
+            .build()
+            .fetch_all(&self.pool)
+            .await?
+            .iter()
+            .map(action_group_from_row)
+            .collect()
+    }
+
+    async fn list_action_group_members(
+        &self,
+        group_id: &str,
+    ) -> Result<Vec<ActionGroupMemberRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query(
+            "SELECT * FROM action_group_members WHERE group_id = ? ORDER BY ordinal, tool_call_id",
+        )
+        .bind(group_id)
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(action_group_member_from_row)
+        .collect()
+    }
+
+    async fn commit_action_group_member_result(
+        &self,
+        group_id: &str,
+        tool_call_id: &str,
+        status: ActionGroupMemberStatus,
+        result_event: &Event,
+        settled_event: &Event,
+    ) -> Result<ActionGroupMemberCommit, Box<dyn std::error::Error + Send + Sync>> {
+        if !status.is_terminal() {
+            return Err("Action Group member 只能提交终态结果".into());
+        }
+        if result_event
+            .payload
+            .get("action_group_id")
+            .and_then(JsonValue::as_str)
+            != Some(group_id)
+            || result_event
+                .payload
+                .get("tool_call_id")
+                .and_then(JsonValue::as_str)
+                != Some(tool_call_id)
+        {
+            return Err("Action Group member 结果 Event 的 group/tool_call 路由不匹配".into());
+        }
+        if settled_event
+            .payload
+            .get("action_group_id")
+            .and_then(JsonValue::as_str)
+            != Some(group_id)
+            || settled_event.topic != "runtime/action_group_settled"
+        {
+            return Err("Action Group settled Event 的路由或 topic 不匹配".into());
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE action_groups SET revision = revision WHERE id = ?")
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await?;
+        let group_row = sqlx::query("SELECT * FROM action_groups WHERE id = ?")
+            .bind(group_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| format!("Action Group '{group_id}' 不存在"))?;
+        let mut group = action_group_from_row(&group_row)?;
+        let member_row = sqlx::query(
+            "SELECT * FROM action_group_members WHERE group_id = ? AND tool_call_id = ?",
+        )
+        .bind(group_id)
+        .bind(tool_call_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| format!("Action Group '{group_id}' 不包含调用 '{tool_call_id}'"))?;
+        let mut member = action_group_member_from_row(&member_row)?;
+        append_event_idempotent_in_transaction(&mut tx, result_event).await?;
+        if member.status.is_terminal() {
+            if member.status != status
+                || member.result_event_id.as_deref() != Some(&result_event.id)
+            {
+                tx.rollback().await?;
+                return Err(format!(
+                    "Action Group '{}' member '{}' 已由不同结果终结",
+                    group_id, tool_call_id
+                )
+                .into());
+            }
+            tx.commit().await?;
+            return Ok(ActionGroupMemberCommit {
+                group,
+                member,
+                settled_now: false,
+                existing: true,
+            });
+        }
+        if group.status != ActionGroupStatus::Running {
+            tx.rollback().await?;
+            return Err(format!(
+                "Action Group '{}' 已是 {}，不能再接收成员结果",
+                group_id,
+                group.status.as_str()
+            )
+            .into());
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"UPDATE action_group_members
+               SET status = ?, result_event_id = ?, updated_at = ?
+               WHERE group_id = ? AND tool_call_id = ? AND status = 'pending'"#,
+        )
+        .bind(status.as_str())
+        .bind(&result_event.id)
+        .bind(&now)
+        .bind(group_id)
+        .bind(tool_call_id)
+        .execute(&mut *tx)
+        .await?;
+        let terminal_member_count = group.terminal_member_count.saturating_add(1);
+        let settled_now = terminal_member_count == group.member_count;
+        if settled_now {
+            append_event_idempotent_in_transaction(&mut tx, settled_event).await?;
+            append_signal_outbox_in_transaction(&mut tx, settled_event).await?;
+            sqlx::query(
+                r#"UPDATE action_groups
+                   SET revision = revision + 1, status = 'settled',
+                       terminal_member_count = ?, updated_at = ?, settled_at = ?
+                   WHERE id = ? AND status = 'running'"#,
+            )
+            .bind(i64::try_from(terminal_member_count)?)
+            .bind(&now)
+            .bind(&now)
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await?;
+        } else {
+            sqlx::query(
+                r#"UPDATE action_groups
+                   SET revision = revision + 1, terminal_member_count = ?, updated_at = ?
+                   WHERE id = ? AND status = 'running'"#,
+            )
+            .bind(i64::try_from(terminal_member_count)?)
+            .bind(&now)
+            .bind(group_id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        let group_row = sqlx::query("SELECT * FROM action_groups WHERE id = ?")
+            .bind(group_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        group = action_group_from_row(&group_row)?;
+        let member_row = sqlx::query(
+            "SELECT * FROM action_group_members WHERE group_id = ? AND tool_call_id = ?",
+        )
+        .bind(group_id)
+        .bind(tool_call_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        member = action_group_member_from_row(&member_row)?;
+        tx.commit().await?;
+        Ok(ActionGroupMemberCommit {
+            group,
+            member,
+            settled_now,
+            existing: false,
+        })
     }
 }
 
@@ -6167,6 +6679,7 @@ impl ExecutionJobStore for SqliteStore {
         claim_token: Option<&str>,
         terminal: ExecutionJobTerminal,
         event: &Event,
+        signal_outbox: bool,
     ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>> {
         if !terminal.status.is_terminal() {
             return Err("Execution Job finish 只能提交终态".into());
@@ -6243,6 +6756,9 @@ impl ExecutionJobStore for SqliteStore {
                 && current.exit_code == terminal.exit_code;
             if exact_replay {
                 append_event_idempotent_in_transaction(&mut tx, event).await?;
+                if signal_outbox {
+                    append_signal_outbox_in_transaction(&mut tx, event).await?;
+                }
                 tx.commit().await?;
                 return Ok(ExecutionJobMutation::Existing(current));
             }
@@ -6364,6 +6880,9 @@ impl ExecutionJobStore for SqliteStore {
             .await;
         }
         append_event_idempotent_in_transaction(&mut tx, event).await?;
+        if signal_outbox {
+            append_signal_outbox_in_transaction(&mut tx, event).await?;
+        }
         let updated = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
             .bind(id)
             .fetch_one(&mut *tx)
@@ -9361,6 +9880,7 @@ mod tests {
                 Some("claim-atomic"),
                 terminal.clone(),
                 &misrouted,
+                false,
             )
             .await
             .is_err());
@@ -9383,6 +9903,7 @@ mod tests {
                 Some("claim-atomic"),
                 terminal.clone(),
                 &result_event,
+                false,
             )
             .await
             .unwrap()
@@ -9420,6 +9941,7 @@ mod tests {
                     Some("claim-atomic"),
                     terminal,
                     &result_event,
+                    false,
                 )
                 .await
                 .unwrap(),
@@ -9523,6 +10045,7 @@ mod tests {
                 Some("legacy-claim"),
                 terminal,
                 &misrouted,
+                false,
             )
             .await
             .is_err());

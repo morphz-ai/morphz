@@ -90,22 +90,23 @@ Context Encoding 会把来源与可信度同时呈现给 Agent：
 
 `token-model` 只是实际请求中的模型标识，不用于推断计数协议。
 
-## 7. 当前 OpenAI-compatible 实现
+## 7. 当前统一协议实现
 
-当前产品主链只实现了 OpenAI Chat Completions-compatible Client。该协议没有被 Morphz 依赖的通用预请求 Token 端点，因此：
+当前 `ProtocolClient` 支持 OpenAI Chat、OpenAI Responses、Anthropic Messages 与 Gemini Content。主链不依赖任何远程预请求 Token 端点，因此：
 
-1. completion 前对实际要发送的完整 OpenAI-compatible JSON 请求做启发式估算；
+1. completion 前对实际要发送的协议原生 JSON 请求做启发式估算；
 2. 估算覆盖 System、Context Encoding、工具历史和完整 Tool Schema；
-3. completion 返回 `usage.prompt_tokens` 后，按“Context + Session 求值链路 + 模型标识 + 工具定义”保存真值锚点；
-4. 下一次请求以该真值为基线，只叠加本地估算得到的请求大小增减量，因此上下文增长和缩小都能被反映；
-5. 整个过程不发起额外计数请求，不识别 Provider，不检查模型名关键词。
+3. completion 返回协议原生输入 usage 后，统一为完整 Prompt Token；Anthropic 的输入值会合并普通输入、cache creation 与 cache read；
+4. 按“Context + Session 求值链路 + 协议 + 模型标识 + 工具定义”保存真值锚点；
+5. 下一次请求以该真值为基线，只叠加本地估算得到的请求大小增减量，因此上下文增长和缩小都能被反映；
+6. 整个过程不发起额外计数请求，不识别 Provider，不检查模型名关键词。
 
 measurement 随对应 completion 调用直接传递，不能按请求内容哈希放进共享暂存表。否则两个 Session 在并发发送相同请求时会互相覆盖。usage 锚点也按 Context/Session 求值链路隔离；共享 Mind 不等于共享会话的计量状态。
 
-两个常见来源是：
+来源按实际协议命名，例如：
 
-- `openai-compatible-request-estimate`：未校准的完整请求启发式估算；
-- `openai-compatible-request-estimate+usage-calibration`：已经 completion usage 校准的估算。
+- `openai-chat-serialized-request-estimate`：未校准的完整请求启发式估算；
+- `openai-chat-serialized-request-estimate+usage-calibration`：已经 completion usage 校准的估算。
 
 这条路径的作用是在未知 Provider 上提供可用的压力信号，不是替代可验证的 tokenizer。
 
@@ -140,9 +141,8 @@ Orchestrator 在模型求值前完成计量，重新计算 `normal / notice / wa
 
 ## 10. 当前边界
 
-- OpenAI-compatible 主链目前只有完整请求估算与 usage 校准，没有精确预请求计数；
+- 四种内建协议主链目前都有完整请求估算与 usage 校准，没有精确预请求计数；
 - `tiktoken-rs`、Hugging Face Tokenizers 和 SentencePiece 尚未连到 profile 配置；
-- Anthropic-compatible 与 Gemini-compatible Client 尚未实现；实现后也不会在核心求值路径调用远程 Token 计数；
 - usage 校准当前保存在进程内，Runtime 重启后需要重新学习；
 - 模型 Context Window 的 soft/hard limit 仍由 Morphz 配置提供，尚未从 Provider metadata 中发现；
 - 历史 Context Pressure Eval 的合成 Client 使用固定计数，用于验证压力状态机，不代表生产 tokenizer 精度。

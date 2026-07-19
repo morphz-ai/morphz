@@ -28,6 +28,7 @@ type StoreError = Box<dyn std::error::Error + Send + Sync>;
 // still migrate without deadlocking itself.
 const SCHEMA_MIGRATION_LOCK: i64 = 0x4D4F_5250_485A_0001_i64;
 
+mod action_group;
 mod activation;
 mod approval;
 mod delegation;
@@ -71,6 +72,12 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20260718_02_execution_jobs",
                     execution::migrate(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260719_02_action_groups",
+                    action_group::migrate(&store.pool),
                 )
                 .await?;
             store
@@ -1313,6 +1320,43 @@ impl ObjectiveStore for PostgresStore {
                 self.get_objective(id)
                     .await?
                     .ok_or("Objective Evaluation 记账后无法读取")?,
+            ));
+        }
+        Ok(match self.get_objective(id).await? {
+            Some(current) => ObjectiveMutation::Conflict { current },
+            None => ObjectiveMutation::NotFound,
+        })
+    }
+
+    async fn renew_objective_evaluation(
+        &self,
+        id: &str,
+        evaluation_id: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<ObjectiveMutation, StoreError> {
+        if evaluation_id.trim().is_empty() {
+            return Err("Objective Evaluation ID 不能为空".into());
+        }
+        if lease_expires_at <= Utc::now() {
+            return Err("Objective Evaluation 续租时间必须在未来".into());
+        }
+        let result = sqlx::query(
+            r#"UPDATE objectives
+               SET evaluation_lease_expires_at = $1, updated_at = $2
+               WHERE id = $3 AND status = 'active' AND wait_condition_json IS NULL
+                 AND active_evaluation_id = $4"#,
+        )
+        .bind(lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .bind(now_text())
+        .bind(id)
+        .bind(evaluation_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ObjectiveMutation::Updated(
+                self.get_objective(id)
+                    .await?
+                    .ok_or("Objective Evaluation 续租后无法读取")?,
             ));
         }
         Ok(match self.get_objective(id).await? {

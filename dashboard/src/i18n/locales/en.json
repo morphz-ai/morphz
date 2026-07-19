@@ -91,6 +91,9 @@
     "copy": "Copy message",
     "copied": "Copied",
     "streaming": "Generating",
+    "waitingForModel": "Waiting for model evaluation",
+    "reasoningCompleted": "Reasoning ended · waiting for final output",
+    "waitingFinalOutput": "Reasoning has ended; final text or tool calls have not arrived yet.",
     "streamFailed": "Streaming response failed",
     "pendingHint": "You can keep sending messages; current execution will not block the dialogue."
   },

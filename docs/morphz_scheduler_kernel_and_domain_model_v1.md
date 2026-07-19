@@ -1154,7 +1154,7 @@ Phase 4 的单机调度管理闭环至此完成。每 Agent/Context/Session/Thre
 - Approval 可以持久等待和恢复，但自动 reviewer、人类 UI、密钥系统和 OS sandbox 是可替换 adapter，不应与 Scheduler Kernel 绑定为一种部署方式；
 - Activation fairness 已跨 Agent/Context/Session 分层轮转，但容量上限当前仍以单机全局并发和保留槽为主，不是租户级资源治理系统；
 - Objective scoped cancellation 已覆盖 executor cancellation resistance、未启动 Job/Approval 原子关闭和本机 exec 进程组终止；它保证可观测终态，不承诺撤销已经发生的外部副作用；
-- `runtime/model_stream` 是进程内、best-effort 的 UI 草稿通道；丢失增量不影响持久回复正确性，但断线客户端必须从持久快照重建，不能把 draft 当恢复协议。其中的 reasoning summary 会在 Attempt 终态额外聚合为 `runtime/model_reasoning_summary` 供重启后查询，但仍不属于 Agent 可见 Context。
+- `runtime/model_stream` 是进程内、best-effort 的 UI 草稿通道；丢失 delta 不影响持久回复正确性。Model Attempt 的机器状态以不可变 `runtime/model_attempt_state` 转换事件持久化，WebSocket 重连时由 Runtime 折叠为 `runtime/model_attempt_snapshot`；reasoning summary 在 Attempt 终态另行聚合为 `runtime/model_reasoning_summary`。这三者都属于可观测轨道，不进入 Agent 可见 Context。
 
 ## 17. 设计总结
 
@@ -1392,3 +1392,44 @@ Phase 3 的单机 Execution Job、Durable Approval 与物理取消控制面至�
 Delivery 验证已经覆盖：singleton 零模型透传、小型批次确定性合并、数量/字符/语义提示进入 Composer、第一条结果最大等待边界、Runtime 重启恢复、旧 generation 迟到 fencing、Fast Path 原子提交、Event/Outbox 幂等提交、旧 SQLite Timer CHECK 约束的无损迁移，以及“Trigger 之后到达的新结果不能被旧回复覆盖”的快照竞态。
 
 Phase 4 已经形成单机调度管理闭环。每租户数字配额、跨进程公平、多 Worker claim 与分布式存储仍属于明确排除的 Phase 5 或后续单机策略增强，不属于本阶段完成标准。
+
+### 2026-07-19：ActionGroup、Objective fencing 与 Model Attempt 生命周期收口
+
+本轮把一次模型响应内的并发 Action 与一次模型请求本身分别收口为两个明确领域边界。
+
+#### Action 与 ActionGroup
+
+- `objective_create` 是控制面 prelude，不是普通 ActionGroup member。Runtime 先执行它、建立或收编 Objective Evaluation route，再允许同一响应中的物理 Action 越过副作用边界；
+- prelude 结束之前不会持久化兄弟 Action 的结果，因此每个结果 Event 在第一次写入前就携带最终 `objective_id / objective_evaluation_id / objective_revision` route。Event 一旦写入即不可变，Runtime 不再用相同 ID 补字段重写；
+- prelude 之后只有一个普通 Action 时不创建 Group，直接等待该 Action 的标准 tool result；有两个或更多普通 Action 时创建一个持久 `ActionGroup`；
+- 每个 member 仍拥有独立 Execution Job、独立不可变结果 Event，并在完成时立即进入 Ledger 和前端可观测流；Group 不阻塞单项结果展示；
+- 最后一个 member 以数据库事务推进 Group 到 `settled`，并原子写入唯一、确定 ID 的 `runtime/action_group_settled` Event 与 Signal Outbox。只有该 barrier 唤醒一次后继 Activation；并发完成、重放和 Runtime 重启不能制造第二次批次唤醒；
+- attached delegation 的 `queued` 回执是持久可观测事实，但明确不产生父 Thread successor Activation；真正的 delegation result 才是唯一唤醒事实。
+
+#### Objective Evaluation fencing
+
+- Objective evaluation lease 的续约校验 Objective ID、evaluation ID、revision 和当前状态；旧 Evaluation 被取代后，heartbeat 会失去 fence 并取消其仍存活的 Activation；
+- 每个物理 Action 在副作用边界之前重新校验所属 Objective Evaluation 是否仍然权威。失去 fence 时提交明确 cancelled 结果，而不是继续执行或静默丢失；
+- Supervisor 创建后继 Evaluation 前释放并撤销旧绑定；重启恢复、lease 到期与在线推进使用同一 revision authority，不能同时复活两套 Evaluation。
+
+#### Model Attempt 状态与流式超时
+
+一次物理 Model Attempt 的状态机为：
+
+```text
+queued → streaming → waiting_final_output → settling → terminal
+```
+
+- `queued` 表示等待 Provider admission；`streaming` 表示请求已经进入 Provider；
+- Provider 发出 reasoning summary 的 done 事件只推进到 `waiting_final_output`，其含义是“推理摘要已结束，等待工具调用、正文或 Provider 最终完成”，绝不等价于请求完成；
+- `settling` 表示 Provider 流已经完成、Runtime 正在校验并提交结果；`completed / continued / protocol_invalid / failed` 为终态；
+- 状态转换使用不可变 `runtime/model_attempt_state` Event，delta 仍走非持久 `runtime/model_stream`。WebSocket 先订阅 live stream，再查询并发送 active-attempt snapshot，关闭重连时遗漏 `started` 的竞态；
+- Provider queue timeout、connect timeout、可重置 stream idle timeout 和可选 hard deadline 是四个不同概念。只要收到任何 SSE chunk，idle timer 就重新计时；默认不设置 hard deadline，不用墙钟上限打断仍持续输出的长 reasoning；
+- reasoning-only 截断可以继续求值。`reasoning_continuation_safety_limit` 默认 `64`，设为 `None` 可关闭次数熔断；正常有进展的 continuation 不做指数退避。连续相同摘要达到 `max_stalled_reasoning_continuations`（默认 `3`）才按停滞空转提前熔断。该限制是事故保险，不是正常任务预算。
+
+#### 已验证边界
+
+- SQLite 与 PostgreSQL 运行同一 RuntimeStore conformance：ActionGroup 并发 member 提交只产生一个 settled transition 和一个 durable continuation；
+- PostgreSQL conformance 同时覆盖独立 Store authority、Objective/Execution fencing 与两个 Runtime 的单次对话交付；
+- attempt-loop 回归覆盖三 Action Function Calling transcript、reasoning continuation 正常完成/可配置安全熔断、stream idle reset、可选 hard deadline、attached delegation 唯一结果唤醒；
+- Dashboard reducer 覆盖 reasoning done 与 response completed 的区分、断线 snapshot 恢复和终态清理。

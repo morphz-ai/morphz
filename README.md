@@ -38,7 +38,7 @@ Session Working Set 默认选择当前 Session 与最近 24 小时内最多 50 �
 
 Context Pressure Eval 使用合成长历史和缩小阈值验证 Agent 自主 `derive/protect/retire`：首次真实运行将 estimated tokens 从 9,177 降至 2,140，并完整保留四项长期事实。设计、命令和结论边界见 [Context Pressure Eval](docs/morphz_context_pressure_eval.md)。
 
-生产 Prompt pressure 已不再只统计 Frame 与 Inbox 字符：Orchestrator 在 completion 前计量完整工作请求，并在 Context Encoding 中显示来源、范围与可信度。核心路径禁止为 Token 计数产生额外远程请求；当前 OpenAI-compatible Client 使用完整请求估算和 completion `usage.prompt_tokens` 校准，后续可按 profile 显式接入本地 tokenizer/chat-template。设计与边界见 [Prompt Token Accounting v1](docs/morphz_prompt_token_accounting_v1.md)。
+生产 Prompt pressure 已不再只统计 Frame 与 Inbox 字符：Orchestrator 在 completion 前计量完整工作请求，并在 Context Encoding 中显示来源、范围与可信度。核心路径禁止为 Token 计数产生额外远程请求；统一协议 Client 使用完整请求估算和 completion 返回的真实输入 usage 校准，后续可按 profile 显式接入本地 tokenizer/chat-template。设计与边界见 [Prompt Token Accounting v1](docs/morphz_prompt_token_accounting_v1.md)。
 
 Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估容量、语义保真和维护效率。首次完整运行的 Capacity/Fidelity 通过、Efficiency 未通过：56 条原始历史全部退休且峰值仅 4,491/8,000，但模型发生多事务循环并线性保护批次 Frame。协议、轨迹与下一步见 [Context Long-Run Eval](docs/morphz_context_long_run_eval.md)。
 
@@ -65,8 +65,8 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    加入不可覆盖保护，Agent 不能通过文件工具、Shell 或自动审批修改 Runtime 自身；
    `.env`、`.git`、`.ssh` 同样默认受保护。
 
-   交互式 TTY 默认进入 Ratatui 界面：Enter 发送，Shift/Alt+Enter 换行，Ctrl+W 打开任务概览，
-   Tab 按需展开任务诊断，Ctrl+K 打开 Mind；`/ctx`、`/jobs`、`/cancel`、`/help` 可检查或控制当前运行。Provider 返回的模型正文和工具参数按统一流式事件
+   交互式 TTY 默认进入 Ratatui 界面：Enter 发送，Shift/Alt+Enter 换行，Ctrl+T 打开任务视图，
+   Tab 按需展开任务诊断，Ctrl+K 打开 Mind；`/ctx`、`/jobs`、`/tools`、`/cancel`、`/help` 可检查或控制当前运行。Provider 返回的模型正文和工具参数按统一流式事件
    展示；无工具正文完整返回后会提交为持久化 Session 消息。`/theme` 可在与 Dashboard
    一致的电光青、鸢尾紫、暖珊瑚和纯单色四套主题间切换。`--plain` 可选择
    行式界面；非 TTY 与 `morphz exec` 自动使用纯文本，适合脚本和管道。

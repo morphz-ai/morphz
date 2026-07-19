@@ -35,7 +35,8 @@ fn client(protocol: ModelProtocol, base_url: String, max_retries: u32) -> Protoc
         "test-model".to_string(),
         None,
         &LlmConfig {
-            request_timeout_secs: 5,
+            connect_timeout_secs: 5,
+            stream_idle_timeout_secs: 5,
             max_retries,
             initial_backoff_secs: 0,
             ..LlmConfig::default()
@@ -250,6 +251,7 @@ fn openai_responses_streams_reasoning_summary_without_promoting_it_to_reply_text
             "type":"response.reasoning_summary_text.delta",
             "delta":"Then answer concisely."
         }),
+        json!({"type":"response.reasoning_summary_text.done"}),
         json!({"type":"response.output_text.delta","delta":"Public answer"}),
         json!({"type":"response.completed","response":{}}),
     ] {
@@ -270,6 +272,7 @@ fn openai_responses_streams_reasoning_summary_without_promoting_it_to_reply_text
             ModelStreamEvent::ReasoningSummaryDelta {
                 text: "Then answer concisely.".to_string(),
             },
+            ModelStreamEvent::ReasoningSummaryCompleted,
             ModelStreamEvent::TextDelta {
                 text: "Public answer".to_string(),
             },

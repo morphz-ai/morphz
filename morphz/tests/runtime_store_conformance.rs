@@ -6,19 +6,20 @@ use morphz::llm::{Client, Message, Response, ToolDefinition};
 use morphz::memory::postgres::PostgresStore;
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
+    ActionGroupFilter, ActionGroupMemberStatus, ActionGroupStatus, ActionGroupStore,
     ActivationOutcomeCommit, ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore,
     DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
     EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
     ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
-    ExecutionRetrySafety, MessageClaim, MindProjectionCommit, MindProjectionStore, NewAgent,
-    NewApprovalRequest, NewCognitiveContext, NewDelegation, NewExecutionJob, NewMindProjection,
-    NewObjective, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
-    ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
-    RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation, ScheduleStatus, ScheduleStore,
-    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionProjectionMutation,
-    SessionProjectionStore, SessionStatus, SessionUpdate, SignalOutboxStatus,
-    ThreadActivationMutation, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadStore, TimerStore,
+    ExecutionRetrySafety, MessageClaim, MindProjectionCommit, MindProjectionStore, NewActionGroup,
+    NewActionGroupMember, NewAgent, NewApprovalRequest, NewCognitiveContext, NewDelegation,
+    NewExecutionJob, NewMindProjection, NewObjective, NewRuntimeTimer, NewSession, NewThread,
+    NewThreadActivation, NewThreadSignal, ObjectiveMutation, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation,
+    ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
+    SessionProjectionMutation, SessionProjectionStore, SessionStatus, SessionUpdate,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationStatus, ThreadKind,
+    ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
 };
 use morphz::memory::{ActivationStore, SessionDirectoryStore};
 use morphz::permission::{PermissionMode, ReviewerKind};
@@ -1756,6 +1757,33 @@ where
         .expect("exactly one Objective evaluation must win the revision fence");
     assert!(winner.active_evaluation_id.is_some());
 
+    let renewed_expiry = chrono::Utc::now() + chrono::Duration::minutes(2);
+    let winner = match store
+        .renew_objective_evaluation(
+            &winner.id,
+            winner.active_evaluation_id.as_deref().unwrap(),
+            renewed_expiry,
+        )
+        .await
+        .unwrap()
+    {
+        ObjectiveMutation::Updated(objective) => objective,
+        mutation => panic!("unexpected renewal mutation: {mutation:?}"),
+    };
+    assert_eq!(
+        winner.revision,
+        ready.revision + 1,
+        "lease heartbeat must not change the model-visible Objective revision"
+    );
+    assert_eq!(winner.evaluation_lease_expires_at, Some(renewed_expiry));
+    assert!(matches!(
+        store
+            .renew_objective_evaluation(&winner.id, "stale-evaluation", renewed_expiry)
+            .await
+            .unwrap(),
+        ObjectiveMutation::Conflict { .. }
+    ));
+
     let usage = match store
         .record_objective_evaluation_usage(
             &winner.id,
@@ -1863,6 +1891,213 @@ where
             .len(),
         1,
         "Objective lease and continuation Event must commit atomically"
+    );
+}
+
+async fn assert_action_group_conformance<S>(store: Arc<S>)
+where
+    S: ActionGroupStore + ActivationStore + EventStore + Send + Sync + 'static,
+{
+    let assistant_call = Event::new(
+        "conformance-action-group-call".to_string(),
+        "Store-Conformance".to_string(),
+        morphz::event::TYPE_AGENT_CALL.to_string(),
+        "chat/assistant_call".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "attempt_id": "conformance-activation",
+            "activation_id": "conformance-activation",
+            "thread_id": "conformance-thread",
+            "root_turn_id": "root-conformance-thread"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    store.append(assistant_call.clone()).await.unwrap();
+    let group = store
+        .create_action_group(
+            NewActionGroup {
+                id: "conformance-action-group".to_string(),
+                activation_id: "conformance-activation".to_string(),
+                thread_id: "conformance-thread".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                session_id: "conformance-session".to_string(),
+                assistant_call_event_id: assistant_call.id,
+                objective_id: None,
+                objective_evaluation_id: None,
+                objective_revision: None,
+            },
+            vec![
+                NewActionGroupMember {
+                    ordinal: 0,
+                    tool_call_id: "group-call-a".to_string(),
+                    tool_name: "read".to_string(),
+                    execution_job_id: None,
+                },
+                NewActionGroupMember {
+                    ordinal: 1,
+                    tool_call_id: "group-call-b".to_string(),
+                    tool_name: "search".to_string(),
+                    execution_job_id: None,
+                },
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(group.status, ActionGroupStatus::Running);
+    assert!(store
+        .create_action_group(
+            NewActionGroup {
+                id: "invalid-single-action-group".to_string(),
+                activation_id: "conformance-activation".to_string(),
+                thread_id: "conformance-thread".to_string(),
+                agent_id: "conformance-agent".to_string(),
+                context_id: "conformance-context".to_string(),
+                session_id: "conformance-session".to_string(),
+                assistant_call_event_id: "unused-call".to_string(),
+                objective_id: None,
+                objective_evaluation_id: None,
+                objective_revision: None,
+            },
+            vec![NewActionGroupMember {
+                ordinal: 0,
+                tool_call_id: "only-call".to_string(),
+                tool_name: "read".to_string(),
+                execution_job_id: None,
+            }],
+        )
+        .await
+        .is_err());
+
+    let result = |call: &str| {
+        Event::new(
+            format!("conformance-action-result-{call}"),
+            "Store-Conformance".to_string(),
+            morphz::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            json!({
+                "context_id": "conformance-context",
+                "session_id": "conformance-session",
+                "attempt_id": "conformance-activation",
+                "activation_id": "conformance-activation",
+                "thread_id": "conformance-thread",
+                "root_turn_id": "root-conformance-thread",
+                "action_group_id": "conformance-action-group",
+                "tool_call_id": call,
+                "tool_name": "read",
+                "tool_status": "success",
+                "text": call
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+    };
+    let settled = Event::new(
+        "action_group_settled_conformance-action-group".to_string(),
+        "Store-Conformance".to_string(),
+        "runtime_control".to_string(),
+        "runtime/action_group_settled".to_string(),
+        json!({
+            "context_id": "conformance-context",
+            "session_id": "conformance-session",
+            "attempt_id": "conformance-activation",
+            "activation_id": "conformance-activation",
+            "thread_id": "conformance-thread",
+            "root_turn_id": "root-conformance-thread",
+            "action_group_id": "conformance-action-group",
+            "member_count": 2
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    let first = {
+        let store = Arc::clone(&store);
+        let settled = settled.clone();
+        let result = result("group-call-a");
+        tokio::spawn(async move {
+            store
+                .commit_action_group_member_result(
+                    "conformance-action-group",
+                    "group-call-a",
+                    ActionGroupMemberStatus::Succeeded,
+                    &result,
+                    &settled,
+                )
+                .await
+        })
+    };
+    let second = {
+        let store = Arc::clone(&store);
+        let settled = settled.clone();
+        let result = result("group-call-b");
+        tokio::spawn(async move {
+            store
+                .commit_action_group_member_result(
+                    "conformance-action-group",
+                    "group-call-b",
+                    ActionGroupMemberStatus::Succeeded,
+                    &result,
+                    &settled,
+                )
+                .await
+        })
+    };
+    let commits = [
+        first.await.unwrap().unwrap(),
+        second.await.unwrap().unwrap(),
+    ];
+    assert_eq!(
+        commits.iter().filter(|commit| commit.settled_now).count(),
+        1,
+        "only the final member transaction may settle and signal the Group"
+    );
+    let current = store
+        .get_action_group("conformance-action-group")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(current.status, ActionGroupStatus::Settled);
+    assert_eq!(current.terminal_member_count, 2);
+    assert_eq!(
+        store
+            .list_action_groups(ActionGroupFilter {
+                context_id: Some("conformance-context".to_string()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .iter()
+            .filter(|group| group.id == "conformance-action-group")
+            .count(),
+        1
+    );
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                event_id: Some(settled.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        store
+            .list_signal_outbox(SignalOutboxStatus::Pending, 100)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|entry| entry.event_id == settled.id)
+            .count(),
+        1,
+        "the settled Event must own exactly one durable continuation"
     );
 }
 
@@ -1998,6 +2233,7 @@ where
             heartbeat.claim_token.as_deref(),
             terminal.clone(),
             &result_event,
+            false,
         )
         .await
         .unwrap()
@@ -2014,6 +2250,7 @@ where
                 heartbeat.claim_token.as_deref(),
                 terminal,
                 &result_event,
+                false,
             )
             .await
             .unwrap(),
@@ -2801,6 +3038,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         })
         .await
         .unwrap();
+    assert_action_group_conformance(Arc::clone(&store)).await;
     assert_execution_job_conformance(Arc::clone(&store)).await;
     assert_approval_grant_conformance(store).await;
 }
@@ -2836,6 +3074,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     for version in [
         "20260718_01_supported_capabilities",
         "20260719_01_session_projections",
+        "20260719_02_action_groups",
         "20260718_02_execution_jobs",
         "20260718_03_approvals",
         "20260718_04_threads",
@@ -2907,6 +3146,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         })
         .await
         .unwrap();
+    assert_action_group_conformance(Arc::clone(&store)).await;
     assert_execution_job_conformance(Arc::clone(&store)).await;
     assert_approval_grant_conformance(Arc::clone(&store)).await;
 
