@@ -2332,6 +2332,66 @@ async fn test_failed_context_only_call_keeps_context_tool_for_repair() {
 }
 
 #[tokio::test]
+async fn active_root_request_cannot_be_retired_before_the_reply_is_delivered() {
+    let session_id = "attempt_active_root_retirement_fence";
+    let (bus, store, orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "retire-active-root".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: json!({
+                        "transaction": "(context-tx (base-version 0) (reason absorbed) (retire @e1))"
+                    })
+                    .to_string(),
+                }],
+            },
+            Response {
+                content: "已保留当前请求并修复维护事务。".to_string(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "repair-without-root-retirement".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: json!({
+                        "transaction": "(context-tx (base-version 0) (create repaired (status complete)))"
+                    })
+                    .to_string(),
+                }],
+            },
+            Response {
+                content: "当前请求已正常交付。".to_string(),
+                tool_calls: Vec::new(),
+            },
+        ],
+        morphz::config::OrchestratorConfig::default(),
+    )
+    .await;
+
+    publish_user(&bus, session_id, "maintain context and answer me").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0].payload["text"], "当前请求已正常交付。");
+    assert_eq!(client.tools_seen().len(), 3);
+    let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
+    assert_eq!(outputs.len(), 2);
+    assert!(outputs[0].payload["text"]
+        .as_str()
+        .is_some_and(|text| text.contains("Runtime 因果保护")));
+    let context = orchestrator
+        .get_current_context_view(session_id)
+        .await
+        .unwrap();
+    assert_eq!(context.state.version, 1);
+    assert_eq!(context.state.frames[0].id, "repaired");
+    assert!(context
+        .observations
+        .iter()
+        .any(|observation| observation.topic == "chat/user_message"));
+}
+
+#[tokio::test]
 async fn model_native_prompt_count_drives_pressure_before_completion() {
     let session_id = "attempt_native_prompt_pressure";
     let config = morphz::config::OrchestratorConfig {

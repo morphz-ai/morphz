@@ -187,7 +187,7 @@ pub fn context_tx_tool_description() -> String {
         .collect::<Vec<_>>()
         .join("；");
     format!(
-        "原子修改你拥有的 Mind Context 与 Session attention。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。Session ID 不是 observation ref，必须使用 session-directory 中的原始 ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且 Mind 修改与 retire-session/restore-session 整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Observation 的 retire 会立即释放其活动编码；容量压力下优先清理已消化且不再需要的 Observation。普通 Frame 的 retire 只进入整理期，当前释放量为 0；Frame 必须按语义价值、有效性、使用和关系判断，不能仅因体积较大而退休。整理期应优先 revise、derive 或建立 sources + supersedes 的 successor；安全 successor 可让来源 Frame 在同一事务立即退休。Frame 数量本身不是退休理由；被退休内容没有删除，可按关键词、ID 和关系链 recall。Context 修改不是给用户的最终回复。提交 BODY 时还必须遵守由协议单一事实源生成的认识契约：{}",
+        "原子修改你拥有的 Mind Context 与 Session attention。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。Session ID 不是 observation ref，必须使用 session-directory 中的原始 ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且 Mind 修改与 retire-session/restore-session 整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Observation 的 retire 会立即释放其活动编码；容量压力下优先清理已消化且不再需要的 Observation。当前 Activation 的根请求与触发 observation 在交付结束前受 Runtime 因果保护，不得 retire；请先完成当前回复或工作交付。普通 Frame 的 retire 只进入整理期，当前释放量为 0；Frame 必须按语义价值、有效性、使用和关系判断，不能仅因体积较大而退休。整理期应优先 revise、derive 或建立 sources + supersedes 的 successor；安全 successor 可让来源 Frame 在同一事务立即退休。Frame 数量本身不是退休理由；被退休内容没有删除，可按关键词、ID 和关系链 recall。Context 修改不是给用户的最终回复。提交 BODY 时还必须遵守由协议单一事实源生成的认识契约：{}",
         render_context_tx_epistemic_guidance()
     )
 }
@@ -1289,8 +1289,31 @@ impl ContextEngine {
         acting_session_id: &str,
         transaction: &str,
     ) -> Result<ContextCommit, DynError> {
-        self.apply_context_transaction_authorized(context_id, acting_session_id, transaction, false)
-            .await
+        self.apply_context_transaction_authorized(
+            context_id,
+            acting_session_id,
+            transaction,
+            false,
+            &BTreeSet::new(),
+        )
+        .await
+    }
+
+    pub async fn apply_context_transaction_protecting(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
+        transaction: &str,
+        causally_protected_ids: &BTreeSet<String>,
+    ) -> Result<ContextCommit, DynError> {
+        self.apply_context_transaction_authorized(
+            context_id,
+            acting_session_id,
+            transaction,
+            false,
+            causally_protected_ids,
+        )
+        .await
     }
 
     async fn apply_context_transaction_authorized(
@@ -1299,6 +1322,7 @@ impl ContextEngine {
         acting_session_id: &str,
         transaction: &str,
         allow_runtime_lifecycle_ops: bool,
+        causally_protected_ids: &BTreeSet<String>,
     ) -> Result<ContextCommit, DynError> {
         let transaction_started = std::time::Instant::now();
         self.capacity_metrics
@@ -1330,6 +1354,7 @@ impl ContextEngine {
                 format!("Context transaction 仍包含未解析短引用 '{unresolved}'，拒绝提交").into(),
             );
         }
+        reject_causally_protected_retirements(&parsed, causally_protected_ids)?;
         let canonical_transaction = render_parsed_transaction(&parsed);
         let current = self.load_current_mind(context_id, None).await?;
         if current.version != parsed.base_version {
@@ -2324,6 +2349,7 @@ impl ContextEngine {
                     acting_session_id,
                     &transaction,
                     true,
+                    &BTreeSet::new(),
                 )
                 .await
             {
@@ -3551,6 +3577,31 @@ fn transaction_reference_candidates(
         }
     }
     Ok(candidates)
+}
+
+fn reject_causally_protected_retirements(
+    transaction: &ParsedTransaction,
+    causally_protected_ids: &BTreeSet<String>,
+) -> Result<(), String> {
+    if causally_protected_ids.is_empty() {
+        return Ok(());
+    }
+    for operation in &transaction.operations {
+        let items = as_list(operation, "context operation")?;
+        if atom_at(items, 0, "operation name")? != "retire" {
+            continue;
+        }
+        for item in items.iter().skip(1) {
+            let id = as_atom(item, "retire target")?;
+            if causally_protected_ids.contains(id) {
+                return Err(format!(
+                    "'{}' 是当前 Activation 尚未交付的根请求或触发 observation，受 Runtime 因果保护；完成当前回复或工作交付前不能 retire",
+                    id
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn resolve_from_references(

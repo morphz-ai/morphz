@@ -30,6 +30,14 @@ pub struct ContextPressureEvalManifest {
     pub expected_markers: Vec<String>,
     pub initial_pressure: ContextPressure,
     pub user_prompt: String,
+    #[serde(default = "default_pressure_scenario")]
+    pub scenario: String,
+    #[serde(default)]
+    pub seed_frame_ids: Vec<String>,
+    #[serde(default)]
+    pub preserve_frame_ids: Vec<String>,
+    #[serde(default)]
+    pub baseline_context_commits: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -55,8 +63,17 @@ pub struct ContextPressureEvalReport {
     pub expected_markers: Vec<String>,
     pub missing_markers: Vec<String>,
     pub context_commits: usize,
+    pub model_context_commits: usize,
     pub context_failures: usize,
     pub replies: usize,
+    pub scenario: String,
+    pub active_seed_frame_ids: Vec<String>,
+    pub retired_seed_frame_ids: Vec<String>,
+    pub new_frame_ids: Vec<String>,
+    pub revised_seed_frame_ids: Vec<String>,
+    pub supersedes_relations: usize,
+    pub preserved_required_frames: bool,
+    pub semantic_frame_maintenance: bool,
     pub success: bool,
 }
 
@@ -155,6 +172,10 @@ pub async fn create_context_pressure_eval(
         initial_pressure,
         user_prompt: "继续这个长期项目：请基于已有信息准备进入下一阶段，并告诉我当前最重要的状态。"
             .to_string(),
+        scenario: default_pressure_scenario(),
+        seed_frame_ids: Vec::new(),
+        preserve_frame_ids: Vec::new(),
+        baseline_context_commits: 0,
     };
     std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
 
@@ -198,6 +219,186 @@ pub async fn create_context_pressure_eval(
         manifest,
         environment,
     })
+}
+
+pub async fn create_frame_value_eval(
+    base_dir: Option<&Path>,
+) -> Result<ContextPressureEvalEnvironment, DynError> {
+    let mut environment = create_context_pressure_eval(base_dir).await?;
+    let store = Arc::new(
+        SqliteStore::new(
+            environment
+                .manifest
+                .database_path
+                .to_string_lossy()
+                .as_ref(),
+        )
+        .await?,
+    );
+    let config = pressure_config(&environment.manifest);
+    let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config);
+    let durable_detail = (0..48)
+        .map(|index| {
+            format!(
+                "约束-{index:02}：该控制面设计负责租约 fencing、幂等交付、因果顺序和崩溃恢复；内容较长不代表价值较低。"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("");
+    let transaction = format!(
+        "(context-tx (base-version 0) (reason \"seed frame value policy evaluation\") \
+         (create durable-control-plane (identity DURABLE-CONTROL-PLANE) (priority long-lived-critical) (details {})) \
+         (create old-route (port 8080) (status obsolete-small-note)) \
+         (create current-route (port 9090) (status CURRENT-ROUTE-AUTHORITATIVE)) \
+         (relate current-route supersedes old-route))",
+        sexpr_string(&durable_detail)
+    );
+    engine
+        .apply_context_transaction(
+            &environment.manifest.context_id,
+            &environment.manifest.session_id,
+            &transaction,
+        )
+        .await?;
+    let view = engine
+        .build_context_encoding(
+            &environment.manifest.context_id,
+            &environment.manifest.session_id,
+            &HashSet::new(),
+        )
+        .await?;
+    if view.pressure.level != "critical" {
+        return Err(format!(
+            "Frame value 场景未达到 critical：tokens={} level={}",
+            view.pressure.estimated_tokens, view.pressure.level
+        )
+        .into());
+    }
+    environment.manifest.scenario = "frame-value".to_string();
+    environment.manifest.initial_pressure = view.pressure;
+    environment.manifest.seed_frame_ids = vec![
+        "durable-control-plane".to_string(),
+        "old-route".to_string(),
+        "current-route".to_string(),
+    ];
+    environment.manifest.preserve_frame_ids = vec![
+        "durable-control-plane".to_string(),
+        "current-route".to_string(),
+    ];
+    environment.manifest.baseline_context_commits = 1;
+    environment.manifest.expected_markers.extend([
+        "DURABLE-CONTROL-PLANE".to_string(),
+        "CURRENT-ROUTE-AUTHORITATIVE".to_string(),
+    ]);
+    environment.manifest.user_prompt = "继续当前项目，并简要告诉我目前最重要的状态。".to_string();
+    persist_manifest(&environment)?;
+    Ok(environment)
+}
+
+pub async fn create_frame_consolidation_eval(
+    base_dir: Option<&Path>,
+) -> Result<ContextPressureEvalEnvironment, DynError> {
+    let mut environment = create_context_pressure_eval(base_dir).await?;
+    environment.manifest.soft_token_limit = 3_500;
+    environment.manifest.hard_token_limit = 5_000;
+    environment.manifest.maintenance_reserve_tokens = 1_500;
+    for (key, value) in [
+        ("MORPHZ_CONTEXT_SOFT_TOKEN_LIMIT", "3500"),
+        ("MORPHZ_CONTEXT_HARD_TOKEN_LIMIT", "5000"),
+        ("MORPHZ_CONTEXT_MAINTENANCE_RESERVE_TOKENS", "1500"),
+    ] {
+        environment
+            .environment
+            .insert(key.to_string(), value.to_string());
+    }
+    let store = Arc::new(
+        SqliteStore::new(
+            environment
+                .manifest
+                .database_path
+                .to_string_lossy()
+                .as_ref(),
+        )
+        .await?,
+    );
+    let engine = ContextEngine::new(
+        Arc::clone(&store) as Arc<dyn EventStore>,
+        pressure_config(&environment.manifest),
+    );
+    let mut operations = Vec::new();
+    let durable_detail = (0..24)
+        .map(|index| format!("长期边界-{index:02}：用户数据不得越权披露，审计证据必须可追溯。"))
+        .collect::<Vec<_>>()
+        .join("");
+    operations.push(format!(
+        "(create durable-user-boundary (identity DURABLE-USER-BOUNDARY) (details {}))",
+        sexpr_string(&durable_detail)
+    ));
+    for index in 0..6 {
+        let detail = repeated_case_detail(
+            index,
+            "VERIFY-BEFORE-RETRY",
+            "工具结果未知时先读取权威状态，确认失败后才允许重试，避免重复副作用",
+        );
+        operations.push(format!(
+            "(create retry-case-{index:02} (case retry-{index:02}) (principle VERIFY-BEFORE-RETRY) (details {}))",
+            sexpr_string(&detail)
+        ));
+    }
+    for index in 0..6 {
+        let detail = repeated_case_detail(
+            index,
+            "LATEST-STATE-WINS",
+            "同一资源发生明确取代时保留最新权威状态，并用 supersedes 维持旧结论的证据血缘",
+        );
+        operations.push(format!(
+            "(create freshness-case-{index:02} (case freshness-{index:02}) (principle LATEST-STATE-WINS) (details {}))",
+            sexpr_string(&detail)
+        ));
+    }
+    let retired_observations = environment.manifest.seed_observation_ids.join(" ");
+    let transaction = format!(
+        "(context-tx (base-version 0) (reason \"seed frame consolidation evaluation\") {} (retire {}))",
+        operations.join(" "),
+        retired_observations
+    );
+    engine
+        .apply_context_transaction(
+            &environment.manifest.context_id,
+            &environment.manifest.session_id,
+            &transaction,
+        )
+        .await?;
+    let view = engine
+        .build_context_encoding(
+            &environment.manifest.context_id,
+            &environment.manifest.session_id,
+            &HashSet::new(),
+        )
+        .await?;
+    if view.pressure.level != "critical" {
+        return Err(format!(
+            "Frame consolidation 场景未达到 critical：tokens={} level={}",
+            view.pressure.estimated_tokens, view.pressure.level
+        )
+        .into());
+    }
+    environment.manifest.scenario = "frame-consolidation".to_string();
+    environment.manifest.initial_pressure = view.pressure;
+    environment.manifest.seed_frame_ids = std::iter::once("durable-user-boundary".to_string())
+        .chain((0..6).map(|index| format!("retry-case-{index:02}")))
+        .chain((0..6).map(|index| format!("freshness-case-{index:02}")))
+        .collect();
+    environment.manifest.preserve_frame_ids = vec!["durable-user-boundary".to_string()];
+    environment.manifest.baseline_context_commits = 1;
+    environment.manifest.expected_markers = vec![
+        "DURABLE-USER-BOUNDARY".to_string(),
+        "VERIFY-BEFORE-RETRY".to_string(),
+        "LATEST-STATE-WINS".to_string(),
+    ];
+    environment.manifest.user_prompt = "继续当前项目，并简要告诉我目前最重要的状态。".to_string();
+    persist_manifest(&environment)?;
+    Ok(environment)
 }
 
 pub async fn inspect_context_pressure_eval(
@@ -245,7 +446,7 @@ pub async fn inspect_context_pressure_eval(
     let missing_markers = manifest
         .expected_markers
         .iter()
-        .filter(|marker| !frame_text.contains(marker.as_str()))
+        .filter(|marker| !semantic_marker_present(&frame_text, marker))
         .cloned()
         .collect::<Vec<_>>();
     let events = store
@@ -258,6 +459,7 @@ pub async fn inspect_context_pressure_eval(
         .iter()
         .filter(|event| event.topic == "chat/context_tx_committed")
         .count();
+    let model_context_commits = context_commits.saturating_sub(manifest.baseline_context_commits);
     let context_failures = events
         .iter()
         .filter(|event| {
@@ -287,10 +489,60 @@ pub async fn inspect_context_pressure_eval(
     } else {
         final_tokens as f64 / initial_tokens as f64
     };
+    let active_frame_ids = view
+        .state
+        .frames
+        .iter()
+        .filter(|frame| !view.state.retired.contains(&frame.id))
+        .map(|frame| frame.id.clone())
+        .collect::<BTreeSet<_>>();
+    let seed_frame_ids = manifest
+        .seed_frame_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let active_seed_frame_ids = seed_frame_ids
+        .intersection(&active_frame_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    let retired_seed_frame_ids = seed_frame_ids
+        .difference(&active_frame_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    let new_frame_ids = active_frame_ids
+        .difference(&seed_frame_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    let revised_seed_frame_ids = view
+        .state
+        .frames
+        .iter()
+        .filter(|frame| seed_frame_ids.contains(&frame.id) && frame.revision > 1)
+        .map(|frame| frame.id.clone())
+        .collect::<Vec<_>>();
+    let supersedes_relations = view
+        .state
+        .relations
+        .iter()
+        .filter(|relation| relation.relation == "supersedes")
+        .count();
+    let preserved_required_frames = manifest
+        .preserve_frame_ids
+        .iter()
+        .all(|id| active_frame_ids.contains(id));
+    let semantic_frame_maintenance = !new_frame_ids.is_empty()
+        || !revised_seed_frame_ids.is_empty()
+        || !retired_seed_frame_ids.is_empty();
+    let observations_ok = manifest.scenario == "frame-consolidation"
+        || retired_seed_observations * 4 >= manifest.seed_observation_ids.len() * 3;
+    let frame_maintenance_ok =
+        manifest.scenario != "frame-consolidation" || semantic_frame_maintenance;
     let success = view.pressure.level != "critical"
-        && retired_seed_observations * 4 >= manifest.seed_observation_ids.len() * 3
+        && observations_ok
+        && frame_maintenance_ok
+        && preserved_required_frames
         && missing_markers.is_empty()
-        && context_commits >= 1
+        && model_context_commits >= 1
         && context_failures == 0
         && replies == 1;
     Ok(ContextPressureEvalReport {
@@ -302,21 +554,72 @@ pub async fn inspect_context_pressure_eval(
         seeded_observations: manifest.seed_observation_ids.len(),
         retired_seed_observations,
         active_seed_observations,
-        active_frame_ids: view
-            .state
-            .frames
-            .iter()
-            .filter(|frame| !view.state.retired.contains(&frame.id))
-            .map(|frame| frame.id.clone())
-            .collect(),
+        active_frame_ids: active_frame_ids.into_iter().collect(),
         protected_ids: view.state.protected.iter().cloned().collect(),
         expected_markers: manifest.expected_markers,
         missing_markers,
         context_commits,
+        model_context_commits,
         context_failures,
         replies,
+        scenario: manifest.scenario,
+        active_seed_frame_ids,
+        retired_seed_frame_ids,
+        new_frame_ids,
+        revised_seed_frame_ids,
+        supersedes_relations,
+        preserved_required_frames,
+        semantic_frame_maintenance,
         success,
     })
+}
+
+fn default_pressure_scenario() -> String {
+    "observation-compression".to_string()
+}
+
+fn pressure_config(manifest: &ContextPressureEvalManifest) -> OrchestratorConfig {
+    OrchestratorConfig {
+        context_soft_token_limit: manifest.soft_token_limit,
+        context_hard_token_limit: manifest.hard_token_limit,
+        context_maintenance_reserve_tokens: manifest.maintenance_reserve_tokens,
+        observation_preview_chars: manifest.observation_preview_chars,
+        ..Default::default()
+    }
+}
+
+fn persist_manifest(environment: &ContextPressureEvalEnvironment) -> Result<(), DynError> {
+    std::fs::write(
+        &environment.manifest_path,
+        serde_json::to_vec_pretty(&environment.manifest)?,
+    )?;
+    Ok(())
+}
+
+fn sexpr_string(value: &str) -> String {
+    serde_json::to_string(value).expect("serializing a Rust string cannot fail")
+}
+
+fn repeated_case_detail(index: usize, marker: &str, principle: &str) -> String {
+    (0..12)
+        .map(|step| {
+            format!(
+                "案例 {index:02} 证据 {step:02}：{marker}。{principle}。这是可归纳的重复案例，不应丢失共同原则。"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn semantic_marker_present(frame_text: &str, marker: &str) -> bool {
+    if frame_text.contains(marker) {
+        return true;
+    }
+    marker == "30天"
+        && frame_text.contains("30")
+        && (frame_text.contains("audit")
+            || frame_text.contains("retention")
+            || frame_text.contains("保留"))
 }
 
 fn synthetic_long_running_history() -> Vec<String> {
@@ -438,5 +741,51 @@ mod tests {
         for marker in &environment.manifest.expected_markers {
             assert!(view.state.frames[0].body.contains(marker));
         }
+    }
+
+    #[tokio::test]
+    async fn frame_value_fixture_is_critical_without_protecting_important_frames() {
+        let base = TempDir::new().unwrap();
+        let environment = create_frame_value_eval(Some(base.path())).await.unwrap();
+        assert_eq!(environment.manifest.scenario, "frame-value");
+        assert_eq!(environment.manifest.initial_pressure.level, "critical");
+        assert_eq!(environment.manifest.baseline_context_commits, 1);
+        let report = inspect_context_pressure_eval(&environment.run_root)
+            .await
+            .unwrap();
+        assert!(!report.success);
+        assert!(report.preserved_required_frames);
+        assert_eq!(report.model_context_commits, 0);
+        assert!(report.protected_ids.is_empty());
+        assert!(report
+            .active_seed_frame_ids
+            .contains(&"durable-control-plane".to_string()));
+    }
+
+    #[tokio::test]
+    async fn frame_consolidation_fixture_has_no_active_seed_observations() {
+        let base = TempDir::new().unwrap();
+        let environment = create_frame_consolidation_eval(Some(base.path()))
+            .await
+            .unwrap();
+        assert_eq!(environment.manifest.scenario, "frame-consolidation");
+        assert_eq!(environment.manifest.initial_pressure.level, "critical");
+        let report = inspect_context_pressure_eval(&environment.run_root)
+            .await
+            .unwrap();
+        assert!(!report.success);
+        assert_eq!(report.active_seed_observations, 0);
+        assert_eq!(report.model_context_commits, 0);
+        assert!(!report.semantic_frame_maintenance);
+        assert!(report.preserved_required_frames);
+    }
+
+    #[test]
+    fn audit_retention_marker_accepts_structured_numeric_representation() {
+        assert!(semantic_marker_present(
+            "(safety (audit-log-retention-days 30))",
+            "30天"
+        ));
+        assert!(!semantic_marker_present("(unrelated 30)", "30天"));
     }
 }

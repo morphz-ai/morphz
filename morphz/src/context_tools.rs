@@ -5,8 +5,11 @@ use crate::orchestrator::context::{
     context_tx_parameter_description, context_tx_tool_description, ContextEngine,
     ContextRecallService, FrameRecallDirection, FrameRecallRequest, RecallSearchRequest,
 };
-use crate::tool::{Tool, ToolExecutionClass, CURRENT_CONTEXT_ID, CURRENT_SESSION_ID};
+use crate::tool::{
+    Tool, ToolExecutionClass, CURRENT_CAUSAL_ROUTE, CURRENT_CONTEXT_ID, CURRENT_SESSION_ID,
+};
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 pub struct ContextTxTool {
@@ -63,9 +66,27 @@ impl Tool for ContextTxTool {
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
             .map_err(|_| "context_tx 缺少 Runtime 注入的当前 cognitive context")?;
+        let causally_protected = CURRENT_CAUSAL_ROUTE
+            .try_with(|route| {
+                route
+                    .as_ref()
+                    .map(|route| {
+                        [route.root_turn_id.clone(), route.trigger_event_id.clone()]
+                            .into_iter()
+                            .filter(|id| !id.is_empty())
+                            .collect::<BTreeSet<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default();
         let commit = self
             .context_engine
-            .apply_context_transaction(&context_id, &session_id, &args.transaction)
+            .apply_context_transaction_protecting(
+                &context_id,
+                &session_id,
+                &args.transaction,
+                &causally_protected,
+            )
             .await?;
         Ok(serde_json::to_string_pretty(&serde_json::json!({
             "status": "committed",
@@ -355,6 +376,70 @@ mod tests {
             .unwrap();
         assert_eq!(view.state.version, 1);
         assert_eq!(view.state.frames[0].id, "objective");
+    }
+
+    #[tokio::test]
+    async fn context_tx_tool_rejects_retiring_the_active_root_request() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("context-causal-fence.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        store
+            .append(Event::new(
+                "event:active-user-request".to_string(),
+                "User".to_string(),
+                crate::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                vec![
+                    ("context_id".to_string(), serde_json::json!("context_test")),
+                    ("session_id".to_string(), serde_json::json!("session_test")),
+                    ("text".to_string(), serde_json::json!("please continue")),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await
+            .unwrap();
+        let engine = Arc::new(ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        ));
+        let tool = ContextTxTool::new(Arc::clone(&engine));
+        let route = crate::tool::ToolCausalRoute {
+            thread_id: "thread-a".to_string(),
+            activation_id: "activation-a".to_string(),
+            root_turn_id: "event:active-user-request".to_string(),
+            trigger_event_id: "event:active-user-request".to_string(),
+            trigger_sequence: 1,
+        };
+        let result = CURRENT_CONTEXT_ID
+            .scope(
+                "context_test".to_string(),
+                CURRENT_SESSION_ID.scope(
+                    "session_test".to_string(),
+                    CURRENT_CAUSAL_ROUTE.scope(
+                        Some(route),
+                        tool.execute(
+                            &serde_json::json!({
+                                "transaction": "(context-tx (base-version 0) (reason active-request) (retire event:active-user-request))"
+                            })
+                            .to_string(),
+                        ),
+                    ),
+                ),
+            )
+            .await;
+
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("Runtime 因果保护"), "{error}");
+        let view = engine
+            .build_context_encoding("context_test", "session_test", &Default::default())
+            .await
+            .unwrap();
+        assert_eq!(view.state.version, 0);
+        assert!(view
+            .observations
+            .iter()
+            .any(|observation| observation.id == "event:active-user-request"));
     }
 
     #[tokio::test]
