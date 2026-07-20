@@ -1076,7 +1076,7 @@ impl ContextEngine {
             .into());
         }
         let actual_hash = mind_state_hash(&state)?;
-        if actual_hash != projection.state_hash {
+        if !mind_state_hash_matches(&state, &projection.state_hash)? {
             return Err(format!(
                 "Context '{context_id}' 的 Mind Projection hash 不一致：stored={}，actual={actual_hash}",
                 projection.state_hash
@@ -1115,7 +1115,7 @@ impl ContextEngine {
             .into());
         }
         let actual_snapshot_hash = mind_state_hash(&state)?;
-        if actual_snapshot_hash != snapshot.state_hash {
+        if !mind_state_hash_matches(&state, &snapshot.state_hash)? {
             return Err(format!(
                 "Mind Snapshot '{}' hash 不一致：stored={}，actual={actual_snapshot_hash}",
                 snapshot.id, snapshot.state_hash
@@ -2800,9 +2800,11 @@ impl ContextEngine {
             full_replay_micros,
             incremental_replay_micros,
             projection_validation_micros,
-            matches: valid_projection
-                && projection_hash.as_deref() == Some(ledger_hash.as_str())
-                && incremental_matches.unwrap_or(true),
+            // A Projection written before a hash-schema extension can have a
+            // different stored digest while still decoding to exactly the
+            // same Mind. `validate_mind_projection` has already required the
+            // digest to match one of the explicitly supported hash schemas.
+            matches: valid_projection && incremental_matches.unwrap_or(true),
         })
     }
 
@@ -5997,6 +5999,74 @@ fn mind_state_hash(state: &MindState) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+/// Hash schema used by Context protocol v20, before cognitive Frame
+/// retirement added the `retiring` maps to Mind and checkpoint state.
+///
+/// Projection hashes fence serialized state, so adding a serde-defaulted field
+/// changes the digest even when its semantic value is empty. Keep the old
+/// schema explicit instead of weakening validation or rewriting a database on
+/// read. New writes always use `mind_state_hash`; this candidate is accepted
+/// only for states which can be represented losslessly by v20.
+#[derive(Serialize)]
+struct MindCheckpointHashV20<'a> {
+    id: &'a str,
+    frames: &'a [ContextFrame],
+    relations: &'a [ContextRelation],
+    retired: &'a BTreeSet<String>,
+    protected: &'a BTreeSet<String>,
+    created_version: u64,
+}
+
+#[derive(Serialize)]
+struct MindStateHashV20<'a> {
+    version: u64,
+    frames: &'a [ContextFrame],
+    relations: &'a [ContextRelation],
+    retired: &'a BTreeSet<String>,
+    protected: &'a BTreeSet<String>,
+    checkpoints: Vec<MindCheckpointHashV20<'a>>,
+}
+
+fn mind_state_hash_v20(state: &MindState) -> Result<Option<String>, String> {
+    if !state.retiring.is_empty()
+        || state
+            .checkpoints
+            .iter()
+            .any(|checkpoint| !checkpoint.retiring.is_empty())
+    {
+        return Ok(None);
+    }
+    let legacy = MindStateHashV20 {
+        version: state.version,
+        frames: &state.frames,
+        relations: &state.relations,
+        retired: &state.retired,
+        protected: &state.protected,
+        checkpoints: state
+            .checkpoints
+            .iter()
+            .map(|checkpoint| MindCheckpointHashV20 {
+                id: &checkpoint.id,
+                frames: &checkpoint.frames,
+                relations: &checkpoint.relations,
+                retired: &checkpoint.retired,
+                protected: &checkpoint.protected,
+                created_version: checkpoint.created_version,
+            })
+            .collect(),
+    };
+    let bytes = serde_json::to_vec(&legacy)
+        .map_err(|error| format!("Mind v20 Snapshot 无法序列化: {error}"))?;
+    Ok(Some(format!("{:x}", Sha256::digest(bytes))))
+}
+
+fn mind_state_hash_matches(state: &MindState, recorded_hash: &str) -> Result<bool, String> {
+    if mind_state_hash(state)? == recorded_hash {
+        return Ok(true);
+    }
+    Ok(mind_state_hash_v20(state)?.as_deref() == Some(recorded_hash))
+}
+
 fn hex_encode(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
@@ -6140,13 +6210,12 @@ fn replay_context_transaction_event(
         .ok_or_else(|| format!("Context transaction '{}' 缺少 transaction", event.id))?;
     let parsed = parse_transaction(transaction)
         .map_err(|error| format!("Context transaction '{}' 无法重放: {}", event.id, error))?;
-    let actual_before_hash = mind_state_hash(state)?;
     if let Some(recorded_before_hash) = event
         .payload
         .get("before_hash")
         .and_then(|value| value.as_str())
     {
-        if recorded_before_hash != actual_before_hash {
+        if !mind_state_hash_matches(state, recorded_before_hash)? {
             return Err(format!(
                 "Context transaction '{}' 的 before_hash 不一致",
                 event.id
@@ -6188,13 +6257,12 @@ fn replay_context_transaction_event(
                 )
             })?;
 
-    let actual_after_hash = mind_state_hash(&candidate)?;
     match event
         .payload
         .get("after_hash")
         .and_then(|value| value.as_str())
     {
-        Some(recorded_after_hash) if recorded_after_hash != actual_after_hash => {
+        Some(recorded_after_hash) if !mind_state_hash_matches(&candidate, recorded_after_hash)? => {
             return Err(format!(
                 "Context transaction '{}' 的 after_hash 不一致",
                 event.id
@@ -6289,19 +6357,23 @@ fn load_mind_from_events(events: &[Event]) -> Result<MindState, String> {
                     mind_state_mismatch(&recorded_state, &projected)
                 ));
             }
-            let snapshot_hash = mind_state_hash(&source_state)?;
-            let projected_hash = mind_state_hash(&projected)?;
-            if event
+            let recorded_snapshot_hash = event
                 .payload
                 .get("snapshot_hash")
-                .and_then(|value| value.as_str())
-                != Some(snapshot_hash.as_str())
-                || event
-                    .payload
-                    .get("projected_hash")
-                    .and_then(|value| value.as_str())
-                    != Some(projected_hash.as_str())
-            {
+                .and_then(|value| value.as_str());
+            let recorded_projected_hash = event
+                .payload
+                .get("projected_hash")
+                .and_then(|value| value.as_str());
+            let snapshot_hash_valid = match recorded_snapshot_hash {
+                Some(hash) => mind_state_hash_matches(&source_state, hash)?,
+                None => false,
+            };
+            let projected_hash_valid = match recorded_projected_hash {
+                Some(hash) => mind_state_hash_matches(&projected, hash)?,
+                None => false,
+            };
+            if !snapshot_hash_valid || !projected_hash_valid {
                 return Err(format!(
                     "Context Seed '{}' 的 Snapshot Hash 不一致",
                     event.id
@@ -6988,6 +7060,98 @@ mod tests {
         ThreadStore as _,
     };
     use tempfile::TempDir;
+
+    #[test]
+    fn v20_projection_hash_remains_valid_after_retiring_schema_extension() {
+        let mut state = MindState {
+            version: 7,
+            ..MindState::default()
+        };
+        state.frames.push(ContextFrame {
+            id: "durable-fact".to_string(),
+            body: "(fact stable)".to_string(),
+            sources: vec!["event-1".to_string()],
+            revision: 1,
+            created_version: 1,
+            updated_version: 7,
+        });
+        state.protected.insert("durable-fact".to_string());
+        state.checkpoints.push(MindCheckpoint {
+            id: "before-schema-change".to_string(),
+            frames: state.frames.clone(),
+            relations: Vec::new(),
+            retired: BTreeSet::new(),
+            retiring: BTreeMap::new(),
+            protected: state.protected.clone(),
+            created_version: 6,
+        });
+
+        let legacy_hash = mind_state_hash_v20(&state).unwrap().unwrap();
+        assert_ne!(legacy_hash, mind_state_hash(&state).unwrap());
+
+        let mut legacy_state = serde_json::to_value(&state).unwrap();
+        legacy_state.as_object_mut().unwrap().remove("retiring");
+        for checkpoint in legacy_state["checkpoints"].as_array_mut().unwrap() {
+            checkpoint.as_object_mut().unwrap().remove("retiring");
+        }
+        let projection = MindProjectionRecord {
+            context_id: "context-v20".to_string(),
+            revision: state.version,
+            state: legacy_state,
+            state_hash: legacy_hash,
+            head_event_id: Some("tx-7".to_string()),
+            updated_at: Utc::now(),
+        };
+        assert_eq!(
+            ContextEngine::validate_mind_projection("context-v20", projection).unwrap(),
+            state
+        );
+    }
+
+    #[test]
+    fn v20_hash_cannot_hide_non_empty_retirement_state() {
+        let mut state = MindState::default();
+        state.retiring.insert(
+            "frame-a".to_string(),
+            FrameRetirement {
+                frame_id: "frame-a".to_string(),
+                requested_frame_revision: 1,
+                requested_mind_version: 2,
+                requested_at_tick: 3,
+                eligible_at_tick: 4,
+                generation: 1,
+                reason: "cooling".to_string(),
+            },
+        );
+        assert_eq!(mind_state_hash_v20(&state).unwrap(), None);
+    }
+
+    #[test]
+    fn v20_transaction_hashes_remain_replayable() {
+        let initial = MindState::default();
+        let transaction = "(context-tx (base-version 0) (create durable-fact (fact stable)))";
+        let parsed = parse_transaction(transaction).unwrap();
+        let (expected, _) = apply_parsed_transaction(&initial, &parsed, &HashSet::new()).unwrap();
+        let event = Event::new(
+            "tx-v20".to_string(),
+            "Agent-Context".to_string(),
+            TYPE_CONTEXT_TRANSACTION.to_string(),
+            "chat/context_tx_committed".to_string(),
+            serde_json::json!({
+                "context_id": "context-v20",
+                "transaction": transaction,
+                "before_hash": mind_state_hash_v20(&initial).unwrap().unwrap(),
+                "after_hash": mind_state_hash_v20(&expected).unwrap().unwrap(),
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert_eq!(
+            replay_context_transaction_event(&initial, &event, &HashSet::new()).unwrap(),
+            expected
+        );
+    }
 
     #[test]
     fn snapshot_head_must_anchor_matching_context_revision_and_hash() {
