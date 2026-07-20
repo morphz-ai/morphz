@@ -246,7 +246,6 @@
     "lineage": "两层认知血缘",
     "lineageTruncated": "结果已截断，可通过 Recall API 继续分页",
     "remainingTicks": "剩余 {{count}} 个认知活动刻度",
-    "tokenCost": "活动块约 {{count}} Token",
     "restore": "恢复",
     "protect": "保护",
     "unprotect": "解除保护",

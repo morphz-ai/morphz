@@ -121,7 +121,7 @@ const CONTEXT_OPERATIONS: &[ContextOperationSpec] = &[
     ContextOperationSpec {
         name: "retire",
         syntax: "(retire ID...)",
-        meaning: "Observation 立即移出 Context；普通 Frame 进入认知活动时钟驱动的整理期，当前 Token 释放量为 0；已有安全 successor 的 Frame 可在同一事务立即收口；原因只能写在事务级 reason 中",
+        meaning: "Observation 立即移出 Context；容量压力下优先清理已消化且不再需要的 Observation。普通 Frame 进入认知活动时钟驱动的整理期，当前 Token 释放量为 0；Frame 必须按语义价值、有效性和 successor 关系判断，不能仅按体积退休；已有安全 successor 的 Frame 可在同一事务立即收口；原因只能写在事务级 reason 中",
     },
     ContextOperationSpec {
         name: "restore",
@@ -187,7 +187,7 @@ pub fn context_tx_tool_description() -> String {
         .collect::<Vec<_>>()
         .join("；");
     format!(
-        "原子修改你拥有的 Mind Context 与 Session attention。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。Session ID 不是 observation ref，必须使用 session-directory 中的原始 ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且 Mind 修改与 retire-session/restore-session 整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Observation 的 retire 会立即释放其活动编码；普通 Frame 的 retire 只进入整理期，当前释放量为 0。整理期应优先 revise、derive 或建立 sources + supersedes 的 successor；安全 successor 可让来源 Frame 在同一事务立即退休。Frame 数量本身不是退休理由；被退休内容没有删除，可按关键词、ID 和关系链 recall。Context 修改不是给用户的最终回复。提交 BODY 时还必须遵守由协议单一事实源生成的认识契约：{}",
+        "原子修改你拥有的 Mind Context 与 Session attention。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。Session ID 不是 observation ref，必须使用 session-directory 中的原始 ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且 Mind 修改与 retire-session/restore-session 整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Observation 的 retire 会立即释放其活动编码；容量压力下优先清理已消化且不再需要的 Observation。普通 Frame 的 retire 只进入整理期，当前释放量为 0；Frame 必须按语义价值、有效性、使用和关系判断，不能仅因体积较大而退休。整理期应优先 revise、derive 或建立 sources + supersedes 的 successor；安全 successor 可让来源 Frame 在同一事务立即退休。Frame 数量本身不是退休理由；被退休内容没有删除，可按关键词、ID 和关系链 recall。Context 修改不是给用户的最终回复。提交 BODY 时还必须遵守由协议单一事实源生成的认识契约：{}",
         render_context_tx_epistemic_guidance()
     )
 }
@@ -701,8 +701,6 @@ pub struct ContextView {
     pub cognitive_clock: ContextCognitiveClock,
     pub state: MindState,
     pub observations: Vec<ContextObservation>,
-    pub frame_token_costs: BTreeMap<String, usize>,
-    pub observation_token_costs: BTreeMap<String, usize>,
     pub pressure: ContextPressure,
     pub turn_budget: TurnBudget,
     pub wake: WakeSignal,
@@ -2254,25 +2252,6 @@ impl ContextEngine {
             references: &references,
         });
 
-        let frame_token_costs = state
-            .frames
-            .iter()
-            .map(|frame| {
-                (
-                    frame.id.clone(),
-                    estimate_active_frame_tokens(frame, &state),
-                )
-            })
-            .collect();
-        let observation_token_costs = observations
-            .iter()
-            .map(|observation| {
-                (
-                    observation.reference.clone(),
-                    estimate_text_tokens(&observation.preview).saturating_add(128),
-                )
-            })
-            .collect();
         Ok(ContextView {
             context_id: context_id.to_string(),
             active_session_id: active_session_id.to_string(),
@@ -2291,8 +2270,6 @@ impl ContextEngine {
             cognitive_clock,
             state,
             observations,
-            frame_token_costs,
-            observation_token_costs,
             pressure,
             turn_budget,
             wake,
@@ -4764,8 +4741,17 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                 atom(frame_retirement_cooling_ticks.to_string()),
             ),
             pair("observation-retire", atom("immediate")),
+            pair(
+                "capacity-relief-priority",
+                atom("discard-absorbed-observations-first"),
+            ),
             pair("ordinary-frame-retire", atom("organizing-window")),
             pair("ordinary-frame-immediate-token-relief", atom("0")),
+            pair(
+                "frame-selection",
+                atom("semantic-value-validity-usage-and-relations"),
+            ),
+            pair("frame-size-alone", atom("never-a-retirement-reason")),
             pair("successor-fast-path", atom("sources-and-supersedes")),
         ],
     ));
@@ -4938,7 +4924,6 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
             .collect(),
     );
 
-    let mut frame_costs = Vec::new();
     let mut mind = vec![atom("mind")];
     for frame in state
         .frames
@@ -5024,14 +5009,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
                 ),
             );
         }
-        let frame_expr = list("frame", fields);
-        frame_costs.push((
-            frame.id.clone(),
-            estimate_text_tokens(&frame_expr.to_string()),
-            state.retiring.get(&frame.id),
-            state.protected.contains(&frame.id),
-        ));
-        mind.push(frame_expr);
+        mind.push(list("frame", fields));
     }
     if !state.relations.is_empty() {
         mind.push(list(
@@ -5080,7 +5058,6 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         ));
     }
 
-    let mut observation_costs = Vec::new();
     let mut inbox = vec![atom("inbox")];
     for observation in observations {
         let mut fields = vec![
@@ -5158,69 +5135,7 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         if observation.usage != ContextUsage::default() {
             fields.push(render_usage(&observation.usage));
         }
-        let observation_expr = list("observation", fields);
-        observation_costs.push((
-            observation.reference.clone(),
-            estimate_text_tokens(&observation_expr.to_string()),
-            observation.protected,
-        ));
-        inbox.push(observation_expr);
-    }
-
-    if matches!(pressure.level.as_str(), "warning" | "critical") {
-        observation_costs
-            .sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
-        frame_costs.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
-        let observations = observation_costs
-            .into_iter()
-            .filter(|(_, _, protected)| !protected)
-            .take(12)
-            .map(|(reference, cost, _)| {
-                list(
-                    "observation",
-                    vec![
-                        pair("ref", atom(reference)),
-                        pair("active-token-cost-estimate", atom(cost.to_string())),
-                        pair("retire-disposition", atom("immediate")),
-                        pair("immediate-token-relief-estimate", atom(cost.to_string())),
-                    ],
-                )
-            })
-            .collect::<Vec<_>>();
-        let frames = frame_costs
-            .into_iter()
-            .filter(|(_, _, _, protected)| !protected)
-            .take(12)
-            .map(|(id, cost, retirement, _)| {
-                let mut fields = vec![
-                    pair("id", atom(id)),
-                    pair("active-token-cost-estimate", atom(cost.to_string())),
-                    pair("retire-disposition", atom("organizing-window")),
-                    pair("immediate-token-relief-estimate", atom("0")),
-                    pair("relief-when-retired-estimate", atom(cost.to_string())),
-                ];
-                if let Some(retirement) = retirement {
-                    fields.push(pair(
-                        "remaining-ticks",
-                        atom(
-                            retirement
-                                .eligible_at_tick
-                                .saturating_sub(cognitive_clock.tick)
-                                .to_string(),
-                        ),
-                    ));
-                }
-                list("frame", fields)
-            })
-            .collect::<Vec<_>>();
-        kernel.push(list(
-            "maintenance-candidates",
-            vec![
-                pair("token-accounting", atom("local-unified-estimate")),
-                list("observations", observations),
-                list("frames", frames),
-            ],
-        ));
+        inbox.push(list("observation", fields));
     }
 
     // Prefix-cache order is intentional: protocol is immutable, the shared
@@ -7649,6 +7564,9 @@ mod tests {
         assert!(rendered.contains("(inbox)"));
         assert!(!rendered.contains("todo_stack"));
         assert!(!rendered.contains("(maintenance-candidates"));
+        assert!(rendered.contains("(capacity-relief-priority discard-absorbed-observations-first)"));
+        assert!(rendered.contains("(frame-selection semantic-value-validity-usage-and-relations)"));
+        assert!(rendered.contains("(frame-size-alone never-a-retirement-reason)"));
 
         let mut warning_pressure = pressure.clone();
         warning_pressure.level = "warning".to_string();
@@ -7675,9 +7593,9 @@ mod tests {
             wake: &wake,
             references: &references,
         });
-        assert!(warning.contains("(maintenance-candidates"));
-        assert!(warning.contains("(retire-disposition organizing-window)"));
-        assert!(warning.contains("(immediate-token-relief-estimate 0)"));
+        assert!(warning.contains("(level warning)"));
+        assert!(!warning.contains("(maintenance-candidates"));
+        assert!(!warning.contains("active-token-cost-estimate"));
 
         assert!(rendered.starts_with(stable_context_prefix()));
         let shared_mind_offset = stable_context_prefix().len();

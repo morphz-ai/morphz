@@ -376,75 +376,70 @@ cooling_ticks = 8
   (body ...))
 ```
 
-### 9.2 压力维护候选
+### 9.2 容量压力只提供物理事实
 
-只在 warning / critical 或模型显式 inspect 时展示紧凑候选，避免持续增加 Prompt 和破坏稳定 Prefix：
+Runtime 不生成 `maintenance-candidates`，也不把对象按 Token 大小排序后暗示为退休目标。这样的清单会提高某些对象在模型注意力中的显著性，并把“资源占用”错误提升为“认知价值”的代理指标。
+
+Context Encoding 只提供 Context 总体容量事实：
 
 ```lisp
-(maintenance-candidates
-  (observation
-    (ref @e42)
-    (active-token-cost 1840)
-    (retire-disposition immediate)
-    (immediate-token-relief 1840)
-    (absorbed-by project-state))
-
-  (frame
-    (id recent-debug-case)
-    (active-token-cost 680)
-    (retire-disposition organizing-window)
-    (immediate-token-relief 0)
-    (relief-when-retired 680)
-    (remaining-ticks 6)))
+(context-pressure
+  (level warning)
+  (estimated-tokens 210000)
+  (soft-limit 196608)
+  (hard-limit 262144)
+  (maintenance-reserve 32768)
+  (active-frames 42)
+  (active-observations 318))
 ```
 
-这里的 `active-token-cost` 只计算目标 Frame 在活动 Context 中可移除的渲染块，不把仍会保留的关系索引成本混入其中。
+模型直接依据可见的语义、时效、使用、来源和关系决定哪些内容不再需要。容量压力下，应先检查已经消化、失效或可由 Frame 承接的 Observation；Frame 只能因为重复、失效、被取代或已经形成更高抽象而进入整理，不能仅因体积较大而退休。
 
 ### 9.3 自描述政策
 
 协议必须明确告诉模型：
 
-1. Observation retire 立即释放容量；
+1. 容量压力下优先清理已经消化且不再需要的 Observation；Observation retire 立即释放容量；
 2. 普通 Frame retire 只进入整理期，当前释放量为 0；
 3. 整理期的主要用途是 revise、merge、derive 和形成 successor；
 4. successor 完整承接后，来源 Frame 可以立即退休；
-5. Frame 数量本身不是退休理由，重复、失效、被取代和已经形成更高抽象才是整理理由；
+5. Frame 数量和 Token 体积本身都不是退休理由，重复、失效、被取代和已经形成更高抽象才是整理理由；
 6. critical 时如果 Inbox 清理不足，应精简 Frame 或建立 successor，而不是批量提交不能立即生效的普通 Frame retire；
 7. 被退休的内容没有删除，可以通过关键词、Frame ID 和关系链召回。
 
-## 10. Token 成本估算
+## 10. Context 总量估算与事务效果
 
 ### 10.1 目标
 
-逐项 Token 估算用于比较操作的容量收益，不要求与 Provider 的隐藏 tokenizer 完全一致，但必须比字符数除常量更可靠，并且与整轮 pressure 计量采用同一口径。
+Token 估算用于判断整个 Context 的压力，并在事务提交后核验维护是否确实产生了容量效果。它不是 Frame 价值排序指标，不生成逐项成本清单，也不参与模型退休对象的预选择。
 
 ### 10.2 计算顺序
 
 1. 如果 Profile 配置了可用的本地 tokenizer，使用对应 tokenizer；
 2. 否则使用一个统一的本地 tokenizer；
-3. 对实际序列化后的 SExpr Frame / observation 块计数，而不是只计算 body；
+3. 对实际序列化后的 Context Encoding 计数，而不是只计算 Frame body；
 4. 使用 Provider 返回的实际 prompt usage 对整轮估算比例做校准；
 5. 核心路径不调用远程 countTokens 接口；
 6. 所有数值明确标记为 estimate。
 
-### 10.3 操作收益
+### 10.3 提交后效果
 
 ```text
 retire observation:
-  immediate relief = observation active-token-cost
+  next encoding removes the retired observation block
 
 retire ordinary frame:
   immediate relief = 0
-  eventual relief = frame active-token-cost
+  the frame remains visible during the organizing window
 
 revise frame:
-  committed relief = old rendered cost - new rendered cost
+  committed effect = total encoding before - total encoding after
 
 successor + retire source frames:
-  committed relief = removed source blocks - added successor block
+  committed effect = total encoding before - total encoding after
 ```
 
-Context transaction 回执应返回提交后的实际估算差额，防止模型把“已申请退休”误认为“已经释放容量”。
+这些计算只在事务提交后作为结果事实返回，不在提交前形成成本排行榜。Context transaction 回执应返回提交后的总体估算差额，防止模型把“已申请退休”误认为“已经释放容量”。
 
 ## 11. Relation 与认知寻址
 
@@ -727,8 +722,6 @@ trait ContextRecallService {
 - active / retiring / retired 数量；
 - retiring Frame 的剩余 cognitive ticks；
 - 退休原因；
-- active-token-cost；
-- immediate / eventual relief；
 - successor 状态；
 - 恢复或保护操作；
 - 关键词搜索和 Frame lineage 展开。
@@ -830,12 +823,12 @@ Context transaction 回执需要让模型看到真实效果：
 5. Mind Projection、Snapshot 与 checkpoint/rollback 支持；
 6. 旧数据库迁移。
 
-### 阶段四：Token 成本与自描述
+### 阶段四：容量压力与自描述
 
-1. 每项 SExpr 渲染块本地 Token 估算；
-2. immediate/eventual relief；
-3. transaction commit 后的实际估算差额；
-4. warning/critical maintenance candidates；
+1. 完整 Context Encoding 的本地 Token 估算；
+2. transaction commit 后的总体估算差额；
+3. 明确 Observation-first 与 Frame 语义价值原则；
+4. 不生成 maintenance candidates 或逐项成本清单；
 5. SExpr VM 自描述政策更新。
 
 ### 阶段五：Dashboard 与真实模型验证
@@ -939,9 +932,8 @@ D ────────┘
 ### 容量
 
 - observation-first retirement ratio；
-- immediate token relief；
-- retiring Frame token debt；
-- successor consolidation net relief；
+- Observation 清理后的总体压力变化；
+- successor consolidation 后的总体压力变化；
 - warning/critical 恢复成功率。
 
 ### 认知结构
@@ -974,12 +966,12 @@ D ────────┘
 
 | 能力 | v1 实现状态 |
 |---|---|
-| Observation retire | 保持立即退休，并在逐项事务回执中报告即时 Token 释放估算 |
+| Observation retire | 保持立即退休；容量压力下由自描述政策提示模型优先清理已消化且不再需要的 Observation |
 | Frame retire | 默认进入 `retiring` 整理期；重复请求不重置窗口 |
 | Successor 收口 | `sources + supersedes` 在同一 Context transaction 中原子退休来源 Frame |
 | Cognitive clock | Context 级持久逻辑 tick；Signal batch 原子认领时幂等推进一次 |
 | Retiring Projection | `MindState.retiring`、Snapshot、Checkpoint、重放与 Seed 边界已统一 |
-| 逐项 Token cost | 按实际 SExpr 活动块执行统一本地估算；Context View、维护候选及事务逐项回执均可见 |
+| Context Token pressure | 按完整 Context Encoding 统一估算总量；不生成维护候选或逐项成本清单；提交后回执报告总体效果 |
 | Recall by Frame ID | 返回 lifecycle、正文、sources 与有向关系边 |
 | Recall depth | 有界 BFS、稳定排序、防环、签名 cursor、节点与字符预算 |
 | Keyword recall | SQLite FTS5 trigram；PostgreSQL `pg_trgm`；能力不可用时显式 degraded 并有界回退 |
@@ -988,12 +980,12 @@ D ────────┘
 | 相关性排序 | exact ID、lexical relevance、updated sequence、stable ID |
 | SQL limit | SQLite/PostgreSQL 均在数据库查询内应用 limit |
 | 统一接口 | 模型 Tool、Rust Runtime、CLI、HTTP API 与 Dashboard 复用 `ContextRecallService` |
-| Dashboard | 展示 active/retiring/retired、认知 tick、Token cost、索引能力、关键词 Recall、lineage 与恢复/保护控制 |
+| Dashboard | 展示 active/retiring/retired、认知 tick、总体压力、索引能力、关键词 Recall、lineage 与恢复/保护控制 |
 | 可观测性 | 记录 clock advance、退休请求/取消/收口/fencing、检索后端/延迟/结果数、图遍历规模和事务 Token 差额 |
 
 本轮验证结果：
 
-- Rust 完整测试：385 个库测试、18 个主程序测试、45 个 Attempt Loop 测试、4 个 CLI 契约测试、3 个存储契约测试通过；3 个既有人工 PTY/视觉 smoke 测试按原设计忽略；
+- Rust 完整测试：386 个库测试、18 个主程序测试、45 个 Attempt Loop 测试、4 个 CLI 契约测试、3 个存储契约测试通过；3 个既有人工 PTY/视觉 smoke 测试按原设计忽略；
 - Dashboard：19 个前端状态测试、ESLint、TypeScript 与生产构建通过；
 - CLI smoke：`context recall search/frame` 与 `context recall-index inspect/rebuild` 的分层帮助可在不初始化 Provider 的情况下使用；
 - PostgreSQL 真机测试由 `MORPHZ_TEST_POSTGRES_URL` 显式启用；未配置时只执行编译与环境门控，不宣称已经连接外部数据库。

@@ -244,7 +244,6 @@
     "lineage": "Two-hop lineage",
     "lineageTruncated": "Results are truncated; continue through the Recall API",
     "remainingTicks": "{{count}} cognitive ticks remaining",
-    "tokenCost": "About {{count}} tokens in the active block",
     "restore": "Restore",
     "protect": "Protect",
     "unprotect": "Unprotect",

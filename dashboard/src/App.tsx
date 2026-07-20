@@ -376,8 +376,6 @@ interface ContextViewResponse {
   cognitive_clock: { tick: number; last_signal_batch_id?: string; revision: number }
   state: MindState
   observations: ContextObservation[]
-  frame_token_costs: Record<string, number>
-  observation_token_costs: Record<string, number>
   pressure: ContextPressure
 }
 
@@ -2655,7 +2653,6 @@ export default function App() {
                       <div className="frame-lifecycle">
                         <strong>{retired.has(selectedFrame.id) ? t('mindView.retired') : selectedRetirement ? t('mindView.retiring') : t('mindView.active')}</strong>
                         {selectedRetirement && <span>{t('mindView.remainingTicks', { count: Math.max(0, selectedRetirement.eligible_at_tick - (contextView?.cognitive_clock.tick ?? 0)) })} · {selectedRetirement.reason}</span>}
-                        <span>{t('mindView.tokenCost', { count: contextView?.frame_token_costs[selectedFrame.id] ?? 0 })}</span>
                         <div>
                           {(retired.has(selectedFrame.id) || selectedRetirement) && <button type="button" disabled={mutatingFrameId === selectedFrame.id} onClick={() => void mutateFrameLifecycle(selectedFrame.id, 'restore')}>{t('mindView.restore')}</button>}
                           <button type="button" disabled={mutatingFrameId === selectedFrame.id} onClick={() => void mutateFrameLifecycle(selectedFrame.id, contextView?.state.protected.includes(selectedFrame.id) ? 'unprotect' : 'protect')}>{contextView?.state.protected.includes(selectedFrame.id) ? t('mindView.unprotect') : t('mindView.protect')}</button>
