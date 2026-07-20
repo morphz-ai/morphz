@@ -3,6 +3,7 @@ use crate::llm::ToolDefinition;
 use crate::memory::ExecutionRetrySafety;
 use crate::orchestrator::context::{
     context_tx_parameter_description, context_tx_tool_description, ContextEngine,
+    ContextRecallService, FrameRecallDirection, FrameRecallRequest, RecallSearchRequest,
 };
 use crate::tool::{Tool, ToolExecutionClass, CURRENT_CONTEXT_ID, CURRENT_SESSION_ID};
 use serde::Deserialize;
@@ -72,6 +73,7 @@ impl Tool for ContextTxTool {
             "before_version": commit.before_version,
             "after_version": commit.after_version,
             "reason": commit.reason,
+            "token_effect": commit.token_effect,
             "changes": commit.changes,
         }))?)
     }
@@ -95,6 +97,12 @@ struct RecallArgs {
     query: Option<String>,
     offset: Option<usize>,
     limit: Option<usize>,
+    depth: Option<usize>,
+    direction: Option<FrameRecallDirection>,
+    include_bodies: Option<bool>,
+    include_events: Option<bool>,
+    max_nodes: Option<usize>,
+    cursor: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -120,6 +128,12 @@ impl Tool for RecallTool {
                     "query": { "type": "string", "description": "在当前 Cognitive Context 的 Ledger 中搜索（覆盖其中所有 Session）" },
                     "offset": { "type": "integer", "minimum": 0, "description": "读取 event 原文的字符偏移；连续分页时必须使用上次结果的 next_offset" },
                     "limit": { "type": "integer", "minimum": 1, "maximum": max_chunk_chars, "description": format!("单次返回字符数，上限 {max_chunk_chars}") }
+                    ,"depth": { "type": "integer", "minimum": 0, "maximum": 4, "description": "frame_id 模式的关系遍历深度；0 只返回目标 Frame" }
+                    ,"direction": { "type": "string", "enum": ["ancestors", "descendants", "both"], "description": "frame_id 模式的关系遍历方向" }
+                    ,"include_bodies": { "type": "boolean", "description": "是否返回 Frame body，默认 true" }
+                    ,"include_events": { "type": "boolean", "description": "是否展开 Event source 原文；false 时仍返回 preview" }
+                    ,"max_nodes": { "type": "integer", "minimum": 1, "maximum": 128, "description": "frame_id 模式单页最多节点数，默认 32" }
+                    ,"cursor": { "type": "string", "description": "继续 Frame 图遍历时原样使用上页 next_cursor" }
                 }
             }),
         }
@@ -144,12 +158,20 @@ impl Tool for RecallTool {
         }
 
         if let Some(frame_id) = args.frame_id {
-            let frame = self
+            let page = self
                 .context_engine
-                .find_frame(&context_id, &frame_id)
-                .await?
-                .ok_or_else(|| format!("frame '{}' 不存在", frame_id))?;
-            return Ok(serde_json::to_string_pretty(&frame)?);
+                .recall_frame(FrameRecallRequest {
+                    context_id,
+                    frame_id,
+                    depth: args.depth.unwrap_or(0),
+                    direction: args.direction.unwrap_or_default(),
+                    include_bodies: args.include_bodies.unwrap_or(true),
+                    include_events: args.include_events.unwrap_or(false),
+                    max_nodes: args.max_nodes.unwrap_or(32),
+                    cursor: non_empty(args.cursor),
+                })
+                .await?;
+            return Ok(serde_json::to_string_pretty(&page)?);
         }
 
         if let Some(event_id) = args.event_id {
@@ -170,31 +192,45 @@ impl Tool for RecallTool {
 
         let query = args.query.unwrap_or_default();
         let limit = args.limit.unwrap_or(10).clamp(1, 50);
-        let events = self
+        let page = self
             .context_engine
-            .search_events(&context_id, &query, limit)
+            .search_recall(RecallSearchRequest {
+                context_id,
+                query: query.clone(),
+                limit,
+            })
             .await?;
         let max_chunk_chars = self.context_engine.recall_chunk_chars();
-        let matches = events
+        let matches = page
+            .matches
             .into_iter()
-            .map(|event| {
-                let event_reference = self.context_engine.event_reference(&event);
-                let text = recall_event_text(&event);
-                let (preview, match_offset) = query_preview(&text, &query, 500);
-                let suggested_offset = match_offset.map(|offset| offset.saturating_sub(250));
-                serde_json::json!({
-                    "event_id": event_reference,
-                    "kind": event.event_type,
-                    "topic": event.topic,
-                    "timestamp": event.timestamp,
-                    "preview": preview,
-                    "truncated": text.chars().count() > 500,
-                    "match_offset": match_offset,
-                    "suggested_recall": suggested_offset.map(|offset| serde_json::json!({
-                        "event_id": event_reference,
-                        "offset": offset,
-                        "limit": max_chunk_chars,
+            .map(|hit| {
+                let kind = hit.document_kind.as_str();
+                let event_reference =
+                    (kind == "event").then(|| format!("@e{}", hit.updated_sequence));
+                let suggested_recall = match kind {
+                    "event" => event_reference.as_ref().map(|event_id| {
+                        serde_json::json!({
+                            "event_id": event_id,
+                            "offset": 0,
+                            "limit": max_chunk_chars,
+                        })
+                    }),
+                    "frame" => Some(serde_json::json!({
+                        "frame_id": hit.document_id.clone(),
                     })),
+                    _ => None,
+                };
+                serde_json::json!({
+                    "kind": kind,
+                    "document_id": hit.document_id.clone(),
+                    "event_id": event_reference,
+                    "frame_id": (kind == "frame").then_some(hit.document_id),
+                    "revision": hit.revision,
+                    "retired": hit.retired,
+                    "score": hit.score,
+                    "preview": hit.preview,
+                    "suggested_recall": suggested_recall,
                 })
             })
             .collect::<Vec<_>>();
@@ -254,6 +290,7 @@ fn recall_event_text(event: &Event) -> String {
         .unwrap_or_else(|| serde_json::Value::Object(event.payload.clone()).to_string())
 }
 
+#[cfg(test)]
 fn query_preview(text: &str, query: &str, width: usize) -> (String, Option<usize>) {
     let chars = text.chars().collect::<Vec<_>>();
     let query_chars = query.chars().collect::<Vec<_>>();

@@ -83,6 +83,46 @@ pub fn is_context_observation(event: &Event) -> bool {
     )
 }
 
+/// Whether accepting an immutable Event into a newly-created Activation adds
+/// a genuinely new external fact to the Cognitive Context. This predicate is
+/// intentionally narrower than `is_context_observation`: internal receipts,
+/// delivery barriers and model continuations may be useful operationally, but
+/// they must not age the Mind merely because Runtime is busy.
+pub fn advances_cognitive_clock(event: &Event) -> bool {
+    if event
+        .payload
+        .get("external_cognitive_fact")
+        .and_then(JsonValue::as_bool)
+        == Some(true)
+    {
+        return true;
+    }
+    if event.event_type == TYPE_USER_MESSAGE {
+        return true;
+    }
+    if event.event_type == TYPE_TOOL_OUTPUT {
+        return event.payload.get("tool_name").and_then(JsonValue::as_str) != Some("context_tx")
+            && !matches!(
+                event.topic.as_str(),
+                "chat/progress"
+                    | "chat/thread_completion_ready"
+                    | "chat/context_tx_committed"
+                    | "runtime/action_group_settled"
+            );
+    }
+    if matches!(
+        event.event_type.as_str(),
+        TYPE_EXCEPTION | TYPE_FILE_CHANGE | TYPE_AGENT_CALL
+    ) {
+        return event.topic != "chat/assistant_call";
+    }
+    event.topic == "chat/schedule_due"
+        || event.topic.starts_with("external/")
+        || event.topic.starts_with("integration/")
+        || event.topic.starts_with("delegation/")
+        || event.topic.starts_with("approval/")
+}
+
 pub type EventHandler = Arc<
     dyn Fn(Event) -> BoxFuture<'static, Result<(), Box<dyn std::error::Error + Send + Sync>>>
         + Send
@@ -669,5 +709,48 @@ mod tests {
 
         assert!(durable.lock().unwrap().is_empty());
         assert_eq!(live.lock().unwrap().as_slice(), ["draft-1"]);
+    }
+
+    #[test]
+    fn cognitive_clock_only_advances_for_new_external_facts() {
+        let event = |event_type: &str, topic: &str, payload: serde_json::Value| {
+            Event::new(
+                format!("{event_type}-{topic}"),
+                "test".to_string(),
+                event_type.to_string(),
+                topic.to_string(),
+                payload.as_object().cloned().unwrap_or_default(),
+            )
+        };
+        assert!(advances_cognitive_clock(&event(
+            TYPE_USER_MESSAGE,
+            "chat/user_message",
+            serde_json::json!({"text": "new fact"}),
+        )));
+        assert!(advances_cognitive_clock(&event(
+            TYPE_TOOL_OUTPUT,
+            "chat/tool_output",
+            serde_json::json!({"tool_name": "read", "text": "result"}),
+        )));
+        assert!(!advances_cognitive_clock(&event(
+            TYPE_TOOL_OUTPUT,
+            "chat/tool_output",
+            serde_json::json!({"tool_name": "context_tx", "text": "committed"}),
+        )));
+        assert!(!advances_cognitive_clock(&event(
+            TYPE_AGENT_CALL,
+            "chat/assistant_call",
+            serde_json::json!({"continuation": true}),
+        )));
+        assert!(!advances_cognitive_clock(&event(
+            "runtime_control",
+            "objective/supervisor_continuation",
+            serde_json::json!({}),
+        )));
+        assert!(advances_cognitive_clock(&event(
+            "integration_result",
+            "integration/github",
+            serde_json::json!({}),
+        )));
     }
 }

@@ -531,6 +531,45 @@ fn context_command() -> Command {
                     .arg(prompt_arg("ID", 0, Some(1)).help("Context ID; defaults to --context")),
                 "Example:\n  morphz context audit context-default",
             ),
+            Command::new("recall-index")
+                .about("Inspect or rebuild the derived lexical Recall index")
+                .subcommands([
+                    output_examples(
+                        Command::new("inspect")
+                            .about("Show Recall index capability and document counts")
+                            .arg(prompt_arg("ID", 0, Some(1)).help("Context ID; defaults to --context")),
+                        "Example:\n  morphz context recall-index inspect context-default --format=json",
+                    ),
+                    output_examples(
+                        Command::new("rebuild")
+                            .about("Rebuild the derived Recall index from Ledger and Mind")
+                            .arg(prompt_arg("ID", 0, Some(1)).help("Context ID; defaults to --context")),
+                        "Example:\n  morphz context recall-index rebuild context-default --format=json",
+                    ),
+                ]),
+            Command::new("recall")
+                .about("Search Context memory or traverse one Frame lineage")
+                .subcommands([
+                    output_examples(
+                        Command::new("search")
+                            .about("Search indexed Event and Frame documents")
+                            .arg(prompt_arg("QUERY", 1, None).help("Unicode lexical query"))
+                            .arg(local_value_arg("limit", "limit", "N", "Maximum matches")),
+                        "Example:\n  morphz context recall search 沙箱 权限 --limit=20 --format=json",
+                    ),
+                    output_examples(
+                        Command::new("frame")
+                            .about("Traverse Frame sources and relations")
+                            .arg(prompt_arg("FRAME", 1, Some(1)).help("Frame ID"))
+                            .arg(local_value_arg("depth", "depth", "N", "Traversal depth, 0..4"))
+                            .arg(local_value_arg("direction", "direction", "DIRECTION", "ancestors, descendants or both"))
+                            .arg(local_value_arg("max-nodes", "max-nodes", "N", "Maximum nodes, 1..128"))
+                            .arg(local_value_arg("cursor", "cursor", "CURSOR", "Opaque continuation cursor"))
+                            .arg(local_switch_arg("include-events", "include-events", "Include complete Event source bodies"))
+                            .arg(local_switch_arg("no-bodies", "no-bodies", "Omit Frame bodies")),
+                        "Example:\n  morphz context recall frame memory/sandbox --depth=2 --direction=ancestors --format=json",
+                    ),
+                ]),
         ])
         .after_help("Run `morphz context <COMMAND> --help` for command-specific help.")
 }

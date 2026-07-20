@@ -5,6 +5,7 @@ use crate::memory::{
     DelegationStatus, NewAgent, NewCognitiveContext, NewSession, ObjectiveMutation,
     ObjectiveStatus, QueryFilter, ScheduleMutation, SessionMountKind, SessionStatus, SessionUpdate,
 };
+use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
 use crate::runtime::{MorphzRuntime, SchedulerQuery};
 use axum::{
     body::Body,
@@ -152,6 +153,32 @@ struct UpdateInferenceRequest {
 #[derive(serde::Deserialize)]
 struct ResumeObjectiveRequest {
     expected_revision: u64,
+    reason: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct RecallSearchHttpQuery {
+    token: Option<String>,
+    query: String,
+    limit: Option<usize>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct FrameRecallHttpQuery {
+    token: Option<String>,
+    depth: Option<usize>,
+    direction: Option<FrameRecallDirection>,
+    include_bodies: Option<bool>,
+    include_events: Option<bool>,
+    max_nodes: Option<usize>,
+    cursor: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct MutateFrameLifecycleRequest {
+    session_id: String,
+    expected_version: u64,
+    action: String,
     reason: Option<String>,
 }
 
@@ -340,6 +367,26 @@ impl Server {
                 get(handle_get_scheduler_snapshot),
             )
             .route(
+                "/api/contexts/:context_id/recall/search",
+                get(handle_search_recall),
+            )
+            .route(
+                "/api/contexts/:context_id/recall/index",
+                get(handle_inspect_recall_index),
+            )
+            .route(
+                "/api/contexts/:context_id/recall/index/rebuild",
+                post(handle_rebuild_recall_index),
+            )
+            .route(
+                "/api/contexts/:context_id/frames/:frame_id/recall",
+                get(handle_recall_frame),
+            )
+            .route(
+                "/api/contexts/:context_id/frames/:frame_id/lifecycle",
+                post(handle_mutate_frame_lifecycle),
+            )
+            .route(
                 "/api/sessions",
                 get(handle_list_sessions).post(handle_create_session),
             )
@@ -455,6 +502,140 @@ async fn handle_status(
         "tool_count": state.runtime.tool_names().len(),
     }))
     .into_response()
+}
+
+async fn handle_search_recall(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<RecallSearchHttpQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if query.query.trim().is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "query 不能为空");
+    }
+    match state
+        .runtime
+        .search_recall(RecallSearchRequest {
+            context_id,
+            query: query.query,
+            limit: query.limit.unwrap_or(20).clamp(1, 100),
+        })
+        .await
+    {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_recall_frame(
+    State(state): State<Arc<AppState>>,
+    Path((context_id, frame_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<FrameRecallHttpQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .runtime
+        .recall_frame(FrameRecallRequest {
+            context_id,
+            frame_id,
+            depth: query.depth.unwrap_or(0),
+            direction: query.direction.unwrap_or_default(),
+            include_bodies: query.include_bodies.unwrap_or(true),
+            include_events: query.include_events.unwrap_or(false),
+            max_nodes: query.max_nodes.unwrap_or(32),
+            cursor: query.cursor.filter(|cursor| !cursor.trim().is_empty()),
+        })
+        .await
+    {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
+    }
+}
+
+async fn handle_inspect_recall_index(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.runtime.inspect_recall_index(&context_id).await {
+        Ok(audit) => Json(audit).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_rebuild_recall_index(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.runtime.rebuild_recall_index(&context_id).await {
+        Ok(audit) => Json(audit).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_mutate_frame_lifecycle(
+    State(state): State<Arc<AppState>>,
+    Path((context_id, frame_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<MutateFrameLifecycleRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let action = match request.action.trim() {
+        "restore" => "restore",
+        "protect" => "protect",
+        "unprotect" => "unprotect",
+        _ => {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                "action 只支持 restore、protect 或 unprotect",
+            )
+        }
+    };
+    let Some(session) = (match state.runtime.get_session(&request.session_id).await {
+        Ok(session) => session,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }) else {
+        return error_response(StatusCode::NOT_FOUND, "Session 不存在");
+    };
+    if session.context_id != context_id {
+        return error_response(StatusCode::BAD_REQUEST, "Session 不属于目标 Context");
+    }
+    let reason = request
+        .reason
+        .unwrap_or_else(|| format!("Dashboard 请求 {action} Frame"));
+    let transaction = format!(
+        "(context-tx (base-version {}) (reason {}) ({} {}))",
+        request.expected_version,
+        crate::sexpr::SExpr::Atom(reason),
+        action,
+        crate::sexpr::SExpr::Atom(frame_id)
+    );
+    match state
+        .runtime
+        .apply_context_transaction(&context_id, &request.session_id, &transaction)
+        .await
+    {
+        Ok(commit) => Json(commit).into_response(),
+        Err(error) => error_response(StatusCode::CONFLICT, error.to_string()),
+    }
 }
 
 async fn handle_get_inference(
@@ -2512,6 +2693,125 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload["outcome"], "conflict");
         assert_eq!(payload["schedule"]["status"], "paused");
+    }
+
+    #[tokio::test]
+    async fn recall_http_endpoints_share_the_runtime_domain_service() {
+        let (state, runtime) = test_state().await;
+        runtime
+            .ensure_session(NewSession {
+                id: "api-recall-session".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Recall API".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime
+            .apply_context_transaction(
+                "context-test",
+                "api-recall-session",
+                r#"(context-tx
+                    (base-version 0)
+                    (reason "验证统一 Recall HTTP API")
+                    (create frame-source (fact "阳光电源项目资料"))
+                    (create frame-summary (summary "新能源业务归纳"))
+                    (relate frame-summary supersedes frame-source))"#,
+            )
+            .await
+            .unwrap();
+
+        let inspect = handle_inspect_recall_index(
+            State(Arc::clone(&state)),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(inspect.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(inspect.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let audit: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(audit["frame_documents"], json!(2));
+        assert!(audit["capability"]["indexed"].as_bool().unwrap());
+
+        let search = handle_search_recall(
+            State(Arc::clone(&state)),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(RecallSearchHttpQuery {
+                token: None,
+                query: "阳光电源".to_string(),
+                limit: Some(10),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(search.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(search.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let results: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(results["matches"][0]["document_id"], "frame-source");
+
+        let graph = handle_recall_frame(
+            State(Arc::clone(&state)),
+            Path(("context-test".to_string(), "frame-source".to_string())),
+            HeaderMap::new(),
+            Query(FrameRecallHttpQuery {
+                token: None,
+                depth: Some(2),
+                direction: Some(FrameRecallDirection::Both),
+                include_bodies: Some(true),
+                include_events: Some(false),
+                max_nodes: Some(10),
+                cursor: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(graph.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(graph.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let graph: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(graph["nodes"].as_array().unwrap().len(), 2);
+        assert_eq!(graph["edges"].as_array().unwrap().len(), 1);
+
+        let lifecycle = handle_mutate_frame_lifecycle(
+            State(Arc::clone(&state)),
+            Path(("context-test".to_string(), "frame-summary".to_string())),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(MutateFrameLifecycleRequest {
+                session_id: "api-recall-session".to_string(),
+                expected_version: 1,
+                action: "protect".to_string(),
+                reason: Some("保留归纳结果".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(lifecycle.status(), StatusCode::OK);
+
+        let rebuild = handle_rebuild_recall_index(
+            State(state),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(rebuild.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(rebuild.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let audit: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(audit["frame_documents"], json!(2));
     }
 
     #[tokio::test]

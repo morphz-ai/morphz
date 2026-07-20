@@ -3,6 +3,145 @@ pub mod sqlite;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
+use unicode_normalization::UnicodeNormalization;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecallDocumentKind {
+    Event,
+    Frame,
+}
+
+impl RecallDocumentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Event => "event",
+            Self::Frame => "frame",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecallDocument {
+    pub context_id: String,
+    pub document_kind: RecallDocumentKind,
+    pub document_id: String,
+    pub revision: u64,
+    pub searchable_text: String,
+    pub preview: String,
+    pub retired: bool,
+    pub updated_sequence: u64,
+    pub state_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecallSearchHit {
+    pub document_kind: RecallDocumentKind,
+    pub document_id: String,
+    pub revision: u64,
+    pub retired: bool,
+    pub score: f64,
+    pub preview: String,
+    pub updated_sequence: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LexicalSearchMode {
+    SqliteFts5Trigram,
+    PostgresPgTrgm,
+    DegradedSubstring,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecallIndexCapability {
+    pub mode: LexicalSearchMode,
+    pub indexed: bool,
+    pub unicode_normalization: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecallIndexAudit {
+    pub context_id: String,
+    pub capability: RecallIndexCapability,
+    pub event_documents: u64,
+    pub frame_documents: u64,
+}
+
+/// Deterministic lexical normalization shared by indexing and querying.
+/// NFKC resolves common full-width/half-width variants while lowercase keeps
+/// mixed Latin/Chinese lookup stable without inventing business synonyms.
+pub fn normalize_recall_text(value: &str) -> String {
+    value.nfkc().flat_map(char::to_lowercase).collect()
+}
+
+fn collect_recall_scalars(value: &serde_json::Value, output: &mut String) {
+    match value {
+        serde_json::Value::String(value) => {
+            output.push(' ');
+            output.push_str(value);
+        }
+        serde_json::Value::Number(value) => {
+            output.push(' ');
+            output.push_str(&value.to_string());
+        }
+        serde_json::Value::Bool(value) => {
+            output.push(' ');
+            output.push_str(if *value { "true" } else { "false" });
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_recall_scalars(value, output);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                collect_recall_scalars(value, output);
+            }
+        }
+        serde_json::Value::Null => {}
+    }
+}
+
+pub fn event_recall_document(
+    event: &crate::event::Event,
+    context_id: &str,
+    sequence: u64,
+) -> RecallDocument {
+    event_recall_document_with_retired(event, context_id, sequence, false)
+}
+
+pub fn event_recall_document_with_retired(
+    event: &crate::event::Event,
+    context_id: &str,
+    sequence: u64,
+    retired: bool,
+) -> RecallDocument {
+    let mut readable = format!("{} {} {}", event.id, event.actor, event.topic);
+    collect_recall_scalars(
+        &serde_json::Value::Object(event.payload.clone()),
+        &mut readable,
+    );
+    let searchable_text = normalize_recall_text(&readable);
+    let preview = readable.chars().take(500).collect::<String>();
+    let state_hash = format!(
+        "{:x}",
+        sha2::Sha256::digest(format!("{searchable_text}\0{retired}").as_bytes())
+    );
+    RecallDocument {
+        context_id: context_id.to_string(),
+        document_kind: RecallDocumentKind::Event,
+        document_id: event.id.clone(),
+        revision: 0,
+        searchable_text,
+        preview,
+        retired,
+        updated_sequence: sequence,
+        state_hash,
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -70,6 +209,17 @@ pub struct CognitiveContextRecord {
     pub seed_projection: Option<String>,
 }
 
+/// Persistent logical activity clock for one shared Cognitive Context.
+/// Wall-clock time is deliberately absent: only a uniquely claimed Signal
+/// batch containing an external cognitive fact advances this counter.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextCognitiveClock {
+    pub context_id: String,
+    pub tick: u64,
+    pub last_signal_batch_id: Option<String>,
+    pub revision: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewCognitiveContext {
     pub id: String,
@@ -99,6 +249,9 @@ pub struct NewMindProjection {
     pub state: serde_json::Value,
     pub state_hash: String,
     pub head_event_id: Option<String>,
+    /// Changed Frame lexical documents prepared by the Context domain. Event
+    /// documents are projected automatically when their Ledger row is added.
+    pub recall_documents: Vec<RecallDocument>,
 }
 
 /// Observation membership changes caused by one Context transaction.
@@ -1394,6 +1547,46 @@ pub trait EventStore: Send + Sync {
     ) -> Result<Vec<crate::event::Event>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
+/// Rebuildable lexical projection shared by Tool, CLI, HTTP and Dashboard.
+/// The Event Ledger and Mind Projection remain authoritative; implementations
+/// must keep hot-path upserts in the same database transaction as their source
+/// mutation and expose degraded capability explicitly when an indexed backend
+/// is unavailable.
+#[async_trait::async_trait]
+pub trait RecallProjectionStore: Send + Sync {
+    async fn recall_index_capability(
+        &self,
+    ) -> Result<RecallIndexCapability, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn search_recall_documents(
+        &self,
+        context_id: &str,
+        normalized_query: &str,
+        limit: usize,
+    ) -> Result<Vec<RecallSearchHit>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Replaces the complete rebuildable index for one Context. This is an
+    /// explicit maintenance operation and never mutates Ledger or Mind state.
+    async fn replace_recall_documents(
+        &self,
+        context_id: &str,
+        documents: &[RecallDocument],
+    ) -> Result<RecallIndexAudit, Box<dyn std::error::Error + Send + Sync>>;
+
+    async fn inspect_recall_index(
+        &self,
+        context_id: &str,
+    ) -> Result<RecallIndexAudit, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+#[async_trait::async_trait]
+pub trait CognitiveClockStore: Send + Sync {
+    async fn get_context_cognitive_clock(
+        &self,
+        context_id: &str,
+    ) -> Result<ContextCognitiveClock, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 /// Current, transactionally maintained Observation set for Session-aware
 /// Context Encoding. The immutable Ledger remains authoritative history;
 /// this Projection contains only observations which have not been retired.
@@ -2187,6 +2380,8 @@ pub trait RuntimeStore:
     + ObjectiveStore
     + MindProjectionStore
     + SessionProjectionStore
+    + RecallProjectionStore
+    + CognitiveClockStore
     + Send
     + Sync
 {

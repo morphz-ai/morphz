@@ -8,18 +8,19 @@ use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     ActionGroupFilter, ActionGroupMemberStatus, ActionGroupStatus, ActionGroupStore,
     ActivationOutcomeCommit, ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore,
-    DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
-    EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore,
-    ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
-    ExecutionRetrySafety, MessageClaim, MindProjectionCommit, MindProjectionStore, NewActionGroup,
-    NewActionGroupMember, NewAgent, NewApprovalRequest, NewCognitiveContext, NewDelegation,
-    NewExecutionJob, NewMindProjection, NewObjective, NewRuntimeTimer, NewSession, NewThread,
-    NewThreadActivation, NewThreadSignal, ObjectiveMutation, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation,
-    ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate, SessionMountKind,
-    SessionProjectionMutation, SessionProjectionStore, SessionStatus, SessionUpdate,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationStatus, ThreadKind,
-    ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
+    CognitiveClockStore, DelegationStatus, DelegationStore, DeliveryFlushCommit,
+    DeliveryIngressStore, DeliveryStatus, EventAppend, EventStore, ExecutionApprovalMutation,
+    ExecutionApprovalStore, ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim, MindProjectionCommit,
+    MindProjectionStore, NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
+    NewCognitiveContext, NewDelegation, NewExecutionJob, NewMindProjection, NewObjective,
+    NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
+    ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
+    RecallDocument, RecallDocumentKind, RecallProjectionStore, RuntimeTimerKind,
+    RuntimeTimerStatus, ScheduleMutation, ScheduleStatus, ScheduleStore, SessionAttentionState,
+    SessionAttentionUpdate, SessionMountKind, SessionProjectionMutation, SessionProjectionStore,
+    SessionStatus, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
+    ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
 };
 use morphz::memory::{ActivationStore, SessionDirectoryStore};
 use morphz::permission::{PermissionMode, ReviewerKind};
@@ -77,6 +78,7 @@ fn sqlite_two_process_context_cas_is_fenced() {
                         state: json!({"version": 1, "worker": role}),
                         state_hash: format!("sqlite-process-hash-{role}"),
                         head_event_id: Some(event.id.clone()),
+                        recall_documents: Vec::new(),
                     },
                 )
                 .await
@@ -113,6 +115,7 @@ fn sqlite_two_process_context_cas_is_fenced() {
                 state: json!({"version": 0}),
                 state_hash: "sqlite-process-hash-0".to_string(),
                 head_event_id: None,
+                recall_documents: Vec::new(),
             })
             .await
             .unwrap();
@@ -510,7 +513,7 @@ where
 
 async fn assert_activation_store_conformance<S>(store: Arc<S>)
 where
-    S: ActivationStore + EventStore + ThreadStore + Send + Sync + 'static,
+    S: ActivationStore + CognitiveClockStore + EventStore + ThreadStore + Send + Sync + 'static,
 {
     let thread = store
         .ensure_thread(NewThread {
@@ -585,6 +588,18 @@ where
     let first = first.await.unwrap().unwrap().unwrap();
     let second = second.await.unwrap().unwrap().unwrap();
     assert_eq!(first.id, second.id);
+    let clock = store
+        .get_context_cognitive_clock("conformance-context")
+        .await
+        .unwrap();
+    assert_eq!(
+        clock.tick, 1,
+        "one claimed external Signal batch advances once"
+    );
+    assert_eq!(
+        clock.last_signal_batch_id.as_deref(),
+        Some(first.id.as_str())
+    );
     assert_eq!(
         store
             .list_signal_outbox(SignalOutboxStatus::Materialized, 16)
@@ -1313,6 +1328,7 @@ where
             state: json!({"version": 0, "frames": []}),
             state_hash: "hash-0".to_string(),
             head_event_id: None,
+            recall_documents: Vec::new(),
         })
         .await
         .unwrap();
@@ -1344,6 +1360,7 @@ where
                         state: json!({"version": 1, "winner": "a"}),
                         state_hash: "hash-a".to_string(),
                         head_event_id: Some(event.id.clone()),
+                        recall_documents: Vec::new(),
                     },
                 )
                 .await
@@ -1373,6 +1390,7 @@ where
                         state: json!({"version": 1, "winner": "b"}),
                         state_hash: "hash-b".to_string(),
                         head_event_id: Some(event.id.clone()),
+                        recall_documents: Vec::new(),
                     },
                 )
                 .await
@@ -1512,6 +1530,7 @@ where
                 state: json!({"version": current.revision + 1, "projection": "retired"}),
                 state_hash: "conformance-projection-retired-hash".to_string(),
                 head_event_id: Some(retire_event.id.clone()),
+                recall_documents: Vec::new(),
             },
         )
         .await
@@ -1553,6 +1572,7 @@ where
                 state: json!({"version": current.revision + 1, "projection": "restored"}),
                 state_hash: "conformance-projection-restored-hash".to_string(),
                 head_event_id: Some(restore_event.id.clone()),
+                recall_documents: Vec::new(),
             },
         )
         .await
@@ -1568,6 +1588,94 @@ where
             .count(),
         1
     );
+}
+
+async fn assert_recall_projection_conformance<S>(store: Arc<S>)
+where
+    S: RecallProjectionStore + Send + Sync + 'static,
+{
+    let context_id = "conformance-context";
+    let documents = vec![
+        RecallDocument {
+            context_id: context_id.to_string(),
+            document_kind: RecallDocumentKind::Frame,
+            document_id: "memory/sandbox-permission".to_string(),
+            revision: 3,
+            searchable_text: morphz::memory::normalize_recall_text(
+                "memory/sandbox-permission 沙箱权限审批 Rust 沙箱",
+            ),
+            preview: "沙箱权限审批应区分拒绝与可申请的能力扩张".to_string(),
+            retired: true,
+            updated_sequence: 20,
+            state_hash: "recall-frame-hash".to_string(),
+        },
+        RecallDocument {
+            context_id: context_id.to_string(),
+            document_kind: RecallDocumentKind::Frame,
+            document_id: "memory/related-case".to_string(),
+            revision: 1,
+            searchable_text: morphz::memory::normalize_recall_text(
+                "related case memory/sandbox-permission 后续案例",
+            ),
+            preview: "后续案例".to_string(),
+            retired: false,
+            updated_sequence: 30,
+            state_hash: "recall-related-hash".to_string(),
+        },
+        RecallDocument {
+            context_id: context_id.to_string(),
+            document_kind: RecallDocumentKind::Event,
+            document_id: "recall-event".to_string(),
+            revision: 0,
+            searchable_text: morphz::memory::normalize_recall_text("全角ＡＢＣ 与中文阳光电源"),
+            preview: "全角ＡＢＣ 与中文阳光电源".to_string(),
+            retired: false,
+            updated_sequence: 10,
+            state_hash: "recall-event-hash".to_string(),
+        },
+    ];
+    let audit = store
+        .replace_recall_documents(context_id, &documents)
+        .await
+        .unwrap();
+    assert_eq!(audit.frame_documents, 2);
+    assert_eq!(audit.event_documents, 1);
+    assert_eq!(audit.capability.unicode_normalization, "nfkc+lowercase");
+
+    let chinese = store
+        .search_recall_documents(
+            context_id,
+            &morphz::memory::normalize_recall_text("沙箱权限审批"),
+            8,
+        )
+        .await
+        .unwrap();
+    assert_eq!(chinese[0].document_id, "memory/sandbox-permission");
+    assert!(
+        chinese[0].retired,
+        "retired Frames remain lexically recallable"
+    );
+
+    let nfkc = store
+        .search_recall_documents(context_id, &morphz::memory::normalize_recall_text("abc"), 8)
+        .await
+        .unwrap();
+    assert!(nfkc.iter().any(|hit| hit.document_id == "recall-event"));
+
+    let exact = store
+        .search_recall_documents(
+            context_id,
+            &morphz::memory::normalize_recall_text("memory/sandbox-permission"),
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        exact.len(),
+        1,
+        "the database must apply the requested limit"
+    );
+    assert_eq!(exact[0].document_id, "memory/sandbox-permission");
 }
 
 async fn assert_timer_lease_conformance<S>(store: Arc<S>)
@@ -2545,6 +2653,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
             state: json!({"version": 0}),
             state_hash: format!("multi-worker-hash-0-{suffix}"),
             head_event_id: None,
+            recall_documents: Vec::new(),
         })
         .await
         .unwrap();
@@ -2564,6 +2673,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
                 state: json!({"version": 1, "worker": "a"}),
                 state_hash: format!("multi-worker-hash-a-{suffix}"),
                 head_event_id: Some(event_a.id.clone()),
+                recall_documents: Vec::new(),
             },
         ),
         second.commit_mind_projection_transaction(
@@ -2577,6 +2687,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
                 state: json!({"version": 1, "worker": "b"}),
                 state_hash: format!("multi-worker-hash-b-{suffix}"),
                 head_event_id: Some(event_b.id.clone()),
+                recall_documents: Vec::new(),
             },
         )
     );
@@ -3017,6 +3128,7 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
     })
     .await;
     assert_session_projection_conformance(Arc::clone(&store)).await;
+    assert_recall_projection_conformance(Arc::clone(&store)).await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;
@@ -3074,6 +3186,8 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     for version in [
         "20260718_01_supported_capabilities",
         "20260719_01_session_projections",
+        "20260720_01_recall_projection",
+        "20260720_02_cognitive_clock",
         "20260719_02_action_groups",
         "20260718_02_execution_jobs",
         "20260718_03_approvals",
@@ -3125,6 +3239,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
     })
     .await;
     assert_session_projection_conformance(Arc::clone(&store)).await;
+    assert_recall_projection_conformance(Arc::clone(&store)).await;
     assert_thread_store_conformance(Arc::clone(&store)).await;
     assert_activation_store_conformance(Arc::clone(&store)).await;
     assert_schedule_store_conformance(Arc::clone(&store)).await;

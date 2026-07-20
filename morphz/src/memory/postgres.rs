@@ -9,11 +9,13 @@
 
 use crate::event::Event;
 use crate::memory::{
-    EventAppend, EventStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
-    MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer, ObjectiveMutation,
-    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate,
-    SessionProjectionMutation, SessionProjectionStore, TimerStore,
+    CognitiveClockStore, ContextCognitiveClock, EventAppend, EventStore, MindProjectionCommit,
+    MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective,
+    NewRuntimeTimer, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, RecallDocument, RecallDocumentKind, RecallIndexAudit,
+    RecallIndexCapability, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
+    RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation,
+    SessionProjectionStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -70,6 +72,18 @@ impl PostgresStore {
                 .await?;
             store
                 .run_versioned_migration(
+                    "20260720_01_recall_projection",
+                    store.migrate_recall_projection(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260720_02_cognitive_clock",
+                    store.migrate_cognitive_clock(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
                     "20260718_02_execution_jobs",
                     execution::migrate(&store.pool),
                 )
@@ -104,6 +118,11 @@ impl PostgresStore {
                     delegation::migrate(&store.pool),
                 )
                 .await?;
+            // Optional search acceleration is deliberately retried outside
+            // the versioned schema migration. A deployment that initially
+            // lacked CREATE EXTENSION may later gain it and should then leave
+            // degraded mode without editing migration history.
+            store.ensure_recall_search_acceleration().await?;
             Ok::<(), StoreError>(())
         }
         .await;
@@ -305,6 +324,73 @@ impl PostgresStore {
                ON objectives(status, evaluation_lease_expires_at, updated_at)"#,
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    async fn migrate_recall_projection(&self) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS recall_documents (
+                 context_id TEXT NOT NULL REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+                 document_kind TEXT NOT NULL CHECK(document_kind IN ('event', 'frame')),
+                 document_id TEXT NOT NULL,
+                 revision BIGINT NOT NULL CHECK(revision >= 0),
+                 searchable_text TEXT NOT NULL,
+                 preview TEXT NOT NULL,
+                 retired BOOLEAN NOT NULL,
+                 updated_sequence BIGINT NOT NULL CHECK(updated_sequence >= 0),
+                 state_hash TEXT NOT NULL,
+                 PRIMARY KEY(context_id, document_kind, document_id)
+               )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_recall_documents_context_updated
+               ON recall_documents(context_id, updated_sequence DESC, document_id)"#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn migrate_cognitive_clock(&self) -> Result<(), StoreError> {
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS context_cognitive_clocks (
+                 context_id TEXT PRIMARY KEY REFERENCES cognitive_contexts(id) ON DELETE CASCADE,
+                 tick BIGINT NOT NULL CHECK(tick >= 0),
+                 last_signal_batch_id TEXT UNIQUE,
+                 revision BIGINT NOT NULL CHECK(revision >= 0)
+               )"#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn ensure_recall_search_acceleration(&self) -> Result<(), StoreError> {
+        match sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+            .execute(&self.pool)
+            .await
+        {
+            Ok(_) => {
+                if let Err(error) = sqlx::query(
+                    r#"CREATE INDEX IF NOT EXISTS idx_pg_recall_documents_trgm
+                       ON recall_documents USING GIN (searchable_text gin_trgm_ops)"#,
+                )
+                .execute(&self.pool)
+                .await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        "PostgreSQL 无法创建 pg_trgm Recall 索引，Recall 降级为受限 ILIKE 查询"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "PostgreSQL 无权启用 pg_trgm，Recall 降级为受限 ILIKE 查询");
+            }
         }
         Ok(())
     }
@@ -587,11 +673,21 @@ async fn append_event_in_tx(
     .execute(&mut **tx)
     .await?;
     if inserted.rows_affected() == 1 {
+        if let Some(context_id) = context_id {
+            let sequence = u64::try_from(
+                sqlx::query_scalar::<_, i64>("SELECT sequence FROM events WHERE id = $1")
+                    .bind(&event.id)
+                    .fetch_one(&mut **tx)
+                    .await?,
+            )?;
+            let document = crate::memory::event_recall_document(event, context_id, sequence);
+            upsert_recall_document_in_tx(tx, &document).await?;
+        }
         project_observation_in_tx(tx, event).await?;
         return Ok(true);
     }
     let existing = sqlx::query(
-        r#"SELECT timestamp, actor, type, topic, context_id, session_id, payload
+        r#"SELECT sequence, timestamp, actor, type, topic, context_id, session_id, payload
            FROM events WHERE id = $1"#,
     )
     .bind(&event.id)
@@ -607,7 +703,43 @@ async fn append_event_in_tx(
     if !same {
         return Err(format!("Event ID '{}' 已被不同内容占用", event.id).into());
     }
+    if let Some(context_id) = context_id {
+        let sequence = u64::try_from(existing.get::<i64, _>("sequence"))?;
+        let document = crate::memory::event_recall_document(event, context_id, sequence);
+        upsert_recall_document_in_tx(tx, &document).await?;
+    }
     Ok(false)
+}
+
+async fn upsert_recall_document_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    document: &RecallDocument,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        r#"INSERT INTO recall_documents
+           (context_id, document_kind, document_id, revision, searchable_text, preview,
+            retired, updated_sequence, state_hash)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           ON CONFLICT(context_id, document_kind, document_id) DO UPDATE SET
+             revision = EXCLUDED.revision,
+             searchable_text = EXCLUDED.searchable_text,
+             preview = EXCLUDED.preview,
+             retired = EXCLUDED.retired,
+             updated_sequence = EXCLUDED.updated_sequence,
+             state_hash = EXCLUDED.state_hash"#,
+    )
+    .bind(&document.context_id)
+    .bind(document.document_kind.as_str())
+    .bind(&document.document_id)
+    .bind(i64::try_from(document.revision)?)
+    .bind(&document.searchable_text)
+    .bind(&document.preview)
+    .bind(document.retired)
+    .bind(i64::try_from(document.updated_sequence)?)
+    .bind(&document.state_hash)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 fn event_has_projection_route(event: &Event) -> bool {
@@ -693,10 +825,26 @@ async fn mutate_session_projection_in_tx(
             .bind(context_id)
             .execute(&mut **tx)
             .await?;
+        if let Some(event) = stored_event_in_tx(tx, event_id, context_id).await? {
+            let sequence = event
+                .sequence
+                .ok_or_else(|| format!("Event '{}' 缺少持久化 sequence", event.id))?;
+            let document = crate::memory::event_recall_document_with_retired(
+                &event, context_id, sequence, true,
+            );
+            upsert_recall_document_in_tx(tx, &document).await?;
+        }
     }
     for event_id in &mutation.restored_event_ids {
         if let Some(event) = stored_event_in_tx(tx, event_id, context_id).await? {
             project_observation_in_tx(tx, &event).await?;
+            let sequence = event
+                .sequence
+                .ok_or_else(|| format!("Event '{}' 缺少持久化 sequence", event.id))?;
+            let document = crate::memory::event_recall_document_with_retired(
+                &event, context_id, sequence, false,
+            );
+            upsert_recall_document_in_tx(tx, &document).await?;
         }
     }
     Ok(())
@@ -945,6 +1093,196 @@ impl EventStore for PostgresStore {
             events.reverse();
         }
         Ok(events)
+    }
+}
+
+fn pg_recall_kind(value: &str) -> Result<RecallDocumentKind, StoreError> {
+    match value {
+        "event" => Ok(RecallDocumentKind::Event),
+        "frame" => Ok(RecallDocumentKind::Frame),
+        other => Err(format!("未知 Recall document kind: {other}").into()),
+    }
+}
+
+async fn postgres_recall_capability(pool: &PgPool) -> Result<RecallIndexCapability, StoreError> {
+    let indexed = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')
+                  AND EXISTS(
+                    SELECT 1 FROM pg_indexes
+                    WHERE indexname = 'idx_pg_recall_documents_trgm'
+                  )"#,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok(RecallIndexCapability {
+        mode: if indexed {
+            crate::memory::LexicalSearchMode::PostgresPgTrgm
+        } else {
+            crate::memory::LexicalSearchMode::DegradedSubstring
+        },
+        indexed,
+        unicode_normalization: "nfkc+lowercase".to_string(),
+        detail: if indexed {
+            "PostgreSQL pg_trgm GIN index".to_string()
+        } else {
+            "PostgreSQL pg_trgm unavailable; bounded ILIKE fallback".to_string()
+        },
+    })
+}
+
+#[async_trait::async_trait]
+impl CognitiveClockStore for PostgresStore {
+    async fn get_context_cognitive_clock(
+        &self,
+        context_id: &str,
+    ) -> Result<ContextCognitiveClock, StoreError> {
+        let row = sqlx::query(
+            "SELECT tick, last_signal_batch_id, revision FROM context_cognitive_clocks WHERE context_id = $1",
+        )
+        .bind(context_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(row) => Ok(ContextCognitiveClock {
+                context_id: context_id.to_string(),
+                tick: u64::try_from(row.get::<i64, _>("tick"))?,
+                last_signal_batch_id: row.get("last_signal_batch_id"),
+                revision: u64::try_from(row.get::<i64, _>("revision"))?,
+            }),
+            None => Ok(ContextCognitiveClock {
+                context_id: context_id.to_string(),
+                tick: 0,
+                last_signal_batch_id: None,
+                revision: 0,
+            }),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RecallProjectionStore for PostgresStore {
+    async fn recall_index_capability(&self) -> Result<RecallIndexCapability, StoreError> {
+        postgres_recall_capability(&self.pool).await
+    }
+
+    async fn search_recall_documents(
+        &self,
+        context_id: &str,
+        normalized_query: &str,
+        limit: usize,
+    ) -> Result<Vec<RecallSearchHit>, StoreError> {
+        let limit = i64::try_from(limit.clamp(1, 100))?;
+        let capability = postgres_recall_capability(&self.pool).await?;
+        let escaped_query = normalized_query
+            .split_whitespace()
+            .map(|term| {
+                term.replace('\\', "\\\\")
+                    .replace('%', "\\%")
+                    .replace('_', "\\_")
+            })
+            .collect::<Vec<_>>()
+            .join("%");
+        let rows = if capability.indexed
+            && normalized_query
+                .split_whitespace()
+                .all(|term| term.chars().count() >= 3)
+        {
+            sqlx::query(
+                r#"SELECT document_kind, document_id, revision, retired, preview,
+                          updated_sequence,
+                          CASE WHEN document_id = $2 THEN 1000000.0
+                               ELSE similarity(searchable_text, $2)::double precision END AS score
+                   FROM recall_documents
+                   WHERE context_id = $1 AND searchable_text ILIKE ('%' || $3 || '%') ESCAPE '\'
+                   ORDER BY (document_id = $2) DESC,
+                            similarity(searchable_text, $2) DESC,
+                            updated_sequence DESC, document_id ASC
+                   LIMIT $4"#,
+            )
+            .bind(context_id)
+            .bind(normalized_query)
+            .bind(&escaped_query)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query(
+                r#"SELECT document_kind, document_id, revision, retired, preview,
+                          updated_sequence,
+                          CASE WHEN document_id = $2 THEN 1000000.0 ELSE 1.0 END AS score
+                   FROM recall_documents
+                   WHERE context_id = $1 AND searchable_text ILIKE ('%' || $3 || '%') ESCAPE '\'
+                   ORDER BY (document_id = $2) DESC, updated_sequence DESC, document_id ASC
+                   LIMIT $4"#,
+            )
+            .bind(context_id)
+            .bind(normalized_query)
+            .bind(&escaped_query)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.into_iter()
+            .map(|row| {
+                Ok(RecallSearchHit {
+                    document_kind: pg_recall_kind(&row.get::<String, _>("document_kind"))?,
+                    document_id: row.get("document_id"),
+                    revision: u64::try_from(row.get::<i64, _>("revision"))?,
+                    retired: row.get("retired"),
+                    score: row.get("score"),
+                    preview: row.get("preview"),
+                    updated_sequence: u64::try_from(row.get::<i64, _>("updated_sequence"))?,
+                })
+            })
+            .collect()
+    }
+
+    async fn replace_recall_documents(
+        &self,
+        context_id: &str,
+        documents: &[RecallDocument],
+    ) -> Result<RecallIndexAudit, StoreError> {
+        if documents
+            .iter()
+            .any(|document| document.context_id != context_id)
+        {
+            return Err("Recall rebuild document 属于错误的 Context".into());
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM recall_documents WHERE context_id = $1")
+            .bind(context_id)
+            .execute(&mut *tx)
+            .await?;
+        for document in documents {
+            upsert_recall_document_in_tx(&mut tx, document).await?;
+        }
+        tx.commit().await?;
+        self.inspect_recall_index(context_id).await
+    }
+
+    async fn inspect_recall_index(&self, context_id: &str) -> Result<RecallIndexAudit, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT document_kind, COUNT(*) AS count
+               FROM recall_documents WHERE context_id = $1 GROUP BY document_kind"#,
+        )
+        .bind(context_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut event_documents = 0;
+        let mut frame_documents = 0;
+        for row in rows {
+            match row.get::<String, _>("document_kind").as_str() {
+                "event" => event_documents = u64::try_from(row.get::<i64, _>("count"))?,
+                "frame" => frame_documents = u64::try_from(row.get::<i64, _>("count"))?,
+                _ => {}
+            }
+        }
+        Ok(RecallIndexAudit {
+            context_id: context_id.to_string(),
+            capability: postgres_recall_capability(&self.pool).await?,
+            event_documents,
+            frame_documents,
+        })
     }
 }
 
@@ -1758,6 +2096,9 @@ impl MindProjectionStore for PostgresStore {
             .bind(&now)
             .execute(&mut *tx)
             .await?;
+            for document in &projection.recall_documents {
+                upsert_recall_document_in_tx(&mut tx, document).await?;
+            }
         }
         let installed = get_projection(&mut *tx, &projection.context_id)
             .await?
@@ -1865,6 +2206,9 @@ impl MindProjectionStore for PostgresStore {
         append_event_in_tx(&mut tx, event).await?;
         mutate_session_projection_in_tx(&mut tx, &next_projection.context_id, session_projection)
             .await?;
+        for document in &next_projection.recall_documents {
+            upsert_recall_document_in_tx(&mut tx, document).await?;
+        }
         if requires_snapshot(event, next_projection.revision) {
             insert_snapshot_in_tx(&mut tx, &next_projection, &event.id, &now).await?;
         }
@@ -1952,6 +2296,9 @@ impl MindProjectionStore for PostgresStore {
             return Err("目标 Context 已存在 seed provenance，拒绝覆盖".into());
         }
         append_event_in_tx(&mut tx, event).await?;
+        for document in &next_projection.recall_documents {
+            upsert_recall_document_in_tx(&mut tx, document).await?;
+        }
         insert_snapshot_in_tx(&mut tx, &next_projection, &event.id, &now).await?;
         let committed = get_projection(&mut *tx, &next_projection.context_id)
             .await?

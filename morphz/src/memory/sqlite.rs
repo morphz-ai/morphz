@@ -8,22 +8,24 @@ use crate::memory::{
     ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationOutcomeCommit,
     ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
     ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
-    CognitiveContextRecord, DelegationRecord, DelegationStatus, DelegationStore,
-    DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus, EventAppend, EventStore,
-    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation,
-    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
-    ExecutionRetrySafety, MessageClaim, MindProjectionCommit, MindProjectionRecord,
-    MindProjectionStore, MindSnapshotRecord, NewActionGroup, NewActionGroupMember, NewAgent,
-    NewApprovalRequest, NewCognitiveContext, NewDelegation, NewExecutionJob, NewMindProjection,
-    NewObjective, NewRuntimeTimer, NewSchedule, NewSession, NewThread, NewThreadActivation,
-    NewThreadSignal, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus,
-    ScheduleMutation, ScheduleRecord, ScheduleStatus, ScheduleStore, SessionAttentionState,
-    SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind, SessionProjectionMutation,
-    SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadStore, TimerStore,
+    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock, DelegationRecord,
+    DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
+    EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
+    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim, MindProjectionCommit,
+    MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewActionGroup,
+    NewActionGroupMember, NewAgent, NewApprovalRequest, NewCognitiveContext, NewDelegation,
+    NewExecutionJob, NewMindProjection, NewObjective, NewRuntimeTimer, NewSchedule, NewSession,
+    NewThread, NewThreadActivation, NewThreadSignal, ObjectiveMutation, ObjectiveRecord,
+    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RecallDocument,
+    RecallDocumentKind, RecallIndexAudit, RecallIndexCapability, RecallProjectionStore,
+    RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation,
+    ScheduleRecord, ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate,
+    SessionDirectoryStore, SessionMountKind, SessionProjectionMutation, SessionProjectionStore,
+    SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus,
+    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadKind,
+    ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
+    ThreadStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -274,6 +276,14 @@ impl SqliteStore {
         );
         CREATE INDEX IF NOT EXISTS idx_contexts_agent_updated
             ON cognitive_contexts(agent_id, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS context_cognitive_clocks (
+            context_id TEXT PRIMARY KEY,
+            tick INTEGER NOT NULL CHECK(tick >= 0),
+            last_signal_batch_id TEXT UNIQUE,
+            revision INTEGER NOT NULL CHECK(revision >= 0),
+            FOREIGN KEY(context_id) REFERENCES cognitive_contexts(id) ON DELETE CASCADE
+        );
 
         CREATE TABLE IF NOT EXISTS context_heads (
             context_id TEXT PRIMARY KEY,
@@ -777,9 +787,85 @@ impl SqliteStore {
         }
 
         migrate_session_projections(&pool).await?;
+        migrate_recall_projection(&pool).await?;
 
         Ok(Self { pool })
     }
+}
+
+async fn migrate_recall_projection(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS recall_documents (
+               context_id TEXT NOT NULL,
+               document_kind TEXT NOT NULL CHECK(document_kind IN ('event', 'frame')),
+               document_id TEXT NOT NULL,
+               revision INTEGER NOT NULL CHECK(revision >= 0),
+               searchable_text TEXT NOT NULL,
+               preview TEXT NOT NULL,
+               retired INTEGER NOT NULL CHECK(retired IN (0, 1)),
+               updated_sequence INTEGER NOT NULL CHECK(updated_sequence >= 0),
+               state_hash TEXT NOT NULL,
+               PRIMARY KEY(context_id, document_kind, document_id)
+           );
+           CREATE INDEX IF NOT EXISTS idx_recall_documents_context_updated
+             ON recall_documents(context_id, updated_sequence DESC, document_id);"#,
+    )
+    .execute(pool)
+    .await?;
+
+    let fts = sqlx::query(
+        r#"CREATE VIRTUAL TABLE IF NOT EXISTS recall_documents_fts USING fts5(
+               context_id UNINDEXED,
+               document_kind UNINDEXED,
+               document_id UNINDEXED,
+               searchable_text,
+               tokenize='trigram'
+           )"#,
+    )
+    .execute(pool)
+    .await;
+    if let Err(error) = fts {
+        tracing::warn!(error = %error, "SQLite 不支持 FTS5 trigram，Recall 降级为受限子串索引查询");
+        return Ok(());
+    }
+
+    for statement in [
+        r#"CREATE TRIGGER IF NOT EXISTS recall_documents_ai AFTER INSERT ON recall_documents BEGIN
+             INSERT INTO recall_documents_fts(context_id, document_kind, document_id, searchable_text)
+             VALUES (new.context_id, new.document_kind, new.document_id, new.searchable_text);
+           END"#,
+        r#"CREATE TRIGGER IF NOT EXISTS recall_documents_ad AFTER DELETE ON recall_documents BEGIN
+             DELETE FROM recall_documents_fts
+             WHERE context_id = old.context_id AND document_kind = old.document_kind
+               AND document_id = old.document_id;
+           END"#,
+        r#"CREATE TRIGGER IF NOT EXISTS recall_documents_au AFTER UPDATE ON recall_documents BEGIN
+             DELETE FROM recall_documents_fts
+             WHERE context_id = old.context_id AND document_kind = old.document_kind
+               AND document_id = old.document_id;
+             INSERT INTO recall_documents_fts(context_id, document_kind, document_id, searchable_text)
+             VALUES (new.context_id, new.document_kind, new.document_id, new.searchable_text);
+           END"#,
+    ] {
+        sqlx::query(statement).execute(pool).await?;
+    }
+    // A crash or an older build may have populated the ordinary projection
+    // before FTS became available. Repair only the missing derived rows.
+    sqlx::query(
+        r#"INSERT INTO recall_documents_fts(context_id, document_kind, document_id, searchable_text)
+           SELECT d.context_id, d.document_kind, d.document_id, d.searchable_text
+           FROM recall_documents d
+           WHERE NOT EXISTS (
+             SELECT 1 FROM recall_documents_fts f
+             WHERE f.context_id = d.context_id AND f.document_kind = d.document_kind
+               AND f.document_id = d.document_id
+           )"#,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 const SESSION_PROJECTION_MIGRATION: &str = "20260719_01_session_projections";
@@ -1816,7 +1902,49 @@ async fn append_event_in_transaction(
     .bind(payload)
     .execute(&mut **tx)
     .await?;
+    if let Some(context_id) = context_id {
+        let sequence = u64::try_from(
+            sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
+                .bind(&event.id)
+                .fetch_one(&mut **tx)
+                .await?,
+        )
+        .map_err(|_| "Event sequence 不能为负数")?;
+        let document = crate::memory::event_recall_document(event, context_id, sequence);
+        upsert_recall_document_in_transaction(tx, &document).await?;
+    }
     project_observation_in_transaction(tx, event).await?;
+    Ok(())
+}
+
+async fn upsert_recall_document_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    document: &RecallDocument,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    sqlx::query(
+        r#"INSERT INTO recall_documents
+           (context_id, document_kind, document_id, revision, searchable_text, preview,
+            retired, updated_sequence, state_hash)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(context_id, document_kind, document_id) DO UPDATE SET
+             revision = excluded.revision,
+             searchable_text = excluded.searchable_text,
+             preview = excluded.preview,
+             retired = excluded.retired,
+             updated_sequence = excluded.updated_sequence,
+             state_hash = excluded.state_hash"#,
+    )
+    .bind(&document.context_id)
+    .bind(document.document_kind.as_str())
+    .bind(&document.document_id)
+    .bind(i64::try_from(document.revision)?)
+    .bind(&document.searchable_text)
+    .bind(&document.preview)
+    .bind(i64::from(document.retired))
+    .bind(i64::try_from(document.updated_sequence)?)
+    .bind(&document.state_hash)
+    .execute(&mut **tx)
+    .await?;
     Ok(())
 }
 
@@ -2039,6 +2167,17 @@ async fn append_event_idempotent_in_transaction(
     .execute(&mut **tx)
     .await?;
     if inserted.rows_affected() == 1 {
+        if let Some(context_id) = context_id {
+            let sequence = u64::try_from(
+                sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
+                    .bind(&event.id)
+                    .fetch_one(&mut **tx)
+                    .await?,
+            )
+            .map_err(|_| "Event sequence 不能为负数")?;
+            let document = crate::memory::event_recall_document(event, context_id, sequence);
+            upsert_recall_document_in_transaction(tx, &document).await?;
+        }
         project_observation_in_transaction(tx, event).await?;
         return Ok(true);
     }
@@ -2057,6 +2196,17 @@ async fn append_event_idempotent_in_transaction(
         && existing.get::<String, _>("payload") == payload;
     if !same {
         return Err(format!("Event ID '{}' 已被不同内容占用", event.id).into());
+    }
+    if let Some(context_id) = context_id {
+        let sequence = u64::try_from(
+            sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
+                .bind(&event.id)
+                .fetch_one(&mut **tx)
+                .await?,
+        )
+        .map_err(|_| "Event sequence 不能为负数")?;
+        let document = crate::memory::event_recall_document(event, context_id, sequence);
+        upsert_recall_document_in_transaction(tx, &document).await?;
     }
     Ok(false)
 }
@@ -2144,10 +2294,26 @@ async fn mutate_session_projection_in_transaction(
             .bind(context_id)
             .execute(&mut **tx)
             .await?;
+        if let Some(event) = stored_event_in_transaction(tx, event_id, context_id).await? {
+            let sequence = event
+                .sequence
+                .ok_or_else(|| format!("Event '{}' 缺少持久化 sequence", event.id))?;
+            let document = crate::memory::event_recall_document_with_retired(
+                &event, context_id, sequence, true,
+            );
+            upsert_recall_document_in_transaction(tx, &document).await?;
+        }
     }
     for event_id in &mutation.restored_event_ids {
         if let Some(event) = stored_event_in_transaction(tx, event_id, context_id).await? {
             project_observation_in_transaction(tx, &event).await?;
+            let sequence = event
+                .sequence
+                .ok_or_else(|| format!("Event '{}' 缺少持久化 sequence", event.id))?;
+            let document = crate::memory::event_recall_document_with_retired(
+                &event, context_id, sequence, false,
+            );
+            upsert_recall_document_in_transaction(tx, &document).await?;
         }
     }
     Ok(())
@@ -2280,6 +2446,9 @@ impl MindProjectionStore for SqliteStore {
             .bind(&now)
             .execute(&mut *tx)
             .await?;
+            for document in &projection.recall_documents {
+                upsert_recall_document_in_transaction(&mut tx, document).await?;
+            }
         }
         let installed = get_mind_projection_from_executor(&mut *tx, &projection.context_id)
             .await?
@@ -2378,6 +2547,9 @@ impl MindProjectionStore for SqliteStore {
             session_projection,
         )
         .await?;
+        for document in &next_projection.recall_documents {
+            upsert_recall_document_in_transaction(&mut tx, document).await?;
+        }
         if context_transaction_requires_snapshot(event, next_projection.revision) {
             insert_mind_snapshot_in_transaction(
                 &mut tx,
@@ -2489,6 +2661,9 @@ impl MindProjectionStore for SqliteStore {
             return Err("目标 Context 已存在 seed provenance，拒绝覆盖".into());
         }
         append_event_in_transaction(&mut tx, event).await?;
+        for document in &next_projection.recall_documents {
+            upsert_recall_document_in_transaction(&mut tx, document).await?;
+        }
         insert_mind_snapshot_in_transaction(
             &mut tx,
             &next_projection.context_id,
@@ -3236,6 +3411,37 @@ impl ActivationStore for SqliteStore {
         .execute(&mut *tx)
         .await?;
 
+        let mut advances_clock = false;
+        for row in &pending {
+            let pending_signal = thread_signal_from_row(row)?;
+            if let Some(event) =
+                stored_event_in_transaction(&mut tx, &pending_signal.event_id, &thread.context_id)
+                    .await?
+            {
+                if crate::event::advances_cognitive_clock(&event) {
+                    advances_clock = true;
+                    break;
+                }
+            }
+        }
+        if advances_clock {
+            sqlx::query(
+                r#"INSERT INTO context_cognitive_clocks
+                   (context_id, tick, last_signal_batch_id, revision)
+                   VALUES (?, 1, ?, 1)
+                   ON CONFLICT(context_id) DO UPDATE SET
+                     tick = context_cognitive_clocks.tick + 1,
+                     last_signal_batch_id = excluded.last_signal_batch_id,
+                     revision = context_cognitive_clocks.revision + 1
+                   WHERE context_cognitive_clocks.last_signal_batch_id IS NULL
+                      OR context_cognitive_clocks.last_signal_batch_id != excluded.last_signal_batch_id"#,
+            )
+            .bind(&thread.context_id)
+            .bind(&activation.id)
+            .execute(&mut *tx)
+            .await?;
+        }
+
         for (ordinal, row) in pending.iter().enumerate() {
             let pending_signal = thread_signal_from_row(row)?;
             let ordinal = i64::try_from(ordinal)
@@ -3264,6 +3470,14 @@ impl ActivationStore for SqliteStore {
             }
         }
         tx.commit().await?;
+        if advances_clock {
+            tracing::debug!(
+                context_id = %thread.context_id,
+                activation_id = %activation.id,
+                signal_count = pending.len(),
+                "认知活动时钟已随唯一 Signal batch 推进"
+            );
+        }
         self.get_thread_activation(&activation.id).await
     }
 
@@ -7884,6 +8098,218 @@ impl EventStore for SqliteStore {
     }
 }
 
+fn recall_kind_from_str(
+    value: &str,
+) -> Result<RecallDocumentKind, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "event" => Ok(RecallDocumentKind::Event),
+        "frame" => Ok(RecallDocumentKind::Frame),
+        other => Err(format!("未知 Recall document kind: {other}").into()),
+    }
+}
+
+async fn sqlite_recall_capability(
+    pool: &SqlitePool,
+) -> Result<RecallIndexCapability, Box<dyn std::error::Error + Send + Sync>> {
+    let indexed = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'recall_documents_fts'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    Ok(RecallIndexCapability {
+        mode: if indexed {
+            crate::memory::LexicalSearchMode::SqliteFts5Trigram
+        } else {
+            crate::memory::LexicalSearchMode::DegradedSubstring
+        },
+        indexed,
+        unicode_normalization: "nfkc+lowercase".to_string(),
+        detail: if indexed {
+            "SQLite FTS5 trigram index".to_string()
+        } else {
+            "SQLite FTS5 trigram unavailable; bounded LIKE fallback".to_string()
+        },
+    })
+}
+
+fn sqlite_fts_query(query: &str) -> String {
+    query
+        .split_whitespace()
+        .filter(|part| !part.is_empty())
+        .map(|part| format!("\"{}\"", part.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+fn escape_like_pattern(query: &str) -> String {
+    query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+#[async_trait::async_trait]
+impl CognitiveClockStore for SqliteStore {
+    async fn get_context_cognitive_clock(
+        &self,
+        context_id: &str,
+    ) -> Result<ContextCognitiveClock, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query(
+            "SELECT tick, last_signal_batch_id, revision FROM context_cognitive_clocks WHERE context_id = ?",
+        )
+        .bind(context_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(row) => Ok(ContextCognitiveClock {
+                context_id: context_id.to_string(),
+                tick: u64::try_from(row.get::<i64, _>("tick"))?,
+                last_signal_batch_id: row.get("last_signal_batch_id"),
+                revision: u64::try_from(row.get::<i64, _>("revision"))?,
+            }),
+            None => Ok(ContextCognitiveClock {
+                context_id: context_id.to_string(),
+                tick: 0,
+                last_signal_batch_id: None,
+                revision: 0,
+            }),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl RecallProjectionStore for SqliteStore {
+    async fn recall_index_capability(
+        &self,
+    ) -> Result<RecallIndexCapability, Box<dyn std::error::Error + Send + Sync>> {
+        sqlite_recall_capability(&self.pool).await
+    }
+
+    async fn search_recall_documents(
+        &self,
+        context_id: &str,
+        normalized_query: &str,
+        limit: usize,
+    ) -> Result<Vec<RecallSearchHit>, Box<dyn std::error::Error + Send + Sync>> {
+        let limit = limit.clamp(1, 100);
+        let capability = sqlite_recall_capability(&self.pool).await?;
+        let use_fts = capability.indexed
+            && normalized_query
+                .split_whitespace()
+                .all(|term| term.chars().count() >= 3);
+        let rows = if use_fts {
+            let expression = sqlite_fts_query(normalized_query);
+            sqlx::query(
+                r#"SELECT d.document_kind, d.document_id, d.revision, d.retired,
+                          d.preview, d.updated_sequence,
+                          CASE WHEN d.document_id = ? THEN 1000000.0
+                               ELSE -bm25(recall_documents_fts) END AS score
+                   FROM recall_documents_fts
+                   JOIN recall_documents d
+                     ON d.context_id = recall_documents_fts.context_id
+                    AND d.document_kind = recall_documents_fts.document_kind
+                    AND d.document_id = recall_documents_fts.document_id
+                   WHERE recall_documents_fts MATCH ?
+                     AND recall_documents_fts.context_id = ?
+                   ORDER BY (d.document_id = ?) DESC,
+                            bm25(recall_documents_fts) ASC,
+                            d.updated_sequence DESC, d.document_id ASC
+                   LIMIT ?"#,
+            )
+            .bind(normalized_query)
+            .bind(expression)
+            .bind(context_id)
+            .bind(normalized_query)
+            .bind(i64::try_from(limit)?)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            let pattern = format!("%{}%", escape_like_pattern(normalized_query));
+            sqlx::query(
+                r#"SELECT document_kind, document_id, revision, retired, preview,
+                          updated_sequence,
+                          CASE WHEN document_id = ? THEN 1000000.0 ELSE 1.0 END AS score
+                   FROM recall_documents
+                   WHERE context_id = ? AND searchable_text LIKE ? ESCAPE '\'
+                   ORDER BY (document_id = ?) DESC, updated_sequence DESC, document_id ASC
+                   LIMIT ?"#,
+            )
+            .bind(normalized_query)
+            .bind(context_id)
+            .bind(pattern)
+            .bind(normalized_query)
+            .bind(i64::try_from(limit)?)
+            .fetch_all(&self.pool)
+            .await?
+        };
+        rows.into_iter()
+            .map(|row| {
+                Ok(RecallSearchHit {
+                    document_kind: recall_kind_from_str(&row.get::<String, _>("document_kind"))?,
+                    document_id: row.get("document_id"),
+                    revision: u64::try_from(row.get::<i64, _>("revision"))?,
+                    retired: row.get::<i64, _>("retired") != 0,
+                    score: row.get("score"),
+                    preview: row.get("preview"),
+                    updated_sequence: u64::try_from(row.get::<i64, _>("updated_sequence"))?,
+                })
+            })
+            .collect()
+    }
+
+    async fn replace_recall_documents(
+        &self,
+        context_id: &str,
+        documents: &[RecallDocument],
+    ) -> Result<RecallIndexAudit, Box<dyn std::error::Error + Send + Sync>> {
+        if documents
+            .iter()
+            .any(|document| document.context_id != context_id)
+        {
+            return Err("Recall rebuild document 属于错误的 Context".into());
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM recall_documents WHERE context_id = ?")
+            .bind(context_id)
+            .execute(&mut *tx)
+            .await?;
+        for document in documents {
+            upsert_recall_document_in_transaction(&mut tx, document).await?;
+        }
+        tx.commit().await?;
+        self.inspect_recall_index(context_id).await
+    }
+
+    async fn inspect_recall_index(
+        &self,
+        context_id: &str,
+    ) -> Result<RecallIndexAudit, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT document_kind, COUNT(*) AS count
+               FROM recall_documents WHERE context_id = ? GROUP BY document_kind"#,
+        )
+        .bind(context_id)
+        .fetch_all(&self.pool)
+        .await?;
+        let mut event_documents = 0;
+        let mut frame_documents = 0;
+        for row in rows {
+            match row.get::<String, _>("document_kind").as_str() {
+                "event" => event_documents = u64::try_from(row.get::<i64, _>("count"))?,
+                "frame" => frame_documents = u64::try_from(row.get::<i64, _>("count"))?,
+                _ => {}
+            }
+        }
+        Ok(RecallIndexAudit {
+            context_id: context_id.to_string(),
+            capability: sqlite_recall_capability(&self.pool).await?,
+            event_documents,
+            frame_documents,
+        })
+    }
+}
+
 #[async_trait::async_trait]
 impl SessionProjectionStore for SqliteStore {
     async fn query_session_projections(
@@ -7943,6 +8369,102 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use tempfile::NamedTempFile;
+
+    #[tokio::test]
+    async fn recall_projection_indexes_chinese_events_frames_and_nfkc() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "recall-context".to_string(),
+                agent_id: "recall-agent".to_string(),
+                title: "Recall Context".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let event = Event::new(
+            "recall-event".to_string(),
+            "User".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "recall-context",
+                "session_id": "recall-session",
+                "text": "阳光电源需要检查沙箱权限审批"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(event).await.unwrap();
+        let frame = RecallDocument {
+            context_id: "recall-context".to_string(),
+            document_kind: RecallDocumentKind::Frame,
+            document_id: "memory/rust-sandbox".to_string(),
+            revision: 3,
+            searchable_text: crate::memory::normalize_recall_text(
+                "memory/rust-sandbox Rust 沙箱 权限申请",
+            ),
+            preview: "Rust 沙箱权限经验".to_string(),
+            retired: true,
+            updated_sequence: 7,
+            state_hash: "frame-hash".to_string(),
+        };
+        let mut documents = vec![frame];
+        let event_document = sqlx::query(
+            "SELECT context_id, document_kind, document_id, revision, searchable_text, preview, retired, updated_sequence, state_hash FROM recall_documents WHERE document_kind = 'event'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        documents.push(RecallDocument {
+            context_id: event_document.get("context_id"),
+            document_kind: RecallDocumentKind::Event,
+            document_id: event_document.get("document_id"),
+            revision: u64::try_from(event_document.get::<i64, _>("revision")).unwrap(),
+            searchable_text: event_document.get("searchable_text"),
+            preview: event_document.get("preview"),
+            retired: event_document.get::<i64, _>("retired") != 0,
+            updated_sequence: u64::try_from(event_document.get::<i64, _>("updated_sequence"))
+                .unwrap(),
+            state_hash: event_document.get("state_hash"),
+        });
+        store
+            .replace_recall_documents("recall-context", &documents)
+            .await
+            .unwrap();
+
+        let chinese = store
+            .search_recall_documents(
+                "recall-context",
+                &crate::memory::normalize_recall_text("权限审批"),
+                10,
+            )
+            .await
+            .unwrap();
+        assert!(chinese.iter().any(|hit| hit.document_id == "recall-event"));
+        let mixed = store
+            .search_recall_documents(
+                "recall-context",
+                &crate::memory::normalize_recall_text("Ｒｕｓｔ 沙箱"),
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(mixed[0].document_id, "memory/rust-sandbox");
+        assert!(mixed[0].retired);
+        let short = store
+            .search_recall_documents("recall-context", "权限", 1)
+            .await
+            .unwrap();
+        assert_eq!(short.len(), 1, "short query must use bounded fallback");
+        let audit = store.inspect_recall_index("recall-context").await.unwrap();
+        assert_eq!(audit.event_documents, 1);
+        assert_eq!(audit.frame_documents, 1);
+    }
 
     async fn seed_schedule(store: &SqliteStore, suffix: &str) -> ScheduleRecord {
         let context_id = format!("schedule-context-{suffix}");
@@ -11584,6 +12106,14 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        assert_eq!(
+            store
+                .get_context_cognitive_clock("signal-context")
+                .await
+                .unwrap()
+                .tick,
+            1
+        );
         assert_eq!(first.trigger_event_id, "signal-event-1");
         let first_signals = store.list_activation_signals(&first.id).await.unwrap();
         assert_eq!(first_signals.len(), 1);
@@ -11607,6 +12137,15 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+        assert_eq!(
+            store
+                .get_context_cognitive_clock("signal-context")
+                .await
+                .unwrap()
+                .tick,
+            1,
+            "pending Signals have not crossed the unique Activation claim boundary"
         );
 
         let completed = store
@@ -11643,6 +12182,28 @@ mod tests {
         assert!(claimed
             .iter()
             .all(|signal| signal.status == ThreadSignalStatus::Claimed));
+        let clock = store
+            .get_context_cognitive_clock("signal-context")
+            .await
+            .unwrap();
+        assert_eq!(clock.tick, 2, "one multi-Signal batch advances one tick");
+        assert_eq!(clock.last_signal_batch_id.as_deref(), Some("activation-2"));
+
+        let duplicate = store
+            .claim_thread_signal_batch(signal(2), activation(2), 32)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(duplicate.id, "activation-2");
+        assert_eq!(
+            store
+                .get_context_cognitive_clock("signal-context")
+                .await
+                .unwrap()
+                .tick,
+            2,
+            "duplicate Signal delivery must be idempotent"
+        );
 
         let batched = match store
             .update_thread_activation(
@@ -11763,6 +12324,15 @@ mod tests {
             .filter(Option::is_some)
             .count();
         assert_eq!(claimed_count, 1, "Thread Activation 必须 single-flight");
+        assert_eq!(
+            store
+                .get_context_cognitive_clock("signal-context")
+                .await
+                .unwrap()
+                .tick,
+            3,
+            "competing workers may create only one clock-advancing batch"
+        );
         assert!(store
             .list_signal_outbox(SignalOutboxStatus::Pending, 16)
             .await
@@ -12639,6 +13209,7 @@ mod tests {
                 state: serde_json::json!({"version": 0, "frames": []}),
                 state_hash: "hash-0".to_string(),
                 head_event_id: None,
+                recall_documents: Vec::new(),
             })
             .await
             .unwrap();
@@ -12666,6 +13237,7 @@ mod tests {
                     state: serde_json::json!({"version": 1, "frames": []}),
                     state_hash: "hash-1".to_string(),
                     head_event_id: Some(event.id.clone()),
+                    recall_documents: Vec::new(),
                 },
             )
             .await
@@ -12699,6 +13271,7 @@ mod tests {
                     state: serde_json::json!({"version": 1, "frames": ["stale"]}),
                     state_hash: "stale-hash".to_string(),
                     head_event_id: Some(stale_event.id.clone()),
+                    recall_documents: Vec::new(),
                 },
             )
             .await
@@ -12747,6 +13320,7 @@ mod tests {
                 state: serde_json::json!({"version": 0, "frames": [], "retired": []}),
                 state_hash: "session-hash-0".to_string(),
                 head_event_id: None,
+                recall_documents: Vec::new(),
             })
             .await
             .unwrap();
@@ -12826,6 +13400,7 @@ mod tests {
                     state: serde_json::json!({"version": 1, "retired": [observation.id]}),
                     state_hash: "session-hash-1".to_string(),
                     head_event_id: Some(retire.id.clone()),
+                    recall_documents: Vec::new(),
                 },
             )
             .await
@@ -12885,6 +13460,7 @@ mod tests {
                     state: serde_json::json!({"version": 2, "retired": []}),
                     state_hash: "session-hash-2".to_string(),
                     head_event_id: Some(restore.id.clone()),
+                    recall_documents: Vec::new(),
                 },
             )
             .await
@@ -12919,6 +13495,7 @@ mod tests {
                 state: serde_json::json!({"version": 0, "retired": []}),
                 state_hash: "migration-hash-0".to_string(),
                 head_event_id: None,
+                recall_documents: Vec::new(),
             })
             .await
             .unwrap();
@@ -12968,6 +13545,7 @@ mod tests {
                         state: serde_json::json!({"version": 1, "retired": [retired.id.clone()]}),
                         state_hash: "migration-hash-1".to_string(),
                         head_event_id: Some(transaction.id.clone()),
+                        recall_documents: Vec::new(),
                     },
                 )
                 .await
@@ -13027,6 +13605,7 @@ mod tests {
                 state: serde_json::json!({"version": 0}),
                 state_hash: "sqlite-shared-0".to_string(),
                 head_event_id: None,
+                recall_documents: Vec::new(),
             })
             .await
             .unwrap();
@@ -13068,6 +13647,7 @@ mod tests {
                     state: serde_json::json!({"version": 1, "worker": "a"}),
                     state_hash: "sqlite-shared-a".to_string(),
                     head_event_id: Some(event_a.id.clone()),
+                    recall_documents: Vec::new(),
                 },
             ),
             second.commit_mind_projection_transaction(
@@ -13081,6 +13661,7 @@ mod tests {
                     state: serde_json::json!({"version": 1, "worker": "b"}),
                     state_hash: "sqlite-shared-b".to_string(),
                     head_event_id: Some(event_b.id.clone()),
+                    recall_documents: Vec::new(),
                 },
             )
         );
