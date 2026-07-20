@@ -279,7 +279,9 @@ impl MorphzRuntimeBuilder {
                 display_name: None,
             })) as Arc<dyn IdentityProvider>
         });
-        let bus = Arc::new(InMemoryEventBus::new());
+        let bus = Arc::new(InMemoryEventBus::with_concurrency_limit(
+            self.config.orchestrator.event_bus.max_in_flight,
+        ));
         let (store, sqlite_database_path, storage_label): (
             Arc<dyn RuntimeStore>,
             Option<String>,

@@ -247,6 +247,8 @@ pub struct OrchestratorConfig {
     /// 这只约束模型调用，不约束等待工具、定时器或审批的 Activation。
     #[serde(deserialize_with = "deserialize_positive_usize")]
     pub model_provider_max_in_flight: usize,
+    /// EventBus 异步业务 handler 的进程内并发窗口。
+    pub event_bus: EventBusConfig,
     /// Durable Session/Event Ledger 的单机有界写入与 group commit 策略。
     pub event_writer: EventWriterConfig,
     /// Runtime 通用调度策略。这里只定义物理调度窗口，不承载任务语义。
@@ -301,6 +303,7 @@ impl Default for OrchestratorConfig {
     fn default() -> Self {
         Self {
             model_provider_max_in_flight: 4,
+            event_bus: EventBusConfig::default(),
             event_writer: EventWriterConfig::default(),
             scheduler: SchedulerConfig::default(),
             activation_admission: ActivationAdmissionConfig::default(),
@@ -322,6 +325,24 @@ impl Default for OrchestratorConfig {
             frame_retirement: FrameRetirementConfig::default(),
             persist_full_context_inspect: false,
         }
+    }
+}
+
+/// EventBus 异步业务派发的单机背压策略。
+///
+/// 该窗口位于 Activation 和模型 Provider 准入之前，只约束同时执行的
+/// business handler；同一订阅者对同一 Event 的持久重派会在此窗口前去重。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct EventBusConfig {
+    /// 同时执行的异步 business handler 上限。
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub max_in_flight: usize,
+}
+
+impl Default for EventBusConfig {
+    fn default() -> Self {
+        Self { max_in_flight: 10 }
     }
 }
 
@@ -1670,6 +1691,21 @@ mod tests {
     }
 
     #[test]
+    fn event_bus_config_is_bounded_and_rejects_zero_capacity() {
+        let defaults = EventBusConfig::default();
+        assert_eq!(defaults.max_in_flight, 10);
+
+        let parsed: EventBusConfig = toml::from_str("max_in_flight = 24\n").unwrap();
+        assert_eq!(parsed.max_in_flight, 24);
+
+        let error = toml::from_str::<EventBusConfig>("max_in_flight = 0\n")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("max_in_flight"));
+        assert!(error.contains("必须大于等于 1"));
+    }
+
+    #[test]
     fn scheduler_config_has_small_bounded_delivery_window() {
         let defaults = SchedulerConfig::default();
         assert_eq!(defaults.delivery_merge_window.as_secs(), 1);
@@ -1959,6 +1995,7 @@ mod tests {
         assert_eq!(cfg.server.identity.provider_id, "morphz-site");
         assert_eq!(cfg.server.identity.service_token_env, "MORPHZ_API_TOKEN");
         assert_eq!(cfg.orchestrator.model_provider_max_in_flight, 4);
+        assert_eq!(cfg.orchestrator.event_bus.max_in_flight, 10);
         assert_eq!(cfg.orchestrator.activation_admission.max_in_flight, 16);
         assert_eq!(cfg.orchestrator.max_delegation_depth, 3);
         assert_eq!(cfg.orchestrator.max_active_delegations_per_agent, 8);
@@ -2046,12 +2083,15 @@ mod tests {
         let mut tmp_file = NamedTempFile::new().unwrap();
         writeln!(tmp_file, "[orchestrator]").unwrap();
         writeln!(tmp_file, "model_provider_max_in_flight = 2").unwrap();
+        writeln!(tmp_file, "[orchestrator.event_bus]").unwrap();
+        writeln!(tmp_file, "max_in_flight = 12").unwrap();
         writeln!(tmp_file, "[orchestrator.activation_admission]").unwrap();
         writeln!(tmp_file, "max_in_flight = 7").unwrap();
 
         let cfg = toml::from_str::<AppConfig>(&std::fs::read_to_string(tmp_file.path()).unwrap())
             .unwrap();
         assert_eq!(cfg.orchestrator.model_provider_max_in_flight, 2);
+        assert_eq!(cfg.orchestrator.event_bus.max_in_flight, 12);
         assert_eq!(cfg.orchestrator.activation_admission.max_in_flight, 7);
         assert_eq!(cfg.orchestrator.tool_timeout_secs, 30);
         assert_eq!(cfg.server.bind, "127.0.0.1:8080");

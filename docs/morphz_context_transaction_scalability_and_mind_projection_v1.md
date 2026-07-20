@@ -570,6 +570,7 @@ SQLite WAL
 
 执行资源分成两个独立池：
 
+- `orchestrator.event_bus.max_in_flight`：进入 Activation 前的异步业务 handler 窗口，默认 10；同一订阅者对同一 Event 的在途重派会先去重；
 - `orchestrator.activation_admission.max_in_flight`：完整 Activation 的运行上限，默认 16；
 - `orchestrator.model_provider_max_in_flight`：模型 Provider 的物理请求上限，默认 4。
 

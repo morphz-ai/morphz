@@ -932,6 +932,7 @@ class 由 Runtime 根据持久 Trigger Event 推导，不接受模型提供任�
 当前配置项包括：
 
 ```text
+orchestrator.event_bus.max_in_flight
 orchestrator.model_provider_max_in_flight
 orchestrator.activation_admission.max_in_flight
 orchestrator.activation_admission.max_queued

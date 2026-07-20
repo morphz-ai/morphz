@@ -146,11 +146,33 @@ impl Subscription {
     }
 }
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct AsyncDispatchKey {
+    subscription_id: String,
+    event_id: String,
+}
+
+struct AsyncDispatchRegistration {
+    in_flight: Arc<DashMap<AsyncDispatchKey, ()>>,
+    key: AsyncDispatchKey,
+}
+
+impl Drop for AsyncDispatchRegistration {
+    fn drop(&mut self) {
+        self.in_flight.remove(&self.key);
+    }
+}
+
 pub struct InMemoryEventBus {
     subscriptions: DashMap<String, Arc<Subscription>>,
     sub_counter: AtomicU64,
     error_handler: Arc<dyn Fn(Box<dyn std::error::Error + Send + Sync>, Event) + Send + Sync>,
     semaphore: Arc<tokio::sync::Semaphore>,
+    /// Durable outbox retries may redispatch one Event while its original
+    /// business handler is still waiting on a thread or admission gate. Keep
+    /// one local delivery per subscription/Event pair so retries cannot fill
+    /// the global business-handler semaphore with duplicate waiters.
+    async_in_flight: Arc<DashMap<AsyncDispatchKey, ()>>,
     durable_lock: Arc<tokio::sync::Mutex<()>>,
     sync_handler_timeout: std::time::Duration,
 }
@@ -178,6 +200,7 @@ impl InMemoryEventBus {
                 tracing::error!(event_id = %ev.id, error = ?err, "事件总线错误");
             }),
             semaphore: Arc::new(tokio::sync::Semaphore::new(limit)),
+            async_in_flight: Arc::new(DashMap::new()),
             durable_lock: Arc::new(tokio::sync::Mutex::new(())),
             sync_handler_timeout,
         }
@@ -329,12 +352,27 @@ impl InMemoryEventBus {
 
         // 3. 异步派发其他业务监听器
         for sub in async_subs {
+            let dispatch_key = AsyncDispatchKey {
+                subscription_id: sub.id.clone(),
+                event_id: ev.id.clone(),
+            };
+            match self.async_in_flight.entry(dispatch_key.clone()) {
+                dashmap::mapref::entry::Entry::Occupied(_) => continue,
+                dashmap::mapref::entry::Entry::Vacant(entry) => {
+                    entry.insert(());
+                }
+            }
             let handler = Arc::clone(&sub.handler);
             let ev_clone = ev.clone();
             let ev_clone_for_err = ev_clone.clone();
             let err_handler = Arc::clone(&self.error_handler);
             let semaphore = Arc::clone(&self.semaphore);
+            let in_flight = Arc::clone(&self.async_in_flight);
             tokio::spawn(async move {
+                let _registration = AsyncDispatchRegistration {
+                    in_flight,
+                    key: dispatch_key,
+                };
                 if let Ok(permit) = semaphore.acquire_owned().await {
                     let _permit = permit;
                     if let Err(err) = handler(ev_clone).await {
@@ -482,6 +520,121 @@ mod tests {
             "最大并发数量 {} 应该不超过 2 且大于 0",
             mc
         );
+    }
+
+    #[tokio::test]
+    async fn duplicate_in_flight_dispatch_does_not_starve_an_unrelated_event() {
+        let bus = Arc::new(InMemoryEventBus::with_concurrency_limit(2));
+        let blocked_started = Arc::new(tokio::sync::Notify::new());
+        let blocked_release = Arc::new(tokio::sync::Notify::new());
+        let unrelated_seen = Arc::new(tokio::sync::Notify::new());
+        let blocked_calls = Arc::new(AtomicU64::new(0));
+
+        let started = Arc::clone(&blocked_started);
+        let release = Arc::clone(&blocked_release);
+        let unrelated = Arc::clone(&unrelated_seen);
+        let calls = Arc::clone(&blocked_calls);
+        bus.subscribe(
+            "chat/*".to_string(),
+            Arc::new(move |event| {
+                let started = Arc::clone(&started);
+                let release = Arc::clone(&release);
+                let unrelated = Arc::clone(&unrelated);
+                let calls = Arc::clone(&calls);
+                Box::pin(async move {
+                    if event.id == "blocked" {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        started.notify_one();
+                        release.notified().await;
+                    } else if event.id == "unrelated" {
+                        unrelated.notify_one();
+                    }
+                    Ok(())
+                })
+            }),
+        );
+
+        let blocked = Event::new(
+            "blocked".to_string(),
+            "test".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::new(),
+        );
+        bus.dispatch_persisted(blocked.clone()).await.unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            blocked_started.notified(),
+        )
+        .await
+        .expect("the original handler should start");
+
+        // Model the Signal Outbox polling the same still-pending row many
+        // times while the original handler is blocked behind its thread gate.
+        for _ in 0..32 {
+            bus.dispatch_persisted(blocked.clone()).await.unwrap();
+        }
+        bus.dispatch_persisted(Event::new(
+            "unrelated".to_string(),
+            "test".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::Map::new(),
+        ))
+        .await
+        .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), unrelated_seen.notified())
+            .await
+            .expect("duplicate redelivery must not consume the unrelated event's slot");
+        assert_eq!(blocked_calls.load(Ordering::SeqCst), 1);
+        blocked_release.notify_waiters();
+    }
+
+    #[tokio::test]
+    async fn failed_async_dispatch_can_be_retried() {
+        let bus = Arc::new(InMemoryEventBus::with_concurrency_limit(1));
+        let attempts = Arc::new(AtomicU64::new(0));
+        let completed = Arc::new(tokio::sync::Notify::new());
+        let attempts_handler = Arc::clone(&attempts);
+        let completed_handler = Arc::clone(&completed);
+        bus.subscribe(
+            "chat/test".to_string(),
+            Arc::new(move |_event| {
+                let attempts = Arc::clone(&attempts_handler);
+                let completed = Arc::clone(&completed_handler);
+                Box::pin(async move {
+                    let attempt = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                    if attempt == 1 {
+                        return Err(std::io::Error::other("transient failure").into());
+                    }
+                    completed.notify_one();
+                    Ok(())
+                })
+            }),
+        );
+        let event = Event::new(
+            "retryable".to_string(),
+            "test".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/test".to_string(),
+            serde_json::Map::new(),
+        );
+
+        bus.dispatch_persisted(event.clone()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !bus.async_in_flight.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("a failed handler should release its in-flight registration");
+
+        bus.dispatch_persisted(event).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), completed.notified())
+            .await
+            .expect("the durable retry should run after a transient failure");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
