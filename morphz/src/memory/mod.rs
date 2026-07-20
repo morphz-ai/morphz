@@ -368,6 +368,39 @@ pub struct SessionRecord {
     pub attention_event_id: Option<String>,
 }
 
+/// Runtime-authoritative identity. A Principal is stable across Sessions and
+/// is never inferred from message text or an LLM-generated Frame.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrincipalRecord {
+    pub id: String,
+    pub provider_id: String,
+    pub assurance: String,
+    pub display_name: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewPrincipal {
+    pub id: String,
+    pub provider_id: String,
+    pub assurance: String,
+    pub display_name: Option<String>,
+}
+
+/// Participation is orthogonal to the Agent -> Context -> Session ownership
+/// hierarchy. One Principal may participate in several Sessions and one
+/// Session may eventually contain several Principals (for example a group
+/// conversation). The exact sender still belongs to each immutable message
+/// Event rather than to this directory record.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionPrincipalBinding {
+    pub session_id: String,
+    pub principal_id: String,
+    pub bound_at: DateTime<Utc>,
+    pub unbound_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionMountKind {
@@ -448,6 +481,7 @@ pub struct ThreadActivationRecord {
     pub agent_id: String,
     pub context_id: String,
     pub session_id: String,
+    pub initiating_principal_id: Option<String>,
     pub trigger_event_id: String,
     pub trigger_sequence: u64,
     pub trigger_kind: String,
@@ -467,6 +501,7 @@ pub struct NewThreadActivation {
     pub agent_id: String,
     pub context_id: String,
     pub session_id: String,
+    pub initiating_principal_id: Option<String>,
     pub trigger_event_id: String,
     pub trigger_sequence: u64,
     pub trigger_kind: String,
@@ -522,6 +557,7 @@ pub struct ThreadSignalRecord {
     pub id: String,
     pub thread_id: String,
     pub event_id: String,
+    pub principal_id: Option<String>,
     pub sequence: u64,
     pub kind: String,
     pub parent_activation_id: Option<String>,
@@ -536,6 +572,7 @@ pub struct NewThreadSignal {
     pub id: String,
     pub thread_id: String,
     pub event_id: String,
+    pub principal_id: Option<String>,
     pub sequence: u64,
     pub kind: String,
     pub parent_activation_id: Option<String>,
@@ -713,6 +750,7 @@ pub struct ExecutionJobRecord {
     pub agent_id: String,
     pub context_id: String,
     pub session_id: String,
+    pub initiating_principal_id: Option<String>,
     pub tool_call_id: String,
     pub tool_name: String,
     pub request: serde_json::Value,
@@ -749,6 +787,7 @@ pub struct NewExecutionJob {
     pub agent_id: String,
     pub context_id: String,
     pub session_id: String,
+    pub initiating_principal_id: Option<String>,
     pub tool_call_id: String,
     pub tool_name: String,
     pub request: serde_json::Value,
@@ -1212,6 +1251,7 @@ pub struct ThreadRecord {
     pub agent_id: String,
     pub context_id: String,
     pub session_id: String,
+    pub initiating_principal_id: Option<String>,
     pub root_turn_id: String,
     pub kind: ThreadKind,
     pub lifecycle: ThreadLifecycle,
@@ -1231,6 +1271,7 @@ pub struct NewThread {
     pub agent_id: String,
     pub context_id: String,
     pub session_id: String,
+    pub initiating_principal_id: Option<String>,
     pub root_turn_id: String,
     pub kind: ThreadKind,
     pub executor_kind: String,
@@ -1342,6 +1383,9 @@ pub struct DelegationRecord {
     pub parent_session_id: String,
     pub child_context_id: String,
     pub child_session_id: String,
+    /// Runtime-authenticated Principal that initiated the parent Activation.
+    /// This is causal identity metadata, not an authorization decision.
+    pub initiating_principal_id: Option<String>,
     pub task: String,
     pub success_when: Option<String>,
     pub context_scope: String,
@@ -1359,6 +1403,7 @@ pub struct NewDelegation {
     pub parent_session_id: String,
     pub child_context_id: String,
     pub child_session_id: String,
+    pub initiating_principal_id: Option<String>,
     pub task: String,
     pub success_when: Option<String>,
     pub context_scope: String,
@@ -1443,6 +1488,9 @@ pub struct ObjectiveRecord {
     pub delivery_session_id: String,
     pub parent_objective_id: Option<String>,
     pub source_event_id: String,
+    /// Runtime-authenticated Principal at Objective formation. Supervisor
+    /// continuations retain this identity across waits and restarts.
+    pub initiating_principal_id: Option<String>,
     pub stated_objective: String,
     pub revision: u64,
     pub status: ObjectiveStatus,
@@ -1469,6 +1517,7 @@ pub struct NewObjective {
     pub delivery_session_id: String,
     pub parent_objective_id: Option<String>,
     pub source_event_id: String,
+    pub initiating_principal_id: Option<String>,
     pub stated_objective: String,
     pub token_budget: Option<u64>,
 }
@@ -1860,6 +1909,32 @@ pub trait ExecutionApprovalStore: Send + Sync {
 /// lifecycle metadata only; Mind semantics remain in the Context event stream.
 #[async_trait::async_trait]
 pub trait SessionDirectoryStore: Send + Sync {
+    async fn ensure_principal(
+        &self,
+        principal: NewPrincipal,
+    ) -> Result<PrincipalRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_principal(
+        &self,
+        id: &str,
+    ) -> Result<Option<PrincipalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn bind_session_principal(
+        &self,
+        session_id: &str,
+        principal_id: &str,
+    ) -> Result<SessionPrincipalBinding, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_session_principals(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SessionPrincipalBinding>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_context_principal_bindings(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<SessionPrincipalBinding>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn verify_session_principal(
+        &self,
+        session_id: &str,
+        principal_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
     async fn create_agent_bundle(
         &self,
         agent: NewAgent,

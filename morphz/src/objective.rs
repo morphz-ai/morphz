@@ -7,7 +7,8 @@ use crate::memory::{
 use crate::orchestrator::context::ContextEngine;
 use crate::timer::{TimerDisposition, TimerEngine};
 use crate::tool::{
-    Tool, ToolExecutionClass, CURRENT_ATTEMPT_ID, CURRENT_CONTEXT_ID, CURRENT_SESSION_ID,
+    Tool, ToolExecutionClass, CURRENT_ATTEMPT_ID, CURRENT_CONTEXT_ID, CURRENT_PRINCIPAL_ID,
+    CURRENT_SESSION_ID,
 };
 use chrono::{DateTime, Duration, Utc};
 use dashmap::DashMap;
@@ -108,6 +109,7 @@ impl Tool for ObjectiveCreateTool {
         let attempt_id = CURRENT_ATTEMPT_ID
             .try_with(Clone::clone)
             .map_err(|_| "objective_create 缺少 Runtime 注入的当前 Evaluation")?;
+        let initiating_principal_id = CURRENT_PRINCIPAL_ID.try_with(Clone::clone).ok().flatten();
         let stated_objective = args.stated_objective.trim();
         if stated_objective.is_empty() {
             return Err("objective_create.stated_objective 不能为空".into());
@@ -197,6 +199,7 @@ impl Tool for ObjectiveCreateTool {
             .into_iter()
             .find(|objective| {
                 objective.coordinator_session_id == session_id
+                    && objective.initiating_principal_id == initiating_principal_id
                     && objective.parent_objective_id == parent_objective_id
                     && normalize_objective_statement(&objective.stated_objective)
                         == normalized_statement
@@ -228,28 +231,30 @@ impl Tool for ObjectiveCreateTool {
         let nonce = Utc::now().timestamp_nanos_opt().unwrap_or(0);
         let objective_id = format!("objective-auto-{nonce}");
         let source_event_id = format!("objective_auto_request_{nonce}");
+        let mut request_payload = vec![
+            ("context_id".to_string(), json!(context_id)),
+            ("session_id".to_string(), json!(session_id)),
+            ("attempt_id".to_string(), json!(attempt_id)),
+            ("requested_objective_id".to_string(), json!(objective_id)),
+            ("stated_objective".to_string(), json!(stated_objective)),
+            ("reason".to_string(), json!(reason)),
+            ("source_refs".to_string(), json!(args.source_refs)),
+            ("source_event_ids".to_string(), json!(source_event_ids)),
+            (
+                "parent_objective_id".to_string(),
+                json!(parent_objective_id),
+            ),
+            ("token_budget".to_string(), json!(args.token_budget)),
+        ];
+        if let Some(principal_id) = &initiating_principal_id {
+            request_payload.push(("principal_id".to_string(), json!(principal_id)));
+        }
         let request_event = Event::new(
             source_event_id.clone(),
             "Agent-Morphz".to_string(),
             TYPE_OBJECTIVE_CONTROL.to_string(),
             "objective/autonomous_requested".to_string(),
-            vec![
-                ("context_id".to_string(), json!(context_id)),
-                ("session_id".to_string(), json!(session_id)),
-                ("attempt_id".to_string(), json!(attempt_id)),
-                ("requested_objective_id".to_string(), json!(objective_id)),
-                ("stated_objective".to_string(), json!(stated_objective)),
-                ("reason".to_string(), json!(reason)),
-                ("source_refs".to_string(), json!(args.source_refs)),
-                ("source_event_ids".to_string(), json!(source_event_ids)),
-                (
-                    "parent_objective_id".to_string(),
-                    json!(parent_objective_id),
-                ),
-                ("token_budget".to_string(), json!(args.token_budget)),
-            ]
-            .into_iter()
-            .collect(),
+            request_payload.into_iter().collect(),
         );
         self.supervisor
             .audit_store
@@ -268,6 +273,7 @@ impl Tool for ObjectiveCreateTool {
                 delivery_session_id: session_id.clone(),
                 parent_objective_id,
                 source_event_id,
+                initiating_principal_id,
                 stated_objective: stated_objective.to_string(),
                 token_budget: args.token_budget,
             })
@@ -1521,28 +1527,30 @@ impl ObjectiveSupervisor {
             "(objective-continuation (id {}) (revision {}) (evaluation {}) (reason active-no-wait) (instruction \"Continue the stated objective autonomously. Audit remaining requirements against current evidence. If complete, call objective_update before the final reply; if waiting, record a precise wait condition; otherwise make new progress.\"))",
             objective.id, claimed_revision, evaluation_id
         );
+        let mut continuation_payload = vec![
+            ("context_id".to_string(), json!(objective.context_id)),
+            (
+                "session_id".to_string(),
+                json!(objective.coordinator_session_id),
+            ),
+            ("objective_id".to_string(), json!(objective.id)),
+            ("objective_revision".to_string(), json!(claimed_revision)),
+            ("objective_evaluation_id".to_string(), json!(evaluation_id)),
+            ("runtime_force_evaluation".to_string(), json!(true)),
+            ("tool_name".to_string(), json!("objective_supervisor")),
+            ("tool_status".to_string(), json!("success")),
+            ("wake_source".to_string(), json!("active-no-wait")),
+            ("text".to_string(), json!(continuation)),
+        ];
+        if let Some(principal_id) = &objective.initiating_principal_id {
+            continuation_payload.push(("principal_id".to_string(), json!(principal_id)));
+        }
         let continuation_event = Event::new(
             format!("objective_continue_{evaluation_id}"),
             "Runtime-ObjectiveSupervisor".to_string(),
             TYPE_TOOL_OUTPUT.to_string(),
             "chat/tool_output".to_string(),
-            vec![
-                ("context_id".to_string(), json!(objective.context_id)),
-                (
-                    "session_id".to_string(),
-                    json!(objective.coordinator_session_id),
-                ),
-                ("objective_id".to_string(), json!(objective.id)),
-                ("objective_revision".to_string(), json!(claimed_revision)),
-                ("objective_evaluation_id".to_string(), json!(evaluation_id)),
-                ("runtime_force_evaluation".to_string(), json!(true)),
-                ("tool_name".to_string(), json!("objective_supervisor")),
-                ("tool_status".to_string(), json!("success")),
-                ("wake_source".to_string(), json!("active-no-wait")),
-                ("text".to_string(), json!(continuation)),
-            ]
-            .into_iter()
-            .collect(),
+            continuation_payload.into_iter().collect(),
         );
         let claimed = self
             .store
@@ -1812,6 +1820,9 @@ impl ObjectiveSupervisor {
         if let Some(reason) = reason {
             payload.push(("reason".to_string(), json!(reason)));
         }
+        if let Some(principal_id) = &objective.initiating_principal_id {
+            payload.push(("principal_id".to_string(), json!(principal_id)));
+        }
         let event = Event::new(
             format!(
                 "objective_{}_{}_{}",
@@ -1832,6 +1843,27 @@ impl ObjectiveSupervisor {
         &self,
         objective: &ObjectiveRecord,
     ) -> Result<(), DynError> {
+        let mut payload = vec![
+            ("context_id".to_string(), json!(objective.context_id)),
+            (
+                "session_id".to_string(),
+                json!(objective.coordinator_session_id),
+            ),
+            ("objective_id".to_string(), json!(objective.id)),
+            ("objective_revision".to_string(), json!(objective.revision)),
+            ("objective_status".to_string(), json!(objective.status)),
+            (
+                "had_evaluation_lease".to_string(),
+                json!(objective.active_evaluation_id.is_some()),
+            ),
+            (
+                "wait_condition".to_string(),
+                json!(objective.wait_condition),
+            ),
+        ];
+        if let Some(principal_id) = &objective.initiating_principal_id {
+            payload.push(("principal_id".to_string(), json!(principal_id)));
+        }
         let event = Event::new(
             format!(
                 "objective_recovered_{}_{}",
@@ -1841,26 +1873,7 @@ impl ObjectiveSupervisor {
             "Runtime-ObjectiveSupervisor".to_string(),
             TYPE_OBJECTIVE_CONTROL.to_string(),
             "objective/recovered".to_string(),
-            vec![
-                ("context_id".to_string(), json!(objective.context_id)),
-                (
-                    "session_id".to_string(),
-                    json!(objective.coordinator_session_id),
-                ),
-                ("objective_id".to_string(), json!(objective.id)),
-                ("objective_revision".to_string(), json!(objective.revision)),
-                ("objective_status".to_string(), json!(objective.status)),
-                (
-                    "had_evaluation_lease".to_string(),
-                    json!(objective.active_evaluation_id.is_some()),
-                ),
-                (
-                    "wait_condition".to_string(),
-                    json!(objective.wait_condition),
-                ),
-            ]
-            .into_iter()
-            .collect(),
+            payload.into_iter().collect(),
         );
         self.audit_store.append(event.clone()).await?;
         self.bus.publish(event).await
@@ -1963,6 +1976,7 @@ mod tests {
                 delivery_session_id: "session-recovery".to_string(),
                 parent_objective_id: None,
                 source_event_id: "source-persisted-wake".to_string(),
+                initiating_principal_id: Some("principal:recovery-user".to_string()),
                 stated_objective: "外部事件到达后继续".to_string(),
                 token_budget: None,
             })
@@ -2021,6 +2035,10 @@ mod tests {
         assert!(recovered.wait_condition.is_none());
         assert!(recovered.active_evaluation_id.is_some());
         assert_eq!(recovered.continuation_sequence, 1);
+        assert_eq!(
+            recovered.initiating_principal_id.as_deref(),
+            Some("principal:recovery-user")
+        );
         let wait_events = store
             .query(QueryFilter {
                 context_id: Some("context-recovery".to_string()),
@@ -2033,9 +2051,32 @@ mod tests {
         assert_eq!(
             wait_events[0]
                 .payload
+                .get("principal_id")
+                .and_then(serde_json::Value::as_str),
+            Some("principal:recovery-user")
+        );
+        assert_eq!(
+            wait_events[0]
+                .payload
                 .get("reason")
                 .and_then(serde_json::Value::as_str),
             Some(wake_event.id.as_str())
+        );
+        let continuation_events = store
+            .query(QueryFilter {
+                context_id: Some("context-recovery".to_string()),
+                topic: Some("chat/tool_output".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(continuation_events.len(), 1);
+        assert_eq!(
+            continuation_events[0]
+                .payload
+                .get("principal_id")
+                .and_then(serde_json::Value::as_str),
+            Some("principal:recovery-user")
         );
     }
 
@@ -2149,6 +2190,7 @@ mod tests {
                 delivery_session_id: "session-fence".to_string(),
                 parent_objective_id: None,
                 source_event_id: "source-fence".to_string(),
+                initiating_principal_id: None,
                 stated_objective: "verify stale evaluation fencing".to_string(),
                 token_budget: None,
             })

@@ -39,9 +39,92 @@ const MAX_SCHEDULE_INTENT_CHARS: usize = 1_000_000;
 tokio::task_local! {
     pub static CURRENT_SESSION_ID: String;
     pub static CURRENT_CONTEXT_ID: String;
+    pub static CURRENT_PRINCIPAL_ID: Option<String>;
     pub static CURRENT_ATTEMPT_ID: String;
     pub static CURRENT_CAUSAL_ROUTE: Option<ToolCausalRoute>;
     pub static CURRENT_EXECUTION_JOB: Option<ToolExecutionJobContext>;
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerifyIdentityArgs {
+    claimed_principal_id: String,
+}
+
+pub struct VerifyIdentityTool {
+    sessions: Arc<dyn SessionStore>,
+}
+
+impl VerifyIdentityTool {
+    pub fn new(sessions: Arc<dyn SessionStore>) -> Self {
+        Self { sessions }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for VerifyIdentityTool {
+    fn name(&self) -> &str {
+        "verify_identity"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "验证消息正文中声称的 Principal 是否就是当前 Activation 的 Runtime 权威身份。不要传 session_id；Runtime 自动使用当前求值路由。身份声明与 kernel.active-principal 冲突、身份等价关系会影响判断、或用户明确要求验证时使用。它只验证身份事实，不替你决定是否分享信息。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "claimed_principal_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "需要验证的稳定 Principal ID，不是显示名称或 Session ID"
+                    }
+                },
+                "required": ["claimed_principal_id"],
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
+    }
+
+    async fn execute(
+        &self,
+        arguments: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let args: VerifyIdentityArgs = serde_json::from_str(arguments)?;
+        let claimed = args.claimed_principal_id.trim();
+        if claimed.is_empty() {
+            return Err("claimed_principal_id 不能为空".into());
+        }
+        let session_id = CURRENT_SESSION_ID
+            .try_with(Clone::clone)
+            .map_err(|_| "verify_identity 缺少当前 Session 路由")?;
+        let active_principal_id = CURRENT_PRINCIPAL_ID.try_with(Clone::clone).ok().flatten();
+        let Some(active_principal_id) = active_principal_id else {
+            return Ok(serde_json::json!({
+                "verified": false,
+                "claimed_principal_id": claimed,
+                "reason": "no_active_principal",
+                "authority": "runtime"
+            })
+            .to_string());
+        };
+        let binding_valid = self
+            .sessions
+            .verify_session_principal(&session_id, &active_principal_id)
+            .await?;
+        Ok(serde_json::json!({
+            "verified": binding_valid && claimed == active_principal_id,
+            "claimed_principal_id": claimed,
+            "active_principal_id": active_principal_id,
+            "session_binding_valid": binding_valid,
+            "authority": "runtime"
+        })
+        .to_string())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -64,6 +147,7 @@ pub struct ToolExecutionJobContext {
     pub agent_id: String,
     pub context_id: String,
     pub session_id: String,
+    pub initiating_principal_id: Option<String>,
     pub tool_call_id: String,
 }
 
@@ -340,6 +424,10 @@ impl Tool for SendMessageTool {
             ("text".to_string(), serde_json::json!(args.content)),
         ]);
         let causal_route = CURRENT_CAUSAL_ROUTE.try_with(Clone::clone).ok().flatten();
+        let initiating_principal_id = CURRENT_PRINCIPAL_ID.try_with(Clone::clone).ok().flatten();
+        if let Some(principal_id) = &initiating_principal_id {
+            payload.insert("principal_id".to_string(), serde_json::json!(principal_id));
+        }
         extend_causal_route(&mut payload, causal_route.as_ref());
         self.bus
             .publish(Event::new(
@@ -469,6 +557,7 @@ impl BackgroundTaskScheduler {
                 agent_id: parent.agent_id.clone(),
                 context_id: parent.context_id.clone(),
                 session_id: parent.session_id.clone(),
+                initiating_principal_id: parent.initiating_principal_id.clone(),
                 tool_call_id: child_tool_call_id,
                 tool_name: "exec/background".to_string(),
                 request,
@@ -1532,6 +1621,10 @@ impl ThreadScheduler {
                 "session_id".to_string(),
                 serde_json::json!(owner.session_id),
             ),
+            (
+                "principal_id".to_string(),
+                serde_json::json!(owner.initiating_principal_id),
+            ),
             ("root_turn_id".to_string(), serde_json::json!(root_turn_id)),
             ("schedule_id".to_string(), serde_json::json!(current.id)),
             (
@@ -1985,6 +2078,7 @@ impl Tool for ScheduleTxTool {
                     agent_id: session.agent_id.clone(),
                     context_id: context_id.clone(),
                     session_id: session_id.clone(),
+                    initiating_principal_id: current_thread.initiating_principal_id.clone(),
                     root_turn_id,
                     kind: ThreadKind::Execution,
                     executor_kind: "self".to_string(),
@@ -2183,6 +2277,7 @@ pub struct BackgroundTask {
     pub pgid: i32,
     pub session_id: String,
     pub context_id: String,
+    pub initiating_principal_id: Option<String>,
     pub causal_route: Option<ToolCausalRoute>,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub last_output_at: chrono::DateTime<chrono::Utc>,
@@ -2235,6 +2330,7 @@ pub(crate) fn background_task_snapshot(task: &BackgroundTask) -> serde_json::Val
         "process_group_id": task.pgid,
         "session_id": task.session_id,
         "context_id": task.context_id,
+        "initiating_principal_id": task.initiating_principal_id,
         "activation_id": task.causal_route.as_ref().map(|route| &route.activation_id),
         "root_turn_id": task.causal_route.as_ref().map(|route| &route.root_turn_id),
         "started_at": task.started_at,
@@ -2346,6 +2442,9 @@ fn background_check_due_payload(
     let mut payload = serde_json::Map::new();
     payload.insert("context_id".to_string(), serde_json::json!(task.context_id));
     payload.insert("session_id".to_string(), serde_json::json!(task.session_id));
+    if let Some(principal_id) = &task.initiating_principal_id {
+        payload.insert("principal_id".to_string(), serde_json::json!(principal_id));
+    }
     payload.insert(
         "tool_name".to_string(),
         serde_json::json!("check_task_after"),
@@ -2415,6 +2514,7 @@ struct ExecutionBuffer {
     bus: Arc<crate::event::InMemoryEventBus>,
     session_id: String,
     context_id: String,
+    initiating_principal_id: Option<String>,
     causal_route: Option<ToolCausalRoute>,
 }
 
@@ -2523,6 +2623,9 @@ impl ExecutionBuffer {
         let mut payload = serde_json::Map::new();
         payload.insert("context_id".to_string(), serde_json::json!(self.context_id));
         payload.insert("session_id".to_string(), serde_json::json!(self.session_id));
+        if let Some(principal_id) = &self.initiating_principal_id {
+            payload.insert("principal_id".to_string(), serde_json::json!(principal_id));
+        }
         payload.insert("task_id".to_string(), serde_json::json!(self.task_id));
         payload.insert(
             "coalesced_chars".to_string(),
@@ -4447,6 +4550,7 @@ impl Tool for ExecuteCommandTool {
             .try_with(Clone::clone)
             .unwrap_or_else(|_| "unknown-attempt".to_string());
         let causal_route = CURRENT_CAUSAL_ROUTE.try_with(Clone::clone).ok().flatten();
+        let initiating_principal_id = CURRENT_PRINCIPAL_ID.try_with(Clone::clone).ok().flatten();
         let execution_job_context = CURRENT_EXECUTION_JOB.try_with(Clone::clone).ok().flatten();
         request_context.session_id = session_id.clone();
         request_context.context_id = context_id.clone();
@@ -4644,6 +4748,7 @@ impl Tool for ExecuteCommandTool {
                 pgid: pid,
                 session_id: session_id.clone(),
                 context_id: context_id.clone(),
+                initiating_principal_id: initiating_principal_id.clone(),
                 causal_route: causal_route.clone(),
                 started_at: now,
                 last_output_at: now,
@@ -4725,6 +4830,7 @@ impl Tool for ExecuteCommandTool {
             bus: bus_clone,
             session_id: session_id_clone,
             context_id: context_id_clone,
+            initiating_principal_id: initiating_principal_id.clone(),
             causal_route: causal_route.clone(),
         });
 
@@ -4956,6 +5062,12 @@ impl Tool for ExecuteCommandTool {
                     let causal_route = tasks_cleanup
                         .get(&task_id_cleanup)
                         .and_then(|task| task.causal_route.clone());
+                    if let Some(principal_id) = tasks_cleanup
+                        .get(&task_id_cleanup)
+                        .and_then(|task| task.initiating_principal_id.clone())
+                    {
+                        payload.insert("principal_id".to_string(), serde_json::json!(principal_id));
+                    }
                     extend_causal_route(&mut payload, causal_route.as_ref());
 
                     let ev = Event::new(
@@ -5638,6 +5750,9 @@ impl Tool for DelegateTool {
         .into_iter()
         .collect::<serde_json::Map<_, _>>();
         let causal_route = CURRENT_CAUSAL_ROUTE.try_with(Clone::clone).ok().flatten();
+        if let Some(principal_id) = CURRENT_PRINCIPAL_ID.try_with(Clone::clone).ok().flatten() {
+            payload.insert("principal_id".to_string(), serde_json::json!(principal_id));
+        }
         extend_causal_route(&mut payload, causal_route.as_ref());
         self.bus
             .publish(Event::new(
@@ -5779,7 +5894,7 @@ mod tests {
     use crate::approval::{ApprovalDecision, ApprovalRequest};
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        ActivationStore as _, NewAgent, NewCognitiveContext, NewSchedule, NewSession,
+        ActivationStore as _, NewAgent, NewCognitiveContext, NewPrincipal, NewSchedule, NewSession,
         NewThreadActivation, ScheduleStore as _, SessionDirectoryStore as _, SessionMountKind,
         SessionStore, ThreadLifecycle, ThreadStore as _, TimerStore,
     };
@@ -5792,6 +5907,73 @@ mod tests {
     #[cfg(target_os = "macos")]
     static MACOS_SANDBOX_EXEC_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static SECRET_ENV_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn verify_identity_uses_runtime_route_not_model_supplied_session() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "verify-agent".to_string(),
+                    title: "Verify Agent".to_string(),
+                    root_context_id: "verify-context".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "verify-context".to_string(),
+                    agent_id: "verify-agent".to_string(),
+                    title: "Verify Context".to_string(),
+                },
+                NewSession {
+                    id: "verify-session".to_string(),
+                    agent_id: "verify-agent".to_string(),
+                    context_id: "verify-context".to_string(),
+                    parent_session_id: None,
+                    title: "Verify Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .ensure_principal(NewPrincipal {
+                id: "principal:a".to_string(),
+                provider_id: "test".to_string(),
+                assurance: "verified".to_string(),
+                display_name: None,
+            })
+            .await
+            .unwrap();
+        store
+            .bind_session_principal("verify-session", "principal:a")
+            .await
+            .unwrap();
+        let tool = VerifyIdentityTool::new(store as Arc<dyn SessionStore>);
+
+        let execute = |claim: &'static str| {
+            let tool = &tool;
+            CURRENT_SESSION_ID.scope(
+                "verify-session".to_string(),
+                CURRENT_PRINCIPAL_ID.scope(Some("principal:a".to_string()), async move {
+                    tool.execute(&serde_json::json!({"claimed_principal_id": claim}).to_string())
+                        .await
+                        .unwrap()
+                }),
+            )
+        };
+        let verified: serde_json::Value =
+            serde_json::from_str(&execute("principal:a").await).unwrap();
+        assert_eq!(verified["verified"], true);
+        assert_eq!(verified["authority"], "runtime");
+        let rejected: serde_json::Value =
+            serde_json::from_str(&execute("principal:b").await).unwrap();
+        assert_eq!(rejected["verified"], false);
+        assert_eq!(rejected["active_principal_id"], "principal:a");
+    }
 
     struct ReplacementDefinitionTool;
 
@@ -5897,6 +6079,7 @@ mod tests {
                 agent_id: parent.agent_id.clone(),
                 context_id: parent.context_id.clone(),
                 session_id: parent.session_id.clone(),
+                initiating_principal_id: None,
                 root_turn_id: root_turn_id.to_string(),
                 kind: ThreadKind::Execution,
                 executor_kind: "self".to_string(),
@@ -5910,6 +6093,7 @@ mod tests {
                 agent_id: parent.agent_id.clone(),
                 context_id: parent.context_id.clone(),
                 session_id: parent.session_id.clone(),
+                initiating_principal_id: None,
                 trigger_event_id: trigger_event_id.to_string(),
                 trigger_sequence: 7,
                 trigger_kind: "chat/user_message".to_string(),
@@ -5927,6 +6111,7 @@ mod tests {
                 agent_id: parent.agent_id.clone(),
                 context_id: parent.context_id.clone(),
                 session_id: parent.session_id.clone(),
+                initiating_principal_id: None,
                 tool_call_id: parent.tool_call_id.clone(),
                 tool_name: "exec".to_string(),
                 request: serde_json::json!({"command": "test-parent-exec"}),
@@ -6096,6 +6281,7 @@ mod tests {
                 agent_id: "agent-scheduler".to_string(),
                 context_id: "context-scheduler".to_string(),
                 session_id: "session-scheduler".to_string(),
+                initiating_principal_id: None,
                 root_turn_id: "root-current".to_string(),
                 kind: ThreadKind::DialogueTurn,
                 executor_kind: "self".to_string(),
@@ -6213,6 +6399,7 @@ mod tests {
                     agent_id: "agent-scheduler-test".to_string(),
                     context_id: "context-scheduler-test".to_string(),
                     session_id: "session-scheduler-test".to_string(),
+                    initiating_principal_id: None,
                     root_turn_id: (*root_turn_id).to_string(),
                     kind: ThreadKind::Execution,
                     executor_kind: "self".to_string(),
@@ -8007,6 +8194,7 @@ mod tests {
             agent_id: "agent-durable-background-success".to_string(),
             context_id: "context-durable-background-success".to_string(),
             session_id: "session-durable-background-success".to_string(),
+            initiating_principal_id: None,
             tool_call_id: "exec-call-durable-background-success".to_string(),
         };
         seed_test_execution_route(
@@ -8127,6 +8315,7 @@ mod tests {
             agent_id: "agent-durable-background".to_string(),
             context_id: "context-durable-background".to_string(),
             session_id: "session-durable-background".to_string(),
+            initiating_principal_id: None,
             tool_call_id: "exec-call-durable-background".to_string(),
         };
         seed_test_execution_route(
@@ -8364,6 +8553,7 @@ mod tests {
             agent_id: "agent-restart-background".to_string(),
             context_id: "context-restart-background".to_string(),
             session_id: "session-restart-background".to_string(),
+            initiating_principal_id: None,
             tool_call_id: "exec-call-restart-background".to_string(),
         };
         seed_test_execution_route(
@@ -8382,6 +8572,7 @@ mod tests {
                 agent_id: parent.agent_id.clone(),
                 context_id: parent.context_id.clone(),
                 session_id: parent.session_id.clone(),
+                initiating_principal_id: None,
                 tool_call_id: child_call_id,
                 tool_name: "exec/background".to_string(),
                 request: serde_json::json!({
@@ -8650,6 +8841,7 @@ mod tests {
                 pgid: i32::MAX,
                 session_id: "wait-rearm-session".to_string(),
                 context_id: "wait-rearm-context".to_string(),
+                initiating_principal_id: None,
                 causal_route: None,
                 started_at: now,
                 last_output_at: now,
@@ -8897,6 +9089,7 @@ mod tests {
             bus: Arc::new(crate::event::InMemoryEventBus::new()),
             session_id: "session_test".to_string(),
             context_id: "context_test".to_string(),
+            initiating_principal_id: None,
             causal_route: None,
         });
 
@@ -8935,6 +9128,7 @@ mod tests {
             bus,
             session_id: "session_test".to_string(),
             context_id: "context_test".to_string(),
+            initiating_principal_id: None,
             causal_route: None,
         });
 

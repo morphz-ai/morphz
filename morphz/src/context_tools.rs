@@ -6,7 +6,8 @@ use crate::orchestrator::context::{
     ContextRecallService, FrameRecallDirection, FrameRecallRequest, RecallSearchRequest,
 };
 use crate::tool::{
-    Tool, ToolExecutionClass, CURRENT_CAUSAL_ROUTE, CURRENT_CONTEXT_ID, CURRENT_SESSION_ID,
+    Tool, ToolExecutionClass, CURRENT_CAUSAL_ROUTE, CURRENT_CONTEXT_ID, CURRENT_PRINCIPAL_ID,
+    CURRENT_SESSION_ID,
 };
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -79,11 +80,13 @@ impl Tool for ContextTxTool {
                     .unwrap_or_default()
             })
             .unwrap_or_default();
+        let principal_id = CURRENT_PRINCIPAL_ID.try_with(Clone::clone).ok().flatten();
         let commit = self
             .context_engine
-            .apply_context_transaction_protecting(
+            .apply_context_transaction_protecting_as_principal(
                 &context_id,
                 &session_id,
+                principal_id.as_deref(),
                 &args.transaction,
                 &causally_protected,
             )

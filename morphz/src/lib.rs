@@ -10,6 +10,7 @@ pub mod event;
 pub mod execution;
 pub mod extension;
 pub mod i18n;
+pub mod identity;
 pub mod llm;
 pub mod memory;
 pub mod objective;

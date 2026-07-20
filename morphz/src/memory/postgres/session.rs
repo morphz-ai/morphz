@@ -1,8 +1,9 @@
 use super::{now_text, parse_time, PostgresStore, StoreError};
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, NewAgent, NewCognitiveContext,
-    NewSession, SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore,
-    SessionMountKind, SessionRecord, SessionStatus, SessionUpdate,
+    NewPrincipal, NewSession, PrincipalRecord, SessionAttentionState, SessionAttentionUpdate,
+    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionRecord, SessionStatus,
+    SessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgRow;
@@ -83,8 +84,150 @@ fn session_from_row(row: &PgRow) -> Result<SessionRecord, StoreError> {
     })
 }
 
+fn principal_from_row(row: &PgRow) -> Result<PrincipalRecord, StoreError> {
+    Ok(PrincipalRecord {
+        id: row.get("id"),
+        provider_id: row.get("provider_id"),
+        assurance: row.get("assurance"),
+        display_name: row.get("display_name"),
+        created_at: parse_time(&row.get::<String, _>("created_at"))?,
+        updated_at: parse_time(&row.get::<String, _>("updated_at"))?,
+    })
+}
+
+fn binding_from_row(row: &PgRow) -> Result<SessionPrincipalBinding, StoreError> {
+    Ok(SessionPrincipalBinding {
+        session_id: row.get("session_id"),
+        principal_id: row.get("principal_id"),
+        bound_at: parse_time(&row.get::<String, _>("bound_at"))?,
+        unbound_at: row
+            .get::<Option<String>, _>("unbound_at")
+            .as_deref()
+            .map(parse_time)
+            .transpose()?,
+    })
+}
+
 #[async_trait::async_trait]
 impl SessionDirectoryStore for PostgresStore {
+    async fn ensure_principal(
+        &self,
+        principal: NewPrincipal,
+    ) -> Result<PrincipalRecord, StoreError> {
+        if principal.id.trim().is_empty()
+            || principal.provider_id.trim().is_empty()
+            || principal.assurance.trim().is_empty()
+        {
+            return Err("Principal id/provider_id/assurance 不能为空".into());
+        }
+        let now = now_text();
+        sqlx::query(
+            r#"INSERT INTO principals
+               (id, provider_id, assurance, display_name, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $5)
+               ON CONFLICT(id) DO UPDATE SET
+                 assurance = EXCLUDED.assurance,
+                 display_name = COALESCE(EXCLUDED.display_name, principals.display_name),
+                 updated_at = EXCLUDED.updated_at
+               WHERE principals.provider_id = EXCLUDED.provider_id"#,
+        )
+        .bind(&principal.id)
+        .bind(&principal.provider_id)
+        .bind(&principal.assurance)
+        .bind(&principal.display_name)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        let existing = self
+            .get_principal(&principal.id)
+            .await?
+            .ok_or("Principal ensure 后无法读取")?;
+        if existing.provider_id != principal.provider_id {
+            return Err(format!(
+                "Principal '{}' 已由 Provider '{}' 管理，不能改由 '{}' 接管",
+                principal.id, existing.provider_id, principal.provider_id
+            )
+            .into());
+        }
+        Ok(existing)
+    }
+
+    async fn get_principal(&self, id: &str) -> Result<Option<PrincipalRecord>, StoreError> {
+        let row = sqlx::query(
+            "SELECT id, provider_id, assurance, display_name, created_at, updated_at FROM principals WHERE id = $1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(principal_from_row).transpose()
+    }
+
+    async fn bind_session_principal(
+        &self,
+        session_id: &str,
+        principal_id: &str,
+    ) -> Result<SessionPrincipalBinding, StoreError> {
+        let now = now_text();
+        let row = sqlx::query(
+            r#"INSERT INTO session_principal_bindings
+               (session_id, principal_id, bound_at, unbound_at)
+               VALUES ($1, $2, $3, NULL)
+               ON CONFLICT(session_id, principal_id) DO UPDATE SET unbound_at = NULL
+               RETURNING session_id, principal_id, bound_at, unbound_at"#,
+        )
+        .bind(session_id)
+        .bind(principal_id)
+        .bind(&now)
+        .fetch_one(&self.pool)
+        .await?;
+        binding_from_row(&row)
+    }
+
+    async fn list_session_principals(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SessionPrincipalBinding>, StoreError> {
+        let rows = sqlx::query(
+            "SELECT session_id, principal_id, bound_at, unbound_at FROM session_principal_bindings WHERE session_id = $1 AND unbound_at IS NULL ORDER BY principal_id",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(binding_from_row).collect()
+    }
+
+    async fn list_context_principal_bindings(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<SessionPrincipalBinding>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT b.session_id, b.principal_id, b.bound_at, b.unbound_at
+               FROM session_principal_bindings b
+               JOIN sessions s ON s.id = b.session_id
+               WHERE s.context_id = $1 AND b.unbound_at IS NULL
+               ORDER BY b.session_id, b.principal_id"#,
+        )
+        .bind(context_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(binding_from_row).collect()
+    }
+
+    async fn verify_session_principal(
+        &self,
+        session_id: &str,
+        principal_id: &str,
+    ) -> Result<bool, StoreError> {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM session_principal_bindings WHERE session_id = $1 AND principal_id = $2 AND unbound_at IS NULL)",
+        )
+        .bind(session_id)
+        .bind(principal_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(Into::into)
+    }
+
     async fn create_agent_bundle(
         &self,
         agent: NewAgent,

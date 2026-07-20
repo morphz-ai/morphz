@@ -329,17 +329,18 @@ impl ScheduleStore for PostgresStore {
         for thread in threads {
             sqlx::query(
                 r#"INSERT INTO threads
-                   (id, revision, agent_id, context_id, session_id, root_turn_id,
+                   (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
                     kind, status, executor_kind, executor_id, delivery_status,
                     created_at, updated_at)
-                   VALUES ($1, 1, $2, $3, $4, $5, $6, 'open', $7, $8,
-                           'none', $9, $9)
+                   VALUES ($1, 1, $2, $3, $4, $5, $6, $7, 'open', $8, $9,
+                           'none', $10, $10)
                    ON CONFLICT DO NOTHING"#,
             )
             .bind(&thread.id)
             .bind(&thread.agent_id)
             .bind(&thread.context_id)
             .bind(&thread.session_id)
+            .bind(&thread.initiating_principal_id)
             .bind(&thread.root_turn_id)
             .bind(thread.kind.as_str())
             .bind(&thread.executor_kind)

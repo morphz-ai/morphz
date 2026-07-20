@@ -161,6 +161,8 @@ async fn main() -> Result<(), AppError> {
     let identity = RuntimeIdentity {
         agent_id: default_agent_id.clone(),
         context_id: default_context_id.clone(),
+        principal_id: std::env::var("MORPHZ_PRINCIPAL_ID")
+            .unwrap_or_else(|_| "principal-local".to_string()),
     };
     let needs_workers = command_needs_llm(&invocation);
     let client = build_client(&invocation, &app_config, needs_workers)?;
@@ -1818,6 +1820,10 @@ async fn create_objective_command(
                 ("context_id".to_string(), serde_json::json!(context.id)),
                 ("session_id".to_string(), serde_json::json!(session.id)),
                 (
+                    "principal_id".to_string(),
+                    serde_json::json!(runtime.identity().principal_id),
+                ),
+                (
                     "requested_objective_id".to_string(),
                     serde_json::json!(objective_id),
                 ),
@@ -1836,6 +1842,7 @@ async fn create_objective_command(
             delivery_session_id: session.id.clone(),
             parent_objective_id: None,
             source_event_id,
+            initiating_principal_id: Some(runtime.identity().principal_id.clone()),
             stated_objective,
             token_budget,
         })
@@ -3268,6 +3275,7 @@ mod tests {
                 .identity(RuntimeIdentity {
                     agent_id: "default-agent".to_string(),
                     context_id: persisted_context_id.to_string(),
+                    principal_id: "principal-test".to_string(),
                 })
                 .build()
                 .await
@@ -3306,6 +3314,7 @@ mod tests {
             .identity(RuntimeIdentity {
                 agent_id: "default-agent".to_string(),
                 context_id: "context-default".to_string(),
+                principal_id: "principal-test".to_string(),
             })
             .build()
             .await

@@ -2029,6 +2029,7 @@ mod tests {
                 .identity(RuntimeIdentity {
                     agent_id: "agent-test".to_string(),
                     context_id: "context-test".to_string(),
+                    principal_id: "principal-web-test".to_string(),
                 })
                 .tool_policy(RuntimeToolPolicy {
                     context_only: true,
@@ -2636,6 +2637,7 @@ mod tests {
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
                 session_id: "api-schedule-session".to_string(),
+                initiating_principal_id: None,
                 root_turn_id: "api-schedule-turn".to_string(),
                 kind: ThreadKind::Execution,
                 executor_kind: "self".to_string(),

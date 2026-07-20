@@ -127,6 +127,7 @@ async fn worker(args: &[String]) -> Result<(), ProbeError> {
         .identity(RuntimeIdentity {
             agent_id: agent_id.clone(),
             context_id: context_id.clone(),
+            principal_id: "principal-postgres-probe".to_string(),
         })
         .tool_policy(RuntimeToolPolicy {
             context_only: true,
@@ -360,6 +361,7 @@ async fn parent() -> Result<(), ProbeError> {
             agent_id: agent_id.clone(),
             context_id: context_id.clone(),
             session_id: session_id.clone(),
+            initiating_principal_id: None,
             root_turn_id: format!("process-probe-crash-root-{suffix}"),
             kind: ThreadKind::Execution,
             executor_kind: "runtime".to_string(),
@@ -372,6 +374,7 @@ async fn parent() -> Result<(), ProbeError> {
             agent_id: agent_id.clone(),
             context_id: context_id.clone(),
             session_id: session_id.clone(),
+            initiating_principal_id: None,
             trigger_event_id: format!("process-probe-crash-trigger-{suffix}"),
             trigger_sequence: 2,
             trigger_kind: "probe".to_string(),
@@ -387,6 +390,7 @@ async fn parent() -> Result<(), ProbeError> {
             agent_id,
             context_id: context_id.clone(),
             session_id: session_id.clone(),
+            initiating_principal_id: None,
             tool_call_id: format!("process-probe-crash-call-{suffix}"),
             tool_name: "read".to_string(),
             request: json!({"path": "README.md"}),

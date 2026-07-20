@@ -10,7 +10,8 @@ use sqlx::postgres::PgRow;
 use sqlx::{PgPool, Row};
 
 const COLUMNS: &str = "id, agent_id, parent_context_id, parent_session_id, child_context_id, \
-child_session_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at";
+child_session_id, initiating_principal_id, task, success_when, context_scope, status, \
+result_event_id, created_at, updated_at";
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
@@ -21,6 +22,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             parent_session_id TEXT NOT NULL REFERENCES sessions(id),
             child_context_id TEXT NOT NULL REFERENCES cognitive_contexts(id),
             child_session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id),
+            initiating_principal_id TEXT,
             task TEXT NOT NULL,
             success_when TEXT,
             context_scope TEXT NOT NULL,
@@ -35,6 +37,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON delegations(parent_session_id, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_delegations_status
            ON delegations(status, updated_at, id)"#,
+        r#"ALTER TABLE delegations
+           ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
     ] {
         sqlx::query(statement).execute(pool).await?;
     }
@@ -60,6 +64,7 @@ fn delegation_from_row(row: &PgRow) -> Result<DelegationRecord, StoreError> {
         parent_session_id: row.get("parent_session_id"),
         child_context_id: row.get("child_context_id"),
         child_session_id: row.get("child_session_id"),
+        initiating_principal_id: row.get("initiating_principal_id"),
         task: row.get("task"),
         success_when: row.get("success_when"),
         context_scope: row.get("context_scope"),
@@ -95,9 +100,9 @@ impl DelegationStore for PostgresStore {
         let row = sqlx::query(&format!(
             r#"INSERT INTO delegations
                (id, agent_id, parent_context_id, parent_session_id,
-                child_context_id, child_session_id, task, success_when,
+                child_context_id, child_session_id, initiating_principal_id, task, success_when,
                 context_scope, status, result_event_id, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued', NULL, $10, $10)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', NULL, $11, $11)
                RETURNING {COLUMNS}"#
         ))
         .bind(&delegation.id)
@@ -106,6 +111,7 @@ impl DelegationStore for PostgresStore {
         .bind(&delegation.parent_session_id)
         .bind(&delegation.child_context_id)
         .bind(&delegation.child_session_id)
+        .bind(&delegation.initiating_principal_id)
         .bind(&delegation.task)
         .bind(&delegation.success_when)
         .bind(&delegation.context_scope)

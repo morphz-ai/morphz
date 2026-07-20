@@ -118,6 +118,12 @@ impl PostgresStore {
                     delegation::migrate(&store.pool),
                 )
                 .await?;
+            store
+                .run_versioned_migration(
+                    "20260720_03_principal_identity",
+                    store.migrate_principal_identity(),
+                )
+                .await?;
             // Optional search acceleration is deliberately retried outside
             // the versioned schema migration. A deployment that initially
             // lacked CREATE EXTENSION may later gain it and should then leave
@@ -222,6 +228,23 @@ impl PostgresStore {
             )"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_sessions_context_activity
                ON sessions(context_id, last_activity_at DESC, id)"#,
+            r#"CREATE TABLE IF NOT EXISTS principals (
+                id TEXT PRIMARY KEY,
+                provider_id TEXT NOT NULL,
+                assurance TEXT NOT NULL,
+                display_name TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS session_principal_bindings (
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+                bound_at TEXT NOT NULL,
+                unbound_at TEXT,
+                PRIMARY KEY(session_id, principal_id)
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_session_principal_bindings_principal
+               ON session_principal_bindings(principal_id, unbound_at, session_id)"#,
             r#"CREATE TABLE IF NOT EXISTS events (
                 sequence BIGSERIAL PRIMARY KEY,
                 id TEXT NOT NULL UNIQUE,
@@ -304,6 +327,7 @@ impl PostgresStore {
                 delivery_session_id TEXT NOT NULL REFERENCES sessions(id),
                 parent_objective_id TEXT REFERENCES objectives(id),
                 source_event_id TEXT NOT NULL,
+                initiating_principal_id TEXT,
                 stated_objective TEXT NOT NULL,
                 revision BIGINT NOT NULL,
                 status TEXT NOT NULL,
@@ -322,6 +346,8 @@ impl PostgresStore {
                ON objectives(context_id, status, updated_at DESC)"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_objectives_recovery
                ON objectives(status, evaluation_lease_expires_at, updated_at)"#,
+            r#"ALTER TABLE objectives
+               ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
         ] {
             sqlx::query(statement).execute(&self.pool).await?;
         }
@@ -366,6 +392,47 @@ impl PostgresStore {
         )
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    /// Add the Principal directory and causal identity columns in a new
+    /// versioned migration. Several owning tables predate identity support;
+    /// editing their original migrations would not upgrade an existing
+    /// PostgreSQL deployment whose migration versions are already recorded.
+    async fn migrate_principal_identity(&self) -> Result<(), StoreError> {
+        for statement in [
+            r#"CREATE TABLE IF NOT EXISTS principals (
+                 id TEXT PRIMARY KEY,
+                 provider_id TEXT NOT NULL,
+                 assurance TEXT NOT NULL,
+                 display_name TEXT,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL
+               )"#,
+            r#"CREATE TABLE IF NOT EXISTS session_principal_bindings (
+                 session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                 principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
+                 bound_at TEXT NOT NULL,
+                 unbound_at TEXT,
+                 PRIMARY KEY(session_id, principal_id)
+               )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_session_principal_bindings_principal
+               ON session_principal_bindings(principal_id, unbound_at, session_id)"#,
+            r#"ALTER TABLE IF EXISTS threads
+               ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
+            r#"ALTER TABLE IF EXISTS thread_activations
+               ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
+            r#"ALTER TABLE IF EXISTS thread_signals
+               ADD COLUMN IF NOT EXISTS principal_id TEXT"#,
+            r#"ALTER TABLE IF EXISTS execution_jobs
+               ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
+            r#"ALTER TABLE IF EXISTS objectives
+               ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
+            r#"ALTER TABLE IF EXISTS delegations
+               ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
+        ] {
+            sqlx::query(statement).execute(&self.pool).await?;
+        }
         Ok(())
     }
 
@@ -533,6 +600,7 @@ fn objective_from_row(row: &PgRow) -> Result<ObjectiveRecord, StoreError> {
         delivery_session_id: row.get("delivery_session_id"),
         parent_objective_id: row.get("parent_objective_id"),
         source_event_id: row.get("source_event_id"),
+        initiating_principal_id: row.get("initiating_principal_id"),
         stated_objective: row.get("stated_objective"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,
         status: parse_objective_status(&row.get::<String, _>("status"))?,
@@ -1288,7 +1356,7 @@ impl RecallProjectionStore for PostgresStore {
 
 const OBJECTIVE_SELECT: &str = r#"SELECT id, agent_id, context_id,
     coordinator_session_id, delivery_session_id, parent_objective_id, source_event_id,
-    stated_objective, revision, status, status_reason, wait_condition_json, active_evaluation_id,
+    initiating_principal_id, stated_objective, revision, status, status_reason, wait_condition_json, active_evaluation_id,
     evaluation_lease_expires_at, continuation_sequence, token_budget, tokens_used,
     time_used_seconds, created_at, updated_at
     FROM objectives"#;
@@ -1354,12 +1422,12 @@ impl ObjectiveStore for PostgresStore {
         sqlx::query(
             r#"INSERT INTO objectives
                (id, agent_id, context_id, coordinator_session_id, delivery_session_id,
-                parent_objective_id, source_event_id, stated_objective, revision, status,
+                parent_objective_id, source_event_id, initiating_principal_id, stated_objective, revision, status,
                 wait_condition_json, active_evaluation_id, evaluation_lease_expires_at,
                 continuation_sequence, token_budget, tokens_used, time_used_seconds,
                 created_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, 'active',
-                       NULL, NULL, NULL, 0, $9, 0, 0, $10, $10)"#,
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, 'active',
+                       NULL, NULL, NULL, 0, $10, 0, 0, $11, $11)"#,
         )
         .bind(&objective.id)
         .bind(&objective.agent_id)
@@ -1368,6 +1436,7 @@ impl ObjectiveStore for PostgresStore {
         .bind(&objective.delivery_session_id)
         .bind(&objective.parent_objective_id)
         .bind(&objective.source_event_id)
+        .bind(&objective.initiating_principal_id)
         .bind(stated_objective)
         .bind(objective.token_budget.map(i64::try_from).transpose()?)
         .bind(&now)

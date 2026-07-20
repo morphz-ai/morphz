@@ -110,6 +110,7 @@ pub mod context_metacognition_eval;
 pub mod context_pressure_eval;
 pub mod eval_sandbox;
 pub mod long_horizon_agent_eval;
+pub mod principal_identity_eval;
 pub mod sexpr_bind_if_eval;
 pub mod sexpr_process_eval;
 pub mod sexpr_reply_eval;

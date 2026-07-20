@@ -25,6 +25,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             agent_id TEXT NOT NULL REFERENCES agents(id),
             context_id TEXT NOT NULL REFERENCES cognitive_contexts(id),
             session_id TEXT NOT NULL REFERENCES sessions(id),
+            initiating_principal_id TEXT,
             root_turn_id TEXT NOT NULL UNIQUE,
             kind TEXT NOT NULL,
             status TEXT NOT NULL,
@@ -43,6 +44,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             agent_id TEXT NOT NULL REFERENCES agents(id),
             context_id TEXT NOT NULL REFERENCES cognitive_contexts(id),
             session_id TEXT NOT NULL REFERENCES sessions(id),
+            initiating_principal_id TEXT,
             trigger_event_id TEXT NOT NULL UNIQUE,
             trigger_sequence BIGINT NOT NULL,
             trigger_kind TEXT NOT NULL,
@@ -55,6 +57,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )"#,
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
+        r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
         r#"CREATE TABLE IF NOT EXISTS execution_jobs (
             id TEXT PRIMARY KEY,
             revision BIGINT NOT NULL DEFAULT 1,
@@ -63,6 +67,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             agent_id TEXT NOT NULL REFERENCES agents(id),
             context_id TEXT NOT NULL REFERENCES cognitive_contexts(id),
             session_id TEXT NOT NULL REFERENCES sessions(id),
+            initiating_principal_id TEXT,
             tool_call_id TEXT NOT NULL,
             tool_name TEXT NOT NULL,
             request_json JSONB NOT NULL,
@@ -87,6 +92,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             finished_at TEXT,
             UNIQUE(activation_id, tool_call_id)
         )"#,
+        r#"ALTER TABLE execution_jobs ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_queue
            ON execution_jobs(status, created_at, id)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_execution_jobs_context_status
@@ -153,6 +159,7 @@ pub(super) fn execution_job_from_row(row: &PgRow) -> Result<ExecutionJobRecord, 
         agent_id: row.get("agent_id"),
         context_id: row.get("context_id"),
         session_id: row.get("session_id"),
+        initiating_principal_id: row.get("initiating_principal_id"),
         tool_call_id: row.get("tool_call_id"),
         tool_name: row.get("tool_name"),
         request: row.get("request_json"),
@@ -217,10 +224,12 @@ pub(super) async fn ensure_job_in_tx(
         r#"SELECT activations.agent_id AS activation_agent_id,
                   activations.context_id AS activation_context_id,
                   activations.session_id AS activation_session_id,
+                  activations.initiating_principal_id AS activation_principal_id,
                   activations.root_turn_id AS activation_root_turn_id,
                   threads.agent_id AS thread_agent_id,
                   threads.context_id AS thread_context_id,
                   threads.session_id AS thread_session_id,
+                  threads.initiating_principal_id AS thread_principal_id,
                   threads.root_turn_id AS thread_root_turn_id
            FROM thread_activations activations CROSS JOIN threads threads
            WHERE activations.id = $1 AND threads.id = $2"#,
@@ -238,16 +247,24 @@ pub(super) async fn ensure_job_in_tx(
         || causal.get::<String, _>("thread_session_id") != job.session_id
         || causal.get::<String, _>("activation_root_turn_id")
             != causal.get::<String, _>("thread_root_turn_id")
+        || causal
+            .get::<Option<String>, _>("activation_principal_id")
+            .as_ref()
+            .is_some_and(|principal| Some(principal) != job.initiating_principal_id.as_ref())
+        || causal
+            .get::<Option<String>, _>("thread_principal_id")
+            .as_ref()
+            .is_some_and(|principal| Some(principal) != job.initiating_principal_id.as_ref())
     {
         return Err("Execution Job 的 Agent/Context/Session/Root Turn 因果边界不一致".into());
     }
     let inserted = sqlx::query(
         r#"INSERT INTO execution_jobs
            (id, revision, activation_id, thread_id, agent_id, context_id,
-            session_id, tool_call_id, tool_name, request_json, status,
+            session_id, initiating_principal_id, tool_call_id, tool_name, request_json, status,
             retry_safety, result_refs_json, created_at, updated_at)
-           VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                   '[]'::jsonb, $12, $12)
+           VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                   '[]'::jsonb, $13, $13)
            ON CONFLICT DO NOTHING"#,
     )
     .bind(&job.id)
@@ -256,6 +273,7 @@ pub(super) async fn ensure_job_in_tx(
     .bind(&job.agent_id)
     .bind(&job.context_id)
     .bind(&job.session_id)
+    .bind(&job.initiating_principal_id)
     .bind(&job.tool_call_id)
     .bind(&job.tool_name)
     .bind(&job.request)

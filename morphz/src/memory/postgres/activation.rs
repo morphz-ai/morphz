@@ -28,6 +28,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             id TEXT PRIMARY KEY,
             thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
             event_id TEXT NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE,
+            principal_id TEXT,
             sequence BIGINT NOT NULL,
             kind TEXT NOT NULL,
             parent_activation_id TEXT REFERENCES thread_activations(id),
@@ -36,6 +37,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             claimed_at TEXT,
             acknowledged_at TEXT
         )"#,
+        r#"ALTER TABLE thread_signals ADD COLUMN IF NOT EXISTS principal_id TEXT"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_signals_thread_status_sequence
            ON thread_signals(thread_id, status, sequence, id)"#,
         r#"CREATE TABLE IF NOT EXISTS activation_signals (
@@ -105,6 +107,7 @@ fn activation_from_row(row: &PgRow) -> Result<ThreadActivationRecord, StoreError
         agent_id: row.get("agent_id"),
         context_id: row.get("context_id"),
         session_id: row.get("session_id"),
+        initiating_principal_id: row.get("initiating_principal_id"),
         trigger_event_id: row.get("trigger_event_id"),
         trigger_sequence: u64::try_from(row.get::<i64, _>("trigger_sequence"))?,
         trigger_kind: row.get("trigger_kind"),
@@ -131,6 +134,7 @@ fn signal_from_row(row: &PgRow) -> Result<ThreadSignalRecord, StoreError> {
         id: row.get("id"),
         thread_id: row.get("thread_id"),
         event_id: row.get("event_id"),
+        principal_id: row.get("principal_id"),
         sequence: u64::try_from(row.get::<i64, _>("sequence"))?,
         kind: row.get("kind"),
         parent_activation_id: row.get("parent_activation_id"),
@@ -224,14 +228,15 @@ impl ActivationStore for PostgresStore {
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"INSERT INTO thread_signals
-               (id, thread_id, event_id, sequence, kind, parent_activation_id,
+               (id, thread_id, event_id, principal_id, sequence, kind, parent_activation_id,
                 status, created_at)
-               VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8)
                ON CONFLICT DO NOTHING"#,
         )
         .bind(&signal.id)
         .bind(&signal.thread_id)
         .bind(&signal.event_id)
+        .bind(&signal.principal_id)
         .bind(i64::try_from(signal.sequence)?)
         .bind(&signal.kind)
         .bind(&signal.parent_activation_id)
@@ -242,9 +247,30 @@ impl ActivationStore for PostgresStore {
             .bind(&signal.event_id)
             .fetch_one(&mut *tx)
             .await?;
-        let stored_signal = signal_from_row(&stored_signal)?;
+        let mut stored_signal = signal_from_row(&stored_signal)?;
+        if stored_signal.principal_id.is_none() && signal.principal_id.is_some() {
+            sqlx::query(
+                "UPDATE thread_signals SET principal_id = $1 WHERE id = $2 AND principal_id IS NULL",
+            )
+            .bind(&signal.principal_id)
+            .bind(&stored_signal.id)
+            .execute(&mut *tx)
+            .await?;
+            stored_signal.principal_id =
+                sqlx::query_scalar("SELECT principal_id FROM thread_signals WHERE id = $1")
+                    .bind(&stored_signal.id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+        }
         if stored_signal.thread_id != signal.thread_id {
             return Err(format!("Event '{}' 已路由到不同 Thread Signal", signal.event_id).into());
+        }
+        if signal.principal_id.is_some() && stored_signal.principal_id != signal.principal_id {
+            return Err(format!(
+                "Event '{}' 的 Thread Signal Principal 不一致",
+                signal.event_id
+            )
+            .into());
         }
         if let Some(outbox) =
             sqlx::query("SELECT * FROM signal_outbox WHERE event_id = $1 FOR UPDATE")
@@ -292,7 +318,21 @@ impl ActivationStore for PostgresStore {
             .bind(&signal.thread_id)
             .fetch_one(&mut *tx)
             .await?;
-        let thread = thread_from_row(&thread)?;
+        let mut thread = thread_from_row(&thread)?;
+        if thread.initiating_principal_id.is_none() && stored_signal.principal_id.is_some() {
+            sqlx::query(
+                "UPDATE threads SET initiating_principal_id = $1 WHERE id = $2 AND initiating_principal_id IS NULL",
+            )
+            .bind(&stored_signal.principal_id)
+            .bind(&thread.id)
+            .execute(&mut *tx)
+            .await?;
+            thread.initiating_principal_id =
+                sqlx::query_scalar("SELECT initiating_principal_id FROM threads WHERE id = $1")
+                    .bind(&thread.id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+        }
         if thread.agent_id != activation.agent_id
             || thread.context_id != activation.context_id
             || thread.session_id != activation.session_id
@@ -358,17 +398,42 @@ impl ActivationStore for PostgresStore {
             return Ok(None);
         }
         let primary = signal_from_row(&pending[0])?;
+        let activation_principal = activation
+            .initiating_principal_id
+            .as_ref()
+            .or(primary.principal_id.as_ref());
+        if activation.initiating_principal_id.is_some()
+            && primary.principal_id.is_some()
+            && activation.initiating_principal_id != primary.principal_id
+        {
+            return Err(format!(
+                "Activation '{}' 与其首个 Signal Principal 不一致",
+                activation.id
+            )
+            .into());
+        }
+        if thread.initiating_principal_id.is_some()
+            && activation_principal.is_some()
+            && thread.initiating_principal_id.as_ref() != activation_principal
+        {
+            return Err(format!(
+                "Thread '{}' 与 Activation '{}' Principal 不一致",
+                thread.id, activation.id
+            )
+            .into());
+        }
         sqlx::query(
             r#"INSERT INTO thread_activations
-               (id, revision, agent_id, context_id, session_id, trigger_event_id,
+               (id, revision, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
                 trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
                 status, created_at, updated_at)
-               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued', $10, $10)"#,
+               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $11)"#,
         )
         .bind(&activation.id)
         .bind(&activation.agent_id)
         .bind(&activation.context_id)
         .bind(&activation.session_id)
+        .bind(activation_principal)
         .bind(&primary.event_id)
         .bind(i64::try_from(primary.sequence)?)
         .bind(&primary.kind)
@@ -552,16 +617,17 @@ impl ActivationStore for PostgresStore {
         let now = now_text();
         sqlx::query(
             r#"INSERT INTO thread_activations
-               (id, revision, agent_id, context_id, session_id, trigger_event_id,
+               (id, revision, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
                 trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
                 status, created_at, updated_at)
-               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 'queued', $10, $10)
+               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $11)
                ON CONFLICT DO NOTHING"#,
         )
         .bind(&activation.id)
         .bind(&activation.agent_id)
         .bind(&activation.context_id)
         .bind(&activation.session_id)
+        .bind(&activation.initiating_principal_id)
         .bind(&activation.trigger_event_id)
         .bind(i64::try_from(activation.trigger_sequence)?)
         .bind(&activation.trigger_kind)
@@ -574,10 +640,27 @@ impl ActivationStore for PostgresStore {
             .bind(&activation.trigger_event_id)
             .fetch_one(&self.pool)
             .await?;
-        let existing = activation_from_row(&row)?;
+        let mut existing = activation_from_row(&row)?;
+        if existing.initiating_principal_id.is_none()
+            && activation.initiating_principal_id.is_some()
+        {
+            sqlx::query(
+                "UPDATE thread_activations SET initiating_principal_id = $1 WHERE id = $2 AND initiating_principal_id IS NULL",
+            )
+            .bind(&activation.initiating_principal_id)
+            .bind(&existing.id)
+            .execute(&self.pool)
+            .await?;
+            existing = self
+                .get_thread_activation(&existing.id)
+                .await?
+                .ok_or("Thread Activation Principal 迁移后无法读取")?;
+        }
         if existing.context_id != activation.context_id
             || existing.session_id != activation.session_id
             || existing.root_turn_id != activation.root_turn_id
+            || (activation.initiating_principal_id.is_some()
+                && existing.initiating_principal_id != activation.initiating_principal_id)
         {
             return Err(format!(
                 "Trigger Event '{}' 已被不同 Thread Activation 占用",

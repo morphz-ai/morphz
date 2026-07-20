@@ -15,17 +15,17 @@ use crate::memory::{
     ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim, MindProjectionCommit,
     MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewActionGroup,
     NewActionGroupMember, NewAgent, NewApprovalRequest, NewCognitiveContext, NewDelegation,
-    NewExecutionJob, NewMindProjection, NewObjective, NewRuntimeTimer, NewSchedule, NewSession,
-    NewThread, NewThreadActivation, NewThreadSignal, ObjectiveMutation, ObjectiveRecord,
-    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RecallDocument,
-    RecallDocumentKind, RecallIndexAudit, RecallIndexCapability, RecallProjectionStore,
-    RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation,
-    ScheduleRecord, ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate,
-    SessionDirectoryStore, SessionMountKind, SessionProjectionMutation, SessionProjectionStore,
-    SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus,
-    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadKind,
-    ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
-    ThreadStore, TimerStore,
+    NewExecutionJob, NewMindProjection, NewObjective, NewPrincipal, NewRuntimeTimer, NewSchedule,
+    NewSession, NewThread, NewThreadActivation, NewThreadSignal, ObjectiveMutation,
+    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PrincipalRecord,
+    QueryFilter, RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallIndexCapability,
+    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
+    RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus, ScheduleStore,
+    SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind,
+    SessionPrincipalBinding, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
+    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -319,6 +319,15 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_mind_snapshots_context_revision
             ON mind_snapshots(context_id, revision DESC);
 
+        CREATE TABLE IF NOT EXISTS principals (
+            id TEXT PRIMARY KEY,
+            provider_id TEXT NOT NULL,
+            assurance TEXT NOT NULL,
+            display_name TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
             agent_id TEXT NOT NULL,
@@ -333,6 +342,18 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_sessions_agent_activity
             ON sessions(agent_id, last_activity_at DESC);
         CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
+
+        CREATE TABLE IF NOT EXISTS session_principal_bindings (
+            session_id TEXT NOT NULL,
+            principal_id TEXT NOT NULL,
+            bound_at TEXT NOT NULL,
+            unbound_at TEXT,
+            PRIMARY KEY(session_id, principal_id),
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY(principal_id) REFERENCES principals(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_principal_bindings_principal
+            ON session_principal_bindings(principal_id, unbound_at, session_id);
 
         CREATE TABLE IF NOT EXISTS session_mounts (
             session_id TEXT NOT NULL,
@@ -359,6 +380,7 @@ impl SqliteStore {
             parent_session_id TEXT NOT NULL,
             child_context_id TEXT NOT NULL,
             child_session_id TEXT NOT NULL,
+            initiating_principal_id TEXT,
             task TEXT NOT NULL,
             success_when TEXT,
             context_scope TEXT NOT NULL,
@@ -380,6 +402,7 @@ impl SqliteStore {
             delivery_session_id TEXT NOT NULL,
             parent_objective_id TEXT,
             source_event_id TEXT NOT NULL,
+            initiating_principal_id TEXT,
             stated_objective TEXT NOT NULL,
             revision INTEGER NOT NULL CHECK(revision >= 1),
             status TEXT NOT NULL CHECK(status IN ('active', 'paused', 'blocked', 'completed', 'cancelled', 'failed')),
@@ -418,6 +441,7 @@ impl SqliteStore {
             agent_id TEXT NOT NULL,
             context_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
+            initiating_principal_id TEXT,
             trigger_event_id TEXT NOT NULL UNIQUE,
             trigger_sequence INTEGER NOT NULL CHECK(trigger_sequence >= 0),
             trigger_kind TEXT NOT NULL,
@@ -457,6 +481,7 @@ impl SqliteStore {
             agent_id TEXT NOT NULL,
             context_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
+            initiating_principal_id TEXT,
             root_turn_id TEXT NOT NULL UNIQUE,
             kind TEXT NOT NULL CHECK(kind IN ('dialogue_turn', 'execution', 'objective', 'delivery')),
             status TEXT NOT NULL CHECK(status IN ('open', 'completed', 'failed', 'cancelled')),
@@ -483,6 +508,7 @@ impl SqliteStore {
             agent_id TEXT NOT NULL,
             context_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
+            initiating_principal_id TEXT,
             tool_call_id TEXT NOT NULL,
             tool_name TEXT NOT NULL,
             request_json TEXT NOT NULL,
@@ -639,6 +665,7 @@ impl SqliteStore {
             id TEXT PRIMARY KEY,
             thread_id TEXT NOT NULL,
             event_id TEXT NOT NULL UNIQUE,
+            principal_id TEXT,
             sequence INTEGER NOT NULL CHECK(sequence >= 0),
             kind TEXT NOT NULL,
             parent_activation_id TEXT,
@@ -712,6 +739,24 @@ impl SqliteStore {
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
+        for (table, column) in [
+            ("thread_activations", "initiating_principal_id"),
+            ("threads", "initiating_principal_id"),
+            ("thread_signals", "principal_id"),
+            ("execution_jobs", "initiating_principal_id"),
+        ] {
+            let columns = sqlx::query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(&pool)
+                .await?
+                .into_iter()
+                .map(|row| row.get::<String, _>("name"))
+                .collect::<std::collections::HashSet<_>>();
+            if !columns.contains(column) {
+                sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"))
+                    .execute(&pool)
+                    .await?;
+            }
+        }
         migrate_runtime_timer_delivery_flush_kind(&pool).await?;
         migrate_schedule_paused_status(&pool).await?;
         // Backfill databases created before the reverse dependency index was
@@ -778,12 +823,32 @@ impl SqliteStore {
             .await?;
         if !objective_columns
             .iter()
+            .any(|row| row.get::<String, _>("name") == "initiating_principal_id")
+        {
+            sqlx::query("ALTER TABLE objectives ADD COLUMN initiating_principal_id TEXT")
+                .execute(&pool)
+                .await?;
+        }
+        if !objective_columns
+            .iter()
             .any(|row| row.get::<String, _>("name") == "status_reason")
         {
             sqlx::query("ALTER TABLE objectives ADD COLUMN status_reason TEXT")
                 .execute(&pool)
                 .await?;
             backfill_objective_status_reasons(&pool).await?;
+        }
+
+        let delegation_columns = sqlx::query("PRAGMA table_info(delegations)")
+            .fetch_all(&pool)
+            .await?;
+        if !delegation_columns
+            .iter()
+            .any(|row| row.get::<String, _>("name") == "initiating_principal_id")
+        {
+            sqlx::query("ALTER TABLE delegations ADD COLUMN initiating_principal_id TEXT")
+                .execute(&pool)
+                .await?;
         }
 
         migrate_session_projections(&pool).await?;
@@ -1418,6 +1483,7 @@ fn delegation_from_row(row: &sqlx::sqlite::SqliteRow) -> DelegationRecord {
         parent_session_id: row.get("parent_session_id"),
         child_context_id: row.get("child_context_id"),
         child_session_id: row.get("child_session_id"),
+        initiating_principal_id: row.get("initiating_principal_id"),
         task: row.get("task"),
         success_when: row.get("success_when"),
         context_scope: row.get("context_scope"),
@@ -1450,6 +1516,28 @@ fn session_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionRecord {
     }
 }
 
+fn principal_from_row(row: &sqlx::sqlite::SqliteRow) -> PrincipalRecord {
+    PrincipalRecord {
+        id: row.get("id"),
+        provider_id: row.get("provider_id"),
+        assurance: row.get("assurance"),
+        display_name: row.get("display_name"),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+    }
+}
+
+fn session_principal_binding_from_row(row: &sqlx::sqlite::SqliteRow) -> SessionPrincipalBinding {
+    SessionPrincipalBinding {
+        session_id: row.get("session_id"),
+        principal_id: row.get("principal_id"),
+        bound_at: parse_time(&row.get::<String, _>("bound_at")),
+        unbound_at: row
+            .get::<Option<String>, _>("unbound_at")
+            .map(|value| parse_time(&value)),
+    }
+}
+
 fn thread_activation_from_row(
     row: &sqlx::sqlite::SqliteRow,
 ) -> Result<ThreadActivationRecord, Box<dyn std::error::Error + Send + Sync>> {
@@ -1459,6 +1547,7 @@ fn thread_activation_from_row(
         agent_id: row.get("agent_id"),
         context_id: row.get("context_id"),
         session_id: row.get("session_id"),
+        initiating_principal_id: row.get("initiating_principal_id"),
         trigger_event_id: row.get("trigger_event_id"),
         trigger_sequence: sqlite_u64(row, "trigger_sequence")?,
         trigger_kind: row.get("trigger_kind"),
@@ -1482,6 +1571,7 @@ fn thread_signal_from_row(
         id: row.get("id"),
         thread_id: row.get("thread_id"),
         event_id: row.get("event_id"),
+        principal_id: row.get("principal_id"),
         sequence: sqlite_u64(row, "sequence")?,
         kind: row.get("kind"),
         parent_activation_id: row.get("parent_activation_id"),
@@ -1505,6 +1595,7 @@ fn thread_from_row(
         agent_id: row.get("agent_id"),
         context_id: row.get("context_id"),
         session_id: row.get("session_id"),
+        initiating_principal_id: row.get("initiating_principal_id"),
         root_turn_id: row.get("root_turn_id"),
         kind: parse_thread_kind(&row.get::<String, _>("kind"))?,
         lifecycle: parse_thread_lifecycle(&row.get::<String, _>("status"))?,
@@ -1591,6 +1682,7 @@ fn objective_from_row(
         delivery_session_id: row.get("delivery_session_id"),
         parent_objective_id: row.get("parent_objective_id"),
         source_event_id: row.get("source_event_id"),
+        initiating_principal_id: row.get("initiating_principal_id"),
         stated_objective: row.get("stated_objective"),
         revision: sqlite_u64(row, "revision")?,
         status: parse_objective_status(&row.get::<String, _>("status"))?,
@@ -1788,6 +1880,7 @@ fn execution_job_from_row(
         agent_id: row.get("agent_id"),
         context_id: row.get("context_id"),
         session_id: row.get("session_id"),
+        initiating_principal_id: row.get("initiating_principal_id"),
         tool_call_id: row.get("tool_call_id"),
         tool_name: row.get("tool_name"),
         request: serde_json::from_str(&row.get::<String, _>("request_json"))?,
@@ -2693,6 +2786,140 @@ impl MindProjectionStore for SqliteStore {
 
 #[async_trait::async_trait]
 impl SessionDirectoryStore for SqliteStore {
+    async fn ensure_principal(
+        &self,
+        principal: NewPrincipal,
+    ) -> Result<PrincipalRecord, Box<dyn std::error::Error + Send + Sync>> {
+        if principal.id.trim().is_empty()
+            || principal.provider_id.trim().is_empty()
+            || principal.assurance.trim().is_empty()
+        {
+            return Err("Principal id/provider_id/assurance 不能为空".into());
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT INTO principals
+               (id, provider_id, assurance, display_name, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                 assurance = excluded.assurance,
+                 display_name = COALESCE(excluded.display_name, principals.display_name),
+                 updated_at = excluded.updated_at
+               WHERE principals.provider_id = excluded.provider_id"#,
+        )
+        .bind(&principal.id)
+        .bind(&principal.provider_id)
+        .bind(&principal.assurance)
+        .bind(&principal.display_name)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        let existing = self
+            .get_principal(&principal.id)
+            .await?
+            .ok_or("Principal ensure 后无法读取")?;
+        if existing.provider_id != principal.provider_id {
+            return Err(format!(
+                "Principal '{}' 已由 Provider '{}' 管理，不能改由 '{}' 接管",
+                principal.id, existing.provider_id, principal.provider_id
+            )
+            .into());
+        }
+        Ok(existing)
+    }
+
+    async fn get_principal(
+        &self,
+        id: &str,
+    ) -> Result<Option<PrincipalRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query(
+            "SELECT id, provider_id, assurance, display_name, created_at, updated_at FROM principals WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.as_ref().map(principal_from_row))
+    }
+
+    async fn bind_session_principal(
+        &self,
+        session_id: &str,
+        principal_id: &str,
+    ) -> Result<SessionPrincipalBinding, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT INTO session_principal_bindings
+               (session_id, principal_id, bound_at, unbound_at)
+               VALUES (?, ?, ?, NULL)
+               ON CONFLICT(session_id, principal_id) DO UPDATE SET unbound_at = NULL"#,
+        )
+        .bind(session_id)
+        .bind(principal_id)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        let row = sqlx::query(
+            "SELECT session_id, principal_id, bound_at, unbound_at FROM session_principal_bindings WHERE session_id = ? AND principal_id = ?",
+        )
+        .bind(session_id)
+        .bind(principal_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(session_principal_binding_from_row(&row))
+    }
+
+    async fn list_session_principals(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SessionPrincipalBinding>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            "SELECT session_id, principal_id, bound_at, unbound_at FROM session_principal_bindings WHERE session_id = ? AND unbound_at IS NULL ORDER BY principal_id",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(session_principal_binding_from_row)
+            .collect())
+    }
+
+    async fn list_context_principal_bindings(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<SessionPrincipalBinding>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT b.session_id, b.principal_id, b.bound_at, b.unbound_at
+               FROM session_principal_bindings b
+               JOIN sessions s ON s.id = b.session_id
+               WHERE s.context_id = ? AND b.unbound_at IS NULL
+               ORDER BY b.session_id, b.principal_id"#,
+        )
+        .bind(context_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(session_principal_binding_from_row)
+            .collect())
+    }
+
+    async fn verify_session_principal(
+        &self,
+        session_id: &str,
+        principal_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM session_principal_bindings WHERE session_id = ? AND principal_id = ? AND unbound_at IS NULL)",
+        )
+        .bind(session_id)
+        .bind(principal_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(exists != 0)
+    }
+
     async fn create_agent_bundle(
         &self,
         agent: NewAgent,
@@ -3245,13 +3472,14 @@ impl ActivationStore for SqliteStore {
         // Orchestrator asks the scheduler to materialize its mailbox Signal.
         sqlx::query(
             r#"INSERT OR IGNORE INTO thread_signals
-               (id, thread_id, event_id, sequence, kind, parent_activation_id,
+               (id, thread_id, event_id, principal_id, sequence, kind, parent_activation_id,
                 status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)"#,
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)"#,
         )
         .bind(&signal.id)
         .bind(&signal.thread_id)
         .bind(&signal.event_id)
+        .bind(&signal.principal_id)
         .bind(sequence)
         .bind(&signal.kind)
         .bind(&signal.parent_activation_id)
@@ -3263,9 +3491,31 @@ impl ActivationStore for SqliteStore {
             .bind(&signal.event_id)
             .fetch_one(&mut *tx)
             .await?;
-        let stored_signal = thread_signal_from_row(&stored_signal)?;
+        let mut stored_signal = thread_signal_from_row(&stored_signal)?;
+        if stored_signal.principal_id.is_none() && signal.principal_id.is_some() {
+            sqlx::query(
+                "UPDATE thread_signals SET principal_id = ? WHERE id = ? AND principal_id IS NULL",
+            )
+            .bind(&signal.principal_id)
+            .bind(&stored_signal.id)
+            .execute(&mut *tx)
+            .await?;
+            stored_signal.principal_id =
+                sqlx::query("SELECT principal_id FROM thread_signals WHERE id = ?")
+                    .bind(&stored_signal.id)
+                    .fetch_one(&mut *tx)
+                    .await?
+                    .get("principal_id");
+        }
         if stored_signal.thread_id != signal.thread_id {
             return Err(format!("Event '{}' 已路由到不同 Thread Signal", signal.event_id).into());
+        }
+        if signal.principal_id.is_some() && stored_signal.principal_id != signal.principal_id {
+            return Err(format!(
+                "Event '{}' 的 Thread Signal Principal 不一致",
+                signal.event_id
+            )
+            .into());
         }
 
         if let Some(outbox) = sqlx::query("SELECT * FROM signal_outbox WHERE event_id = ?")
@@ -3313,7 +3563,22 @@ impl ActivationStore for SqliteStore {
             .bind(&signal.thread_id)
             .fetch_one(&mut *tx)
             .await?;
-        let thread = thread_from_row(&thread)?;
+        let mut thread = thread_from_row(&thread)?;
+        if thread.initiating_principal_id.is_none() && stored_signal.principal_id.is_some() {
+            sqlx::query(
+                "UPDATE threads SET initiating_principal_id = ? WHERE id = ? AND initiating_principal_id IS NULL",
+            )
+            .bind(&stored_signal.principal_id)
+            .bind(&thread.id)
+            .execute(&mut *tx)
+            .await?;
+            thread.initiating_principal_id =
+                sqlx::query("SELECT initiating_principal_id FROM threads WHERE id = ?")
+                    .bind(&thread.id)
+                    .fetch_one(&mut *tx)
+                    .await?
+                    .get("initiating_principal_id");
+        }
         if thread.agent_id != activation.agent_id
             || thread.context_id != activation.context_id
             || thread.session_id != activation.session_id
@@ -3388,19 +3653,44 @@ impl ActivationStore for SqliteStore {
             return Ok(None);
         }
         let primary = thread_signal_from_row(&pending[0])?;
+        let activation_principal = activation
+            .initiating_principal_id
+            .as_ref()
+            .or(primary.principal_id.as_ref());
+        if activation.initiating_principal_id.is_some()
+            && primary.principal_id.is_some()
+            && activation.initiating_principal_id != primary.principal_id
+        {
+            return Err(format!(
+                "Activation '{}' 与其首个 Signal Principal 不一致",
+                activation.id
+            )
+            .into());
+        }
+        if thread.initiating_principal_id.is_some()
+            && activation_principal.is_some()
+            && thread.initiating_principal_id.as_ref() != activation_principal
+        {
+            return Err(format!(
+                "Thread '{}' 与 Activation '{}' Principal 不一致",
+                thread.id, activation.id
+            )
+            .into());
+        }
         let trigger_sequence = i64::try_from(primary.sequence)
             .map_err(|_| "Activation trigger sequence 超出 SQLite INTEGER 范围")?;
         sqlx::query(
             r#"INSERT INTO thread_activations
-               (id, revision, agent_id, context_id, session_id, trigger_event_id,
+               (id, revision, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
                 trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
                 status, created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
         )
         .bind(&activation.id)
         .bind(&activation.agent_id)
         .bind(&activation.context_id)
         .bind(&activation.session_id)
+        .bind(activation_principal)
         .bind(&primary.event_id)
         .bind(trigger_sequence)
         .bind(&primary.kind)
@@ -3592,15 +3882,16 @@ impl ActivationStore for SqliteStore {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         sqlx::query(
             r#"INSERT OR IGNORE INTO thread_activations
-               (id, revision, agent_id, context_id, session_id, trigger_event_id,
+               (id, revision, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
                 trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
                 status, created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
         )
         .bind(&activation.id)
         .bind(&activation.agent_id)
         .bind(&activation.context_id)
         .bind(&activation.session_id)
+        .bind(&activation.initiating_principal_id)
         .bind(&activation.trigger_event_id)
         .bind(trigger_sequence)
         .bind(&activation.trigger_kind)
@@ -3614,10 +3905,27 @@ impl ActivationStore for SqliteStore {
             .bind(&activation.trigger_event_id)
             .fetch_one(&self.pool)
             .await?;
-        let existing = thread_activation_from_row(&row)?;
+        let mut existing = thread_activation_from_row(&row)?;
+        if existing.initiating_principal_id.is_none()
+            && activation.initiating_principal_id.is_some()
+        {
+            sqlx::query(
+                "UPDATE thread_activations SET initiating_principal_id = ? WHERE id = ? AND initiating_principal_id IS NULL",
+            )
+            .bind(&activation.initiating_principal_id)
+            .bind(&existing.id)
+            .execute(&self.pool)
+            .await?;
+            existing.initiating_principal_id = self
+                .get_thread_activation(&existing.id)
+                .await?
+                .and_then(|record| record.initiating_principal_id);
+        }
         if existing.context_id != activation.context_id
             || existing.session_id != activation.session_id
             || existing.root_turn_id != activation.root_turn_id
+            || (activation.initiating_principal_id.is_some()
+                && existing.initiating_principal_id != activation.initiating_principal_id)
         {
             return Err(format!(
                 "Trigger Event '{}' 已被不同 Thread Activation 占用",
@@ -3980,15 +4288,16 @@ impl ThreadStore for SqliteStore {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         sqlx::query(
             r#"INSERT OR IGNORE INTO threads
-               (id, revision, agent_id, context_id, session_id, root_turn_id,
+               (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
                 kind, status, executor_kind, executor_id, delivery_status,
                 created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, 'open', ?, ?, 'none', ?, ?)"#,
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, 'none', ?, ?)"#,
         )
         .bind(&thread.id)
         .bind(&thread.agent_id)
         .bind(&thread.context_id)
         .bind(&thread.session_id)
+        .bind(&thread.initiating_principal_id)
         .bind(&thread.root_turn_id)
         .bind(thread.kind.as_str())
         .bind(&thread.executor_kind)
@@ -4001,12 +4310,34 @@ impl ThreadStore for SqliteStore {
             .bind(&thread.root_turn_id)
             .fetch_one(&self.pool)
             .await?;
-        let existing = thread_from_row(&row)?;
+        let mut existing = thread_from_row(&row)?;
+        if existing.initiating_principal_id.is_none() && thread.initiating_principal_id.is_some() {
+            sqlx::query(
+                "UPDATE threads SET initiating_principal_id = ? WHERE id = ? AND initiating_principal_id IS NULL",
+            )
+            .bind(&thread.initiating_principal_id)
+            .bind(&existing.id)
+            .execute(&self.pool)
+            .await?;
+            existing.initiating_principal_id = self
+                .get_thread(&existing.id)
+                .await?
+                .and_then(|record| record.initiating_principal_id);
+        }
         if existing.context_id != thread.context_id
             || existing.session_id != thread.session_id
             || existing.agent_id != thread.agent_id
         {
             return Err(format!("Root Turn '{}' 已被不同 Thread 占用", thread.root_turn_id).into());
+        }
+        if thread.initiating_principal_id.is_some()
+            && existing.initiating_principal_id != thread.initiating_principal_id
+        {
+            return Err(format!(
+                "Root Turn '{}' 的 initiating Principal 不一致",
+                thread.root_turn_id
+            )
+            .into());
         }
         Ok(existing)
     }
@@ -4664,15 +4995,16 @@ impl ScheduleStore for SqliteStore {
         for thread in threads {
             sqlx::query(
                 r#"INSERT OR IGNORE INTO threads
-                   (id, revision, agent_id, context_id, session_id, root_turn_id,
+                   (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
                     kind, status, executor_kind, executor_id, delivery_status,
                     created_at, updated_at)
-                   VALUES (?, 1, ?, ?, ?, ?, ?, 'open', ?, ?, 'none', ?, ?)"#,
+                   VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, 'none', ?, ?)"#,
             )
             .bind(&thread.id)
             .bind(&thread.agent_id)
             .bind(&thread.context_id)
             .bind(&thread.session_id)
+            .bind(&thread.initiating_principal_id)
             .bind(&thread.root_turn_id)
             .bind(thread.kind.as_str())
             .bind(&thread.executor_kind)
@@ -5094,8 +5426,9 @@ impl DelegationStore for SqliteStore {
         sqlx::query(
             r#"INSERT INTO delegations
                (id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id,
-                task, success_when, context_scope, status, result_event_id, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, ?)"#,
+                initiating_principal_id, task, success_when, context_scope, status, result_event_id,
+                created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, ?)"#,
         )
         .bind(&delegation.id)
         .bind(&delegation.agent_id)
@@ -5103,6 +5436,7 @@ impl DelegationStore for SqliteStore {
         .bind(&delegation.parent_session_id)
         .bind(&delegation.child_context_id)
         .bind(&delegation.child_session_id)
+        .bind(&delegation.initiating_principal_id)
         .bind(&delegation.task)
         .bind(&delegation.success_when)
         .bind(&delegation.context_scope)
@@ -5120,7 +5454,7 @@ impl DelegationStore for SqliteStore {
         id: &str,
     ) -> Result<Option<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let row = sqlx::query(
-            "SELECT id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at FROM delegations WHERE id = ?",
+            "SELECT id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id, initiating_principal_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at FROM delegations WHERE id = ?",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -5133,7 +5467,7 @@ impl DelegationStore for SqliteStore {
         child_session_id: &str,
     ) -> Result<Option<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let row = sqlx::query(
-            "SELECT id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at FROM delegations WHERE child_session_id = ?",
+            "SELECT id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id, initiating_principal_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at FROM delegations WHERE child_session_id = ?",
         )
         .bind(child_session_id)
         .fetch_optional(&self.pool)
@@ -5145,7 +5479,7 @@ impl DelegationStore for SqliteStore {
         &self,
     ) -> Result<Vec<DelegationRecord>, Box<dyn std::error::Error + Send + Sync>> {
         let rows = sqlx::query(
-            "SELECT id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at FROM delegations ORDER BY updated_at DESC",
+            "SELECT id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id, initiating_principal_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at FROM delegations ORDER BY updated_at DESC",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -5209,7 +5543,7 @@ impl DelegationStore for SqliteStore {
             };
         }
         let row = sqlx::query(
-            "SELECT id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at FROM delegations WHERE id = ?",
+            "SELECT id, agent_id, parent_context_id, parent_session_id, child_context_id, child_session_id, initiating_principal_id, task, success_when, context_scope, status, result_event_id, created_at, updated_at FROM delegations WHERE id = ?",
         )
         .bind(id)
         .fetch_one(&mut *tx)
@@ -5234,7 +5568,7 @@ impl DelegationStore for SqliteStore {
 
 const OBJECTIVE_SELECT: &str = r#"SELECT id, agent_id, context_id,
     coordinator_session_id, delivery_session_id, parent_objective_id, source_event_id,
-    stated_objective, revision, status, status_reason, wait_condition_json, active_evaluation_id,
+    initiating_principal_id, stated_objective, revision, status, status_reason, wait_condition_json, active_evaluation_id,
     evaluation_lease_expires_at, continuation_sequence, token_budget, tokens_used,
     time_used_seconds, created_at, updated_at
     FROM objectives"#;
@@ -5311,11 +5645,11 @@ impl ObjectiveStore for SqliteStore {
         sqlx::query(
             r#"INSERT INTO objectives
                (id, agent_id, context_id, coordinator_session_id, delivery_session_id,
-                parent_objective_id, source_event_id, stated_objective, revision, status,
+                parent_objective_id, source_event_id, initiating_principal_id, stated_objective, revision, status,
                 wait_condition_json, active_evaluation_id, evaluation_lease_expires_at,
                 continuation_sequence, token_budget, tokens_used, time_used_seconds,
                 created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', NULL, NULL, NULL, 0, ?, 0, 0, ?, ?)"#,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', NULL, NULL, NULL, 0, ?, 0, 0, ?, ?)"#,
         )
         .bind(&objective.id)
         .bind(&objective.agent_id)
@@ -5324,6 +5658,7 @@ impl ObjectiveStore for SqliteStore {
         .bind(&objective.delivery_session_id)
         .bind(&objective.parent_objective_id)
         .bind(&objective.source_event_id)
+        .bind(&objective.initiating_principal_id)
         .bind(stated_objective)
         .bind(token_budget)
         .bind(&now)
@@ -6370,10 +6705,12 @@ async fn ensure_execution_job_in_transaction(
         r#"SELECT activations.agent_id AS activation_agent_id,
                   activations.context_id AS activation_context_id,
                   activations.session_id AS activation_session_id,
+                  activations.initiating_principal_id AS activation_principal_id,
                   activations.root_turn_id AS activation_root_turn_id,
                   threads.agent_id AS thread_agent_id,
                   threads.context_id AS thread_context_id,
                   threads.session_id AS thread_session_id,
+                  threads.initiating_principal_id AS thread_principal_id,
                   threads.root_turn_id AS thread_root_turn_id
            FROM thread_activations activations, threads threads
            WHERE activations.id = ? AND threads.id = ?"#,
@@ -6387,10 +6724,12 @@ async fn ensure_execution_job_in_transaction(
     let activation_context_id: String = causal.get("activation_context_id");
     let activation_session_id: String = causal.get("activation_session_id");
     let activation_root_turn_id: String = causal.get("activation_root_turn_id");
+    let activation_principal_id: Option<String> = causal.get("activation_principal_id");
     let thread_agent_id: String = causal.get("thread_agent_id");
     let thread_context_id: String = causal.get("thread_context_id");
     let thread_session_id: String = causal.get("thread_session_id");
     let thread_root_turn_id: String = causal.get("thread_root_turn_id");
+    let thread_principal_id: Option<String> = causal.get("thread_principal_id");
     if activation_agent_id != job.agent_id
         || thread_agent_id != job.agent_id
         || activation_context_id != job.context_id
@@ -6398,6 +6737,12 @@ async fn ensure_execution_job_in_transaction(
         || activation_session_id != job.session_id
         || thread_session_id != job.session_id
         || activation_root_turn_id != thread_root_turn_id
+        || activation_principal_id
+            .as_ref()
+            .is_some_and(|principal| Some(principal) != job.initiating_principal_id.as_ref())
+        || thread_principal_id
+            .as_ref()
+            .is_some_and(|principal| Some(principal) != job.initiating_principal_id.as_ref())
     {
         return Err("Execution Job 的 Agent/Context/Session/Root Turn 因果边界不一致".into());
     }
@@ -6406,9 +6751,9 @@ async fn ensure_execution_job_in_transaction(
     let inserted = sqlx::query(
         r#"INSERT OR IGNORE INTO execution_jobs
            (id, revision, activation_id, thread_id, agent_id, context_id,
-            session_id, tool_call_id, tool_name, request_json, status,
+            session_id, initiating_principal_id, tool_call_id, tool_name, request_json, status,
             retry_safety, result_refs_json, created_at, updated_at)
-           VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)"#,
+           VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)"#,
     )
     .bind(&job.id)
     .bind(&job.activation_id)
@@ -6416,6 +6761,7 @@ async fn ensure_execution_job_in_transaction(
     .bind(&job.agent_id)
     .bind(&job.context_id)
     .bind(&job.session_id)
+    .bind(&job.initiating_principal_id)
     .bind(&job.tool_call_id)
     .bind(&job.tool_name)
     .bind(&request_json)
@@ -8370,6 +8716,255 @@ mod tests {
     use std::sync::Arc;
     use tempfile::NamedTempFile;
 
+    async fn seed_identity_directory(store: &SqliteStore) {
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "identity-agent".to_string(),
+                    title: "Identity Agent".to_string(),
+                    root_context_id: "identity-context".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "identity-context".to_string(),
+                    agent_id: "identity-agent".to_string(),
+                    title: "Identity Context".to_string(),
+                },
+                NewSession {
+                    id: "identity-session-a1".to_string(),
+                    agent_id: "identity-agent".to_string(),
+                    context_id: "identity-context".to_string(),
+                    parent_session_id: None,
+                    title: "A1".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "identity-session-a2".to_string(),
+                agent_id: "identity-agent".to_string(),
+                context_id: "identity-context".to_string(),
+                parent_session_id: None,
+                title: "A2".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn principal_directory_is_many_to_many_and_survives_restart() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_string_lossy().to_string();
+        let store = SqliteStore::new(&path).await.unwrap();
+        seed_identity_directory(&store).await;
+        for id in ["principal:a", "principal:b"] {
+            store
+                .ensure_principal(NewPrincipal {
+                    id: id.to_string(),
+                    provider_id: "test-provider".to_string(),
+                    assurance: "verified".to_string(),
+                    display_name: Some("Alice".to_string()),
+                })
+                .await
+                .unwrap();
+        }
+        store
+            .bind_session_principal("identity-session-a1", "principal:a")
+            .await
+            .unwrap();
+        store
+            .bind_session_principal("identity-session-a2", "principal:a")
+            .await
+            .unwrap();
+        store
+            .bind_session_principal("identity-session-a1", "principal:b")
+            .await
+            .unwrap();
+
+        assert!(store
+            .verify_session_principal("identity-session-a2", "principal:a")
+            .await
+            .unwrap());
+        assert!(!store
+            .verify_session_principal("identity-session-a2", "principal:b")
+            .await
+            .unwrap());
+        assert_eq!(
+            store
+                .list_session_principals("identity-session-a1")
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|binding| binding.principal_id)
+                .collect::<Vec<_>>(),
+            ["principal:a", "principal:b"]
+        );
+        assert_eq!(
+            store
+                .list_context_principal_bindings("identity-context")
+                .await
+                .unwrap()
+                .len(),
+            3
+        );
+        let mismatch = store
+            .ensure_principal(NewPrincipal {
+                id: "principal:a".to_string(),
+                provider_id: "other-provider".to_string(),
+                assurance: "verified".to_string(),
+                display_name: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(mismatch.to_string().contains("provider"));
+
+        store.pool.close().await;
+        let restarted = SqliteStore::new(&path).await.unwrap();
+        assert!(restarted
+            .verify_session_principal("identity-session-a1", "principal:b")
+            .await
+            .unwrap());
+        assert_eq!(
+            restarted
+                .get_principal("principal:a")
+                .await
+                .unwrap()
+                .unwrap()
+                .display_name
+                .as_deref(),
+            Some("Alice")
+        );
+    }
+
+    #[tokio::test]
+    async fn principal_causal_route_is_persistent_and_fences_conflicting_replay() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_string_lossy().to_string();
+        let store = SqliteStore::new(&path).await.unwrap();
+        seed_identity_directory(&store).await;
+        let event = Event::new(
+            "identity-event-a".to_string(),
+            "User".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "identity-context",
+                "session_id": "identity-session-a1",
+                "principal_id": "principal:a",
+                "text": "hello"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(event).await.unwrap();
+        let sequence = store
+            .query(QueryFilter {
+                event_id: Some("identity-event-a".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        let thread = store
+            .ensure_thread(NewThread {
+                id: "identity-thread".to_string(),
+                agent_id: "identity-agent".to_string(),
+                context_id: "identity-context".to_string(),
+                session_id: "identity-session-a1".to_string(),
+                initiating_principal_id: Some("principal:a".to_string()),
+                root_turn_id: "identity-event-a".to_string(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+            })
+            .await
+            .unwrap();
+        let activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: "identity-signal".to_string(),
+                    thread_id: thread.id.clone(),
+                    event_id: "identity-event-a".to_string(),
+                    principal_id: Some("principal:a".to_string()),
+                    sequence,
+                    kind: "chat/user_message".to_string(),
+                    parent_activation_id: None,
+                },
+                NewThreadActivation {
+                    id: "identity-activation".to_string(),
+                    agent_id: "identity-agent".to_string(),
+                    context_id: "identity-context".to_string(),
+                    session_id: "identity-session-a1".to_string(),
+                    initiating_principal_id: Some("principal:a".to_string()),
+                    trigger_event_id: "identity-event-a".to_string(),
+                    trigger_sequence: sequence,
+                    trigger_kind: "chat/user_message".to_string(),
+                    parent_activation_id: None,
+                    root_turn_id: "identity-event-a".to_string(),
+                },
+                32,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            activation.initiating_principal_id.as_deref(),
+            Some("principal:a")
+        );
+
+        let conflict = store
+            .ensure_thread(NewThread {
+                id: "identity-thread-conflict".to_string(),
+                agent_id: "identity-agent".to_string(),
+                context_id: "identity-context".to_string(),
+                session_id: "identity-session-a1".to_string(),
+                initiating_principal_id: Some("principal:b".to_string()),
+                root_turn_id: "identity-event-a".to_string(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+            })
+            .await
+            .unwrap_err();
+        assert!(conflict.to_string().contains("Principal"));
+
+        store.pool.close().await;
+        let restarted = SqliteStore::new(&path).await.unwrap();
+        assert_eq!(
+            restarted
+                .get_thread("identity-thread")
+                .await
+                .unwrap()
+                .unwrap()
+                .initiating_principal_id
+                .as_deref(),
+            Some("principal:a")
+        );
+        assert_eq!(
+            restarted
+                .get_thread_activation("identity-activation")
+                .await
+                .unwrap()
+                .unwrap()
+                .initiating_principal_id
+                .as_deref(),
+            Some("principal:a")
+        );
+        assert_eq!(
+            restarted
+                .list_activation_signals("identity-activation")
+                .await
+                .unwrap()[0]
+                .principal_id
+                .as_deref(),
+            Some("principal:a")
+        );
+    }
+
     #[tokio::test]
     async fn recall_projection_indexes_chinese_events_frames_and_nfkc() {
         let tmp_file = NamedTempFile::new().unwrap();
@@ -8503,6 +9098,7 @@ mod tests {
                     agent_id: "schedule-agent".to_string(),
                     context_id: context_id.clone(),
                     session_id: session_id.clone(),
+                    initiating_principal_id: None,
                     root_turn_id,
                     kind: ThreadKind::Execution,
                     executor_kind: "self".to_string(),
@@ -8560,6 +9156,7 @@ mod tests {
                         agent_id: "delivery-agent".to_string(),
                         context_id: context_id.clone(),
                         session_id: session_id.clone(),
+                        initiating_principal_id: None,
                         root_turn_id: format!("delivery-root-{suffix}-{index}"),
                         kind: ThreadKind::Execution,
                         executor_kind: "self".to_string(),
@@ -9022,6 +9619,7 @@ mod tests {
                 agent_id: "job-agent".to_string(),
                 context_id: context_id.clone(),
                 session_id: session_id.clone(),
+                initiating_principal_id: None,
                 root_turn_id: root_turn_id.clone(),
                 kind: ThreadKind::Execution,
                 executor_kind: "self".to_string(),
@@ -9035,6 +9633,7 @@ mod tests {
                 agent_id: "job-agent".to_string(),
                 context_id: context_id.clone(),
                 session_id: session_id.clone(),
+                initiating_principal_id: None,
                 trigger_event_id: format!("job-trigger-{suffix}"),
                 trigger_sequence: 1,
                 trigger_kind: "chat/user_message".to_string(),
@@ -9050,6 +9649,7 @@ mod tests {
             agent_id: "job-agent".to_string(),
             context_id,
             session_id,
+            initiating_principal_id: None,
             tool_call_id: format!("call-{suffix}"),
             tool_name: "exec".to_string(),
             request: serde_json::json!({"command": "printf ok"}),
@@ -10212,6 +10812,7 @@ mod tests {
                 agent_id: created.agent_id.clone(),
                 context_id: created.context_id.clone(),
                 session_id: created.session_id.clone(),
+                initiating_principal_id: None,
                 tool_call_id: created.tool_call_id.clone(),
                 tool_name: created.tool_name.clone(),
                 request: created.request.clone(),
@@ -10229,6 +10830,7 @@ mod tests {
                 agent_id: created.agent_id.clone(),
                 context_id: created.context_id.clone(),
                 session_id: created.session_id.clone(),
+                initiating_principal_id: None,
                 tool_call_id: created.tool_call_id.clone(),
                 tool_name: "read".to_string(),
                 request: serde_json::json!({"path": "other"}),
@@ -10290,6 +10892,7 @@ mod tests {
                 agent_id: created.agent_id.clone(),
                 context_id: created.context_id.clone(),
                 session_id: created.session_id.clone(),
+                initiating_principal_id: None,
                 tool_call_id: created.tool_call_id.clone(),
                 tool_name: created.tool_name.clone(),
                 request: created.request.clone(),
@@ -11555,6 +12158,7 @@ mod tests {
                 agent_id: "outbox-agent".to_string(),
                 context_id: "outbox-context".to_string(),
                 session_id: "outbox-session".to_string(),
+                initiating_principal_id: None,
                 root_turn_id: event.id.clone(),
                 kind: ThreadKind::DialogueTurn,
                 executor_kind: "self".to_string(),
@@ -11568,6 +12172,7 @@ mod tests {
                     id: "outbox-signal".to_string(),
                     thread_id: thread.id,
                     event_id: event.id.clone(),
+                    principal_id: None,
                     sequence,
                     kind: event.topic.clone(),
                     parent_activation_id: None,
@@ -11577,6 +12182,7 @@ mod tests {
                     agent_id: "outbox-agent".to_string(),
                     context_id: "outbox-context".to_string(),
                     session_id: "outbox-session".to_string(),
+                    initiating_principal_id: None,
                     trigger_event_id: event.id.clone(),
                     trigger_sequence: sequence,
                     trigger_kind: event.topic.clone(),
@@ -11770,6 +12376,7 @@ mod tests {
                     agent_id: "admission-agent".to_string(),
                     context_id: "admission-context".to_string(),
                     session_id: "admission-session".to_string(),
+                    initiating_principal_id: None,
                     root_turn_id: root_turn_id.clone(),
                     kind: ThreadKind::Execution,
                     executor_kind: "self".to_string(),
@@ -11783,6 +12390,7 @@ mod tests {
                         id: format!("admission-signal-{name}"),
                         thread_id: thread.id,
                         event_id: event_id.clone(),
+                        principal_id: None,
                         sequence,
                         kind: (*topic).to_string(),
                         parent_activation_id: None,
@@ -11792,6 +12400,7 @@ mod tests {
                         agent_id: "admission-agent".to_string(),
                         context_id: "admission-context".to_string(),
                         session_id: "admission-session".to_string(),
+                        initiating_principal_id: None,
                         trigger_event_id: event_id,
                         trigger_sequence: sequence,
                         trigger_kind: (*topic).to_string(),
@@ -12035,6 +12644,7 @@ mod tests {
                 agent_id: "signal-agent".to_string(),
                 context_id: "signal-context".to_string(),
                 session_id: "signal-session".to_string(),
+                initiating_principal_id: None,
                 root_turn_id: "signal-root".to_string(),
                 kind: ThreadKind::Execution,
                 executor_kind: "self".to_string(),
@@ -12085,6 +12695,7 @@ mod tests {
             id: format!("signal-{index}"),
             thread_id: thread.id.clone(),
             event_id: format!("signal-event-{index}"),
+            principal_id: None,
             sequence: sequence(&format!("signal-event-{index}")),
             kind: "chat/tool_output".to_string(),
             parent_activation_id: None,
@@ -12094,6 +12705,7 @@ mod tests {
             agent_id: "signal-agent".to_string(),
             context_id: "signal-context".to_string(),
             session_id: "signal-session".to_string(),
+            initiating_principal_id: None,
             trigger_event_id: format!("signal-event-{index}"),
             trigger_sequence: sequence(&format!("signal-event-{index}")),
             trigger_kind: "chat/tool_output".to_string(),
@@ -12271,6 +12883,7 @@ mod tests {
                         id: "signal-4".to_string(),
                         thread_id: "signal-thread".to_string(),
                         event_id: "signal-event-4".to_string(),
+                        principal_id: None,
                         sequence: sequence_4,
                         kind: "chat/tool_output".to_string(),
                         parent_activation_id: None,
@@ -12280,6 +12893,7 @@ mod tests {
                         agent_id: "signal-agent".to_string(),
                         context_id: "signal-context".to_string(),
                         session_id: "signal-session".to_string(),
+                        initiating_principal_id: None,
                         trigger_event_id: "signal-event-4".to_string(),
                         trigger_sequence: sequence_4,
                         trigger_kind: "chat/tool_output".to_string(),
@@ -12298,6 +12912,7 @@ mod tests {
                         id: "signal-5".to_string(),
                         thread_id: "signal-thread".to_string(),
                         event_id: "signal-event-5".to_string(),
+                        principal_id: None,
                         sequence: sequence_5,
                         kind: "chat/tool_output".to_string(),
                         parent_activation_id: None,
@@ -12307,6 +12922,7 @@ mod tests {
                         agent_id: "signal-agent".to_string(),
                         context_id: "signal-context".to_string(),
                         session_id: "signal-session".to_string(),
+                        initiating_principal_id: None,
                         trigger_event_id: "signal-event-5".to_string(),
                         trigger_sequence: sequence_5,
                         trigger_kind: "chat/tool_output".to_string(),
@@ -12698,6 +13314,7 @@ mod tests {
                 parent_session_id: "session-root".to_string(),
                 child_context_id: "context-child".to_string(),
                 child_session_id: "session-child".to_string(),
+                initiating_principal_id: Some("principal:delegator".to_string()),
                 task: "verify lifecycle".to_string(),
                 success_when: Some("done".to_string()),
                 context_scope: "current_session".to_string(),
@@ -12705,6 +13322,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(delegation.status, DelegationStatus::Queued);
+        assert_eq!(
+            delegation.initiating_principal_id.as_deref(),
+            Some("principal:delegator")
+        );
         let misrouted_result = Event::new(
             "misrouted-result-event".to_string(),
             "sub-agent".to_string(),
@@ -12845,6 +13466,7 @@ mod tests {
                 delivery_session_id: "objective-outbox-session".to_string(),
                 parent_objective_id: None,
                 source_event_id: "objective-outbox-source".to_string(),
+                initiating_principal_id: None,
                 stated_objective: "prove atomic continuation".to_string(),
                 token_budget: None,
             })
@@ -12964,6 +13586,7 @@ mod tests {
                 delivery_session_id: "session-objective".to_string(),
                 parent_objective_id: None,
                 source_event_id: "user-event-1".to_string(),
+                initiating_principal_id: None,
                 stated_objective: "完成一项可恢复的长程工作".to_string(),
                 token_budget: Some(256_000),
             })
@@ -13099,6 +13722,7 @@ mod tests {
                 delivery_session_id: "session-objective".to_string(),
                 parent_objective_id: None,
                 source_event_id: "user-event-usage".to_string(),
+                initiating_principal_id: None,
                 stated_objective: "验证 Evaluation 成本按租约隔离记账".to_string(),
                 token_budget: None,
             })

@@ -5819,6 +5819,7 @@ mod tests {
             delivery_session_id: "s".to_string(),
             parent_objective_id: None,
             source_event_id: "event-1".to_string(),
+            initiating_principal_id: None,
             stated_objective: "Win TankWar and keep improving strategy".to_string(),
             revision: 3,
             status: ObjectiveStatus::Active,

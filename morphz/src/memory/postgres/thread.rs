@@ -65,6 +65,7 @@ pub(super) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
         agent_id: row.get("agent_id"),
         context_id: row.get("context_id"),
         session_id: row.get("session_id"),
+        initiating_principal_id: row.get("initiating_principal_id"),
         root_turn_id: row.get("root_turn_id"),
         kind: parse_kind(&row.get::<String, _>("kind"))?,
         lifecycle: parse_lifecycle(&row.get::<String, _>("status"))?,
@@ -88,16 +89,17 @@ impl ThreadStore for PostgresStore {
         let now = now_text();
         sqlx::query(
             r#"INSERT INTO threads
-               (id, revision, agent_id, context_id, session_id, root_turn_id,
+               (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
                 kind, status, executor_kind, executor_id, delivery_status,
                 created_at, updated_at)
-               VALUES ($1, 1, $2, $3, $4, $5, $6, 'open', $7, $8, 'none', $9, $9)
+               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, 'open', $8, $9, 'none', $10, $10)
                ON CONFLICT DO NOTHING"#,
         )
         .bind(&thread.id)
         .bind(&thread.agent_id)
         .bind(&thread.context_id)
         .bind(&thread.session_id)
+        .bind(&thread.initiating_principal_id)
         .bind(&thread.root_turn_id)
         .bind(thread.kind.as_str())
         .bind(&thread.executor_kind)
@@ -105,15 +107,37 @@ impl ThreadStore for PostgresStore {
         .bind(now)
         .execute(&self.pool)
         .await?;
-        let existing = self
+        let mut existing = self
             .get_thread_by_root(&thread.root_turn_id)
             .await?
             .ok_or("Thread 并发创建后无法读取")?;
+        if existing.initiating_principal_id.is_none() && thread.initiating_principal_id.is_some() {
+            sqlx::query(
+                "UPDATE threads SET initiating_principal_id = $1 WHERE id = $2 AND initiating_principal_id IS NULL",
+            )
+            .bind(&thread.initiating_principal_id)
+            .bind(&existing.id)
+            .execute(&self.pool)
+            .await?;
+            existing = self
+                .get_thread(&existing.id)
+                .await?
+                .ok_or("Thread Principal 迁移后无法读取")?;
+        }
         if existing.context_id != thread.context_id
             || existing.session_id != thread.session_id
             || existing.agent_id != thread.agent_id
         {
             return Err(format!("Root Turn '{}' 已被不同 Thread 占用", thread.root_turn_id).into());
+        }
+        if thread.initiating_principal_id.is_some()
+            && existing.initiating_principal_id != thread.initiating_principal_id
+        {
+            return Err(format!(
+                "Root Turn '{}' 的 initiating Principal 不一致",
+                thread.root_turn_id
+            )
+            .into());
         }
         Ok(existing)
     }

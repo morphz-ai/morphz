@@ -8,6 +8,9 @@ use crate::context_tools::{ContextTxTool, RecallTool};
 use crate::event::TYPE_TOOL_OUTPUT;
 use crate::event::{Event, InMemoryEventBus, TYPE_USER_MESSAGE};
 use crate::execution::ExecutionJobManager;
+use crate::identity::{
+    IdentityEvidence, IdentityProvider, PrincipalAssertion, StaticIdentityProvider,
+};
 use crate::llm::{Client, ReasoningEffort};
 use crate::memory::postgres::PostgresStore;
 use crate::memory::sqlite::SqliteStore;
@@ -16,11 +19,11 @@ use crate::memory::{
     ApprovalResolution, ApprovalStore, CognitiveContextRecord, DelegationRecord, DelegationStatus,
     EventStore, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
     ExecutionJobStore, MessageClaim, MindProjectionStore, NewAgent, NewCognitiveContext,
-    NewDelegation, NewObjective, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RecallProjectionStore, RuntimeStore,
-    ScheduleMutation, ScheduleRecord, ScheduleStatus, SessionRecord, SessionStore, SessionUpdate,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadPhase, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, TimerStore,
+    NewDelegation, NewObjective, NewPrincipal, NewSession, ObjectiveMutation, ObjectiveRecord,
+    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RecallProjectionStore,
+    RuntimeStore, ScheduleMutation, ScheduleRecord, ScheduleStatus, SessionRecord, SessionStore,
+    SessionUpdate, ThreadActivationRecord, ThreadActivationStatus, ThreadPhase, ThreadRecord,
+    ThreadSignalRecord, ThreadSignalStatus, TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -35,7 +38,8 @@ use crate::timer::TimerEngine;
 use crate::tool::{
     BackgroundTaskScheduler, CheckTaskAfterTool, DelegateTool, EditFileTool, ExecuteCommandTool,
     KillTaskTool, ListFilesTool, ListSkillsTool, ListTasksTool, ReadFileTool, Registry,
-    ScheduleTxTool, SearchTool, SendMessageTool, TaskStatusTool, ThreadScheduler, WriteFileTool,
+    ScheduleTxTool, SearchTool, SendMessageTool, TaskStatusTool, ThreadScheduler,
+    VerifyIdentityTool, WriteFileTool,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -47,11 +51,18 @@ use std::sync::{Arc, Weak};
 pub type RuntimeError = Box<dyn std::error::Error + Send + Sync>;
 
 static RUNTIME_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+const RUNTIME_DEFAULT_IDENTITY_PROVIDER_ID: &str = "runtime-default";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeIdentity {
     pub agent_id: String,
     pub context_id: String,
+    #[serde(default = "default_runtime_principal_id")]
+    pub principal_id: String,
+}
+
+fn default_runtime_principal_id() -> String {
+    "principal-local".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -159,6 +170,7 @@ impl Default for RuntimeIdentity {
         Self {
             agent_id: "default-agent".to_string(),
             context_id: "context-default".to_string(),
+            principal_id: default_runtime_principal_id(),
         }
     }
 }
@@ -187,6 +199,7 @@ pub struct MorphzRuntimeBuilder {
     identity: RuntimeIdentity,
     tool_policy: RuntimeToolPolicy,
     approval_provider: Option<Arc<dyn ApprovalProvider>>,
+    identity_provider: Option<Arc<dyn IdentityProvider>>,
 }
 
 impl MorphzRuntimeBuilder {
@@ -198,6 +211,7 @@ impl MorphzRuntimeBuilder {
             identity: RuntimeIdentity::default(),
             tool_policy: RuntimeToolPolicy::from_environment(),
             approval_provider: None,
+            identity_provider: None,
             config,
             client,
         }
@@ -231,6 +245,11 @@ impl MorphzRuntimeBuilder {
         self
     }
 
+    pub fn identity_provider(mut self, provider: Arc<dyn IdentityProvider>) -> Self {
+        self.identity_provider = Some(provider);
+        self
+    }
+
     pub async fn build(self) -> Result<MorphzRuntime, RuntimeError> {
         let database_path = self
             .database_path
@@ -252,6 +271,14 @@ impl MorphzRuntimeBuilder {
                 }
             }
         }
+        let identity_provider = self.identity_provider.unwrap_or_else(|| {
+            Arc::new(StaticIdentityProvider::new(PrincipalAssertion {
+                principal_id: self.identity.principal_id.clone(),
+                provider_id: RUNTIME_DEFAULT_IDENTITY_PROVIDER_ID.to_string(),
+                assurance: "local-process".to_string(),
+                display_name: None,
+            })) as Arc<dyn IdentityProvider>
+        });
         let bus = Arc::new(InMemoryEventBus::new());
         let (store, sqlite_database_path, storage_label): (
             Arc<dyn RuntimeStore>,
@@ -411,6 +438,7 @@ impl MorphzRuntimeBuilder {
             inner: Arc::new(RuntimeInner {
                 config: self.config,
                 identity: self.identity,
+                identity_provider,
                 sqlite_database_path,
                 storage_label,
                 client: runtime_client,
@@ -477,6 +505,11 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
             .session_store()
             .expect("Runtime ContextEngine 必须配置 SessionStore"),
     )));
+    registry.register(Arc::new(VerifyIdentityTool::new(
+        context_engine
+            .session_store()
+            .expect("Runtime ContextEngine 必须配置 SessionStore"),
+    )));
     if policy.context_only {
         return;
     }
@@ -531,6 +564,7 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
 struct RuntimeInner {
     config: AppConfig,
     identity: RuntimeIdentity,
+    identity_provider: Arc<dyn IdentityProvider>,
     sqlite_database_path: Option<String>,
     storage_label: String,
     client: Arc<dyn Client>,
@@ -564,6 +598,13 @@ impl MorphzRuntime {
         if self.inner.started.load(Ordering::Acquire) {
             return Ok(());
         }
+        self.ensure_principal(PrincipalAssertion {
+            principal_id: self.inner.identity.principal_id.clone(),
+            provider_id: RUNTIME_DEFAULT_IDENTITY_PROVIDER_ID.to_string(),
+            assurance: "runtime-default".to_string(),
+            display_name: None,
+        })
+        .await?;
         if self
             .inner
             .store
@@ -624,6 +665,63 @@ impl MorphzRuntime {
 
     pub fn identity(&self) -> &RuntimeIdentity {
         &self.inner.identity
+    }
+
+    pub async fn authenticate_identity(
+        &self,
+        evidence: IdentityEvidence,
+    ) -> Result<PrincipalAssertion, RuntimeError> {
+        self.inner.identity_provider.authenticate(evidence).await
+    }
+
+    pub async fn ensure_principal(
+        &self,
+        assertion: PrincipalAssertion,
+    ) -> Result<crate::memory::PrincipalRecord, RuntimeError> {
+        self.inner
+            .store
+            .ensure_principal(NewPrincipal {
+                id: assertion.principal_id,
+                provider_id: assertion.provider_id,
+                assurance: assertion.assurance,
+                display_name: assertion.display_name,
+            })
+            .await
+    }
+
+    pub async fn bind_session_principal(
+        &self,
+        session_id: &str,
+        assertion: PrincipalAssertion,
+    ) -> Result<crate::memory::SessionPrincipalBinding, RuntimeError> {
+        let principal = self.ensure_principal(assertion).await?;
+        self.inner
+            .store
+            .bind_session_principal(session_id, &principal.id)
+            .await
+    }
+
+    pub async fn list_session_principals(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::memory::SessionPrincipalBinding>, RuntimeError> {
+        self.inner.store.list_session_principals(session_id).await
+    }
+
+    async fn bind_default_principal(
+        &self,
+        session_id: &str,
+    ) -> Result<crate::memory::SessionPrincipalBinding, RuntimeError> {
+        self.bind_session_principal(
+            session_id,
+            PrincipalAssertion {
+                principal_id: self.inner.identity.principal_id.clone(),
+                provider_id: RUNTIME_DEFAULT_IDENTITY_PROVIDER_ID.to_string(),
+                assurance: "runtime-default".to_string(),
+                display_name: None,
+            },
+        )
+        .await
     }
 
     pub async fn inspect_schedule(&self, id: &str) -> Result<Option<ScheduleRecord>, RuntimeError> {
@@ -733,6 +831,7 @@ impl MorphzRuntime {
     pub async fn ensure_session(&self, session: NewSession) -> Result<SessionHandle, RuntimeError> {
         let id = session.id.clone();
         let session = self.inner.store.ensure_session(session).await?;
+        self.bind_default_principal(&session.id).await?;
         self.inner
             .orchestrator
             .register_session_context(&session.id, &session.context_id);
@@ -760,6 +859,8 @@ impl MorphzRuntime {
             .inner
             .store
             .create_agent_bundle(agent, context, session)
+            .await?;
+        self.bind_default_principal(&bundle.initial_session.id)
             .await?;
         self.inner.orchestrator.register_session_context(
             &bundle.initial_session.id,
@@ -799,6 +900,20 @@ impl MorphzRuntime {
 
     pub async fn create_session(&self, session: NewSession) -> Result<SessionRecord, RuntimeError> {
         let session = self.inner.store.create_session(session).await?;
+        self.bind_default_principal(&session.id).await?;
+        self.inner
+            .orchestrator
+            .register_session_context(&session.id, &session.context_id);
+        Ok(session)
+    }
+
+    pub async fn create_session_for_principal(
+        &self,
+        session: NewSession,
+        assertion: PrincipalAssertion,
+    ) -> Result<SessionRecord, RuntimeError> {
+        let session = self.inner.store.create_session(session).await?;
+        self.bind_session_principal(&session.id, assertion).await?;
         self.inner
             .orchestrator
             .register_session_context(&session.id, &session.context_id);
@@ -1070,38 +1185,41 @@ impl MorphzRuntime {
         }
 
         if cancelled.iter().any(|delegation| delegation.id == root.id) {
-            self.inner
-                .bus
-                .publish(Event::new(
-                    format!(
-                        "delegation_cancelled_{}_{}",
-                        root.id,
-                        chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+            let mut cancelled_event = Event::new(
+                format!(
+                    "delegation_cancelled_{}_{}",
+                    root.id,
+                    chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                ),
+                "System-Delegation".to_string(),
+                crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                vec![
+                    ("context_id".to_string(), json!(root.parent_context_id)),
+                    ("session_id".to_string(), json!(root.parent_session_id)),
+                    ("delegation_id".to_string(), json!(root.id)),
+                    ("tool_name".to_string(), json!("delegate")),
+                    ("tool_status".to_string(), json!("cancelled")),
+                    (
+                        "text".to_string(),
+                        json!(json!({
+                            "delegation_id": id,
+                            "status": "cancelled",
+                            "cancelled_descendants": cancelled.len().saturating_sub(1),
+                            "guidance": "Delegation 已取消；请根据当前证据继续或向用户说明。"
+                        })
+                        .to_string()),
                     ),
-                    "System-Delegation".to_string(),
-                    crate::event::TYPE_TOOL_OUTPUT.to_string(),
-                    "chat/tool_output".to_string(),
-                    vec![
-                        ("context_id".to_string(), json!(root.parent_context_id)),
-                        ("session_id".to_string(), json!(root.parent_session_id)),
-                        ("delegation_id".to_string(), json!(root.id)),
-                        ("tool_name".to_string(), json!("delegate")),
-                        ("tool_status".to_string(), json!("cancelled")),
-                        (
-                            "text".to_string(),
-                            json!(json!({
-                                "delegation_id": id,
-                                "status": "cancelled",
-                                "cancelled_descendants": cancelled.len().saturating_sub(1),
-                                "guidance": "Delegation 已取消；请根据当前证据继续或向用户说明。"
-                            })
-                            .to_string()),
-                        ),
-                    ]
-                    .into_iter()
-                    .collect(),
-                ))
-                .await?;
+                ]
+                .into_iter()
+                .collect(),
+            );
+            if let Some(principal_id) = &root.initiating_principal_id {
+                cancelled_event
+                    .payload
+                    .insert("principal_id".to_string(), json!(principal_id));
+            }
+            self.inner.bus.publish(cancelled_event).await?;
         }
         Ok(cancelled)
     }
@@ -1867,6 +1985,36 @@ impl SessionHandle {
         actor: impl Into<String>,
         client_message_id: Option<String>,
     ) -> Result<MessageReceipt, RuntimeError> {
+        self.runtime.bind_default_principal(&self.id).await?;
+        self.send_as_principal(
+            text,
+            actor,
+            self.runtime.identity().principal_id.clone(),
+            client_message_id,
+        )
+        .await
+    }
+
+    pub async fn send_authenticated(
+        &self,
+        text: impl Into<String>,
+        actor: impl Into<String>,
+        evidence: IdentityEvidence,
+        client_message_id: Option<String>,
+    ) -> Result<MessageReceipt, RuntimeError> {
+        let assertion = self.runtime.authenticate_identity(evidence).await?;
+        self.runtime.ensure_principal(assertion.clone()).await?;
+        self.send_as_principal(text, actor, assertion.principal_id, client_message_id)
+            .await
+    }
+
+    pub async fn send_as_principal(
+        &self,
+        text: impl Into<String>,
+        actor: impl Into<String>,
+        principal_id: impl Into<String>,
+        client_message_id: Option<String>,
+    ) -> Result<MessageReceipt, RuntimeError> {
         let session = self
             .runtime
             .get_session(&self.id)
@@ -1882,6 +2030,20 @@ impl SessionHandle {
         if text.chars().count() > 1_000_000 {
             return Err("消息正文超过 1,000,000 字符".into());
         }
+        let principal_id = principal_id.into();
+        if !self
+            .runtime
+            .inner
+            .store
+            .verify_session_principal(&self.id, &principal_id)
+            .await?
+        {
+            return Err(format!(
+                "Principal '{}' 未绑定到 Session '{}'，拒绝接收消息",
+                principal_id, self.id
+            )
+            .into());
+        }
         let client_message_id = client_message_id.unwrap_or_else(|| runtime_id("client"));
         let event_id = runtime_id("msg");
         let event = Event::new(
@@ -1892,6 +2054,7 @@ impl SessionHandle {
             [
                 ("context_id".to_string(), json!(session.context_id)),
                 ("session_id".to_string(), json!(self.id)),
+                ("principal_id".to_string(), json!(principal_id)),
                 ("client_message_id".to_string(), json!(client_message_id)),
                 ("text".to_string(), json!(text)),
             ]
@@ -2033,6 +2196,30 @@ mod tests {
 
     struct ReplyClient;
 
+    struct ExternalIdentityProvider;
+
+    #[async_trait::async_trait]
+    impl IdentityProvider for ExternalIdentityProvider {
+        fn provider_id(&self) -> &str {
+            "test-oauth"
+        }
+
+        async fn authenticate(
+            &self,
+            evidence: IdentityEvidence,
+        ) -> Result<PrincipalAssertion, crate::identity::IdentityError> {
+            if evidence.channel != "dashboard" {
+                return Err("unexpected identity channel".into());
+            }
+            Ok(PrincipalAssertion {
+                principal_id: "principal-external".to_string(),
+                provider_id: self.provider_id().to_string(),
+                assurance: "test-authenticated".to_string(),
+                display_name: Some("External User".to_string()),
+            })
+        }
+    }
+
     struct BlockingReplyClient {
         entered: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
@@ -2133,6 +2320,114 @@ mod tests {
             .await
             .unwrap();
         assert!(sqlite.get_agent("injected-agent").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn pluggable_identity_provider_anchors_authenticated_messages_without_owning_runtime_default(
+    ) {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .identity_provider(Arc::new(ExternalIdentityProvider))
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+
+        let default_principal = runtime
+            .inner
+            .store
+            .get_principal(&runtime.identity().principal_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            default_principal.provider_id,
+            RUNTIME_DEFAULT_IDENTITY_PROVIDER_ID
+        );
+
+        let assertion = runtime
+            .authenticate_identity(IdentityEvidence {
+                channel: "dashboard".to_string(),
+                credential: Some(Arc::from(b"opaque-test-token".as_slice())),
+            })
+            .await
+            .unwrap();
+        let session = runtime
+            .create_session_for_principal(
+                NewSession {
+                    id: "external-identity-session".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    parent_session_id: None,
+                    title: "External identity".to_string(),
+                    mount_kind: crate::memory::SessionMountKind::ExistingContext,
+                },
+                assertion,
+            )
+            .await
+            .unwrap();
+        let receipt = runtime
+            .session(session.id)
+            .send_authenticated(
+                "hello from authenticated ingress",
+                "External User",
+                IdentityEvidence {
+                    channel: "dashboard".to_string(),
+                    credential: Some(Arc::from(b"opaque-test-token".as_slice())),
+                },
+                Some("external-message-1".to_string()),
+            )
+            .await
+            .unwrap();
+        let event = runtime
+            .query_events(QueryFilter {
+                event_id: Some(receipt.event_id),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(
+            event
+                .payload
+                .get("principal_id")
+                .and_then(|value| value.as_str()),
+            Some("principal-external")
+        );
+
+        let forged_event_id = "forged-cross-session-principal";
+        let forged = Event::new(
+            forged_event_id.to_string(),
+            "Untrusted Adapter".to_string(),
+            TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            [
+                (
+                    "context_id".to_string(),
+                    json!(runtime.identity().context_id),
+                ),
+                ("session_id".to_string(), json!("external-identity-session")),
+                (
+                    "principal_id".to_string(),
+                    json!(runtime.identity().principal_id),
+                ),
+                ("text".to_string(), json!("I claim another identity")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let _ = runtime.publish(forged).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(runtime
+            .inner
+            .store
+            .get_thread_by_root(forged_event_id)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -2967,6 +3262,7 @@ mod tests {
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
                 session_id: "session-scheduler-snapshot".to_string(),
+                initiating_principal_id: None,
                 root_turn_id: root_turn_id.to_string(),
                 kind: crate::memory::ThreadKind::Execution,
                 executor_kind: "self".to_string(),
@@ -3013,6 +3309,7 @@ mod tests {
                     id: "signal-scheduler-snapshot".to_string(),
                     thread_id: thread.id.clone(),
                     event_id: signal_event.id.clone(),
+                    principal_id: None,
                     sequence: trigger_sequence,
                     kind: signal_event.topic.clone(),
                     parent_activation_id: None,
@@ -3022,6 +3319,7 @@ mod tests {
                     agent_id: runtime.identity().agent_id.clone(),
                     context_id: runtime.identity().context_id.clone(),
                     session_id: "session-scheduler-snapshot".to_string(),
+                    initiating_principal_id: None,
                     trigger_event_id: signal_event.id,
                     trigger_sequence,
                     trigger_kind: "chat/user_message".to_string(),
@@ -3043,6 +3341,7 @@ mod tests {
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
                 session_id: "session-scheduler-snapshot".to_string(),
+                initiating_principal_id: None,
                 tool_call_id: "call-scheduler-snapshot".to_string(),
                 tool_name: "exec".to_string(),
                 request: json!({"command": "cargo test"}),
@@ -3777,6 +4076,7 @@ mod tests {
                     agent_id: runtime.identity().agent_id.clone(),
                     context_id: runtime.identity().context_id.clone(),
                     session_id: session_id.to_string(),
+                    initiating_principal_id: None,
                     root_turn_id: format!("root-{session_id}-{index}"),
                     kind: crate::memory::ThreadKind::Execution,
                     executor_kind: "self".to_string(),
@@ -4048,6 +4348,7 @@ mod tests {
                     agent_id: crashed.identity().agent_id.clone(),
                     context_id: crashed.identity().context_id.clone(),
                     session_id: "session-delivery-recovery".to_string(),
+                    initiating_principal_id: None,
                     root_turn_id: format!("root-delivery-recovery-{index}"),
                     kind: crate::memory::ThreadKind::Execution,
                     executor_kind: "self".to_string(),
@@ -4175,6 +4476,7 @@ mod tests {
                     agent_id: seed.identity().agent_id.clone(),
                     context_id: seed.identity().context_id.clone(),
                     session_id: "session-delivery-snapshot".to_string(),
+                    initiating_principal_id: None,
                     root_turn_id: format!("root-delivery-snapshot-{index}"),
                     kind: crate::memory::ThreadKind::Execution,
                     executor_kind: "self".to_string(),
@@ -4224,6 +4526,7 @@ mod tests {
                 agent_id: runtime.identity().agent_id.clone(),
                 context_id: runtime.identity().context_id.clone(),
                 session_id: "session-delivery-snapshot".to_string(),
+                initiating_principal_id: None,
                 root_turn_id: "root-delivery-snapshot-late".to_string(),
                 kind: crate::memory::ThreadKind::Execution,
                 executor_kind: "self".to_string(),
@@ -4626,6 +4929,7 @@ mod tests {
                 agent_id: crashed.identity().agent_id.clone(),
                 context_id: crashed.identity().context_id.clone(),
                 session_id: "session-activation-recovery".to_string(),
+                initiating_principal_id: None,
                 root_turn_id: "root-activation-recovery".to_string(),
                 kind: crate::memory::ThreadKind::Execution,
                 executor_kind: "self".to_string(),
@@ -4641,6 +4945,7 @@ mod tests {
                     id: "signal-activation-recovery".to_string(),
                     thread_id: "thread-activation-recovery".to_string(),
                     event_id: trigger.id.clone(),
+                    principal_id: None,
                     sequence: trigger_sequence,
                     kind: trigger.topic.clone(),
                     parent_activation_id: None,
@@ -4650,6 +4955,7 @@ mod tests {
                     agent_id: crashed.identity().agent_id.clone(),
                     context_id: crashed.identity().context_id.clone(),
                     session_id: "session-activation-recovery".to_string(),
+                    initiating_principal_id: None,
                     trigger_event_id: trigger.id.clone(),
                     trigger_sequence,
                     trigger_kind: trigger.topic.clone(),
@@ -4915,6 +5221,7 @@ mod tests {
                 delivery_session_id: "session-objective-runtime".to_string(),
                 parent_objective_id: None,
                 source_event_id: "runtime-test-source".to_string(),
+                initiating_principal_id: None,
                 stated_objective: "完成 Supervisor 确定性回归测试".to_string(),
                 token_budget: None,
             })
@@ -5011,6 +5318,7 @@ mod tests {
                 delivery_session_id: session.id().to_string(),
                 parent_objective_id: None,
                 source_event_id: "objective-concurrent-source".to_string(),
+                initiating_principal_id: None,
                 stated_objective: "保持一个尚未结束的 Objective Evaluation".to_string(),
                 token_budget: None,
             })
@@ -5129,6 +5437,7 @@ mod tests {
                 delivery_session_id: session.id().to_string(),
                 parent_objective_id: None,
                 source_event_id: "objective-scoped-a-source".to_string(),
+                initiating_principal_id: None,
                 stated_objective: "保持 Objective A 运行直到被暂停".to_string(),
                 token_budget: None,
             })
@@ -5174,6 +5483,7 @@ mod tests {
             agent_id: runtime.identity().agent_id.clone(),
             context_id: runtime.identity().context_id.clone(),
             session_id: session.id().to_string(),
+            initiating_principal_id: None,
             tool_call_id: "objective-scoped-physical-call".to_string(),
             tool_name: "test-physical-tool".to_string(),
             request: json!({"probe": true}),
@@ -5213,6 +5523,7 @@ mod tests {
                 delivery_session_id: session.id().to_string(),
                 parent_objective_id: None,
                 source_event_id: "objective-scoped-b-source".to_string(),
+                initiating_principal_id: None,
                 stated_objective: "Objective B 必须在 A 暂停后继续".to_string(),
                 token_budget: None,
             })
@@ -5492,6 +5803,7 @@ mod tests {
                 delivery_session_id: "session-objective-blocked".to_string(),
                 parent_objective_id: None,
                 source_event_id: "runtime-test-blocked-source".to_string(),
+                initiating_principal_id: None,
                 stated_objective: "验证真实阻塞会交付说明并停止自动续跑".to_string(),
                 token_budget: None,
             })
@@ -5559,6 +5871,7 @@ mod tests {
                 delivery_session_id: "session-objective-long-run".to_string(),
                 parent_objective_id: None,
                 source_event_id: "runtime-test-long-run-source".to_string(),
+                initiating_principal_id: None,
                 stated_objective: "持续求值超过一百次后再显式完成".to_string(),
                 token_budget: None,
             })
@@ -5729,6 +6042,7 @@ mod tests {
                 delivery_session_id: "session-objective-wait".to_string(),
                 parent_objective_id: None,
                 source_event_id: "runtime-wait-source".to_string(),
+                initiating_principal_id: None,
                 stated_objective: "等待后台任务后完成".to_string(),
                 token_budget: None,
             })
@@ -5843,6 +6157,7 @@ mod tests {
                 delivery_session_id: "session-objective-recover".to_string(),
                 parent_objective_id: None,
                 source_event_id: "recovery-source".to_string(),
+                initiating_principal_id: None,
                 stated_objective: "验证 Runtime 重启恢复".to_string(),
                 token_budget: None,
             })
@@ -5961,6 +6276,7 @@ mod tests {
                     delivery_session_id: session_id.to_string(),
                     parent_objective_id: None,
                     source_event_id: format!("source-{objective_id}"),
+                    initiating_principal_id: None,
                     stated_objective: format!("完成 {session_id} 的独立目标"),
                     token_budget: None,
                 })
@@ -6074,6 +6390,7 @@ mod tests {
                 delivery_session_id: "session-objective-recover".to_string(),
                 parent_objective_id: None,
                 source_event_id: "timer-source".to_string(),
+                initiating_principal_id: None,
                 stated_objective: "计时器到达后继续".to_string(),
                 token_budget: None,
             })
@@ -6273,6 +6590,7 @@ mod tests {
                 parent_session_id: "cancel-root".to_string(),
                 child_context_id: "cancel-child-context".to_string(),
                 child_session_id: "cancel-child".to_string(),
+                initiating_principal_id: None,
                 task: "child".to_string(),
                 success_when: None,
                 context_scope: "mind_only".to_string(),
@@ -6284,6 +6602,7 @@ mod tests {
                 parent_session_id: "cancel-child".to_string(),
                 child_context_id: "cancel-grand-context".to_string(),
                 child_session_id: "cancel-grand".to_string(),
+                initiating_principal_id: None,
                 task: "grand".to_string(),
                 success_when: None,
                 context_scope: "mind_only".to_string(),
