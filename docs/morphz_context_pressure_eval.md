@@ -115,8 +115,9 @@ Gemini 继续执行两个更强场景：
   11,991 → 1,752，结果通过。
 
 第一次 consolidation 探针还发现：模型可能在维护事务中误退休当前用户请求，导致下一次求值
-选择 `no_reply`。Runtime 现以当前 Activation 的 root/trigger Event 做因果 fencing；交付完成前
-`context_tx` 不得退休它们。该约束有确定性单元测试，修复后的同场景真实回归产生且仅产生一次回复。
+选择 `no_reply`。Runtime 现以当前 Activation 的 root Event 做交付 fencing；交付完成前
+`context_tx` 不得退休根请求。已经被当前 Attempt 消费的独立 trigger observation 可以在同一事务
+中总结并 retire。该边界有确定性单元测试，修复后的同场景真实回归产生且仅产生一次回复。
 
 ## 结论边界
 

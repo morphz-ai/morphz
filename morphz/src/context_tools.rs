@@ -67,17 +67,14 @@ impl Tool for ContextTxTool {
         let context_id = CURRENT_CONTEXT_ID
             .try_with(Clone::clone)
             .map_err(|_| "context_tx 缺少 Runtime 注入的当前 cognitive context")?;
-        let causally_protected = CURRENT_CAUSAL_ROUTE
+        let delivery_protected = CURRENT_CAUSAL_ROUTE
             .try_with(|route| {
                 route
                     .as_ref()
-                    .map(|route| {
-                        [route.root_turn_id.clone(), route.trigger_event_id.clone()]
-                            .into_iter()
-                            .filter(|id| !id.is_empty())
-                            .collect::<BTreeSet<_>>()
-                    })
-                    .unwrap_or_default()
+                    .map(|route| route.root_turn_id.clone())
+                    .filter(|id| !id.is_empty())
+                    .into_iter()
+                    .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
         let principal_id = CURRENT_PRINCIPAL_ID.try_with(Clone::clone).ok().flatten();
@@ -88,7 +85,7 @@ impl Tool for ContextTxTool {
                 &session_id,
                 principal_id.as_deref(),
                 &args.transaction,
-                &causally_protected,
+                &delivery_protected,
             )
             .await?;
         Ok(serde_json::to_string_pretty(&serde_json::json!({
@@ -402,6 +399,22 @@ mod tests {
             ))
             .await
             .unwrap();
+        store
+            .append(Event::new(
+                "event:delivery-trigger".to_string(),
+                "Tool".to_string(),
+                crate::event::TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                vec![
+                    ("context_id".to_string(), serde_json::json!("context_test")),
+                    ("session_id".to_string(), serde_json::json!("session_test")),
+                    ("text".to_string(), serde_json::json!("ready to deliver")),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await
+            .unwrap();
         let engine = Arc::new(ContextEngine::new(
             Arc::clone(&store) as Arc<dyn EventStore>,
             OrchestratorConfig::default(),
@@ -411,8 +424,8 @@ mod tests {
             thread_id: "thread-a".to_string(),
             activation_id: "activation-a".to_string(),
             root_turn_id: "event:active-user-request".to_string(),
-            trigger_event_id: "event:active-user-request".to_string(),
-            trigger_sequence: 1,
+            trigger_event_id: "event:delivery-trigger".to_string(),
+            trigger_sequence: 2,
         };
         let result = CURRENT_CONTEXT_ID
             .scope(
@@ -443,6 +456,102 @@ mod tests {
             .observations
             .iter()
             .any(|observation| observation.id == "event:active-user-request"));
+    }
+
+    #[tokio::test]
+    async fn context_tx_tool_allows_revising_a_frame_and_retiring_the_distinct_trigger() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("context-trigger-retirement.db");
+        let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
+        for (id, actor, event_type, topic, text) in [
+            (
+                "event:active-user-request",
+                "User",
+                crate::event::TYPE_USER_MESSAGE,
+                "chat/user_message",
+                "please continue",
+            ),
+            (
+                "event:fresh-tool-output",
+                "Tool",
+                crate::event::TYPE_TOOL_OUTPUT,
+                "chat/tool_output",
+                "the requested work completed",
+            ),
+        ] {
+            store
+                .append(Event::new(
+                    id.to_string(),
+                    actor.to_string(),
+                    event_type.to_string(),
+                    topic.to_string(),
+                    vec![
+                        ("context_id".to_string(), serde_json::json!("context_test")),
+                        ("session_id".to_string(), serde_json::json!("session_test")),
+                        ("text".to_string(), serde_json::json!(text)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+                .await
+                .unwrap();
+        }
+        let engine = Arc::new(ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        ));
+        engine
+            .apply_context_transaction(
+                "context_test",
+                "session_test",
+                "(context-tx (base-version 0) (create progress (status pending)))",
+            )
+            .await
+            .unwrap();
+        let tool = ContextTxTool::new(Arc::clone(&engine));
+        let route = crate::tool::ToolCausalRoute {
+            thread_id: "thread-a".to_string(),
+            activation_id: "activation-tool-output".to_string(),
+            root_turn_id: "event:active-user-request".to_string(),
+            trigger_event_id: "event:fresh-tool-output".to_string(),
+            trigger_sequence: 2,
+        };
+        let result = CURRENT_CONTEXT_ID
+            .scope(
+                "context_test".to_string(),
+                CURRENT_SESSION_ID.scope(
+                    "session_test".to_string(),
+                    CURRENT_CAUSAL_ROUTE.scope(
+                        Some(route),
+                        tool.execute(
+                            &serde_json::json!({
+                                "transaction": "(context-tx (base-version 1) (reason absorbed-trigger) (revise progress (status summarized)) (retire event:fresh-tool-output))"
+                            })
+                            .to_string(),
+                        ),
+                    ),
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.contains("committed"));
+        let view = engine
+            .build_context_encoding("context_test", "session_test", &Default::default())
+            .await
+            .unwrap();
+        assert_eq!(view.state.version, 2);
+        assert_eq!(view.state.frames[0].id, "progress");
+        assert!(view.state.frames[0].body.contains("summarized"));
+        assert!(view.state.retired.contains("event:fresh-tool-output"));
+        assert!(view
+            .observations
+            .iter()
+            .any(|observation| observation.id == "event:active-user-request"));
+        assert!(view
+            .observations
+            .iter()
+            .all(|observation| observation.id != "event:fresh-tool-output"));
     }
 
     #[tokio::test]
