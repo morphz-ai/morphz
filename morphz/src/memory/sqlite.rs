@@ -2869,6 +2869,29 @@ impl SessionDirectoryStore for SqliteStore {
         Ok(session_principal_binding_from_row(&row))
     }
 
+    async fn bind_all_sessions_to_principal(
+        &self,
+        principal_id: &str,
+        include_archived: bool,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"INSERT INTO session_principal_bindings
+               (session_id, principal_id, bound_at, unbound_at)
+               SELECT id, ?, ?, NULL FROM sessions
+               WHERE (? OR status != 'archived')
+               ON CONFLICT(session_id, principal_id) DO UPDATE SET unbound_at = NULL
+               WHERE session_principal_bindings.unbound_at IS NOT NULL"#,
+        )
+        .bind(principal_id)
+        .bind(&now)
+        .bind(include_archived)
+        .execute(&self.pool)
+        .await?;
+        usize::try_from(result.rows_affected())
+            .map_err(|_| "Session Principal 批量绑定数超出 usize".into())
+    }
+
     async fn list_session_principals(
         &self,
         session_id: &str,
@@ -2883,6 +2906,30 @@ impl SessionDirectoryStore for SqliteStore {
             .iter()
             .map(session_principal_binding_from_row)
             .collect())
+    }
+
+    async fn list_principal_sessions(
+        &self,
+        principal_id: &str,
+        include_archived: bool,
+    ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title,
+                      s.status, s.created_at, s.updated_at, s.last_activity_at,
+                      sm.attention_state, sm.attention_revision, sm.attention_reason,
+                      sm.attention_changed_at, sm.attention_event_id
+               FROM sessions s
+               JOIN session_principal_bindings b ON b.session_id = s.id
+               JOIN session_mounts sm ON sm.session_id = s.id AND sm.unmounted_at IS NULL
+               WHERE b.principal_id = ? AND b.unbound_at IS NULL
+                 AND (? OR s.status != 'archived')
+               ORDER BY s.last_activity_at DESC, s.id"#,
+        )
+        .bind(principal_id)
+        .bind(include_archived)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.iter().map(session_from_row).collect())
     }
 
     async fn list_context_principal_bindings(
@@ -3226,6 +3273,81 @@ impl SessionDirectoryStore for SqliteStore {
         self.get_session(&session.id)
             .await?
             .ok_or_else(|| "Session 创建后无法读取".into())
+    }
+
+    async fn create_session_for_principal(
+        &self,
+        session: NewSession,
+        principal_id: &str,
+    ) -> Result<SessionRecord, Box<dyn std::error::Error + Send + Sync>> {
+        if self.get_principal(principal_id).await?.is_none() {
+            return Err(format!("Principal '{principal_id}' 不存在").into());
+        }
+        let context = self
+            .get_context(&session.context_id)
+            .await?
+            .ok_or_else(|| format!("父 Context '{}' 不存在", session.context_id))?;
+        if context.agent_id != session.agent_id {
+            return Err(format!(
+                "Session '{}' 的 Agent '{}' 与 Context '{}' 的 Agent '{}' 不一致",
+                session.id, session.agent_id, session.context_id, context.agent_id
+            )
+            .into());
+        }
+        if let Some(parent_id) = session.parent_session_id.as_deref() {
+            let parent = self
+                .get_session(parent_id)
+                .await?
+                .ok_or_else(|| format!("父 Session '{parent_id}' 不存在"))?;
+            if parent.context_id != session.context_id {
+                return Err(format!(
+                    "父 Session '{}' 属于 Context '{}'，不能作为 Context '{}' 内 Session 的父级",
+                    parent_id, parent.context_id, session.context_id
+                )
+                .into());
+            }
+        }
+
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"INSERT INTO sessions
+               (id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, last_activity_at)
+               VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)"#,
+        )
+        .bind(&session.id)
+        .bind(&session.agent_id)
+        .bind(&session.context_id)
+        .bind(&session.parent_session_id)
+        .bind(&session.title)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO session_mounts (session_id, generation, context_id, mount_kind, mounted_at, unmounted_at) VALUES (?, 1, ?, ?, ?, NULL)",
+        )
+        .bind(&session.id)
+        .bind(&session.context_id)
+        .bind(session.mount_kind.as_str())
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO session_principal_bindings
+               (session_id, principal_id, bound_at, unbound_at)
+               VALUES (?, ?, ?, NULL)"#,
+        )
+        .bind(&session.id)
+        .bind(principal_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.get_session(&session.id)
+            .await?
+            .ok_or_else(|| "Session 与 Principal 原子创建后无法读取".into())
     }
 
     async fn ensure_session(

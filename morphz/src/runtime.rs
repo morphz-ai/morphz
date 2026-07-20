@@ -62,7 +62,7 @@ pub struct RuntimeIdentity {
 }
 
 fn default_runtime_principal_id() -> String {
-    "principal-local".to_string()
+    "principal-default".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -708,6 +708,40 @@ impl MorphzRuntime {
         self.inner.store.list_session_principals(session_id).await
     }
 
+    pub async fn bind_all_sessions_to_principal(
+        &self,
+        assertion: PrincipalAssertion,
+        include_archived: bool,
+    ) -> Result<usize, RuntimeError> {
+        let principal = self.ensure_principal(assertion).await?;
+        self.inner
+            .store
+            .bind_all_sessions_to_principal(&principal.id, include_archived)
+            .await
+    }
+
+    pub async fn list_principal_sessions(
+        &self,
+        principal_id: &str,
+        archived: bool,
+    ) -> Result<Vec<SessionRecord>, RuntimeError> {
+        self.inner
+            .store
+            .list_principal_sessions(principal_id, archived)
+            .await
+    }
+
+    pub async fn verify_session_principal(
+        &self,
+        session_id: &str,
+        principal_id: &str,
+    ) -> Result<bool, RuntimeError> {
+        self.inner
+            .store
+            .verify_session_principal(session_id, principal_id)
+            .await
+    }
+
     async fn bind_default_principal(
         &self,
         session_id: &str,
@@ -899,8 +933,19 @@ impl MorphzRuntime {
     }
 
     pub async fn create_session(&self, session: NewSession) -> Result<SessionRecord, RuntimeError> {
-        let session = self.inner.store.create_session(session).await?;
-        self.bind_default_principal(&session.id).await?;
+        let principal = self
+            .ensure_principal(PrincipalAssertion {
+                principal_id: self.inner.identity.principal_id.clone(),
+                provider_id: RUNTIME_DEFAULT_IDENTITY_PROVIDER_ID.to_string(),
+                assurance: "runtime-default".to_string(),
+                display_name: None,
+            })
+            .await?;
+        let session = self
+            .inner
+            .store
+            .create_session_for_principal(session, &principal.id)
+            .await?;
         self.inner
             .orchestrator
             .register_session_context(&session.id, &session.context_id);
@@ -912,8 +957,12 @@ impl MorphzRuntime {
         session: NewSession,
         assertion: PrincipalAssertion,
     ) -> Result<SessionRecord, RuntimeError> {
-        let session = self.inner.store.create_session(session).await?;
-        self.bind_session_principal(&session.id, assertion).await?;
+        let principal = self.ensure_principal(assertion).await?;
+        let session = self
+            .inner
+            .store
+            .create_session_for_principal(session, &principal.id)
+            .await?;
         self.inner
             .orchestrator
             .register_session_context(&session.id, &session.context_id);

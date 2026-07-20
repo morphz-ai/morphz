@@ -183,6 +183,29 @@ impl SessionDirectoryStore for PostgresStore {
         binding_from_row(&row)
     }
 
+    async fn bind_all_sessions_to_principal(
+        &self,
+        principal_id: &str,
+        include_archived: bool,
+    ) -> Result<usize, StoreError> {
+        let now = now_text();
+        let result = sqlx::query(
+            r#"INSERT INTO session_principal_bindings
+               (session_id, principal_id, bound_at, unbound_at)
+               SELECT id, $1, $2, NULL FROM sessions
+               WHERE ($3 OR status != 'archived')
+               ON CONFLICT(session_id, principal_id) DO UPDATE SET unbound_at = NULL
+               WHERE session_principal_bindings.unbound_at IS NOT NULL"#,
+        )
+        .bind(principal_id)
+        .bind(&now)
+        .bind(include_archived)
+        .execute(&self.pool)
+        .await?;
+        usize::try_from(result.rows_affected())
+            .map_err(|_| "Session Principal 批量绑定数超出 usize".into())
+    }
+
     async fn list_session_principals(
         &self,
         session_id: &str,
@@ -194,6 +217,29 @@ impl SessionDirectoryStore for PostgresStore {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(binding_from_row).collect()
+    }
+
+    async fn list_principal_sessions(
+        &self,
+        principal_id: &str,
+        include_archived: bool,
+    ) -> Result<Vec<SessionRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT s.id, s.agent_id, s.context_id, s.parent_session_id, s.title,
+                      s.status, s.created_at, s.updated_at, s.last_activity_at,
+                      s.attention_state, s.attention_revision, s.attention_reason,
+                      s.attention_changed_at, s.attention_event_id, s.mount_kind
+               FROM sessions s
+               JOIN session_principal_bindings b ON b.session_id = s.id
+               WHERE b.principal_id = $1 AND b.unbound_at IS NULL
+                 AND ($2 OR s.status != 'archived')
+               ORDER BY s.last_activity_at DESC, s.id"#,
+        )
+        .bind(principal_id)
+        .bind(include_archived)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(session_from_row).collect()
     }
 
     async fn list_context_principal_bindings(
@@ -526,6 +572,71 @@ impl SessionDirectoryStore for PostgresStore {
         .bind(session.mount_kind.as_str())
         .fetch_one(&self.pool)
         .await?;
+        session_from_row(&row)
+    }
+
+    async fn create_session_for_principal(
+        &self,
+        session: NewSession,
+        principal_id: &str,
+    ) -> Result<SessionRecord, StoreError> {
+        if self.get_principal(principal_id).await?.is_none() {
+            return Err(format!("Principal '{principal_id}' 不存在").into());
+        }
+        let context = self
+            .get_context(&session.context_id)
+            .await?
+            .ok_or_else(|| format!("父 Context '{}' 不存在", session.context_id))?;
+        if context.agent_id != session.agent_id {
+            return Err(format!(
+                "Session '{}' 的 Agent '{}' 与 Context '{}' 的 Agent '{}' 不一致",
+                session.id, session.agent_id, session.context_id, context.agent_id
+            )
+            .into());
+        }
+        if let Some(parent_id) = session.parent_session_id.as_deref() {
+            let parent = self
+                .get_session(parent_id)
+                .await?
+                .ok_or_else(|| format!("父 Session '{parent_id}' 不存在"))?;
+            if parent.context_id != session.context_id {
+                return Err(format!(
+                    "父 Session '{}' 属于 Context '{}'，不能作为 Context '{}' 内 Session 的父级",
+                    parent_id, parent.context_id, session.context_id
+                )
+                .into());
+            }
+        }
+
+        let now = now_text();
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query(&format!(
+            "INSERT INTO sessions \
+             (id, agent_id, context_id, parent_session_id, title, status, created_at, updated_at, \
+              last_activity_at, attention_state, attention_revision, mount_kind) \
+             VALUES ($1, $2, $3, $4, $5, 'active', $6, $6, $6, 'active', 0, $7) \
+             RETURNING {SESSION_COLUMNS}"
+        ))
+        .bind(&session.id)
+        .bind(&session.agent_id)
+        .bind(&session.context_id)
+        .bind(&session.parent_session_id)
+        .bind(&session.title)
+        .bind(&now)
+        .bind(session.mount_kind.as_str())
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            r#"INSERT INTO session_principal_bindings
+               (session_id, principal_id, bound_at, unbound_at)
+               VALUES ($1, $2, $3, NULL)"#,
+        )
+        .bind(&session.id)
+        .bind(principal_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         session_from_row(&row)
     }
 

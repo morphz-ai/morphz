@@ -18,6 +18,7 @@ use morphz::provider::{list_provider_models, probe_provider};
 use morphz::runtime::{
     MorphzRuntime, RuntimeEventStream, RuntimeIdentity, SchedulerQuery, SessionHandle,
 };
+use morphz::sdk::{MorphzSdk, SdkErrorCode, SendMessageCommand};
 use morphz::web::{Server, ServerDefaults};
 use std::io::IsTerminal;
 use std::io::{BufRead, Write};
@@ -162,7 +163,7 @@ async fn main() -> Result<(), AppError> {
         agent_id: default_agent_id.clone(),
         context_id: default_context_id.clone(),
         principal_id: std::env::var("MORPHZ_PRINCIPAL_ID")
-            .unwrap_or_else(|_| "principal-local".to_string()),
+            .unwrap_or_else(|_| "principal-default".to_string()),
     };
     let needs_workers = command_needs_llm(&invocation);
     let client = build_client(&invocation, &app_config, needs_workers)?;
@@ -177,6 +178,13 @@ async fn main() -> Result<(), AppError> {
         // subscribers or model evaluation. Initializing only the identity records
         // keeps the lack of an API key harmless and avoids background workers.
         ensure_cli_identity_records(&runtime, &default_agent_id, &default_context_id).await?;
+    }
+    let trusted_gateway_serve = invocation.command_path() == ["serve"]
+        && app_config.server.identity.mode == config::ServerIdentityMode::TrustedGateway;
+    if !trusted_gateway_serve {
+        let sdk = MorphzSdk::new(runtime.clone());
+        sdk.adopt_sessions_for_default_principal(sdk.default_principal(), true)
+            .await?;
     }
 
     dispatch_runtime_command(
@@ -733,14 +741,17 @@ async fn dispatch_runtime_command(
             run_once(runtime, session, prompt).await
         }
         "serve" => {
-            let server = Arc::new(Server::new_with_capacity(
-                runtime,
-                ServerDefaults {
-                    agent_id: default_agent_id,
-                    context_id: default_context_id,
-                },
-                app_config.server.broadcast_capacity,
-            ));
+            let server = Arc::new(
+                Server::new_with_capacity(
+                    runtime,
+                    ServerDefaults {
+                        agent_id: default_agent_id,
+                        context_id: default_context_id,
+                    },
+                    app_config.server.broadcast_capacity,
+                )
+                .with_identity(app_config.server.identity.clone()),
+            );
             server.start(&app_config.server.bind).await?;
             tracing::info!(bind = %app_config.server.bind, "Morphz Server 已启动");
             shutdown_signal().await;
@@ -1090,10 +1101,13 @@ async fn select_or_create_console_session(
     _default_agent_id: &str,
     default_context_id: &str,
 ) -> Result<SessionHandle, AppError> {
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
     if let Some(session_id) = option_value(invocation, "session") {
-        let record = runtime.get_session(session_id).await?.ok_or_else(|| {
-            format!("Session '{session_id}' 不存在；--session 只用于恢复现有会话")
-        })?;
+        let record = sdk
+            .get_session(&principal.principal_id, session_id)
+            .await
+            .map_err(|error| format!("无法恢复 Session '{session_id}': {error}"))?;
         ensure_active_session(&record)?;
         if option_value(invocation, "context")
             .is_some_and(|context_id| context_id != record.context_id)
@@ -1118,34 +1132,44 @@ async fn select_or_create_console_session(
     if let Ok(session_id) = std::env::var("MORPHZ_SESSION_ID") {
         if !session_id.trim().is_empty() {
             validate_identifier("session_id", &session_id)?;
-            if let Some(record) = runtime.get_session(&session_id).await? {
-                ensure_active_session(&record)?;
-                return Ok(runtime.session(session_id));
+            match sdk.get_session(&principal.principal_id, &session_id).await {
+                Ok(record) => {
+                    ensure_active_session(&record)?;
+                    return Ok(runtime.session(session_id));
+                }
+                Err(error) if error.code == SdkErrorCode::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
-            return runtime
-                .ensure_session(NewSession {
-                    id: session_id,
-                    agent_id: context.agent_id,
-                    context_id: context.id,
-                    parent_session_id: None,
-                    title: "环境指定终端 Session".to_string(),
-                    mount_kind: SessionMountKind::ExistingContext,
-                })
-                .await;
+            let record = sdk
+                .create_session(
+                    principal,
+                    NewSession {
+                        id: session_id,
+                        agent_id: context.agent_id,
+                        context_id: context.id,
+                        parent_session_id: None,
+                        title: "环境指定终端 Session".to_string(),
+                        mount_kind: SessionMountKind::ExistingContext,
+                    },
+                )
+                .await?;
+            return Ok(runtime.session(record.id));
         }
     }
 
     let session_id = generated_id("session");
-    runtime
-        .create_session(NewSession {
+    sdk.create_session(
+        principal,
+        NewSession {
             id: session_id.clone(),
             agent_id: context.agent_id,
             context_id: context.id,
             parent_session_id: None,
             title: "本地终端".to_string(),
             mount_kind: SessionMountKind::ExistingContext,
-        })
-        .await?;
+        },
+    )
+    .await?;
     Ok(runtime.session(session_id))
 }
 
@@ -1161,6 +1185,8 @@ async fn resolve_resumed_session(
     runtime: &MorphzRuntime,
     invocation: &Invocation,
 ) -> Result<(SessionHandle, String), AppError> {
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
     let mut prompt_args = invocation.prompt_args().to_vec();
     let use_last = switch_enabled(invocation, "last")?;
     if use_last && option_value(invocation, "session").is_some() {
@@ -1168,8 +1194,7 @@ async fn resolve_resumed_session(
     }
     let session_id =
         if use_last || (option_value(invocation, "session").is_none() && prompt_args.is_empty()) {
-            runtime
-                .list_sessions(false)
+            sdk.list_sessions(&principal.principal_id, false)
                 .await?
                 .into_iter()
                 .find(|session| {
@@ -1187,10 +1212,10 @@ async fn resolve_resumed_session(
         } else {
             unreachable!("无位置参数时已按最近 Session 处理")
         };
-    let record = runtime
-        .get_session(&session_id)
-        .await?
-        .ok_or_else(|| format!("Session '{session_id}' 不存在"))?;
+    let record = sdk
+        .get_session(&principal.principal_id, &session_id)
+        .await
+        .map_err(|error| format!("无法恢复 Session '{session_id}': {error}"))?;
     ensure_active_session(&record)?;
     Ok((runtime.session(session_id), prompt_args.join(" ")))
 }
@@ -1510,8 +1535,13 @@ async fn show_scheduler(
 }
 
 async fn list_sessions(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {
-    let mut records = runtime
-        .list_sessions(switch_enabled(invocation, "include-archived")?)
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let mut records = sdk
+        .list_sessions(
+            &principal.principal_id,
+            switch_enabled(invocation, "include-archived")?,
+        )
         .await?;
     if let Some(context) = option_value(invocation, "context") {
         records.retain(|record| record.context_id == context);
@@ -1544,10 +1574,9 @@ async fn show_session(runtime: &MorphzRuntime, invocation: &Invocation) -> Resul
         .map(String::as_str)
         .or_else(|| option_value(invocation, "session"))
         .ok_or("用法: morphz session show <ID>")?;
-    let record = runtime
-        .get_session(id)
-        .await?
-        .ok_or_else(|| format!("Session '{id}' 不存在"))?;
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let record = sdk.get_session(&principal.principal_id, id).await?;
     println!("{}", serde_json::to_string_pretty(&record)?);
     Ok(())
 }
@@ -1558,6 +1587,8 @@ async fn create_session_command(
     _default_agent_id: &str,
     default_context_id: &str,
 ) -> Result<(), AppError> {
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
     let session_id = option_value(invocation, "id")
         .map(str::to_string)
         .unwrap_or_else(|| generated_id("session"));
@@ -1565,13 +1596,12 @@ async fn create_session_command(
     let source = selected_context(runtime, invocation, default_context_id).await?;
     let (context_id, mount_kind) = if switch_enabled(invocation, "independent")? {
         let context_id = generated_id("context");
-        runtime
-            .create_context(NewCognitiveContext {
-                id: context_id.clone(),
-                agent_id: source.agent_id.clone(),
-                title: format!("{} 的独立认知副本", source.title),
-            })
-            .await?;
+        sdk.create_context(NewCognitiveContext {
+            id: context_id.clone(),
+            agent_id: source.agent_id.clone(),
+            title: format!("{} 的独立认知副本", source.title),
+        })
+        .await?;
         if let Err(error) = runtime
             .seed_context_from_mind(&source.id, None, &context_id)
             .await
@@ -1586,19 +1616,22 @@ async fn create_session_command(
     } else {
         (source.id, SessionMountKind::ExistingContext)
     };
-    let record = runtime
-        .create_session(NewSession {
-            id: session_id,
-            agent_id: source.agent_id,
-            context_id,
-            parent_session_id: None,
-            title: option_value(invocation, "title")
-                .unwrap_or("新 Session")
-                .chars()
-                .take(200)
-                .collect(),
-            mount_kind,
-        })
+    let record = sdk
+        .create_session(
+            principal,
+            NewSession {
+                id: session_id,
+                agent_id: source.agent_id,
+                context_id,
+                parent_session_id: None,
+                title: option_value(invocation, "title")
+                    .unwrap_or("新 Session")
+                    .chars()
+                    .take(200)
+                    .collect(),
+                mount_kind,
+            },
+        )
         .await?;
     println!("{}", serde_json::to_string_pretty(&record)?);
     Ok(())
@@ -2119,10 +2152,19 @@ async fn run_once(
     prompt: String,
 ) -> Result<(), AppError> {
     let session_id = session.id().to_string();
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
     let mut events = runtime.subscribe("*", 256);
-    session
-        .send(prompt, "User", Some(generated_id("cli")))
-        .await?;
+    sdk.send_message(
+        &principal,
+        SendMessageCommand {
+            session_id: session_id.clone(),
+            text: prompt,
+            actor: "User".to_string(),
+            client_message_id: Some(generated_id("cli")),
+        },
+    )
+    .await?;
     while let Some(event) = events.recv().await {
         let Some((event_session, text, kind)) = console_message_from_event(&event) else {
             continue;
@@ -2332,9 +2374,17 @@ async fn run_interactive(
                 Utc::now().timestamp_nanos_opt().unwrap_or(0),
                 msg_counter
             );
-            if let Err(error) =
-                rt.block_on(console_session.send(text, "User-Shafreeck", Some(client_message_id)))
-            {
+            let sdk = MorphzSdk::new(console_runtime.clone());
+            let principal = sdk.default_principal();
+            if let Err(error) = rt.block_on(sdk.send_message(
+                &principal,
+                SendMessageCommand {
+                    session_id: console_session.id().to_string(),
+                    text,
+                    actor: "User-Shafreeck".to_string(),
+                    client_message_id: Some(client_message_id),
+                },
+            )) {
                 if let Ok(mut waiting) = waiting_for_reply.lock() {
                     *waiting = false;
                 }

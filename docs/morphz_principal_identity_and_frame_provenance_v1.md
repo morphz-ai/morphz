@@ -134,7 +134,7 @@ pub trait IdentityProvider {
 
 认证发生在用户消息进入 Runtime 之前。消息正文中的“我是谁”不能成为认证输入。
 
-身份系统关闭时，Runtime 可以使用明确的 `anonymous` 或 `local` Principal；不能把缺失身份静默猜成某个已有用户。
+默认单用户宿主使用明确的 `principal-default`；可信 Gateway 模式缺失身份时必须拒绝请求，不能静默回退或把缺失身份猜成某个已有用户。
 
 ## 6. 身份沿因果链传播
 

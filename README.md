@@ -126,7 +126,7 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
 系统控制面，项目配置不能修改。完整分层设计见
 [CLI 产品化 v1](docs/morphz_cli_productization_v1.md)。
 
-监听非本机地址时，必须设置 `MORPHZ_DASHBOARD_TOKEN`。Dashboard 可通过 `VITE_MORPHZ_TOKEN` 携带同一 token，也可分别用 `VITE_MORPHZ_HTTP_URL`、`VITE_MORPHZ_WS_URL` 指定 Core 地址。
+监听非本机地址时必须配置服务访问令牌。默认 Dashboard 模式使用 `MORPHZ_DASHBOARD_TOKEN`；可信 Gateway 模式使用 `[server.identity].service_token_env` 指向的环境变量，并要求每个 Session 请求携带 Runtime Principal。完整契约见 [SDK v1 与可信 Gateway 身份接入](docs/morphz_sdk_and_trusted_gateway_identity_v1.md)。Dashboard 可通过 `VITE_MORPHZ_TOKEN` 携带同一 token，也可分别用 `VITE_MORPHZ_HTTP_URL`、`VITE_MORPHZ_WS_URL` 指定 Core 地址。
 
 Docker 示例：
 

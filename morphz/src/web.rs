@@ -1,5 +1,7 @@
 use crate::approval::ApprovalDecision;
+use crate::config::{ServerIdentityConfig, ServerIdentityMode};
 use crate::event::Event;
+use crate::identity::PrincipalAssertion;
 use crate::llm::ReasoningEffort;
 use crate::memory::{
     DelegationStatus, NewAgent, NewCognitiveContext, NewSession, ObjectiveMutation,
@@ -7,6 +9,7 @@ use crate::memory::{
 };
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
 use crate::runtime::{MorphzRuntime, SchedulerQuery};
+use crate::sdk::{MorphzSdk, SdkError, SdkErrorCode, SendMessageCommand, SessionEventsQuery};
 use axum::{
     body::Body,
     extract::{
@@ -37,6 +40,7 @@ pub struct Server {
     broadcast_tx: broadcast::Sender<Event>,
     default_agent_id: String,
     default_context_id: String,
+    identity: ServerIdentityConfig,
 }
 
 pub struct ServerDefaults {
@@ -46,16 +50,19 @@ pub struct ServerDefaults {
 
 struct AppState {
     runtime: MorphzRuntime,
+    sdk: MorphzSdk,
     broadcast_tx: broadcast::Sender<Event>,
     auth_token: Option<String>,
     default_agent_id: String,
     default_context_id: String,
+    identity: ServerIdentityConfig,
 }
 
 #[derive(Default, serde::Deserialize)]
 struct AuthQuery {
     token: Option<String>,
     session_id: Option<String>,
+    principal_id: Option<String>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -217,16 +224,41 @@ impl Server {
             broadcast_tx,
             default_agent_id: defaults.agent_id,
             default_context_id: defaults.context_id,
+            identity: ServerIdentityConfig::default(),
         }
+    }
+
+    pub fn with_identity(mut self, identity: ServerIdentityConfig) -> Self {
+        self.identity = identity;
+        self
     }
 
     pub async fn start(
         &self,
         addr_str: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let auth_token = std::env::var("MORPHZ_DASHBOARD_TOKEN")
-            .ok()
-            .filter(|token| !token.trim().is_empty());
+        let auth_token = match self.identity.mode {
+            ServerIdentityMode::Default => std::env::var("MORPHZ_DASHBOARD_TOKEN")
+                .ok()
+                .filter(|token| !token.trim().is_empty()),
+            ServerIdentityMode::TrustedGateway => {
+                if self.identity.provider_id.trim().is_empty() {
+                    return Err("server.identity.provider_id 不能为空".into());
+                }
+                let variable = self.identity.service_token_env.trim();
+                if variable.is_empty() {
+                    return Err("server.identity.service_token_env 不能为空".into());
+                }
+                let token = std::env::var(variable)
+                    .map_err(|_| format!("trusted-gateway 模式需要环境变量 {variable}"))?
+                    .trim()
+                    .to_string();
+                if token.is_empty() {
+                    return Err(format!("trusted-gateway 模式的 {variable} 不能为空").into());
+                }
+                Some(token)
+            }
+        };
         self.start_with_dashboard_token(addr_str, auth_token).await
     }
 
@@ -237,7 +269,18 @@ impl Server {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let broadcast_tx_clone = self.broadcast_tx.clone();
         let runtime = self.runtime.clone();
+        let sdk = MorphzSdk::new(self.runtime.clone());
         let default_agent_id = self.default_agent_id.clone();
+        let identity_mode = self.identity.mode;
+
+        if self.identity.mode == ServerIdentityMode::Default {
+            let adopted = sdk
+                .adopt_sessions_for_default_principal(sdk.default_principal(), true)
+                .await?;
+            if adopted > 0 {
+                tracing::info!(adopted, "默认身份已接管旧 Session");
+            }
+        }
 
         // 通过 Runtime 事件流将所有事件分发给各 WebSocket 客户端。
         let mut events = self.runtime.subscribe("*", 1024);
@@ -276,6 +319,11 @@ impl Server {
                                 )
                                 .into());
                             }
+                        } else if identity_mode == ServerIdentityMode::TrustedGateway {
+                            return Err(format!(
+                                "可信 Gateway 模式拒绝从事件隐式创建未知 Session '{session_id}'"
+                            )
+                            .into());
                         } else {
                             let agent_id = match runtime.get_context(&context_id).await? {
                                 Some(context) => context.agent_id,
@@ -315,10 +363,12 @@ impl Server {
 
         let state = Arc::new(AppState {
             runtime: self.runtime.clone(),
+            sdk,
             broadcast_tx: self.broadcast_tx.clone(),
             auth_token: auth_token.filter(|token| !token.trim().is_empty()),
             default_agent_id: self.default_agent_id.clone(),
             default_context_id: self.default_context_id.clone(),
+            identity: self.identity.clone(),
         });
 
         // 跨域支持 (CORS)
@@ -332,7 +382,12 @@ impl Server {
                 Method::DELETE,
                 Method::OPTIONS,
             ])
-            .allow_headers(vec![header::CONTENT_TYPE, header::AUTHORIZATION]);
+            .allow_headers(vec![
+                header::CONTENT_TYPE,
+                header::AUTHORIZATION,
+                header::HeaderName::from_static("x-morphz-principal"),
+                header::HeaderName::from_static("x-morphz-principal-name"),
+            ]);
 
         let app = Router::new()
             .route("/", get(handle_dashboard_index))
@@ -403,6 +458,10 @@ impl Server {
                 post(handle_send_message),
             )
             .route(
+                "/api/sessions/:session_id/principal",
+                post(handle_bind_session_principal),
+            )
+            .route(
                 "/api/sessions/:session_id/events",
                 get(handle_get_session_events),
             )
@@ -440,9 +499,7 @@ impl Server {
 
         let addr: SocketAddr = addr_str.parse()?;
         if !addr.ip().is_loopback() && state.auth_token.is_none() {
-            return Err(
-                "非本机监听必须设置 MORPHZ_DASHBOARD_TOKEN，避免事件流和记忆图谱无认证暴露".into(),
-            );
+            return Err("非本机监听必须配置服务访问令牌，避免事件流和记忆图谱无认证暴露".into());
         }
         let listener = tokio::net::TcpListener::bind(addr).await?;
         tracing::info!(addr = %addr, "Dashboard API Server 启动成功");
@@ -764,6 +821,86 @@ fn error_response(status: StatusCode, message: impl Into<String>) -> axum::respo
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
+fn sdk_error_response(error: SdkError) -> axum::response::Response {
+    let status = match error.code {
+        SdkErrorCode::InvalidArgument => StatusCode::BAD_REQUEST,
+        SdkErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
+        SdkErrorCode::Forbidden => StatusCode::FORBIDDEN,
+        SdkErrorCode::NotFound => StatusCode::NOT_FOUND,
+        SdkErrorCode::Conflict => StatusCode::CONFLICT,
+        SdkErrorCode::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (
+        status,
+        Json(json!({
+            "error": {
+                "code": error.code.as_str(),
+                "message": error.message,
+            }
+        })),
+    )
+        .into_response()
+}
+
+fn request_principal(
+    state: &AppState,
+    headers: &HeaderMap,
+    query_principal_id: Option<&str>,
+) -> Result<PrincipalAssertion, SdkError> {
+    if state.identity.mode == ServerIdentityMode::Default {
+        return Ok(state.sdk.default_principal());
+    }
+    let header_principal_id = headers
+        .get("x-morphz-principal")
+        .map(|value| value.to_str())
+        .transpose()
+        .map_err(|_| {
+            SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Principal Header 不是有效 UTF-8",
+            )
+        })?;
+    if let (Some(header), Some(query)) = (header_principal_id, query_principal_id) {
+        if header != query {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Header 与 Query 的 Principal 不一致",
+            ));
+        }
+    }
+    let principal_id = header_principal_id
+        .or(query_principal_id)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            SdkError::new(
+                SdkErrorCode::Unauthorized,
+                "trusted-gateway 请求缺少当前 Principal",
+            )
+        })?;
+    validate_identifier("principal_id", principal_id)
+        .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error))?;
+    let display_name = headers
+        .get("x-morphz-principal-name")
+        .map(|value| value.to_str())
+        .transpose()
+        .map_err(|_| {
+            SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Principal Name Header 不是有效 UTF-8",
+            )
+        })?
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(200).collect::<String>());
+    Ok(PrincipalAssertion {
+        principal_id: principal_id.to_string(),
+        provider_id: state.identity.provider_id.clone(),
+        assurance: "trusted-gateway".to_string(),
+        display_name,
+    })
+}
+
 fn bounded_title(value: Option<String>, fallback: &str) -> String {
     value
         .unwrap_or_else(|| fallback.to_string())
@@ -954,6 +1091,10 @@ async fn handle_create_agent(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
     let agent_id = request.id.unwrap_or_else(|| api_id("agent"));
     let context_id = request.root_context_id.unwrap_or_else(|| api_id("context"));
     let session_id = request
@@ -968,7 +1109,7 @@ async fn handle_create_agent(
             return error_response(StatusCode::BAD_REQUEST, error);
         }
     }
-    match state
+    let bundle = match state
         .runtime
         .create_agent_bundle(
             NewAgent {
@@ -992,9 +1133,17 @@ async fn handle_create_agent(
         )
         .await
     {
-        Ok(bundle) => (StatusCode::CREATED, Json(bundle)).into_response(),
-        Err(error) => error_response(StatusCode::CONFLICT, error.to_string()),
+        Ok(bundle) => bundle,
+        Err(error) => return error_response(StatusCode::CONFLICT, error.to_string()),
+    };
+    if let Err(error) = state
+        .sdk
+        .bind_existing_session(principal, &bundle.initial_session.id)
+        .await
+    {
+        return sdk_error_response(error);
     }
+    (StatusCode::CREATED, Json(bundle)).into_response()
 }
 
 async fn handle_list_sessions(
@@ -1005,9 +1154,17 @@ async fn handle_list_sessions(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state.runtime.list_sessions(query.include_archived).await {
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .list_sessions(&principal.principal_id, query.include_archived)
+        .await
+    {
         Ok(sessions) => Json(json!({ "sessions": sessions })).into_response(),
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -1255,7 +1412,7 @@ async fn handle_create_context(
         .take(200)
         .collect::<String>();
     match state
-        .runtime
+        .sdk
         .create_context(NewCognitiveContext {
             id,
             agent_id,
@@ -1264,7 +1421,7 @@ async fn handle_create_context(
         .await
     {
         Ok(context) => (StatusCode::CREATED, Json(context)).into_response(),
-        Err(error) => error_response(StatusCode::CONFLICT, error.to_string()),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -1277,6 +1434,10 @@ async fn handle_create_session(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
     let id = request.id.unwrap_or_else(|| api_id("session"));
     if let Err(error) = validate_identifier("session_id", &id) {
         return error_response(StatusCode::BAD_REQUEST, error);
@@ -1296,19 +1457,22 @@ async fn handle_create_session(
         Err((status, error)) => return error_response(status, error),
     };
     match state
-        .runtime
-        .create_session(NewSession {
-            id,
-            agent_id: mount.agent_id,
-            context_id: mount.context_id,
-            parent_session_id: request.parent_session_id,
-            title: bounded_title(request.title, "新会话"),
-            mount_kind: mount.mount_kind,
-        })
+        .sdk
+        .create_session(
+            principal,
+            NewSession {
+                id,
+                agent_id: mount.agent_id,
+                context_id: mount.context_id,
+                parent_session_id: request.parent_session_id,
+                title: bounded_title(request.title, "新会话"),
+                mount_kind: mount.mount_kind,
+            },
+        )
         .await
     {
         Ok(session) => (StatusCode::CREATED, Json(session)).into_response(),
-        Err(error) => error_response(StatusCode::CONFLICT, error.to_string()),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -1321,6 +1485,10 @@ async fn handle_create_independent_session(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
     let session_id = request.session_id.unwrap_or_else(|| api_id("session"));
     if let Err(error) = validate_identifier("session_id", &session_id) {
         return error_response(StatusCode::BAD_REQUEST, error);
@@ -1356,15 +1524,18 @@ async fn handle_create_independent_session(
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
     match state
-        .runtime
-        .create_session(NewSession {
-            id: session_id,
-            agent_id: mount.agent_id,
-            context_id: mount.context_id,
-            parent_session_id: None,
-            title: bounded_title(request.session_title, "独立会话"),
-            mount_kind: SessionMountKind::NewContextFromMind,
-        })
+        .sdk
+        .create_session(
+            principal,
+            NewSession {
+                id: session_id,
+                agent_id: mount.agent_id,
+                context_id: mount.context_id,
+                parent_session_id: None,
+                title: bounded_title(request.session_title, "独立会话"),
+                mount_kind: SessionMountKind::NewContextFromMind,
+            },
+        )
         .await
     {
         Ok(session) => (
@@ -1372,7 +1543,7 @@ async fn handle_create_independent_session(
             Json(json!({ "context": context, "session": session, "seed": mount.seed })),
         )
             .into_response(),
-        Err(error) => error_response(StatusCode::CONFLICT, error.to_string()),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -1385,10 +1556,17 @@ async fn handle_get_session(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state.runtime.get_session(&session_id).await {
-        Ok(Some(session)) => Json(session).into_response(),
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "Session 不存在"),
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .get_session(&principal.principal_id, &session_id)
+        .await
+    {
+        Ok(session) => Json(session).into_response(),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -1402,6 +1580,10 @@ async fn handle_update_session(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
     let title = request
         .title
         .map(|title| title.trim().chars().take(200).collect::<String>());
@@ -1409,8 +1591,9 @@ async fn handle_update_session(
         return error_response(StatusCode::BAD_REQUEST, "title 不能为空");
     }
     match state
-        .runtime
+        .sdk
         .update_session(
+            &principal.principal_id,
             &session_id,
             SessionUpdate {
                 title,
@@ -1419,9 +1602,8 @@ async fn handle_update_session(
         )
         .await
     {
-        Ok(Some(session)) => Json(session).into_response(),
-        Ok(None) => error_response(StatusCode::NOT_FOUND, "Session 不存在"),
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Ok(session) => Json(session).into_response(),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -1435,10 +1617,17 @@ async fn handle_send_message(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let session = match state.runtime.get_session(&session_id).await {
-        Ok(Some(session)) => session,
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Session 不存在"),
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let session = match state
+        .sdk
+        .get_session(&principal.principal_id, &session_id)
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => return sdk_error_response(error),
     };
     if session.status == SessionStatus::Archived {
         return error_response(StatusCode::CONFLICT, "归档 Session 不能接收新消息");
@@ -1456,9 +1645,16 @@ async fn handle_send_message(
         return error_response(StatusCode::BAD_REQUEST, error);
     }
     match state
-        .runtime
-        .session(session_id)
-        .send(request.text, "User-API", Some(client_message_id))
+        .sdk
+        .send_message(
+            &principal,
+            SendMessageCommand {
+                session_id,
+                text: request.text,
+                actor: "User-API".to_string(),
+                client_message_id: Some(client_message_id),
+            },
+        )
         .await
     {
         Ok(receipt) => {
@@ -1478,7 +1674,36 @@ async fn handle_send_message(
             )
                 .into_response()
         }
-        Err(error) => error_response(StatusCode::BAD_REQUEST, error.to_string()),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_bind_session_principal(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if state.identity.mode != ServerIdentityMode::TrustedGateway {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "默认身份模式不需要显式认领 Session",
+        );
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .bind_existing_session(principal, &session_id)
+        .await
+    {
+        Ok(session) => Json(json!({ "session": session, "bound": true })).into_response(),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -1491,31 +1716,25 @@ async fn handle_get_session_events(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state.runtime.get_session(&session_id).await {
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Session 不存在"),
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-        Ok(Some(_)) => {}
-    }
-    let limit = query.limit.unwrap_or(100).clamp(1, 1_000);
-    let filter = if let Some(after_sequence) = query.after_sequence {
-        QueryFilter {
-            session_id: Some(session_id),
-            after_sequence: Some(after_sequence),
-            top_k: Some(limit),
-            excluded_topics: vec!["chat/context_inspect".to_string()],
-            ..QueryFilter::default()
-        }
-    } else {
-        QueryFilter {
-            session_id: Some(session_id),
-            latest_k: Some(limit),
-            excluded_topics: vec!["chat/context_inspect".to_string()],
-            ..QueryFilter::default()
-        }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
     };
-    match state.runtime.query_events(filter).await {
+    let limit = query.limit.unwrap_or(100).clamp(1, 1_000);
+    match state
+        .sdk
+        .session_events(
+            &principal.principal_id,
+            SessionEventsQuery {
+                session_id,
+                after_sequence: query.after_sequence,
+                limit,
+            },
+        )
+        .await
+    {
         Ok(events) => Json(json!({ "events": events })).into_response(),
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -1528,10 +1747,17 @@ async fn handle_get_session_context(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let session = match state.runtime.get_session(&session_id).await {
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Session 不存在"),
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-        Ok(Some(session)) => session,
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let session = match state
+        .sdk
+        .get_session(&principal.principal_id, &session_id)
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => return sdk_error_response(error),
     };
     match state
         .runtime
@@ -1552,10 +1778,16 @@ async fn handle_cancel_session(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    match state.runtime.get_session(&session_id).await {
-        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Session 不存在"),
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-        Ok(Some(_)) => {}
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    if let Err(error) = state
+        .sdk
+        .get_session(&principal.principal_id, &session_id)
+        .await
+    {
+        return sdk_error_response(error);
     }
     let was_running = state.runtime.cancel_session(&session_id);
     let payload = vec![
@@ -1763,6 +1995,26 @@ async fn handle_ws_upgrade(
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if let Some(session_id) = query.session_id.as_deref() {
+        let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+            Ok(principal) => principal,
+            Err(error) => return sdk_error_response(error),
+        };
+        if let Err(error) = state
+            .sdk
+            .authorize_session(&principal.principal_id, session_id)
+            .await
+        {
+            return sdk_error_response(error);
+        }
+    } else if state.identity.mode == ServerIdentityMode::TrustedGateway
+        && query.principal_id.is_some()
+    {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "Principal 订阅必须同时指定 session_id",
+        );
     }
     ws.on_upgrade(|socket| handle_ws(socket, state, query.session_id))
 }
@@ -2040,13 +2292,16 @@ mod tests {
                 .unwrap();
         runtime.start().await.unwrap();
         let (broadcast_tx, _) = broadcast::channel(32);
+        let sdk = MorphzSdk::new(runtime.clone());
         (
             Arc::new(AppState {
                 runtime: runtime.clone(),
+                sdk,
                 broadcast_tx,
                 auth_token: None,
                 default_agent_id: "agent-test".to_string(),
                 default_context_id: "context-test".to_string(),
+                identity: ServerIdentityConfig::default(),
             }),
             runtime,
         )
@@ -2174,6 +2429,159 @@ mod tests {
             &HeaderMap::new(),
             Some("wrong")
         ));
+    }
+
+    fn gateway_headers(principal_id: Option<&str>) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer gateway-secret".parse().unwrap(),
+        );
+        if let Some(principal_id) = principal_id {
+            headers.insert(
+                header::HeaderName::from_static("x-morphz-principal"),
+                principal_id.parse().unwrap(),
+            );
+        }
+        headers
+    }
+
+    #[tokio::test]
+    async fn trusted_gateway_requires_principal_and_fences_cross_identity_sessions() {
+        let (default_state, runtime) = test_state().await;
+        let state = Arc::new(AppState {
+            runtime: runtime.clone(),
+            sdk: MorphzSdk::new(runtime.clone()),
+            broadcast_tx: default_state.broadcast_tx.clone(),
+            auth_token: Some("gateway-secret".to_string()),
+            default_agent_id: "agent-test".to_string(),
+            default_context_id: "context-test".to_string(),
+            identity: ServerIdentityConfig {
+                mode: ServerIdentityMode::TrustedGateway,
+                provider_id: "morphz-site".to_string(),
+                service_token_env: "MORPHZ_API_TOKEN".to_string(),
+            },
+        });
+
+        let missing_principal = handle_create_session(
+            State(Arc::clone(&state)),
+            gateway_headers(None),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("gateway-missing-principal".to_string()),
+                agent_id: None,
+                parent_session_id: None,
+                title: None,
+                mount: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(missing_principal.status(), StatusCode::UNAUTHORIZED);
+
+        let created = handle_create_session(
+            State(Arc::clone(&state)),
+            gateway_headers(Some("site-user-1")),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("gateway-session-a".to_string()),
+                agent_id: None,
+                parent_session_id: None,
+                title: Some("A".to_string()),
+                mount: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(created.status(), StatusCode::CREATED);
+
+        let own = handle_get_session(
+            State(Arc::clone(&state)),
+            Path("gateway-session-a".to_string()),
+            gateway_headers(Some("site-user-1")),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(own.status(), StatusCode::OK);
+
+        let foreign = handle_get_session(
+            State(Arc::clone(&state)),
+            Path("gateway-session-a".to_string()),
+            gateway_headers(Some("site-user-2")),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(foreign.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(foreign.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["code"], "forbidden");
+
+        let foreign_send = handle_send_message(
+            State(Arc::clone(&state)),
+            Path("gateway-session-a".to_string()),
+            gateway_headers(Some("site-user-2")),
+            Query(AuthQuery::default()),
+            Json(SendMessageRequest {
+                text: "I am user 1".to_string(),
+                client_message_id: Some("forged-identity-message".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(foreign_send.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn trusted_gateway_can_explicitly_claim_legacy_session_mapping() {
+        let (default_state, runtime) = test_state().await;
+        runtime
+            .create_session(NewSession {
+                id: "legacy-site-session".to_string(),
+                agent_id: "agent-test".to_string(),
+                context_id: "context-test".to_string(),
+                parent_session_id: None,
+                title: "Legacy".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let state = Arc::new(AppState {
+            runtime: runtime.clone(),
+            sdk: MorphzSdk::new(runtime),
+            broadcast_tx: default_state.broadcast_tx.clone(),
+            auth_token: Some("gateway-secret".to_string()),
+            default_agent_id: "agent-test".to_string(),
+            default_context_id: "context-test".to_string(),
+            identity: ServerIdentityConfig {
+                mode: ServerIdentityMode::TrustedGateway,
+                provider_id: "morphz-site".to_string(),
+                service_token_env: "MORPHZ_API_TOKEN".to_string(),
+            },
+        });
+
+        let claim = handle_bind_session_principal(
+            State(Arc::clone(&state)),
+            Path("legacy-site-session".to_string()),
+            gateway_headers(Some("site-user-9")),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(claim.status(), StatusCode::OK);
+
+        let read = handle_get_session(
+            State(state),
+            Path("legacy-site-session".to_string()),
+            gateway_headers(Some("site-user-9")),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(read.status(), StatusCode::OK);
     }
 
     #[tokio::test]
@@ -2539,6 +2947,7 @@ mod tests {
             Query(AuthQuery {
                 token: None,
                 session_id: Some("api-observability-session".to_string()),
+                principal_id: None,
             }),
         )
         .await

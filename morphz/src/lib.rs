@@ -19,6 +19,7 @@ pub mod permission;
 pub mod provider;
 pub mod runtime;
 pub mod sandbox;
+pub mod sdk;
 pub mod setup;
 pub mod sexpr;
 pub mod sexpr_vm_contract;

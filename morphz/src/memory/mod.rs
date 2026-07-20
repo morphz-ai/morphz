@@ -1922,10 +1922,20 @@ pub trait SessionDirectoryStore: Send + Sync {
         session_id: &str,
         principal_id: &str,
     ) -> Result<SessionPrincipalBinding, Box<dyn std::error::Error + Send + Sync>>;
+    async fn bind_all_sessions_to_principal(
+        &self,
+        principal_id: &str,
+        include_archived: bool,
+    ) -> Result<usize, Box<dyn std::error::Error + Send + Sync>>;
     async fn list_session_principals(
         &self,
         session_id: &str,
     ) -> Result<Vec<SessionPrincipalBinding>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_principal_sessions(
+        &self,
+        principal_id: &str,
+        include_archived: bool,
+    ) -> Result<Vec<SessionRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn list_context_principal_bindings(
         &self,
         context_id: &str,
@@ -1984,6 +1994,13 @@ pub trait SessionDirectoryStore: Send + Sync {
     async fn create_session(
         &self,
         session: NewSession,
+    ) -> Result<SessionRecord, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically creates the Session and its initial Principal binding. A
+    /// failed binding must never leave a caller-visible orphan Session.
+    async fn create_session_for_principal(
+        &self,
+        session: NewSession,
+        principal_id: &str,
     ) -> Result<SessionRecord, Box<dyn std::error::Error + Send + Sync>>;
     async fn ensure_session(
         &self,

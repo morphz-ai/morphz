@@ -17,6 +17,7 @@ use crate::memory::{
 };
 use crate::orchestrator::context::ContextView;
 use crate::runtime::{MorphzRuntime, SessionHandle};
+use crate::sdk::{MorphzSdk, SendMessageCommand};
 use crate::tool::{get_tasks_map, BackgroundTaskStatus};
 use chrono::Utc;
 use crossterm::cursor::Show;
@@ -3918,7 +3919,7 @@ pub async fn run(
 
     let mut runtime_events = runtime.subscribe("*", 2_048);
     if let Some(prompt) = initial_prompt.filter(|value| !value.trim().is_empty()) {
-        submit_prompt(&session, &mut state, prompt).await;
+        submit_prompt(&runtime, &session, &mut state, prompt).await;
     }
 
     let mut terminal = TerminalSession::enter()?;
@@ -4039,7 +4040,7 @@ pub async fn run(
                                 if handle_command(&runtime, &session, &mut state, &text).await? {
                                     continue;
                                 }
-                                submit_prompt(&session, &mut state, text).await;
+                                submit_prompt(&runtime, &session, &mut state, text).await;
                             }
                         }
                     }
@@ -4097,13 +4098,31 @@ pub async fn run(
     Ok(())
 }
 
-async fn submit_prompt(session: &SessionHandle, state: &mut UiState, prompt: String) {
+async fn submit_prompt(
+    runtime: &MorphzRuntime,
+    session: &SessionHandle,
+    state: &mut UiState,
+    prompt: String,
+) {
     state.begin_request(&prompt);
     let message_id = format!(
         "tui_{}",
         Utc::now().timestamp_nanos_opt().unwrap_or_default()
     );
-    if let Err(error) = session.send(prompt, "User", Some(message_id)).await {
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    if let Err(error) = sdk
+        .send_message(
+            &principal,
+            SendMessageCommand {
+                session_id: session.id().to_string(),
+                text: prompt,
+                actor: "User".to_string(),
+                client_message_id: Some(message_id),
+            },
+        )
+        .await
+    {
         state.push(
             EntryKind::Error,
             if state.locale.is_chinese() {

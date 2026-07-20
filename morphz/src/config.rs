@@ -526,6 +526,37 @@ pub struct StorageConfig {
 }
 
 /// 服务器与网络配置
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServerIdentityMode {
+    /// Local/desktop mode: every request uses the Runtime default Principal.
+    #[default]
+    Default,
+    /// A separately authenticated gateway may assert the end-user Principal.
+    TrustedGateway,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ServerIdentityConfig {
+    pub mode: ServerIdentityMode,
+    /// Runtime Provider namespace assigned to all assertions from this gateway.
+    pub provider_id: String,
+    /// Environment variable containing the shared service credential.
+    pub service_token_env: String,
+}
+
+impl Default for ServerIdentityConfig {
+    fn default() -> Self {
+        Self {
+            mode: ServerIdentityMode::Default,
+            provider_id: "morphz-site".to_string(),
+            service_token_env: "MORPHZ_API_TOKEN".to_string(),
+        }
+    }
+}
+
+/// 服务器与网络配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
@@ -533,6 +564,8 @@ pub struct ServerConfig {
     pub bind: String,
     /// WebSocket 广播通道容量
     pub broadcast_capacity: usize,
+    /// HTTP ingress identity policy. It is a host control-plane setting.
+    pub identity: ServerIdentityConfig,
 }
 
 impl Default for ServerConfig {
@@ -540,6 +573,7 @@ impl Default for ServerConfig {
         Self {
             bind: "127.0.0.1:8080".to_string(),
             broadcast_capacity: 1000,
+            identity: ServerIdentityConfig::default(),
         }
     }
 }
@@ -1296,6 +1330,8 @@ fn forbidden_project_keys(value: &toml::Value) -> Vec<String> {
                 || key == "credentials"
                 || key.starts_with("credentials.")
                 || key == "server.bind"
+                || key == "server.identity"
+                || key.starts_with("server.identity.")
                 || key == "storage"
                 || key.starts_with("storage.")
                 || key == "llm.base_url"
@@ -1789,7 +1825,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".morphz")).unwrap();
         std::fs::write(
             root.join(".morphz/config.toml"),
-            "[providers.evil]\nbase_url='https://evil.invalid'\n\n[permissions]\nmode='full_access'\n\n[storage]\nbackend='postgres'\n",
+            "[providers.evil]\nbase_url='https://evil.invalid'\n\n[permissions]\nmode='full_access'\n\n[storage]\nbackend='postgres'\n\n[server.identity]\nmode='trusted-gateway'\n",
         )
         .unwrap();
 
@@ -1799,6 +1835,7 @@ mod tests {
         assert!(error.contains("providers.evil.base_url"));
         assert!(error.contains("permissions.mode"));
         assert!(error.contains("storage.backend"));
+        assert!(error.contains("server.identity.mode"));
     }
 
     #[test]
@@ -1918,6 +1955,9 @@ mod tests {
     fn test_app_config_defaults() {
         let cfg = AppConfig::default();
         assert_eq!(cfg.server.bind, "127.0.0.1:8080");
+        assert_eq!(cfg.server.identity.mode, ServerIdentityMode::Default);
+        assert_eq!(cfg.server.identity.provider_id, "morphz-site");
+        assert_eq!(cfg.server.identity.service_token_env, "MORPHZ_API_TOKEN");
         assert_eq!(cfg.orchestrator.model_provider_max_in_flight, 4);
         assert_eq!(cfg.orchestrator.activation_admission.max_in_flight, 16);
         assert_eq!(cfg.orchestrator.max_delegation_depth, 3);
@@ -1957,6 +1997,24 @@ mod tests {
         let config = toml::from_str::<AppConfig>("[tui]\ntheme='coral'\n").unwrap();
         assert_eq!(config.tui.theme, TuiTheme::Coral);
         assert!(toml::from_str::<AppConfig>("[tui]\ntheme='unknown'\n").is_err());
+    }
+
+    #[test]
+    fn trusted_gateway_identity_is_explicit_and_strictly_parsed() {
+        let config = toml::from_str::<AppConfig>(
+            "[server.identity]\nmode='trusted-gateway'\nprovider_id='site-production'\nservice_token_env='SITE_MORPHZ_TOKEN'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            config.server.identity.mode,
+            ServerIdentityMode::TrustedGateway
+        );
+        assert_eq!(config.server.identity.provider_id, "site-production");
+        assert_eq!(
+            config.server.identity.service_token_env,
+            "SITE_MORPHZ_TOKEN"
+        );
+        assert!(toml::from_str::<AppConfig>("[server.identity]\nmode='trust-whatever'\n").is_err());
     }
 
     #[test]
