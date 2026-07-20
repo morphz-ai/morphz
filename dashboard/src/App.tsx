@@ -21,6 +21,7 @@ import {
   MessageSquare,
   Palette,
   Play,
+  Plus,
   Radio,
   RefreshCw,
   Send,
@@ -952,7 +953,7 @@ const Composer = memo(function Composer({
           autoCorrect="off"
           autoCapitalize="off"
           spellCheck={false}
-          disabled={!selectedSessionId || sending}
+          disabled={sending}
           onChange={event => setMessage(event.target.value)}
           onCompositionStart={() => { composingInput.current = true }}
           onCompositionEnd={() => { composingInput.current = false }}
@@ -973,7 +974,7 @@ const Composer = memo(function Composer({
       ) : null}
       <button
         className="send-button"
-        disabled={(!message.trim() && quotes.length === 0) || sending || !selectedSessionId}
+        disabled={(!message.trim() && quotes.length === 0) || sending}
         type="button"
         onClick={() => void submit()}
       >
@@ -1009,7 +1010,10 @@ export default function App() {
   const [recallIndex, setRecallIndex] = useState<RecallIndexAudit | null>(null)
   const [recallBusy, setRecallBusy] = useState(false)
   const [mutatingFrameId, setMutatingFrameId] = useState('')
+  const [contextMenuOpen, setContextMenuOpen] = useState(false)
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
+  const [creatingContext, setCreatingContext] = useState(false)
+  const [creatingSession, setCreatingSession] = useState(false)
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
   const [sending, setSending] = useState(false)
   const [changingReasoning, setChangingReasoning] = useState(false)
@@ -1037,6 +1041,7 @@ export default function App() {
   const sessionLoadInFlight = useRef(false)
   const sessionLoadQueued = useRef<{ sessionId: string, contextId: string } | null>(null)
   const loadSessionRef = useRef<(sessionId: string, contextId: string) => Promise<void>>(async () => {})
+  const contextSelectorRef = useRef<HTMLDivElement>(null)
   const sessionSelectorRef = useRef<HTMLDivElement>(null)
   const themeSelectorRef = useRef<HTMLDivElement>(null)
   const selectedScopeRef = useRef({ sessionId: '', contextId: '' })
@@ -1460,6 +1465,7 @@ export default function App() {
         setView(current => current === 'mind' ? 'conversation' : 'mind')
       } else if (event.key === 'Escape') {
         setView('conversation')
+        setContextMenuOpen(false)
         setSessionMenuOpen(false)
         setThemeMenuOpen(false)
       }
@@ -1471,6 +1477,9 @@ export default function App() {
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node
+      if (contextMenuOpen && contextSelectorRef.current && !contextSelectorRef.current.contains(target)) {
+        setContextMenuOpen(false)
+      }
       if (sessionMenuOpen && sessionSelectorRef.current && !sessionSelectorRef.current.contains(target)) {
         setSessionMenuOpen(false)
       }
@@ -1480,11 +1489,14 @@ export default function App() {
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [sessionMenuOpen, themeMenuOpen])
+  }, [contextMenuOpen, sessionMenuOpen, themeMenuOpen])
 
   const selectedSession = sessions.find(item => item.id === selectedSessionId)
   const selectedContext = contexts.find(item => item.id === selectedContextId)
   const selectedAgent = agents.find(item => item.id === selectedAgentId)
+  const visibleContexts = contexts
+    .filter(item => item.agent_id === selectedAgentId && item.status === 'active')
+    .sort((left, right) => left.title.localeCompare(right.title))
   const visibleSessions = sessions
     .filter(item => item.context_id === selectedContextId && item.status === 'active')
     .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))
@@ -1736,6 +1748,99 @@ export default function App() {
     return () => window.cancelAnimationFrame(frame)
   }, [toolTimeline.length, view])
 
+  const activateContext = useCallback((context: ContextRecord) => {
+    const nextSession = sessions
+      .filter(item => item.context_id === context.id && item.status === 'active')
+      .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))[0]
+    setPendingTurn(null)
+    setSelectedAgentId(context.agent_id)
+    setSelectedContextId(context.id)
+    setSelectedSessionId(nextSession?.id ?? '')
+    setContextView(null)
+    setSchedulerSnapshot(null)
+    setEvents([])
+    setEventsSessionId('')
+    setFrameLineage(null)
+    setSelectedFrameId('')
+    setContextMenuOpen(false)
+    setSessionMenuOpen(false)
+    setView('conversation')
+    window.setTimeout(() => composerInputRef.current?.focus(), 0)
+  }, [sessions])
+
+  const createContext = useCallback(async (): Promise<ContextRecord | null> => {
+    if (creatingContext) return null
+    const agentId = selectedAgentId || status?.agent_id || agents[0]?.id || ''
+    if (!agentId) {
+      setError(t('errors.noAgentForContext'))
+      return null
+    }
+    setCreatingContext(true)
+    try {
+      const response = await fetch(`${CORE_HTTP_URL}/api/contexts`, {
+        method: 'POST',
+        headers: apiHeaders(true),
+        body: JSON.stringify({
+          agent_id: agentId,
+          title: t('header.newContextTitle', { count: visibleContexts.length + 1 }),
+        }),
+      })
+      if (!response.ok) throw new Error(t('errors.createContext', { status: response.status }))
+      const context = await response.json() as ContextRecord
+      setContexts(current => [...current.filter(item => item.id !== context.id), context])
+      activateContext(context)
+      setError('')
+      return context
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      return null
+    } finally {
+      setCreatingContext(false)
+    }
+  }, [activateContext, agents, apiHeaders, creatingContext, selectedAgentId, status?.agent_id, t, visibleContexts.length])
+
+  const createSession = useCallback(async (targetContext?: ContextRecord): Promise<SessionRecord | null> => {
+    if (creatingSession) return null
+    const context = targetContext ?? selectedContext
+    const contextId = context?.id ?? selectedContextId
+    if (!contextId) {
+      setError(t('errors.noContextForSession'))
+      return null
+    }
+    const agentId = context?.agent_id || selectedAgentId || status?.agent_id || undefined
+    const count = sessions.filter(item => item.context_id === contextId).length
+    setCreatingSession(true)
+    try {
+      const response = await fetch(`${CORE_HTTP_URL}/api/sessions`, {
+        method: 'POST',
+        headers: apiHeaders(true),
+        body: JSON.stringify({
+          agent_id: agentId,
+          title: t('header.newSessionTitle', { count: count + 1 }),
+          mount: { type: 'existing_context', context_id: contextId },
+        }),
+      })
+      if (!response.ok) throw new Error(t('errors.createSession', { status: response.status }))
+      const session = await response.json() as SessionRecord
+      setSessions(current => [...current.filter(item => item.id !== session.id), session])
+      setPendingTurn(null)
+      setSelectedAgentId(session.agent_id)
+      setSelectedContextId(session.context_id)
+      setSelectedSessionId(session.id)
+      setContextMenuOpen(false)
+      setSessionMenuOpen(false)
+      setView('conversation')
+      setError('')
+      window.setTimeout(() => composerInputRef.current?.focus(), 0)
+      return session
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+      return null
+    } finally {
+      setCreatingSession(false)
+    }
+  }, [apiHeaders, creatingSession, selectedAgentId, selectedContext, selectedContextId, sessions, status?.agent_id, t])
+
   const chooseSession = (session: SessionRecord) => {
     if (session.id !== selectedSessionId) {
       setPendingTurn(null)
@@ -1785,7 +1890,7 @@ export default function App() {
     const hasQuotes = quotes.length > 0
     const text = draftMessage.trim()
     if (!text && !hasQuotes) return false
-    if (!selectedSessionId || sending) return false
+    if (sending) return false
     const composedText = hasQuotes
       ? quotes.map((q, i) => {
           const block = `> [${i + 1}] ${q.text.replace(/\n/g, '\n> ')}\n> — ${q.eventActor}, ${q.eventTime}, ${q.eventId}`
@@ -1793,11 +1898,22 @@ export default function App() {
         }).join('\n\n') + (text ? `\n\n${text}` : '')
       : text
     setSending(true)
-    const startedAt = Date.now()
-    setPendingTurn({ startedAt, rootTurnId: null })
     conversationPinnedToEnd.current = true
+    let startedAt: number | null = null
     try {
-      const response = await fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`, {
+      let targetContext: ContextRecord | null | undefined = selectedContext
+      if (!targetContext) {
+        targetContext = await createContext()
+        if (!targetContext) return false
+      }
+      let targetSession: SessionRecord | null | undefined = selectedSession
+      if (!targetSession || targetSession.context_id !== targetContext.id) {
+        targetSession = await createSession(targetContext)
+        if (!targetSession) return false
+      }
+      startedAt = Date.now()
+      setPendingTurn({ startedAt, rootTurnId: null })
+      const response = await fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(targetSession.id)}/messages`, {
         method: 'POST',
         headers: apiHeaders(true),
         body: JSON.stringify({
@@ -1812,16 +1928,18 @@ export default function App() {
         : current)
       setQuotes([])
       setError('')
-      window.setTimeout(() => void loadSession(selectedSessionId, selectedContextId), 120)
+      window.setTimeout(() => void loadSession(targetSession.id, targetSession.context_id), 120)
       return true
     } catch (reason) {
-      setPendingTurn(current => current?.startedAt === startedAt ? null : current)
+      if (startedAt !== null) {
+        setPendingTurn(current => current?.startedAt === startedAt ? null : current)
+      }
       setError(reason instanceof Error ? reason.message : String(reason))
       return false
     } finally {
       setSending(false)
     }
-  }, [apiHeaders, loadSession, quotes, selectedContextId, selectedSessionId, sending, t])
+  }, [apiHeaders, createContext, createSession, loadSession, quotes, selectedContext, selectedSession, sending, t])
 
   const cancelCurrentSession = useCallback(async () => {
     if (!selectedSessionId) return
@@ -2073,11 +2191,33 @@ export default function App() {
           </button>
 
           <div className="identity-trail">
-            <button className={`identity-chip ${view === 'mind' ? 'is-active' : ''} ${!selectedContext ? 'unset' : ''}`} type="button" onClick={() => setView('mind')}>
-              <small>{t('header.context').toUpperCase()}</small>
-              <strong>{selectedContext?.title ?? (selectedContextId || t('header.noContext'))}</strong>
-              <span>{t('common.shared')} · r{contextView?.state.version ?? 0}</span>
-            </button>
+            <div className="context-selector" ref={contextSelectorRef}>
+              <button className={`identity-chip context-chip ${view === 'mind' ? 'is-active' : ''} ${!selectedContext ? 'unset' : ''}`} type="button" onClick={() => setContextMenuOpen(open => !open)}>
+                <small>{t('header.context').toUpperCase()}</small>
+                <strong>{selectedContext?.title ?? (selectedContextId || t('header.noContext'))}</strong>
+                <span>{t('common.shared')} · r{contextView?.state.version ?? 0}</span>
+                <ChevronDown size={13} />
+              </button>
+              {contextMenuOpen && (
+                <div className="session-popover context-popover">
+                  <header><span>{t('header.visibleContexts').toUpperCase()}</span><strong>{t('header.contextsForAgent', { count: visibleContexts.length })}</strong></header>
+                  <div className="session-options">
+                    {visibleContexts.map(context => (
+                      <button className={context.id === selectedContextId ? 'is-current' : ''} key={context.id} type="button" onClick={() => activateContext(context)}>
+                        <i className={`presence ${context.status}`} />
+                        <span><strong>{context.title}</strong><small>{shortId(context.id, 25)}</small></span>
+                        <em>{context.id === selectedContextId ? t('header.active').toUpperCase() : ''}</em>
+                      </button>
+                    ))}
+                    {visibleContexts.length === 0 && <div className="catalog-empty">{t('header.noVisibleContexts')}</div>}
+                  </div>
+                  <footer className="catalog-popover-footer">
+                    <button type="button" onClick={() => { setContextMenuOpen(false); setView('mind') }} disabled={!selectedContextId}><Brain size={13} />{t('header.inspectContext')}</button>
+                    <button type="button" onClick={() => void createContext()} disabled={creatingContext}><Plus size={13} />{creatingContext ? t('header.creatingContext') : t('header.createContext')}</button>
+                  </footer>
+                </div>
+              )}
+            </div>
             <span className="trail-separator">/</span>
             <button className={`identity-chip tasks-chip ${view === 'work' ? 'is-active' : ''}`} type="button" onClick={() => setView('work')}>
               <small>{t('work.title').toUpperCase()}</small>
@@ -2103,8 +2243,12 @@ export default function App() {
                         <em>{session.id === selectedSessionId ? t('header.active').toUpperCase() : statusLabel(session.attention_state ?? 'resident', t).toUpperCase()}</em>
                       </button>
                     ))}
+                    {visibleSessions.length === 0 && <div className="catalog-empty">{t('header.noVisibleSessions')}</div>}
                   </div>
-                  <footer>{t('header.dashboardHint')}</footer>
+                  <footer className="catalog-popover-footer">
+                    <button type="button" onClick={() => void createSession()} disabled={creatingSession || !selectedContextId}><Plus size={13} />{creatingSession ? t('header.creatingSession') : t('header.createSession')}</button>
+                    <small>{t('header.dashboardHint')}</small>
+                  </footer>
                 </div>
               )}
             </div>

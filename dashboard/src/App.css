@@ -149,9 +149,9 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .identity-chip.is-active strong { color: var(--text); }
 .tasks-chip strong { max-width: 95px; }
 .tasks-chip span { color: var(--muted); }
-.session-selector { position: relative; min-width: 0; }
-.session-chip { position: relative; padding-right: 26px; }
-.session-chip svg { position: absolute; top: 50%; right: 9px; color: var(--muted); }
+.context-selector, .session-selector { position: relative; min-width: 0; }
+.context-chip, .session-chip { position: relative; padding-right: 26px; }
+.context-chip svg, .session-chip svg { position: absolute; top: 50%; right: 9px; color: var(--muted); }
 
 .session-popover {
   position: absolute;
@@ -169,6 +169,7 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .session-popover > header span, .session-popover > header strong { font-family: var(--mono); font-size: 10px; }
 .session-popover > header span { color: var(--accent); letter-spacing: .1em; }
 .session-popover > header strong { color: var(--muted); font-weight: 500; }
+.context-popover { left: 0; }
 .session-options { max-height: 360px; overflow-y: auto; padding: 8px; }
 .session-options button { display: grid; width: 100%; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 11px; border-radius: var(--radius-sm); text-align: left; transition: background .12s ease; }
 .session-options button:hover, .session-options button.is-current { background: var(--accent-soft); }
@@ -176,10 +177,16 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .session-options strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .session-options small { overflow: hidden; color: var(--muted); font-family: var(--mono); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .session-options em { color: var(--accent); font-family: var(--mono); font-size: 9px; font-style: normal; }
+.catalog-empty { padding: 20px 12px; color: var(--faint); text-align: center; font-size: 11px; }
 .presence { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
 .presence.active, .presence.resident { background: var(--green); box-shadow: 0 0 0 4px var(--green-soft); }
 .presence.retired, .presence.swapped { background: var(--yellow); box-shadow: 0 0 0 4px var(--yellow-soft); }
 .session-popover > footer { padding: 10px 16px; border-top: 1px solid var(--line); color: var(--faint); font-size: 10px; }
+.catalog-popover-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.catalog-popover-footer button { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 7px 9px; border: 1px solid var(--line); border-radius: var(--radius-xs); background: var(--surface); color: var(--text-soft); font-size: 10px; font-weight: 650; transition: border-color .15s ease, background .15s ease; }
+.catalog-popover-footer button:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-strong); }
+.catalog-popover-footer button:disabled { opacity: .45; cursor: default; }
+.catalog-popover-footer small { min-width: 0; color: var(--faint); font-size: 9px; line-height: 1.4; }
 
 .runtime-side { justify-self: end; gap: 10px; white-space: nowrap; }
 .runtime-side > * { flex: 0 0 auto; }
@@ -680,7 +687,7 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
   .page-shell { padding: 0; }
   .morphz-shell { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
   .runtime-header { grid-template-columns: auto 1fr auto; min-height: 68px; padding-inline: 16px; }
-  .brand small, .trail-separator, .identity-chip:first-child, .tasks-chip { display: none; }
+  .brand small, .trail-separator, .tasks-chip { display: none; }
   .identity-trail { flex-wrap: wrap; }
   .identity-chip span { display: none; }
   .brand { gap: 7px; }
@@ -689,7 +696,7 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
   .identity-chip { display: flex; align-items: center; gap: 7px; padding: 7px; }
   .identity-chip small, .identity-chip span { display: none; }
   .identity-chip strong { max-width: 180px; font-size: 11px; }
-  .session-chip { padding-right: 23px; }
+  .context-chip, .session-chip { padding-right: 23px; }
   .session-popover { position: fixed; top: 68px; right: 12px; left: 12px; width: auto; }
   .theme-button { width: 34px; height: 34px; justify-content: center; padding: 0; }
   .theme-button svg:last-child { display: none; }
