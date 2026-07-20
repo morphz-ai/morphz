@@ -1,4 +1,4 @@
-# Session Projection Scope v1（需求草案）
+# Session Projection Scope 与 Principal 关联 v1（需求草案）
 
 > 状态：需求草案；由官网项目（`~/Codes/morphz-ai-site`）发起，待主仓库评审后进入设计
 > 更新时间：2026-07-20
@@ -23,14 +23,29 @@ Session。跨会话投影（当前 Working Set 会把窗口内其他 Session 的
 
 ### 2.1 属性
 
-Session 增加持久化属性：
+Session 增加两个持久化属性：
 
 ```text
-projection_scope: shared | private    （默认 shared，可随时变更）
+projection_scope: shared | private     （默认 shared，可随时变更）
+principal_id:     Option<String>       （创建时设定，身份归属；不可由模型修改）
 ```
 
 - 属性属于 Runtime Reality（Registry 元数据），不依赖模型在 Frame 中自觉记录；
 - 变更应产生可审计事件（建议记入 Ledger，标注操作来源为网关/所有者）。
+
+**principal_id 的动机**（2026-07-20 补充）：同一身份可以拥有多条 Session
+（多设备、多话题、网站 + 终端），当前 `SessionRecord` 无任何身份关联字段，
+Agent 在结构层面无法知道两条 Session 属于同一个人，只能靠标题或用户自称
+语义猜测——而身份恰恰不应该是「可以选择相信的话」，应该是不可伪造的
+Runtime 事实。此外，披露范围候选中的 `identity-private`（同一 principal 的
+Session 可复用某认识）没有该字段无法实现。要求：
+
+- `create_session` 可携带 `principal_id`，由持有 API 凭证的调用方（网关/CLI）
+  设定；模型与 `context_tx` 均不可写；
+- Session Directory 编码向模型暴露该字段（或其稳定化名），使 Agent 能
+  结构性识别「这几条连接是同一个人」；
+- 不同 principal 之间的字面值不要求全局语义（网站用户是网关 users.id、
+  本地终端可以是操作者自定标识），Runtime 只保证同值即同身份。
 
 ### 2.2 Working Set 编译过滤
 
