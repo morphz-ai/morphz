@@ -28,6 +28,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import './App.css'
+import { nextDashboardLanguage } from './i18n/language'
 import {
   createLiveModelState,
   findReasoningSummaryChainForPayload,
@@ -2045,7 +2046,7 @@ export default function App() {
               className="theme-button"
               type="button"
               title={t('language.toggle')}
-              onClick={() => { void i18n.changeLanguage(i18n.language?.startsWith('zh') ? 'en' : 'zh') }}
+              onClick={() => { void i18n.changeLanguage(nextDashboardLanguage(i18n.language)) }}
             >
               <Globe size={15} />
               <span>{currentLangCode}</span>

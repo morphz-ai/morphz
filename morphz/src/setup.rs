@@ -2,6 +2,7 @@ use crate::config::{
     morphz_home_dir, save_managed_provider, AppConfig, CredentialConfig, CredentialSource,
     ModelProtocol, ProviderConfig,
 };
+use crate::i18n::Locale;
 use crate::provider::{
     builtin_provider_catalog, list_provider_models, probe_provider, store_keychain_credential,
 };
@@ -19,21 +20,24 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use std::error::Error;
 use std::io::{self, Stdout};
 use std::path::{Path, PathBuf};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use zeroize::Zeroizing;
 
 type SetupError = Box<dyn Error + Send + Sync>;
 
-const ACCENT: Color = Color::Rgb(91, 196, 255);
-const MUTED: Color = Color::Rgb(127, 140, 160);
-const PANEL: Color = Color::Rgb(20, 25, 34);
-const SUCCESS: Color = Color::Rgb(119, 221, 119);
-const WARNING: Color = Color::Rgb(245, 190, 80);
-const ERROR: Color = Color::Rgb(255, 110, 120);
+// Setup deliberately inherits the terminal background. Named ANSI colors are
+// resolved by the user's terminal theme and remain readable in light and dark
+// appearances without Morphz owning the surface color.
+const ACCENT: Color = Color::LightMagenta;
+const MUTED: Color = Color::DarkGray;
+const SUCCESS: Color = Color::Green;
+const WARNING: Color = Color::Yellow;
+const ERROR: Color = Color::Red;
 
 #[derive(Debug, Clone)]
 struct ProviderPreset {
@@ -96,10 +100,11 @@ struct SetupTerminal {
     events: EventStream,
     step: usize,
     total_steps: usize,
+    locale: Locale,
 }
 
 impl SetupTerminal {
-    fn enter() -> Result<Self, SetupError> {
+    fn enter(locale: Locale) -> Result<Self, SetupError> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
         if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, Hide) {
@@ -112,6 +117,7 @@ impl SetupTerminal {
             events: EventStream::new(),
             step: 1,
             total_steps: 5,
+            locale,
         })
     }
 
@@ -131,6 +137,30 @@ impl SetupTerminal {
             body,
             footer,
             border_color,
+            input: None,
+            locale: self.locale,
+        };
+        self.terminal.draw(|frame| render_setup_page(frame, page))?;
+        Ok(())
+    }
+
+    fn draw_input_page(
+        &mut self,
+        title: &str,
+        subtitle: &str,
+        input: SetupInput,
+        footer: &str,
+    ) -> Result<(), SetupError> {
+        let page = SetupPage {
+            step: self.step,
+            total_steps: self.total_steps,
+            title,
+            subtitle,
+            body: Vec::new(),
+            footer,
+            border_color: ACCENT,
+            input: Some(input),
+            locale: self.locale,
         };
         self.terminal.draw(|frame| render_setup_page(frame, page))?;
         Ok(())
@@ -140,7 +170,14 @@ impl SetupTerminal {
         self.events
             .next()
             .await
-            .ok_or("Setup 终端事件流已关闭")?
+            .ok_or_else(|| {
+                self.locale
+                    .text(
+                        "The setup terminal event stream was closed",
+                        "初始化终端事件流已关闭",
+                    )
+                    .to_string()
+            })?
             .map_err(Into::into)
     }
 
@@ -154,14 +191,18 @@ impl SetupTerminal {
         let mut selected = initial.min(choices.len().saturating_sub(1));
         loop {
             let mut body = Vec::new();
-            let window_size = 6;
+            let window_size = 4;
             let start = selected
                 .saturating_sub(window_size / 2)
                 .min(choices.len().saturating_sub(window_size));
             let end = (start + window_size).min(choices.len());
             if start > 0 {
                 body.push(Line::from(Span::styled(
-                    format!("      ↑ 还有 {start} 项"),
+                    if self.locale.is_chinese() {
+                        format!("      ↑ 还有 {start} 项")
+                    } else {
+                        format!("      ↑ {start} more")
+                    },
                     Style::default().fg(MUTED),
                 )));
                 body.push(Line::from(""));
@@ -170,13 +211,13 @@ impl SetupTerminal {
                 let active = index == selected;
                 body.push(Line::from(vec![
                     Span::styled(
-                        if active { "  ◆ " } else { "    " },
+                        if active { "  › " } else { "    " },
                         Style::default().fg(if active { ACCENT } else { MUTED }),
                     ),
                     Span::styled(
                         choice.title.clone(),
                         Style::default()
-                            .fg(if active { Color::White } else { MUTED })
+                            .fg(if active { ACCENT } else { Color::Reset })
                             .add_modifier(if active {
                                 Modifier::BOLD
                             } else {
@@ -192,7 +233,11 @@ impl SetupTerminal {
             }
             if end < choices.len() {
                 body.push(Line::from(Span::styled(
-                    format!("      ↓ 还有 {} 项", choices.len() - end),
+                    if self.locale.is_chinese() {
+                        format!("      ↓ 还有 {} 项", choices.len() - end)
+                    } else {
+                        format!("      ↓ {} more", choices.len() - end)
+                    },
                     Style::default().fg(MUTED),
                 )));
             }
@@ -200,7 +245,10 @@ impl SetupTerminal {
                 title,
                 subtitle,
                 body,
-                "↑↓ / j k 选择   Enter 确认   Esc 取消",
+                self.locale.text(
+                    "↑↓ / j k Select   Enter Confirm   Esc Cancel",
+                    "方向键或 j/k 选择   回车确认   退出键取消",
+                ),
                 ACCENT,
             )?;
             match self.next_event().await? {
@@ -210,7 +258,7 @@ impl SetupTerminal {
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('c')
                     {
-                        return Err("Setup 已取消".into());
+                        return Err(self.locale.text("Setup cancelled", "设置已取消").into());
                     }
                     match key.code {
                         KeyCode::Up | KeyCode::Char('k') => {
@@ -230,7 +278,9 @@ impl SetupTerminal {
                             }
                         }
                         KeyCode::Enter => return Ok(selected),
-                        KeyCode::Esc => return Err("Setup 已取消".into()),
+                        KeyCode::Esc => {
+                            return Err(self.locale.text("Setup cancelled", "设置已取消").into())
+                        }
                         _ => {}
                     }
                 }
@@ -248,51 +298,76 @@ impl SetupTerminal {
     ) -> Result<String, SetupError> {
         let mut value = String::new();
         loop {
-            let display = if secret {
-                if value.is_empty() {
-                    "尚未输入".to_string()
-                } else {
-                    format!(
-                        "{}  已输入 {} 个字符",
-                        "•".repeat(value.chars().count()),
-                        value.chars().count()
-                    )
-                }
-            } else if value.is_empty() {
-                default
-                    .map(|default| format!("默认：{default}"))
-                    .unwrap_or_else(|| "请输入内容".to_string())
-            } else {
+            let entered = !value.is_empty();
+            let display = if secret && entered {
+                "•".repeat(value.chars().count())
+            } else if entered {
                 value.clone()
-            };
-            let body = vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    format!("  {display}"),
-                    Style::default()
-                        .fg(if value.is_empty() {
-                            MUTED
+            } else {
+                default
+                    .map(|default| {
+                        if self.locale.is_chinese() {
+                            format!("默认：{default}")
                         } else {
-                            Color::White
-                        })
-                        .add_modifier(Modifier::BOLD),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    if secret {
-                        "  密钥原文永远不会显示；上面的圆点和字符数用于确认输入已经生效。"
-                    } else {
-                        "  支持粘贴；Enter 确认当前值。"
-                    },
-                    Style::default().fg(MUTED),
-                )),
-            ];
-            self.draw_page(
+                            format!("Default: {default}")
+                        }
+                    })
+                    .unwrap_or_else(|| {
+                        if secret {
+                            self.locale.text("Enter API key", "输入密钥").to_string()
+                        } else {
+                            self.locale.text("Enter a value", "输入内容").to_string()
+                        }
+                    })
+            };
+            self.draw_input_page(
                 title,
                 subtitle,
-                body,
-                "Enter 确认   Backspace 删除   Esc 取消",
-                if secret { WARNING } else { ACCENT },
+                SetupInput {
+                    label: if secret {
+                        self.locale.text("API KEY", "密钥")
+                    } else {
+                        self.locale.text("VALUE", "输入")
+                    },
+                    display,
+                    entered,
+                    cursor_width: if entered {
+                        if secret {
+                            value.chars().count()
+                        } else {
+                            UnicodeWidthStr::width(value.as_str())
+                        }
+                    } else {
+                        0
+                    },
+                    helper: if secret {
+                        if entered {
+                            if self.locale.is_chinese() {
+                                format!("密钥已隐藏 · 已输入 {} 个字符", value.chars().count())
+                            } else {
+                                format!(
+                                    "Secret hidden · {} characters entered",
+                                    value.chars().count()
+                                )
+                            }
+                        } else {
+                            self.locale
+                                .text(
+                                    "The secret is never displayed or written to the project",
+                                    "密钥原文不会显示或进入项目目录",
+                                )
+                                .to_string()
+                        }
+                    } else {
+                        self.locale
+                            .text("Type or paste a value", "支持直接输入和粘贴")
+                            .to_string()
+                    },
+                },
+                self.locale.text(
+                    "Enter Confirm   Backspace Delete   Esc Cancel",
+                    "回车确认   退格删除   退出键取消",
+                ),
             )?;
             match self.next_event().await? {
                 Event::Paste(text) => value.extend(
@@ -305,7 +380,7 @@ impl SetupTerminal {
                     if key.modifiers.contains(KeyModifiers::CONTROL)
                         && key.code == KeyCode::Char('c')
                     {
-                        return Err("Setup 已取消".into());
+                        return Err(self.locale.text("Setup cancelled", "设置已取消").into());
                     }
                     match key.code {
                         KeyCode::Char(character)
@@ -326,7 +401,9 @@ impl SetupTerminal {
                                 return Ok(result);
                             }
                         }
-                        KeyCode::Esc => return Err("Setup 已取消".into()),
+                        KeyCode::Esc => {
+                            return Err(self.locale.text("Setup cancelled", "设置已取消").into())
+                        }
                         _ => {}
                     }
                 }
@@ -346,7 +423,8 @@ impl SetupTerminal {
                     Style::default().fg(WARNING).add_modifier(Modifier::BOLD),
                 )),
             ],
-            "正在处理，请稍候…",
+            self.locale
+                .text("Working, please wait…", "正在处理，请稍候…"),
             WARNING,
         )
     }
@@ -366,7 +444,8 @@ impl SetupTerminal {
                     .lines()
                     .map(|line| Line::from(format!("  {line}")))
                     .collect(),
-                "Enter 继续   Esc 取消",
+                self.locale
+                    .text("Enter Continue   Esc Cancel", "回车继续   退出键取消"),
                 color,
             )?;
             if let Event::Key(key) = self.next_event().await? {
@@ -375,9 +454,11 @@ impl SetupTerminal {
                 }
                 match key.code {
                     KeyCode::Enter => return Ok(()),
-                    KeyCode::Esc => return Err("Setup 已取消".into()),
+                    KeyCode::Esc => {
+                        return Err(self.locale.text("Setup cancelled", "设置已取消").into())
+                    }
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return Err("Setup 已取消".into())
+                        return Err(self.locale.text("Setup cancelled", "设置已取消").into())
                     }
                     _ => {}
                 }
@@ -407,6 +488,16 @@ struct SetupPage<'a> {
     body: Vec<Line<'static>>,
     footer: &'a str,
     border_color: Color,
+    input: Option<SetupInput>,
+    locale: Locale,
+}
+
+struct SetupInput {
+    label: &'static str,
+    display: String,
+    entered: bool,
+    cursor_width: usize,
+    helper: String,
 }
 
 fn render_setup_page(frame: &mut Frame<'_>, page: SetupPage<'_>) {
@@ -418,125 +509,286 @@ fn render_setup_page(frame: &mut Frame<'_>, page: SetupPage<'_>) {
         body,
         footer,
         border_color,
+        input,
+        locale,
     } = page;
-    let area = centered_rect(78, 78, frame.area());
+    let area = centered_setup_rect(frame.area());
     frame.render_widget(Clear, area);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
-            Constraint::Min(8),
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Min(10),
             Constraint::Length(2),
         ])
         .split(area);
-    let progress = (0..total_steps)
-        .map(|index| if index < step { "━" } else { "─" })
-        .collect::<Vec<_>>()
-        .join("━━");
-    let header = Paragraph::new(vec![
-        Line::from(vec![
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled("◆", Style::default().fg(ACCENT)),
+        Span::styled(
+            "  Morphz",
+            Style::default()
+                .fg(Color::Reset)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            locale.text("  /  INITIAL SETUP", "  /  初始设置"),
+            Style::default().fg(MUTED),
+        ),
+    ]));
+    frame.render_widget(header, chunks[0]);
+    let progress = setup_progress(step, total_steps, locale);
+    frame.render_widget(Paragraph::new(progress), chunks[1]);
+
+    let card = Block::default()
+        .title(Line::from(vec![
+            Span::styled("  ", Style::default()),
             Span::styled(
-                " Morphz Setup ",
+                title.to_uppercase(),
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(ACCENT)
+                    .fg(border_color)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(format!("   {title}")),
-        ]),
-        Line::from(Span::styled(
-            format!(" {progress}   {step}/{total_steps}   {subtitle}"),
-            Style::default().fg(MUTED),
-        )),
-    ])
-    .block(
-        Block::default()
-            .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(border_color))
-            .style(Style::default().bg(PANEL)),
+            Span::styled("  ", Style::default()),
+        ]))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(MUTED))
+        .padding(Padding::new(2, 2, 1, 1));
+    let card_inner = card.inner(chunks[2]);
+    frame.render_widget(card, chunks[2]);
+
+    let content_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(3)])
+        .split(card_inner);
+    frame.render_widget(
+        Paragraph::new(subtitle)
+            .style(Style::default().fg(MUTED))
+            .wrap(Wrap { trim: true }),
+        content_chunks[0],
     );
-    frame.render_widget(header, chunks[0]);
-    let content = Paragraph::new(body)
-        .wrap(Wrap { trim: false })
-        .block(
-            Block::default()
-                .borders(Borders::LEFT | Borders::RIGHT)
-                .border_style(Style::default().fg(border_color))
-                .padding(ratatui::widgets::Padding::uniform(1)),
-        )
-        .style(Style::default().bg(PANEL).fg(Color::White));
-    frame.render_widget(content, chunks[1]);
+    if let Some(input) = input {
+        render_setup_input(frame, content_chunks[1], input, border_color);
+    } else {
+        frame.render_widget(
+            Paragraph::new(body)
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(Color::Reset)),
+            content_chunks[1],
+        );
+    }
     let footer = Paragraph::new(footer)
         .alignment(Alignment::Center)
-        .style(Style::default().fg(MUTED).bg(PANEL))
-        .block(
-            Block::default()
-                .borders(Borders::BOTTOM | Borders::LEFT | Borders::RIGHT)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(border_color)),
-        );
-    frame.render_widget(footer, chunks[2]);
+        .style(Style::default().fg(MUTED));
+    frame.render_widget(footer, chunks[3]);
 }
 
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
+fn setup_progress(step: usize, total_steps: usize, locale: Locale) -> Line<'static> {
+    let mut spans = vec![
+        Span::styled(locale.text("STEP ", "步骤 "), Style::default().fg(MUTED)),
+        Span::styled(
+            format!("{step:02}"),
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" / {total_steps:02}    "),
+            Style::default().fg(MUTED),
+        ),
+    ];
+    for index in 1..=total_steps {
+        spans.push(Span::styled(
+            if index <= step { "●" } else { "○" },
+            Style::default().fg(if index <= step { ACCENT } else { MUTED }),
+        ));
+        if index < total_steps {
+            spans.push(Span::styled(" ─ ", Style::default().fg(MUTED)));
+        }
+    }
+    Line::from(spans)
+}
+
+fn render_setup_input(frame: &mut Frame<'_>, area: Rect, input: SetupInput, color: Color) {
+    let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Min(0),
         ])
         .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
+    let input_block = Block::default()
+        .title(format!(" {} ", input.label))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(color))
+        .padding(Padding::horizontal(1));
+    let input_inner = input_block.inner(rows[0]);
+    frame.render_widget(input_block, rows[0]);
+
+    let prefix = "› ";
+    let available = input_inner
+        .width
+        .saturating_sub(UnicodeWidthStr::width(prefix) as u16) as usize;
+    let (visible, visible_cursor) =
+        visible_input_tail(&input.display, input.cursor_width, available, input.entered);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                prefix,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                visible,
+                Style::default()
+                    .fg(if input.entered { Color::Reset } else { MUTED })
+                    .add_modifier(if input.entered {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::ITALIC
+                    }),
+            ),
+        ])),
+        input_inner,
+    );
+    frame.render_widget(
+        Paragraph::new(input.helper).style(Style::default().fg(MUTED)),
+        rows[1],
+    );
+    let cursor_x = input_inner
+        .x
+        .saturating_add(UnicodeWidthStr::width(prefix) as u16)
+        .saturating_add(visible_cursor as u16)
+        .min(input_inner.right().saturating_sub(1));
+    frame.set_cursor_position((cursor_x, input_inner.y));
+}
+
+fn visible_input_tail(
+    display: &str,
+    cursor_width: usize,
+    available: usize,
+    entered: bool,
+) -> (String, usize) {
+    if !entered {
+        return (truncate_to_width(display, available), 0);
+    }
+    if cursor_width <= available {
+        return (display.to_string(), cursor_width);
+    }
+    let content_width = available.saturating_sub(1);
+    let mut width = 0;
+    let mut tail = Vec::new();
+    for character in display.chars().rev() {
+        let character_width = character.width().unwrap_or(0);
+        if width + character_width > content_width {
+            break;
+        }
+        width += character_width;
+        tail.push(character);
+    }
+    tail.reverse();
+    (
+        format!("…{}", tail.into_iter().collect::<String>()),
+        width + 1,
+    )
+}
+
+fn truncate_to_width(value: &str, available: usize) -> String {
+    let mut width = 0;
+    value
+        .chars()
+        .take_while(|character| {
+            let character_width = character.width().unwrap_or(0);
+            if width + character_width > available {
+                false
+            } else {
+                width += character_width;
+                true
+            }
+        })
+        .collect()
+}
+
+fn centered_setup_rect(area: Rect) -> Rect {
+    let width = area.width.saturating_sub(4).min(88);
+    let height = area.height.saturating_sub(2).min(32);
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
 }
 
 pub async fn run_interactive_setup() -> Result<SetupResult, SetupError> {
-    let mut ui = SetupTerminal::enter()?;
+    run_interactive_setup_for(Locale::detect()).await
+}
+
+pub async fn run_interactive_setup_for(locale: Locale) -> Result<SetupResult, SetupError> {
+    let mut ui = SetupTerminal::enter(locale)?;
+    let locale = ui.locale;
     let catalog = presets();
     let provider_choice = ui
         .choose(
-            "选择 Provider",
-            "Provider 决定模型服务的物理边界；协议在下一步单独声明。",
+            locale.text("Choose a provider", "选择模型服务商"),
+            locale.text(
+                "The provider defines the model service boundary. The protocol is selected separately.",
+                "模型服务商决定服务边界，通信协议将在下一步单独选择。",
+            ),
             &[
-                Choice::new("OpenAI", "官方 OpenAI Responses API"),
-                Choice::new("Anthropic", "官方 Anthropic Messages API"),
-                Choice::new("Google Gemini", "官方 Gemini generateContent API"),
-                Choice::new("自定义 Provider", "本地代理、私有部署或兼容标准协议的服务"),
+                Choice::new(
+                    "OpenAI",
+                    locale.text("Official Responses API", "官方响应接口"),
+                ),
+                Choice::new(
+                    "Anthropic",
+                    locale.text("Official Messages API", "官方消息接口"),
+                ),
+                Choice::new(
+                    "Google Gemini",
+                    locale.text("Official generateContent API", "官方内容生成接口"),
+                ),
+                Choice::new(
+                    locale.text("Custom provider", "自定义服务商"),
+                    locale.text(
+                        "Local proxy, private deployment, or standards-compatible service",
+                        "适用于本地代理、私有部署或兼容标准协议的服务",
+                    ),
+                ),
             ],
             0,
         )
         .await?;
 
     ui.step = 2;
-    let (provider_id, protocol, base_url, default_env) =
-        if let Some(preset) = catalog.get(provider_choice) {
-            (
-                preset.id.to_string(),
-                preset.protocol,
-                preset.base_url.clone(),
-                preset.env_name.to_string(),
+    let (provider_id, protocol, base_url, default_env) = if let Some(preset) =
+        catalog.get(provider_choice)
+    {
+        (
+            preset.id.to_string(),
+            preset.protocol,
+            preset.base_url.clone(),
+            preset.env_name.to_string(),
+        )
+    } else {
+        let provider_id = ui
+            .input(
+                locale.text("Provider ID", "服务商标识"),
+                locale.text(
+                    "A stable configuration name, for example local-proxy.",
+                    "配置中使用的稳定名称，例如 local-proxy。",
+                ),
+                Some("custom"),
+                false,
             )
-        } else {
-            let provider_id = ui
-                .input(
-                    "Provider 标识",
-                    "这是配置中的稳定名称，例如 local-proxy。",
-                    Some("custom"),
-                    false,
-                )
-                .await?;
-            let protocol_choice = ui
+            .await?;
+        let protocol_choice = ui
                 .choose(
-                    "选择协议",
-                    "协议决定请求和流式响应的编码方式，不能从模型名称猜测。",
+                    locale.text("Choose a protocol", "选择通信协议"),
+                    locale.text(
+                        "The protocol defines request and streaming response encoding; it is never inferred from a model name.",
+                        "通信协议决定请求和流式响应的编码方式，不会根据模型名称猜测。",
+                    ),
                     &[
                         Choice::new("OpenAI Responses", "/responses"),
                         Choice::new("OpenAI Chat Completions", "/chat/completions"),
@@ -546,27 +798,30 @@ pub async fn run_interactive_setup() -> Result<SetupResult, SetupError> {
                     1,
                 )
                 .await?;
-            let protocol = [
-                ModelProtocol::OpenaiResponses,
-                ModelProtocol::OpenaiChat,
-                ModelProtocol::AnthropicMessages,
-                ModelProtocol::GeminiContent,
-            ][protocol_choice];
-            let base_url = ui
+        let protocol = [
+            ModelProtocol::OpenaiResponses,
+            ModelProtocol::OpenaiChat,
+            ModelProtocol::AnthropicMessages,
+            ModelProtocol::GeminiContent,
+        ][protocol_choice];
+        let base_url = ui
                 .input(
-                    "Provider 地址",
-                    "填写协议根地址；Morphz 会根据协议拼接具体 endpoint。",
+                    locale.text("Provider URL", "服务商地址"),
+                    locale.text(
+                        "Enter the protocol root URL; Morphz appends the endpoint required by the selected protocol.",
+                        "填写通信协议的根地址，Morphz 会根据所选协议补充具体接口路径。",
+                    ),
                     None,
                     false,
                 )
                 .await?;
-            (
-                provider_id,
-                protocol,
-                base_url,
-                "MORPHZ_PROVIDER_API_KEY".to_string(),
-            )
-        };
+        (
+            provider_id,
+            protocol,
+            base_url,
+            "MORPHZ_PROVIDER_API_KEY".to_string(),
+        )
+    };
 
     ui.step = 3;
     let credential_id = provider_id.clone();
@@ -590,9 +845,12 @@ pub async fn run_interactive_setup() -> Result<SetupResult, SetupError> {
 
     ui.step = 4;
     ui.status(
-        "发现模型",
+        locale.text("Discovering models", "发现模型"),
         &format!("{} · {}", provider_id, protocol.as_str()),
-        "正在连接 Provider 并读取模型目录",
+        locale.text(
+            "Connecting to the provider and reading its model catalog",
+            "正在连接模型服务商并读取模型目录",
+        ),
     )?;
     let (models, catalog_error) = match list_provider_models(&probe_config, &provider_id).await {
         Ok(models) => (models, None),
@@ -600,9 +858,16 @@ pub async fn run_interactive_setup() -> Result<SetupResult, SetupError> {
     };
     if let Some(error) = catalog_error {
         ui.acknowledge(
-            "模型目录不可用",
-            "这不会阻止手工填写模型 ID。",
-            &format!("读取模型目录失败：\n\n{error}\n\n请确认凭证、协议和 Base URL。"),
+            locale.text("Model catalog unavailable", "模型目录不可用"),
+            locale.text(
+                "You can still enter a model ID manually.",
+                "仍然可以手工填写模型标识。",
+            ),
+            &if locale.is_chinese() {
+                format!("读取模型目录失败：\n\n{error}\n\n请确认凭证、通信协议和服务地址。")
+            } else {
+                format!("Could not read the model catalog:\n\n{error}\n\nCheck the credential, protocol, and base URL.")
+            },
             WARNING,
         )
         .await?;
@@ -612,30 +877,52 @@ pub async fn run_interactive_setup() -> Result<SetupResult, SetupError> {
 
     ui.step = 5;
     ui.status(
-        "验证能力",
+        locale.text("Verifying capabilities", "验证能力"),
         &format!("{} · {}", provider_id, model),
-        "正在验证流式正文与标准工具调用",
+        locale.text(
+            "Verifying streamed text and standard tool calls",
+            "正在验证流式文本与标准工具调用",
+        ),
     )?;
-    let (connection_verified, verification_message) =
-        match probe_provider(&probe_config, &provider_id, Some(&model)).await {
-            Ok(probe) if probe.completion_stream_verified && probe.tool_call_verified => (
-                true,
-                "Provider 连接成功；流式正文与工具调用握手均通过。".to_string(),
-            ),
-            Ok(probe) => (
-                false,
+    let (connection_verified, verification_message) = match probe_provider(
+        &probe_config,
+        &provider_id,
+        Some(&model),
+    )
+    .await
+    {
+        Ok(probe) if probe.completion_stream_verified && probe.tool_call_verified => (
+            true,
+            locale
+                .text(
+                    "Provider connected. Streamed text and tool-call handshakes both passed.",
+                    "模型服务商连接成功，流式文本与工具调用握手均已通过。",
+                )
+                .to_string(),
+        ),
+        Ok(probe) => (
+            false,
+            if locale.is_chinese() {
                 format!(
-                    "Provider 可达，但能力握手不完整。\n\nstream={}\ntool_call={}\n\n配置仍会保存，可使用 `morphz provider test {provider_id}` 复查。",
-                    probe.completion_stream_verified, probe.tool_call_verified
-                ),
-            ),
-            Err(error) => (
-                false,
+                        "模型服务商可以访问，但能力握手不完整。\n\n流式文本={}\n工具调用={}\n\n配置仍会保存，可使用 `morphz provider test {provider_id}` 复查。",
+                        probe.completion_stream_verified, probe.tool_call_verified
+                    )
+            } else {
                 format!(
-                    "能力握手失败：\n\n{error}\n\n配置仍会保存，可使用 `morphz provider test {provider_id}` 复查。"
-                ),
-            ),
-        };
+                        "The provider is reachable, but capability verification is incomplete.\n\nstream={}\ntool_call={}\n\nThe configuration will still be saved. Run `morphz provider test {provider_id}` to retry.",
+                        probe.completion_stream_verified, probe.tool_call_verified
+                    )
+            },
+        ),
+        Err(error) => (
+            false,
+            if locale.is_chinese() {
+                format!("能力握手失败：\n\n{error}\n\n配置仍会保存，可使用 `morphz provider test {provider_id}` 复查。")
+            } else {
+                format!("Capability verification failed:\n\n{error}\n\nThe configuration will still be saved. Run `morphz provider test {provider_id}` to retry.")
+            },
+        ),
+    };
     let config_path = save_managed_provider(
         &provider_id,
         &provider,
@@ -646,13 +933,14 @@ pub async fn run_interactive_setup() -> Result<SetupResult, SetupError> {
     )?;
     ui.acknowledge(
         if connection_verified {
-            "Setup 完成"
+            locale.text("Setup complete", "设置完成")
         } else {
-            "配置已保存"
+            locale.text("Configuration saved", "配置已保存")
         },
         &format!("{} · {} · {}", provider_id, protocol.as_str(), model),
         &format!(
-            "{verification_message}\n\n配置文件：{}",
+            "{verification_message}\n\n{}：{}",
+            locale.text("Configuration", "配置文件"),
             config_path.display()
         ),
         if connection_verified {
@@ -676,19 +964,46 @@ async fn configure_credential(
     provider_id: &str,
     default_env: &str,
 ) -> Result<Option<CredentialConfig>, SetupError> {
+    let locale = ui.locale;
     loop {
         let mode = ui
             .choose(
-                "配置凭证",
-                "密钥只进入你明确选择的安全存储；不会写入项目目录。",
+                locale.text("Configure credentials", "配置凭证"),
+                locale.text(
+                    "The key is stored only in the selected credential store and is never written to the project.",
+                    "密钥只会进入明确选择的凭证存储，不会写入项目目录。",
+                ),
                 &[
-                    Choice::new("系统 Keychain", "推荐；由操作系统保护，可能需要解锁"),
                     Choice::new(
-                        "Morphz secrets 文件",
-                        "$MORPHZ_HOME/.env 中的用户级明文；目录 0700、文件 0600",
+                        locale.text("System keychain", "系统钥匙串"),
+                        locale.text(
+                            "Recommended; protected by the operating system and may require unlocking",
+                            "推荐使用，由操作系统保护，可能需要解锁",
+                        ),
                     ),
-                    Choice::new("既有环境变量", "只记录变量名，不读取或保存密钥原文"),
-                    Choice::new("无认证", "仅适用于不要求凭证的本地服务"),
+                    Choice::new(
+                        locale.text("Morphz secrets file", "Morphz 密钥文件"),
+                        if locale.is_chinese() {
+                            format!("用户级明文文件，权限为 0600；直接写入 {default_env}")
+                        } else {
+                            format!("User-level plaintext with mode 0600; writes {default_env}")
+                        },
+                    ),
+                    Choice::new(
+                        locale.text("Existing environment variable", "已有环境变量"),
+                        if locale.is_chinese() {
+                            format!("直接引用 {default_env}，不读取或保存密钥原文")
+                        } else {
+                            format!("References {default_env} without reading or storing the secret")
+                        },
+                    ),
+                    Choice::new(
+                        locale.text("No authentication", "无需认证"),
+                        locale.text(
+                            "Only for local services that require no credential",
+                            "仅适用于不要求凭证的本地服务",
+                        ),
+                    ),
                 ],
                 0,
             )
@@ -697,8 +1012,11 @@ async fn configure_credential(
             0 => {
                 let secret = Zeroizing::new(
                     ui.input(
-                        "输入 API Key",
-                        "输入被隐藏；界面会显示圆点和字符数量作为反馈。",
+                        locale.text("Enter API key", "输入接口密钥"),
+                        locale.text(
+                            "Input is hidden; dots and a character count confirm that typing is active.",
+                            "输入内容会被隐藏，界面通过圆点和字符数量反馈输入状态。",
+                        ),
                         None,
                         true,
                     )
@@ -706,9 +1024,15 @@ async fn configure_credential(
                 );
                 loop {
                     ui.status(
-                        "保存到 Keychain",
-                        "Morphz 正在写入当前用户的系统凭证库。",
-                        "正在请求 macOS Keychain",
+                        locale.text("Saving to keychain", "保存到系统钥匙串"),
+                        locale.text(
+                            "Morphz is writing to the current user's credential store.",
+                            "Morphz 正在写入当前用户的系统凭证库。",
+                        ),
+                        locale.text(
+                            "Requesting access to the macOS keychain",
+                            "正在请求访问 macOS 系统钥匙串",
+                        ),
                     )?;
                     match store_keychain_credential("morphz.provider", provider_id, secret.as_str())
                     {
@@ -721,18 +1045,42 @@ async fn configure_credential(
                             }));
                         }
                         Err(error) => {
-                            let explanation = explain_keychain_error(&error.to_string());
+                            let explanation = explain_keychain_error(locale, &error.to_string());
                             let action = ui
                                 .choose(
-                                    "Keychain 无法写入",
+                                    locale.text(
+                                        "Could not write to the keychain",
+                                        "无法写入系统钥匙串",
+                                    ),
                                     &explanation,
                                     &[
-                                        Choice::new("重试 Keychain", "解锁登录钥匙串后再次尝试"),
                                         Choice::new(
-                                            "改存 Morphz secrets 文件",
-                                            "使用刚才输入的密钥，写入权限为 0600 的用户级明文文件",
+                                            locale.text("Retry keychain", "重试系统钥匙串"),
+                                            locale.text(
+                                                "Unlock the login keychain and try again",
+                                                "解锁登录钥匙串后再次尝试",
+                                            ),
                                         ),
-                                        Choice::new("返回凭证选择", "丢弃刚才输入的密钥"),
+                                        Choice::new(
+                                            locale.text(
+                                                "Use the Morphz secrets file",
+                                                "改用 Morphz 密钥文件",
+                                            ),
+                                            locale.text(
+                                                "Store the entered key in a user-level plaintext file with mode 0600",
+                                                "将刚才输入的密钥写入权限为 0600 的用户级明文文件",
+                                            ),
+                                        ),
+                                        Choice::new(
+                                            locale.text(
+                                                "Return to credential choices",
+                                                "返回凭证选择",
+                                            ),
+                                            locale.text(
+                                                "Discard the key that was just entered",
+                                                "丢弃刚才输入的密钥",
+                                            ),
+                                        ),
                                     ],
                                     1,
                                 )
@@ -757,19 +1105,16 @@ async fn configure_credential(
                 }
             }
             1 => {
-                let env_name = ui
-                    .input(
-                        "凭证变量名",
-                        "密钥保存在 Morphz 用户级 .env；配置只引用这个变量名。",
-                        Some(default_env),
-                        false,
-                    )
-                    .await?;
+                let env_name = default_env.to_string();
                 validate_env_name(&env_name)?;
                 let secret = Zeroizing::new(
                     ui.input(
-                        "输入 API Key",
-                        "输入被隐藏；文件会以 0600 权限原子写入。",
+                        locale.text("Enter API key", "输入接口密钥"),
+                        &if locale.is_chinese() {
+                            format!("将以 {env_name} 写入权限为 0600 的 Morphz 密钥文件。")
+                        } else {
+                            format!("The key will be written as {env_name} to the Morphz secrets file with mode 0600.")
+                        },
                         None,
                         true,
                     )
@@ -785,22 +1130,23 @@ async fn configure_credential(
                 }));
             }
             2 => {
-                let env_name = ui
-                    .input(
-                        "环境变量名",
-                        "该变量必须已存在于当前进程或 Morphz 用户级 .env 中。",
-                        Some(default_env),
-                        false,
-                    )
-                    .await?;
+                let env_name = default_env.to_string();
                 validate_env_name(&env_name)?;
                 if std::env::var_os(&env_name).is_none() {
                     ui.acknowledge(
-                        "环境变量不存在",
-                        "Morphz 不会猜测或创建外部环境变量。",
-                        &format!(
-                            "当前进程中没有 {env_name}。\n\n请先设置该变量，或者选择 Morphz secrets 文件。"
+                        locale.text(
+                            "Environment variable not found",
+                            "环境变量不存在",
                         ),
+                        locale.text(
+                            "The default credential variable for this provider is not set.",
+                            "当前模型服务商的默认凭证变量尚未设置。",
+                        ),
+                        &if locale.is_chinese() {
+                            format!("当前进程中没有 {env_name}。\n\n请先设置该变量，或者选择 Morphz 密钥文件直接保存接口密钥。")
+                        } else {
+                            format!("{env_name} is not present in the current process.\n\nSet it first, or choose the Morphz secrets file to store the API key.")
+                        },
                         ERROR,
                     )
                     .await?;
@@ -824,11 +1170,15 @@ async fn configure_credential(
 }
 
 async fn select_model(ui: &mut SetupTerminal, models: &[String]) -> Result<String, SetupError> {
+    let locale = ui.locale;
     if models.is_empty() {
         return ui
             .input(
-                "模型 ID",
-                "模型目录不可用，请填写 Provider 接受的精确模型名称。",
+                locale.text("Model ID", "模型标识"),
+                locale.text(
+                    "The model catalog is unavailable. Enter the exact model name accepted by the provider.",
+                    "模型目录不可用，请填写模型服务商接受的精确模型名称。",
+                ),
                 None,
                 false,
             )
@@ -837,13 +1187,28 @@ async fn select_model(ui: &mut SetupTerminal, models: &[String]) -> Result<Strin
     let mut choices = models
         .iter()
         .take(18)
-        .map(|model| Choice::new(model, "Provider 模型目录"))
+        .map(|model| {
+            Choice::new(
+                model,
+                locale.text("Provider model catalog", "服务商模型目录"),
+            )
+        })
         .collect::<Vec<_>>();
-    choices.push(Choice::new("手工输入模型 ID", "目录中没有目标模型时使用"));
+    choices.push(Choice::new(
+        locale.text("Enter a model ID manually", "手工输入模型标识"),
+        locale.text(
+            "Use when the target model is not in the catalog",
+            "目标模型不在目录中时使用",
+        ),
+    ));
     let selected = ui
         .choose(
-            "选择模型",
-            &format!("Provider 返回了 {} 个模型。", models.len()),
+            locale.text("Choose a model", "选择模型"),
+            &if locale.is_chinese() {
+                format!("模型服务商返回了 {} 个模型。", models.len())
+            } else {
+                format!("The provider returned {} models.", models.len())
+            },
             &choices,
             0,
         )
@@ -851,8 +1216,16 @@ async fn select_model(ui: &mut SetupTerminal, models: &[String]) -> Result<Strin
     if selected < choices.len() - 1 {
         Ok(models[selected].clone())
     } else {
-        ui.input("模型 ID", "填写 Provider 接受的精确模型名称。", None, false)
-            .await
+        ui.input(
+            locale.text("Model ID", "模型标识"),
+            locale.text(
+                "Enter the exact model name accepted by the provider.",
+                "填写模型服务商接受的精确模型名称。",
+            ),
+            None,
+            false,
+        )
+        .await
     }
 }
 
@@ -863,13 +1236,24 @@ fn validate_env_name(name: &str) -> Result<(), SetupError> {
         .is_some_and(|character| character == '_' || character.is_ascii_alphabetic());
     if !valid_start || !chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
     {
-        return Err(format!("'{name}' 不是合法的环境变量名").into());
+        let locale = Locale::detect();
+        return Err(if locale.is_chinese() {
+            format!("'{name}' 不是合法的环境变量名").into()
+        } else {
+            format!("'{name}' is not a valid environment variable name").into()
+        });
     }
     Ok(())
 }
 
 fn store_host_env_credential(name: &str, secret: &str) -> Result<PathBuf, SetupError> {
-    let home = morphz_home_dir().ok_or("无法确定 Morphz 用户配置目录")?;
+    let locale = Locale::detect();
+    let home = morphz_home_dir().ok_or_else(|| {
+        locale.text(
+            "Could not determine the Morphz user configuration directory",
+            "无法确定 Morphz 用户配置目录",
+        )
+    })?;
     store_host_env_credential_at(&home, name, secret)
 }
 
@@ -884,7 +1268,12 @@ fn store_host_env_credential_at(
             .chars()
             .any(|character| matches!(character, '\r' | '\n'))
     {
-        return Err("API Key 不能为空或包含换行符".into());
+        return Err(Locale::detect()
+            .text(
+                "The API key cannot be empty or contain a newline",
+                "接口密钥不能为空或包含换行符",
+            )
+            .into());
     }
     std::fs::create_dir_all(home)?;
     #[cfg(unix)]
@@ -938,18 +1327,25 @@ fn quote_env_value(value: &str) -> String {
     )
 }
 
-fn explain_keychain_error(error: &str) -> String {
+fn explain_keychain_error(locale: Locale, error: &str) -> String {
     if error.contains("-25308") || error.contains("User interaction is not allowed") {
-        "macOS 需要解锁或授权 Keychain，但当前 cargo/终端进程不能展示这次系统交互。密钥尚未被保存。"
+        locale
+            .text(
+                "macOS must unlock or authorize the system keychain, but the current terminal process cannot display that interaction. The key has not been saved.",
+                "macOS 需要解锁或授权系统钥匙串，但当前终端进程无法展示这次系统交互。密钥尚未保存。",
+            )
             .to_string()
+    } else if locale.is_chinese() {
+        format!("操作系统拒绝了这次钥匙串写入：{error}。密钥尚未保存。")
     } else {
-        format!("操作系统拒绝了这次 Keychain 写入：{error}。密钥尚未被保存。")
+        format!("The operating system rejected the keychain write: {error}. The key has not been saved.")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
@@ -991,9 +1387,100 @@ mod tests {
     #[test]
     fn keychain_interaction_error_is_explained_in_product_language() {
         let message = explain_keychain_error(
+            Locale::SimplifiedChinese,
             "PlatformFailure(Error { code: -25308, message: User interaction is not allowed. })",
         );
         assert!(message.contains("macOS"));
-        assert!(message.contains("尚未被保存"));
+        assert!(message.contains("尚未保存"));
+    }
+
+    #[test]
+    fn setup_input_is_focused_and_inherits_terminal_background() {
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_setup_page(
+                    frame,
+                    SetupPage {
+                        step: 3,
+                        total_steps: 5,
+                        title: "输入 API Key",
+                        subtitle: "密钥只会保存到用户选择的凭证存储。",
+                        body: Vec::new(),
+                        footer: "Enter 确认   Esc 取消",
+                        border_color: ACCENT,
+                        input: Some(SetupInput {
+                            label: "API KEY",
+                            display: "输入 API Key".to_string(),
+                            entered: false,
+                            cursor_width: 0,
+                            helper: "密钥原文不会显示".to_string(),
+                        }),
+                        locale: Locale::English,
+                    },
+                );
+            })
+            .unwrap();
+
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("Morphz"));
+        assert!(screen.contains("INITIAL SETUP"));
+        assert!(screen.matches("API KEY").count() >= 2);
+        assert!(screen.contains('›'));
+        assert!(terminal.backend().cursor_visible());
+        assert!(terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .all(|cell| cell.bg == Color::Reset));
+    }
+
+    #[test]
+    fn long_setup_input_keeps_the_cursor_inside_the_visible_tail() {
+        let (visible, cursor) =
+            visible_input_tail("https://a-very-long-provider.example.com/v1", 44, 18, true);
+        assert!(visible.starts_with('…'));
+        assert!(UnicodeWidthStr::width(visible.as_str()) <= 18);
+        assert_eq!(cursor, UnicodeWidthStr::width(visible.as_str()));
+    }
+
+    #[test]
+    fn setup_chinese_surface_does_not_render_english_chrome() {
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_setup_page(
+                    frame,
+                    SetupPage {
+                        step: 1,
+                        total_steps: 5,
+                        title: "选择模型服务商",
+                        subtitle: "模型服务商决定服务边界。",
+                        body: vec![Line::from("  OpenAI")],
+                        footer: "Enter 确认   Esc 取消",
+                        border_color: ACCENT,
+                        input: None,
+                        locale: Locale::SimplifiedChinese,
+                    },
+                );
+            })
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("Morphz"));
+        assert!(!screen.contains("INITIAL SETUP"));
+        assert!(!screen.contains("STEP"));
     }
 }

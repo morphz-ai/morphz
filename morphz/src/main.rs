@@ -1,8 +1,9 @@
 use chrono::Utc;
 use morphz::approval::ApprovalDecision;
-use morphz::cli::{morphz_command, morphz_command_line_parser, Invocation};
+use morphz::cli::{morphz_command, morphz_command_line_parser_for, Invocation};
 use morphz::config;
 use morphz::event::Event;
+use morphz::i18n::{locale_from_cli_args, Locale, UiLanguage};
 use morphz::llm::{Client, Message, ReasoningEffort, Response, ToolDefinition};
 use morphz::memory::{
     NewAgent, NewCognitiveContext, NewObjective, NewSession, ObjectiveMutation, ObjectiveStatus,
@@ -49,8 +50,18 @@ fn init_logging(log_level: Option<&str>, tui_mode: bool) -> Result<(), AppError>
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
-    let invocation = morphz_command_line_parser()
-        .parse(std::env::args_os().skip(1))
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    // Language is needed before Clap can render help or parse errors. Load the
+    // host-owned environment and the non-secret configuration layers without
+    // mutating the working directory so every UI starts from one preference.
+    if let Some(path) = config::host_env_path() {
+        let _ = config::load_env(&path.to_string_lossy());
+    }
+    let locale = locale_from_cli_args(&args)
+        .or_else(|| bootstrap_config_language(&args).map(UiLanguage::resolve))
+        .unwrap_or_else(Locale::detect);
+    let invocation = morphz_command_line_parser_for(locale)
+        .parse(args)
         .unwrap_or_else(|error| error.exit());
 
     if invocation.command_path() == ["version"] {
@@ -102,7 +113,7 @@ async fn main() -> Result<(), AppError> {
     // database/runtime initialization and, most importantly, before a model
     // credential exists.
     if invocation.command_path() == ["setup"] {
-        morphz::setup::run_interactive_setup().await?;
+        morphz::setup::run_interactive_setup_for(resolved.config.ui.language.resolve()).await?;
         return Ok(());
     }
 
@@ -116,7 +127,7 @@ async fn main() -> Result<(), AppError> {
             "尚未配置模型 Provider，正在进入首次启动设置。\n\
              （Morphz 不会自动读取工作目录中的 .env；凭证将保存到用户级配置。）\n"
         );
-        morphz::setup::run_interactive_setup().await?;
+        morphz::setup::run_interactive_setup_for(resolved.config.ui.language.resolve()).await?;
         // The setup wizard writes the managed user layer. Re-resolve all
         // layers so this very invocation can continue into the TUI without a
         // restart, while preserving Profile/project/CLI precedence.
@@ -172,6 +183,64 @@ async fn main() -> Result<(), AppError> {
         tui_mode,
     )
     .await
+}
+
+fn bootstrap_config_language(args: &[std::ffi::OsString]) -> Option<UiLanguage> {
+    let initial_cwd = std::env::current_dir().ok()?;
+    let cwd = bootstrap_option_value(args, "cwd", Some('C'))
+        .map(PathBuf::from)
+        .map(|path| {
+            if path.is_absolute() {
+                path
+            } else {
+                initial_cwd.join(path)
+            }
+        })
+        .unwrap_or(initial_cwd);
+    let explicit_path = bootstrap_option_value(args, "config-file", None)
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("MORPHZ_CONFIG_PATH").map(PathBuf::from));
+    let profile = bootstrap_option_value(args, "profile", Some('p'))
+        .or_else(|| config::active_profile().ok().flatten());
+    config::resolve_config(&cwd, explicit_path.as_deref(), profile.as_deref())
+        .ok()
+        .map(|resolved| resolved.config.ui.language)
+}
+
+fn bootstrap_option_value(
+    args: &[std::ffi::OsString],
+    long: &str,
+    short: Option<char>,
+) -> Option<String> {
+    let long_flag = format!("--{long}");
+    for (index, argument) in args.iter().enumerate() {
+        let argument = argument.to_str()?;
+        if let Some(value) = argument.strip_prefix(&format!("{long_flag}=")) {
+            return Some(value.to_string());
+        }
+        if argument == long_flag {
+            return args
+                .get(index + 1)
+                .and_then(|value| value.to_str())
+                .map(str::to_string);
+        }
+        if let Some(short) = short {
+            let short_flag = format!("-{short}");
+            if argument == short_flag {
+                return args
+                    .get(index + 1)
+                    .and_then(|value| value.to_str())
+                    .map(str::to_string);
+            }
+            if let Some(value) = argument
+                .strip_prefix(&short_flag)
+                .filter(|value| !value.is_empty())
+            {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn generate_completion(invocation: &Invocation) -> Result<(), AppError> {
@@ -429,6 +498,7 @@ fn mark_environment_config_sources(resolved: &mut config::ResolvedConfig) {
         ),
         ("MORPHZ_LLM_MAX_OUTPUT_TOKENS", "llm.max_output_tokens"),
         ("MORPHZ_LLM_REASONING_EFFORT", "llm.reasoning_effort"),
+        ("MORPHZ_LANGUAGE", "ui.language"),
     ] {
         if std::env::var_os(variable).is_some() {
             resolved.mark_source(key, format!("environment:{variable}"));
@@ -444,6 +514,7 @@ fn mark_cli_config_sources(invocation: &Invocation, resolved: &mut config::Resol
         ("sandbox", "permissions.sandbox_mode"),
         ("approval", "permissions.approval_policy"),
         ("theme", "tui.theme"),
+        ("language", "ui.language"),
         ("network", "permissions.network"),
         ("add-dir", "permissions.read_roots/write_roots"),
     ] {
@@ -498,6 +569,10 @@ fn apply_cli_config(
         app_config.tui.theme = config::TuiTheme::parse(theme).ok_or_else(|| {
             format!("未知 TUI 主题 '{theme}'；可用 system、mono、iris、cyan、coral、no-color")
         })?;
+    }
+    if let Some(language) = option_value(invocation, "language") {
+        app_config.ui.language = UiLanguage::parse(language)
+            .ok_or_else(|| format!("未知界面语言 '{language}'；可用 auto、en、zh-CN"))?;
     }
     if let Some(sandbox) = option_value(invocation, "sandbox") {
         make_permissions_custom(app_config);
@@ -2693,10 +2768,10 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_cli_config, command_needs_llm, console_message_from_event, create_session_command,
-        dashboard_browser_url, ensure_cli_identity_records, format_tool_call_activity,
-        generate_dashboard_token, parse_terminal_approval_input, read_console_input,
-        resolve_resumed_session, select_or_create_console_session,
+        apply_cli_config, bootstrap_config_language, command_needs_llm, console_message_from_event,
+        create_session_command, dashboard_browser_url, ensure_cli_identity_records,
+        format_tool_call_activity, generate_dashboard_token, parse_terminal_approval_input,
+        read_console_input, resolve_resumed_session, select_or_create_console_session,
         should_run_first_time_setup_with_terminal, should_use_tui_with_terminal,
         wait_for_session_reply, ConsoleInput, ConsoleMessageKind, OfflineClient,
     };
@@ -2704,6 +2779,7 @@ mod tests {
     use morphz::cli::morphz_command_line_parser;
     use morphz::config::{AppConfig, TuiTheme};
     use morphz::event::Event;
+    use morphz::i18n::UiLanguage;
     use morphz::llm::{Client, ReasoningEffort};
     use morphz::memory::{NewAgent, NewCognitiveContext, NewSession, SessionMountKind};
     use morphz::permission::{ApprovalPolicy, PermissionMode, ReviewerKind, SandboxMode};
@@ -2935,6 +3011,32 @@ mod tests {
 
         let invalid = morphz_command_line_parser().parse(["--theme=ultraviolet"]);
         assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn cli_language_override_is_persisted_in_runtime_config() {
+        let invocation = morphz_command_line_parser()
+            .parse(["--language=zh-CN"])
+            .unwrap();
+        let mut config = AppConfig::default();
+        apply_cli_config(&invocation, &mut config).unwrap();
+        assert_eq!(config.ui.language, UiLanguage::SimplifiedChinese);
+    }
+
+    #[test]
+    fn configured_language_is_available_before_clap_renders_help() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, "[ui]\nlanguage = 'zh-CN'\n").unwrap();
+        let args = vec![
+            std::ffi::OsString::from("--config-file"),
+            path.into_os_string(),
+            std::ffi::OsString::from("--help"),
+        ];
+        assert_eq!(
+            bootstrap_config_language(&args),
+            Some(UiLanguage::SimplifiedChinese)
+        );
     }
 
     #[test]

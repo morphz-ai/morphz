@@ -71,6 +71,16 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    一致的电光青、鸢尾紫、暖珊瑚和纯单色四套主题间切换。`--plain` 可选择
    行式界面；非 TTY 与 `morphz exec` 自动使用纯文本，适合脚本和管道。
 
+   用户界面语言由统一的 `[ui].language` 配置控制，可设为 `auto`、`en` 或 `zh-CN`；
+   `--language`（别名 `--lang`）优先于配置，`MORPHZ_LANGUAGE` 用于覆盖自动检测。
+   Setup、CLI 帮助和 TUI 使用同一语言选择。Dashboard 是多用户客户端，默认跟随浏览器语言，
+   并允许每个浏览器独立切换和记忆语言；各界面共享同一套产品术语。
+
+   ```toml
+   [ui]
+   language = "zh-CN"
+   ```
+
    CLI 也可以直接携带提示词；未被已注册命令和选项消费的文本都会交给 Agent：
 
    ```bash

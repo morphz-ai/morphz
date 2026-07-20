@@ -3,11 +3,12 @@ import { initReactI18next } from 'react-i18next'
 import LanguageDetector from 'i18next-browser-languagedetector'
 import en from './locales/en.json'
 import zh from './locales/zh.json'
+import { createLanguageResources, supportedDashboardLanguages } from './language'
 
-export const resources = {
-  en: { translation: en },
-  zh: { translation: zh },
-} as const
+export const resources = createLanguageResources(
+  { translation: en },
+  { translation: zh },
+)
 
 i18n
   .use(LanguageDetector)
@@ -15,11 +16,13 @@ i18n
   .init({
     resources,
     fallbackLng: 'en',
+    supportedLngs: [...supportedDashboardLanguages],
+    nonExplicitSupportedLngs: true,
     interpolation: {
       escapeValue: false,
     },
     detection: {
-      order: ['navigator', 'localStorage', 'htmlTag'],
+      order: ['localStorage', 'navigator', 'htmlTag'],
       caches: ['localStorage'],
     },
   })

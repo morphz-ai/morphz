@@ -12,8 +12,8 @@
     "sessionsInContext": "此上下文中有 {{count}} 个",
     "active": "活跃",
     "resident": "驻留",
-    "dashboardHint": "Dashboard 只展示 Runtime API 当前允许读取的会话。",
-    "agentLabel": "agent/{{title}}"
+    "dashboardHint": "控制台只展示运行时接口当前允许读取的会话。",
+    "agentLabel": "代理/{{title}}"
   },
   "theme": {
     "title": "强调色主题",
@@ -38,7 +38,7 @@
 
   "reasoning": {
     "label": "推理",
-    "title": "只影响后续模型请求；关闭会发送 none。GLM-5.2 的模型默认档位是最高，低/中会映射为高",
+    "title": "只影响后续模型请求；关闭后不启用推理强度。GLM-5.2 的默认档位是最高，低和中会映射为高",
     "defaultUnknown": "服务默认（未声明）",
     "off": "关闭",
     "low": "低",
@@ -49,7 +49,7 @@
   },
   "reasoningSummary": {
     "toggle": "推理摘要",
-    "toggleTitle": "显示或收起 Provider 返回的推理摘要；摘要独立保存，绝不会混入回复正文",
+    "toggleTitle": "显示或收起模型服务商返回的推理摘要；摘要独立保存，绝不会混入回复正文",
     "title": "推理摘要",
     "live": "实时 · 独立通道",
     "persisted": "已保存 · 非回复正文",
@@ -82,7 +82,7 @@
     "roleAgent": "Morphz",
     "roleObjective": "目标",
     "roleWork": "工作",
-    "roleRuntime": "Runtime",
+    "roleRuntime": "运行时",
     "noText": "（无文本）",
     "historyHint": "向上滚动加载更早的 {{count}} 条消息",
     "addToChat": "添加到对话",
@@ -100,7 +100,7 @@
   "work": {
     "title": "运行时任务",
     "heading": "任务与执行",
-    "description": "这里只展示 Runtime 可验证的目标、求值、后台进程和委派；普通认知框架不会被猜成任务。",
+    "description": "这里只展示运行时可验证的目标、求值、后台进程和委派；普通认知框架不会被猜成任务。",
     "refresh": "刷新",
     "backToChat": "返回对话",
     "executingCount": "{{count}} 执行中",
@@ -123,12 +123,12 @@
       "deleting": "正在删除",
       "waitCondition": "等待 · {{kind}}",
       "revision": "r{{revision}}",
-      "tokens": "{{tokens}} tok",
-      "seconds": "{{seconds}}s"
+      "tokens": "{{tokens}} 个词元",
+      "seconds": "{{seconds}} 秒"
     },
     "scheduler": {
       "title": "线程调度",
-      "subtitle": "{{count}} 条排队 / 定时意图 · Runtime 权威状态",
+      "subtitle": "{{count}} 条排队或定时意图 · 运行时权威状态",
       "threads": "线程",
       "noThreads": "没有非终态线程",
       "schedules": "调度计划",
@@ -157,7 +157,7 @@
     "attention": {
       "title": "需要关注",
       "subtitle": "只有需要用户决定或执行失败的事实才会提升到这里",
-      "jobFailed": "Execution Job 失败，但没有记录错误正文",
+      "jobFailed": "执行作业失败，但没有记录错误正文",
       "deliveryFailed": "工作已完成，但结果尚未成功交付"
     },
     "approvals": {
@@ -169,8 +169,8 @@
     },
     "admission": {
       "title": "准入与背压",
-      "subtitle": "SQLite 是权威积压；进程窗口只解释当前物理调度",
-      "inFlight": "本 Context 执行中 {{count}}",
+      "subtitle": "SQLite 中保存权威积压；进程窗口只解释当前物理调度",
+      "inFlight": "本上下文执行中 {{count}}",
       "loaded": "已载入队列 {{count}}",
       "durable": "持久排队 {{count}}",
       "deferred": "窗口外等待 {{count}}",
@@ -184,17 +184,17 @@
     },
     "causal": {
       "title": "调度因果链",
-      "subtitle": "Thread → Signal → Activation → Execution Job → Approval → Result → Delivery",
+      "subtitle": "线程 → 信号 → 求值激活 → 执行作业 → 审批 → 结果 → 交付",
       "activation": "求值激活",
-      "noJobs": "本次激活没有产生 Execution Job",
+      "noJobs": "本次激活没有产生执行作业",
       "request": "权威请求参数",
       "retrySafety": "重试安全性",
       "revision": "修订",
-      "worker": "执行 Worker",
+      "worker": "执行节点",
       "result": "物理执行结果",
       "exitCode": "退出码 {{code}}",
       "delivery": "结果交付",
-      "empty": "当前 Context 没有可展示的调度线程",
+      "empty": "当前上下文没有可展示的调度线程",
       "historyLimited": "为保持页面流畅，已隐藏更早的 {{count}} 条已结束线程",
       "diagnostics": "未挂接的调度诊断数据"
     },
@@ -205,7 +205,7 @@
     },
     "toolTimeline": {
       "title": "工具调用时间线",
-      "subtitle": "Runtime 真实执行事件 · 自动滚动到底部",
+      "subtitle": "运行时真实执行事件 · 自动滚动到底部",
       "parameters": "参数",
       "truncated": " · 原始 {{chars}} 字符",
       "result": "结果 · {{status}}",
@@ -218,7 +218,7 @@
   "mindView": {
     "title": "认知上下文",
     "heading": "共享认知",
-    "description": "认知框架的业务结构由 Agent 自主形成；Runtime 只呈现身份、来源、版本、关系与生命周期。",
+    "description": "认知框架的业务结构由代理自主形成；运行时只呈现身份、来源、版本、关系与生命周期。",
     "backToChat": "返回对话",
     "metrics": {
       "frames": "框架",
@@ -245,7 +245,7 @@
     "sessionWindowDetail": "最多 {{count}} 个完整会话",
     "pressure": "压力",
     "checkpoints": "检查点",
-    "checkpointsDetail": "Agent 显式维护",
+    "checkpointsDetail": "代理显式维护",
     "retiredCount": "已退役",
     "retiredDetail": "可恢复，未删除账本"
   },
@@ -269,7 +269,7 @@
       "approvalRequired": "需要审批",
       "deliveryFailed": "结果待交付",
       "backpressure": "调度背压",
-      "deferredCount": "{{count}} 个 Activation 正在持久队列中等待载入",
+      "deferredCount": "{{count}} 个求值激活正在持久队列中等待载入",
       "delegating": "正在委派",
       "summary": "{{executing}} 执行 · {{waiting}} 等待"
     },
@@ -342,7 +342,7 @@
     "unspecifiedQuery": "未显示查询",
     "workspace": "工作区",
     "contextLedger": "上下文账本",
-    "subAgent": "子 Agent",
+    "subAgent": "子代理",
     "backgroundTask": "后台任务",
     "targetSession": "目标会话",
     "noMessage": "不向当前会话发送文本",
@@ -354,7 +354,7 @@
     "processCurrentMessage": "处理当前用户消息",
     "continueObjective": "继续持久目标",
     "processToolResult": "处理{{tool}}结果：{{target}}",
-    "processRuntimeEvent": "处理 Runtime 事件：{{kind}}"
+    "processRuntimeEvent": "处理运行时事件：{{kind}}"
   },
   "time": {
     "ago": {
@@ -379,43 +379,43 @@
     "executingTools": "正在执行 {{tools}}",
     "toolResult": "正在处理 {{tool}} 的结果",
     "modelEval": "正在思考",
-    "waiting": "请求已接收，等待 Runtime 求值"
+    "waiting": "请求已接收，等待运行时求值"
   },
   "errors": {
-    "statusHttp": "Runtime 状态 HTTP {{status}}",
-    "contextHttp": "Context Encoding HTTP {{status}}",
-    "schedulerHttp": "Scheduler Snapshot HTTP {{status}}",
-    "sendMessage": "发送消息 HTTP {{status}}",
-    "cancelSession": "取消会话 HTTP {{status}}",
-    "reasoning": "调整推理深度 HTTP {{status}}",
-    "resumeObjective": "恢复目标 HTTP {{status}}",
-    "deleteObjective": "删除目标 HTTP {{status}}",
-    "approvalDecision": "提交审批决定 HTTP {{status}}",
-    "scheduleMutation": "修改 Schedule HTTP {{status}}",
-    "invalidScheduleDate": "请输入有效的 ISO 时间或本地日期时间",
+    "statusHttp": "运行时状态接口返回 {{status}}",
+    "contextHttp": "上下文编码接口返回 {{status}}",
+    "schedulerHttp": "调度快照接口返回 {{status}}",
+    "sendMessage": "消息发送接口返回 {{status}}",
+    "cancelSession": "会话取消接口返回 {{status}}",
+    "reasoning": "推理深度接口返回 {{status}}",
+    "resumeObjective": "目标恢复接口返回 {{status}}",
+    "deleteObjective": "目标删除接口返回 {{status}}",
+    "approvalDecision": "审批接口返回 {{status}}",
+    "scheduleMutation": "调度计划接口返回 {{status}}",
+    "invalidScheduleDate": "请输入有效的标准时间或本地日期时间",
     "invalidScheduleInterval": "周期秒数必须是正整数",
-    "websocketParse": "WebSocket 返回了无法解析的事件",
+    "websocketParse": "实时连接返回了无法解析的事件",
     "copyFailed": "复制失败"
   },
   "reason": {
-    "resumeByUser": "用户通过 Dashboard 显式恢复 Objective",
-    "deleteByUser": "用户通过 Dashboard 删除 Objective",
+    "resumeByUser": "用户通过控制台显式恢复目标",
+    "deleteByUser": "用户通过控制台删除目标",
     "approval": {
-      "allow_once": "用户通过 Dashboard 仅批准这一次能力申请",
-      "deny": "用户通过 Dashboard 拒绝能力申请"
+      "allow_once": "用户通过控制台仅批准这一次能力申请",
+      "deny": "用户通过控制台拒绝能力申请"
     }
   },
   "dialog": {
     "deleteObjectiveTitle": "删除这个目标？",
     "deleteObjectiveBody": "{{objective}}\n\n删除会立即停止它的自动续跑；审计历史仍会保留。",
-    "denyApproval": "拒绝后该 Execution Job 将无法使用申请的能力。确定拒绝？",
-    "cancelSchedule": "取消后这个 Schedule 不会再触发。确定取消？",
-    "rescheduleAt": "新的触发时间（ISO 或本地日期时间）",
+    "denyApproval": "拒绝后该执行作业将无法使用申请的能力。确定拒绝？",
+    "cancelSchedule": "取消后这个调度计划不会再触发。确定取消？",
+    "rescheduleAt": "新的触发时间（标准时间或本地日期时间）",
     "rescheduleInterval": "周期秒数；留空表示单次执行"
   },
   "nav": {
     "tasks": "打开任务视图 (Ctrl+T)",
     "toggleTasks": "切换任务视图 (Ctrl+T)",
-    "connection": "WebSocket 连接状态"
+    "connection": "实时连接状态"
   }
 }

@@ -1,3 +1,4 @@
+use crate::i18n::UiLanguage;
 use crate::llm::ReasoningEffort;
 use crate::permission::{PermissionConfig, PermissionMode};
 use serde::{Deserialize, Serialize};
@@ -692,6 +693,20 @@ impl Default for TuiConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UiConfig {
+    pub language: UiLanguage,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            language: UiLanguage::Auto,
+        }
+    }
+}
+
 /// 工业化全局配置（聚合所有子配置）
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -704,6 +719,7 @@ pub struct AppConfig {
     pub credentials: BTreeMap<String, CredentialConfig>,
     pub permissions: PermissionConfig,
     pub background_task: BackgroundTaskConfig,
+    pub ui: UiConfig,
     pub tui: TuiConfig,
 }
 
@@ -1904,6 +1920,7 @@ mod tests {
         assert!(!cfg.background_task.timeout_notify_enabled);
         assert_eq!(cfg.background_task.timeout_notify_secs, 300);
         assert_eq!(cfg.tui.theme, TuiTheme::Cyan);
+        assert_eq!(cfg.ui.language, UiLanguage::Auto);
     }
 
     #[test]
@@ -1911,6 +1928,13 @@ mod tests {
         let config = toml::from_str::<AppConfig>("[tui]\ntheme='coral'\n").unwrap();
         assert_eq!(config.tui.theme, TuiTheme::Coral);
         assert!(toml::from_str::<AppConfig>("[tui]\ntheme='unknown'\n").is_err());
+    }
+
+    #[test]
+    fn ui_language_is_strictly_parsed_from_config() {
+        let config = toml::from_str::<AppConfig>("[ui]\nlanguage='zh-CN'\n").unwrap();
+        assert_eq!(config.ui.language, UiLanguage::SimplifiedChinese);
+        assert!(toml::from_str::<AppConfig>("[ui]\nlanguage='fr'\n").is_err());
     }
 
     #[test]

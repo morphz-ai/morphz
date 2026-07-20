@@ -10,6 +10,7 @@ mod shell;
 use crate::approval::ApprovalDecision;
 use crate::config::TuiTheme;
 use crate::event::Event as RuntimeEvent;
+use crate::i18n::Locale;
 use crate::llm::ModelStreamEvent;
 use crate::memory::{
     DelegationRecord, DelegationStatus, ObjectiveRecord, ObjectiveStatus, ObjectiveWaitCondition,
@@ -48,7 +49,8 @@ const USER_MESSAGE_PREFIX: &str = "✨ ";
 const COMPOSER_PREFIX: &str = "❯ ";
 const REASONING_PREVIEW_LINES: usize = 2;
 const MOUSE_SCROLL_LINES: u16 = 3;
-const MORPHZ_TAGLINE: &str = "Cognitive S-Expression Machine";
+const MORPHZ_TAGLINE_EN: &str = "Cognitive S-Expression Machine";
+const MORPHZ_TAGLINE_ZH: &str = "认知符号表达式机器";
 const MORPHZ_WORDMARK: [&str; 6] = [
     r"███╗   ███╗ ██████╗ ██████╗ ██████╗ ██╗  ██╗ ███████╗",
     r"████╗ ████║██╔═══██╗██╔══██╗██╔══██╗██║  ██║ ╚══███╔╝",
@@ -532,6 +534,7 @@ struct PendingApproval {
 
 #[derive(Debug)]
 struct UiState {
+    locale: Locale,
     agent_id: String,
     context_id: String,
     session_id: String,
@@ -567,6 +570,14 @@ struct UiState {
 }
 
 impl UiState {
+    fn tr(&self, english: &'static str, chinese: &'static str) -> &'static str {
+        self.locale.text(english, chinese)
+    }
+
+    fn tagline(&self) -> &'static str {
+        self.locale.text(MORPHZ_TAGLINE_EN, MORPHZ_TAGLINE_ZH)
+    }
+
     fn new(runtime: &MorphzRuntime, session: &SessionHandle) -> Self {
         let configured_theme = runtime.config().tui.theme;
         let theme_kind = if std::env::var_os("NO_COLOR").is_some() {
@@ -575,7 +586,9 @@ impl UiState {
             configured_theme
         };
         let appearance = detect_terminal_appearance();
+        let locale = runtime.config().ui.language.resolve();
         Self {
+            locale,
             agent_id: runtime.identity().agent_id.clone(),
             context_id: runtime.identity().context_id.clone(),
             session_id: session.id().to_string(),
@@ -585,8 +598,8 @@ impl UiState {
             entries: Vec::new(),
             composer: Composer::new(),
             live_attempts: BTreeMap::new(),
-            status: "ready".to_string(),
-            context_status: "Context loading".to_string(),
+            status: locale.text("ready", "就绪").to_string(),
+            context_status: locale.text("Context loading", "上下文正在加载").to_string(),
             objectives: Vec::new(),
             context_view: None,
             delegations: Vec::new(),
@@ -674,7 +687,7 @@ impl UiState {
         self.follow_tail = true;
         self.push(EntryKind::User, prompt.to_string());
         self.busy = true;
-        self.status = "queued".to_string();
+        self.status = self.tr("queued", "已排队").to_string();
     }
 
     fn update_context(&mut self, view: &ContextView) {
@@ -685,17 +698,31 @@ impl UiState {
             .iter()
             .filter(|objective| objective.status == ObjectiveStatus::Active)
             .count();
-        self.context_status = format!(
-            "{} · {}/{} · {} frames · {}+{} sessions · {} work · {} goals",
-            view.pressure.level,
-            compact_count(view.pressure.estimated_tokens),
-            compact_count(view.pressure.hard_limit),
-            view.pressure.active_frames,
-            view.session_working_set.full_session_ids.len(),
-            view.session_working_set.metadata_only_session_ids.len(),
-            view.active_activations.len(),
-            active_objectives
-        );
+        self.context_status = if self.locale.is_chinese() {
+            format!(
+                "{} · {}/{} · {} 个认知框架 · {}+{} 个会话 · {} 项求值 · {} 个目标",
+                localized_pressure(self.locale, &view.pressure.level),
+                compact_count(view.pressure.estimated_tokens),
+                compact_count(view.pressure.hard_limit),
+                view.pressure.active_frames,
+                view.session_working_set.full_session_ids.len(),
+                view.session_working_set.metadata_only_session_ids.len(),
+                view.active_activations.len(),
+                active_objectives
+            )
+        } else {
+            format!(
+                "{} · {}/{} · {} frames · {}+{} sessions · {} evaluations · {} objectives",
+                localized_pressure(self.locale, &view.pressure.level),
+                compact_count(view.pressure.estimated_tokens),
+                compact_count(view.pressure.hard_limit),
+                view.pressure.active_frames,
+                view.session_working_set.full_session_ids.len(),
+                view.session_working_set.metadata_only_session_ids.len(),
+                view.active_activations.len(),
+                active_objectives
+            )
+        };
         self.context_view = Some(view.clone());
     }
 
@@ -844,14 +871,14 @@ impl UiState {
             "chat/progress" => self.push(EntryKind::Progress, text),
             "runtime/tool_calls_selected" => {
                 if event_thread_kind(&event.payload) != "execution" {
-                    if let Some(activity) = format_tool_activity(&event.payload) {
+                    if let Some(activity) = format_tool_activity(&event.payload, self.locale) {
                         self.push_tool(activity.compact, activity.detail);
                     }
                 }
             }
             "chat/tool_output" => {
                 if event_thread_kind(&event.payload) != "execution" {
-                    if let Some(activity) = format_tool_result(&event.payload) {
+                    if let Some(activity) = format_tool_result(&event.payload, self.locale) {
                         self.push_tool(activity.compact, activity.detail);
                     }
                 }
@@ -895,20 +922,20 @@ impl UiState {
             "runtime/tool_calls_selected" => {
                 self.resolve_causal_live_attempt(&event);
                 if event_thread_kind(&event.payload) != "execution" {
-                    if let Some(activity) = format_tool_activity(&event.payload) {
+                    if let Some(activity) = format_tool_activity(&event.payload, self.locale) {
                         self.push_tool(activity.compact, activity.detail);
                     }
                 }
                 self.busy = true;
-                self.status = "running tools".to_string();
+                self.status = self.tr("running tools", "正在执行工具").to_string();
             }
             "chat/tool_output" => {
                 if event_thread_kind(&event.payload) != "execution" {
-                    if let Some(activity) = format_tool_result(&event.payload) {
+                    if let Some(activity) = format_tool_result(&event.payload, self.locale) {
                         self.push_tool(activity.compact, activity.detail);
                     }
                 }
-                self.status = "processing results".to_string();
+                self.status = self.tr("processing results", "正在处理结果").to_string();
             }
             "chat/progress" => {
                 // The durable progress fact commits the text just streamed by
@@ -925,15 +952,20 @@ impl UiState {
             "runtime/response_protocol_error" => {
                 self.clear_exact_live_attempt(&event);
                 self.refresh_busy_from_live_attempts();
-                self.status = "correcting model response".to_string();
+                self.status = self
+                    .tr("correcting model response", "正在纠正模型响应")
+                    .to_string();
             }
             "runtime/response_protocol_fused" => {
                 self.clear_exact_live_attempt(&event);
                 self.refresh_busy_from_live_attempts();
                 self.status = if self.busy {
-                    "response protocol error · other work continues"
+                    self.tr(
+                        "response protocol error · other work continues",
+                        "响应协议错误 · 其他工作仍在继续",
+                    )
                 } else {
-                    "response protocol error"
+                    self.tr("response protocol error", "响应协议错误")
                 }
                 .to_string();
             }
@@ -957,7 +989,12 @@ impl UiState {
                 self.resolve_causal_live_attempt(&event);
                 self.push(EntryKind::Assistant, text);
                 self.refresh_busy_from_live_attempts();
-                self.status = if self.busy { "running" } else { "ready" }.to_string();
+                self.status = if self.busy {
+                    self.tr("running", "执行中")
+                } else {
+                    self.tr("ready", "就绪")
+                }
+                .to_string();
             }
             "chat/outbound_message" => {
                 let text = event
@@ -977,16 +1014,22 @@ impl UiState {
                 if background > 0 {
                     self.refresh_busy_from_live_attempts();
                     self.status = if self.busy {
-                        format!("running · {background} background task(s)")
+                        if self.locale.is_chinese() {
+                            format!("执行中 · {background} 个后台任务")
+                        } else {
+                            format!("running · {background} background task(s)")
+                        }
+                    } else if self.locale.is_chinese() {
+                        format!("就绪 · {background} 个后台任务")
                     } else {
                         format!("ready · {background} background task(s)")
                     };
                 } else {
                     self.refresh_busy_from_live_attempts();
                     self.status = if self.busy {
-                        "running".to_string()
+                        self.tr("running", "执行中").to_string()
                     } else {
-                        "ready · no reply".to_string()
+                        self.tr("ready · no reply", "就绪 · 无需回复").to_string()
                     };
                 }
             }
@@ -1002,7 +1045,12 @@ impl UiState {
                     self.live_attempts.clear();
                 }
                 self.refresh_busy_from_live_attempts();
-                self.status = if self.busy { "running" } else { "cancelled" }.to_string();
+                self.status = if self.busy {
+                    self.tr("running", "执行中")
+                } else {
+                    self.tr("cancelled", "已取消")
+                }
+                .to_string();
             }
             "chat/runtime_error" => {
                 self.clear_causal_live_attempt(&event);
@@ -1010,20 +1058,28 @@ impl UiState {
                     .payload
                     .get("error")
                     .and_then(Value::as_str)
-                    .unwrap_or("Runtime error");
+                    .unwrap_or_else(|| self.tr("Runtime error", "运行时错误"));
                 self.push(EntryKind::Error, message);
                 self.refresh_busy_from_live_attempts();
                 self.status = if self.busy {
-                    "runtime error · other work continues"
+                    self.tr(
+                        "runtime error · other work continues",
+                        "运行时错误 · 其他工作仍在继续",
+                    )
                 } else {
-                    "runtime error"
+                    self.tr("runtime error", "运行时错误")
                 }
                 .to_string();
             }
             "runtime/thread_result" => {
                 self.resolve_causal_live_attempt(&event);
                 self.refresh_busy_from_live_attempts();
-                self.status = if self.busy { "running" } else { "ready" }.to_string();
+                self.status = if self.busy {
+                    self.tr("running", "执行中")
+                } else {
+                    self.tr("ready", "就绪")
+                }
+                .to_string();
             }
             "runtime/approval_requested" => {
                 let id = event
@@ -1036,10 +1092,15 @@ impl UiState {
                     .payload
                     .get("text")
                     .and_then(Value::as_str)
-                    .unwrap_or("权限请求需要用户决定")
+                    .unwrap_or_else(|| {
+                        self.tr(
+                            "This permission request needs your decision",
+                            "这项权限请求需要你做出决定",
+                        )
+                    })
                     .to_string();
                 self.pending_approval = Some(PendingApproval { id, text });
-                self.status = "approval required".to_string();
+                self.status = self.tr("approval required", "等待审批").to_string();
             }
             _ => {}
         }
@@ -1060,9 +1121,9 @@ impl UiState {
                     LiveAttempt::new(activation_id.to_string(), thread_kind.to_string()),
                 );
                 self.status = if thread_kind == "execution" {
-                    "work evaluating"
+                    self.tr("execution evaluating", "执行正在求值")
                 } else {
-                    "thinking"
+                    self.tr("thinking", "正在思考")
                 }
                 .to_string();
             }
@@ -1080,14 +1141,21 @@ impl UiState {
                 }
             }
             ModelStreamEvent::ReasoningSummaryCompleted => {
-                self.status = "reasoning complete · waiting for final output".to_string();
+                self.status = self
+                    .tr(
+                        "reasoning complete · waiting for final output",
+                        "推理已完成 · 正在等待最终输出",
+                    )
+                    .to_string();
             }
             ModelStreamEvent::ToolCallStarted { index, name, .. } => {
                 if let Some(attempt) = self.live_attempts.get_mut(attempt_id) {
                     attempt.tools.entry(index).or_default().name = name.clone();
                 }
                 self.status = if name == "no_reply" {
-                    "finishing silently".to_string()
+                    self.tr("finishing silently", "正在静默完成").to_string()
+                } else if self.locale.is_chinese() {
+                    format!("正在准备 {name}")
                 } else {
                     format!("preparing {name}")
                 };
@@ -1111,16 +1179,19 @@ impl UiState {
             }
             ModelStreamEvent::Usage { .. } => {}
             ModelStreamEvent::Completed => {
-                self.status = "processing response".to_string();
+                self.status = self.tr("processing response", "正在处理响应").to_string();
             }
             ModelStreamEvent::Failed { message } => {
                 self.live_attempts.remove(attempt_id);
                 self.push(EntryKind::Error, message);
                 self.refresh_busy_from_live_attempts();
                 self.status = if self.busy {
-                    "model error · other work continues"
+                    self.tr(
+                        "model error · other work continues",
+                        "模型错误 · 其他工作仍在继续",
+                    )
                 } else {
-                    "model error"
+                    self.tr("model error", "模型错误")
                 }
                 .to_string();
             }
@@ -1261,7 +1332,10 @@ impl UiState {
                 ),
             ]),
             Line::from(vec![
-                Span::styled("agent/", Style::default().fg(self.theme.text_muted)),
+                Span::styled(
+                    self.tr("agent/", "代理/"),
+                    Style::default().fg(self.theme.text_muted),
+                ),
                 Span::styled(
                     short_id(&self.agent_id),
                     Style::default().fg(self.theme.text_secondary),
@@ -1272,7 +1346,7 @@ impl UiState {
 
         let context = vec![
             Line::from(Span::styled(
-                "CONTEXT",
+                self.tr("CONTEXT", "上下文"),
                 Style::default().fg(self.theme.text_muted),
             )),
             Line::from(vec![
@@ -1282,14 +1356,17 @@ impl UiState {
                         .fg(self.theme.text_primary)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("  shared", Style::default().fg(self.theme.focus)),
+                Span::styled(
+                    self.tr("  shared", "  共享"),
+                    Style::default().fg(self.theme.focus),
+                ),
             ]),
         ];
         frame.render_widget(Paragraph::new(context), columns[2]);
 
         let session = vec![
             Line::from(Span::styled(
-                "SESSION",
+                self.tr("SESSION", "会话"),
                 Style::default().fg(self.theme.text_muted),
             )),
             Line::from(vec![
@@ -1299,7 +1376,10 @@ impl UiState {
                         .fg(self.theme.text_primary)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("  active", Style::default().fg(self.theme.success)),
+                Span::styled(
+                    self.tr("  active", "  活跃"),
+                    Style::default().fg(self.theme.success),
+                ),
             ]),
         ];
         frame.render_widget(Paragraph::new(session), columns[4]);
@@ -1319,15 +1399,25 @@ impl UiState {
             .unwrap_or((0, 0, "loading", 0, 0));
         let runtime = vec![
             Line::from(vec![
-                Span::styled("MIND  ", Style::default().fg(self.theme.focus)),
                 Span::styled(
-                    format!("{frames} frames"),
+                    self.tr("MIND  ", "认知  "),
+                    Style::default().fg(self.theme.focus),
+                ),
+                Span::styled(
+                    if self.locale.is_chinese() {
+                        format!("{frames} 个认知框架")
+                    } else {
+                        format!("{frames} frames")
+                    },
                     Style::default()
                         .fg(self.theme.text_primary)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("  r{version} · {pressure}"),
+                    format!(
+                        "  r{version} · {}",
+                        localized_pressure(self.locale, pressure)
+                    ),
                     Style::default().fg(pressure_color(pressure, &self.theme)),
                 ),
             ]),
@@ -1348,19 +1438,28 @@ impl UiState {
 
     fn render_legacy_identity_line(&self) -> Line<'static> {
         Line::from(vec![
-            Span::styled("AGENT ", Style::default().fg(self.theme.text_muted)),
+            Span::styled(
+                self.tr("AGENT ", "代理 "),
+                Style::default().fg(self.theme.text_muted),
+            ),
             Span::styled(
                 short_id(&self.agent_id),
                 Style::default().fg(self.theme.text_secondary),
             ),
             Span::styled("  │  ", Style::default().fg(self.theme.border_strong)),
-            Span::styled("CONTEXT ", Style::default().fg(self.theme.text_muted)),
+            Span::styled(
+                self.tr("CONTEXT ", "上下文 "),
+                Style::default().fg(self.theme.text_muted),
+            ),
             Span::styled(
                 short_id(&self.context_id),
                 Style::default().fg(self.theme.text_secondary),
             ),
             Span::styled("  │  ", Style::default().fg(self.theme.border_strong)),
-            Span::styled("SESSION ", Style::default().fg(self.theme.text_muted)),
+            Span::styled(
+                self.tr("SESSION ", "会话 "),
+                Style::default().fg(self.theme.text_muted),
+            ),
             Span::styled(
                 short_id(&self.session_id),
                 Style::default().fg(self.theme.text_primary),
@@ -1399,9 +1498,21 @@ impl UiState {
 
     fn render_chat_status(&self, frame: &mut Frame<'_>, area: Rect) {
         let (view_label, view_color, view_detail) = match self.active_view {
-            UiView::Tasks => ("TASKS", self.theme.focus, "目标、执行与委派"),
-            UiView::Mind => ("MIND", self.theme.focus, "共享认知"),
-            UiView::Conversation => ("CHAT", self.theme.user, "当前 Session"),
+            UiView::Tasks => (
+                self.tr("TASKS", "任务"),
+                self.theme.focus,
+                self.tr("Objectives, execution, and delegations", "目标、执行与委派"),
+            ),
+            UiView::Mind => (
+                self.tr("MIND", "认知"),
+                self.theme.focus,
+                self.tr("Shared cognition", "共享认知"),
+            ),
+            UiView::Conversation => (
+                self.tr("CHAT", "对话"),
+                self.theme.user,
+                self.tr("Current session", "当前会话"),
+            ),
         };
         if area.height < 3 {
             frame.render_widget(
@@ -1448,8 +1559,14 @@ impl UiState {
         );
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("对话输入可用  ", Style::default().fg(self.theme.text_muted)),
-                Span::styled("Esc 返回", Style::default().fg(self.theme.user)),
+                Span::styled(
+                    self.tr("Conversation input remains available  ", "仍可输入对话  "),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+                Span::styled(
+                    self.tr("Esc to return", "按 Esc 返回"),
+                    Style::default().fg(self.theme.user),
+                ),
             ]))
             .alignment(Alignment::Right),
             inner,
@@ -1463,20 +1580,29 @@ impl UiState {
         let mut lines = vec![
             Line::from(vec![
                 Span::styled(
-                    "TASKS & EXECUTION",
+                    self.tr("TASKS & EXECUTION", "任务与执行"),
                     Style::default()
                         .fg(self.theme.focus)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(
-                        "  {activations} activations  ·  {objectives} objectives  ·  {background_count} tasks  ·  {delegations} delegations"
-                    ),
+                    if self.locale.is_chinese() {
+                        format!(
+                            "  {activations} 项求值  ·  {objectives} 个目标  ·  {background_count} 个后台任务  ·  {delegations} 项委派"
+                        )
+                    } else {
+                        format!(
+                            "  {activations} evaluations  ·  {objectives} objectives  ·  {background_count} background tasks  ·  {delegations} delegations"
+                        )
+                    },
                     Style::default().fg(self.theme.text_muted),
                 ),
             ]),
             Line::from(Span::styled(
-                "只显示当前可执行事实；Tab 展开诊断详情。",
+                self.tr(
+                    "Only current executable facts are shown; press Tab for diagnostics.",
+                    "仅显示当前可执行事实；按 Tab 查看诊断详情。",
+                ),
                 Style::default().fg(self.theme.text_muted),
             )),
             Line::from(""),
@@ -1485,7 +1611,7 @@ impl UiState {
             lines.push(Line::from(vec![
                 Span::styled("○  ", Style::default().fg(self.theme.text_muted)),
                 Span::styled(
-                    "当前没有活跃任务",
+                    self.tr("No active tasks", "当前没有活跃任务"),
                     Style::default().fg(self.theme.text_secondary),
                 ),
             ]));
@@ -1495,7 +1621,7 @@ impl UiState {
         if let Some(view) = self.context_view.as_ref() {
             if !view.active_activations.is_empty() {
                 lines.push(section_title(
-                    "MODEL",
+                    self.tr("MODEL EVALUATIONS", "模型求值"),
                     view.active_activations.len(),
                     self.theme.tool,
                     self.theme.text_muted,
@@ -1504,17 +1630,25 @@ impl UiState {
                     lines.push(Line::from(vec![
                         Span::styled("  ◒  ", Style::default().fg(self.theme.tool)),
                         Span::styled(
-                            item.status.as_str().to_uppercase(),
+                            localized_runtime_status(self.locale, item.status.as_str()),
                             Style::default()
                                 .fg(task_status_color(item.status.as_str(), &self.theme))
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
-                            format!(
-                                "  {} · session/{}",
-                                item.trigger_kind,
-                                short_id(&item.session_id)
-                            ),
+                            if self.locale.is_chinese() {
+                                format!(
+                                    "  {} · 会话/{}",
+                                    item.trigger_kind,
+                                    short_id(&item.session_id)
+                                )
+                            } else {
+                                format!(
+                                    "  {} · session/{}",
+                                    item.trigger_kind,
+                                    short_id(&item.session_id)
+                                )
+                            },
                             Style::default().fg(self.theme.text_muted),
                         ),
                     ]));
@@ -1524,6 +1658,7 @@ impl UiState {
                     view.active_activations.len(),
                     MAX_ITEMS_PER_SECTION,
                     self.theme.text_muted,
+                    self.locale,
                 );
                 lines.push(Line::from(""));
             }
@@ -1536,7 +1671,7 @@ impl UiState {
             .collect::<Vec<_>>();
         if !active_objectives.is_empty() {
             lines.push(section_title(
-                "OBJECTIVES",
+                self.tr("OBJECTIVES", "目标"),
                 active_objectives.len(),
                 self.theme.warning,
                 self.theme.text_muted,
@@ -1552,7 +1687,10 @@ impl UiState {
                         Style::default().fg(self.theme.text_primary),
                     ),
                     Span::styled(
-                        format!("  ·  {}", objective.status.as_str()),
+                        format!(
+                            "  ·  {}",
+                            localized_objective_status(self.locale, objective.status)
+                        ),
                         Style::default().fg(self.theme.text_muted),
                     ),
                 ]));
@@ -1562,6 +1700,7 @@ impl UiState {
                 active_objectives.len(),
                 MAX_ITEMS_PER_SECTION,
                 self.theme.text_muted,
+                self.locale,
             );
             lines.push(Line::from(""));
         }
@@ -1573,7 +1712,7 @@ impl UiState {
             .collect::<Vec<_>>();
         if !background.is_empty() {
             lines.push(section_title(
-                "BACKGROUND",
+                self.tr("BACKGROUND TASKS", "后台任务"),
                 background.len(),
                 self.theme.success,
                 self.theme.text_muted,
@@ -1586,7 +1725,10 @@ impl UiState {
                         Style::default().fg(self.theme.text_primary),
                     ),
                     Span::styled(
-                        format!("  ·  {}", background_status_str(task.status)),
+                        format!(
+                            "  ·  {}",
+                            localized_background_status(self.locale, task.status)
+                        ),
                         Style::default().fg(self.theme.text_muted),
                     ),
                 ]));
@@ -1596,6 +1738,7 @@ impl UiState {
                 background.len(),
                 MAX_ITEMS_PER_SECTION,
                 self.theme.text_muted,
+                self.locale,
             );
             lines.push(Line::from(""));
         }
@@ -1613,7 +1756,7 @@ impl UiState {
             .collect::<Vec<_>>();
         if !active_delegations.is_empty() {
             lines.push(section_title(
-                "DELEGATIONS",
+                self.tr("DELEGATIONS", "委派"),
                 active_delegations.len(),
                 self.theme.focus,
                 self.theme.text_muted,
@@ -1626,7 +1769,10 @@ impl UiState {
                         Style::default().fg(self.theme.text_primary),
                     ),
                     Span::styled(
-                        format!("  ·  {}", job.status.as_str()),
+                        format!(
+                            "  ·  {}",
+                            localized_delegation_status(self.locale, &job.status)
+                        ),
                         Style::default().fg(self.theme.text_muted),
                     ),
                 ]));
@@ -1636,6 +1782,7 @@ impl UiState {
                 active_delegations.len(),
                 MAX_ITEMS_PER_SECTION,
                 self.theme.text_muted,
+                self.locale,
             );
         }
         lines
@@ -1645,7 +1792,7 @@ impl UiState {
         let mut lines = vec![
             Line::from(vec![
                 Span::styled(
-                    "TASK DIAGNOSTICS",
+                    self.tr("TASK DIAGNOSTICS", "任务诊断"),
                     Style::default()
                         .fg(self.theme.brand)
                         .add_modifier(Modifier::BOLD),
@@ -1656,7 +1803,10 @@ impl UiState {
                 ),
             ]),
             Line::from(Span::styled(
-                "只显示 Runtime 可验证的 Objective、Evaluation、后台物理任务与 Delegation。",
+                self.tr(
+                    "Only Runtime-verified objectives, evaluations, background tasks, and delegations are shown.",
+                    "仅显示运行时可验证的目标、求值、后台任务与委派。",
+                ),
                 Style::default().fg(self.theme.text_muted),
             )),
             Line::from(""),
@@ -1668,7 +1818,7 @@ impl UiState {
             .map(|view| view.active_activations.as_slice())
             .unwrap_or_default();
         lines.push(section_title(
-            "ACTIVATIONS",
+            self.tr("EVALUATIONS", "求值"),
             activations.len(),
             self.theme.text_secondary,
             self.theme.text_muted,
@@ -1677,25 +1827,34 @@ impl UiState {
             lines.push(Line::from(vec![
                 Span::styled("  ◇ ", Style::default().fg(self.theme.tool)),
                 Span::styled(
-                    item.status.as_str().to_uppercase(),
+                    localized_runtime_status(self.locale, item.status.as_str()),
                     Style::default()
                         .fg(task_status_color(item.status.as_str(), &self.theme))
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(
-                        "  {}  ·  session/{}  ·  {}",
-                        short_id(&item.id),
-                        short_id(&item.session_id),
-                        item.trigger_kind
-                    ),
+                    if self.locale.is_chinese() {
+                        format!(
+                            "  {}  ·  会话/{}  ·  {}",
+                            short_id(&item.id),
+                            short_id(&item.session_id),
+                            item.trigger_kind
+                        )
+                    } else {
+                        format!(
+                            "  {}  ·  session/{}  ·  {}",
+                            short_id(&item.id),
+                            short_id(&item.session_id),
+                            item.trigger_kind
+                        )
+                    },
                     Style::default().fg(self.theme.text_muted),
                 ),
             ]));
         }
         if activations.is_empty() {
             lines.push(empty_state_line(
-                "没有活跃的模型求值",
+                self.tr("No active model evaluations", "没有活跃的模型求值"),
                 self.theme.text_muted,
             ));
         }
@@ -1707,7 +1866,7 @@ impl UiState {
             .filter(|objective| !objective.status.is_terminal())
             .collect::<Vec<_>>();
         lines.push(section_title(
-            "OBJECTIVES",
+            self.tr("OBJECTIVES", "目标"),
             objectives.len(),
             self.theme.text_secondary,
             self.theme.text_muted,
@@ -1719,17 +1878,25 @@ impl UiState {
                     Style::default().fg(objective_status_color(objective.status, &self.theme)),
                 ),
                 Span::styled(
-                    objective.status.as_str().to_uppercase(),
+                    localized_objective_status(self.locale, objective.status),
                     Style::default()
                         .fg(objective_status_color(objective.status, &self.theme))
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(
-                        "  {}  ·  rev {}",
-                        short_id(&objective.id),
-                        objective.revision
-                    ),
+                    if self.locale.is_chinese() {
+                        format!(
+                            "  {}  ·  修订 {}",
+                            short_id(&objective.id),
+                            objective.revision
+                        )
+                    } else {
+                        format!(
+                            "  {}  ·  revision {}",
+                            short_id(&objective.id),
+                            objective.revision
+                        )
+                    },
                     Style::default().fg(self.theme.text_muted),
                 ),
             ]));
@@ -1742,7 +1909,11 @@ impl UiState {
             )));
             if let Some(wait) = objective.wait_condition.as_ref() {
                 lines.push(Line::from(Span::styled(
-                    format!("     wait: {}", format_objective_wait(wait)),
+                    format!(
+                        "     {}: {}",
+                        self.tr("waiting", "等待"),
+                        format_objective_wait(wait, self.locale)
+                    ),
                     Style::default().fg(self.theme.text_muted),
                 )));
             }
@@ -1753,7 +1924,7 @@ impl UiState {
             .all(|objective| objective.status.is_terminal())
         {
             lines.push(empty_state_line(
-                "没有非终态 Objective",
+                self.tr("No non-terminal objectives", "没有非终态目标"),
                 self.theme.text_muted,
             ));
         }
@@ -1765,7 +1936,7 @@ impl UiState {
             .filter(|task| task.context_id == self.context_id && !task.status.is_terminal())
             .collect::<Vec<_>>();
         lines.push(section_title(
-            "BACKGROUND TASKS",
+            self.tr("BACKGROUND TASKS", "后台任务"),
             background.len(),
             self.theme.text_secondary,
             self.theme.text_muted,
@@ -1774,7 +1945,7 @@ impl UiState {
             lines.push(Line::from(vec![
                 Span::styled("  ◒ ", Style::default().fg(self.theme.warning)),
                 Span::styled(
-                    background_status_str(task.status).to_uppercase(),
+                    localized_background_status(self.locale, task.status),
                     Style::default()
                         .fg(task_status_color(
                             background_status_str(task.status),
@@ -1783,12 +1954,21 @@ impl UiState {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(
-                        "  {}  ·  session/{}  ·  {}s",
-                        short_id(&task.id),
-                        short_id(&task.session_id),
-                        (Utc::now() - task.started_at).num_seconds().max(0)
-                    ),
+                    if self.locale.is_chinese() {
+                        format!(
+                            "  {}  ·  会话/{}  ·  {}秒",
+                            short_id(&task.id),
+                            short_id(&task.session_id),
+                            (Utc::now() - task.started_at).num_seconds().max(0)
+                        )
+                    } else {
+                        format!(
+                            "  {}  ·  session/{}  ·  {}s",
+                            short_id(&task.id),
+                            short_id(&task.session_id),
+                            (Utc::now() - task.started_at).num_seconds().max(0)
+                        )
+                    },
                     Style::default().fg(self.theme.text_muted),
                 ),
             ]));
@@ -1802,7 +1982,7 @@ impl UiState {
             .any(|task| task.context_id == self.context_id && !task.status.is_terminal())
         {
             lines.push(empty_state_line(
-                "没有运行中的后台物理任务",
+                self.tr("No running background tasks", "没有运行中的后台任务"),
                 self.theme.text_muted,
             ));
         }
@@ -1820,7 +2000,7 @@ impl UiState {
             })
             .collect::<Vec<_>>();
         lines.push(section_title(
-            "DELEGATIONS",
+            self.tr("DELEGATIONS", "委派"),
             delegations.len(),
             self.theme.text_secondary,
             self.theme.text_muted,
@@ -1829,17 +2009,25 @@ impl UiState {
             lines.push(Line::from(vec![
                 Span::styled("  ◇ ", Style::default().fg(self.theme.tool)),
                 Span::styled(
-                    job.status.as_str().to_uppercase(),
+                    localized_delegation_status(self.locale, &job.status),
                     Style::default()
                         .fg(task_status_color(job.status.as_str(), &self.theme))
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(
-                        "  {}  ·  child/{}",
-                        short_id(&job.id),
-                        short_id(&job.child_session_id)
-                    ),
+                    if self.locale.is_chinese() {
+                        format!(
+                            "  {}  ·  子会话/{}",
+                            short_id(&job.id),
+                            short_id(&job.child_session_id)
+                        )
+                    } else {
+                        format!(
+                            "  {}  ·  child/{}",
+                            short_id(&job.id),
+                            short_id(&job.child_session_id)
+                        )
+                    },
                     Style::default().fg(self.theme.text_muted),
                 ),
             ]));
@@ -1860,13 +2048,16 @@ impl UiState {
             })
         {
             lines.push(empty_state_line(
-                "没有活跃的 Sub Agent Delegation",
+                self.tr("No active subagent delegations", "没有活跃的子代理委派"),
                 self.theme.text_muted,
             ));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "Mind 中的自由 Frame 只在认知视图呈现；它们不会被 Runtime 猜测成任务。",
+            self.tr(
+                "Free-form frames appear only in the cognition view; the Runtime never guesses that they are tasks.",
+                "自由认知框架仅在认知视图中呈现；运行时不会猜测它们是任务。",
+            ),
             Style::default().fg(self.theme.text_muted),
         )));
         lines
@@ -1875,41 +2066,57 @@ impl UiState {
     fn mind_lines(&self) -> Vec<Line<'static>> {
         let Some(view) = self.context_view.as_ref() else {
             return vec![empty_state_line(
-                "MIND · Context 认知结构正在加载",
+                self.tr(
+                    "The shared cognition structure is loading",
+                    "共享认知结构正在加载",
+                ),
                 self.theme.text_muted,
             )];
         };
         let mut lines = vec![
             Line::from(vec![
                 Span::styled(
-                    "SHARED MIND",
+                    self.tr("SHARED MIND", "共享认知"),
                     Style::default()
                         .fg(self.theme.brand)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
                     format!(
-                        "  ·  context/{}  ·  revision {}",
+                        "  ·  {}/{}  ·  {} {}",
+                        self.tr("context", "上下文"),
                         short_id(&view.context_id),
-                        view.state.version
+                        self.tr("revision", "修订"),
+                        view.state.version,
                     ),
                     Style::default().fg(self.theme.text_muted),
                 ),
             ]),
             Line::from(Span::styled(
-                format!(
-                    "{} tokens / {} hard limit · pressure {} · {} full + {} metadata sessions",
-                    compact_count(view.pressure.estimated_tokens),
-                    compact_count(view.pressure.hard_limit),
-                    view.pressure.level,
-                    view.session_working_set.full_session_ids.len(),
-                    view.session_working_set.metadata_only_session_ids.len()
-                ),
+                if self.locale.is_chinese() {
+                    format!(
+                        "{} 个词元 / {} 硬上限 · 压力 {} · {} 个完整会话 + {} 个元数据会话",
+                        compact_count(view.pressure.estimated_tokens),
+                        compact_count(view.pressure.hard_limit),
+                        localized_pressure(self.locale, &view.pressure.level),
+                        view.session_working_set.full_session_ids.len(),
+                        view.session_working_set.metadata_only_session_ids.len()
+                    )
+                } else {
+                    format!(
+                        "{} tokens / {} hard limit · pressure {} · {} full + {} metadata sessions",
+                        compact_count(view.pressure.estimated_tokens),
+                        compact_count(view.pressure.hard_limit),
+                        localized_pressure(self.locale, &view.pressure.level),
+                        view.session_working_set.full_session_ids.len(),
+                        view.session_working_set.metadata_only_session_ids.len()
+                    )
+                },
                 Style::default().fg(self.theme.text_muted),
             )),
             Line::from(""),
             section_title(
-                "FRAMES",
+                self.tr("FRAMES", "认知框架"),
                 view.state.frames.len(),
                 self.theme.text_secondary,
                 self.theme.text_muted,
@@ -1917,7 +2124,7 @@ impl UiState {
         ];
         for frame in &view.state.frames {
             let protected = if view.state.protected.contains(&frame.id) {
-                " · protected"
+                self.tr(" · protected", " · 已保护")
             } else {
                 ""
             };
@@ -1930,12 +2137,21 @@ impl UiState {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(
-                        "  ·  rev {}  ·  updated v{}  ·  {} source(s){protected}",
-                        frame.revision,
-                        frame.updated_version,
-                        frame.sources.len()
-                    ),
+                    if self.locale.is_chinese() {
+                        format!(
+                            "  ·  修订 {}  ·  更新于版本 {}  ·  {} 个来源{protected}",
+                            frame.revision,
+                            frame.updated_version,
+                            frame.sources.len()
+                        )
+                    } else {
+                        format!(
+                            "  ·  revision {}  ·  updated v{}  ·  {} source(s){protected}",
+                            frame.revision,
+                            frame.updated_version,
+                            frame.sources.len()
+                        )
+                    },
                     Style::default().fg(self.theme.text_muted),
                 ),
             ]));
@@ -1949,14 +2165,17 @@ impl UiState {
         }
         if view.state.frames.is_empty() {
             lines.push(empty_state_line(
-                "当前 Mind 还没有形成认知 Frame",
+                self.tr(
+                    "The shared cognition has not formed any frames yet",
+                    "共享认知尚未形成任何认知框架",
+                ),
                 self.theme.text_muted,
             ));
             lines.push(Line::from(""));
         }
 
         lines.push(section_title(
-            "RELATIONS",
+            self.tr("RELATIONS", "关系"),
             view.state.relations.len(),
             self.theme.text_secondary,
             self.theme.text_muted,
@@ -1971,16 +2190,28 @@ impl UiState {
             )));
         }
         if view.state.relations.is_empty() {
-            lines.push(empty_state_line("没有显式关系", self.theme.text_muted));
+            lines.push(empty_state_line(
+                self.tr("No explicit relations", "没有显式关系"),
+                self.theme.text_muted,
+            ));
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            format!(
-                "RETIRED {}  ·  PROTECTED {}  ·  CHECKPOINTS {}  ·  Ctrl+K / Esc 返回对话",
-                view.state.retired.len(),
-                view.state.protected.len(),
-                view.state.checkpoints.len()
-            ),
+            if self.locale.is_chinese() {
+                format!(
+                    "已退役 {}  ·  已保护 {}  ·  检查点 {}  ·  按 Ctrl+K 或 Esc 返回对话",
+                    view.state.retired.len(),
+                    view.state.protected.len(),
+                    view.state.checkpoints.len()
+                )
+            } else {
+                format!(
+                    "RETIRED {}  ·  PROTECTED {}  ·  CHECKPOINTS {}  ·  Ctrl+K / Esc to return",
+                    view.state.retired.len(),
+                    view.state.protected.len(),
+                    view.state.checkpoints.len()
+                )
+            },
             Style::default().fg(self.theme.text_muted),
         )));
         lines
@@ -2081,11 +2312,14 @@ impl UiState {
 
     fn evaluation_panel_lines(&self, detailed: bool) -> Vec<Line<'static>> {
         let Some(view) = self.context_view.as_ref() else {
-            return vec![empty_state_line("Context 正在加载", self.theme.text_muted)];
+            return vec![empty_state_line(
+                self.tr("Context is loading", "上下文正在加载"),
+                self.theme.text_muted,
+            )];
         };
         if view.active_activations.is_empty() {
             return vec![empty_state_line(
-                "没有活跃的模型求值",
+                self.tr("No active model evaluations", "没有活跃的模型求值"),
                 self.theme.text_muted,
             )];
         }
@@ -2095,7 +2329,7 @@ impl UiState {
                 let mut lines = vec![Line::from(vec![
                     Span::styled("◒ ", Style::default().fg(self.theme.tool)),
                     Span::styled(
-                        item.status.as_str().to_uppercase(),
+                        localized_runtime_status(self.locale, item.status.as_str()),
                         Style::default()
                             .fg(task_status_color(item.status.as_str(), &self.theme))
                             .add_modifier(Modifier::BOLD),
@@ -2108,9 +2342,10 @@ impl UiState {
                 if detailed {
                     lines.push(Line::from(Span::styled(
                         format!(
-                            "  {} · session/{}",
+                            "  {} · {}/{}",
                             short_id(&item.id),
-                            short_id(&item.session_id)
+                            self.tr("session", "会话"),
+                            short_id(&item.session_id),
                         ),
                         Style::default().fg(self.theme.text_muted),
                     )));
@@ -2128,7 +2363,7 @@ impl UiState {
             .collect::<Vec<_>>();
         if objectives.is_empty() {
             return vec![empty_state_line(
-                "没有非终态 Objective",
+                self.tr("No non-terminal objectives", "没有非终态目标"),
                 self.theme.text_muted,
             )];
         }
@@ -2147,23 +2382,31 @@ impl UiState {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        format!("  ·  {}", objective.status.as_str()),
+                        format!(
+                            "  ·  {}",
+                            localized_objective_status(self.locale, objective.status)
+                        ),
                         Style::default().fg(objective_status_color(objective.status, &self.theme)),
                     ),
                 ])];
                 if detailed {
                     lines.push(Line::from(Span::styled(
                         format!(
-                            "   {} · revision {}",
+                            "   {} · {} {}",
                             short_id(&objective.id),
-                            objective.revision
+                            self.tr("revision", "修订"),
+                            objective.revision,
                         ),
                         Style::default().fg(self.theme.text_muted),
                     )));
                 }
                 if let Some(wait) = objective.wait_condition.as_ref() {
                     lines.push(Line::from(Span::styled(
-                        format!("   waiting · {}", format_objective_wait(wait)),
+                        format!(
+                            "   {} · {}",
+                            self.tr("waiting", "等待"),
+                            format_objective_wait(wait, self.locale)
+                        ),
                         Style::default().fg(self.theme.warning),
                     )));
                 }
@@ -2189,7 +2432,7 @@ impl UiState {
             .collect::<Vec<_>>();
         if tasks.is_empty() {
             return vec![empty_state_line(
-                "没有运行中的后台物理任务",
+                self.tr("No running background tasks", "没有运行中的后台任务"),
                 self.theme.text_muted,
             )];
         }
@@ -2203,7 +2446,7 @@ impl UiState {
                         Style::default().fg(self.theme.text_primary),
                     ),
                     Span::styled(
-                        format!("  ·  {}", background_status_str(status)),
+                        format!("  ·  {}", localized_background_status(self.locale, status)),
                         Style::default().fg(task_status_color(
                             background_status_str(status),
                             &self.theme,
@@ -2213,10 +2456,12 @@ impl UiState {
                 if detailed {
                     lines.push(Line::from(Span::styled(
                         format!(
-                            "  {} · session/{} · {}s",
+                            "  {} · {}/{} · {}{}",
                             short_id(&id),
+                            self.tr("session", "会话"),
                             short_id(&session_id),
-                            (Utc::now() - started_at).num_seconds().max(0)
+                            (Utc::now() - started_at).num_seconds().max(0),
+                            self.tr("s", "秒"),
                         ),
                         Style::default().fg(self.theme.text_muted),
                     )));
@@ -2240,7 +2485,7 @@ impl UiState {
             .collect::<Vec<_>>();
         if jobs.is_empty() {
             return vec![empty_state_line(
-                "没有活跃的 Sub Agent Delegation",
+                self.tr("No active subagent delegations", "没有活跃的子代理委派"),
                 self.theme.text_muted,
             )];
         }
@@ -2253,15 +2498,19 @@ impl UiState {
                         Style::default().fg(self.theme.text_primary),
                     ),
                     Span::styled(
-                        format!("  ·  {}", job.status.as_str()),
+                        format!(
+                            "  ·  {}",
+                            localized_delegation_status(self.locale, &job.status)
+                        ),
                         Style::default().fg(task_status_color(job.status.as_str(), &self.theme)),
                     ),
                 ])];
                 if detailed {
                     lines.push(Line::from(Span::styled(
                         format!(
-                            "  {} · child/{}",
+                            "  {} · {}/{}",
                             short_id(&job.id),
+                            self.tr("child", "子会话"),
                             short_id(&job.child_session_id)
                         ),
                         Style::default().fg(self.theme.text_muted),
@@ -2284,7 +2533,10 @@ impl UiState {
             .count();
         if activations + background == 0 {
             return vec![empty_state_line(
-                "没有正在执行的模型求值或后台任务",
+                self.tr(
+                    "No model evaluations or background tasks are running",
+                    "没有正在执行的模型求值或后台任务",
+                ),
                 self.theme.text_muted,
             )];
         }
@@ -2292,7 +2544,7 @@ impl UiState {
         let mut lines = Vec::new();
         if activations > 0 {
             lines.push(section_title(
-                "ACTIVATIONS",
+                self.tr("EVALUATIONS", "求值"),
                 activations,
                 self.theme.tool,
                 self.theme.text_muted,
@@ -2304,7 +2556,7 @@ impl UiState {
                 lines.push(Line::from(""));
             }
             lines.push(section_title(
-                "BACKGROUND TASKS",
+                self.tr("BACKGROUND TASKS", "后台任务"),
                 background,
                 self.theme.success,
                 self.theme.text_muted,
@@ -2342,17 +2594,21 @@ impl UiState {
         self.render_metric_card(
             frame,
             metrics[0],
-            "OBJECTIVES",
+            self.tr("OBJECTIVES", "目标"),
             objectives.to_string(),
-            "当前目标".to_string(),
+            self.tr("current objectives", "当前目标").to_string(),
             self.theme.focus,
         );
         self.render_metric_card(
             frame,
             metrics[1],
-            "IN FLIGHT",
+            self.tr("IN FLIGHT", "执行中"),
             (activations + background).to_string(),
-            format!("{activations} activations · {background} tasks"),
+            if self.locale.is_chinese() {
+                format!("{activations} 项求值 · {background} 个后台任务")
+            } else {
+                format!("{activations} evaluations · {background} background tasks")
+            },
             if activations + background > 0 {
                 self.theme.success
             } else {
@@ -2362,9 +2618,9 @@ impl UiState {
         self.render_metric_card(
             frame,
             metrics[2],
-            "DELEGATIONS",
+            self.tr("DELEGATIONS", "委派"),
             delegations.to_string(),
-            "Sub Agents".to_string(),
+            self.tr("subagents", "子代理").to_string(),
             self.theme.tool,
         );
 
@@ -2381,7 +2637,7 @@ impl UiState {
         self.render_section_panel(
             frame,
             task_rows[0],
-            "OBJECTIVES",
+            self.tr("OBJECTIVES", "目标"),
             objectives,
             self.objective_panel_lines(self.show_task_diagnostics),
             self.theme.focus,
@@ -2394,7 +2650,7 @@ impl UiState {
         self.render_section_panel(
             frame,
             execution[0],
-            "EXECUTION",
+            self.tr("EXECUTION", "执行"),
             activations + background,
             self.execution_panel_lines(self.show_task_diagnostics),
             self.theme.success,
@@ -2402,7 +2658,7 @@ impl UiState {
         self.render_section_panel(
             frame,
             execution[1],
-            "DELEGATIONS",
+            self.tr("DELEGATIONS", "委派"),
             delegations,
             self.delegation_panel_lines(self.show_task_diagnostics),
             self.theme.tool,
@@ -2413,7 +2669,7 @@ impl UiState {
         let block = Block::default()
             .title(Line::from(vec![
                 Span::styled(
-                    " TASKS & EXECUTION ",
+                    self.tr(" TASKS & EXECUTION ", " 任务与执行 "),
                     Style::default()
                         .fg(self.theme.focus)
                         .add_modifier(Modifier::BOLD),
@@ -2437,17 +2693,23 @@ impl UiState {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
-                    "○  当前没有进行中的任务",
+                    self.tr("○  No tasks are running", "○  当前没有进行中的任务"),
                     Style::default()
                         .fg(self.theme.text_secondary)
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
-                    "新的目标、执行任务和委派会按层级出现在这里。",
+                    self.tr(
+                        "New objectives, executions, and delegations will appear here by level.",
+                        "新的目标、执行任务和委派会按层级出现在这里。",
+                    ),
                     Style::default().fg(self.theme.text_muted),
                 )),
                 Line::from(Span::styled(
-                    "继续在下方输入，或按 Esc 返回对话。",
+                    self.tr(
+                        "Continue typing below, or press Esc to return to the conversation.",
+                        "继续在下方输入，或按 Esc 返回对话。",
+                    ),
                     Style::default().fg(self.theme.text_muted),
                 )),
             ])
@@ -2467,7 +2729,10 @@ impl UiState {
                 frame,
                 area,
                 vec![empty_state_line(
-                    "MIND · Context 认知结构正在加载",
+                    self.tr(
+                        "The shared cognition structure is loading",
+                        "共享认知结构正在加载",
+                    ),
                     self.theme.text_muted,
                 )],
             );
@@ -2491,36 +2756,43 @@ impl UiState {
         self.render_metric_card(
             frame,
             metrics[0],
-            "FRAMES",
+            self.tr("FRAMES", "认知框架"),
             view.state.frames.len().to_string(),
-            "认知单元".to_string(),
+            self.tr("cognitive units", "认知单元").to_string(),
             self.theme.focus,
         );
         self.render_metric_card(
             frame,
             metrics[1],
-            "RELATIONS",
+            self.tr("RELATIONS", "关系"),
             view.state.relations.len().to_string(),
-            "语义连接".to_string(),
+            self.tr("semantic links", "语义连接").to_string(),
             self.theme.tool,
         );
         self.render_metric_card(
             frame,
             metrics[2],
-            "OBSERVATIONS",
+            self.tr("OBSERVATIONS", "观察"),
             view.observations.len().to_string(),
-            "可追溯证据".to_string(),
+            self.tr("traceable evidence", "可追溯证据").to_string(),
             self.theme.text_secondary,
         );
         self.render_metric_card(
             frame,
             metrics[3],
-            "SESSIONS",
+            self.tr("SESSIONS", "会话"),
             view.session_working_set.full_session_ids.len().to_string(),
-            format!(
-                "+{} metadata",
-                view.session_working_set.metadata_only_session_ids.len()
-            ),
+            if self.locale.is_chinese() {
+                format!(
+                    "+{} 个元数据会话",
+                    view.session_working_set.metadata_only_session_ids.len()
+                )
+            } else {
+                format!(
+                    "+{} metadata sessions",
+                    view.session_working_set.metadata_only_session_ids.len()
+                )
+            },
             self.theme.user,
         );
 
@@ -2539,7 +2811,7 @@ impl UiState {
             .iter()
             .flat_map(|context_frame| {
                 let protection = if view.state.protected.contains(&context_frame.id) {
-                    " · protected"
+                    self.tr(" · protected", " · 已保护")
                 } else {
                     ""
                 };
@@ -2566,7 +2838,11 @@ impl UiState {
                     )));
                 }
                 lines.push(Line::from(Span::styled(
-                    format!("   {} source(s)", context_frame.sources.len()),
+                    if self.locale.is_chinese() {
+                        format!("   {} 个来源", context_frame.sources.len())
+                    } else {
+                        format!("   {} source(s)", context_frame.sources.len())
+                    },
                     Style::default().fg(self.theme.text_muted),
                 )));
                 lines.push(Line::from(""));
@@ -2576,7 +2852,7 @@ impl UiState {
         self.render_section_panel(
             frame,
             body[0],
-            "COGNITIVE FRAMES",
+            self.tr("COGNITIVE FRAMES", "认知框架"),
             view.state.frames.len(),
             frame_lines,
             self.theme.focus,
@@ -2584,9 +2860,12 @@ impl UiState {
 
         let mut mind_state = vec![
             Line::from(vec![
-                Span::styled("PRESSURE  ", Style::default().fg(self.theme.text_muted)),
                 Span::styled(
-                    view.pressure.level.to_uppercase(),
+                    self.tr("PRESSURE  ", "压力  "),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+                Span::styled(
+                    localized_pressure(self.locale, &view.pressure.level),
                     Style::default()
                         .fg(pressure_color(&view.pressure.level, &self.theme))
                         .add_modifier(Modifier::BOLD),
@@ -2607,42 +2886,79 @@ impl UiState {
             )),
             Line::from(""),
             Line::from(vec![
-                Span::styled("RESIDENCY  ", Style::default().fg(self.theme.text_muted)),
                 Span::styled(
-                    format!(
-                        "{} full · {} metadata",
-                        view.session_working_set.full_session_ids.len(),
-                        view.session_working_set.metadata_only_session_ids.len()
-                    ),
+                    self.tr("RESIDENCY  ", "驻留  "),
+                    Style::default().fg(self.theme.text_muted),
+                ),
+                Span::styled(
+                    if self.locale.is_chinese() {
+                        format!(
+                            "{} 个完整会话 · {} 个元数据会话",
+                            view.session_working_set.full_session_ids.len(),
+                            view.session_working_set.metadata_only_session_ids.len()
+                        )
+                    } else {
+                        format!(
+                            "{} full sessions · {} metadata sessions",
+                            view.session_working_set.full_session_ids.len(),
+                            view.session_working_set.metadata_only_session_ids.len()
+                        )
+                    },
                     Style::default().fg(self.theme.text_primary),
                 ),
             ]),
             Line::from(Span::styled(
-                format!(
-                    "window {} · max {} sessions",
-                    format_duration(view.session_working_set.active_window_secs),
-                    view.session_working_set.max_sessions
-                ),
+                if self.locale.is_chinese() {
+                    format!(
+                        "窗口 {} · 最多 {} 个会话",
+                        format_duration_localized(
+                            view.session_working_set.active_window_secs,
+                            self.locale,
+                        ),
+                        view.session_working_set.max_sessions
+                    )
+                } else {
+                    format!(
+                        "window {} · max {} sessions",
+                        format_duration_localized(
+                            view.session_working_set.active_window_secs,
+                            self.locale,
+                        ),
+                        view.session_working_set.max_sessions
+                    )
+                },
                 Style::default().fg(self.theme.text_muted),
             )),
             Line::from(""),
             Line::from(Span::styled(
-                format!(
-                    "LIFECYCLE  {} protected · {} retired",
-                    view.state.protected.len(),
-                    view.state.retired.len()
-                ),
+                if self.locale.is_chinese() {
+                    format!(
+                        "生命周期  {} 个已保护 · {} 个已退役",
+                        view.state.protected.len(),
+                        view.state.retired.len()
+                    )
+                } else {
+                    format!(
+                        "LIFECYCLE  {} protected · {} retired",
+                        view.state.protected.len(),
+                        view.state.retired.len()
+                    )
+                },
                 Style::default().fg(self.theme.text_secondary),
             )),
             Line::from(Span::styled(
-                format!("           {} checkpoints", view.state.checkpoints.len()),
+                if self.locale.is_chinese() {
+                    format!("           {} 个检查点", view.state.checkpoints.len())
+                } else {
+                    format!("           {} checkpoints", view.state.checkpoints.len())
+                },
                 Style::default().fg(self.theme.text_muted),
             )),
         ];
         if !view.state.relations.is_empty() {
             mind_state.push(Line::from(""));
             mind_state.push(section_title(
-                "RELATIONS",
+                self.tr("RELATIONS", "关系"),
                 view.state.relations.len(),
                 self.theme.tool,
                 self.theme.text_muted,
@@ -2660,7 +2976,7 @@ impl UiState {
         self.render_section_panel(
             frame,
             body[1],
-            "MIND STATE",
+            self.tr("MIND STATE", "认知状态"),
             format!("r{}", view.state.version),
             mind_state,
             self.theme.text_secondary,
@@ -2671,7 +2987,7 @@ impl UiState {
         let block = Block::default()
             .title(Line::from(vec![
                 Span::styled(
-                    " COGNITIVE FRAMES ",
+                    self.tr(" COGNITIVE FRAMES ", " 认知框架 "),
                     Style::default()
                         .fg(self.theme.focus)
                         .add_modifier(Modifier::BOLD),
@@ -2698,13 +3014,19 @@ impl UiState {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
-                    "○  当前 Mind 还没有形成认知 Frame",
+                    self.tr(
+                        "○  The shared cognition has not formed any frames yet",
+                        "○  共享认知尚未形成任何认知框架",
+                    ),
                     Style::default()
                         .fg(self.theme.text_secondary)
                         .add_modifier(Modifier::BOLD),
                 )),
                 Line::from(Span::styled(
-                    "Agent 会在需要保留目标、约束或经验时自主创建。",
+                    self.tr(
+                        "The agent creates them autonomously when goals, constraints, or experience should persist.",
+                        "代理会在需要保留目标、约束或经验时自主创建。",
+                    ),
                     Style::default().fg(self.theme.text_muted),
                 )),
             ])
@@ -2750,7 +3072,7 @@ impl UiState {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled("  ·  ", Style::default().fg(self.theme.tool)),
-                Span::styled(MORPHZ_TAGLINE, Style::default().fg(self.theme.text_muted)),
+                Span::styled(self.tagline(), Style::default().fg(self.theme.text_muted)),
             ]));
         } else {
             lines.push(Line::from(vec![
@@ -2764,7 +3086,7 @@ impl UiState {
             ]));
             if width >= 44 {
                 lines.push(Line::from(Span::styled(
-                    format!("     {MORPHZ_TAGLINE}"),
+                    format!("     {}", self.tagline()),
                     Style::default().fg(self.theme.text_muted),
                 )));
             }
@@ -2773,7 +3095,7 @@ impl UiState {
             Line::from(""),
             Line::from(vec![
                 Span::styled(
-                    "     Directory  ",
+                    self.tr("     Directory  ", "     目录      "),
                     Style::default().fg(self.theme.text_muted),
                 ),
                 Span::styled(
@@ -2783,7 +3105,7 @@ impl UiState {
             ]),
             Line::from(vec![
                 Span::styled(
-                    "     Session    ",
+                    self.tr("     Session    ", "     会话      "),
                     Style::default().fg(self.theme.text_muted),
                 ),
                 Span::styled(
@@ -2799,7 +3121,7 @@ impl UiState {
             ]),
             Line::from(vec![
                 Span::styled(
-                    "     Model      ",
+                    self.tr("     Model      ", "     模型      "),
                     Style::default().fg(self.theme.text_muted),
                 ),
                 Span::styled(
@@ -2882,7 +3204,7 @@ impl UiState {
                         Style::default().fg(self.theme.brand),
                     ),
                     Span::styled(
-                        "Thinking…",
+                        self.tr("Thinking…", "正在思考…"),
                         Style::default()
                             .fg(self.theme.text_muted)
                             .add_modifier(Modifier::ITALIC),
@@ -2903,8 +3225,8 @@ impl UiState {
                 lines.push(Line::from(""));
             }
             for tool in attempt.tools.values() {
-                let activity = summarize_tool_call(&tool.name, &tool.arguments, None);
-                let mut body = format!("Using {}", activity.title);
+                let activity = summarize_tool_call(&tool.name, &tool.arguments, None, self.locale);
+                let mut body = format!("{} {}", self.tr("Using", "正在使用"), activity.title);
                 if !activity.target.is_empty() {
                     body.push('\n');
                     body.push_str("  ");
@@ -2988,7 +3310,11 @@ impl UiState {
             lines.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    format!("… ({hidden_count} more lines · Ctrl+R to expand)"),
+                    if self.locale.is_chinese() {
+                        format!("…（还有 {hidden_count} 行 · 按 Ctrl+R 展开）")
+                    } else {
+                        format!("… ({hidden_count} more lines · Ctrl+R to expand)")
+                    },
                     Style::default().fg(self.theme.text_muted),
                 ),
             ]));
@@ -3013,8 +3339,12 @@ impl UiState {
                 .or_else(|| trimmed.strip_prefix('!'))
                 .unwrap_or(trimmed)
                 .trim_start();
-            let completed = cleaned.starts_with("Used ") || trimmed.starts_with('✓');
-            let failed = cleaned.starts_with("Failed ") || trimmed.starts_with('!');
+            let completed = cleaned.starts_with("Used ")
+                || cleaned.starts_with("已使用 ")
+                || trimmed.starts_with('✓');
+            let failed = cleaned.starts_with("Failed ")
+                || cleaned.starts_with("失败 ")
+                || trimmed.starts_with('!');
             let color = if failed {
                 self.theme.error
             } else if completed {
@@ -3025,7 +3355,12 @@ impl UiState {
             if starts_activity {
                 let (verb, title) = cleaned
                     .split_once(' ')
-                    .filter(|(verb, _)| matches!(*verb, "Using" | "Used" | "Failed"))
+                    .filter(|(verb, _)| {
+                        matches!(
+                            *verb,
+                            "Using" | "Used" | "Failed" | "正在使用" | "已使用" | "失败"
+                        )
+                    })
                     .unwrap_or(("", cleaned));
                 let mut spans = vec![Span::styled("● ", Style::default().fg(color))];
                 if !verb.is_empty() {
@@ -3105,7 +3440,10 @@ impl UiState {
                         .fg(self.theme.focus)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled("输入消息…", Style::default().fg(self.theme.text_muted)),
+                Span::styled(
+                    self.tr("Type a message…", "输入消息…"),
+                    Style::default().fg(self.theme.text_muted),
+                ),
             ])]
         } else {
             text.split('\n')
@@ -3179,7 +3517,7 @@ impl UiState {
                 Paragraph::new(Line::from(vec![
                     Span::styled("●  ", Style::default().fg(self.theme.warning)),
                     Span::styled(
-                        "取消当前会话任务？",
+                        self.tr("Cancel the current session task?", "取消当前会话任务？"),
                         Style::default()
                             .fg(self.theme.warning)
                             .add_modifier(Modifier::BOLD),
@@ -3188,9 +3526,12 @@ impl UiState {
                 columns[0],
             );
             frame.render_widget(
-                Paragraph::new("再按 Esc 确认  ·  其他按键继续")
-                    .style(Style::default().fg(self.theme.warning))
-                    .alignment(Alignment::Right),
+                Paragraph::new(self.tr(
+                    "Press Esc again to confirm  ·  any other key to continue",
+                    "再按 Esc 确认  ·  按其他键继续",
+                ))
+                .style(Style::default().fg(self.theme.warning))
+                .alignment(Alignment::Right),
                 columns[1],
             );
             return;
@@ -3218,17 +3559,26 @@ impl UiState {
         }
         frame.render_widget(Paragraph::new(Line::from(left)), columns[0]);
         let hints = if area.width < 112 {
-            "? shortcuts"
+            self.tr("? shortcuts", "? 快捷键")
         } else if self.active_view == UiView::Tasks {
             if self.show_task_diagnostics {
-                "Tab summary  ·  Esc conversation  ·  ? shortcuts"
+                self.tr(
+                    "Tab summary  ·  Esc conversation  ·  ? shortcuts",
+                    "Tab 概要  ·  Esc 对话  ·  ? 快捷键",
+                )
             } else {
-                "Tab diagnostics  ·  Esc conversation  ·  ? shortcuts"
+                self.tr(
+                    "Tab diagnostics  ·  Esc conversation  ·  ? shortcuts",
+                    "Tab 诊断  ·  Esc 对话  ·  ? 快捷键",
+                )
             }
         } else if self.active_view == UiView::Conversation {
-            "Ctrl+P shell  ·  Ctrl+T/K views  ·  ? help"
+            self.tr(
+                "Ctrl+P shell  ·  Ctrl+T/K views  ·  ? help",
+                "Ctrl+P 终端  ·  Ctrl+T/K 视图  ·  ? 帮助",
+            )
         } else {
-            "Esc conversation  ·  ? shortcuts"
+            self.tr("Esc conversation  ·  ? shortcuts", "Esc 对话  ·  ? 快捷键")
         };
         frame.render_widget(
             Paragraph::new(hints)
@@ -3240,41 +3590,75 @@ impl UiState {
 
     fn render_help(&self, frame: &mut Frame<'_>, area: Rect) {
         frame.render_widget(Clear, area);
-        let help = Paragraph::new(vec![
-            Line::from("Keyboard"),
-            Line::from("  Enter                 Send"),
-            Line::from("  Shift+Enter           Insert newline (enhanced terminals)"),
-            Line::from("  Ctrl+J                Insert newline (portable fallback)"),
-            Line::from("  Ctrl+T                Toggle Tasks view"),
-            Line::from("  Ctrl+W                Compatibility alias for Tasks view"),
-            Line::from("  Ctrl+K                Toggle Mind / Frame view"),
-            Line::from("  Ctrl+P                Toggle embedded shell"),
-            Line::from("  Tab                   Toggle Tasks summary/diagnostics"),
-            Line::from("  Esc                   Return to Conversation view"),
-            Line::from("  Esc Esc               Confirm, then cancel active task"),
-            Line::from("  Ctrl+O                Expand/collapse Objectives"),
-            Line::from("  Alt+T                 Cycle color theme"),
-            Line::from("  Ctrl+R                Expand/collapse reasoning summaries"),
-            Line::from("  Ctrl+C                Cancel active evaluation; quit when idle"),
-            Line::from("  Ctrl+D                Exit Morphz"),
-            Line::from("  Mouse wheel/PageUp    Scroll transcript"),
-            Line::from("  Ctrl+Home/Ctrl+End    Jump to transcript start/end"),
-            Line::from("  ?                     Toggle shortcuts (when input is empty)"),
-            Line::from(""),
-            Line::from("Commands"),
-            Line::from("  /ctx   /objectives   /jobs   /tools   /theme   /cancel   /clear   /quit"),
-            Line::from(""),
-            Line::from("Press Esc or ? to close."),
-        ])
-        .block(
-            Block::default()
-                .title(" Keyboard shortcuts ")
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(Style::default().fg(self.theme.focus))
-                .padding(ratatui::widgets::Padding::uniform(1)),
-        )
-        .style(Style::default().fg(self.theme.text_primary));
+        let help_lines = if self.locale.is_chinese() {
+            vec![
+                Line::from("键盘快捷键"),
+                Line::from("  Enter                 发送"),
+                Line::from("  Shift+Enter           插入换行（增强终端）"),
+                Line::from("  Ctrl+J                插入换行（通用备用）"),
+                Line::from("  Ctrl+T                切换任务视图"),
+                Line::from("  Ctrl+W                任务视图兼容快捷键"),
+                Line::from("  Ctrl+K                切换认知框架视图"),
+                Line::from("  Ctrl+P                切换内嵌终端"),
+                Line::from("  Tab                   切换任务概要和诊断"),
+                Line::from("  Esc                   返回对话视图"),
+                Line::from("  Esc Esc               确认并取消活跃任务"),
+                Line::from("  Ctrl+O                展开或收起目标"),
+                Line::from("  Alt+T                 切换颜色主题"),
+                Line::from("  Ctrl+R                展开或收起推理摘要"),
+                Line::from("  Ctrl+C                取消活跃求值；空闲时退出"),
+                Line::from("  Ctrl+D                退出 Morphz"),
+                Line::from("  鼠标滚轮/PageUp    滚动对话记录"),
+                Line::from("  Ctrl+Home/Ctrl+End    跳到对话记录开头或末尾"),
+                Line::from("  ?                     输入为空时切换快捷键面板"),
+                Line::from(""),
+                Line::from("命令"),
+                Line::from(
+                    "  /ctx   /objectives   /jobs   /tools   /theme   /cancel   /clear   /quit",
+                ),
+                Line::from(""),
+                Line::from("按 Esc 或 ? 关闭。"),
+            ]
+        } else {
+            vec![
+                Line::from("Keyboard shortcuts"),
+                Line::from("  Enter                 Send"),
+                Line::from("  Shift+Enter           Insert newline (enhanced terminals)"),
+                Line::from("  Ctrl+J                Insert newline (portable fallback)"),
+                Line::from("  Ctrl+T                Toggle Tasks view"),
+                Line::from("  Ctrl+W                Compatibility alias for Tasks view"),
+                Line::from("  Ctrl+K                Toggle cognition frame view"),
+                Line::from("  Ctrl+P                Toggle embedded shell"),
+                Line::from("  Tab                   Toggle Tasks summary/diagnostics"),
+                Line::from("  Esc                   Return to Conversation view"),
+                Line::from("  Esc Esc               Confirm, then cancel active task"),
+                Line::from("  Ctrl+O                Expand/collapse Objectives"),
+                Line::from("  Alt+T                 Cycle color theme"),
+                Line::from("  Ctrl+R                Expand/collapse reasoning summaries"),
+                Line::from("  Ctrl+C                Cancel active evaluation; quit when idle"),
+                Line::from("  Ctrl+D                Exit Morphz"),
+                Line::from("  Mouse wheel/PageUp    Scroll transcript"),
+                Line::from("  Ctrl+Home/Ctrl+End    Jump to transcript start/end"),
+                Line::from("  ?                     Toggle shortcuts (when input is empty)"),
+                Line::from(""),
+                Line::from("Commands"),
+                Line::from(
+                    "  /ctx   /objectives   /jobs   /tools   /theme   /cancel   /clear   /quit",
+                ),
+                Line::from(""),
+                Line::from("Press Esc or ? to close."),
+            ]
+        };
+        let help = Paragraph::new(help_lines)
+            .block(
+                Block::default()
+                    .title(self.tr(" Keyboard shortcuts ", " 键盘快捷键 "))
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(self.theme.focus))
+                    .padding(ratatui::widgets::Padding::uniform(1)),
+            )
+            .style(Style::default().fg(self.theme.text_primary));
         frame.render_widget(help, area);
     }
 
@@ -3282,25 +3666,32 @@ impl UiState {
         frame.render_widget(Clear, area);
         let mut lines = vec![Line::from(vec![
             Span::styled(
-                "Objectives",
+                self.tr("Objectives", "目标"),
                 Style::default()
                     .fg(self.theme.brand)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("  {} non-terminal", self.objectives.len()),
+                if self.locale.is_chinese() {
+                    format!("  {} 个非终态目标", self.objectives.len())
+                } else {
+                    format!("  {} non-terminal", self.objectives.len())
+                },
                 Style::default().fg(self.theme.text_muted),
             ),
         ])];
         lines.push(Line::from(""));
         if self.objectives.is_empty() {
             lines.push(Line::from(Span::styled(
-                "当前 Context 没有进行中、暂停或阻塞的 Objective。",
+                self.tr(
+                    "The current context has no active, paused, or blocked objectives.",
+                    "当前上下文没有进行中、暂停或受阻的目标。",
+                ),
                 Style::default().fg(self.theme.text_muted),
             )));
         } else {
             for objective in ordered_objectives(&self.objectives, &self.session_id) {
-                let status = objective.status.as_str();
+                let status = localized_objective_status(self.locale, objective.status);
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("{} ", objective_status_marker(objective.status)),
@@ -3309,7 +3700,7 @@ impl UiState {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        status.to_uppercase(),
+                        status,
                         Style::default()
                             .fg(objective_status_color(objective.status, &self.theme))
                             .add_modifier(Modifier::BOLD),
@@ -3328,24 +3719,36 @@ impl UiState {
                 if let Some(reason) = objective.status_reason.as_deref() {
                     for reason_line in reason.lines() {
                         lines.push(Line::from(vec![
-                            Span::styled("   原因  ", Style::default().fg(self.theme.text_muted)),
+                            Span::styled(
+                                self.tr("   Reason  ", "   原因  "),
+                                Style::default().fg(self.theme.text_muted),
+                            ),
                             Span::styled(reason_line, Style::default().fg(self.theme.text_primary)),
                         ]));
                     }
                 }
-                let mut facts = vec![format!("rev {}", objective.revision)];
-                if objective.coordinator_session_id == self.session_id {
-                    facts.push("current session".to_string());
+                let mut facts = vec![if self.locale.is_chinese() {
+                    format!("修订 {}", objective.revision)
                 } else {
-                    facts.push(format!(
-                        "session {}",
-                        short_id(&objective.coordinator_session_id)
-                    ));
+                    format!("revision {}", objective.revision)
+                }];
+                if objective.coordinator_session_id == self.session_id {
+                    facts.push(self.tr("current session", "当前会话").to_string());
+                } else {
+                    facts.push(if self.locale.is_chinese() {
+                        format!("会话 {}", short_id(&objective.coordinator_session_id))
+                    } else {
+                        format!("session {}", short_id(&objective.coordinator_session_id))
+                    });
                 }
                 if let Some(wait) = objective.wait_condition.as_ref() {
-                    facts.push(format!("waiting: {}", format_objective_wait(wait)));
+                    facts.push(format!(
+                        "{}: {}",
+                        self.tr("waiting", "等待"),
+                        format_objective_wait(wait, self.locale)
+                    ));
                 } else if objective.active_evaluation_id.is_some() {
-                    facts.push("evaluation running".to_string());
+                    facts.push(self.tr("evaluation running", "求值正在进行").to_string());
                 }
                 if let Some(budget) = objective.token_budget {
                     facts.push(format!("{} / {} tok", objective.tokens_used, budget));
@@ -3353,7 +3756,10 @@ impl UiState {
                     facts.push(format!("{} tok", objective.tokens_used));
                 }
                 if objective.time_used_seconds > 0 {
-                    facts.push(format_duration(objective.time_used_seconds));
+                    facts.push(format_duration_localized(
+                        objective.time_used_seconds,
+                        self.locale,
+                    ));
                 }
                 lines.push(Line::from(Span::styled(
                     format!("   {}", facts.join("  ·  ")),
@@ -3361,7 +3767,11 @@ impl UiState {
                 )));
                 if let Some(parent) = objective.parent_objective_id.as_deref() {
                     lines.push(Line::from(Span::styled(
-                        format!("   child of {}", short_id(parent)),
+                        if self.locale.is_chinese() {
+                            format!("   子目标，父目标为 {}", short_id(parent))
+                        } else {
+                            format!("   child of {}", short_id(parent))
+                        },
                         Style::default().fg(self.theme.text_muted),
                     )));
                 }
@@ -3369,7 +3779,10 @@ impl UiState {
             }
         }
         lines.push(Line::from(Span::styled(
-            "Ctrl+O / Esc 收起  ·  PageUp / PageDown 滚动",
+            self.tr(
+                "Ctrl+O / Esc to close  ·  PageUp / PageDown to scroll",
+                "按 Ctrl+O 或 Esc 收起  ·  按 PageUp 或 PageDown 滚动",
+            ),
             Style::default().fg(self.theme.text_muted),
         )));
         let panel = Paragraph::new(lines)
@@ -3377,7 +3790,7 @@ impl UiState {
             .scroll((self.objective_scroll, 0))
             .block(
                 Block::default()
-                    .title(" Context Objectives ")
+                    .title(self.tr(" Context Objectives ", " 上下文目标 "))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(self.theme.focus))
@@ -3392,12 +3805,16 @@ impl UiState {
             return;
         };
         frame.render_widget(Clear, area);
-        let body = format!("{}\n\n[y] Allow once    [n] Deny", approval.text);
+        let body = format!(
+            "{}\n\n{}",
+            approval.text,
+            self.tr("[y] Allow once    [n] Deny", "[y] 允许一次    [n] 拒绝")
+        );
         let dialog = Paragraph::new(body)
             .wrap(Wrap { trim: false })
             .block(
                 Block::default()
-                    .title(" Permission approval ")
+                    .title(self.tr(" Permission approval ", " 权限审批 "))
                     .borders(Borders::ALL)
                     .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(self.theme.warning))
@@ -3553,7 +3970,14 @@ pub async fn run(
                                     match shell::EmbeddedShell::spawn(&shell_cwd) {
                                         Ok(shell) => embedded_shell = Some(shell),
                                         Err(error) => {
-                                            state.push(EntryKind::Error, format!("无法打开嵌入式 Shell：{error}"));
+                                            state.push(
+                                                EntryKind::Error,
+                                                if state.locale.is_chinese() {
+                                                    format!("无法打开内嵌终端：{error}")
+                                                } else {
+                                                    format!("Could not open the embedded shell: {error}")
+                                                },
+                                            );
                                             embedded_shell = None;
                                         }
                                     }
@@ -3573,27 +3997,40 @@ pub async fn run(
                             UiAction::Quit => break,
                             UiAction::Cancel => {
                                 if session.cancel() {
-                                    state.push(EntryKind::System, "已请求取消当前 Session 求值。后台物理任务仍由各自生命周期管理。");
-                                    state.status = "cancelling".to_string();
+                                    state.push(EntryKind::System, state.tr(
+                                        "Cancellation requested for the current session evaluation. Background tasks keep their own lifecycles.",
+                                        "已请求取消当前会话求值。后台任务仍按各自的生命周期运行。",
+                                    ));
+                                    state.status = state.tr("cancelling", "正在取消").to_string();
                                 } else {
-                                    state.status = "nothing to cancel".to_string();
+                                    state.status = state.tr("nothing to cancel", "没有可取消的求值").to_string();
                                 }
                             }
                             UiAction::Approve(allow) => {
                                 if let Some(approval) = state.pending_approval.take() {
                                     let decision = if allow {
                                         ApprovalDecision::AllowOnce {
-                                            rationale: "用户在 Morphz TUI 中批准".to_string(),
+                                            rationale: state.tr(
+                                                "The user approved in the Morphz terminal interface",
+                                                "用户已在 Morphz 终端界面中批准",
+                                            ).to_string(),
                                             risk_tags: vec!["human-approved".to_string()],
                                         }
                                     } else {
                                         ApprovalDecision::Deny {
-                                            rationale: "用户在 Morphz TUI 中拒绝".to_string(),
+                                            rationale: state.tr(
+                                                "The user denied in the Morphz terminal interface",
+                                                "用户已在 Morphz 终端界面中拒绝",
+                                            ).to_string(),
                                             risk_tags: vec!["human-denied".to_string()],
                                         }
                                     };
                                     match runtime.decide_approval(&approval.id, decision).await {
-                                        Ok(()) => state.push(EntryKind::System, if allow { "权限请求已批准一次。" } else { "权限请求已拒绝。" }),
+                                        Ok(()) => state.push(EntryKind::System, if allow {
+                                            state.tr("Permission approved once.", "权限请求已批准一次。")
+                                        } else {
+                                            state.tr("Permission request denied.", "权限请求已拒绝。")
+                                        }),
                                         Err(error) => state.push(EntryKind::Error, error),
                                     }
                                 }
@@ -3623,7 +4060,10 @@ pub async fn run(
             }
             event = runtime_events.recv() => {
                 let Some(event) = event else {
-                    state.push(EntryKind::Error, "Runtime 事件通道已关闭。");
+                    state.push(EntryKind::Error, state.tr(
+                        "The Runtime event channel has closed.",
+                        "运行时事件通道已关闭。",
+                    ));
                     state.busy = false;
                     continue;
                 };
@@ -3664,9 +4104,16 @@ async fn submit_prompt(session: &SessionHandle, state: &mut UiState, prompt: Str
         Utc::now().timestamp_nanos_opt().unwrap_or_default()
     );
     if let Err(error) = session.send(prompt, "User", Some(message_id)).await {
-        state.push(EntryKind::Error, format!("发送消息失败：{error}"));
+        state.push(
+            EntryKind::Error,
+            if state.locale.is_chinese() {
+                format!("发送消息失败：{error}")
+            } else {
+                format!("Could not send the message: {error}")
+            },
+        );
         state.busy = false;
-        state.status = "send failed".to_string();
+        state.status = state.tr("send failed", "发送失败").to_string();
     }
 }
 
@@ -3681,10 +4128,17 @@ async fn handle_command(
         let theme_kind = state.cycle_theme();
         state.push(
             EntryKind::System,
-            format!(
-                "已切换到 {} 主题；本次 TUI 会话立即生效。",
-                theme_kind.as_str()
-            ),
+            if state.locale.is_chinese() {
+                format!(
+                    "已切换到 {} 主题；本次终端会话立即生效。",
+                    theme_kind.as_str()
+                )
+            } else {
+                format!(
+                    "Switched to the {} theme for this terminal session.",
+                    theme_kind.as_str()
+                )
+            },
         );
         return Ok(true);
     }
@@ -3694,18 +4148,29 @@ async fn handle_command(
                 state.set_theme(theme_kind);
                 state.push(
                     EntryKind::System,
-                    format!(
-                        "已切换到 {} 主题；本次 TUI 会话立即生效。",
-                        theme_kind.as_str()
-                    ),
+                    if state.locale.is_chinese() {
+                        format!("已切换到 {} 主题；本次终端会话立即生效。", theme_kind.as_str())
+                    } else {
+                        format!(
+                            "Switched to the {} theme for this terminal session.",
+                            theme_kind.as_str()
+                        )
+                    },
                 );
             }
             None => state.push(
                 EntryKind::Error,
-                format!(
-                    "未知主题 '{}'；可用 system、mono、iris、cyan、coral、no-color。",
-                    value.trim()
-                ),
+                if state.locale.is_chinese() {
+                    format!(
+                        "未知主题 '{}'；可用值为 system、mono、iris、cyan、coral、no-color。",
+                        value.trim()
+                    )
+                } else {
+                    format!(
+                        "Unknown theme '{}'; available values: system, mono, iris, cyan, coral, no-color.",
+                        value.trim()
+                    )
+                },
             ),
         }
         return Ok(true);
@@ -3722,9 +4187,21 @@ async fn handle_command(
         }
         "/cancel" => {
             if session.cancel() {
-                state.push(EntryKind::System, "已请求取消当前 Session 求值。");
+                state.push(
+                    EntryKind::System,
+                    state.tr(
+                        "Cancellation requested for the current session evaluation.",
+                        "已请求取消当前会话求值。",
+                    ),
+                );
             } else {
-                state.push(EntryKind::System, "当前没有可取消的 Session 求值。");
+                state.push(
+                    EntryKind::System,
+                    state.tr(
+                        "The current session has no cancellable evaluation.",
+                        "当前会话没有可取消的求值。",
+                    ),
+                );
             }
             Ok(true)
         }
@@ -3734,7 +4211,14 @@ async fn handle_command(
                     state.update_context(&view);
                     state.push(EntryKind::System, view.sexpr);
                 }
-                Err(error) => state.push(EntryKind::Error, format!("读取 Context 失败：{error}")),
+                Err(error) => state.push(
+                    EntryKind::Error,
+                    if state.locale.is_chinese() {
+                        format!("读取上下文失败：{error}")
+                    } else {
+                        format!("Could not read the context: {error}")
+                    },
+                ),
             }
             Ok(true)
         }
@@ -3748,18 +4232,25 @@ async fn handle_command(
             state.push(
                 EntryKind::System,
                 if state.show_tool_details {
-                    "已展开工具调用的原始参数与结果。"
+                    state.tr(
+                        "Expanded raw tool arguments and results.",
+                        "已展开工具调用的原始参数与结果。",
+                    )
                 } else {
-                    "已收起工具调用的原始参数与结果。"
+                    state.tr(
+                        "Collapsed raw tool arguments and results.",
+                        "已收起工具调用的原始参数与结果。",
+                    )
                 },
             );
             Ok(true)
         }
         "/jobs" => {
             match runtime.list_delegations().await {
-                Ok(jobs) if jobs.is_empty() => {
-                    state.push(EntryKind::System, "当前没有 Sub Agent 任务。")
-                }
+                Ok(jobs) if jobs.is_empty() => state.push(
+                    EntryKind::System,
+                    state.tr("There are no subagent delegations.", "当前没有子代理委派。"),
+                ),
                 Ok(jobs) => {
                     let body = jobs
                         .into_iter()
@@ -3767,7 +4258,7 @@ async fn handle_command(
                             format!(
                                 "{}  [{}]  {}",
                                 job.id,
-                                job.status.as_str(),
+                                localized_delegation_status(state.locale, &job.status),
                                 truncate(&job.task.replace('\n', " "), 120)
                             )
                         })
@@ -3775,7 +4266,14 @@ async fn handle_command(
                         .join("\n");
                     state.push(EntryKind::System, body);
                 }
-                Err(error) => state.push(EntryKind::Error, format!("读取任务失败：{error}")),
+                Err(error) => state.push(
+                    EntryKind::Error,
+                    if state.locale.is_chinese() {
+                        format!("读取委派失败：{error}")
+                    } else {
+                        format!("Could not read delegations: {error}")
+                    },
+                ),
             }
             Ok(true)
         }
@@ -4016,10 +4514,20 @@ fn section_title(
     ])
 }
 
-fn push_more_hint(lines: &mut Vec<Line<'static>>, total: usize, shown: usize, color: Color) {
+fn push_more_hint(
+    lines: &mut Vec<Line<'static>>,
+    total: usize,
+    shown: usize,
+    color: Color,
+    locale: Locale,
+) {
     if total > shown {
         lines.push(Line::from(Span::styled(
-            format!("     … 另有 {} 项，按 Tab 查看详情", total - shown),
+            if locale.is_chinese() {
+                format!("     … 另有 {} 项，按 Tab 查看详情", total - shown)
+            } else {
+                format!("     … {} more; press Tab for details", total - shown)
+            },
             Style::default().fg(color),
         )));
     }
@@ -4073,6 +4581,85 @@ fn background_status_str(status: BackgroundTaskStatus) -> &'static str {
         BackgroundTaskStatus::Failed => "failed",
         BackgroundTaskStatus::Killed => "killed",
     }
+}
+
+fn localized_runtime_status(locale: Locale, status: &str) -> String {
+    if !locale.is_chinese() {
+        return status.replace('_', " ").to_uppercase();
+    }
+    match status {
+        "running" | "active" => "运行中",
+        "queued" => "已排队",
+        "waiting_tool" => "等待工具",
+        "waiting_external" => "等待外部事件",
+        "starting" => "正在启动",
+        "kill_requested" => "等待终止",
+        "succeeded" | "completed" => "已完成",
+        "failed" => "已失败",
+        "killed" => "已终止",
+        "cancelled" => "已取消",
+        other => return other.replace('_', " "),
+    }
+    .to_string()
+}
+
+fn localized_objective_status(locale: Locale, status: ObjectiveStatus) -> &'static str {
+    match (locale.is_chinese(), status) {
+        (false, ObjectiveStatus::Active) => "ACTIVE",
+        (false, ObjectiveStatus::Paused) => "PAUSED",
+        (false, ObjectiveStatus::Blocked) => "BLOCKED",
+        (false, ObjectiveStatus::Completed) => "COMPLETED",
+        (false, ObjectiveStatus::Cancelled) => "CANCELLED",
+        (false, ObjectiveStatus::Failed) => "FAILED",
+        (true, ObjectiveStatus::Active) => "进行中",
+        (true, ObjectiveStatus::Paused) => "已暂停",
+        (true, ObjectiveStatus::Blocked) => "受阻",
+        (true, ObjectiveStatus::Completed) => "已完成",
+        (true, ObjectiveStatus::Cancelled) => "已取消",
+        (true, ObjectiveStatus::Failed) => "已失败",
+    }
+}
+
+fn localized_background_status(locale: Locale, status: BackgroundTaskStatus) -> &'static str {
+    if !locale.is_chinese() {
+        return background_status_str(status);
+    }
+    match status {
+        BackgroundTaskStatus::Starting => "正在启动",
+        BackgroundTaskStatus::Running => "运行中",
+        BackgroundTaskStatus::KillRequested => "等待终止",
+        BackgroundTaskStatus::Succeeded => "已完成",
+        BackgroundTaskStatus::Failed => "已失败",
+        BackgroundTaskStatus::Killed => "已终止",
+    }
+}
+
+fn localized_delegation_status(locale: Locale, status: &DelegationStatus) -> &'static str {
+    if !locale.is_chinese() {
+        return status.as_str();
+    }
+    match status {
+        DelegationStatus::Queued => "已排队",
+        DelegationStatus::Running => "运行中",
+        DelegationStatus::Completed => "已完成",
+        DelegationStatus::Failed => "已失败",
+        DelegationStatus::Cancelled => "已取消",
+    }
+}
+
+fn localized_pressure(locale: Locale, pressure: &str) -> String {
+    if !locale.is_chinese() {
+        return pressure.to_uppercase();
+    }
+    match pressure {
+        "normal" | "healthy" => "正常",
+        "warning" | "soft" => "预警",
+        "critical" | "hard" => "紧张",
+        "overflow" => "超限",
+        "loading" => "加载中",
+        other => return other.to_string(),
+    }
+    .to_string()
 }
 
 fn ordered_objectives<'a>(
@@ -4162,29 +4749,59 @@ fn inset_rect(area: Rect, horizontal: u16, vertical: u16) -> Rect {
     )
 }
 
-fn format_objective_wait(wait: &ObjectiveWaitCondition) -> String {
+fn format_objective_wait(wait: &ObjectiveWaitCondition, locale: Locale) -> String {
     match wait {
         ObjectiveWaitCondition::ToolTask { task_id } => {
-            format!("tool task {}", short_id(task_id))
+            if locale.is_chinese() {
+                format!("工具任务 {}", short_id(task_id))
+            } else {
+                format!("tool task {}", short_id(task_id))
+            }
         }
         ObjectiveWaitCondition::Delegation { delegation_id } => {
-            format!("delegation {}", short_id(delegation_id))
+            if locale.is_chinese() {
+                format!("委派 {}", short_id(delegation_id))
+            } else {
+                format!("delegation {}", short_id(delegation_id))
+            }
         }
         ObjectiveWaitCondition::Timer { deadline } => {
-            format!("timer {}", deadline.format("%m-%d %H:%M UTC"))
+            if locale.is_chinese() {
+                format!("定时器 {}", deadline.format("%m-%d %H:%M UTC"))
+            } else {
+                format!("timer {}", deadline.format("%m-%d %H:%M UTC"))
+            }
         }
         ObjectiveWaitCondition::Permission { request_id } => {
-            format!("permission {}", short_id(request_id))
+            if locale.is_chinese() {
+                format!("权限审批 {}", short_id(request_id))
+            } else {
+                format!("permission {}", short_id(request_id))
+            }
         }
         ObjectiveWaitCondition::UserInput { session_id } => {
-            format!("user input {}", short_id(session_id))
+            if locale.is_chinese() {
+                format!("用户输入 {}", short_id(session_id))
+            } else {
+                format!("user input {}", short_id(session_id))
+            }
         }
         ObjectiveWaitCondition::ExternalEvent {
             topic,
             correlation_id,
-        } => format!("event {topic} / {}", short_id(correlation_id)),
+        } => {
+            if locale.is_chinese() {
+                format!("事件 {topic} / {}", short_id(correlation_id))
+            } else {
+                format!("event {topic} / {}", short_id(correlation_id))
+            }
+        }
         ObjectiveWaitCondition::ResourceAvailable { resource } => {
-            format!("resource {resource}")
+            if locale.is_chinese() {
+                format!("资源 {resource}")
+            } else {
+                format!("resource {resource}")
+            }
         }
     }
 }
@@ -4199,6 +4816,22 @@ fn format_duration(seconds: u64) -> String {
         format!("{minutes}m {seconds}s")
     } else {
         format!("{seconds}s")
+    }
+}
+
+fn format_duration_localized(seconds: u64, locale: Locale) -> String {
+    if !locale.is_chinese() {
+        return format_duration(seconds);
+    }
+    let hours = seconds / 3_600;
+    let minutes = (seconds % 3_600) / 60;
+    let seconds = seconds % 60;
+    if hours > 0 {
+        format!("{hours}小时{minutes}分")
+    } else if minutes > 0 {
+        format!("{minutes}分{seconds}秒")
+    } else {
+        format!("{seconds}秒")
     }
 }
 
@@ -4230,7 +4863,10 @@ struct ToolSummary {
     meta: Vec<String>,
 }
 
-fn format_tool_activity(payload: &serde_json::Map<String, Value>) -> Option<ToolActivity> {
+fn format_tool_activity(
+    payload: &serde_json::Map<String, Value>,
+    locale: Locale,
+) -> Option<ToolActivity> {
     let calls = payload
         .get("calls")
         .and_then(Value::as_array)
@@ -4262,8 +4898,12 @@ fn format_tool_activity(payload: &serde_json::Map<String, Value>) -> Option<Tool
             .get("arguments")
             .and_then(Value::as_str)
             .unwrap_or("{}");
-        let summary = summarize_tool_call(name, arguments, Some(id));
-        let mut lines = vec![format!("Using {}", summary.title)];
+        let summary = summarize_tool_call(name, arguments, Some(id), locale);
+        let mut lines = vec![if locale.is_chinese() {
+            format!("调用 {}", summary.title)
+        } else {
+            format!("Using {}", summary.title)
+        }];
         if !summary.target.is_empty() {
             lines.push(format!("   {}", summary.target));
         }
@@ -4271,7 +4911,7 @@ fn format_tool_activity(payload: &serde_json::Map<String, Value>) -> Option<Tool
             lines.push(format!("   {}", summary.meta.join("  ·  ")));
         }
         compact.push(lines.join("\n"));
-        let route = format_causal_route(payload);
+        let route = format_causal_route(payload, locale);
         detail.push(format!(
             "{} · {}{}\n{}",
             name,
@@ -4281,12 +4921,18 @@ fn format_tool_activity(payload: &serde_json::Map<String, Value>) -> Option<Tool
         ));
     }
     if deduplicated > 0 {
-        compact.push(format!(
-            "↷ Skipped {deduplicated} duplicate context update(s)"
-        ));
+        compact.push(if locale.is_chinese() {
+            format!("↷ 跳过 {deduplicated} 次重复的上下文更新")
+        } else {
+            format!("↷ Skipped {deduplicated} duplicate context update(s)")
+        });
     }
     if rejected > 0 {
-        compact.push(format!("! Rejected {rejected} unavailable tool call(s)"));
+        compact.push(if locale.is_chinese() {
+            format!("! 拒绝 {rejected} 个不可用的工具调用")
+        } else {
+            format!("! Rejected {rejected} unavailable tool call(s)")
+        });
     }
     if compact.is_empty() {
         return None;
@@ -4297,7 +4943,10 @@ fn format_tool_activity(payload: &serde_json::Map<String, Value>) -> Option<Tool
     })
 }
 
-fn format_tool_result(payload: &serde_json::Map<String, Value>) -> Option<ToolActivity> {
+fn format_tool_result(
+    payload: &serde_json::Map<String, Value>,
+    locale: Locale,
+) -> Option<ToolActivity> {
     let name = payload.get("tool_name").and_then(Value::as_str)?;
     let status = payload
         .get("tool_status")
@@ -4317,26 +4966,34 @@ fn format_tool_result(payload: &serde_json::Map<String, Value>) -> Option<ToolAc
     let mut facts = Vec::new();
     if let Some(value) = &parsed {
         if let Some(execution) = value.get("execution").and_then(Value::as_str) {
-            facts.push(execution.to_string());
+            facts.push(localized_tool_fact(execution, locale).to_string());
         }
         if let Some(exit_code) = value.get("exit_code").and_then(Value::as_i64) {
-            facts.push(format!("exit {exit_code}"));
+            facts.push(if locale.is_chinese() {
+                format!("退出码 {exit_code}")
+            } else {
+                format!("exit {exit_code}")
+            });
         }
         if let Some(task_status) = value.get("task_status").and_then(Value::as_str) {
-            facts.push(task_status.to_string());
+            facts.push(localized_tool_fact(task_status, locale).to_string());
         }
         if let Some(output_empty) = value.get("output_empty").and_then(Value::as_bool) {
             if output_empty {
-                facts.push("no output".to_string());
+                facts.push(locale.text("no output", "没有输出").to_string());
             }
         }
     }
     if facts.is_empty() {
-        facts.push(status.to_string());
+        facts.push(localized_tool_fact(status, locale).to_string());
     }
-    let title = tool_title(name);
-    let compact = if failed {
+    let title = tool_title(name, locale);
+    let compact = if failed && locale.is_chinese() {
+        format!("{title}失败  ·  {}", facts.join("  ·  "))
+    } else if failed {
         format!("Failed {title}  ·  {}", facts.join("  ·  "))
+    } else if locale.is_chinese() {
+        format!("已完成{title}  ·  {}", facts.join("  ·  "))
     } else {
         format!("Used {title}  ·  {}", facts.join("  ·  "))
     };
@@ -4344,28 +5001,53 @@ fn format_tool_result(payload: &serde_json::Map<String, Value>) -> Option<ToolAc
         .get("tool_call_id")
         .and_then(Value::as_str)
         .map(short_call_id)
-        .unwrap_or_else(|| "no call id".to_string());
+        .unwrap_or_else(|| locale.text("no call id", "无调用标识").to_string());
     let detail = format!(
         "{} · {} · {}{}\n{}",
         name,
         call_id,
         status,
-        format_causal_route(payload),
+        format_causal_route(payload, locale),
         truncate(text, 2_000)
     );
     Some(ToolActivity { compact, detail })
 }
 
-fn format_causal_route(payload: &serde_json::Map<String, Value>) -> String {
+fn localized_tool_fact(value: &str, locale: Locale) -> &str {
+    if !locale.is_chinese() {
+        return value;
+    }
+    match value {
+        "sandboxed" => "沙箱执行",
+        "escalated" => "权限扩张执行",
+        "background" => "后台执行",
+        "direct" => "直接执行",
+        "success" | "succeeded" | "completed" => "已完成",
+        "running" => "执行中",
+        "queued" => "排队中",
+        "waiting" => "等待中",
+        "failed" | "error" => "失败",
+        "timeout" => "超时",
+        "rejected" => "已拒绝",
+        "killed" => "已终止",
+        _ => value,
+    }
+}
+
+fn format_causal_route(payload: &serde_json::Map<String, Value>, locale: Locale) -> String {
     let mut fields = Vec::new();
-    for (label, key) in [
-        ("execution", "activation_id"),
-        ("root", "root_turn_id"),
-        ("trigger", "trigger_event_id"),
-        ("cause", "caused_by"),
+    for (english, chinese, key) in [
+        ("execution", "执行", "activation_id"),
+        ("root", "根轮次", "root_turn_id"),
+        ("trigger", "触发", "trigger_event_id"),
+        ("cause", "原因", "caused_by"),
     ] {
         if let Some(value) = payload.get(key).and_then(Value::as_str) {
-            fields.push(format!("{label} {}", short_id(value)));
+            fields.push(format!(
+                "{} {}",
+                locale.text(english, chinese),
+                short_id(value)
+            ));
         }
     }
     if fields.is_empty() {
@@ -4390,7 +5072,12 @@ fn event_thread_kind(payload: &serde_json::Map<String, Value>) -> &str {
         .unwrap_or("dialogue_turn")
 }
 
-fn summarize_tool_call(name: &str, arguments: &str, _call_id: Option<&str>) -> ToolSummary {
+fn summarize_tool_call(
+    name: &str,
+    arguments: &str,
+    _call_id: Option<&str>,
+    locale: Locale,
+) -> ToolSummary {
     let value = serde_json::from_str::<Value>(arguments).unwrap_or(Value::Null);
     let string = |key: &str| {
         value
@@ -4408,64 +5095,73 @@ fn summarize_tool_call(name: &str, arguments: &str, _call_id: Option<&str>) -> T
             if path.is_empty() {
                 query
             } else {
-                format!("{query}  in  {path}")
+                format!("{query}  {}  {path}", locale.text("in", "位于"))
             }
         }
         "list_files" => string("path"),
         "recall" => string("query"),
         "delegate" => string("task"),
         "check_task_after" | "wait_task" | "task_status" | "kill_task" => string("task_id"),
-        "context_tx" => "Mind / Frame transaction".to_string(),
+        "context_tx" => locale
+            .text("Mind / Frame transaction", "认知事务")
+            .to_string(),
         "send_message" => format!("{} · {}", string("session_id"), string("content")),
-        "no_reply" => "No message to active Session".to_string(),
+        "no_reply" => locale
+            .text("No message to active Session", "不向当前会话发送消息")
+            .to_string(),
         _ => first_scalar(&value),
     };
     target = truncate(&target.replace('\n', " "), 180);
     let mut meta = Vec::new();
     if name == "exec" {
         if let Some(cwd) = value.get("cwd").and_then(Value::as_str) {
-            meta.push(format!("cwd {cwd}"));
+            meta.push(format!("{} {cwd}", locale.text("cwd", "工作目录")));
         }
         if value
             .pointer("/requested_permissions/network")
             .and_then(Value::as_bool)
             == Some(true)
         {
-            meta.push("network".to_string());
+            meta.push(locale.text("network", "网络").to_string());
         }
         if value.get("sandbox_permissions").and_then(Value::as_str) == Some("require_escalated") {
-            meta.push("approval required".to_string());
+            meta.push(locale.text("approval required", "需要审批").to_string());
         }
         if let Some(wait_ms) = value.get("wait_ms").and_then(Value::as_u64) {
-            meta.push(format!("wait {}s", wait_ms as f64 / 1_000.0));
+            meta.push(if locale.is_chinese() {
+                format!("等待 {} 秒", wait_ms as f64 / 1_000.0)
+            } else {
+                format!("wait {}s", wait_ms as f64 / 1_000.0)
+            });
         }
     }
     ToolSummary {
-        title: tool_title(name).to_string(),
+        title: tool_title(name, locale).to_string(),
         target,
         meta,
     }
 }
 
-fn tool_title(name: &str) -> &'static str {
-    match name {
-        "read" => "Read file",
-        "write" => "Write file",
-        "edit" => "Edit file",
-        "exec" => "Run command",
-        "search" => "Search workspace",
-        "list_files" => "Browse files",
-        "recall" => "Recall evidence",
-        "context_tx" => "Update context",
-        "delegate" => "Delegate work",
-        "list_tasks" => "List background tasks",
-        "check_task_after" | "wait_task" => "Schedule task checkpoint",
-        "task_status" => "Inspect background task",
-        "kill_task" => "Stop background task",
-        "send_message" => "Send Session message",
-        "no_reply" => "Finish without message",
-        _ => "Use tool",
-    }
+fn tool_title(name: &str, locale: Locale) -> &'static str {
+    let (english, chinese) = match name {
+        "read" => ("Read file", "读取文件"),
+        "write" => ("Write file", "写入文件"),
+        "edit" => ("Edit file", "修改文件"),
+        "exec" => ("Run command", "执行命令"),
+        "search" => ("Search workspace", "搜索工作区"),
+        "list_files" => ("Browse files", "浏览文件"),
+        "recall" => ("Recall evidence", "召回证据"),
+        "context_tx" => ("Update context", "维护认知"),
+        "delegate" => ("Delegate work", "委派工作"),
+        "list_tasks" => ("List background tasks", "列出后台任务"),
+        "check_task_after" | "wait_task" => ("Schedule task checkpoint", "设置任务检查点"),
+        "task_status" => ("Inspect background task", "检查后台任务"),
+        "kill_task" => ("Stop background task", "终止后台任务"),
+        "send_message" => ("Send Session message", "发送会话消息"),
+        "no_reply" => ("Finish without message", "静默结束"),
+        _ => ("Use tool", "调用工具"),
+    };
+    locale.text(english, chinese)
 }
 
 fn first_scalar(value: &Value) -> String {
@@ -4582,6 +5278,7 @@ mod tests {
 
     fn test_state(composer: Composer) -> UiState {
         UiState {
+            locale: Locale::English,
             agent_id: "agent-default".to_string(),
             context_id: "context-default".to_string(),
             session_id: "s".to_string(),
@@ -5287,7 +5984,7 @@ mod tests {
             .join("\n");
         assert!(wide.contains("███╗   ███╗"));
         assert!(wide.contains("Morphz"));
-        assert!(wide.contains(MORPHZ_TAGLINE));
+        assert!(wide.contains(MORPHZ_TAGLINE_EN));
         assert!(!wide.contains("persistent coding agent"));
 
         let medium = state
@@ -5307,7 +6004,7 @@ mod tests {
             .join("\n");
         assert!(narrow.contains("◆"));
         assert!(narrow.contains("Morphz"));
-        assert!(narrow.contains(MORPHZ_TAGLINE));
+        assert!(narrow.contains(MORPHZ_TAGLINE_EN));
         assert!(!narrow.contains(r"|  \/  | ___"));
         assert!(!narrow.contains("███╗   ███╗"));
 
@@ -5318,7 +6015,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(tiny.contains("Morphz"));
-        assert!(!tiny.contains(MORPHZ_TAGLINE));
+        assert!(!tiny.contains(MORPHZ_TAGLINE_EN));
 
         assert_eq!(
             interpolate_color(Color::Reset, Color::Rgb(1, 2, 3), 3, 5),
@@ -5348,6 +6045,7 @@ mod tests {
         let mut composer = Composer::new();
         composer.insert_str("draft");
         let mut state = test_state(composer);
+        state.locale = Locale::SimplifiedChinese;
         state.busy = true;
 
         assert!(matches!(key_action(&mut state, escape), UiAction::None));
@@ -5459,7 +6157,7 @@ mod tests {
                 "arguments": r#"{"command":"cargo test","cwd":"/workspace","requested_permissions":{"network":true},"sandbox_permissions":"require_escalated"}"#
             }]
         });
-        let activity = format_tool_activity(payload.as_object().unwrap()).unwrap();
+        let activity = format_tool_activity(payload.as_object().unwrap(), Locale::English).unwrap();
         assert!(activity.compact.contains("Run command"));
         assert!(activity.compact.contains("cargo test"));
         assert!(activity.compact.contains("network"));
@@ -5477,11 +6175,30 @@ mod tests {
             "tool_status": "success",
             "text": r#"{"execution":"sandboxed","exit_code":0,"output_empty":true}"#
         });
-        let activity = format_tool_result(payload.as_object().unwrap()).unwrap();
+        let activity = format_tool_result(payload.as_object().unwrap(), Locale::English).unwrap();
         assert!(activity.compact.contains("Used Run command"));
         assert!(activity.compact.contains("sandboxed"));
         assert!(activity.compact.contains("exit 0"));
         assert!(activity.compact.contains("no output"));
+    }
+
+    #[test]
+    fn chinese_tool_activity_does_not_mix_english_product_copy() {
+        let payload = serde_json::json!({
+            "calls": [{
+                "id": "call_1",
+                "name": "exec",
+                "arguments": r#"{"command":"cargo test","cwd":"/workspace","requested_permissions":{"network":true},"sandbox_permissions":"require_escalated"}"#
+            }]
+        });
+        let activity =
+            format_tool_activity(payload.as_object().unwrap(), Locale::SimplifiedChinese).unwrap();
+        assert!(activity.compact.contains("调用 执行命令"));
+        assert!(activity.compact.contains("工作目录 /workspace"));
+        assert!(activity.compact.contains("网络"));
+        assert!(activity.compact.contains("需要审批"));
+        assert!(!activity.compact.contains("Using"));
+        assert!(!activity.compact.contains("approval required"));
     }
 
     #[test]
@@ -5506,7 +6223,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(screen.contains("Morphz"));
-        assert!(screen.contains(MORPHZ_TAGLINE));
+        assert!(screen.contains(MORPHZ_TAGLINE_EN));
         assert!(screen.contains("Directory"));
         assert!(screen.contains("Session"));
         assert!(screen.contains("Using"));
@@ -5679,6 +6396,7 @@ mod tests {
     #[test]
     fn empty_state_hides_objective_chrome_and_inherits_terminal_background() {
         let mut state = test_state(Composer::new());
+        state.locale = Locale::SimplifiedChinese;
         let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
         terminal.draw(|frame| state.render(frame)).unwrap();
 
@@ -5693,7 +6411,7 @@ mod tests {
             .filter(|character| !character.is_whitespace())
             .collect::<String>();
         assert!(screen.contains("Morphz"));
-        assert!(screen.contains("? shortcuts"));
+        assert!(compact_screen.contains("快捷键"));
         assert!(!screen.contains("F1 shortcuts"));
         assert!(compact_screen.contains("输入消息"));
         assert!(!screen.contains("OBJECTIVE"));
@@ -5707,6 +6425,38 @@ mod tests {
             .iter()
             .any(|cell| cell.fg == state.theme.focus));
         assert!(buffer.content().iter().all(|cell| cell.bg == Color::Reset));
+    }
+
+    #[test]
+    fn terminal_chrome_uses_one_language_at_a_time() {
+        let render = |locale| {
+            let mut state = test_state(Composer::new());
+            state.locale = locale;
+            let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+            terminal.draw(|frame| state.render(frame)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>()
+        };
+
+        let english = render(Locale::English);
+        assert!(english.contains("Typeamessage"));
+        assert!(english.contains("shortcuts"));
+        assert!(!english.contains("输入消息"));
+        assert!(!english.contains("快捷键"));
+
+        let chinese = render(Locale::SimplifiedChinese);
+        assert!(chinese.contains("输入消息") || chinese.contains("请选择会话"));
+        assert!(chinese.contains("快捷键"));
+        assert!(!chinese.contains("Typeamessage"));
+        assert!(!chinese.contains("shortcuts"));
     }
 
     #[test]
@@ -6038,6 +6788,7 @@ mod tests {
     #[test]
     fn objective_panel_renders_lifecycle_and_progress() {
         let mut state = test_state(Composer::new());
+        state.locale = Locale::SimplifiedChinese;
         state.objectives.push(test_objective());
         state.show_objectives = true;
         let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
@@ -6053,11 +6804,11 @@ mod tests {
             .chars()
             .filter(|character| !character.is_whitespace())
             .collect::<String>();
-        assert!(screen.contains("Context Objectives"));
-        assert!(screen.contains("ACTIVE"));
+        assert!(compact_screen.contains("上下文目标"));
+        assert!(compact_screen.contains("进行中"));
         assert!(compact_screen.contains("原因"));
         assert!(compact_screen.contains("等待后台比赛结束后继续分析"));
-        assert!(screen.contains("waiting: tool task task-123"));
+        assert!(compact_screen.contains("等待:工具任务task-123"));
         assert!(screen.contains("32000 / 256000 tok"));
         assert!(!terminal.backend().cursor_visible());
     }
