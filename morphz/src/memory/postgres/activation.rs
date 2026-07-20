@@ -1,5 +1,6 @@
 use super::{
-    append_event_in_tx, now_text, parse_time, thread::thread_from_row, PostgresStore, StoreError,
+    append_event_in_tx, now_text, parse_time, stored_event_in_tx, thread::thread_from_row,
+    PostgresStore, StoreError,
 };
 use crate::admission::AdmissionClass;
 use crate::event::Event;
@@ -376,6 +377,34 @@ impl ActivationStore for PostgresStore {
         .bind(&now)
         .execute(&mut *tx)
         .await?;
+        let mut advances_clock = false;
+        for row in &pending {
+            let pending_signal = signal_from_row(row)?;
+            if let Some(event) =
+                stored_event_in_tx(&mut tx, &pending_signal.event_id, &thread.context_id).await?
+            {
+                if crate::event::advances_cognitive_clock(&event) {
+                    advances_clock = true;
+                    break;
+                }
+            }
+        }
+        if advances_clock {
+            sqlx::query(
+                r#"INSERT INTO context_cognitive_clocks
+                   (context_id, tick, last_signal_batch_id, revision)
+                   VALUES ($1, 1, $2, 1)
+                   ON CONFLICT(context_id) DO UPDATE SET
+                     tick = context_cognitive_clocks.tick + 1,
+                     last_signal_batch_id = EXCLUDED.last_signal_batch_id,
+                     revision = context_cognitive_clocks.revision + 1
+                   WHERE context_cognitive_clocks.last_signal_batch_id IS DISTINCT FROM EXCLUDED.last_signal_batch_id"#,
+            )
+            .bind(&thread.context_id)
+            .bind(&activation.id)
+            .execute(&mut *tx)
+            .await?;
+        }
         for (ordinal, row) in pending.iter().enumerate() {
             let pending_signal = signal_from_row(row)?;
             sqlx::query(
@@ -409,6 +438,14 @@ impl ActivationStore for PostgresStore {
             .await?;
         let created = activation_from_row(&row)?;
         tx.commit().await?;
+        if advances_clock {
+            tracing::debug!(
+                context_id = %thread.context_id,
+                activation_id = %activation.id,
+                signal_count = pending.len(),
+                "认知活动时钟已随唯一 Signal batch 推进"
+            );
+        }
         Ok(Some(created))
     }
 

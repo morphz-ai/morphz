@@ -9,6 +9,9 @@ use morphz::memory::{
     NewAgent, NewCognitiveContext, NewObjective, NewSession, ObjectiveMutation, ObjectiveStatus,
     SessionMountKind, SessionRecord, SessionStatus,
 };
+use morphz::orchestrator::context::{
+    FrameRecallDirection, FrameRecallRequest, RecallSearchRequest,
+};
 use morphz::permission::{ApprovalPolicy, PermissionMode, ReviewerKind, SandboxMode};
 use morphz::provider::build_configured_client;
 use morphz::provider::{list_provider_models, probe_provider};
@@ -788,6 +791,18 @@ async fn dispatch_runtime_command(
         "context show" => show_context(&runtime, &invocation, &default_context_id, false).await,
         "context status" => show_context(&runtime, &invocation, &default_context_id, true).await,
         "context audit" => audit_context(&runtime, &invocation, &default_context_id).await,
+        "context recall-index" | "context recall-index inspect" => {
+            inspect_recall_index(&runtime, &invocation, &default_context_id).await
+        }
+        "context recall-index rebuild" => {
+            rebuild_recall_index(&runtime, &invocation, &default_context_id).await
+        }
+        "context recall search" => {
+            search_context_recall(&runtime, &invocation, &default_context_id).await
+        }
+        "context recall frame" => {
+            recall_context_frame(&runtime, &invocation, &default_context_id).await
+        }
         "scheduler" | "scheduler show" => {
             show_scheduler(&runtime, &invocation, &default_context_id).await
         }
@@ -1317,6 +1332,107 @@ async fn audit_context(
     if !audit.matches {
         return Err(format!("Context '{id}' 的 Mind Projection 与 Ledger 不一致").into());
     }
+    Ok(())
+}
+
+fn selected_context_id<'a>(
+    invocation: &'a Invocation,
+    default_context_id: &'a str,
+    positional: bool,
+) -> &'a str {
+    positional
+        .then(|| invocation.prompt_args().first().map(String::as_str))
+        .flatten()
+        .or_else(|| option_value(invocation, "context"))
+        .unwrap_or(default_context_id)
+}
+
+async fn inspect_recall_index(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    default_context_id: &str,
+) -> Result<(), AppError> {
+    let context_id = selected_context_id(invocation, default_context_id, true);
+    let audit = runtime.inspect_recall_index(context_id).await?;
+    println!("{}", serde_json::to_string_pretty(&audit)?);
+    Ok(())
+}
+
+async fn rebuild_recall_index(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    default_context_id: &str,
+) -> Result<(), AppError> {
+    let context_id = selected_context_id(invocation, default_context_id, true);
+    let audit = runtime.rebuild_recall_index(context_id).await?;
+    println!("{}", serde_json::to_string_pretty(&audit)?);
+    Ok(())
+}
+
+async fn search_context_recall(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    default_context_id: &str,
+) -> Result<(), AppError> {
+    let query = invocation.prompt_args().join(" ");
+    if query.trim().is_empty() {
+        return Err("context recall search 需要 QUERY".into());
+    }
+    let limit = option_value(invocation, "limit")
+        .unwrap_or("20")
+        .parse::<usize>()
+        .map_err(|_| "--limit 必须是整数")?
+        .clamp(1, 100);
+    let page = runtime
+        .search_recall(RecallSearchRequest {
+            context_id: selected_context_id(invocation, default_context_id, false).to_string(),
+            query,
+            limit,
+        })
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&page)?);
+    Ok(())
+}
+
+async fn recall_context_frame(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    default_context_id: &str,
+) -> Result<(), AppError> {
+    let frame_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("context recall frame 需要 FRAME")?
+        .clone();
+    let depth = option_value(invocation, "depth")
+        .unwrap_or("0")
+        .parse::<usize>()
+        .map_err(|_| "--depth 必须是整数")?
+        .min(4);
+    let max_nodes = option_value(invocation, "max-nodes")
+        .unwrap_or("32")
+        .parse::<usize>()
+        .map_err(|_| "--max-nodes 必须是整数")?
+        .clamp(1, 128);
+    let direction = match option_value(invocation, "direction").unwrap_or("ancestors") {
+        "ancestors" => FrameRecallDirection::Ancestors,
+        "descendants" => FrameRecallDirection::Descendants,
+        "both" => FrameRecallDirection::Both,
+        value => return Err(format!("未知 direction '{value}'").into()),
+    };
+    let page = runtime
+        .recall_frame(FrameRecallRequest {
+            context_id: selected_context_id(invocation, default_context_id, false).to_string(),
+            frame_id,
+            depth,
+            direction,
+            include_bodies: !switch_enabled(invocation, "no-bodies")?,
+            include_events: switch_enabled(invocation, "include-events")?,
+            max_nodes,
+            cursor: option_value(invocation, "cursor").map(ToOwned::to_owned),
+        })
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&page)?);
     Ok(())
 }
 

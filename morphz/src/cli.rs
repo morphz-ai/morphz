@@ -800,6 +800,118 @@ fn context_command(locale: Locale) -> Command {
                     ))),
                 "Example:\n  morphz context audit context-default",
             ),
+            Command::new("recall-index")
+                .about(locale.text(
+                    "Inspect or rebuild the derived lexical Recall index",
+                    "检查或重建派生的词法召回索引",
+                ))
+                .subcommands([
+                    output_examples(
+                        locale,
+                        Command::new("inspect")
+                            .about(locale.text(
+                                "Show Recall index capability and document counts",
+                                "显示召回索引能力与文档数量",
+                            ))
+                            .arg(prompt_arg("ID", 0, Some(1)).help(locale.text(
+                                "Context ID; defaults to --context",
+                                "上下文标识；默认使用 --context",
+                            ))),
+                        "Example:\n  morphz context recall-index inspect context-default --format=json",
+                    ),
+                    output_examples(
+                        locale,
+                        Command::new("rebuild")
+                            .about(locale.text(
+                                "Rebuild the derived Recall index from Ledger and Mind",
+                                "根据账本与认知重建派生的召回索引",
+                            ))
+                            .arg(prompt_arg("ID", 0, Some(1)).help(locale.text(
+                                "Context ID; defaults to --context",
+                                "上下文标识；默认使用 --context",
+                            ))),
+                        "Example:\n  morphz context recall-index rebuild context-default --format=json",
+                    ),
+                ]),
+            Command::new("recall")
+                .about(locale.text(
+                    "Search Context memory or traverse one Frame lineage",
+                    "搜索上下文记忆或遍历一个认知框架的血缘",
+                ))
+                .subcommands([
+                    output_examples(
+                        locale,
+                        Command::new("search")
+                            .about(locale.text(
+                                "Search indexed Event and Frame documents",
+                                "搜索已索引的事件与认知框架文档",
+                            ))
+                            .arg(prompt_arg("QUERY", 1, None).help(locale.text(
+                                "Unicode lexical query",
+                                "Unicode 词法查询",
+                            )))
+                            .arg(local_value_arg(
+                                "limit",
+                                "limit",
+                                "N",
+                                locale.text("Maximum matches", "最大匹配数量"),
+                            )),
+                        "Example:\n  morphz context recall search 沙箱 权限 --limit=20 --format=json",
+                    ),
+                    output_examples(
+                        locale,
+                        Command::new("frame")
+                            .about(locale.text(
+                                "Traverse Frame sources and relations",
+                                "遍历认知框架的来源与关系",
+                            ))
+                            .arg(prompt_arg("FRAME", 1, Some(1)).help(locale.text(
+                                "Frame ID",
+                                "认知框架标识",
+                            )))
+                            .arg(local_value_arg(
+                                "depth",
+                                "depth",
+                                "N",
+                                locale.text("Traversal depth, 0..4", "遍历深度，范围 0..4"),
+                            ))
+                            .arg(local_value_arg(
+                                "direction",
+                                "direction",
+                                "DIRECTION",
+                                locale.text(
+                                    "ancestors, descendants or both",
+                                    "向上游、向下游或双向遍历",
+                                ),
+                            ))
+                            .arg(local_value_arg(
+                                "max-nodes",
+                                "max-nodes",
+                                "N",
+                                locale.text("Maximum nodes, 1..128", "最大节点数，范围 1..128"),
+                            ))
+                            .arg(local_value_arg(
+                                "cursor",
+                                "cursor",
+                                "CURSOR",
+                                locale.text("Opaque continuation cursor", "不透明的续页游标"),
+                            ))
+                            .arg(local_switch_arg(
+                                "include-events",
+                                "include-events",
+                                locale.text(
+                                    "Include complete Event source bodies",
+                                    "包含完整的事件来源正文",
+                                ),
+                            ))
+                            .arg(local_switch_arg(
+                                "no-bodies",
+                                "no-bodies",
+                                locale.text("Omit Frame bodies", "省略认知框架正文"),
+                            )),
+                        "Example:\n  morphz context recall frame memory/sandbox --depth=2 --direction=ancestors --format=json",
+                    ),
+                ]),
         ])
         .after_help(locale.text(
             "Run `morphz context <COMMAND> --help` for command-specific help.",

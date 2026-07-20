@@ -290,6 +290,8 @@ pub struct OrchestratorConfig {
     pub max_context_transactions_per_turn: usize,
     /// 当前 Context Encoding 自动包含哪些 Session 历史。
     pub session_working_set: SessionWorkingSetConfig,
+    /// Frame 从显式 retire 请求进入真正 retired 前经历的认知活动窗口。
+    pub frame_retirement: FrameRetirementConfig,
     /// 是否在 Ledger 中保留完整 Context Encoding 与模型消息。
     /// 默认仅保存内容哈希和尺寸；实时事件订阅仍能看到完整内容。
     pub persist_full_context_inspect: bool,
@@ -317,8 +319,23 @@ impl Default for OrchestratorConfig {
             attempt_soft_checkpoint_interval: 90,
             max_context_transactions_per_turn: 6,
             session_working_set: SessionWorkingSetConfig::default(),
+            frame_retirement: FrameRetirementConfig::default(),
             persist_full_context_inspect: false,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct FrameRetirementConfig {
+    /// 只在当前 Cognitive Context 接收新外部事实时推进；不是墙钟时间。
+    #[serde(deserialize_with = "deserialize_positive_u64")]
+    pub cooling_ticks: u64,
+}
+
+impl Default for FrameRetirementConfig {
+    fn default() -> Self {
+        Self { cooling_ticks: 8 }
     }
 }
 
@@ -427,6 +444,18 @@ where
     D: serde::Deserializer<'de>,
 {
     let value = usize::deserialize(deserializer)?;
+    if value == 0 {
+        Err(serde::de::Error::custom("该配置值必须大于等于 1"))
+    } else {
+        Ok(value)
+    }
+}
+
+fn deserialize_positive_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = u64::deserialize(deserializer)?;
     if value == 0 {
         Err(serde::de::Error::custom("该配置值必须大于等于 1"))
     } else {

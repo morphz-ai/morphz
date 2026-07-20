@@ -286,11 +286,19 @@ interface ContextRelation {
   created_version: number
 }
 
+interface FrameRetirement {
+  frame_id: string
+  requested_at_tick: number
+  eligible_at_tick: number
+  reason: string
+}
+
 interface MindState {
   version: number
   frames: ContextFrame[]
   relations: ContextRelation[]
   retired: string[]
+  retiring: Record<string, FrameRetirement>
   protected: string[]
   checkpoints: Array<{ id: string; created_version: number }>
 }
@@ -366,9 +374,34 @@ interface ContextViewResponse {
   thread_phases: Record<string, 'idle' | 'runnable' | 'running' | 'waiting'>
   schedules: ScheduleRecord[]
   objectives: ObjectiveRecord[]
+  cognitive_clock: { tick: number; last_signal_batch_id?: string; revision: number }
   state: MindState
   observations: ContextObservation[]
   pressure: ContextPressure
+}
+
+interface RecallSearchHit {
+  document_kind: 'event' | 'frame'
+  document_id: string
+  revision: number
+  retired: boolean
+  score: number
+  preview: string
+}
+
+interface FrameRecallPage {
+  root_frame_id: string
+  mind_version: number
+  nodes: Array<{ kind: 'frame' | 'event'; id: string; depth: number; lifecycle?: string; preview?: string }>
+  edges: Array<{ subject: string; relation: string; object: string }>
+  truncated: boolean
+  next_cursor?: string
+}
+
+interface RecallIndexAudit {
+  capability: { mode: string; indexed: boolean; unicode_normalization: string; detail: string }
+  event_documents: number
+  frame_documents: number
 }
 
 interface DelegationRecord {
@@ -970,6 +1003,12 @@ export default function App() {
   const [selectedContextId, setSelectedContextId] = useState('')
   const [selectedSessionId, setSelectedSessionId] = useState('')
   const [selectedFrameId, setSelectedFrameId] = useState('')
+  const [recallQuery, setRecallQuery] = useState('')
+  const [recallMatches, setRecallMatches] = useState<RecallSearchHit[]>([])
+  const [frameLineage, setFrameLineage] = useState<FrameRecallPage | null>(null)
+  const [recallIndex, setRecallIndex] = useState<RecallIndexAudit | null>(null)
+  const [recallBusy, setRecallBusy] = useState(false)
+  const [mutatingFrameId, setMutatingFrameId] = useState('')
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
   const [sending, setSending] = useState(false)
@@ -1114,6 +1153,75 @@ export default function App() {
   useEffect(() => {
     loadSessionRef.current = loadSession
   }, [loadSession])
+
+  const searchRecall = useCallback(async () => {
+    if (!selectedContextId || !recallQuery.trim()) return
+    setRecallBusy(true)
+    try {
+      const response = await fetch(
+        `${CORE_HTTP_URL}/api/contexts/${encodeURIComponent(selectedContextId)}/recall/search?query=${encodeURIComponent(recallQuery.trim())}&limit=30`,
+        { headers: apiHeaders() },
+      )
+      if (!response.ok) throw new Error(t('errors.contextHttp', { status: response.status }))
+      const page = await response.json() as { matches: RecallSearchHit[] }
+      setRecallMatches(page.matches)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setRecallBusy(false)
+    }
+  }, [apiHeaders, recallQuery, selectedContextId, t])
+
+  const mutateFrameLifecycle = useCallback(async (frameId: string, action: 'restore' | 'protect' | 'unprotect') => {
+    if (!selectedContextId || !selectedSessionId || !contextView) return
+    setMutatingFrameId(frameId)
+    try {
+      const response = await fetch(
+        `${CORE_HTTP_URL}/api/contexts/${encodeURIComponent(selectedContextId)}/frames/${encodeURIComponent(frameId)}/lifecycle`,
+        {
+          method: 'POST',
+          headers: apiHeaders(true),
+          body: JSON.stringify({
+            session_id: selectedSessionId,
+            expected_version: contextView.state.version,
+            action,
+          }),
+        },
+      )
+      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`)
+      await loadSessionRef.current(selectedSessionId, selectedContextId)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setMutatingFrameId('')
+    }
+  }, [apiHeaders, contextView, selectedContextId, selectedSessionId])
+
+  useEffect(() => {
+    if (view !== 'mind' || !selectedContextId) return
+    let cancelled = false
+    void fetch(
+      `${CORE_HTTP_URL}/api/contexts/${encodeURIComponent(selectedContextId)}/recall/index`,
+      { headers: apiHeaders() },
+    ).then(async response => {
+      if (response.ok && !cancelled) setRecallIndex(await response.json() as RecallIndexAudit)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [apiHeaders, selectedContextId, view])
+
+  useEffect(() => {
+    if (view !== 'mind' || !selectedContextId || !selectedFrameId) return
+    let cancelled = false
+    void fetch(
+      `${CORE_HTTP_URL}/api/contexts/${encodeURIComponent(selectedContextId)}/frames/${encodeURIComponent(selectedFrameId)}/recall?depth=2&direction=both&include_bodies=false&max_nodes=64`,
+      { headers: apiHeaders() },
+    ).then(async response => {
+      if (response.ok && !cancelled) setFrameLineage(await response.json() as FrameRecallPage)
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [apiHeaders, selectedContextId, selectedFrameId, view])
 
   useEffect(() => {
     try {
@@ -1553,7 +1661,12 @@ export default function App() {
     ? schedulerSnapshot.summary.waiting_approval_jobs + schedulerSnapshot.summary.active_schedules
     : runningObjectives.filter(item => Boolean(item.wait_condition)).length
   const selectedFrame = contextView?.state.frames.find(frame => frame.id === selectedFrameId)
+  const selectedFrameLineage = frameLineage?.root_frame_id === selectedFrameId ? frameLineage : null
   const retired = new Set(contextView?.state.retired ?? [])
+  const retiring = contextView?.state.retiring ?? {}
+  const activeFrameCount = (contextView?.state.frames ?? []).filter(frame => !retired.has(frame.id)).length
+  const retiringFrameCount = Object.keys(retiring).length
+  const selectedRetirement = selectedFrame ? retiring[selectedFrame.id] : undefined
 
   useEffect(() => {
     // Restore composer focus once a send finishes so the user can keep typing.
@@ -1628,6 +1741,7 @@ export default function App() {
       setPendingTurn(null)
     }
     setSelectedAgentId(session.agent_id)
+    setFrameLineage(null)
     setSelectedContextId(session.context_id)
     setSelectedSessionId(session.id)
     setSessionMenuOpen(false)
@@ -2502,11 +2616,23 @@ export default function App() {
               </header>
 
               <div className="mind-metrics">
-                <div><Brain size={18} /><span><small>{t('mindView.metrics.frames').toUpperCase()}</small><strong>{contextView?.state.frames.length ?? 0}</strong></span></div>
+                <div><Brain size={18} /><span><small>{t('mindView.metrics.frames').toUpperCase()}</small><strong>{activeFrameCount} · {retiringFrameCount} · {retired.size}</strong></span></div>
                 <div><GitBranch size={18} /><span><small>{t('mindView.metrics.relations').toUpperCase()}</small><strong>{contextView?.state.relations.length ?? 0}</strong></span></div>
                 <div><Database size={18} /><span><small>{t('mindView.metrics.observations').toUpperCase()}</small><strong>{contextView?.observations.length ?? 0}</strong></span></div>
-                <div><Layers3 size={18} /><span><small>{t('mindView.metrics.residentSessions').toUpperCase()}</small><strong>{contextView?.session_working_set.full_session_ids.length ?? 0}</strong></span></div>
+                <div><Clock3 size={18} /><span><small>{t('mindView.metrics.cognitiveTick').toUpperCase()}</small><strong>{contextView?.cognitive_clock.tick ?? 0}</strong></span></div>
               </div>
+
+              <form className="recall-search" onSubmit={event => { event.preventDefault(); void searchRecall() }}>
+                <input value={recallQuery} onChange={event => setRecallQuery(event.target.value)} placeholder={t('mindView.searchPlaceholder')} />
+                <button type="submit" disabled={recallBusy || !recallQuery.trim()}><Database size={14} /> {recallBusy ? t('mindView.searching') : t('mindView.search')}</button>
+                {recallIndex && <small className={recallIndex.capability.indexed ? 'indexed' : 'degraded'}>{recallIndex.capability.mode} · {recallIndex.event_documents + recallIndex.frame_documents}</small>}
+              </form>
+              {recallMatches.length > 0 && <div className="recall-results">{recallMatches.map(hit => (
+                <button key={`${hit.document_kind}-${hit.document_id}`} type="button" onClick={() => hit.document_kind === 'frame' && setSelectedFrameId(hit.document_id)}>
+                  <span><b>{hit.document_kind}</b><strong>{hit.document_id}</strong>{hit.retired && <em>{t('mindView.retired')}</em>}</span>
+                  <small>{hit.preview}</small>
+                </button>
+              ))}</div>}
 
               <div className="mind-grid">
                 <div className="frame-library">
@@ -2515,7 +2641,7 @@ export default function App() {
                     {(contextView?.state.frames ?? []).map(frame => (
                       <button className={frame.id === selectedFrameId ? 'is-selected' : ''} key={frame.id} type="button" onClick={() => setSelectedFrameId(frame.id)}>
                         <span><strong>{frame.id}</strong><small>r{frame.revision} · v{frame.updated_version} · {t('mindView.sourceCount', { count: frame.sources.length })}</small></span>
-                        {retired.has(frame.id) && <em>{t('mindView.retired').toUpperCase()}</em>}
+                        {retired.has(frame.id) ? <em>{t('mindView.retired').toUpperCase()}</em> : retiring[frame.id] ? <em className="retiring">{t('mindView.retiring').toUpperCase()}</em> : null}
                       </button>
                     ))}
                   </div>
@@ -2525,6 +2651,14 @@ export default function App() {
                   {selectedFrame ? (
                     <>
                       <header><span><small>{t('mindView.frame').toUpperCase()}</small><strong>{selectedFrame.id}</strong></span><em>{t('mindView.revision', { revision: selectedFrame.revision })}</em></header>
+                      <div className="frame-lifecycle">
+                        <strong>{retired.has(selectedFrame.id) ? t('mindView.retired') : selectedRetirement ? t('mindView.retiring') : t('mindView.active')}</strong>
+                        {selectedRetirement && <span>{t('mindView.remainingTicks', { count: Math.max(0, selectedRetirement.eligible_at_tick - (contextView?.cognitive_clock.tick ?? 0)) })} · {selectedRetirement.reason}</span>}
+                        <div>
+                          {(retired.has(selectedFrame.id) || selectedRetirement) && <button type="button" disabled={mutatingFrameId === selectedFrame.id} onClick={() => void mutateFrameLifecycle(selectedFrame.id, 'restore')}>{t('mindView.restore')}</button>}
+                          <button type="button" disabled={mutatingFrameId === selectedFrame.id} onClick={() => void mutateFrameLifecycle(selectedFrame.id, contextView?.state.protected.includes(selectedFrame.id) ? 'unprotect' : 'protect')}>{contextView?.state.protected.includes(selectedFrame.id) ? t('mindView.unprotect') : t('mindView.protect')}</button>
+                        </div>
+                      </div>
                       <pre>{selectedFrame.body}</pre>
                       <div className="frame-meta">
                         <div><small>{t('mindView.created').toUpperCase()}</small><strong>v{selectedFrame.created_version}</strong></div>
@@ -2534,6 +2668,7 @@ export default function App() {
                       </div>
                       {selectedFrame.sources.length > 0 && <div className="source-list">{selectedFrame.sources.map(source => <span key={source}>{source}</span>)}</div>}
                       <section className="relations"><h3>{t('mindView.relationsTitle').toUpperCase()}</h3>{(contextView?.state.relations ?? []).filter(item => item.subject === selectedFrame.id || item.object === selectedFrame.id).map((item, index) => <div key={`${item.subject}-${item.relation}-${item.object}-${index}`}><span>{item.subject}</span><b>{item.relation}</b><span>{item.object}</span></div>)}</section>
+                      <section className="relations lineage"><h3>{t('mindView.lineage').toUpperCase()}</h3>{(selectedFrameLineage?.edges ?? []).map((item, index) => <div key={`${item.subject}-${item.relation}-${item.object}-${index}`}><span>{item.subject}</span><b>{item.relation}</b><span>{item.object}</span></div>)}{selectedFrameLineage?.truncated && <small>{t('mindView.lineageTruncated')}</small>}</section>
                     </>
                   ) : <div className="small-empty">{t('mindView.emptyFrame')}</div>}
                 </article>
@@ -2543,7 +2678,7 @@ export default function App() {
                 <div><small>{t('mindView.sessionWindow').toUpperCase()}</small><strong>{Math.round((contextView?.session_working_set.active_window_secs ?? 0) / 3600)}h</strong><span>{t('mindView.sessionWindowDetail', { count: contextView?.session_working_set.max_sessions ?? 0 })}</span></div>
                 <div><small>{t('mindView.pressure').toUpperCase()}</small><strong>{statusLabel(contextView?.pressure.level ?? 'normal', t)}</strong><span>{contextView?.pressure.token_accuracy ?? 'estimate'}</span></div>
                 <div><small>{t('mindView.checkpoints').toUpperCase()}</small><strong>{contextView?.state.checkpoints.length ?? 0}</strong><span>{t('mindView.checkpointsDetail')}</span></div>
-                <div><small>{t('mindView.retiredCount').toUpperCase()}</small><strong>{contextView?.state.retired.length ?? 0}</strong><span>{t('mindView.retiredDetail')}</span></div>
+                <div><small>{t('mindView.recallIndex').toUpperCase()}</small><strong>{recallIndex?.capability.indexed ? t('mindView.indexed') : t('mindView.degraded')}</strong><span>{recallIndex?.capability.detail ?? t('mindView.indexUnknown')}</span></div>
               </section>
             </section>
           )}

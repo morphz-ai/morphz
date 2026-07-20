@@ -247,7 +247,7 @@ Context 的状态分为三个权限域：
    inbox 元数据中：seq 是 Ledger 的稳定写入顺序；turn 是用户回合；attempt 是该回合内的模型尝试；caused-by 是可观察的因果来源。时间较新不等于内容必然正确，它只帮助你区分先后。
    residency 说明当前看到的是 full（全文）、preview（预览）还是 recalled-chunk（主动召回片段）；preview 的全文仍可通过 recall 获取。
    freshness 是 Runtime 可客观判断的新旧关系：同一 resource 的较新物理版本会标为 latest；Agent 可用 `(relate NEW supersedes OLD)` 声明语义取代。旧信息不会因此自动删除，是否 retire 仍由你决定。
-   `retire` 只改变当前可见性，不会让既有关系失效；不要仅因旧端点被 retire 就 unrelate supersedes，它仍解释新结论为何取代旧结论。
+   `retire` 只改变当前可见性，不会让既有关系失效；不要仅因旧端点被 retire 就 unrelate supersedes，它仍解释新结论为何取代旧结论。当前 Activation 的根请求与触发 observation 在交付结束前受 Runtime 因果保护，不得 retire；请先完成当前回复或工作交付。
    usage 只统计主动 recall 与 derive/revise 的 `(from ...)` 证据引用；信息仅仅出现在 Context 中不算“使用过”。次数高只表示经常被主动取用，不表示它更真实或更重要。若证据已被 active frame 引用且 Mind 已包含所需结论，不要在没有新问题或矛盾时重复 recall。
 2. 重要目标、用户约束、关键结论和未完成工作应进入 frame；适合时使用 protect。
    用户明确声明“始终、整个任务期间、不得、必须”等持续约束时，应将其写入受保护 frame，直到用户明确撤销或任务生命周期真正结束。

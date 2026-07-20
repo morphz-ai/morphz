@@ -16,7 +16,7 @@ v1 使用缩小阈值模拟超长生命周期，避免为了验证行为真的�
 | Maintenance reserve | 2,500 |
 | Critical threshold | 6,500 |
 | 初始 observation | 38 |
-| 初始 estimated tokens | 9,177 |
+| 初始 estimated tokens | 11,609（当前本地估算器） |
 
 合成历史不包含用户数据或仓库代码，包括：
 
@@ -40,6 +40,22 @@ cargo run -p morphz-evals --bin context_pressure_eval -- create /private/tmp/mor
 ```bash
 cargo run -p morphz-evals --bin context_pressure_eval -- inspect RUN_ROOT
 ```
+
+v2 还提供两组不替模型做语义选择的夹具：
+
+```bash
+# 大而重要 Frame、小而过期 Frame 与大量已消化 Observation 同时存在
+cargo run -p morphz-evals --bin context_pressure_eval -- \
+  create-frame-value /private/tmp/morphz-eval-runs
+
+# 已无 seed Observation 可清，压力主要来自可归纳的重复 Frame
+cargo run -p morphz-evals --bin context_pressure_eval -- \
+  create-frame-consolidation /private/tmp/morphz-eval-runs
+```
+
+`frame-value` 中的重要 Frame 故意不 `protect`，以验证模型不会仅因其体积较大而退休；
+`frame-consolidation` 则要求最终状态保留长期边界和两条共同原则，但不规定模型必须生成几个
+Frame、使用什么 ID，或选择 `derive` 还是 `revise`。
 
 成功条件：
 
@@ -73,6 +89,34 @@ Agent 一次提交成功：
 - estimated tokens 减少 7,037，最终为初始的 23.3%。
 
 这证明当前机制在一次受控真实运行中形成了完整闭环：`pressure → 自主 derive/protect/retire → pressure 恢复 normal → reply`。
+
+## 2026-07-20 多模型与 Frame 策略回归
+
+Observation-only 场景使用同一 OpenAI Responses-compatible Provider、相同隔离数据和
+`soft=6,000 / hard=9,000 / reserve=2,500`，不给模型追加“优先清 Observation”的测试提示。
+
+| Model | Seed Observation retired | Active Frame | 估算 Token 初始→最终 | 结果 |
+| --- | ---: | ---: | ---: | --- |
+| `gemini-3-flash-agent` | 38/38 | 4 | 11,609 → 1,957 | 通过 |
+| `qwen3.8-max-preview` | 38/38 | 1 | 11,609 → 2,146 | 通过 |
+| `qwen-glm-5.2` | 38/38 | 5 | 11,609 → 2,255 | 通过 |
+| `gpt-5.6-sol` | 38/38 | 2 | 11,609 → 1,925 | 通过 |
+| `deepseek-v4-pro` | 33/38 | 1 | 11,609 → 2,979 | 通过 |
+
+五个模型均先处理已消化 Observation，并保留 `ORBIT-7 / 9090 / 30 天 / SQLite WAL`。
+DeepSeek 选择额外保护五条原始关键证据，因此压缩率较低，但仍退出 critical。
+
+Gemini 继续执行两个更强场景：
+
+- `frame-value`：38/38 seed Observation 被退休；未受保护、内容较大的
+  `durable-control-plane` 与权威 `current-route` 均保留；13,858 → 3,976，结果通过。
+- `frame-consolidation`：初态 13 个 Frame、无活动 seed Observation；模型把 12 个重复案例
+  归纳为两个原则 Frame，建立 12 条 `supersedes`，精简而保留长期用户边界；
+  11,991 → 1,752，结果通过。
+
+第一次 consolidation 探针还发现：模型可能在维护事务中误退休当前用户请求，导致下一次求值
+选择 `no_reply`。Runtime 现以当前 Activation 的 root/trigger Event 做因果 fencing；交付完成前
+`context_tx` 不得退休它们。该约束有确定性单元测试，修复后的同场景真实回归产生且仅产生一次回复。
 
 ## 结论边界
 

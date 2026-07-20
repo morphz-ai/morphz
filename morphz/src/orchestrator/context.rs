@@ -3,12 +3,13 @@ use crate::event::{
     Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use crate::memory::{
-    DeliveryStatus, EventStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
-    MindSnapshotRecord, NewMindProjection, ObjectiveRecord, ObjectiveStore, QueryFilter,
-    ScheduleRecord, ScheduleStatus, SessionAttentionState, SessionAttentionUpdate,
-    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionStatus, SessionStore,
-    ThreadActivationRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
-    WorkerCoordinationMode,
+    CognitiveClockStore, ContextCognitiveClock, DeliveryStatus, EventStore, MindProjectionCommit,
+    MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewMindProjection,
+    ObjectiveRecord, ObjectiveStore, QueryFilter, RecallDocument, RecallDocumentKind,
+    RecallIndexAudit, RecallProjectionStore, RecallSearchHit, ScheduleRecord, ScheduleStatus,
+    SessionAttentionState, SessionAttentionUpdate, SessionProjectionMutation,
+    SessionProjectionStore, SessionRecord, SessionStatus, SessionStore, ThreadActivationRecord,
+    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, WorkerCoordinationMode,
 };
 use crate::orchestrator::context_contract::{
     render_context_tx_epistemic_guidance, ContractClause, EPISTEMIC_CONTRACT,
@@ -21,15 +22,16 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 20;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 21;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
+const FRAME_RECALL_PAGE_CHAR_BUDGET: usize = 24_000;
 
 fn validate_snapshot_head_event(
     snapshot: &MindSnapshotRecord,
@@ -119,7 +121,7 @@ const CONTEXT_OPERATIONS: &[ContextOperationSpec] = &[
     ContextOperationSpec {
         name: "retire",
         syntax: "(retire ID...)",
-        meaning: "移出当前 Context；原因只能写在事务级 reason 中",
+        meaning: "Observation 立即移出 Context；容量压力下优先清理已消化且不再需要的 Observation。普通 Frame 进入认知活动时钟驱动的整理期，当前 Token 释放量为 0；Frame 必须按语义价值、有效性和 successor 关系判断，不能仅按体积退休；已有安全 successor 的 Frame 可在同一事务立即收口；原因只能写在事务级 reason 中",
     },
     ContextOperationSpec {
         name: "restore",
@@ -185,7 +187,7 @@ pub fn context_tx_tool_description() -> String {
         .collect::<Vec<_>>()
         .join("；");
     format!(
-        "原子修改你拥有的 Mind Context 与 Session attention。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。Session ID 不是 observation ref，必须使用 session-directory 中的原始 ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且 Mind 修改与 retire-session/restore-session 整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Context 修改不是给用户的最终回复。提交 BODY 时还必须遵守由协议单一事实源生成的认识契约：{}",
+        "原子修改你拥有的 Mind Context 与 Session attention。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。Session ID 不是 observation ref，必须使用 session-directory 中的原始 ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且 Mind 修改与 retire-session/restore-session 整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Observation 的 retire 会立即释放其活动编码；容量压力下优先清理已消化且不再需要的 Observation。当前 Activation 的根请求与触发 observation 在交付结束前受 Runtime 因果保护，不得 retire；请先完成当前回复或工作交付。普通 Frame 的 retire 只进入整理期，当前释放量为 0；Frame 必须按语义价值、有效性、使用和关系判断，不能仅因体积较大而退休。整理期应优先 revise、derive 或建立 sources + supersedes 的 successor；安全 successor 可让来源 Frame 在同一事务立即退休。Frame 数量本身不是退休理由；被退休内容没有删除，可按关键词、ID 和关系链 recall。Context 修改不是给用户的最终回复。提交 BODY 时还必须遵守由协议单一事实源生成的认识契约：{}",
         render_context_tx_epistemic_guidance()
     )
 }
@@ -263,6 +265,19 @@ pub struct ContextRelation {
     pub created_version: u64,
 }
 
+/// A model-requested retirement that is still inside its cognitive organizing
+/// window. Generation and Frame revision fence later automatic finalization.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FrameRetirement {
+    pub frame_id: String,
+    pub requested_frame_revision: u64,
+    pub requested_mind_version: u64,
+    pub requested_at_tick: u64,
+    pub eligible_at_tick: u64,
+    pub generation: u64,
+    pub reason: String,
+}
+
 /// Agent 显式建立的 Mind 恢复点。快照不包含其他 checkpoint，
 /// 避免递归复制；Runtime 只在 Context 中展示元数据。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -271,6 +286,8 @@ pub struct MindCheckpoint {
     pub frames: Vec<ContextFrame>,
     pub relations: Vec<ContextRelation>,
     pub retired: BTreeSet<String>,
+    #[serde(default)]
+    pub retiring: BTreeMap<String, FrameRetirement>,
     pub protected: BTreeSet<String>,
     pub created_version: u64,
 }
@@ -286,6 +303,8 @@ pub struct MindState {
     #[serde(default)]
     pub relations: Vec<ContextRelation>,
     pub retired: BTreeSet<String>,
+    #[serde(default)]
+    pub retiring: BTreeMap<String, FrameRetirement>,
     pub protected: BTreeSet<String>,
     #[serde(default)]
     pub checkpoints: Vec<MindCheckpoint>,
@@ -296,6 +315,17 @@ pub struct ContextChange {
     pub operation: String,
     pub target: String,
     pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_effect: Option<ContextChangeTokenEffect>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextChangeTokenEffect {
+    pub accounting: String,
+    pub estimated_active_before: usize,
+    pub estimated_active_after: usize,
+    pub estimated_immediate_relief: usize,
+    pub estimated_eventual_relief: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -304,7 +334,18 @@ pub struct ContextCommit {
     pub before_version: u64,
     pub after_version: u64,
     pub reason: Option<String>,
+    pub token_effect: ContextTokenEffect,
     pub changes: Vec<ContextChange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextTokenEffect {
+    pub accounting: String,
+    pub scope: String,
+    pub estimated_before: usize,
+    pub estimated_after: usize,
+    pub estimated_immediate_relief: usize,
+    pub estimated_eventual_relief: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -657,6 +698,7 @@ pub struct ContextView {
     pub concurrent_activations: Vec<ConcurrentActivationView>,
     pub background_tasks: Vec<BackgroundTaskView>,
     pub objectives: Vec<ObjectiveRecord>,
+    pub cognitive_clock: ContextCognitiveClock,
     pub state: MindState,
     pub observations: Vec<ContextObservation>,
     pub pressure: ContextPressure,
@@ -667,6 +709,107 @@ pub struct ContextView {
     /// and deserialize the whole Ledger a second time.
     #[serde(skip)]
     references: ContextReferences,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FrameRecallDirection {
+    #[default]
+    Ancestors,
+    Descendants,
+    Both,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FrameRecallRequest {
+    pub context_id: String,
+    pub frame_id: String,
+    pub depth: usize,
+    pub direction: FrameRecallDirection,
+    pub include_bodies: bool,
+    pub include_events: bool,
+    pub max_nodes: usize,
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecallSearchRequest {
+    pub context_id: String,
+    pub query: String,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RecallSearchPage {
+    pub context_id: String,
+    pub query: String,
+    pub matches: Vec<RecallSearchHit>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FrameRecallNode {
+    Frame {
+        id: String,
+        revision: u64,
+        lifecycle: String,
+        depth: usize,
+        sources: Vec<String>,
+        body: Option<String>,
+    },
+    Event {
+        id: String,
+        reference: String,
+        depth: usize,
+        preview: String,
+        body: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FrameRecallEdge {
+    pub subject: String,
+    pub relation: String,
+    pub object: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FrameRecallPage {
+    pub root_frame_id: String,
+    pub mind_version: u64,
+    pub nodes: Vec<FrameRecallNode>,
+    pub edges: Vec<FrameRecallEdge>,
+    pub truncated: bool,
+    pub next_cursor: Option<String>,
+}
+
+/// One domain service for model tools, the Rust SDK, CLI, HTTP and Dashboard.
+/// Presentation layers must not read Recall tables or reimplement graph walks.
+#[async_trait::async_trait]
+pub trait ContextRecallService: Send + Sync {
+    async fn search_recall(
+        &self,
+        request: RecallSearchRequest,
+    ) -> Result<RecallSearchPage, DynError>;
+
+    async fn recall_frame(&self, request: FrameRecallRequest) -> Result<FrameRecallPage, DynError>;
+
+    async fn inspect_recall_index(&self, context_id: &str) -> Result<RecallIndexAudit, DynError>;
+
+    async fn rebuild_recall_index(&self, context_id: &str) -> Result<RecallIndexAudit, DynError>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct FrameRecallCursor {
+    context_id: String,
+    frame_id: String,
+    mind_version: u64,
+    depth: usize,
+    direction: FrameRecallDirection,
+    include_bodies: bool,
+    include_events: bool,
+    max_nodes: usize,
+    offset: usize,
 }
 
 fn select_session_working_set(
@@ -798,25 +941,42 @@ pub struct ContextEngine {
     session_store: Option<Arc<dyn SessionStore>>,
     mind_projection_store: Option<Arc<dyn MindProjectionStore>>,
     session_projection_store: Option<Arc<dyn SessionProjectionStore>>,
+    recall_projection_store: Option<Arc<dyn RecallProjectionStore>>,
+    cognitive_clock_store: Option<Arc<dyn CognitiveClockStore>>,
     objective_store: Option<Arc<dyn ObjectiveStore>>,
     worker_coordination_mode: WorkerCoordinationMode,
     config: OrchestratorConfig,
     context_locks: DashMap<String, Arc<Mutex<()>>>,
     capacity_metrics: ContextCapacityMetrics,
+    recall_cursor_secret: [u8; 32],
 }
 
 impl ContextEngine {
     pub fn new(store: Arc<dyn EventStore>, config: OrchestratorConfig) -> Self {
+        let mut recall_cursor_secret = [0_u8; 32];
+        if getrandom::fill(&mut recall_cursor_secret).is_err() {
+            recall_cursor_secret.copy_from_slice(&Sha256::digest(
+                format!(
+                    "{}:{}",
+                    std::process::id(),
+                    Utc::now().timestamp_nanos_opt().unwrap_or_default()
+                )
+                .as_bytes(),
+            ));
+        }
         Self {
             store,
             session_store: None,
             mind_projection_store: None,
             session_projection_store: None,
+            recall_projection_store: None,
+            cognitive_clock_store: None,
             objective_store: None,
             worker_coordination_mode: WorkerCoordinationMode::ExclusiveProcess,
             config,
             context_locks: DashMap::new(),
             capacity_metrics: ContextCapacityMetrics::default(),
+            recall_cursor_secret,
         }
     }
 
@@ -838,6 +998,22 @@ impl ContextEngine {
         session_projection_store: Arc<dyn SessionProjectionStore>,
     ) -> Self {
         self.session_projection_store = Some(session_projection_store);
+        self
+    }
+
+    pub fn with_recall_projection_store(
+        mut self,
+        recall_projection_store: Arc<dyn RecallProjectionStore>,
+    ) -> Self {
+        self.recall_projection_store = Some(recall_projection_store);
+        self
+    }
+
+    pub fn with_cognitive_clock_store(
+        mut self,
+        cognitive_clock_store: Arc<dyn CognitiveClockStore>,
+    ) -> Self {
+        self.cognitive_clock_store = Some(cognitive_clock_store);
         self
     }
 
@@ -1066,6 +1242,7 @@ impl ContextEngine {
                     state: serde_json::to_value(&recovery.state)?,
                     state_hash,
                     head_event_id: Some(recovery.head_event_id),
+                    recall_documents: all_frame_recall_documents(context_id, &recovery.state),
                 })
                 .await?;
             return Self::validate_mind_projection(context_id, installed);
@@ -1100,6 +1277,7 @@ impl ContextEngine {
                 state: serde_json::to_value(&replayed)?,
                 state_hash,
                 head_event_id,
+                recall_documents: all_frame_recall_documents(context_id, &replayed),
             })
             .await?;
         Self::validate_mind_projection(context_id, installed)
@@ -1111,11 +1289,57 @@ impl ContextEngine {
         acting_session_id: &str,
         transaction: &str,
     ) -> Result<ContextCommit, DynError> {
+        self.apply_context_transaction_authorized(
+            context_id,
+            acting_session_id,
+            transaction,
+            false,
+            &BTreeSet::new(),
+        )
+        .await
+    }
+
+    pub async fn apply_context_transaction_protecting(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
+        transaction: &str,
+        causally_protected_ids: &BTreeSet<String>,
+    ) -> Result<ContextCommit, DynError> {
+        self.apply_context_transaction_authorized(
+            context_id,
+            acting_session_id,
+            transaction,
+            false,
+            causally_protected_ids,
+        )
+        .await
+    }
+
+    async fn apply_context_transaction_authorized(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
+        transaction: &str,
+        allow_runtime_lifecycle_ops: bool,
+        causally_protected_ids: &BTreeSet<String>,
+    ) -> Result<ContextCommit, DynError> {
         let transaction_started = std::time::Instant::now();
         self.capacity_metrics
             .context_transactions_total
             .fetch_add(1, Ordering::Relaxed);
         let mut parsed = parse_transaction(transaction)?;
+        if !allow_runtime_lifecycle_ops
+            && parsed.operations.iter().any(|operation| {
+                as_list(operation, "context operation")
+                    .ok()
+                    .and_then(|items| items.first())
+                    .and_then(|item| as_atom(item, "operation").ok())
+                    == Some("finalize-retirement")
+            })
+        {
+            return Err("finalize-retirement 是 Runtime 私有生命周期操作".into());
+        }
         let lock = self.context_lock(context_id);
         let _guard = lock.lock().await;
 
@@ -1130,6 +1354,7 @@ impl ContextEngine {
                 format!("Context transaction 仍包含未解析短引用 '{unresolved}'，拒绝提交").into(),
             );
         }
+        reject_causally_protected_retirements(&parsed, causally_protected_ids)?;
         let canonical_transaction = render_parsed_transaction(&parsed);
         let current = self.load_current_mind(context_id, None).await?;
         if current.version != parsed.base_version {
@@ -1138,7 +1363,33 @@ impl ContextEngine {
                 .fetch_add(1, Ordering::Relaxed);
         }
         let observation_ids = observation_ids(&referenced_observations);
-        let (next, changes) = apply_parsed_transaction(&current, &parsed, &observation_ids)?;
+        let cognitive_tick = match &self.cognitive_clock_store {
+            Some(store) => store.get_context_cognitive_clock(context_id).await?.tick,
+            None => 0,
+        };
+        let retirement_policy = FrameRetirementPolicy::cognitive(
+            cognitive_tick,
+            self.config.frame_retirement.cooling_ticks,
+        );
+        let (next, mut changes) = apply_parsed_transaction_with_policy(
+            &current,
+            &parsed,
+            &observation_ids,
+            retirement_policy,
+        )?;
+        attach_context_change_token_effects(
+            &mut changes,
+            &current,
+            &next,
+            &referenced_observations,
+            &self.config,
+        );
+        let token_effect = context_transaction_token_effect(
+            &current,
+            &next,
+            &referenced_observations,
+            &self.config,
+        );
         let session_projection = SessionProjectionMutation {
             retired_event_ids: next.retired.difference(&current.retired).cloned().collect(),
             restored_event_ids: current.retired.difference(&next.retired).cloned().collect(),
@@ -1163,8 +1414,18 @@ impl ContextEngine {
             ("after_version".to_string(), json!(next.version)),
             ("reason".to_string(), json!(&parsed.reason)),
             ("changes".to_string(), json!(changes)),
+            ("token_effect".to_string(), json!(&token_effect)),
             ("before_hash".to_string(), json!(&before_hash)),
             ("after_hash".to_string(), json!(&after_hash)),
+            (
+                "frame_retirement_policy".to_string(),
+                json!("cognitive-cooling-v1"),
+            ),
+            ("cognitive_tick".to_string(), json!(cognitive_tick)),
+            (
+                "frame_retirement_cooling_ticks".to_string(),
+                json!(self.config.frame_retirement.cooling_ticks),
+            ),
             ("text".to_string(), json!(&canonical_transaction)),
         ]
         .into_iter()
@@ -1196,6 +1457,9 @@ impl ContextEngine {
                         state: serde_json::to_value(&next)?,
                         state_hash: after_hash,
                         head_event_id: Some(tx_id.clone()),
+                        recall_documents: changed_frame_recall_documents(
+                            context_id, &current, &next,
+                        ),
                     },
                 )
                 .await?
@@ -1235,12 +1499,61 @@ impl ContextEngine {
             &self.capacity_metrics.context_commit_latency_micros_max,
             commit_micros,
         );
+        for change in &changes {
+            match change.operation.as_str() {
+                "retire-frame-requested" => tracing::info!(
+                    context_id,
+                    frame_id = %change.target,
+                    detail = ?change.detail,
+                    "Frame retirement entered its cognitive organizing window"
+                ),
+                "retire-frame-finalized" => tracing::info!(
+                    context_id,
+                    frame_id = %change.target,
+                    detail = ?change.detail,
+                    "Frame retirement became effective"
+                ),
+                "finalize-retirement-stale" => tracing::warn!(
+                    context_id,
+                    frame_id = %change.target,
+                    detail = ?change.detail,
+                    "Stale Frame retirement was fenced as a no-op"
+                ),
+                "revise" | "restore" | "protect"
+                    if change
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("retirement-cancelled")) =>
+                {
+                    tracing::info!(
+                        context_id,
+                        frame_id = %change.target,
+                        operation = %change.operation,
+                        "Frame retirement intent was cancelled"
+                    )
+                }
+                _ => {}
+            }
+        }
+        tracing::debug!(
+            context_id,
+            transaction_id = %tx_id,
+            before_version = current.version,
+            after_version = next.version,
+            estimated_before = token_effect.estimated_before,
+            estimated_after = token_effect.estimated_after,
+            estimated_immediate_relief = token_effect.estimated_immediate_relief,
+            estimated_eventual_relief = token_effect.estimated_eventual_relief,
+            commit_micros,
+            "Context transaction committed with estimated Token effect"
+        );
 
         Ok(ContextCommit {
             transaction_id: tx_id,
             before_version: current.version,
             after_version: next.version,
             reason: parsed.reason,
+            token_effect,
             changes,
         })
     }
@@ -1458,6 +1771,7 @@ impl ContextEngine {
                     state: serde_json::to_value(&empty)?,
                     state_hash: mind_state_hash(&empty)?,
                     head_event_id: None,
+                    recall_documents: Vec::new(),
                 })
                 .await?;
             match projection_store
@@ -1473,6 +1787,7 @@ impl ContextEngine {
                         state: serde_json::to_value(&projected)?,
                         state_hash: projected_hash.clone(),
                         head_event_id: Some(seed_id),
+                        recall_documents: all_frame_recall_documents(target_context_id, &projected),
                     },
                 )
                 .await?
@@ -1615,7 +1930,18 @@ impl ContextEngine {
         excluded_observation_ids: &HashSet<String>,
         activation_record: Option<&ThreadActivationRecord>,
     ) -> Result<ContextView, DynError> {
+        self.finalize_due_frame_retirements(context_id, active_session_id)
+            .await?;
         let state = self.load_current_mind(context_id, None).await?;
+        let cognitive_clock = match &self.cognitive_clock_store {
+            Some(store) => store.get_context_cognitive_clock(context_id).await?,
+            None => ContextCognitiveClock {
+                context_id: context_id.to_string(),
+                tick: 0,
+                last_signal_batch_id: None,
+                revision: 0,
+            },
+        };
         let legacy_events = if self.session_store.is_none() {
             Some(self.context_events(context_id).await?)
         } else {
@@ -1941,6 +2267,8 @@ impl ContextEngine {
             concurrent_activations: &concurrent_activations,
             background_tasks: &background_tasks,
             objectives: &objectives,
+            cognitive_clock: &cognitive_clock,
+            frame_retirement_cooling_ticks: self.config.frame_retirement.cooling_ticks,
             state: &state,
             observations: &observations,
             pressure: &pressure,
@@ -1964,6 +2292,7 @@ impl ContextEngine {
             concurrent_activations,
             background_tasks,
             objectives,
+            cognitive_clock,
             state,
             observations,
             pressure,
@@ -1972,6 +2301,77 @@ impl ContextEngine {
             sexpr,
             references,
         })
+    }
+
+    async fn finalize_due_frame_retirements(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
+    ) -> Result<(), DynError> {
+        let Some(clock_store) = &self.cognitive_clock_store else {
+            return Ok(());
+        };
+        for _ in 0..3 {
+            let clock = clock_store.get_context_cognitive_clock(context_id).await?;
+            let state = self.load_current_mind(context_id, None).await?;
+            let due = state
+                .retiring
+                .values()
+                .filter(|retirement| retirement.eligible_at_tick <= clock.tick)
+                .cloned()
+                .collect::<Vec<_>>();
+            if due.is_empty() {
+                return Ok(());
+            }
+            let mut items = vec![
+                atom("context-tx"),
+                list("base-version", vec![atom(state.version.to_string())]),
+                list(
+                    "reason",
+                    vec![atom("认知活动整理窗口到期，Runtime 执行 fencing 后收口")],
+                ),
+            ];
+            items.extend(due.iter().map(|retirement| {
+                list(
+                    "finalize-retirement",
+                    vec![
+                        atom(&retirement.frame_id),
+                        atom(retirement.generation.to_string()),
+                        atom(retirement.requested_frame_revision.to_string()),
+                        atom(retirement.eligible_at_tick.to_string()),
+                    ],
+                )
+            }));
+            let transaction = SExpr::List(items).to_string();
+            match self
+                .apply_context_transaction_authorized(
+                    context_id,
+                    acting_session_id,
+                    &transaction,
+                    true,
+                    &BTreeSet::new(),
+                )
+                .await
+            {
+                Ok(commit) => {
+                    tracing::info!(
+                        context_id,
+                        cognitive_tick = clock.tick,
+                        transaction_id = %commit.transaction_id,
+                        finalized = due.len(),
+                        "Frame retirement cognitive window became effective"
+                    );
+                    return Ok(());
+                }
+                Err(error) if error.to_string().contains("版本冲突") => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(format!(
+            "Context '{}' Frame retirement 收口连续发生版本冲突",
+            context_id
+        )
+        .into())
     }
 
     /// 用模型客户端对“完整 Prompt”的计量结果替换 Context 局部字符估算，并重新
@@ -2012,6 +2412,8 @@ impl ContextEngine {
             concurrent_activations: &view.concurrent_activations,
             background_tasks: &view.background_tasks,
             objectives: &view.objectives,
+            cognitive_clock: &view.cognitive_clock,
+            frame_retirement_cooling_ticks: self.config.frame_retirement.cooling_ticks,
             state: &view.state,
             observations: &view.observations,
             pressure: &view.pressure,
@@ -2072,6 +2474,266 @@ impl ContextEngine {
             .frames
             .into_iter()
             .find(|frame| frame.id == frame_id))
+    }
+
+    pub async fn recall_frame_graph(
+        &self,
+        mut request: FrameRecallRequest,
+    ) -> Result<FrameRecallPage, DynError> {
+        let started = std::time::Instant::now();
+        request.depth = request.depth.min(4);
+        request.max_nodes = request.max_nodes.clamp(1, 128);
+        let state = self.load_current_mind(&request.context_id, None).await?;
+        let offset = if let Some(cursor) = &request.cursor {
+            let cursor = self.decode_frame_recall_cursor(cursor)?;
+            if cursor.context_id != request.context_id
+                || cursor.frame_id != request.frame_id
+                || cursor.depth != request.depth
+                || cursor.direction != request.direction
+                || cursor.include_bodies != request.include_bodies
+                || cursor.include_events != request.include_events
+                || cursor.max_nodes != request.max_nodes
+            {
+                return Err("Recall cursor 与当前查询参数不匹配".into());
+            }
+            if cursor.mind_version != state.version {
+                return Err("Recall cursor 对应的 Mind revision 已变化；请从第一页重新召回".into());
+            }
+            cursor.offset
+        } else {
+            0
+        };
+
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        enum NodeKey {
+            Frame(String),
+            Event(String),
+        }
+
+        let frames = state
+            .frames
+            .iter()
+            .map(|frame| (frame.id.as_str(), frame))
+            .collect::<HashMap<_, _>>();
+        if !frames.contains_key(request.frame_id.as_str()) {
+            return Err(format!("frame '{}' 不存在", request.frame_id).into());
+        }
+        let mut queue = VecDeque::from([(NodeKey::Frame(request.frame_id.clone()), 0_usize)]);
+        let mut visited = HashSet::new();
+        let mut ordered = Vec::new();
+        let mut edges = BTreeSet::new();
+        while let Some((node, node_depth)) = queue.pop_front() {
+            if node_depth > request.depth || !visited.insert(node.clone()) {
+                continue;
+            }
+            ordered.push((node.clone(), node_depth));
+            let NodeKey::Frame(frame_id) = node else {
+                continue;
+            };
+            let Some(frame) = frames.get(frame_id.as_str()) else {
+                continue;
+            };
+            let mut neighbors = BTreeSet::new();
+            if matches!(
+                request.direction,
+                FrameRecallDirection::Ancestors | FrameRecallDirection::Both
+            ) {
+                for source in &frame.sources {
+                    let key = if frames.contains_key(source.as_str()) {
+                        NodeKey::Frame(source.clone())
+                    } else {
+                        NodeKey::Event(source.clone())
+                    };
+                    neighbors.insert(key);
+                    edges.insert(FrameRecallEdge {
+                        subject: frame_id.clone(),
+                        relation: "source".to_string(),
+                        object: source.clone(),
+                    });
+                }
+                for relation in state
+                    .relations
+                    .iter()
+                    .filter(|relation| relation.subject == frame_id)
+                {
+                    if frames.contains_key(relation.object.as_str()) {
+                        neighbors.insert(NodeKey::Frame(relation.object.clone()));
+                        edges.insert(FrameRecallEdge {
+                            subject: relation.subject.clone(),
+                            relation: relation.relation.clone(),
+                            object: relation.object.clone(),
+                        });
+                    }
+                }
+            }
+            if matches!(
+                request.direction,
+                FrameRecallDirection::Descendants | FrameRecallDirection::Both
+            ) {
+                for descendant in state
+                    .frames
+                    .iter()
+                    .filter(|candidate| candidate.sources.iter().any(|source| source == &frame_id))
+                {
+                    neighbors.insert(NodeKey::Frame(descendant.id.clone()));
+                    edges.insert(FrameRecallEdge {
+                        subject: descendant.id.clone(),
+                        relation: "source".to_string(),
+                        object: frame_id.clone(),
+                    });
+                }
+                for relation in state
+                    .relations
+                    .iter()
+                    .filter(|relation| relation.object == frame_id)
+                {
+                    if frames.contains_key(relation.subject.as_str()) {
+                        neighbors.insert(NodeKey::Frame(relation.subject.clone()));
+                        edges.insert(FrameRecallEdge {
+                            subject: relation.subject.clone(),
+                            relation: relation.relation.clone(),
+                            object: relation.object.clone(),
+                        });
+                    }
+                }
+            }
+            if node_depth < request.depth {
+                queue.extend(
+                    neighbors
+                        .into_iter()
+                        .map(|neighbor| (neighbor, node_depth.saturating_add(1))),
+                );
+            }
+        }
+
+        if offset > ordered.len() {
+            return Err("Recall cursor offset 超出稳定遍历结果".into());
+        }
+        let hard_end = offset.saturating_add(request.max_nodes).min(ordered.len());
+        let mut nodes = Vec::with_capacity(hard_end.saturating_sub(offset));
+        let mut rendered_chars = 0_usize;
+        let mut end = offset;
+        for (key, depth) in &ordered[offset..hard_end] {
+            let node = match key {
+                NodeKey::Frame(id) => {
+                    let frame = frames
+                        .get(id.as_str())
+                        .ok_or_else(|| format!("遍历中的 frame '{id}' 已不存在"))?;
+                    FrameRecallNode::Frame {
+                        id: id.clone(),
+                        revision: frame.revision,
+                        lifecycle: if state.retired.contains(id) {
+                            "retired".to_string()
+                        } else if state.retiring.contains_key(id) {
+                            "retiring".to_string()
+                        } else {
+                            "active".to_string()
+                        },
+                        depth: *depth,
+                        sources: frame.sources.clone(),
+                        body: request.include_bodies.then(|| frame.body.clone()),
+                    }
+                }
+                NodeKey::Event(id) => {
+                    let event = self
+                        .find_event(&request.context_id, id)
+                        .await?
+                        .ok_or_else(|| format!("frame source event '{id}' 不存在或越权"))?;
+                    let body = event_text(&event);
+                    FrameRecallNode::Event {
+                        id: id.clone(),
+                        reference: self.event_reference(&event),
+                        depth: *depth,
+                        preview: body.chars().take(500).collect(),
+                        body: request.include_events.then_some(body),
+                    }
+                }
+            };
+            let node_chars = serde_json::to_string(&node)?.chars().count();
+            if !nodes.is_empty()
+                && rendered_chars.saturating_add(node_chars) > FRAME_RECALL_PAGE_CHAR_BUDGET
+            {
+                break;
+            }
+            rendered_chars = rendered_chars.saturating_add(node_chars);
+            nodes.push(node);
+            end = end.saturating_add(1);
+        }
+        let selected_ids = nodes
+            .iter()
+            .map(|node| match node {
+                FrameRecallNode::Frame { id, .. } | FrameRecallNode::Event { id, .. } => id.clone(),
+            })
+            .collect::<HashSet<_>>();
+        let edges = edges
+            .into_iter()
+            .filter(|edge| {
+                selected_ids.contains(&edge.subject) || selected_ids.contains(&edge.object)
+            })
+            .collect();
+        let truncated = end < ordered.len();
+        let next_cursor = if truncated {
+            Some(self.encode_frame_recall_cursor(&FrameRecallCursor {
+                context_id: request.context_id.clone(),
+                frame_id: request.frame_id.clone(),
+                mind_version: state.version,
+                depth: request.depth,
+                direction: request.direction,
+                include_bodies: request.include_bodies,
+                include_events: request.include_events,
+                max_nodes: request.max_nodes,
+                offset: end,
+            })?)
+        } else {
+            None
+        };
+        let page = FrameRecallPage {
+            root_frame_id: request.frame_id,
+            mind_version: state.version,
+            nodes,
+            edges,
+            truncated,
+            next_cursor,
+        };
+        tracing::debug!(
+            context_id = request.context_id,
+            root_frame_id = page.root_frame_id,
+            depth = request.depth,
+            direction = ?request.direction,
+            visited_nodes = visited.len(),
+            returned_nodes = page.nodes.len(),
+            returned_edges = page.edges.len(),
+            truncated = page.truncated,
+            latency_micros = started.elapsed().as_micros() as u64,
+            "Frame Recall traversal completed"
+        );
+        Ok(page)
+    }
+
+    fn encode_frame_recall_cursor(&self, cursor: &FrameRecallCursor) -> Result<String, DynError> {
+        let payload = serde_json::to_vec(cursor)?;
+        let mut signed = Vec::with_capacity(self.recall_cursor_secret.len() + payload.len());
+        signed.extend_from_slice(&self.recall_cursor_secret);
+        signed.extend_from_slice(&payload);
+        let signature = Sha256::digest(&signed);
+        Ok(format!(
+            "{}.{}",
+            hex_encode(&payload),
+            hex_encode(&signature)
+        ))
+    }
+
+    fn decode_frame_recall_cursor(&self, cursor: &str) -> Result<FrameRecallCursor, DynError> {
+        let (payload, signature) = cursor.split_once('.').ok_or("Recall cursor 格式无效")?;
+        let payload = hex_decode(payload)?;
+        let signature = hex_decode(signature)?;
+        let mut signed = Vec::with_capacity(self.recall_cursor_secret.len() + payload.len());
+        signed.extend_from_slice(&self.recall_cursor_secret);
+        signed.extend_from_slice(&payload);
+        if signature.as_slice() != Sha256::digest(&signed).as_slice() {
+            return Err("Recall cursor 签名无效".into());
+        }
+        Ok(serde_json::from_slice(&payload)?)
     }
 
     pub async fn mind_version(&self, context_id: &str) -> Result<u64, DynError> {
@@ -2160,6 +2822,100 @@ impl ContextEngine {
             })
             .await?;
         Ok(events.into_iter().take(limit).collect())
+    }
+
+    pub async fn search_recall_documents(
+        &self,
+        context_id: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<RecallSearchHit>, DynError> {
+        let started = std::time::Instant::now();
+        let normalized = crate::memory::normalize_recall_text(query.trim());
+        if normalized.is_empty() {
+            return Ok(Vec::new());
+        }
+        if let Some(store) = &self.recall_projection_store {
+            let capability = store.recall_index_capability().await?;
+            let matches = store
+                .search_recall_documents(context_id, &normalized, limit.clamp(1, 100))
+                .await?;
+            tracing::debug!(
+                context_id,
+                backend = ?capability.mode,
+                indexed = capability.indexed,
+                query_chars = normalized.chars().count(),
+                candidate_count = matches.len(),
+                returned_count = matches.len(),
+                requested_limit = limit,
+                latency_micros = started.elapsed().as_micros() as u64,
+                "Lexical Recall query completed"
+            );
+            return Ok(matches);
+        }
+        // In-memory/legacy test stores retain a bounded compatibility path;
+        // production Runtime always wires RecallProjectionStore.
+        let events = self.search_events(context_id, query, limit).await?;
+        let matches = events
+            .into_iter()
+            .map(|event| {
+                let preview = event_text(&event).chars().take(500).collect();
+                RecallSearchHit {
+                    document_kind: RecallDocumentKind::Event,
+                    document_id: event.id,
+                    revision: 0,
+                    retired: false,
+                    score: 1.0,
+                    preview,
+                    updated_sequence: event.sequence.unwrap_or_default(),
+                }
+            })
+            .collect::<Vec<_>>();
+        tracing::debug!(
+            context_id,
+            backend = "legacy-event-query",
+            indexed = false,
+            query_chars = normalized.chars().count(),
+            candidate_count = matches.len(),
+            returned_count = matches.len(),
+            requested_limit = limit,
+            latency_micros = started.elapsed().as_micros() as u64,
+            "Lexical Recall query completed through compatibility fallback"
+        );
+        Ok(matches)
+    }
+
+    pub async fn inspect_recall_index(
+        &self,
+        context_id: &str,
+    ) -> Result<RecallIndexAudit, DynError> {
+        self.recall_projection_store
+            .as_ref()
+            .ok_or("ContextEngine 未配置 RecallProjectionStore")?
+            .inspect_recall_index(context_id)
+            .await
+    }
+
+    pub async fn rebuild_recall_index(
+        &self,
+        context_id: &str,
+    ) -> Result<RecallIndexAudit, DynError> {
+        let store = self
+            .recall_projection_store
+            .as_ref()
+            .ok_or("ContextEngine 未配置 RecallProjectionStore")?;
+        let state = self.load_current_mind(context_id, None).await?;
+        let events = self.context_events(context_id).await?;
+        let mut documents = all_frame_recall_documents(context_id, &state);
+        documents.extend(events.iter().map(|event| {
+            crate::memory::event_recall_document_with_retired(
+                event,
+                context_id,
+                event.sequence.unwrap_or_default(),
+                state.retired.contains(&event.id),
+            )
+        }));
+        store.replace_recall_documents(context_id, &documents).await
     }
 
     fn context_lock(&self, context_id: &str) -> Arc<Mutex<()>> {
@@ -2365,6 +3121,35 @@ impl ContextEngine {
             freshness: metadata.freshness,
             usage: metadata.usage,
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl ContextRecallService for ContextEngine {
+    async fn search_recall(
+        &self,
+        request: RecallSearchRequest,
+    ) -> Result<RecallSearchPage, DynError> {
+        let matches = self
+            .search_recall_documents(&request.context_id, &request.query, request.limit)
+            .await?;
+        Ok(RecallSearchPage {
+            context_id: request.context_id,
+            query: request.query,
+            matches,
+        })
+    }
+
+    async fn recall_frame(&self, request: FrameRecallRequest) -> Result<FrameRecallPage, DynError> {
+        self.recall_frame_graph(request).await
+    }
+
+    async fn inspect_recall_index(&self, context_id: &str) -> Result<RecallIndexAudit, DynError> {
+        ContextEngine::inspect_recall_index(self, context_id).await
+    }
+
+    async fn rebuild_recall_index(&self, context_id: &str) -> Result<RecallIndexAudit, DynError> {
+        ContextEngine::rebuild_recall_index(self, context_id).await
     }
 }
 
@@ -2775,6 +3560,9 @@ fn transaction_reference_candidates(
                     candidates.insert(as_atom(item, "Context ID")?.to_string());
                 }
             }
+            "finalize-retirement" => {
+                candidates.insert(atom_at(items, 1, "frame ID")?.to_string());
+            }
             "relate" | "unrelate" => {
                 candidates.insert(atom_at(items, 1, "relation subject")?.to_string());
                 candidates.insert(atom_at(items, 3, "relation object")?.to_string());
@@ -2789,6 +3577,31 @@ fn transaction_reference_candidates(
         }
     }
     Ok(candidates)
+}
+
+fn reject_causally_protected_retirements(
+    transaction: &ParsedTransaction,
+    causally_protected_ids: &BTreeSet<String>,
+) -> Result<(), String> {
+    if causally_protected_ids.is_empty() {
+        return Ok(());
+    }
+    for operation in &transaction.operations {
+        let items = as_list(operation, "context operation")?;
+        if atom_at(items, 0, "operation name")? != "retire" {
+            continue;
+        }
+        for item in items.iter().skip(1) {
+            let id = as_atom(item, "retire target")?;
+            if causally_protected_ids.contains(id) {
+                return Err(format!(
+                    "'{}' 是当前 Activation 尚未交付的根请求或触发 observation，受 Runtime 因果保护；完成当前回复或工作交付前不能 retire",
+                    id
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn resolve_from_references(
@@ -2832,10 +3645,50 @@ fn render_parsed_transaction(transaction: &ParsedTransaction) -> String {
     SExpr::List(items).to_string()
 }
 
+#[derive(Debug, Clone, Copy)]
+struct FrameRetirementPolicy {
+    staged: bool,
+    cognitive_tick: u64,
+    cooling_ticks: u64,
+}
+
+impl FrameRetirementPolicy {
+    fn legacy_immediate() -> Self {
+        Self {
+            staged: false,
+            cognitive_tick: 0,
+            cooling_ticks: 0,
+        }
+    }
+
+    fn cognitive(cognitive_tick: u64, cooling_ticks: u64) -> Self {
+        Self {
+            staged: true,
+            cognitive_tick,
+            cooling_ticks,
+        }
+    }
+}
+
+#[cfg(test)]
 fn apply_parsed_transaction(
     current: &MindState,
     tx: &ParsedTransaction,
     observation_ids: &HashSet<String>,
+) -> Result<(MindState, Vec<ContextChange>), String> {
+    apply_parsed_transaction_with_policy(
+        current,
+        tx,
+        observation_ids,
+        FrameRetirementPolicy::legacy_immediate(),
+    )
+}
+
+fn apply_parsed_transaction_with_policy(
+    current: &MindState,
+    tx: &ParsedTransaction,
+    observation_ids: &HashSet<String>,
+    retirement_policy: FrameRetirementPolicy,
 ) -> Result<(MindState, Vec<ContextChange>), String> {
     if current.version != tx.base_version {
         return Err(format!(
@@ -2902,6 +3755,7 @@ fn apply_parsed_transaction(
                 if next.retired.contains(id) {
                     return Err(format!("frame '{}' 已退役；请先 restore 再 revise", id));
                 }
+                let cancelled_retirement = next.retiring.remove(id).is_some();
                 let (sources, body_expr) = if op.len() == 4 {
                     let sources = parse_sources(&op[2])?;
                     ensure_sources_exist(&next, observation_ids, &sources)?;
@@ -2921,7 +3775,15 @@ fn apply_parsed_transaction(
                 }
                 frame.revision += 1;
                 frame.updated_version = next_version;
-                changes.push(change("revise", id, Some(format!("r{}", frame.revision))));
+                changes.push(change(
+                    "revise",
+                    id,
+                    Some(if cancelled_retirement {
+                        format!("r{}; retirement-cancelled", frame.revision)
+                    } else {
+                        format!("r{}", frame.revision)
+                    }),
+                ));
             }
             "retire" => {
                 let reason = tx
@@ -2947,8 +3809,53 @@ fn apply_parsed_transaction(
                             id
                         ));
                     }
-                    next.retired.insert(id.to_string());
-                    changes.push(change("retire", id, Some(reason.clone())));
+                    let is_frame = next.frames.iter().any(|frame| frame.id == id);
+                    if retirement_policy.staged && is_frame {
+                        if next.retired.contains(id) {
+                            return Err(format!("frame '{}' 已经处于 retired 状态", id));
+                        }
+                        if let Some(existing) = next.retiring.get(id) {
+                            changes.push(change(
+                                "retire-frame-existing",
+                                id,
+                                Some(format!(
+                                    "eligible-at-tick={}; reason={}",
+                                    existing.eligible_at_tick, existing.reason
+                                )),
+                            ));
+                            continue;
+                        }
+                        let frame = next
+                            .frames
+                            .iter()
+                            .find(|frame| frame.id == id)
+                            .ok_or_else(|| format!("frame '{}' 不存在", id))?;
+                        let eligible_at_tick = retirement_policy
+                            .cognitive_tick
+                            .saturating_add(retirement_policy.cooling_ticks);
+                        next.retiring.insert(
+                            id.to_string(),
+                            FrameRetirement {
+                                frame_id: id.to_string(),
+                                requested_frame_revision: frame.revision,
+                                requested_mind_version: current.version,
+                                requested_at_tick: retirement_policy.cognitive_tick,
+                                eligible_at_tick,
+                                generation: next_version,
+                                reason: reason.clone(),
+                            },
+                        );
+                        changes.push(change(
+                            "retire-frame-requested",
+                            id,
+                            Some(format!(
+                                "state=retiring; eligible-at-tick={eligible_at_tick}; immediate-token-relief=0"
+                            )),
+                        ));
+                    } else {
+                        next.retired.insert(id.to_string());
+                        changes.push(change("retire", id, Some(reason.clone())));
+                    }
                 }
             }
             "restore" => {
@@ -2956,11 +3863,74 @@ fn apply_parsed_transaction(
                 for item in op.iter().skip(1) {
                     let id = validated_id(as_atom(item, "restore target")?)?;
                     ensure_known(&next, observation_ids, id)?;
+                    if next.retiring.remove(id).is_some() {
+                        changes.push(change(
+                            "restore",
+                            id,
+                            Some("retirement-cancelled".to_string()),
+                        ));
+                        continue;
+                    }
                     if !next.retired.remove(id) {
                         return Err(format!("'{}' 当前没有处于 retired 状态", id));
                     }
                     changes.push(change("restore", id, None));
                 }
+            }
+            "finalize-retirement" => {
+                require_len(
+                    op,
+                    5,
+                    "(finalize-retirement ID GENERATION FRAME-REVISION ELIGIBLE-TICK)",
+                )?;
+                if !retirement_policy.staged {
+                    return Err("finalize-retirement 需要 cognitive retirement policy".to_string());
+                }
+                let id = validated_id(atom_at(op, 1, "frame id")?)?;
+                let generation = atom_at(op, 2, "retirement generation")?
+                    .parse::<u64>()
+                    .map_err(|_| "retirement generation 必须是非负整数".to_string())?;
+                let frame_revision = atom_at(op, 3, "frame revision")?
+                    .parse::<u64>()
+                    .map_err(|_| "frame revision 必须是非负整数".to_string())?;
+                let eligible_at_tick = atom_at(op, 4, "eligible tick")?
+                    .parse::<u64>()
+                    .map_err(|_| "eligible tick 必须是非负整数".to_string())?;
+                let Some(retirement) = next.retiring.get(id) else {
+                    changes.push(change(
+                        "finalize-retirement-stale",
+                        id,
+                        Some("intent-missing".to_string()),
+                    ));
+                    continue;
+                };
+                let frame_is_current = next
+                    .frames
+                    .iter()
+                    .any(|frame| frame.id == id && frame.revision == frame_revision);
+                if retirement.generation != generation
+                    || retirement.requested_frame_revision != frame_revision
+                    || retirement.eligible_at_tick != eligible_at_tick
+                    || retirement_policy.cognitive_tick < eligible_at_tick
+                    || next.protected.contains(id)
+                    || !frame_is_current
+                {
+                    changes.push(change(
+                        "finalize-retirement-stale",
+                        id,
+                        Some("fencing-mismatch".to_string()),
+                    ));
+                    continue;
+                }
+                next.retiring.remove(id);
+                next.retired.insert(id.to_string());
+                changes.push(change(
+                    "retire-frame-finalized",
+                    id,
+                    Some(format!(
+                        "eligible-at-tick={eligible_at_tick}; state=retired"
+                    )),
+                ));
             }
             "retire-session" | "restore-session" => {
                 if name == "retire-session" && tx.reason.is_none() {
@@ -3008,6 +3978,7 @@ fn apply_parsed_transaction(
                         }
                     })?;
                     if name == "protect" {
+                        next.retiring.remove(id);
                         next.protected.insert(id.to_string());
                     } else if !next.protected.remove(id) {
                         return Err(format!("'{}' 当前没有被 protect", id));
@@ -3091,6 +4062,7 @@ fn apply_parsed_transaction(
                     frames: next.frames.clone(),
                     relations: next.relations.clone(),
                     retired: next.retired.clone(),
+                    retiring: next.retiring.clone(),
                     protected: next.protected.clone(),
                     created_version: next_version,
                 });
@@ -3116,6 +4088,7 @@ fn apply_parsed_transaction(
                 next.frames = checkpoint.frames;
                 next.relations = checkpoint.relations;
                 next.retired = checkpoint.retired;
+                next.retiring = checkpoint.retiring;
                 next.protected = checkpoint.protected;
                 changes.push(change("rollback", id, Some(reason.clone())));
             }
@@ -3140,6 +4113,33 @@ fn apply_parsed_transaction(
                 return Err(format!(
                     "未知 Context 原语 '{}'。当前支持 create/derive/revise/retire/restore/retire-session/restore-session/protect/unprotect/place/relate/unrelate/checkpoint/rollback/drop-checkpoint",
                     other
+                ));
+            }
+        }
+    }
+
+    if retirement_policy.staged {
+        let retiring_ids = next.retiring.keys().cloned().collect::<Vec<_>>();
+        for target in retiring_ids {
+            let successor = next.relations.iter().find_map(|relation| {
+                (relation.relation == "supersedes" && relation.object == target)
+                    .then(|| {
+                        next.frames.iter().find(|frame| {
+                            frame.id == relation.subject
+                                && frame.sources.iter().any(|source| source == &target)
+                                && !next.retired.contains(&frame.id)
+                        })
+                    })
+                    .flatten()
+            });
+            if let Some(successor) = successor {
+                let successor_id = successor.id.clone();
+                next.retiring.remove(&target);
+                next.retired.insert(target.clone());
+                changes.push(change(
+                    "retire-frame-finalized",
+                    &target,
+                    Some(format!("successor={successor_id}; state=retired")),
                 ));
             }
         }
@@ -3193,6 +4193,8 @@ struct ContextRenderInput<'a> {
     concurrent_activations: &'a [ConcurrentActivationView],
     background_tasks: &'a [BackgroundTaskView],
     objectives: &'a [ObjectiveRecord],
+    cognitive_clock: &'a ContextCognitiveClock,
+    frame_retirement_cooling_ticks: u64,
     state: &'a MindState,
     observations: &'a [ContextObservation],
     pressure: &'a ContextPressure,
@@ -3751,6 +4753,8 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         concurrent_activations,
         background_tasks,
         objectives,
+        cognitive_clock,
+        frame_retirement_cooling_ticks,
         state,
         observations,
         pressure,
@@ -3764,6 +4768,44 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         kernel.push(pair("parent-session", atom(parent)));
     }
     kernel.push(pair("version", atom(state.version.to_string())));
+    kernel.push(list(
+        "cognitive-clock",
+        vec![
+            pair("tick", atom(cognitive_clock.tick.to_string())),
+            pair("source", atom("signal-batch")),
+            pair(
+                "last-advanced-by",
+                cognitive_clock
+                    .last_signal_batch_id
+                    .as_deref()
+                    .map(atom)
+                    .unwrap_or_else(|| atom("none")),
+            ),
+        ],
+    ));
+    kernel.push(list(
+        "frame-retirement-policy",
+        vec![
+            pair("clock", atom("cognitive-activity")),
+            pair(
+                "cooling-ticks",
+                atom(frame_retirement_cooling_ticks.to_string()),
+            ),
+            pair("observation-retire", atom("immediate")),
+            pair(
+                "capacity-relief-priority",
+                atom("discard-absorbed-observations-first"),
+            ),
+            pair("ordinary-frame-retire", atom("organizing-window")),
+            pair("ordinary-frame-immediate-token-relief", atom("0")),
+            pair(
+                "frame-selection",
+                atom("semantic-value-validity-usage-and-relations"),
+            ),
+            pair("frame-size-alone", atom("never-a-retirement-reason")),
+            pair("successor-fast-path", atom("sources-and-supersedes")),
+        ],
+    ));
     if let Some(evaluation) = activation {
         kernel.push(render_current_activation(evaluation, references));
     }
@@ -3964,6 +5006,35 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
             sources,
             pair("body", body),
         ];
+        let lifecycle = if let Some(retirement) = state.retiring.get(&frame.id) {
+            list(
+                "lifecycle",
+                vec![
+                    pair("state", atom("retiring")),
+                    pair(
+                        "requested-at-tick",
+                        atom(retirement.requested_at_tick.to_string()),
+                    ),
+                    pair(
+                        "eligible-at-tick",
+                        atom(retirement.eligible_at_tick.to_string()),
+                    ),
+                    pair(
+                        "remaining-ticks",
+                        atom(
+                            retirement
+                                .eligible_at_tick
+                                .saturating_sub(cognitive_clock.tick)
+                                .to_string(),
+                        ),
+                    ),
+                    pair("reason", atom(&retirement.reason)),
+                ],
+            )
+        } else {
+            list("lifecycle", vec![pair("state", atom("active"))])
+        };
+        fields.insert(2, lifecycle);
         let freshness = freshness_for_id(state, &frame.id);
         if freshness.latest.is_some()
             || !freshness.supersedes.is_empty()
@@ -4667,6 +5738,39 @@ fn render_protocol() -> SExpr {
                         "relation-policy",
                         atom("Runtime 只解释 supersedes 的新旧关系；其他 relation 保持 Agent 语义"),
                     ),
+                    list(
+                        "frame-retirement-policy",
+                        vec![
+                            pair(
+                                "observation",
+                                atom("retire 立即生效并在下一次编码释放其活动块 Token"),
+                            ),
+                            pair(
+                                "ordinary-frame",
+                                atom("retire 只进入整理期；正文仍在活动 Context，当前 Token 释放量为 0"),
+                            ),
+                            pair(
+                                "organizing-window",
+                                atom("优先 revise 精简，或 derive/relate 形成更高阶 successor；revise、restore、protect 会取消旧退休意图"),
+                            ),
+                            pair(
+                                "successor",
+                                atom("活跃 successor 同时以 sources 引用旧 Frame 并声明 supersedes 后，旧 Frame 可在同一事务立即退休"),
+                            ),
+                            pair(
+                                "selection",
+                                atom("Frame 数量本身不是退休理由；重复、失效、已被取代或已形成更高抽象才是整理理由"),
+                            ),
+                            pair(
+                                "critical-pressure",
+                                atom("先清理已消化 observation；若仍不足，应精简 Frame 或建立 successor，不要依赖批量普通 Frame retire 立即释放容量"),
+                            ),
+                            pair(
+                                "retrieval",
+                                atom("retired 不等于删除；可通过关键词、Frame ID、sources 与 relation 链 recall 和 restore"),
+                            ),
+                        ],
+                    ),
                     list("operations", operations),
                 ],
             ),
@@ -4874,6 +5978,9 @@ fn project_mind_seed(source: &MindState) -> MindState {
             .filter(|id| frame_ids.contains(*id))
             .cloned()
             .collect(),
+        // Retirement windows belong to the source Context's cognitive clock;
+        // a newly seeded Context starts with no inherited pending intent.
+        retiring: BTreeMap::new(),
         protected: source
             .protected
             .iter()
@@ -4888,6 +5995,137 @@ fn mind_state_hash(state: &MindState) -> Result<String, String> {
     let bytes =
         serde_json::to_vec(state).map_err(|error| format!("Mind Snapshot 无法序列化: {error}"))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn hex_decode(value: &str) -> Result<Vec<u8>, DynError> {
+    if !value.len().is_multiple_of(2) {
+        return Err("十六进制 cursor 长度无效".into());
+    }
+    value
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|chunk| {
+            let text = std::str::from_utf8(chunk)?;
+            Ok(u8::from_str_radix(text, 16)?)
+        })
+        .collect()
+}
+
+fn frame_recall_document(
+    context_id: &str,
+    state: &MindState,
+    frame: &ContextFrame,
+    retired_override: Option<bool>,
+) -> RecallDocument {
+    let mut text = format!("{} {}", frame.id, frame.body);
+    if let Some(retirement) = state.retiring.get(&frame.id) {
+        text.push_str(" retiring ");
+        text.push_str(&retirement.reason);
+    }
+    for source in &frame.sources {
+        text.push(' ');
+        text.push_str(source);
+    }
+    for relation in state
+        .relations
+        .iter()
+        .filter(|relation| relation.subject == frame.id || relation.object == frame.id)
+    {
+        text.push(' ');
+        text.push_str(&relation.subject);
+        text.push(' ');
+        text.push_str(&relation.relation);
+        text.push(' ');
+        text.push_str(&relation.object);
+    }
+    let searchable_text = crate::memory::normalize_recall_text(&text);
+    let retired = retired_override.unwrap_or_else(|| state.retired.contains(&frame.id));
+    let state_hash = format!(
+        "{:x}",
+        Sha256::digest(
+            format!(
+                "{}:{}:{}:{}",
+                frame.revision, retired, searchable_text, state.version
+            )
+            .as_bytes()
+        )
+    );
+    RecallDocument {
+        context_id: context_id.to_string(),
+        document_kind: RecallDocumentKind::Frame,
+        document_id: frame.id.clone(),
+        revision: frame.revision,
+        searchable_text,
+        preview: frame.body.chars().take(500).collect(),
+        retired,
+        updated_sequence: state.version,
+        state_hash,
+    }
+}
+
+fn all_frame_recall_documents(context_id: &str, state: &MindState) -> Vec<RecallDocument> {
+    state
+        .frames
+        .iter()
+        .map(|frame| frame_recall_document(context_id, state, frame, None))
+        .collect()
+}
+
+fn changed_frame_recall_documents(
+    context_id: &str,
+    current: &MindState,
+    next: &MindState,
+) -> Vec<RecallDocument> {
+    let current_frames = current
+        .frames
+        .iter()
+        .map(|frame| (frame.id.as_str(), frame))
+        .collect::<HashMap<_, _>>();
+    let next_frames = next
+        .frames
+        .iter()
+        .map(|frame| (frame.id.as_str(), frame))
+        .collect::<HashMap<_, _>>();
+    let mut affected = BTreeSet::new();
+    for id in current_frames.keys().chain(next_frames.keys()) {
+        if current_frames.get(id) != next_frames.get(id)
+            || current.retired.contains(*id) != next.retired.contains(*id)
+            || current.retiring.get(*id) != next.retiring.get(*id)
+        {
+            affected.insert((*id).to_string());
+        }
+    }
+    if current.relations != next.relations {
+        for relation in current.relations.iter().chain(&next.relations) {
+            affected.insert(relation.subject.clone());
+            affected.insert(relation.object.clone());
+        }
+    }
+    affected
+        .into_iter()
+        .filter_map(|id| {
+            next_frames
+                .get(id.as_str())
+                .map(|frame| frame_recall_document(context_id, next, frame, None))
+                .or_else(|| {
+                    current_frames.get(id.as_str()).map(|frame| {
+                        // Rollback may remove a Frame from the current Mind. Its
+                        // immutable history remains searchable as inactive.
+                        frame_recall_document(context_id, current, frame, Some(true))
+                    })
+                })
+        })
+        .collect()
 }
 
 fn replay_context_transaction_event(
@@ -4915,13 +6153,40 @@ fn replay_context_transaction_event(
             ));
         }
     }
-    let (candidate, replayed_changes) = apply_parsed_transaction(state, &parsed, seen_observations)
-        .map_err(|error| {
-            format!(
-                "Context transaction '{}' 确定性重放失败: {}",
-                event.id, error
-            )
-        })?;
+    let retirement_policy = if event
+        .payload
+        .get("frame_retirement_policy")
+        .and_then(|value| value.as_str())
+        == Some("cognitive-cooling-v1")
+    {
+        FrameRetirementPolicy::cognitive(
+            event
+                .payload
+                .get("cognitive_tick")
+                .and_then(|value| value.as_u64())
+                .ok_or_else(|| format!("Context transaction '{}' 缺少 cognitive_tick", event.id))?,
+            event
+                .payload
+                .get("frame_retirement_cooling_ticks")
+                .and_then(|value| value.as_u64())
+                .ok_or_else(|| {
+                    format!(
+                        "Context transaction '{}' 缺少 frame_retirement_cooling_ticks",
+                        event.id
+                    )
+                })?,
+        )
+    } else {
+        FrameRetirementPolicy::legacy_immediate()
+    };
+    let (candidate, replayed_changes) =
+        apply_parsed_transaction_with_policy(state, &parsed, seen_observations, retirement_policy)
+            .map_err(|error| {
+                format!(
+                    "Context transaction '{}' 确定性重放失败: {}",
+                    event.id, error
+                )
+            })?;
 
     let actual_after_hash = mind_state_hash(&candidate)?;
     match event
@@ -4957,7 +6222,21 @@ fn replay_context_transaction_event(
     if let Some(recorded_changes) = event.payload.get("changes") {
         let recorded_changes: Vec<ContextChange> = serde_json::from_value(recorded_changes.clone())
             .map_err(|error| format!("Context transaction '{}' Diff 损坏: {}", event.id, error))?;
-        if recorded_changes != replayed_changes {
+        // Per-item Token effects are receipt annotations calculated from the
+        // actually rendered observation/Frame blocks. They do not participate
+        // in Mind state transition replay, whose input deliberately contains
+        // only stable Context IDs. Validate the semantic Diff here; Projection
+        // hashes independently fence the resulting state.
+        if recorded_changes.len() != replayed_changes.len()
+            || recorded_changes
+                .iter()
+                .zip(&replayed_changes)
+                .any(|(recorded, replayed)| {
+                    recorded.operation != replayed.operation
+                        || recorded.target != replayed.target
+                        || recorded.detail != replayed.detail
+                })
+        {
             return Err(format!(
                 "Context transaction '{}' 的 Diff 与 SExpr 重放结果不一致",
                 event.id
@@ -5429,6 +6708,127 @@ fn estimate_text_tokens(text: &str) -> usize {
     ascii.saturating_add(3) / 4 + non_ascii
 }
 
+fn estimate_active_frame_tokens(frame: &ContextFrame, state: &MindState) -> usize {
+    let sources = frame.sources.join(" ");
+    let lifecycle = if state.retiring.contains_key(&frame.id) {
+        "retiring"
+    } else {
+        "active"
+    };
+    estimate_text_tokens(&format!(
+        "(frame (id {}) (revision {}) (lifecycle (state {})) (sources {}) (body {}))",
+        frame.id, frame.revision, lifecycle, sources, frame.body
+    ))
+}
+
+fn estimate_active_mind_tokens(state: &MindState) -> usize {
+    state
+        .frames
+        .iter()
+        .filter(|frame| !state.retired.contains(&frame.id))
+        .map(|frame| estimate_active_frame_tokens(frame, state))
+        .sum()
+}
+
+fn estimate_observation_event_tokens(event: &Event, config: &OrchestratorConfig) -> usize {
+    let text = event_text(event);
+    let (preview, _) = preview_text(&text, config.observation_preview_chars);
+    estimate_text_tokens(&format!(
+        "(observation (ref {}) (kind {}) (topic {}) (actor {}) (preview {}))",
+        event.id, event.event_type, event.topic, event.actor, preview
+    ))
+}
+
+fn context_transaction_token_effect(
+    current: &MindState,
+    next: &MindState,
+    referenced_observations: &[Event],
+    config: &OrchestratorConfig,
+) -> ContextTokenEffect {
+    let referenced_cost = |state: &MindState| {
+        referenced_observations
+            .iter()
+            .filter(|event| !state.retired.contains(&event.id))
+            .map(|event| estimate_observation_event_tokens(event, config))
+            .sum::<usize>()
+    };
+    let estimated_before = estimate_active_mind_tokens(current) + referenced_cost(current);
+    let estimated_after = estimate_active_mind_tokens(next) + referenced_cost(next);
+    let estimated_eventual_relief = next
+        .retiring
+        .keys()
+        .filter(|id| !current.retiring.contains_key(*id))
+        .filter_map(|id| next.frames.iter().find(|frame| &frame.id == id))
+        .map(|frame| estimate_active_frame_tokens(frame, next))
+        .sum();
+    ContextTokenEffect {
+        accounting: "local-unified-estimate".to_string(),
+        scope: "active-mind-plus-referenced-observations".to_string(),
+        estimated_before,
+        estimated_after,
+        estimated_immediate_relief: estimated_before.saturating_sub(estimated_after),
+        estimated_eventual_relief,
+    }
+}
+
+fn attach_context_change_token_effects(
+    changes: &mut [ContextChange],
+    current: &MindState,
+    next: &MindState,
+    referenced_observations: &[Event],
+    config: &OrchestratorConfig,
+) {
+    let observation_costs = referenced_observations
+        .iter()
+        .map(|event| {
+            (
+                event.id.as_str(),
+                estimate_observation_event_tokens(event, config),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    let active_cost = |state: &MindState, target: &str| -> Option<usize> {
+        if let Some(cost) = observation_costs.get(target) {
+            return Some(if state.retired.contains(target) {
+                0
+            } else {
+                *cost
+            });
+        }
+        state
+            .frames
+            .iter()
+            .find(|frame| frame.id == target)
+            .map(|frame| {
+                if state.retired.contains(target) {
+                    0
+                } else {
+                    estimate_active_frame_tokens(frame, state)
+                }
+            })
+    };
+
+    for change in changes {
+        let Some(before) = active_cost(current, &change.target) else {
+            continue;
+        };
+        let after = active_cost(next, &change.target).unwrap_or(0);
+        let eventual = if next.retiring.contains_key(&change.target) {
+            after
+        } else {
+            0
+        };
+        change.token_effect = Some(ContextChangeTokenEffect {
+            accounting: "local-unified-estimate".to_string(),
+            estimated_active_before: before,
+            estimated_active_after: after,
+            estimated_immediate_relief: before.saturating_sub(after),
+            estimated_eventual_relief: eventual,
+        });
+    }
+}
+
 fn canonical_body(expr: &SExpr) -> Result<String, String> {
     let body = expr.to_string();
     parse(&body).map_err(|error| format!("frame body 无法稳定往返解析: {}", error))?;
@@ -5512,6 +6912,7 @@ fn change(operation: &str, target: &str, detail: Option<String>) -> ContextChang
         operation: operation.to_string(),
         target: target.to_string(),
         detail,
+        token_effect: None,
     }
 }
 
@@ -5582,8 +6983,9 @@ mod tests {
     use crate::event::TYPE_AGENT_CALL;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        DeliveryIngressStore as _, NewAgent, NewCognitiveContext, NewSession, ObjectiveStatus,
-        SessionDirectoryStore as _, SessionMountKind, SessionStore,
+        ActivationStore as _, DeliveryIngressStore as _, NewAgent, NewCognitiveContext, NewSession,
+        ObjectiveStatus, SessionDirectoryStore as _, SessionMountKind, SessionStore,
+        ThreadStore as _,
     };
     use tempfile::TempDir;
 
@@ -5923,6 +7325,101 @@ mod tests {
     }
 
     #[test]
+    fn retiring_frame_repeat_revise_restore_and_protect_are_fenced() {
+        let create =
+            parse_transaction("(context-tx (base-version 0) (create memory (fact detailed)))")
+                .unwrap();
+        let (state, _) = apply_parsed_transaction_with_policy(
+            &MindState::default(),
+            &create,
+            &HashSet::new(),
+            FrameRetirementPolicy::cognitive(10, 8),
+        )
+        .unwrap();
+        let retire =
+            parse_transaction("(context-tx (base-version 1) (reason organize) (retire memory))")
+                .unwrap();
+        let (state, _) = apply_parsed_transaction_with_policy(
+            &state,
+            &retire,
+            &HashSet::new(),
+            FrameRetirementPolicy::cognitive(10, 8),
+        )
+        .unwrap();
+        assert_eq!(state.retiring["memory"].eligible_at_tick, 18);
+
+        let repeated = parse_transaction(
+            "(context-tx (base-version 2) (reason still-organize) (retire memory))",
+        )
+        .unwrap();
+        let (state, changes) = apply_parsed_transaction_with_policy(
+            &state,
+            &repeated,
+            &HashSet::new(),
+            FrameRetirementPolicy::cognitive(15, 8),
+        )
+        .unwrap();
+        assert_eq!(state.retiring["memory"].eligible_at_tick, 18);
+        assert!(changes
+            .iter()
+            .any(|change| change.operation == "retire-frame-existing"));
+
+        let revise =
+            parse_transaction("(context-tx (base-version 3) (revise memory (fact compact)))")
+                .unwrap();
+        let (state, _) = apply_parsed_transaction_with_policy(
+            &state,
+            &revise,
+            &HashSet::new(),
+            FrameRetirementPolicy::cognitive(15, 8),
+        )
+        .unwrap();
+        assert!(!state.retiring.contains_key("memory"));
+        assert_eq!(state.frames[0].revision, 2);
+
+        let retire_again =
+            parse_transaction("(context-tx (base-version 4) (reason reconsider) (retire memory))")
+                .unwrap();
+        let (state, _) = apply_parsed_transaction_with_policy(
+            &state,
+            &retire_again,
+            &HashSet::new(),
+            FrameRetirementPolicy::cognitive(20, 8),
+        )
+        .unwrap();
+        let restore = parse_transaction("(context-tx (base-version 5) (restore memory))").unwrap();
+        let (state, _) = apply_parsed_transaction_with_policy(
+            &state,
+            &restore,
+            &HashSet::new(),
+            FrameRetirementPolicy::cognitive(20, 8),
+        )
+        .unwrap();
+        assert!(!state.retiring.contains_key("memory"));
+
+        let retire_once_more =
+            parse_transaction("(context-tx (base-version 6) (reason final-check) (retire memory))")
+                .unwrap();
+        let (state, _) = apply_parsed_transaction_with_policy(
+            &state,
+            &retire_once_more,
+            &HashSet::new(),
+            FrameRetirementPolicy::cognitive(30, 8),
+        )
+        .unwrap();
+        let protect = parse_transaction("(context-tx (base-version 7) (protect memory))").unwrap();
+        let (state, _) = apply_parsed_transaction_with_policy(
+            &state,
+            &protect,
+            &HashSet::new(),
+            FrameRetirementPolicy::cognitive(30, 8),
+        )
+        .unwrap();
+        assert!(!state.retiring.contains_key("memory"));
+        assert!(state.protected.contains("memory"));
+    }
+
+    #[test]
     fn stale_base_version_is_rejected() {
         let state = MindState {
             version: 4,
@@ -6028,6 +7525,12 @@ mod tests {
             excluded: SessionWorkingSetExclusions::default(),
             selection: "test".to_string(),
         };
+        let cognitive_clock = ContextCognitiveClock {
+            context_id: "context-1".to_string(),
+            tick: 142,
+            last_signal_batch_id: Some("work-current".to_string()),
+            revision: 142,
+        };
         let rendered = render_context(ContextRenderInput {
             context_id: "context-1",
             active_session_id: "s1",
@@ -6042,6 +7545,8 @@ mod tests {
             concurrent_activations: &concurrent_activations,
             background_tasks: &[],
             objectives: &[],
+            cognitive_clock: &cognitive_clock,
+            frame_retirement_cooling_ticks: 8,
             state: &state,
             observations: &[],
             pressure: &pressure,
@@ -6057,6 +7562,10 @@ mod tests {
         assert_eq!(
             parsed.get_path(&["kernel", "version"]),
             Some(&SExpr::Atom("1".to_string()))
+        );
+        assert_eq!(
+            parsed.get_path(&["kernel", "cognitive-clock", "tick"]),
+            Some(&SExpr::Atom("142".to_string()))
         );
         assert_eq!(
             parsed.get_path(&["kernel", "wake", "cause"]),
@@ -6105,6 +7614,39 @@ mod tests {
         assert!(rendered.contains("(mind (frame"));
         assert!(rendered.contains("(inbox)"));
         assert!(!rendered.contains("todo_stack"));
+        assert!(!rendered.contains("(maintenance-candidates"));
+        assert!(rendered.contains("(capacity-relief-priority discard-absorbed-observations-first)"));
+        assert!(rendered.contains("(frame-selection semantic-value-validity-usage-and-relations)"));
+        assert!(rendered.contains("(frame-size-alone never-a-retirement-reason)"));
+
+        let mut warning_pressure = pressure.clone();
+        warning_pressure.level = "warning".to_string();
+        let warning = render_context(ContextRenderInput {
+            context_id: "context-1",
+            active_session_id: "s1",
+            parent_session_id: None,
+            sessions: &[],
+            session_working_set: &working_set,
+            active_activations: &[],
+            threads: &[],
+            thread_signals: &[],
+            schedules: &[],
+            activation: Some(&evaluation),
+            concurrent_activations: &concurrent_activations,
+            background_tasks: &[],
+            objectives: &[],
+            cognitive_clock: &cognitive_clock,
+            frame_retirement_cooling_ticks: 8,
+            state: &state,
+            observations: &[],
+            pressure: &warning_pressure,
+            turn_budget: &budget,
+            wake: &wake,
+            references: &references,
+        });
+        assert!(warning.contains("(level warning)"));
+        assert!(!warning.contains("(maintenance-candidates"));
+        assert!(!warning.contains("active-token-cost-estimate"));
 
         assert!(rendered.starts_with(stable_context_prefix()));
         let shared_mind_offset = stable_context_prefix().len();
@@ -6125,6 +7667,8 @@ mod tests {
             concurrent_activations: &concurrent_activations,
             background_tasks: &[],
             objectives: &[],
+            cognitive_clock: &cognitive_clock,
+            frame_retirement_cooling_ticks: 8,
             state: &state,
             observations: &[],
             pressure: &pressure,
@@ -6994,6 +8538,388 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn frame_recall_traverses_ancestors_with_stable_signed_pagination() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("recall-graph.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_context(NewCognitiveContext {
+                id: "recall-graph-context".to_string(),
+                agent_id: "recall-graph-agent".to_string(),
+                title: "Recall Graph".to_string(),
+            })
+            .await
+            .unwrap();
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>);
+        engine
+            .apply_context_transaction(
+                "recall-graph-context",
+                "recall-graph-session",
+                "(context-tx (base-version 0) (create A (fact a)) (create B (fact b)) (create D (fact d)))",
+            )
+            .await
+            .unwrap();
+        engine
+            .apply_context_transaction(
+                "recall-graph-context",
+                "recall-graph-session",
+                "(context-tx (base-version 1) (derive C (from A B) (summary c)) (derive E (from C D) (summary e)) (retire A B) (reason \"consolidated\"))",
+            )
+            .await
+            .unwrap();
+
+        let request = |depth, max_nodes, cursor| FrameRecallRequest {
+            context_id: "recall-graph-context".to_string(),
+            frame_id: "E".to_string(),
+            depth,
+            direction: FrameRecallDirection::Ancestors,
+            include_bodies: true,
+            include_events: false,
+            max_nodes,
+            cursor,
+        };
+        let depth_zero = engine
+            .recall_frame_graph(request(0, 32, None))
+            .await
+            .unwrap();
+        assert_eq!(depth_zero.nodes.len(), 1);
+        assert_eq!(
+            depth_zero
+                .edges
+                .iter()
+                .map(|edge| edge.object.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["C", "D"]),
+            "depth=0 still exposes the root's direct addressing edges"
+        );
+        let depth_one = engine
+            .recall_frame_graph(request(1, 32, None))
+            .await
+            .unwrap();
+        assert_eq!(depth_one.nodes.len(), 3);
+        let depth_two = engine
+            .recall_frame_graph(request(2, 32, None))
+            .await
+            .unwrap();
+        let ids = depth_two
+            .nodes
+            .iter()
+            .map(|node| match node {
+                FrameRecallNode::Frame { id, .. } | FrameRecallNode::Event { id, .. } => id.clone(),
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            ids,
+            ["A", "B", "C", "D", "E"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+        assert!(depth_two.nodes.iter().any(|node| matches!(
+            node,
+            FrameRecallNode::Frame { id, lifecycle, .. }
+                if id == "A" && lifecycle == "retiring"
+        )));
+
+        let descendants = engine
+            .recall_frame_graph(FrameRecallRequest {
+                context_id: "recall-graph-context".to_string(),
+                frame_id: "A".to_string(),
+                depth: 2,
+                direction: FrameRecallDirection::Descendants,
+                include_bodies: false,
+                include_events: false,
+                max_nodes: 32,
+                cursor: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            descendants
+                .nodes
+                .iter()
+                .map(|node| match node {
+                    FrameRecallNode::Frame { id, .. } | FrameRecallNode::Event { id, .. } => {
+                        id.as_str()
+                    }
+                })
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["A", "C", "E"])
+        );
+
+        let first = engine
+            .recall_frame_graph(request(2, 2, None))
+            .await
+            .unwrap();
+        assert!(first.truncated);
+        let second = engine
+            .recall_frame_graph(request(2, 2, first.next_cursor.clone()))
+            .await
+            .unwrap();
+        let third = engine
+            .recall_frame_graph(request(2, 2, second.next_cursor.clone()))
+            .await
+            .unwrap();
+        let paged = first
+            .nodes
+            .iter()
+            .chain(&second.nodes)
+            .chain(&third.nodes)
+            .map(|node| match node {
+                FrameRecallNode::Frame { id, .. } | FrameRecallNode::Event { id, .. } => id.clone(),
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(paged, ids);
+        let mut tampered = first.next_cursor.unwrap();
+        tampered.replace_range(0..1, if tampered.starts_with('0') { "1" } else { "0" });
+        assert!(engine
+            .recall_frame_graph(request(2, 2, Some(tampered)))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("签名"));
+
+        engine
+            .apply_context_transaction(
+                "recall-graph-context",
+                "recall-graph-session",
+                "(context-tx (base-version 2) (relate C related-to E) (relate E related-to C))",
+            )
+            .await
+            .unwrap();
+        let cyclic = engine
+            .recall_frame_graph(FrameRecallRequest {
+                context_id: "recall-graph-context".to_string(),
+                frame_id: "E".to_string(),
+                depth: 4,
+                direction: FrameRecallDirection::Both,
+                include_bodies: false,
+                include_events: false,
+                max_nodes: 128,
+                cursor: None,
+            })
+            .await
+            .unwrap();
+        let cyclic_ids = cyclic
+            .nodes
+            .iter()
+            .map(|node| match node {
+                FrameRecallNode::Frame { id, .. } | FrameRecallNode::Event { id, .. } => id,
+            })
+            .collect::<HashSet<_>>();
+        assert_eq!(
+            cyclic_ids.len(),
+            cyclic.nodes.len(),
+            "cycles must not revisit nodes"
+        );
+    }
+
+    #[tokio::test]
+    async fn frame_retirement_uses_cognitive_ticks_and_successor_fast_path() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("frame-retirement.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_context(NewCognitiveContext {
+                id: "retirement-context".to_string(),
+                agent_id: "retirement-agent".to_string(),
+                title: "Retirement Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "retirement-session".to_string(),
+                agent_id: "retirement-agent".to_string(),
+                context_id: "retirement-context".to_string(),
+                parent_session_id: None,
+                title: "Retirement Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut config = OrchestratorConfig::default();
+        config.frame_retirement.cooling_ticks = 2;
+        let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config)
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+            .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>)
+            .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>)
+            .with_cognitive_clock_store(Arc::clone(&store) as Arc<dyn CognitiveClockStore>);
+
+        engine
+            .apply_context_transaction(
+                "retirement-context",
+                "retirement-session",
+                "(context-tx (base-version 0) (create recent-memory (fact recent)))",
+            )
+            .await
+            .unwrap();
+        let requested = engine
+            .apply_context_transaction(
+                "retirement-context",
+                "retirement-session",
+                "(context-tx (base-version 1) (reason organize) (retire recent-memory))",
+            )
+            .await
+            .unwrap();
+        assert!(requested
+            .changes
+            .iter()
+            .any(|change| change.operation == "retire-frame-requested"));
+        let requested_effect = requested
+            .changes
+            .iter()
+            .find(|change| change.operation == "retire-frame-requested")
+            .and_then(|change| change.token_effect.as_ref())
+            .expect("ordinary Frame retirement must report a per-item estimate");
+        assert_eq!(requested_effect.estimated_immediate_relief, 0);
+        assert!(requested_effect.estimated_eventual_relief > 0);
+        let state = engine
+            .load_current_mind("retirement-context", None)
+            .await
+            .unwrap();
+        assert!(state.retiring.contains_key("recent-memory"));
+        assert!(!state.retired.contains("recent-memory"));
+
+        for tick in 1_u64..=2 {
+            let event_id = format!("retirement-signal-{tick}");
+            let root_turn_id = format!("retirement-root-{tick}");
+            store
+                .append(Event::new(
+                    event_id.clone(),
+                    "User".to_string(),
+                    TYPE_USER_MESSAGE.to_string(),
+                    "chat/user_message".to_string(),
+                    serde_json::json!({
+                        "context_id": "retirement-context",
+                        "session_id": "retirement-session",
+                        "root_turn_id": root_turn_id,
+                        "text": format!("new fact {tick}")
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ))
+                .await
+                .unwrap();
+            let sequence = store
+                .query(QueryFilter {
+                    event_id: Some(event_id.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()[0]
+                .sequence
+                .unwrap();
+            let thread_id = format!("retirement-thread-{tick}");
+            store
+                .ensure_thread(crate::memory::NewThread {
+                    id: thread_id.clone(),
+                    agent_id: "retirement-agent".to_string(),
+                    context_id: "retirement-context".to_string(),
+                    session_id: "retirement-session".to_string(),
+                    root_turn_id: root_turn_id.clone(),
+                    kind: crate::memory::ThreadKind::DialogueTurn,
+                    executor_kind: "self".to_string(),
+                    executor_id: None,
+                })
+                .await
+                .unwrap();
+            store
+                .claim_thread_signal_batch(
+                    crate::memory::NewThreadSignal {
+                        id: format!("retirement-mail-{tick}"),
+                        thread_id,
+                        event_id: event_id.clone(),
+                        sequence,
+                        kind: "chat/user_message".to_string(),
+                        parent_activation_id: None,
+                    },
+                    crate::memory::NewThreadActivation {
+                        id: format!("retirement-activation-{tick}"),
+                        agent_id: "retirement-agent".to_string(),
+                        context_id: "retirement-context".to_string(),
+                        session_id: "retirement-session".to_string(),
+                        trigger_event_id: event_id,
+                        trigger_sequence: sequence,
+                        trigger_kind: "chat/user_message".to_string(),
+                        parent_activation_id: None,
+                        root_turn_id,
+                    },
+                    32,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            let view = engine
+                .build_context_encoding("retirement-context", "retirement-session", &HashSet::new())
+                .await
+                .unwrap();
+            assert_eq!(view.cognitive_clock.tick, tick);
+            if tick == 1 {
+                assert!(view.state.retiring.contains_key("recent-memory"));
+                assert!(view.sexpr.contains("(state retiring)"));
+                assert!(view.sexpr.contains("(remaining-ticks 1)"));
+            } else {
+                assert!(!view.state.retiring.contains_key("recent-memory"));
+                assert!(view.state.retired.contains("recent-memory"));
+            }
+        }
+
+        engine
+            .apply_context_transaction(
+                "retirement-context",
+                "retirement-session",
+                "(context-tx (base-version 3) (create case-a (fact a)))",
+            )
+            .await
+            .unwrap();
+        let consolidated = engine
+            .apply_context_transaction(
+                "retirement-context",
+                "retirement-session",
+                "(context-tx (base-version 4) (reason consolidate) (derive general-model (from case-a) (knowledge general)) (relate general-model supersedes case-a) (retire case-a))",
+            )
+            .await
+            .unwrap();
+        let state = engine
+            .load_current_mind("retirement-context", None)
+            .await
+            .unwrap();
+        assert!(state.retired.contains("case-a"));
+        assert!(!state.retiring.contains_key("case-a"));
+        assert!(consolidated.changes.iter().any(|change| {
+            change.operation == "retire-frame-finalized"
+                && change
+                    .detail
+                    .as_deref()
+                    .is_some_and(|detail| detail.contains("general-model"))
+        }));
+        let consolidated_effect = consolidated
+            .changes
+            .iter()
+            .find(|change| {
+                change.operation == "retire-frame-finalized" && change.target == "case-a"
+            })
+            .and_then(|change| change.token_effect.as_ref())
+            .expect("successor retirement must report its source Frame relief");
+        assert!(consolidated_effect.estimated_immediate_relief > 0);
+        assert_eq!(consolidated_effect.estimated_eventual_relief, 0);
+    }
+
+    #[tokio::test]
     async fn committed_mind_survives_engine_restart_and_observation_retirement() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("context-persistence.db");
@@ -7042,7 +8968,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["event:constraint"]
         );
-        engine
+        let committed = engine
             .apply_context_transaction(
                 session_id,
                 session_id,
@@ -7056,6 +8982,14 @@ mod tests {
             )
             .await
             .unwrap();
+        let retired_observation_effect = committed
+            .changes
+            .iter()
+            .find(|change| change.operation == "retire" && change.target == "event:constraint")
+            .and_then(|change| change.token_effect.as_ref())
+            .expect("Observation retirement must report immediate per-item relief");
+        assert!(retired_observation_effect.estimated_immediate_relief > 0);
+        assert_eq!(retired_observation_effect.estimated_eventual_relief, 0);
 
         let restarted = ContextEngine::new(
             Arc::clone(&store) as Arc<dyn EventStore>,
@@ -7393,9 +9327,16 @@ mod tests {
             .state
             .protected
             .contains("stable-principle"));
+        assert!(source_before_seed
+            .state
+            .retiring
+            .contains_key("evidence-frame"));
         assert!(project_mind_seed(&source_before_seed.state)
             .protected
             .contains("stable-principle"));
+        assert!(project_mind_seed(&source_before_seed.state)
+            .retiring
+            .is_empty());
 
         let receipt = engine
             .seed_context_from_mind("seed-source", Some(1), "seed-target")
@@ -7423,7 +9364,8 @@ mod tests {
         assert_eq!(child.sessions[0].session.id, "seed-session-c");
         assert!(child.observations.is_empty());
         assert!(child.state.protected.contains("stable-principle"));
-        assert!(child.state.retired.contains("evidence-frame"));
+        assert!(!child.state.retired.contains("evidence-frame"));
+        assert!(!child.state.retiring.contains_key("evidence-frame"));
         let inherited = child
             .state
             .frames

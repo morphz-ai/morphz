@@ -17,15 +17,18 @@ use crate::memory::{
     EventStore, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
     ExecutionJobStore, MessageClaim, MindProjectionStore, NewAgent, NewCognitiveContext,
     NewDelegation, NewObjective, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeStore, ScheduleMutation,
-    ScheduleRecord, ScheduleStatus, SessionRecord, SessionStore, SessionUpdate,
+    ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RecallProjectionStore, RuntimeStore,
+    ScheduleMutation, ScheduleRecord, ScheduleStatus, SessionRecord, SessionStore, SessionUpdate,
     ThreadActivationRecord, ThreadActivationStatus, ThreadPhase, ThreadRecord, ThreadSignalRecord,
     ThreadSignalStatus, TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
 };
-use crate::orchestrator::context::{ContextEngine, ContextView};
+use crate::orchestrator::context::{
+    ContextEngine, ContextRecallService, ContextView, FrameRecallPage, FrameRecallRequest,
+    RecallSearchPage, RecallSearchRequest,
+};
 use crate::orchestrator::orchestrator::{DurableApprovalServices, Orchestrator};
 use crate::permission::{PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode};
 use crate::timer::TimerEngine;
@@ -299,6 +302,10 @@ impl MorphzRuntimeBuilder {
             .with_session_projection_store(
                 Arc::clone(&store) as Arc<dyn crate::memory::SessionProjectionStore>
             )
+            .with_recall_projection_store(Arc::clone(&store) as Arc<dyn RecallProjectionStore>)
+            .with_cognitive_clock_store(
+                Arc::clone(&store) as Arc<dyn crate::memory::CognitiveClockStore>
+            )
             .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>)
             .with_worker_coordination_mode(store.worker_coordination_mode()),
         );
@@ -410,6 +417,7 @@ impl MorphzRuntimeBuilder {
                 bus,
                 store,
                 registry,
+                context_engine,
                 orchestrator,
                 objective_supervisor,
                 thread_scheduler,
@@ -529,6 +537,7 @@ struct RuntimeInner {
     bus: Arc<InMemoryEventBus>,
     store: Arc<dyn RuntimeStore>,
     registry: Arc<Registry>,
+    context_engine: Arc<ContextEngine>,
     orchestrator: Arc<Orchestrator>,
     objective_supervisor: Arc<ObjectiveSupervisor>,
     thread_scheduler: Arc<ThreadScheduler>,
@@ -1694,6 +1703,48 @@ impl MorphzRuntime {
         self.inner
             .orchestrator
             .get_context_encoding(context_id, session_id)
+            .await
+    }
+
+    pub async fn search_recall(
+        &self,
+        request: RecallSearchRequest,
+    ) -> Result<RecallSearchPage, RuntimeError> {
+        self.inner.context_engine.search_recall(request).await
+    }
+
+    pub async fn recall_frame(
+        &self,
+        request: FrameRecallRequest,
+    ) -> Result<FrameRecallPage, RuntimeError> {
+        self.inner.context_engine.recall_frame(request).await
+    }
+
+    pub async fn inspect_recall_index(
+        &self,
+        context_id: &str,
+    ) -> Result<crate::memory::RecallIndexAudit, RuntimeError> {
+        ContextRecallService::inspect_recall_index(self.inner.context_engine.as_ref(), context_id)
+            .await
+    }
+
+    pub async fn rebuild_recall_index(
+        &self,
+        context_id: &str,
+    ) -> Result<crate::memory::RecallIndexAudit, RuntimeError> {
+        ContextRecallService::rebuild_recall_index(self.inner.context_engine.as_ref(), context_id)
+            .await
+    }
+
+    pub async fn apply_context_transaction(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
+        transaction: &str,
+    ) -> Result<crate::orchestrator::context::ContextCommit, RuntimeError> {
+        self.inner
+            .context_engine
+            .apply_context_transaction(context_id, acting_session_id, transaction)
             .await
     }
 }

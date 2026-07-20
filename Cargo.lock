@@ -2376,6 +2376,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
  "unicode-width",
  "vt100",
  "walkdir",
