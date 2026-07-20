@@ -491,7 +491,7 @@ Morphz 采用相同的依赖方向，但不复制 `ThreadGoal` 层级：
 - Context Encoding protocol version 14 固定说明 Objective/Context/Session/Evaluation 边界及自主创建纪律，动态 `kernel.objectives` 只注入紧凑控制状态；`objective/evaluation_started` 会确定性重置本 continuation cycle 的 Attempt 与 Context 事务预算；
 - 后台 task、Delegation、permission、user input、timer、external event 和 resource available 均有精确等待类型；task/timer 完成采用事件驱动唤醒，不通过模型轮询；
 - Runtime 公共 API 提供 create/get/list/edit/update/pause/resume/cancel；CLI 提供 `objective list/show/create/edit/pause/resume/cancel`，运行命令持续展示进度、工具、审批和最终回复；
-- 同一 Context 的多个 Objective 可以绑定不同 coordinator/delivery Session 并发运行，共享 Mind 仍使用既有 Context version 锁串行提交。
+- 同一 Context 的多个 Objective 无论绑定相同还是不同 coordinator/delivery Session，都可以拥有独立 Activation 并发运行；同一 Objective 仍由 revision、Evaluation 租约与本地 Objective slot 保持单飞，共享 Mind 仍使用既有 Context version 锁串行提交。
 
 ### 18.2 验收结果
 
@@ -499,6 +499,7 @@ Morphz 采用相同的依赖方向，但不复制 `ThreadGoal` 层级：
 
 - active Objective 在进度 reply 后自动续跑，显式 completed 后的最终 reply 停止续跑；
 - Agent 在普通 Evaluation 中自主创建 Objective 后，当前 Evaluation 被收编；重复创建返回 existing，第一次 reply 后只产生一次 Supervisor continuation；
+- 同一 Activation 连续创建多个兄弟 Objective 时，首个收编当前 Evaluation，其余目标立即获得独立 continuation 并并发进入模型，不依赖前一个目标释放 Session；
 - completed/blocked 状态先提交，最终 reply 保持 Objective 路由并按 Evaluation ID 释放租约；
 - 连续 101 个 Objective Evaluation、总计 102 次模型请求后仍能正常完成，没有硬性 Attempt/工具次数终止；
 - 后台 task 等待不轮询，只由匹配的物理终态事件唤醒一次；

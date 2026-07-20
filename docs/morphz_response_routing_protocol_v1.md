@@ -63,7 +63,7 @@ evaluation_outcomes.activation_id  PRIMARY KEY
 
 同一个 Activation 重试或崩溃恢复时只能提交一次终态；同一个 Root Turn 后续由工具完成、Timer 或 Objective Supervisor 唤醒的新 Activation，则可以合法提交新的消息。SQLite 启动迁移已经把开发期物理列 `work_item_id` 原位改名为 `activation_id`，产品接口和存储不再保留双重术语。这修复了“等待时先静默/回复一次，后台完成后的最终通知被旧 Root Turn 唯一约束抑制”的问题。
 
-Objective Evaluation 的终态归属同样绑定到具体 Activation，而不是只按 Session 推断。Session 级绑定只负责调度互斥；Objective 标识必须沿该 Activation 的工具结果和因果后继显式传播。同一 Session 的并发用户 Activation 即使先结束，也不能释放或冒领正在运行的 Objective Evaluation。
+Objective Evaluation 的终态归属同样绑定到具体 Activation，而不是只按 Session 推断。Objective 级绑定负责同一目标的求值互斥；Objective 标识必须沿该 Activation 的工具结果和因果后继显式传播。同一 Session 的兄弟 Objective 可以并发求值，而并发用户 Activation 即使先结束，也不能释放或冒领其中任何一个 Objective Evaluation。
 
 ### 4.1 Delivery Router 与不可变触发快照
 

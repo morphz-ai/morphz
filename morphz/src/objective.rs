@@ -160,7 +160,7 @@ impl Tool for ObjectiveCreateTool {
             let active = self
                 .supervisor
                 .evaluations
-                .get(&session_id)
+                .get_for_activation(&attempt_id)
                 .ok_or("只有当前正在求值的 Objective 才能作为自主创建的 parent")?;
             if active.objective_id != parent_id {
                 return Err(format!(
@@ -205,7 +205,12 @@ impl Tool for ObjectiveCreateTool {
                         == normalized_statement
             })
         {
-            let adopted = if self.supervisor.evaluations.get(&session_id).is_none() {
+            let adopted = if self
+                .supervisor
+                .evaluations
+                .get_for_activation(&attempt_id)
+                .is_none()
+            {
                 self.supervisor
                     .claim_routed_evaluation(&existing, &attempt_id, Some(&attempt_id), false)
                     .await?
@@ -216,14 +221,17 @@ impl Tool for ObjectiveCreateTool {
                 self.supervisor
                     .publish_state_event("evaluation_started", claimed, Some(&attempt_id))
                     .await?;
+            } else {
+                self.supervisor.reconcile(existing.clone()).await?;
             }
+            let current = self.supervisor.get(&existing.id).await?.unwrap_or(existing);
             return Ok(serde_json::to_string_pretty(&json!({
                 "status": "existing",
                 "created": false,
-                "objective_id": existing.id,
-                "objective_status": existing.status,
-                "revision": adopted.as_ref().map(|objective| objective.revision).unwrap_or(existing.revision),
-                "activation_adoption": if adopted.is_some() { "current-activation" } else { "already-routed-or-queued" },
+                "objective_id": current.id,
+                "objective_status": current.status,
+                "revision": current.revision,
+                "activation_adoption": if adopted.is_some() { "current-activation" } else { "already-routed-or-independent-continuation" },
                 "guidance": "相同的非终态 Objective 已存在；不要重复创建。继续执行它，或在有权限时更新其状态。"
             }))?);
         }
@@ -279,7 +287,12 @@ impl Tool for ObjectiveCreateTool {
             })
             .await?;
 
-        let adopted = if self.supervisor.evaluations.get(&session_id).is_none() {
+        let adopted = if self
+            .supervisor
+            .evaluations
+            .get_for_activation(&attempt_id)
+            .is_none()
+        {
             self.supervisor
                 .claim_routed_evaluation(&created, &attempt_id, Some(&attempt_id), false)
                 .await?
@@ -293,18 +306,21 @@ impl Tool for ObjectiveCreateTool {
             self.supervisor
                 .publish_state_event("evaluation_started", claimed, Some(&attempt_id))
                 .await?;
+        } else {
+            self.supervisor.reconcile(created.clone()).await?;
         }
+        let current = self.supervisor.get(&created.id).await?.unwrap_or(created);
 
         Ok(serde_json::to_string_pretty(&json!({
             "status": "created",
             "created": true,
-            "objective_id": created.id,
-            "objective_status": created.status,
-            "revision": adopted.as_ref().map(|objective| objective.revision).unwrap_or(created.revision),
-            "context_id": created.context_id,
-            "coordinator_session_id": created.coordinator_session_id,
-            "parent_objective_id": created.parent_objective_id,
-            "activation_adoption": if adopted.is_some() { "current-activation" } else { "queued-behind-current-objective" },
+            "objective_id": current.id,
+            "objective_status": current.status,
+            "revision": current.revision,
+            "context_id": current.context_id,
+            "coordinator_session_id": current.coordinator_session_id,
+            "parent_objective_id": current.parent_objective_id,
+            "activation_adoption": if adopted.is_some() { "current-activation" } else { "independent-continuation" },
             "guidance": "Objective 已持久化。不要重复创建；继续当前工作。普通文本或 no_reply 只结束当前 Activation，Objective 未完成时 Supervisor 会自动续跑。"
         }))?)
     }
@@ -591,7 +607,7 @@ pub struct ActiveObjectiveEvaluation {
 /// authoritative; this registry only lets Orchestrator stamp terminal IO with
 /// the Objective Evaluation that caused it.
 pub struct ObjectiveEvaluationRegistry {
-    by_session: DashMap<String, ActiveObjectiveEvaluation>,
+    by_objective: DashMap<String, ActiveObjectiveEvaluation>,
     by_activation: DashMap<String, ActiveObjectiveEvaluation>,
     /// A cancellation tombstone is keyed by the persistent Evaluation ID, not
     /// by Session.  It therefore cannot cancel an unrelated dialogue or a
@@ -604,7 +620,7 @@ impl Default for ObjectiveEvaluationRegistry {
     fn default() -> Self {
         let (cancellation_epoch, _) = watch::channel(0);
         Self {
-            by_session: DashMap::new(),
+            by_objective: DashMap::new(),
             by_activation: DashMap::new(),
             cancelled_evaluations: DashMap::new(),
             cancellation_epoch,
@@ -613,8 +629,10 @@ impl Default for ObjectiveEvaluationRegistry {
 }
 
 impl ObjectiveEvaluationRegistry {
-    pub fn get(&self, session_id: &str) -> Option<ActiveObjectiveEvaluation> {
-        self.by_session.get(session_id).map(|entry| entry.clone())
+    pub fn get_for_objective(&self, objective_id: &str) -> Option<ActiveObjectiveEvaluation> {
+        self.by_objective
+            .get(objective_id)
+            .map(|entry| entry.clone())
     }
 
     pub fn get_for_activation(&self, activation_id: &str) -> Option<ActiveObjectiveEvaluation> {
@@ -704,10 +722,11 @@ impl ObjectiveEvaluationRegistry {
 
     fn try_bind(
         &self,
-        session_id: &str,
+        objective_id: &str,
         evaluation: ActiveObjectiveEvaluation,
     ) -> Result<(), ActiveObjectiveEvaluation> {
-        match self.by_session.entry(session_id.to_string()) {
+        debug_assert_eq!(objective_id, evaluation.objective_id);
+        match self.by_objective.entry(objective_id.to_string()) {
             dashmap::mapref::entry::Entry::Vacant(entry) => {
                 entry.insert(evaluation);
                 Ok(())
@@ -716,12 +735,12 @@ impl ObjectiveEvaluationRegistry {
         }
     }
 
-    fn unbind(&self, session_id: &str, evaluation_id: &str) {
-        self.by_session.remove_if(session_id, |_, active| {
+    fn unbind(&self, objective_id: &str, evaluation_id: &str) {
+        self.by_objective.remove_if(objective_id, |_, active| {
             active.evaluation_id == evaluation_id
         });
-        // Activation routing has a longer lifetime than the Session scheduling
-        // lane.  A pause/cancel releases the lane first, then signals the exact
+        // Activation routing has a longer lifetime than the Objective scheduling
+        // slot. A pause/cancel releases the slot first, then signals the exact
         // running Activation.  The Orchestrator removes this binding only after
         // that Activation reaches a durable terminal state.
     }
@@ -733,7 +752,7 @@ impl ObjectiveEvaluationRegistry {
     }
 
     fn cleanup_cancellation_tombstone(&self, evaluation: &ActiveObjectiveEvaluation) {
-        let still_bound_to_session = self.by_session.iter().any(|entry| {
+        let still_bound_to_objective = self.by_objective.iter().any(|entry| {
             entry.objective_id == evaluation.objective_id
                 && entry.evaluation_id == evaluation.evaluation_id
         });
@@ -741,7 +760,7 @@ impl ObjectiveEvaluationRegistry {
             entry.objective_id == evaluation.objective_id
                 && entry.evaluation_id == evaluation.evaluation_id
         });
-        if !still_bound_to_session && !still_bound_to_work {
+        if !still_bound_to_objective && !still_bound_to_work {
             self.clear_cancelled_evaluation(&evaluation.objective_id, &evaluation.evaluation_id);
         }
     }
@@ -1028,8 +1047,8 @@ impl ObjectiveSupervisor {
 
     /// Re-run scheduling policy for every non-terminal Objective in one
     /// Cognitive Context. Control paths call this only after the exact stopped
-    /// Evaluation has received its cancellation signal, so a sibling cannot
-    /// enter the released Session lane ahead of that signal.
+    /// Evaluation has received its cancellation signal, so the same Objective
+    /// cannot claim a replacement before its old Activation is fenced.
     pub async fn reconcile_context(self: &Arc<Self>, context_id: &str) -> Result<(), DynError> {
         for objective in self
             .store
@@ -1238,7 +1257,7 @@ impl ObjectiveSupervisor {
     }
 
     pub async fn terminal_outcome(self: &Arc<Self>, event: &Event) -> Result<(), DynError> {
-        let Some(session_id) = event
+        let Some(_session_id) = event
             .payload
             .get("session_id")
             .and_then(|value| value.as_str())
@@ -1289,7 +1308,8 @@ impl ObjectiveSupervisor {
             )
             .await?;
         self.cancel_lease_timer(&binding.objective_id).await?;
-        self.evaluations.unbind(session_id, &binding.evaluation_id);
+        self.evaluations
+            .unbind(&binding.objective_id, &binding.evaluation_id);
         let mut context_to_reconcile = None;
         match mutation {
             ObjectiveMutation::Updated(updated) => {
@@ -1434,7 +1454,7 @@ impl ObjectiveSupervisor {
         };
         if self
             .evaluations
-            .try_bind(&objective.coordinator_session_id, local_binding)
+            .try_bind(&objective.id, local_binding)
             .is_err()
         {
             return Ok(None);
@@ -1450,15 +1470,10 @@ impl ObjectiveSupervisor {
             )
             .await?;
         let ObjectiveMutation::Updated(claimed) = claimed else {
-            self.evaluations
-                .unbind(&objective.coordinator_session_id, &evaluation_id);
+            self.evaluations.unbind(&objective.id, &evaluation_id);
             return Ok(None);
         };
-        if let Some(mut active) = self
-            .evaluations
-            .by_session
-            .get_mut(&objective.coordinator_session_id)
-        {
+        if let Some(mut active) = self.evaluations.by_objective.get_mut(&objective.id) {
             if active.evaluation_id == evaluation_id {
                 active.revision = claimed.revision;
             }
@@ -1516,7 +1531,7 @@ impl ObjectiveSupervisor {
         };
         if self
             .evaluations
-            .try_bind(&objective.coordinator_session_id, local_binding)
+            .try_bind(&objective.id, local_binding)
             .is_err()
         {
             return Ok(());
@@ -1563,15 +1578,10 @@ impl ObjectiveSupervisor {
             )
             .await?;
         let ObjectiveMutation::Updated(claimed) = claimed else {
-            self.evaluations
-                .unbind(&objective.coordinator_session_id, &evaluation_id);
+            self.evaluations.unbind(&objective.id, &evaluation_id);
             return Ok(());
         };
-        if let Some(mut active) = self
-            .evaluations
-            .by_session
-            .get_mut(&objective.coordinator_session_id)
-        {
+        if let Some(mut active) = self.evaluations.by_objective.get_mut(&objective.id) {
             if active.evaluation_id == evaluation_id {
                 active.revision = claimed.revision;
             }
@@ -1777,11 +1787,9 @@ impl ObjectiveSupervisor {
     }
 
     fn clear_local_binding(&self, objective: &ObjectiveRecord) {
-        if let Some(active) = self.evaluations.get(&objective.coordinator_session_id) {
-            if active.objective_id == objective.id {
-                self.evaluations
-                    .unbind(&objective.coordinator_session_id, &active.evaluation_id);
-            }
+        if let Some(active) = self.evaluations.get_for_objective(&objective.id) {
+            self.evaluations
+                .unbind(&objective.id, &active.evaluation_id);
         }
     }
 
@@ -2081,7 +2089,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluation_registry_does_not_overwrite_an_active_session_lane() {
+    fn evaluation_registry_serializes_each_objective_but_not_its_session() {
         let registry = ObjectiveEvaluationRegistry::default();
         let first = ActiveObjectiveEvaluation {
             objective_id: "objective-a".to_string(),
@@ -2089,24 +2097,47 @@ mod tests {
             revision: 2,
             started_at: Utc::now(),
         };
-        assert!(registry.try_bind("session-a", first.clone()).is_ok());
+        assert!(registry.try_bind("objective-a", first.clone()).is_ok());
         registry.bind_activation("work-a", first.clone());
         assert_eq!(registry.get_for_activation("work-a"), Some(first.clone()));
         assert!(registry.get_for_activation("work-b").is_none());
-        let second = ActiveObjectiveEvaluation {
+        let competing = ActiveObjectiveEvaluation {
+            objective_id: "objective-a".to_string(),
+            evaluation_id: "evaluation-a-2".to_string(),
+            revision: 3,
+            started_at: Utc::now(),
+        };
+        assert_eq!(
+            registry.try_bind("objective-a", competing),
+            Err(first.clone())
+        );
+        let sibling = ActiveObjectiveEvaluation {
             objective_id: "objective-b".to_string(),
             evaluation_id: "evaluation-b".to_string(),
             revision: 2,
             started_at: Utc::now(),
         };
-        assert_eq!(registry.try_bind("session-a", second), Err(first.clone()));
-        registry.unbind("session-a", "wrong-evaluation");
-        assert_eq!(registry.get("session-a"), Some(first.clone()));
-        registry.unbind("session-a", "evaluation-a");
-        assert!(registry.get("session-a").is_none());
+        assert!(registry.try_bind("objective-b", sibling.clone()).is_ok());
+        registry.bind_activation("work-b", sibling.clone());
+        registry.unbind("objective-a", "wrong-evaluation");
+        assert_eq!(
+            registry.get_for_objective("objective-a"),
+            Some(first.clone())
+        );
+        assert_eq!(
+            registry.get_for_objective("objective-b"),
+            Some(sibling.clone())
+        );
+        registry.unbind("objective-a", "evaluation-a");
+        assert!(registry.get_for_objective("objective-a").is_none());
+        assert_eq!(
+            registry.get_for_objective("objective-b"),
+            Some(sibling.clone())
+        );
         assert_eq!(registry.get_for_activation("work-a"), Some(first));
         registry.remove_activation("work-a");
         assert!(registry.get_for_activation("work-a").is_none());
+        assert_eq!(registry.get_for_activation("work-b"), Some(sibling));
     }
 
     #[tokio::test]
@@ -2216,7 +2247,9 @@ mod tests {
             revision: claimed.revision,
             started_at: Utc::now(),
         };
-        registry.try_bind("session-fence", binding.clone()).unwrap();
+        registry
+            .try_bind("objective-fence", binding.clone())
+            .unwrap();
         registry.bind_activation("activation-old", binding.clone());
         let supervisor = Arc::new(ObjectiveSupervisor::new(
             Arc::clone(&store) as Arc<dyn ObjectiveStore>,

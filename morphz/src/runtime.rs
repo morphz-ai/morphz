@@ -2768,6 +2768,12 @@ mod tests {
         calls: AtomicU64,
     }
 
+    struct MultipleObjectiveAutonomousCreateClient {
+        calls: AtomicU64,
+        objective_phases: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+        both_objectives_started: tokio::sync::Barrier,
+    }
+
     struct ObjectiveWaitingClient {
         calls: AtomicU64,
     }
@@ -3009,6 +3015,71 @@ mod tests {
     }
 
     #[async_trait::async_trait]
+    impl Client for MultipleObjectiveAutonomousCreateClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let Some(objective_id) = current_objective_binding_from_messages(&messages) else {
+                assert!(tools.iter().any(|tool| tool.name == "objective_create"));
+                return Ok(Response {
+                    content: String::new(),
+                    tool_calls: ["并发目标甲", "并发目标乙"]
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, stated_objective)| ToolCallRepr {
+                            id: format!("multi-objective-create-{index}"),
+                            r#type: "function".to_string(),
+                            func_name: "objective_create".to_string(),
+                            arguments: json!({
+                                "stated_objective": stated_objective,
+                                "reason": "验证同一 Activation 创建的兄弟目标能够并发推进",
+                                "source_refs": []
+                            })
+                            .to_string(),
+                        })
+                        .collect(),
+                });
+            };
+            let phase = {
+                let mut phases = self.objective_phases.lock().unwrap();
+                let phase = phases.entry(objective_id.clone()).or_default();
+                let current = *phase;
+                *phase += 1;
+                current
+            };
+            match phase {
+                0 => {
+                    self.both_objectives_started.wait().await;
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: format!("multi-objective-complete-{objective_id}"),
+                            r#type: "function".to_string(),
+                            func_name: "objective_update".to_string(),
+                            arguments: json!({
+                                "objective_id": objective_id,
+                                "base_revision": objective_revision_from_messages(
+                                    &messages,
+                                    &objective_id
+                                ),
+                                "status": "completed",
+                                "reason": "兄弟 Objective 已并发进入模型并完成",
+                                "evidence_refs": []
+                            })
+                            .to_string(),
+                        }],
+                    })
+                }
+                1 => Ok(text_response(format!("{objective_id}-complete"))),
+                _ => Err(format!("Objective {objective_id} produced an extra Evaluation").into()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
     impl Client for SharedContextObjectiveClient {
         async fn create_completion(
             &self,
@@ -3083,6 +3154,21 @@ mod tests {
                 id.starts_with("objective-auto-").then(|| id.to_string())
             })
             .expect("autonomous Objective should be visible in Context Encoding")
+    }
+
+    fn current_objective_binding_from_messages(messages: &[Message]) -> Option<String> {
+        const MARKER: &str = "(objective-binding ";
+        let context = messages
+            .iter()
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let current_evaluation = context.rsplit("(evaluate ").next().unwrap_or(&context);
+        let start = current_evaluation.find(MARKER)? + MARKER.len();
+        let suffix = &current_evaluation[start..];
+        let end = suffix.find(')')?;
+        let objective_id = &suffix[..end];
+        (objective_id != "none").then(|| objective_id.to_string())
     }
 
     async fn objective_after_evaluation_release(
@@ -5442,7 +5528,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pausing_one_objective_cancels_only_its_activation_and_physical_jobs() {
+    async fn same_session_objectives_run_concurrently_and_pause_is_scoped() {
         let database = NamedTempFile::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
@@ -5580,6 +5666,30 @@ mod tests {
             })
             .await
             .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            client.objective_b_started.notified(),
+        )
+        .await
+        .expect("Objective B should start while same-Session Objective A is still running");
+        let objective_b_active = runtime
+            .get_objective("objective-scoped-b")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(objective_b_active.active_evaluation_id.is_some());
+        assert!(runtime
+            .inner
+            .objective_supervisor
+            .evaluations()
+            .get_for_objective("objective-scoped-a")
+            .is_some());
+        assert!(runtime
+            .inner
+            .objective_supervisor
+            .evaluations()
+            .get_for_objective("objective-scoped-b")
+            .is_some());
         session
             .send(
                 "dialogue survives scoped objective cancellation",
@@ -5678,6 +5788,22 @@ mod tests {
                 .status,
             ObjectiveStatus::Paused
         );
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                client.objective_b_cancelled.notified(),
+            )
+            .await
+            .is_err(),
+            "pausing Objective A must not cancel concurrent sibling Objective B"
+        );
+        assert!(runtime
+            .get_objective("objective-scoped-b")
+            .await
+            .unwrap()
+            .unwrap()
+            .active_evaluation_id
+            .is_some());
 
         client.release_dialogue.notify_one();
         let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
@@ -5685,31 +5811,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(reply.payload["text"], "dialogue-still-alive");
-        let objective_b_started = tokio::time::timeout(
-            std::time::Duration::from_secs(3),
-            client.objective_b_started.notified(),
-        )
-        .await;
-        if objective_b_started.is_err() {
-            let current = runtime
-                .get_objective("objective-scoped-b")
-                .await
-                .unwrap()
-                .unwrap();
-            let lane = runtime
-                .inner
-                .objective_supervisor
-                .evaluations()
-                .get(session.id());
-            let activations = runtime
-                .active_thread_activations(runtime.identity().context_id.as_str())
-                .await
-                .unwrap();
-            panic!(
-                "Objective B should take the released Objective lane: current={current:?} lane={lane:?} activations={activations:?}"
-            );
-        }
-
         let objective_b = runtime
             .get_objective("objective-scoped-b")
             .await
@@ -6050,6 +6151,125 @@ mod tests {
             continuations, 1,
             "创建时应收编当前 Evaluation，只在第一次 reply 后续跑一次"
         );
+    }
+
+    #[tokio::test]
+    async fn one_activation_can_create_multiple_objectives_that_start_concurrently() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        config.orchestrator.activation_admission.max_in_flight = 8;
+        let client = Arc::new(MultipleObjectiveAutonomousCreateClient {
+            calls: AtomicU64::new(0),
+            objective_phases: std::sync::Mutex::new(std::collections::HashMap::new()),
+            both_objectives_started: tokio::sync::Barrier::new(2),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-multiple-objectives".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Multiple concurrent Objectives".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 8);
+        session
+            .send(
+                "请在本次 Activation 中创建两个需要同时推进的持久目标",
+                "User-Test",
+                Some("multiple-objectives-message".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let mut delivered = std::collections::HashMap::new();
+        while delivered.len() < 2 {
+            let reply = match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                replies.recv(),
+            )
+            .await
+            {
+                Ok(Some(reply)) => reply,
+                outcome => {
+                    let objectives = runtime
+                        .list_context_objectives(&runtime.identity().context_id, true)
+                        .await
+                        .unwrap();
+                    let phases = client.objective_phases.lock().unwrap().clone();
+                    let events = runtime
+                        .query_events(QueryFilter {
+                            session_id: Some(session.id().to_string()),
+                            top_k: Some(100),
+                            ..Default::default()
+                        })
+                        .await
+                        .unwrap();
+                    panic!(
+                        "same-Session sibling Objectives should both finish without queuing: outcome={outcome:?} calls={} phases={phases:?} objectives={objectives:?} events={events:?}",
+                        client.calls.load(Ordering::SeqCst)
+                    );
+                }
+            };
+            assert_eq!(reply.payload["session_id"], session.id());
+            let objective_id = reply.payload["objective_id"]
+                .as_str()
+                .expect("reply must retain its Objective route")
+                .to_string();
+            delivered.insert(
+                objective_id,
+                reply.payload["text"].as_str().unwrap().to_string(),
+            );
+        }
+        assert_eq!(delivered.len(), 2);
+        for (objective_id, text) in &delivered {
+            assert_eq!(text, &format!("{objective_id}-complete"));
+            let objective = objective_after_evaluation_release(&runtime, objective_id).await;
+            assert_eq!(objective.status, ObjectiveStatus::Completed);
+            assert_eq!(objective.coordinator_session_id, session.id());
+        }
+        assert_eq!(client.calls.load(Ordering::SeqCst), 5);
+        assert!(client
+            .objective_phases
+            .lock()
+            .unwrap()
+            .values()
+            .all(|phase| *phase == 2));
+
+        let create_receipts = runtime
+            .query_events(QueryFilter {
+                session_id: Some(session.id().to_string()),
+                topic: Some("chat/tool_output".to_string()),
+                top_k: Some(100),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.payload["tool_name"] == "objective_create")
+            .filter_map(|event| event.payload["text"].as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        assert_eq!(create_receipts.len(), 2);
+        assert!(create_receipts
+            .iter()
+            .any(|receipt| receipt.contains("\"activation_adoption\": \"current-activation\"")));
+        assert!(create_receipts.iter().any(
+            |receipt| receipt.contains("\"activation_adoption\": \"independent-continuation\"")
+        ));
     }
 
     #[tokio::test]
