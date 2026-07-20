@@ -2,6 +2,7 @@ pub mod activation_admission;
 pub mod admission;
 pub mod approval;
 pub mod approval_authority;
+pub mod build_info;
 pub mod cli;
 pub mod config;
 pub mod context_tools;

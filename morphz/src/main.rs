@@ -68,7 +68,7 @@ async fn main() -> Result<(), AppError> {
         .unwrap_or_else(|error| error.exit());
 
     if invocation.command_path() == ["version"] {
-        println!("morphz {}", env!("CARGO_PKG_VERSION"));
+        println!("morphz {}", morphz::build_info::VERSION);
         return Ok(());
     }
     if invocation.command_path() == ["completion"] {

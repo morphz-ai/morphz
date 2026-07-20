@@ -209,7 +209,7 @@ pub fn morphz_command() -> Command {
 
 pub fn morphz_command_for(locale: Locale) -> Command {
     let command = Command::new("morphz")
-        .version(env!("CARGO_PKG_VERSION"))
+        .version(crate::build_info::VERSION)
         .about(locale.text(
             "Agent runtime with Context-owned Sessions",
             "由上下文承载会话的代理运行时",

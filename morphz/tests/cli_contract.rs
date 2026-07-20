@@ -59,10 +59,21 @@ fn command_typos_use_the_standard_argument_error_exit_code() {
 fn version_and_completion_do_not_initialize_the_runtime() {
     let version = morphz(&["--version"]);
     assert!(version.status.success());
-    assert!(String::from_utf8(version.stdout)
-        .unwrap()
-        .starts_with("morphz "));
+    let stdout = String::from_utf8(version.stdout).unwrap();
+    assert_eq!(
+        stdout.trim(),
+        format!("morphz {}", morphz::build_info::VERSION)
+    );
+    assert!(stdout.contains(morphz::build_info::GIT_COMMIT));
     assert!(version.stderr.is_empty());
+
+    let version_subcommand = morphz(&["version"]);
+    assert!(version_subcommand.status.success());
+    assert_eq!(
+        String::from_utf8(version_subcommand.stdout).unwrap(),
+        stdout
+    );
+    assert!(version_subcommand.stderr.is_empty());
 
     let completion = morphz(&["completion", "zsh"]);
     assert!(
