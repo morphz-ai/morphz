@@ -1253,6 +1253,272 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
 }
 
 #[tokio::test]
+async fn runtime_restart_resumes_context_tx_continuation_until_final_reply() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("context-tx-continuation-recovery.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    store
+        .create_agent_bundle(
+            NewAgent {
+                id: "context-tx-recovery-agent".to_string(),
+                title: "Context Tx Recovery Agent".to_string(),
+                root_context_id: "context-tx-recovery-context".to_string(),
+            },
+            NewCognitiveContext {
+                id: "context-tx-recovery-context".to_string(),
+                agent_id: "context-tx-recovery-agent".to_string(),
+                title: "Context Tx Recovery Context".to_string(),
+            },
+            NewSession {
+                id: "context-tx-recovery-session".to_string(),
+                agent_id: "context-tx-recovery-agent".to_string(),
+                context_id: "context-tx-recovery-context".to_string(),
+                parent_session_id: None,
+                title: "Context Tx Recovery Session".to_string(),
+                mount_kind: SessionMountKind::NewBlankContext,
+            },
+        )
+        .await
+        .unwrap();
+
+    let root = Event::new(
+        "context-tx-recovery-root".to_string(),
+        "Test-User".to_string(),
+        TYPE_USER_MESSAGE.to_string(),
+        "chat/user_message".to_string(),
+        vec![
+            (
+                "context_id".to_string(),
+                json!("context-tx-recovery-context"),
+            ),
+            (
+                "session_id".to_string(),
+                json!("context-tx-recovery-session"),
+            ),
+            ("text".to_string(), json!("remember this and confirm")),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    store.append(root.clone()).await.unwrap();
+
+    let persisted_call = json!([{
+        "id": "context-tx-recovery-call",
+        "type": "function",
+        "function": {
+            "name": "context_tx",
+            "arguments": json!({
+                "transaction": "(context-tx (base-version 0) (create recovery-state (status committed)))"
+            })
+            .to_string()
+        }
+    }]);
+    store
+        .append(Event::new(
+            "call_context-tx-recovery-origin".to_string(),
+            "Agent-Morphz".to_string(),
+            "agent_call".to_string(),
+            "chat/assistant_call".to_string(),
+            vec![
+                (
+                    "context_id".to_string(),
+                    json!("context-tx-recovery-context"),
+                ),
+                (
+                    "session_id".to_string(),
+                    json!("context-tx-recovery-session"),
+                ),
+                (
+                    "attempt_id".to_string(),
+                    json!("context-tx-recovery-origin"),
+                ),
+                ("phase".to_string(), json!("work")),
+                ("text".to_string(), json!("")),
+                ("tool_calls".to_string(), persisted_call.clone()),
+                ("transcript_tool_calls".to_string(), persisted_call),
+                ("root_turn_id".to_string(), json!(root.id)),
+            ]
+            .into_iter()
+            .collect(),
+        ))
+        .await
+        .unwrap();
+
+    let context_tx_output = Event::new(
+        "context-tx-recovery-output".to_string(),
+        "System-ContextTx".to_string(),
+        TYPE_TOOL_OUTPUT.to_string(),
+        "chat/tool_output".to_string(),
+        vec![
+            (
+                "context_id".to_string(),
+                json!("context-tx-recovery-context"),
+            ),
+            (
+                "session_id".to_string(),
+                json!("context-tx-recovery-session"),
+            ),
+            (
+                "attempt_id".to_string(),
+                json!("context-tx-recovery-origin"),
+            ),
+            (
+                "tool_call_id".to_string(),
+                json!("context-tx-recovery-call"),
+            ),
+            ("tool_name".to_string(), json!("context_tx")),
+            ("tool_status".to_string(), json!("success")),
+            ("root_turn_id".to_string(), json!(root.id)),
+            (
+                "text".to_string(),
+                json!(r#"{"status":"committed","after_version":1}"#),
+            ),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    store.append(context_tx_output.clone()).await.unwrap();
+    let output_sequence = store
+        .query(QueryFilter {
+            event_id: Some(context_tx_output.id.clone()),
+            session_id: Some("context-tx-recovery-session".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|event| event.id == context_tx_output.id)
+        .and_then(|event| event.sequence)
+        .unwrap();
+    // The interrupted continuation had already compiled this tool result into
+    // its Context and entered model streaming. On restart that audit snapshot
+    // must not make the recovered Activation look successfully completed: no
+    // terminal assistant decision or Delivery exists yet.
+    store
+        .append(Event::new(
+            "context-tx-recovery-inspect".to_string(),
+            "Runtime-Orchestrator".to_string(),
+            "proposal".to_string(),
+            "chat/context_inspect".to_string(),
+            vec![
+                (
+                    "context_id".to_string(),
+                    json!("context-tx-recovery-context"),
+                ),
+                (
+                    "session_id".to_string(),
+                    json!("context-tx-recovery-session"),
+                ),
+                ("root_turn_id".to_string(), json!(root.id)),
+                ("trigger_event_id".to_string(), json!(context_tx_output.id)),
+                (
+                    "text".to_string(),
+                    json!("continuation entered model streaming"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ))
+        .await
+        .unwrap();
+    store
+        .ensure_thread(NewThread {
+            id: "context-tx-recovery-thread".to_string(),
+            agent_id: "context-tx-recovery-agent".to_string(),
+            context_id: "context-tx-recovery-context".to_string(),
+            session_id: "context-tx-recovery-session".to_string(),
+            initiating_principal_id: None,
+            root_turn_id: root.id.clone(),
+            kind: ThreadKind::DialogueTurn,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+        })
+        .await
+        .unwrap();
+    let activation = store
+        .ensure_thread_activation(NewThreadActivation {
+            id: "context-tx-recovery-continuation".to_string(),
+            agent_id: "context-tx-recovery-agent".to_string(),
+            context_id: "context-tx-recovery-context".to_string(),
+            session_id: "context-tx-recovery-session".to_string(),
+            initiating_principal_id: None,
+            trigger_event_id: context_tx_output.id.clone(),
+            trigger_sequence: output_sequence,
+            trigger_kind: context_tx_output.topic.clone(),
+            parent_activation_id: None,
+            root_turn_id: root.id.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .update_thread_activation(
+                &activation.id,
+                activation.revision,
+                ThreadActivationStatus::Running,
+                Some("runtime:2147483647"),
+                Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+                Some(1),
+            )
+            .await
+            .unwrap(),
+        ThreadActivationMutation::Updated(_)
+    ));
+
+    let client = Arc::new(MockClient::new(vec![text_reply_response(
+        "context maintenance recovered and delivered",
+    )]));
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    let replies = wait_for_topic(&store, "chat/reply", "context-tx-recovery-session").await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0].payload.get("text"),
+        Some(&json!("context maintenance recovered and delivered"))
+    );
+    assert!(
+        wait_for_topic_count(&store, "chat/cancelled", "context-tx-recovery-session", 0,)
+            .await
+            .is_empty()
+    );
+    assert_eq!(client.messages_seen().len(), 1);
+    assert!(client.messages_seen()[0].iter().any(|message| {
+        message.role == "tool"
+            && message.tool_call_id.as_deref() == Some("context-tx-recovery-call")
+            && message.content.contains("after_version")
+    }));
+    let mut terminal_status = None;
+    for _ in 0..80 {
+        let status = store
+            .get_thread_activation("context-tx-recovery-continuation")
+            .await
+            .unwrap()
+            .unwrap()
+            .status;
+        if status.is_terminal() {
+            terminal_status = Some(status);
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(terminal_status, Some(ThreadActivationStatus::Succeeded));
+}
+
+#[tokio::test]
 async fn test_plain_text_terminal_is_delivered_without_correction() {
     let session_id = "attempt_plain_text_terminal";
     let responses = vec![text_reply_response("I am done")];
@@ -1287,6 +1553,7 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
     });
     let config = morphz::config::OrchestratorConfig {
         reasoning_continuation_safety_limit: None,
+        persist_full_context_inspect: true,
         ..Default::default()
     };
     let engine = Arc::new(
@@ -1343,6 +1610,36 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
             && message.content.contains("reasoning segment 2")
             && message.content.contains("reasoning segment 3")
     }));
+    let inspections = store
+        .query(QueryFilter {
+            session_id: Some(session_id.to_string()),
+            topic: Some("chat/context_inspect".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        inspections.len(),
+        4,
+        "each physical request must be inspectable"
+    );
+    let final_inspection = inspections
+        .iter()
+        .find(|event| {
+            event
+                .payload
+                .get("attempt_id")
+                .and_then(|value| value.as_str())
+                .is_some_and(|attempt_id| attempt_id.ends_with("_response_retry_3"))
+        })
+        .expect("final continuation request must have its own Context Inspect");
+    let inspected_messages = serde_json::to_string(&final_inspection.payload["messages"]).unwrap();
+    assert!(inspected_messages.contains("reasoning segment 1"));
+    assert!(inspected_messages.contains("reasoning segment 2"));
+    assert!(inspected_messages.contains("reasoning segment 3"));
+    assert!(final_inspection.payload["tools"]
+        .as_array()
+        .is_some_and(|tools| !tools.is_empty()));
     let first_summary = summaries
         .iter()
         .find(|event| event.payload.get("text") == Some(&json!("reasoning segment 1")))

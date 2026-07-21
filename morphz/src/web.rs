@@ -271,6 +271,7 @@ impl Server {
         let runtime = self.runtime.clone();
         let sdk = MorphzSdk::new(self.runtime.clone());
         let default_agent_id = self.default_agent_id.clone();
+        let default_context_id = self.default_context_id.clone();
         let identity_mode = self.identity.mode;
 
         if self.identity.mode == ServerIdentityMode::Default {
@@ -300,55 +301,25 @@ impl Server {
                         .get("session_id")
                         .and_then(|value| value.as_str())
                     {
-                        let context_id = ev
+                        let declared_context_id = ev
                             .payload
                             .get("context_id")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or(session_id)
-                            .to_string();
+                            .and_then(|value| value.as_str());
                         let parent_session_id = ev
                             .payload
                             .get("parent_session_id")
                             .and_then(|value| value.as_str())
                             .map(ToOwned::to_owned);
-                        if let Some(existing) = runtime.get_session(session_id).await? {
-                            if existing.context_id != context_id {
-                                return Err(format!(
-                                    "事件路由拒绝：Session '{}' 属于 Context '{}'，事件声明 '{}'",
-                                    session_id, existing.context_id, context_id
-                                )
-                                .into());
-                            }
-                        } else if identity_mode == ServerIdentityMode::TrustedGateway {
-                            return Err(format!(
-                                "可信 Gateway 模式拒绝从事件隐式创建未知 Session '{session_id}'"
-                            )
-                            .into());
-                        } else {
-                            let agent_id = match runtime.get_context(&context_id).await? {
-                                Some(context) => context.agent_id,
-                                None => {
-                                    runtime
-                                        .ensure_context(NewCognitiveContext {
-                                            id: context_id.clone(),
-                                            agent_id: default_agent_id.clone(),
-                                            title: context_id.clone(),
-                                        })
-                                        .await?;
-                                    default_agent_id.clone()
-                                }
-                            };
-                            runtime
-                                .ensure_session(NewSession {
-                                    id: session_id.to_string(),
-                                    agent_id,
-                                    context_id,
-                                    parent_session_id,
-                                    title: session_id.to_string(),
-                                    mount_kind: SessionMountKind::ExistingContext,
-                                })
-                                .await?;
-                        }
+                        ensure_dashboard_event_session_route(
+                            &runtime,
+                            &default_agent_id,
+                            &default_context_id,
+                            identity_mode,
+                            session_id,
+                            declared_context_id,
+                            parent_session_id,
+                        )
+                        .await?;
                         runtime.touch_session(session_id, ev.timestamp).await?;
                     }
                     let _ = broadcast_tx_clone.send(ev);
@@ -2040,16 +2011,82 @@ fn token_is_authorized(
 }
 
 fn dashboard_event_requires_session_touch(event: &Event) -> bool {
-    // Provider deltas and their one-shot durable reasoning-summary snapshot
-    // are observability data, not user activity. Replaying either in the
-    // Dashboard must not make an otherwise inactive Session look active.
+    // Provider deltas, model-attempt snapshots and Context Inspect are
+    // observability data, not user activity. Replaying them in the Dashboard
+    // must not make an otherwise inactive Session look active.
     !matches!(
         event.topic.as_str(),
         "runtime/model_stream"
             | "runtime/model_reasoning_summary"
             | "runtime/model_attempt_state"
             | "runtime/model_attempt_snapshot"
+            | "chat/context_inspect"
     )
+}
+
+async fn ensure_dashboard_event_session_route(
+    runtime: &MorphzRuntime,
+    default_agent_id: &str,
+    default_context_id: &str,
+    identity_mode: ServerIdentityMode,
+    session_id: &str,
+    declared_context_id: Option<&str>,
+    parent_session_id: Option<String>,
+) -> Result<(), crate::runtime::RuntimeError> {
+    if let Some(existing) = runtime.get_session(session_id).await? {
+        if let Some(declared_context_id) = declared_context_id {
+            if existing.context_id != declared_context_id {
+                return Err(format!(
+                    "事件路由拒绝：Session '{}' 属于 Context '{}'，事件声明 '{}'",
+                    session_id, existing.context_id, declared_context_id
+                )
+                .into());
+            }
+        }
+        return Ok(());
+    }
+
+    if identity_mode == ServerIdentityMode::TrustedGateway {
+        return Err(
+            format!("可信 Gateway 模式拒绝从事件隐式创建未知 Session '{session_id}'").into(),
+        );
+    }
+
+    // An Event that only carries a Session route cannot authoritatively name a
+    // Context. Falling back to `session_id` here used to create Cognitive
+    // Contexts named `session_*`, collapsing two distinct domain identities.
+    // Default mode may still adopt an unknown local Session, but it must mount
+    // it into the configured default Context unless the Event explicitly names
+    // another Context.
+    let context_id = declared_context_id.unwrap_or(default_context_id);
+    let agent_id = match runtime.get_context(context_id).await? {
+        Some(context) => context.agent_id,
+        None => {
+            runtime
+                .ensure_context(NewCognitiveContext {
+                    id: context_id.to_string(),
+                    agent_id: default_agent_id.to_string(),
+                    title: if context_id == default_context_id {
+                        "默认认知 Context".to_string()
+                    } else {
+                        context_id.to_string()
+                    },
+                })
+                .await?;
+            default_agent_id.to_string()
+        }
+    };
+    runtime
+        .ensure_session(NewSession {
+            id: session_id.to_string(),
+            agent_id,
+            context_id: context_id.to_string(),
+            parent_session_id,
+            title: session_id.to_string(),
+            mount_kind: SessionMountKind::ExistingContext,
+        })
+        .await?;
+    Ok(())
 }
 
 async fn handle_ws(mut socket: WebSocket, state: Arc<AppState>, session_filter: Option<String>) {
@@ -2319,6 +2356,74 @@ mod tests {
         assert!(token_is_authorized(None, &HeaderMap::new(), None));
     }
 
+    #[tokio::test]
+    async fn event_with_only_session_route_mounts_into_default_context() {
+        let (_, runtime) = test_state().await;
+
+        ensure_dashboard_event_session_route(
+            &runtime,
+            "agent-test",
+            "context-test",
+            ServerIdentityMode::Default,
+            "session-from-event",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let session = runtime
+            .get_session("session-from-event")
+            .await
+            .unwrap()
+            .expect("event route should adopt the local Session");
+        assert_eq!(session.context_id, "context-test");
+        assert!(runtime
+            .get_context("session-from-event")
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn event_without_context_uses_registered_session_mount() {
+        let (state, runtime) = test_state().await;
+        let response = handle_create_session(
+            State(state),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("registered-session".to_string()),
+                agent_id: None,
+                parent_session_id: None,
+                title: Some("Registered".to_string()),
+                mount: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        ensure_dashboard_event_session_route(
+            &runtime,
+            "agent-test",
+            "context-test",
+            ServerIdentityMode::Default,
+            "registered-session",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let session = runtime
+            .get_session("registered-session")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.context_id, "context-test");
+    }
+
     #[test]
     fn model_observability_events_do_not_mutate_session_activity() {
         let event = Event::new(
@@ -2338,6 +2443,15 @@ mod tests {
             serde_json::Map::new(),
         );
         assert!(!dashboard_event_requires_session_touch(&durable_summary));
+
+        let context_inspect = Event::new(
+            "context-inspect-test".to_string(),
+            "System-ContextKernel".to_string(),
+            crate::event::TYPE_PROPOSAL.to_string(),
+            "chat/context_inspect".to_string(),
+            serde_json::Map::new(),
+        );
+        assert!(!dashboard_event_requires_session_touch(&context_inspect));
 
         let unrelated_ephemeral = Event::new(
             "other-ephemeral-test".to_string(),

@@ -75,6 +75,7 @@ const CORE_TOKEN = locationToken ?? (import.meta.env.VITE_MORPHZ_TOKEN as string
 
 type View = 'conversation' | 'work' | 'mind'
 type AccentTheme = 'iris' | 'cyan' | 'coral' | 'mono'
+type ContextInspectTab = 'encoding' | 'messages' | 'tools' | 'mind' | 'inbox' | 'metadata'
 
 const accentThemes: Array<{ id: AccentTheme; labelKey: string; descKey: string }> = [
   { id: 'cyan', labelKey: 'theme.cyan.label', descKey: 'theme.cyan.description' },
@@ -244,6 +245,16 @@ interface MorphzEvent {
   payload: EventPayload
 }
 
+function contextInspectMetadata(payload: EventPayload): EventPayload {
+  const metadata = { ...payload }
+  delete metadata.text
+  delete metadata.messages
+  delete metadata.tools
+  delete metadata.mind
+  delete metadata.inbox
+  return metadata
+}
+
 interface PendingTurnState {
   startedAt: number
   rootTurnId: string | null
@@ -379,6 +390,7 @@ interface ContextViewResponse {
   state: MindState
   observations: ContextObservation[]
   pressure: ContextPressure
+  sexpr: string
 }
 
 interface RecallSearchHit {
@@ -999,6 +1011,9 @@ export default function App() {
   const [contextView, setContextView] = useState<ContextViewResponse | null>(null)
   const [events, setEvents] = useState<MorphzEvent[]>([])
   const [eventsSessionId, setEventsSessionId] = useState('')
+  const [latestContextInspect, setLatestContextInspect] = useState<MorphzEvent | null>(null)
+  const [contextInspectTab, setContextInspectTab] = useState<ContextInspectTab>('encoding')
+  const [contextInspectCopied, setContextInspectCopied] = useState(false)
   const [liveModelState, dispatchModelStream] = useReducer(modelStreamReducer, createLiveModelState())
   const [selectedAgentId, setSelectedAgentId] = useState('')
   const [selectedContextId, setSelectedContextId] = useState('')
@@ -1257,6 +1272,9 @@ export default function App() {
     const resetTimer = window.setTimeout(() => {
       dispatchModelStream({ type: 'reset_session', sessionId: selectedSessionId })
       setEventsSessionId('')
+      setLatestContextInspect(null)
+      setContextInspectTab('encoding')
+      setContextInspectCopied(false)
     }, 0)
     return () => window.clearTimeout(resetTimer)
   }, [selectedSessionId])
@@ -1372,6 +1390,13 @@ export default function App() {
             if (attemptId && isModelStreamEvent(stream)) {
               queueStreamEvent({ attemptId, activationId, threadKind, timestamp: event.timestamp, stream })
             }
+            return
+          }
+          if (event.topic === 'chat/context_inspect') {
+            // The full inspect is intentionally ephemeral: retain only the
+            // selected Session's latest exact model input in browser memory.
+            // Durable storage keeps hashes and sizes, not another Prompt copy.
+            if (typeof event.payload.text === 'string') setLatestContextInspect(event)
             return
           }
           setEventsSessionId(selectedSessionId)
@@ -1679,6 +1704,43 @@ export default function App() {
   const activeFrameCount = (contextView?.state.frames ?? []).filter(frame => !retired.has(frame.id)).length
   const retiringFrameCount = Object.keys(retiring).length
   const selectedRetirement = selectedFrame ? retiring[selectedFrame.id] : undefined
+  const hasExactContextInspect = latestContextInspect !== null
+    && latestContextInspect.payload.session_id === selectedSessionId
+    && typeof latestContextInspect.payload.text === 'string'
+  const contextInspectPayload = hasExactContextInspect ? latestContextInspect.payload : null
+  const contextInspectContent = (() => {
+    switch (contextInspectTab) {
+      case 'encoding':
+        return typeof contextInspectPayload?.text === 'string'
+          ? contextInspectPayload.text
+          : contextView?.sexpr ?? ''
+      case 'messages':
+        return contextInspectPayload?.messages === undefined
+          ? t('mindView.contextInspect.notRetained')
+          : JSON.stringify(contextInspectPayload.messages, null, 2)
+      case 'tools':
+        return contextInspectPayload?.tools === undefined
+          ? t('mindView.contextInspect.notRetained')
+          : JSON.stringify(contextInspectPayload.tools, null, 2)
+      case 'mind':
+        return JSON.stringify(contextInspectPayload?.mind ?? contextView?.state ?? {}, null, 2)
+      case 'inbox':
+        return JSON.stringify(contextInspectPayload?.inbox ?? contextView?.observations ?? [], null, 2)
+      case 'metadata':
+        return JSON.stringify(
+          contextInspectPayload
+            ? contextInspectMetadata(contextInspectPayload)
+            : {
+                context_id: contextView?.context_id,
+                session_id: contextView?.active_session_id,
+                pressure: contextView?.pressure,
+                source: 'current-context-encoding',
+              },
+          null,
+          2,
+        )
+    }
+  })()
 
   useEffect(() => {
     // Restore composer focus once a send finishes so the user can keep typing.
@@ -2765,6 +2827,59 @@ export default function App() {
                 <div><Database size={18} /><span><small>{t('mindView.metrics.observations').toUpperCase()}</small><strong>{contextView?.observations.length ?? 0}</strong></span></div>
                 <div><Clock3 size={18} /><span><small>{t('mindView.metrics.cognitiveTick').toUpperCase()}</small><strong>{contextView?.cognitive_clock.tick ?? 0}</strong></span></div>
               </div>
+
+              <details className="context-inspect-view">
+                <summary>
+                  <span className="context-inspect-title">
+                    <Brain size={15} />
+                    <span><small>{t('mindView.contextInspect.eyebrow').toUpperCase()}</small><strong>{t('mindView.contextInspect.title')}</strong></span>
+                  </span>
+                  <span className={`context-inspect-source ${hasExactContextInspect ? 'exact' : 'current'}`}>
+                    {hasExactContextInspect ? t('mindView.contextInspect.exact') : t('mindView.contextInspect.current')}
+                  </span>
+                  <span className="context-inspect-summary">
+                    {hasExactContextInspect && latestContextInspect
+                      ? `${formatTime(latestContextInspect.timestamp, i18n.language)} · ${shortId(String(latestContextInspect.payload.attempt_id ?? latestContextInspect.id), 26)}`
+                      : t('mindView.contextInspect.currentHint')}
+                  </span>
+                  <ChevronDown size={14} />
+                </summary>
+                <div className="context-inspect-body">
+                  <header>
+                    <nav aria-label={t('mindView.contextInspect.tabsLabel')}>
+                      {(['encoding', 'messages', 'tools', 'mind', 'inbox', 'metadata'] as ContextInspectTab[]).map(tab => (
+                        <button
+                          className={contextInspectTab === tab ? 'is-active' : ''}
+                          key={tab}
+                          type="button"
+                          onClick={() => { setContextInspectTab(tab); setContextInspectCopied(false) }}
+                        >
+                          {t(`mindView.contextInspect.tabs.${tab}`)}
+                        </button>
+                      ))}
+                    </nav>
+                    <button
+                      className="context-inspect-copy"
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(contextInspectContent).then(() => {
+                          setContextInspectCopied(true)
+                          window.setTimeout(() => setContextInspectCopied(false), 1400)
+                        })
+                      }}
+                    >
+                      {contextInspectCopied ? <Check size={13} /> : <Copy size={13} />}
+                      {contextInspectCopied ? t('mindView.contextInspect.copied') : t('mindView.contextInspect.copy')}
+                    </button>
+                  </header>
+                  <pre>{contextInspectContent || t('mindView.contextInspect.empty')}</pre>
+                  <footer>
+                    {hasExactContextInspect
+                      ? t('mindView.contextInspect.ephemeralNotice')
+                      : t('mindView.contextInspect.reconstructedNotice')}
+                  </footer>
+                </div>
+              </details>
 
               <form className="recall-search" onSubmit={event => { event.preventDefault(); void searchRecall() }}>
                 <input value={recallQuery} onChange={event => setRecallQuery(event.target.value)} placeholder={t('mindView.searchPlaceholder')} />

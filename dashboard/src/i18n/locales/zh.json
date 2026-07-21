@@ -238,6 +238,28 @@
       "residentSessions": "驻留会话",
       "cognitiveTick": "认知活动时钟"
     },
+    "contextInspect": {
+      "eyebrow": "求值上下文",
+      "title": "模型这一次实际看到了什么",
+      "exact": "实时精确输入",
+      "current": "当前重建结果",
+      "currentHint": "展开查看当前上下文编码",
+      "tabsLabel": "求值上下文组成",
+      "tabs": {
+        "encoding": "上下文编码",
+        "messages": "消息",
+        "tools": "工具",
+        "mind": "心智",
+        "inbox": "收件箱",
+        "metadata": "元数据"
+      },
+      "copy": "复制",
+      "copied": "已复制",
+      "empty": "当前没有可查看的求值上下文。",
+      "notRetained": "这一精确请求组成属于此前或页面未在线时发生的求值，没有在持久存储中重复保存。发送新消息后，可在这里捕获下一次精确请求。",
+      "ephemeralNotice": "这是当前会话最近一次通过实时事件观察到的精确模型输入。浏览器仅在内存中保留；账本只保存哈希、尺寸和因果元数据。",
+      "reconstructedNotice": "当前没有保留实时精确请求；这里展示的是根据最新投影重新编译的结果，可能不同于此前某次模型请求。"
+    },
     "frameLibrary": "认知库",
     "sourceCount": "{{count}} 来源",
     "sourceCount_one": "{{count}} 来源",

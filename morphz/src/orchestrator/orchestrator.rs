@@ -10,7 +10,7 @@ use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_TOOL_OUTPUT, T
 use crate::execution::{
     ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat, JobOutcome, JobReceipt,
 };
-use crate::llm::{Client, Message, PromptTokenAccuracy, PromptTokenCount};
+use crate::llm::{Client, Message, PromptTokenAccuracy, PromptTokenCount, ToolDefinition};
 use crate::memory::{
     ActionGroupMemberStatus, ActionGroupStore, ActivationOutcomeCommit, ApprovalFilter,
     ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
@@ -1700,7 +1700,7 @@ impl Orchestrator {
                             tracing::info!(
                                 activation_id = %activation.id,
                                 root_turn_id = %activation.root_turn_id,
-                                "Runtime 重启后中止未形成物理工作的 Dialogue Turn"
+                                "Runtime 重启后中止未形成持久 Assistant 决策的 Dialogue Turn"
                             );
                             if announce {
                                 self.bus
@@ -1744,14 +1744,19 @@ impl Orchestrator {
                     }
                     continue;
                 }
-                // A persisted assistant decision is the durable recovery
-                // boundary. Its original trigger may already be represented
-                // by a later Context snapshot, but suppressing that trigger
-                // would also suppress resume_persisted_activation and strand
-                // the newly materialized Thread. The flag is process
-                // local: dispatch_persisted does not append a second Event.
+                // A persisted assistant decision is a durable recovery
+                // boundary. A running Activation may also have compiled its
+                // trigger into Context and entered model streaming without
+                // reaching that boundary. In both cases the original trigger
+                // can look "covered" by a later Context snapshot; force this
+                // one process-local redispatch so recovery either resumes the
+                // exact persisted decision or finishes the interrupted model
+                // continuation. dispatch_persisted never appends a new Event.
                 let mut trigger = trigger;
-                if events.contains_key(&format!("call_{}", activation.id)) {
+                if events.contains_key(&format!("call_{}", activation.id))
+                    || (recovery_owns_activation
+                        && activation.status == ThreadActivationStatus::Running)
+                {
                     trigger
                         .payload
                         .insert("runtime_force_evaluation".to_string(), json!(true));
@@ -4232,7 +4237,6 @@ impl Orchestrator {
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<HashSet<_>>();
-        self.record_context_inspect(session_id, &attempt_id, &context, &messages);
         let base_protocol_messages = messages;
         let mut protocol_messages = base_protocol_messages.clone();
         let mut protocol_errors = 0usize;
@@ -4249,6 +4253,13 @@ impl Orchestrator {
             } else {
                 format!("{attempt_id}_response_retry_{request_index}")
             };
+            self.record_context_inspect(
+                session_id,
+                &model_attempt_id,
+                &context,
+                &protocol_messages,
+                &tools,
+            );
             self.record_model_attempt_started(
                 session_id,
                 &model_attempt_id,
@@ -7161,6 +7172,7 @@ impl Orchestrator {
         attempt_id: &str,
         context: &ContextView,
         messages: &[Message],
+        tools: &[ToolDefinition],
     ) {
         let bus = Arc::clone(&self.bus);
         let mut payload = vec![
@@ -7169,6 +7181,7 @@ impl Orchestrator {
             ("attempt_id".to_string(), json!(attempt_id)),
             ("text".to_string(), json!(context.sexpr)),
             ("messages".to_string(), json!(messages)),
+            ("tools".to_string(), json!(tools)),
             ("mind".to_string(), json!(context.state)),
             ("inbox".to_string(), json!(context.observations)),
             ("pressure".to_string(), json!(context.pressure)),
@@ -7748,8 +7761,29 @@ fn interrupted_dialogue_on_restart(
             .get("root_turn_id")
             .and_then(|value| value.as_str())
             == Some(activation.root_turn_id.as_str())
-            && event_contains_physical_tool_plan(event)
+            && event_contains_recoverable_assistant_decision(event)
     })
+}
+
+/// Once an assistant decision is durable, startup recovery must finish that
+/// causal turn instead of cancelling it as an untouched model request. This is
+/// deliberately broader than a physical-tool plan: `context_tx` is a durable
+/// cognitive side effect, and a terminal assistant decision may have crossed
+/// the persistence boundary immediately before its `chat/reply` delivery.
+fn event_contains_recoverable_assistant_decision(event: &Event) -> bool {
+    if event.topic != "chat/assistant_call" {
+        return false;
+    }
+    event
+        .payload
+        .get("terminal_outcome")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+        || event
+            .payload
+            .get("tool_calls")
+            .and_then(|value| value.as_array())
+            .is_some_and(|calls| !calls.is_empty())
 }
 
 fn recovery_owns_activation(
@@ -7937,7 +7971,7 @@ fn compact_context_inspect_for_persistence(event: &mut Event) {
         return;
     }
     let mut components = serde_json::Map::new();
-    for key in ["text", "messages", "mind", "inbox"] {
+    for key in ["text", "messages", "tools", "mind", "inbox"] {
         let Some(value) = event.payload.remove(key) else {
             continue;
         };
@@ -9195,6 +9229,10 @@ mod tests {
                     "messages".to_string(),
                     json!([{"role":"user","content":"hello"}]),
                 ),
+                (
+                    "tools".to_string(),
+                    json!([{"name":"read","description":"Read a file","parameters":{}}]),
+                ),
                 ("mind".to_string(), json!({"frames": ["a", "b"]})),
                 ("inbox".to_string(), json!([{"ref":"@e1"}])),
                 ("pressure".to_string(), json!({"level":"warning"})),
@@ -9206,7 +9244,7 @@ mod tests {
         assert_eq!(event.payload["storage"], "compact-v1");
         assert_eq!(event.payload["context_id"], "context-1");
         assert_eq!(event.payload["pressure"]["level"], "warning");
-        for key in ["text", "messages", "mind", "inbox"] {
+        for key in ["text", "messages", "tools", "mind", "inbox"] {
             assert!(!event.payload.contains_key(key));
             assert_eq!(
                 event.payload["components"][key]["sha256"]

@@ -237,6 +237,28 @@
       "residentSessions": "Resident Sessions",
       "cognitiveTick": "Cognitive Activity Tick"
     },
+    "contextInspect": {
+      "eyebrow": "Evaluation Context",
+      "title": "What the model actually saw",
+      "exact": "Exact live input",
+      "current": "Current reconstruction",
+      "currentHint": "Open to inspect the current Context Encoding",
+      "tabsLabel": "Evaluation context components",
+      "tabs": {
+        "encoding": "Context Encoding",
+        "messages": "Messages",
+        "tools": "Tools",
+        "mind": "Mind",
+        "inbox": "Inbox",
+        "metadata": "Metadata"
+      },
+      "copy": "Copy",
+      "copied": "Copied",
+      "empty": "No evaluation context is available.",
+      "notRetained": "This exact request component belongs to a previous or missed live evaluation and was intentionally not duplicated in durable storage. Send a new message to capture the next exact request here.",
+      "ephemeralNotice": "This is the latest exact input observed live for this Session. The browser retains it in memory; the Ledger stores only hashes, sizes and causal metadata.",
+      "reconstructedNotice": "No exact live request is currently retained. This view is freshly compiled from the current Projection and may differ from an earlier model request."
+    },
     "frameLibrary": "Frame Library",
     "sourceCount_one": "{{count}} source",
     "sourceCount_other": "{{count}} sources",

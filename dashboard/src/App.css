@@ -327,6 +327,32 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .work-metrics small, .mind-metrics small { color: var(--muted); font-family: var(--mono); font-size: 10px; letter-spacing: .1em; }
 .work-metrics strong, .mind-metrics strong { color: var(--text-soft); font-family: var(--mono); font-size: 19px; }
 
+.context-inspect-view { margin-bottom: var(--space-md); overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-soft); box-shadow: var(--shadow-sm); }
+.context-inspect-view > summary { display: grid; grid-template-columns: minmax(240px, auto) auto minmax(0, 1fr) 16px; gap: 14px; align-items: center; padding: 14px 16px; cursor: pointer; list-style: none; }
+.context-inspect-view > summary::-webkit-details-marker { display: none; }
+.context-inspect-view[open] > summary { border-bottom: 1px solid var(--line); background: var(--surface); }
+.context-inspect-view > summary > svg { color: var(--faint); transition: transform .16s ease; }
+.context-inspect-view[open] > summary > svg { transform: rotate(180deg); }
+.context-inspect-title { display: flex; min-width: 0; align-items: center; gap: 10px; }
+.context-inspect-title > svg { flex: 0 0 auto; color: var(--accent); filter: drop-shadow(0 0 6px var(--accent-glow)); }
+.context-inspect-title > span { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.context-inspect-title small { color: var(--accent); font-family: var(--mono); font-size: 8px; letter-spacing: .11em; }
+.context-inspect-title strong { overflow: hidden; color: var(--text-soft); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.context-inspect-source { padding: 4px 7px; border-radius: var(--radius-xs); font-family: var(--mono); font-size: 8px; white-space: nowrap; }
+.context-inspect-source.exact { background: var(--green-soft); color: var(--green); }
+.context-inspect-source.current { background: var(--accent-soft); color: var(--accent); }
+.context-inspect-summary { overflow: hidden; color: var(--faint); font-family: var(--mono); font-size: 9px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.context-inspect-body { min-width: 0; padding: 12px; }
+.context-inspect-body > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+.context-inspect-body nav { display: flex; min-width: 0; flex-wrap: wrap; gap: 4px; }
+.context-inspect-body nav button, .context-inspect-copy { padding: 6px 9px; border: 1px solid transparent; border-radius: var(--radius-xs); color: var(--muted); font-family: var(--mono); font-size: 9px; }
+.context-inspect-body nav button:hover { background: var(--surface); color: var(--text-soft); }
+.context-inspect-body nav button.is-active { border-color: var(--line-strong); background: var(--accent-soft); color: var(--accent); }
+.context-inspect-copy { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; border-color: var(--line); background: var(--surface); color: var(--text-soft); }
+.context-inspect-copy:hover { border-color: var(--accent); color: var(--accent); }
+.context-inspect-body > pre { max-height: min(54dvh, 620px); margin: 0; overflow: auto; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); color: var(--text-soft); font-family: var(--mono); font-size: 10px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.context-inspect-body > footer { padding: 9px 2px 1px; color: var(--faint); font-size: 9px; line-height: 1.5; }
+
 .model-evaluation-board { margin-bottom: var(--space-lg); }
 .model-evaluation-board > header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; color: var(--muted); font-family: var(--mono); }
 .model-evaluation-board > header span { color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .1em; }
@@ -712,6 +738,10 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
   .tool-timeline-list { max-height: clamp(240px, 38dvh, 420px); }
   .work-metrics, .mind-metrics { grid-template-columns: 1fr 1fr; }
   .mind-grid { grid-template-columns: 1fr; }
+  .context-inspect-view > summary { grid-template-columns: minmax(0, 1fr) auto 14px; gap: 8px; }
+  .context-inspect-summary { display: none; }
+  .context-inspect-body > header { align-items: flex-start; flex-direction: column; }
+  .context-inspect-copy { align-self: flex-end; }
   .attention-list { grid-template-columns: 1fr; }
   .causal-thread > summary { grid-template-columns: auto minmax(0, 1fr) auto 14px; }
   .causal-thread > summary > em { display: none; }
