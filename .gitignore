@@ -31,3 +31,8 @@ task-*
 
 # OS files
 .DS_Store
+
+# Local benchmark artifacts
+/jobs/
+__pycache__/
+*.py[cod]

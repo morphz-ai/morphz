@@ -1,0 +1,39 @@
+[llm]
+provider = "pibench"
+model = "qwen3.8-max-preview"
+
+[providers.pibench]
+protocol = "openai-responses"
+base_url = "http://host.docker.internal:8317/v1"
+credential = "pibench"
+
+[credentials.pibench]
+source = "env"
+name = "MORPHZ_PROVIDER_API_KEY"
+
+[storage]
+backend = "sqlite"
+
+[storage.sqlite]
+path = "/root/.morphz/pibench.db"
+
+[server]
+bind = "127.0.0.1:8081"
+
+[server.identity]
+mode = "trusted-gateway"
+provider_id = "pi-bench"
+service_token_env = "MORPHZ_API_TOKEN"
+
+[orchestrator]
+model_provider_max_in_flight = 8
+context_soft_token_limit = 196608
+context_hard_token_limit = 262144
+context_maintenance_reserve_tokens = 32768
+
+[orchestrator.activation_admission]
+max_in_flight = 16
+
+[orchestrator.session_working_set]
+active_window = "168h"
+max_sessions = 50

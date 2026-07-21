@@ -2390,6 +2390,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "morphz",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",

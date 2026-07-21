@@ -11,6 +11,15 @@ use std::sync::Arc;
 
 pub type EvalError = Box<dyn std::error::Error + Send + Sync>;
 
+#[derive(Debug, Clone, Default)]
+pub struct EvalRuntimeOverrides {
+    pub model_provider_max_in_flight: Option<usize>,
+    pub activation_max_in_flight: Option<usize>,
+    pub context_soft_token_limit: Option<usize>,
+    pub context_hard_token_limit: Option<usize>,
+    pub context_maintenance_reserve_tokens: Option<usize>,
+}
+
 /// Build evaluation clients through exactly the same explicit
 /// Provider/Protocol/Model/Credential path as the production Runtime.
 pub fn configured_model_client() -> Result<(Arc<dyn Client>, String), EvalError> {
@@ -43,6 +52,29 @@ pub fn configure_agent_model_profile(
     base_url: &str,
     model: &str,
     api_key_env: &str,
+) -> Result<(), EvalError> {
+    configure_agent_model_profile_with_overrides(
+        command,
+        run_root,
+        protocol,
+        base_url,
+        model,
+        api_key_env,
+        &EvalRuntimeOverrides::default(),
+    )
+}
+
+/// Configure the production Provider path plus benchmark-only Runtime limits.
+/// These limits live in the isolated evaluation config, not in the task prompt,
+/// so the model cannot alter the physical concurrency budget.
+pub fn configure_agent_model_profile_with_overrides(
+    command: &mut tokio::process::Command,
+    run_root: &Path,
+    protocol: &str,
+    base_url: &str,
+    model: &str,
+    api_key_env: &str,
+    overrides: &EvalRuntimeOverrides,
 ) -> Result<(), EvalError> {
     if std::env::var_os(api_key_env).is_none() {
         return Err(format!("模型评测需要环境变量 {api_key_env}，但当前未设置").into());
@@ -94,6 +126,43 @@ pub fn configure_agent_model_profile(
             ])),
         )])),
     );
+    let mut orchestrator = toml::map::Map::new();
+    if let Some(value) = overrides.model_provider_max_in_flight {
+        orchestrator.insert(
+            "model_provider_max_in_flight".to_string(),
+            toml::Value::Integer(value as i64),
+        );
+    }
+    if let Some(value) = overrides.context_soft_token_limit {
+        orchestrator.insert(
+            "context_soft_token_limit".to_string(),
+            toml::Value::Integer(value as i64),
+        );
+    }
+    if let Some(value) = overrides.context_hard_token_limit {
+        orchestrator.insert(
+            "context_hard_token_limit".to_string(),
+            toml::Value::Integer(value as i64),
+        );
+    }
+    if let Some(value) = overrides.context_maintenance_reserve_tokens {
+        orchestrator.insert(
+            "context_maintenance_reserve_tokens".to_string(),
+            toml::Value::Integer(value as i64),
+        );
+    }
+    if let Some(value) = overrides.activation_max_in_flight {
+        orchestrator.insert(
+            "activation_admission".to_string(),
+            toml::Value::Table(toml::map::Map::from_iter([(
+                "max_in_flight".to_string(),
+                toml::Value::Integer(value as i64),
+            )])),
+        );
+    }
+    if !orchestrator.is_empty() {
+        root.insert("orchestrator".to_string(), toml::Value::Table(orchestrator));
+    }
     std::fs::write(
         &config_path,
         toml::to_string_pretty(&toml::Value::Table(root))?,
@@ -105,6 +174,7 @@ pub fn configure_agent_model_profile(
 }
 
 pub mod coding_frame_eval;
+pub mod concurrent_objective_eval;
 pub mod context_long_run_eval;
 pub mod context_metacognition_eval;
 pub mod context_pressure_eval;
