@@ -543,6 +543,25 @@ v1 采取“语义 Ledger 永久保留、在线读取有界、诊断大对象先
 
 在尚无冷存储实现和真实容量数据前，Runtime 不进行“按时间删除旧消息”或“Snapshot 后截断 Ledger”。这是一项明确的安全策略，而不是遗漏的 GC。
 
+### 8.6 后续候选：独立 Diagnostic Store
+
+> 2026-07-21 记录，本节是后续设计候选，不代表当前已经实现或决定立即实施。
+
+`context_inspect` 的用途是回答“某一次物理模型请求实际看见了什么”，本质上属于诊断与可观测数据，而不是 Agent 的因果事实或认识内容。当前实现仍然为每次物理模型请求向 Ledger 写入一条 `chat/context_inspect`，但默认只持久化路由、压力、预算、Wake 和各大组件的 hash/bytes/chars/items；完整 Context Encoding、Messages、Tools、Mind 与 Inbox 只通过实时 WebSocket 提供。当前 compact 记录没有 TTL、数量上限或自动清除策略，会随 Ledger 永久保留。
+
+需要特别区分：compact 记录不是指向其他数据库内容的可重建索引。它不能还原当时的完整 Prompt；Dashboard 断线或重启后只能展示当前 Context Encoding 作为回退，不能把它标成历史 Attempt 的精确重建。
+
+如果长期容量和运维数据证明仍有必要治理，应优先评估独立的 `DiagnosticStore`，而不是给语义 Ledger 增加按时间删除：
+
+- 语义 Ledger 继续保持不可变、可重放，不因诊断保留策略而截断；
+- Diagnostic Store 保存精确 Inspect 或 compact Inspect，并以 Event ID、Attempt ID、Context/Session/Activation 路由和内容 hash 关联 Ledger；
+- 允许配置 TTL、每 Session/Activation 最大记录数、失败与超时记录的延长保留、手动导出与清理；
+- 诊断数据的缺失不得改变 Context Encoding、Projection、调度恢复或模型行为；
+- Dashboard 必须明确区分“实时精确 Inspect”“历史精确 Inspect”“compact 元数据”和“当前 Context 回退”；
+- 旧版完整 `context_inspect` 的删除与 SQLite `VACUUM` 只能作为显式维护操作，不自动执行。
+
+是否引入 Diagnostic Store、默认保留期限以及是否保存历史完整 Prompt，留待真实部署容量、安全边界和诊断需求共同决定。
+
 ## 9. Session Event 高并发写入
 
 Session Event 不存在共享认知语义冲突，但仍需要物理写入策略。
