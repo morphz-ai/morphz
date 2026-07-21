@@ -4,6 +4,7 @@
 > 日期：2026-07-13
 > 适用范围：System Prompt、Context Encoding、Mind、高层身份、Session、Delegate 与未来非助手形态
 > 延伸设计：[`morphz_frame_vm_model_cognition_decoupling.md`](morphz_frame_vm_model_cognition_decoupling.md) 讨论专用小型 Frame VM、外置认知和异构模型算力
+> 领域运行层：[`morphz_domain_harness_architecture_v1.md`](morphz_domain_harness_architecture_v1.md) 讨论同一 Agent 如何在 Runtime 之上按 Objective 挂载 Coding、知识工作、视频编辑等 Harness
 
 ## 1. 核心结论
 

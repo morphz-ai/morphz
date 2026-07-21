@@ -1,0 +1,129 @@
+{
+  "schema_version": 1,
+  "scenario": "forgedepot-concurrent-objectives-v1",
+  "observed_at": "2026-07-20/2026-07-21",
+  "runtime_commit": "a53043429926a6eec1a5212ce9dd621b1d80fcc5",
+  "runtime_dirty": true,
+  "model": "qwen3.8-max-preview",
+  "protocol": "openai-responses",
+  "runs": [
+    {
+      "id": "20260720T201740.440Z-70205",
+      "scheduling_arm": "autonomous",
+      "duration_seconds": 926.102571,
+      "objective_count": 0,
+      "completed_objective_count": 0,
+      "peak_concurrent_evaluations": 0,
+      "effective_parallelism": 0.0,
+      "objective_tokens_used": 0,
+      "model_attempts": 25,
+      "physical_tool_calls": 40,
+      "failed_tool_outputs": 0,
+      "context_transaction_conflicts": 0,
+      "failed_activation_count": 1,
+      "terminal_failure_without_reply": true,
+      "restart_performed": false,
+      "valid_probe_count": 0,
+      "answered_probe_count": 0,
+      "project_success": true,
+      "structural_coordination_success": false,
+      "probe_reply_success": true,
+      "coordination_success": false,
+      "success": false,
+      "hidden_verification": {
+        "passed": 7,
+        "total": 7
+      }
+    },
+    {
+      "id": "20260720T205642.080Z-86830",
+      "scheduling_arm": "objective_guided",
+      "probe_transport": "legacy-stdin-invalid",
+      "duration_seconds": 2712.058502,
+      "objective_count": 3,
+      "completed_objective_count": 3,
+      "peak_concurrent_evaluations": 3,
+      "objective_launch_spread_seconds": 0.04457,
+      "evaluation_active_seconds": 4141.761652,
+      "effective_parallelism": 1.5271653059643329,
+      "objective_tokens_used": 4292028,
+      "model_attempts": 55,
+      "physical_tool_calls": 85,
+      "failed_tool_outputs": 2,
+      "context_transaction_conflicts": 2,
+      "failed_activation_count": 0,
+      "terminal_failure_without_reply": false,
+      "restart_performed": true,
+      "valid_probe_count": 0,
+      "answered_probe_count": 0,
+      "project_success": true,
+      "structural_coordination_success": true,
+      "probe_reply_success": true,
+      "coordination_success": true,
+      "success": true,
+      "hidden_verification": {
+        "passed": 7,
+        "total": 7
+      },
+      "semantic_observation": "The final workspace passed, but the forgedepot-blob-contract Mind frame remained stale."
+    },
+    {
+      "id": "20260720T214840.245Z-15844",
+      "scheduling_arm": "objective_guided",
+      "probe_transport": "http",
+      "duration_seconds": 1529.772361,
+      "objective_count": 3,
+      "completed_objective_count": 3,
+      "peak_concurrent_evaluations": 3,
+      "objective_launch_spread_seconds": 0.050654,
+      "evaluation_active_seconds": 4113.271844,
+      "effective_parallelism": 2.688813021377368,
+      "objective_tokens_used": 5132165,
+      "model_attempts": 81,
+      "physical_tool_calls": 105,
+      "failed_tool_outputs": 3,
+      "context_transaction_conflicts": 0,
+      "failed_activation_count": 0,
+      "terminal_failure_without_reply": false,
+      "restart_performed": true,
+      "valid_probe_count": 2,
+      "answered_probe_count": 1,
+      "project_success": true,
+      "structural_coordination_success": true,
+      "probe_reply_success": false,
+      "coordination_success": false,
+      "success": false,
+      "hidden_verification": {
+        "passed": 7,
+        "total": 7
+      },
+      "objective_file_write_attempts": 10,
+      "cross_objective_file_overlaps": [
+        {
+          "path": "src/semver.rs",
+          "objective_count": 3,
+          "write_attempts": 3
+        }
+      ],
+      "probes": [
+        {
+          "kind": "live_status_query",
+          "answered": true,
+          "assessment": "Accurately distinguished committed evidence from not-yet-observed work while three Objectives remained active."
+        },
+        {
+          "kind": "cross_cutting_requirement",
+          "answered": false,
+          "semantic_adoption": true,
+          "assessment": "The protected yank-semantics Frame and final tests were correct, but the post-context_tx Dialogue continuation was interrupted by the forced restart and never delivered a reply."
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "All runs used one model and one dirty Runtime revision.",
+    "The first guided run used a legacy stdin probe path and cannot score online replies.",
+    "Harbor container execution was not available because the local Docker daemon was unavailable.",
+    "Full Pi-Bench scoring still requires the AppWorld MCP backend."
+  ]
+}
