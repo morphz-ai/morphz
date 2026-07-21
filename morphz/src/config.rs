@@ -707,6 +707,44 @@ pub struct BackgroundTaskConfig {
     pub artifact_dir: String,
 }
 
+/// Cloud-side liveness and lease reconciliation for user-owned execution
+/// nodes. Transport implementations may use HTTP long polling, WebSocket or
+/// QUIC; these values describe the durable protocol rather than a socket.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct EdgeExecutionConfig {
+    pub reconcile_interval: HumanDuration,
+    pub node_stale_after: HumanDuration,
+    pub default_command_lease: HumanDuration,
+    /// Offer a reusable Principal + Agent + Thread + Target authority scope
+    /// to reviewers. `allow_once` still remains strictly one Job.
+    pub capability_leases_enabled: bool,
+    /// Safety backstop for a Thread-scoped lease. Thread termination, Target
+    /// policy changes and explicit revocation invalidate it earlier.
+    pub capability_lease_ttl: HumanDuration,
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub max_targets_per_node: usize,
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub max_in_flight_per_node: usize,
+    #[serde(deserialize_with = "deserialize_positive_usize")]
+    pub max_route_hops: usize,
+}
+
+impl Default for EdgeExecutionConfig {
+    fn default() -> Self {
+        Self {
+            reconcile_interval: HumanDuration::from_secs(15),
+            node_stale_after: HumanDuration::from_secs(45),
+            default_command_lease: HumanDuration::from_secs(30),
+            capability_leases_enabled: true,
+            capability_lease_ttl: HumanDuration::from_secs(8 * 60 * 60),
+            max_targets_per_node: 64,
+            max_in_flight_per_node: 8,
+            max_route_hops: 1,
+        }
+    }
+}
+
 impl Default for BackgroundTaskConfig {
     fn default() -> Self {
         Self {
@@ -803,6 +841,7 @@ pub struct AppConfig {
     pub credentials: BTreeMap<String, CredentialConfig>,
     pub permissions: PermissionConfig,
     pub background_task: BackgroundTaskConfig,
+    pub edge_execution: EdgeExecutionConfig,
     pub ui: UiConfig,
     pub tui: TuiConfig,
 }

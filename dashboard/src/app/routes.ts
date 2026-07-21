@@ -1,0 +1,82 @@
+export type DashboardView = 'overview' | 'dialogue' | 'scheduler' | 'cognition' | 'ledger' | 'runtime'
+
+export type CognitionView = 'mind' | 'attention' | 'encoding' | 'recall'
+
+export interface DashboardRoute {
+  view: DashboardView
+  contextId?: string
+  sessionId?: string
+  threadId?: string
+  cognitionView?: CognitionView
+}
+
+const cognitionViews = new Set<CognitionView>(['mind', 'attention', 'encoding', 'recall'])
+
+function decoded(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+export function parseDashboardRoute(pathname: string): DashboardRoute {
+  const segments = pathname.split('/').filter(Boolean)
+  if (segments.length === 0) return { view: 'overview' }
+  if (segments[0] === 'runtime') return { view: 'runtime' }
+  if (segments[0] !== 'contexts' || !segments[1]) return { view: 'overview' }
+
+  const contextId = decoded(segments[1])
+  switch (segments[2]) {
+    case 'dialogue':
+      return { view: 'dialogue', contextId, sessionId: decoded(segments[3]) }
+    case 'scheduler':
+      return { view: 'scheduler', contextId }
+    case 'threads':
+      return { view: 'scheduler', contextId, threadId: decoded(segments[3]) }
+    case 'cognition': {
+      const candidate = decoded(segments[3]) as CognitionView | undefined
+      return {
+        view: 'cognition',
+        contextId,
+        cognitionView: candidate && cognitionViews.has(candidate) ? candidate : 'mind',
+      }
+    }
+    case 'ledger':
+      return { view: 'ledger', contextId }
+    case 'overview':
+    default:
+      return { view: 'overview', contextId }
+  }
+}
+
+export function threadPath(contextId: string, threadId: string): string {
+  return `/contexts/${encodeURIComponent(contextId)}/threads/${encodeURIComponent(threadId)}`
+}
+
+export function dashboardPath(
+  view: DashboardView,
+  contextId?: string,
+  sessionId?: string,
+  cognitionView: CognitionView = 'mind',
+): string {
+  if (view === 'runtime') return '/runtime'
+  if (!contextId) return '/'
+  const context = encodeURIComponent(contextId)
+  switch (view) {
+    case 'dialogue':
+      return sessionId
+        ? `/contexts/${context}/dialogue/${encodeURIComponent(sessionId)}`
+        : `/contexts/${context}/overview`
+    case 'scheduler':
+      return `/contexts/${context}/scheduler`
+    case 'cognition':
+      return `/contexts/${context}/cognition/${cognitionView}`
+    case 'ledger':
+      return `/contexts/${context}/ledger`
+    case 'overview':
+    default:
+      return `/contexts/${context}/overview`
+  }
+}

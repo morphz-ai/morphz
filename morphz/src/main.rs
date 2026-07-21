@@ -6,8 +6,9 @@ use morphz::event::Event;
 use morphz::i18n::{locale_from_cli_args, Locale, UiLanguage};
 use morphz::llm::{Client, Message, ReasoningEffort, Response, ToolDefinition};
 use morphz::memory::{
-    NewAgent, NewCognitiveContext, NewObjective, NewSession, ObjectiveMutation, ObjectiveStatus,
-    SessionMountKind, SessionRecord, SessionStatus,
+    ExecutionTargetAuthorizationScope, ExecutionTargetKind, ExecutionTargetRegistration,
+    ExecutionTargetStatus, NewAgent, NewCognitiveContext, NewObjective, NewSession,
+    ObjectiveMutation, ObjectiveStatus, SessionMountKind, SessionRecord, SessionStatus,
 };
 use morphz::orchestrator::context::{
     FrameRecallDirection, FrameRecallRequest, RecallSearchRequest,
@@ -18,7 +19,10 @@ use morphz::provider::{list_provider_models, probe_provider};
 use morphz::runtime::{
     MorphzRuntime, RuntimeEventStream, RuntimeIdentity, SchedulerQuery, SessionHandle,
 };
-use morphz::sdk::{MorphzSdk, SdkErrorCode, SendMessageCommand};
+use morphz::sdk::{
+    AuthorizeExecutionTargetCommand, CreateNodePairingCodeCommand, ExecutionJobQuery, MorphzSdk,
+    SdkErrorCode, SendMessageCommand,
+};
 use morphz::web::{Server, ServerDefaults};
 use std::io::IsTerminal;
 use std::io::{BufRead, Write};
@@ -779,6 +783,36 @@ async fn dispatch_runtime_command(
             shutdown_signal().await;
             Ok(())
         }
+        "edge pair" => pair_edge_node(&runtime, &invocation).await,
+        "edge run" => run_edge_node(runtime, &app_config, &invocation).await,
+        "edge rotate-key" => rotate_edge_node_key(&runtime, &invocation).await,
+        "edge pairing-code" => create_edge_pairing_code(&runtime, &invocation).await,
+        "edge nodes" => list_edge_nodes(&runtime, &invocation).await,
+        "edge revoke" => revoke_edge_node(&runtime, &invocation).await,
+        "edge local-leases" => list_edge_local_leases(&invocation),
+        "edge revoke-local-lease" => revoke_edge_local_lease(&invocation),
+        "edge" | "edge status" => show_edge_node_status(&invocation),
+        "target" | "target list" => list_execution_targets(&runtime, &invocation).await,
+        "target show" => show_execution_target(&runtime, &invocation).await,
+        "target enable" => {
+            mutate_execution_target(&runtime, &invocation, ExecutionTargetStatus::Online).await
+        }
+        "target disable" => {
+            mutate_execution_target(&runtime, &invocation, ExecutionTargetStatus::Disabled).await
+        }
+        "target authorize" => authorize_execution_target(&runtime, &invocation).await,
+        "target authorizations" => {
+            list_execution_target_authorizations(&runtime, &invocation).await
+        }
+        "target revoke-authorization" => {
+            revoke_execution_target_authorization(&runtime, &invocation).await
+        }
+        "lease" | "lease list" => list_capability_leases(&runtime, &invocation).await,
+        "lease revoke" => revoke_capability_lease(&runtime, &invocation).await,
+        "execution" | "execution list" => list_execution_jobs(&runtime, &invocation).await,
+        "execution show" => show_execution_job(&runtime, &invocation).await,
+        "execution output" => show_execution_job_output(&runtime, &invocation).await,
+        "execution cancel" => cancel_execution_job(&runtime, &invocation).await,
         "provider" | "provider list" => list_providers(&app_config, &invocation),
         "provider test" => test_provider(&app_config, &invocation).await,
         "model" | "model list" => list_models(&app_config, &invocation).await,
@@ -849,6 +883,630 @@ async fn dispatch_runtime_command(
         "doctor" => doctor(&runtime, &app_config),
         command => Err(format!("命令尚未实现: {command}").into()),
     }
+}
+
+fn edge_credential_path(invocation: &Invocation) -> Result<PathBuf, AppError> {
+    option_value(invocation, "credential-file")
+        .map(PathBuf::from)
+        .map(Ok)
+        .unwrap_or_else(|| morphz::edge_node::EdgeNodeCredentials::default_path())
+}
+
+async fn pair_edge_node(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {
+    let server_url =
+        option_value(invocation, "server-url").ok_or("morphz edge pair 缺少 --server-url")?;
+    let pairing_code =
+        option_value(invocation, "pairing-code").ok_or("morphz edge pair 缺少 --pairing-code")?;
+    let node_name = option_value(invocation, "node-name")
+        .map(str::to_string)
+        .or_else(|| std::env::var("HOSTNAME").ok())
+        .unwrap_or_else(|| "Morphz Edge Node".to_string());
+    let identity = morphz::edge_node::generate_device_identity()?;
+    let gateway = morphz::edge_node::EdgeGatewayClient::new(server_url)?;
+    let paired = gateway
+        .pair(morphz::sdk::PairExecutionNodeCommand {
+            code: pairing_code.to_string(),
+            node_id: option_value(invocation, "node-id").map(str::to_string),
+            name: node_name,
+            device_key_fingerprint: identity.fingerprint.clone(),
+            device_public_key: identity.public_key.clone(),
+            protocol_version: 1,
+            platform: Some(format!(
+                "{}-{}",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )),
+            capabilities: runtime.physical_tool_names(),
+            metadata: serde_json::json!({
+                "client_version": morphz::build_info::VERSION,
+                "transport": "outbound_http_long_poll"
+            }),
+        })
+        .await?;
+    let credentials = morphz::edge_node::EdgeNodeCredentials {
+        server_url: server_url.trim_end_matches('/').to_string(),
+        node_id: paired.node.id.clone(),
+        device_key_fingerprint: identity.fingerprint,
+        device_public_key: identity.public_key,
+        device_private_key_pkcs8: identity.private_key_pkcs8,
+    };
+    let path = edge_credential_path(invocation)?;
+    credentials.save(&path)?;
+    println!(
+        "Paired Edge Node '{}' ({})\nCredentials: {}",
+        paired.node.name,
+        paired.node.id,
+        path.display()
+    );
+    Ok(())
+}
+
+fn show_edge_node_status(invocation: &Invocation) -> Result<(), AppError> {
+    let path = edge_credential_path(invocation)?;
+    let credentials = morphz::edge_node::EdgeNodeCredentials::load(&path)?;
+    println!(
+        "Edge Node: {}\nGateway: {}\nCredentials: {}",
+        credentials.node_id,
+        credentials.server_url,
+        path.display()
+    );
+    Ok(())
+}
+
+async fn create_edge_pairing_code(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let ttl = option_value(invocation, "ttl")
+        .map(str::parse::<u64>)
+        .transpose()?
+        .unwrap_or(300);
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let pairing = sdk
+        .create_node_pairing_code(
+            &principal.principal_id,
+            CreateNodePairingCodeCommand {
+                expires_in_seconds: ttl,
+            },
+        )
+        .await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&pairing)?);
+    } else {
+        println!(
+            "Pairing code: {}\nExpires at: {}",
+            pairing.code, pairing.expires_at
+        );
+    }
+    Ok(())
+}
+
+async fn list_edge_nodes(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let nodes = sdk.list_execution_nodes(&principal.principal_id).await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&nodes)?);
+    } else if nodes.is_empty() {
+        println!("No Execution Nodes.");
+    } else {
+        for node in nodes {
+            println!(
+                "{}\t{}\t{}\tr{}\t{}\t{}",
+                node.id,
+                node.name,
+                node.status.as_str(),
+                node.revision,
+                node.platform.as_deref().unwrap_or("—"),
+                node.capabilities.join(",")
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn revoke_edge_node(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let node_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("edge revoke 缺少 NODE_ID")?;
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let node = sdk
+        .revoke_execution_node(
+            &principal.principal_id,
+            node_id,
+            required_revision(invocation)?,
+        )
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&node)?);
+    Ok(())
+}
+
+fn list_edge_local_leases(invocation: &Invocation) -> Result<(), AppError> {
+    let credentials =
+        morphz::edge_node::EdgeNodeCredentials::load(&edge_credential_path(invocation)?)?;
+    let store = morphz::edge_node::EdgeLocalCapabilityLeaseStore::for_node(&credentials.node_id);
+    let leases = store.list();
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&leases)?);
+    } else if leases.is_empty() {
+        println!("No Provider-local Capability Leases.");
+    } else {
+        for lease in leases {
+            println!(
+                "{}\t{}\t{}\t{}\t{}",
+                lease.id,
+                lease.target_id,
+                lease.thread_id,
+                lease.capability,
+                if lease.revoked_at.is_some() {
+                    "revoked"
+                } else {
+                    "active"
+                }
+            );
+        }
+    }
+    Ok(())
+}
+
+fn revoke_edge_local_lease(invocation: &Invocation) -> Result<(), AppError> {
+    let lease_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("edge revoke-local-lease 缺少 LEASE_ID")?;
+    let credentials =
+        morphz::edge_node::EdgeNodeCredentials::load(&edge_credential_path(invocation)?)?;
+    let store = morphz::edge_node::EdgeLocalCapabilityLeaseStore::for_node(&credentials.node_id);
+    if !store.revoke(lease_id)? {
+        return Err(format!("Provider-local Capability Lease '{lease_id}' 不存在").into());
+    }
+    println!("Revoked Provider-local Capability Lease: {lease_id}");
+    Ok(())
+}
+
+async fn rotate_edge_node_key(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let path = edge_credential_path(invocation)?;
+    let credentials = morphz::edge_node::EdgeNodeCredentials::load(&path)?;
+    let gateway = morphz::edge_node::EdgeGatewayClient::new(&credentials.server_url)?;
+    let node = gateway
+        .heartbeat_node(
+            &credentials,
+            &morphz::edge_node::EdgeNodeAdvertisement {
+                platform: Some(format!(
+                    "{}-{}",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                )),
+                capabilities: runtime.physical_tool_names(),
+                metadata: serde_json::json!({
+                    "client_version": morphz::build_info::VERSION,
+                    "transport": "outbound_http_long_poll"
+                }),
+                targets: Vec::new(),
+            },
+        )
+        .await?;
+    let identity = morphz::edge_node::generate_device_identity()?;
+    let replacement = morphz::edge_node::EdgeNodeCredentials {
+        server_url: credentials.server_url.clone(),
+        node_id: credentials.node_id.clone(),
+        device_key_fingerprint: identity.fingerprint.clone(),
+        device_public_key: identity.public_key.clone(),
+        device_private_key_pkcs8: identity.private_key_pkcs8.clone(),
+    };
+    let pending_path = path.with_extension("json.rotate-pending");
+    replacement.save(&pending_path)?;
+    if let Err(error) = gateway
+        .rotate_device_key(&credentials, node.revision, &identity)
+        .await
+    {
+        let _ = std::fs::remove_file(&pending_path);
+        return Err(error.into());
+    }
+    std::fs::rename(&pending_path, &path).map_err(|error| {
+        format!(
+            "服务端密钥已轮换，但本地凭证替换失败；请将 '{}' 恢复为 '{}': {error}",
+            pending_path.display(),
+            path.display()
+        )
+    })?;
+    println!(
+        "Rotated Edge Node device key: {}\nCredentials: {}",
+        credentials.node_id,
+        path.display()
+    );
+    Ok(())
+}
+
+async fn run_edge_node(
+    runtime: MorphzRuntime,
+    app_config: &config::AppConfig,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let credentials =
+        morphz::edge_node::EdgeNodeCredentials::load(&edge_credential_path(invocation)?)?;
+    let target_id = option_value(invocation, "target-id")
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("target-{}-workspace", credentials.node_id));
+    let target_name = option_value(invocation, "target-name")
+        .map(str::to_string)
+        .unwrap_or_else(|| "Edge Workspace".to_string());
+    let worker_count = option_value(invocation, "workers")
+        .map(str::parse::<usize>)
+        .transpose()?
+        .unwrap_or(app_config.edge_execution.max_in_flight_per_node)
+        .clamp(1, app_config.edge_execution.max_in_flight_per_node.max(1));
+    let capabilities = runtime.physical_tool_names();
+    let target = ExecutionTargetRegistration {
+        id: target_id.clone(),
+        owner_principal_id: None,
+        provider_node_id: Some(credentials.node_id.clone()),
+        kind: ExecutionTargetKind::EdgeNode,
+        name: target_name,
+        status: ExecutionTargetStatus::Online,
+        platform: Some(format!(
+            "{}-{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        )),
+        workspace_root: Some(app_config.permissions.workspace_root.clone()),
+        capabilities: capabilities.clone(),
+        metadata: serde_json::json!({
+            "backend": "edge_node",
+            "protocol_version": 1,
+            "workspace_identity": target_id,
+        }),
+        policy_digest: runtime.execution_policy_digest(),
+        last_seen_at: Some(Utc::now()),
+    };
+    let gateway = morphz::edge_node::EdgeGatewayClient::new(&credentials.server_url)?;
+    let advertisement = morphz::edge_node::EdgeNodeAdvertisement {
+        platform: target.platform.clone(),
+        capabilities,
+        metadata: serde_json::json!({
+            "client_version": morphz::build_info::VERSION,
+            "transport": "outbound_http_long_poll"
+        }),
+        targets: vec![target],
+    };
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let mut workers = tokio::task::JoinSet::new();
+    for index in 0..worker_count {
+        let worker = morphz::edge_node::EdgeNodeWorker::new(
+            gateway.clone(),
+            credentials.clone(),
+            advertisement.clone(),
+            runtime.clone(),
+            morphz::edge_node::EdgeWorkerConfig {
+                worker_id: format!("{}-{}-{}", credentials.node_id, std::process::id(), index),
+                lease_seconds: app_config.edge_execution.default_command_lease.as_secs(),
+                ..Default::default()
+            },
+        );
+        workers.spawn(worker.run_until_shutdown(shutdown_rx.clone()));
+    }
+    println!(
+        "Edge Node {} is online; target={} workers={} (Ctrl+C to stop)",
+        credentials.node_id, target_id, worker_count
+    );
+    tokio::signal::ctrl_c().await?;
+    let _ = shutdown_tx.send(true);
+    while let Some(result) = workers.join_next().await {
+        result??;
+    }
+    Ok(())
+}
+
+fn required_revision(invocation: &Invocation) -> Result<u64, AppError> {
+    option_value(invocation, "revision")
+        .ok_or_else(|| "缺少 --revision".into())
+        .and_then(|value| value.parse::<u64>().map_err(Into::into))
+}
+
+async fn list_execution_targets(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let targets = sdk.list_execution_targets(&principal.principal_id).await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&targets)?);
+    } else if targets.is_empty() {
+        println!("No Execution Targets.");
+    } else {
+        for target in targets {
+            println!(
+                "{}\t{}\t{}\t{}\tr{}\t{}",
+                target.id,
+                target.name,
+                target.kind.as_str(),
+                target.status.as_str(),
+                target.revision,
+                target.capabilities.join(",")
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn show_execution_target(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let target_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("target show 缺少 TARGET_ID")?;
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let target = sdk
+        .inspect_execution_target(&principal.principal_id, target_id)
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&target)?);
+    Ok(())
+}
+
+async fn mutate_execution_target(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+    status: ExecutionTargetStatus,
+) -> Result<(), AppError> {
+    let target_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("target enable/disable 缺少 TARGET_ID")?;
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let target = sdk
+        .set_execution_target_status(
+            &principal.principal_id,
+            target_id,
+            required_revision(invocation)?,
+            status,
+        )
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&target)?);
+    Ok(())
+}
+
+async fn authorize_execution_target(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let target_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("target authorize 缺少 TARGET_ID")?
+        .to_string();
+    let scope = match option_value(invocation, "scope") {
+        Some("agent") => ExecutionTargetAuthorizationScope::Agent,
+        Some("context") => ExecutionTargetAuthorizationScope::Context,
+        Some("thread") => ExecutionTargetAuthorizationScope::Thread,
+        _ => return Err("--scope 必须是 agent、context 或 thread".into()),
+    };
+    let scope_id = option_value(invocation, "scope-id")
+        .ok_or("target authorize 缺少 --scope-id")?
+        .to_string();
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let authorization = sdk
+        .authorize_execution_target(
+            &principal.principal_id,
+            AuthorizeExecutionTargetCommand {
+                target_id,
+                scope,
+                scope_id,
+            },
+        )
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&authorization)?);
+    Ok(())
+}
+
+async fn list_execution_target_authorizations(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let authorizations = sdk
+        .list_execution_target_authorizations(
+            &principal.principal_id,
+            invocation.prompt_args().first().cloned(),
+            false,
+        )
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&authorizations)?);
+    Ok(())
+}
+
+async fn revoke_execution_target_authorization(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let authorization_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("target revoke-authorization 缺少 AUTHORIZATION_ID")?;
+    let reason = option_value(invocation, "reason").unwrap_or("CLI revoke");
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let authorization = sdk
+        .revoke_execution_target_authorization(
+            &principal.principal_id,
+            authorization_id,
+            required_revision(invocation)?,
+            reason,
+        )
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&authorization)?);
+    Ok(())
+}
+
+async fn list_capability_leases(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let leases = sdk
+        .list_capability_leases(
+            &principal.principal_id,
+            option_value(invocation, "thread-id").map(str::to_string),
+            option_value(invocation, "target-id").map(str::to_string),
+            true,
+        )
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&leases)?);
+    Ok(())
+}
+
+async fn revoke_capability_lease(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let lease_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("lease revoke 缺少 LEASE_ID")?;
+    let reason = option_value(invocation, "reason").unwrap_or("CLI revoke");
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let lease = sdk
+        .revoke_capability_lease(
+            &principal.principal_id,
+            lease_id,
+            required_revision(invocation)?,
+            reason,
+        )
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&lease)?);
+    Ok(())
+}
+
+async fn list_execution_jobs(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let jobs = sdk
+        .list_execution_jobs(
+            &principal.principal_id,
+            ExecutionJobQuery {
+                context_id: option_value(invocation, "context-id").map(str::to_string),
+                thread_id: option_value(invocation, "thread-id").map(str::to_string),
+                target_id: option_value(invocation, "target-id").map(str::to_string),
+                include_terminal: switch_enabled(invocation, "include-terminal")?,
+                newest_first: true,
+                limit: option_value(invocation, "limit")
+                    .map(str::parse::<usize>)
+                    .transpose()?,
+                ..ExecutionJobQuery::default()
+            },
+        )
+        .await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&jobs)?);
+    } else if jobs.is_empty() {
+        println!("No Execution Jobs.");
+    } else {
+        for job in jobs {
+            println!(
+                "{}\t{}\t{}\t{}\t{}\tr{}",
+                job.id,
+                job.status.as_str(),
+                job.tool_name,
+                job.target_id,
+                job.thread_id,
+                job.revision
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn show_execution_job(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let job_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("execution show 缺少 JOB_ID")?;
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let job = sdk
+        .inspect_execution_job(&principal.principal_id, job_id)
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&job)?);
+    Ok(())
+}
+
+async fn show_execution_job_output(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let job_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("execution output 缺少 JOB_ID")?;
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    // Output inherits the parent Job's Principal authority.
+    sdk.inspect_execution_job(&principal.principal_id, job_id)
+        .await?;
+    let after = option_value(invocation, "after")
+        .map(str::parse::<u64>)
+        .transpose()?
+        .unwrap_or(0);
+    let limit = option_value(invocation, "limit")
+        .map(str::parse::<usize>)
+        .transpose()?
+        .unwrap_or(200)
+        .clamp(1, 1_000);
+    let chunks = sdk.list_edge_command_output(job_id, after, limit).await?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&chunks)?);
+    } else {
+        for chunk in chunks {
+            print!("{}", chunk.text);
+        }
+        std::io::stdout().flush()?;
+    }
+    Ok(())
+}
+
+async fn cancel_execution_job(
+    runtime: &MorphzRuntime,
+    invocation: &Invocation,
+) -> Result<(), AppError> {
+    let job_id = invocation
+        .prompt_args()
+        .first()
+        .ok_or("execution cancel 缺少 JOB_ID")?;
+    let sdk = MorphzSdk::new(runtime.clone());
+    let principal = sdk.default_principal();
+    let job = sdk
+        .cancel_execution_job(
+            &principal.principal_id,
+            job_id,
+            required_revision(invocation)?,
+            option_value(invocation, "reason"),
+        )
+        .await?;
+    println!("{}", serde_json::to_string_pretty(&job)?);
+    Ok(())
 }
 
 fn selected_provider_id<'a>(
@@ -1320,7 +1978,9 @@ async fn audit_context(
         .map(String::as_str)
         .or_else(|| option_value(invocation, "context"))
         .unwrap_or(default_context_id);
-    let audit = runtime.audit_mind_projection(id).await?;
+    let audit = MorphzSdk::new(runtime.clone())
+        .audit_mind_projection(id)
+        .await?;
     if json_output(invocation) {
         println!("{}", serde_json::to_string_pretty(&audit)?);
     } else {
@@ -1477,7 +2137,7 @@ async fn show_scheduler(
     if limit == 0 || limit > 2_000 {
         return Err("--limit 必须在 1..=2000 之间".into());
     }
-    let snapshot = runtime
+    let snapshot = MorphzSdk::new(runtime.clone())
         .scheduler_snapshot(
             context_id,
             SchedulerQuery {

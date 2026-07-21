@@ -1,6 +1,8 @@
 use crate::approval::{
-    AiAutoReviewProvider, ApprovalDecision, ApprovalProvider, DenyAllApprovalProvider,
-    EscalatingApprovalProvider, HumanApprovalHub, HumanApprovalProvider, PendingHumanApproval,
+    capability_lease_policy_digest, AiAutoReviewProvider, ApprovalDecision, ApprovalProvider,
+    ApprovalRequest, CapabilityLeaseOffer, DenyAllApprovalProvider, EscalatingApprovalProvider,
+    HumanApprovalHub, HumanApprovalProvider, PendingHumanApproval,
+    CAPABILITY_LEASE_APPROVED_RISK_TAG,
 };
 use crate::config::{AppConfig, StorageBackend};
 use crate::context_tools::{ContextTxTool, RecallTool};
@@ -16,11 +18,18 @@ use crate::memory::postgres::PostgresStore;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalRecord,
-    ApprovalResolution, ApprovalStore, CognitiveContextRecord, DelegationRecord, DelegationStatus,
-    EventStore, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionJobStore, MessageClaim, MindProjectionStore, NewAgent, NewCognitiveContext,
-    NewDelegation, NewObjective, NewPrincipal, NewSession, ObjectiveMutation, ObjectiveRecord,
-    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RecallProjectionStore,
+    ApprovalResolution, ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation,
+    CapabilityLeaseRecord, CognitiveContextRecord, DelegationRecord, DelegationStatus,
+    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
+    EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
+    ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
+    ExecutionTargetStore, MessageClaim, MindProjectionStore, NewAgent, NewCognitiveContext,
+    NewDelegation, NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode,
+    NewObjective, NewPrincipal, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, QueryFilter, RecallProjectionStore,
     RuntimeStore, ScheduleMutation, ScheduleRecord, ScheduleStatus, SessionRecord, SessionStore,
     SessionUpdate, ThreadActivationRecord, ThreadActivationStatus, ThreadPhase, ThreadRecord,
     ThreadSignalRecord, ThreadSignalStatus, TimerStore,
@@ -29,11 +38,14 @@ use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
 };
 use crate::orchestrator::context::{
-    ContextEngine, ContextRecallService, ContextView, FrameRecallPage, FrameRecallRequest,
-    RecallSearchPage, RecallSearchRequest,
+    ContextEngine, ContextPressure, ContextRecallService, ContextView, FrameRecallPage,
+    FrameRecallRequest, ProjectedSession, RecallSearchPage, RecallSearchRequest,
+    SessionWorkingSetView,
 };
 use crate::orchestrator::orchestrator::{DurableApprovalServices, Orchestrator};
-use crate::permission::{PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode};
+use crate::permission::{
+    ApprovalRequirement, PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode,
+};
 use crate::timer::TimerEngine;
 use crate::tool::{
     BackgroundTaskScheduler, CheckTaskAfterTool, DelegateTool, EditFileTool, ExecuteCommandTool,
@@ -42,7 +54,7 @@ use crate::tool::{
     VerifyIdentityTool, WriteFileTool,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -141,6 +153,107 @@ pub struct SchedulerSnapshot {
     pub orphan_approvals: Vec<ApprovalRecord>,
 }
 
+/// Bounded, authoritative summary used by every Context-level product surface.
+/// The overview deliberately contains projections and aggregate counts rather
+/// than the unbounded Ledger or the full Context Encoding S-expression.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextOverview {
+    pub context: CognitiveContextRecord,
+    pub agent: Option<AgentRecord>,
+    pub generated_at: chrono::DateTime<chrono::Utc>,
+    pub active_session_id: Option<String>,
+    pub sessions: Vec<ProjectedSession>,
+    pub working_set: Option<SessionWorkingSetView>,
+    pub mind_revision: u64,
+    pub active_frames: usize,
+    pub retiring_frames: usize,
+    pub retired_items: usize,
+    pub pressure: Option<ContextPressure>,
+    pub objectives: Vec<ObjectiveRecord>,
+    pub scheduler: SchedulerSummary,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextOverviewQuery {
+    pub active_session_id: Option<String>,
+}
+
+/// One complete causal Thread aggregate. Scheduler lists and inspectors use
+/// this same type so an Execution Job can never become a global, ownerless row.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadDetail {
+    pub context_id: String,
+    pub generated_at: chrono::DateTime<chrono::Utc>,
+    pub snapshot: SchedulerThreadSnapshot,
+    /// Durable Model Attempt transitions and provider-authored reasoning
+    /// summaries causally routed to this Thread. Ephemeral deltas remain on
+    /// the live stream and are intentionally absent from this aggregate.
+    pub model_attempt_events: Vec<Event>,
+}
+
+/// Transport-neutral Ledger query. Payload identity/causal filters are kept in
+/// this public contract even while a backend may satisfy them through a
+/// bounded post-filter; the response makes that scan boundary explicit.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LedgerQuery {
+    pub context_id: String,
+    pub session_id: Option<String>,
+    pub principal_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub activation_id: Option<String>,
+    pub actor: Option<String>,
+    pub event_type: Option<String>,
+    pub topic: Option<String>,
+    pub search_query: Option<String>,
+    pub after_sequence: Option<u64>,
+    pub before_sequence: Option<u64>,
+    pub start_time: Option<chrono::DateTime<chrono::Utc>>,
+    pub end_time: Option<chrono::DateTime<chrono::Utc>>,
+    pub limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LedgerQueryPage {
+    pub context_id: String,
+    pub generated_at: chrono::DateTime<chrono::Utc>,
+    pub events: Vec<Event>,
+    pub scanned_count: usize,
+    pub scan_exhaustive: bool,
+    pub next_after_sequence: Option<u64>,
+    pub next_before_sequence: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeStatus {
+    pub generated_at: chrono::DateTime<chrono::Utc>,
+    pub started: bool,
+    pub uptime_seconds: u64,
+    pub recovery: RuntimeRecoveryStatus,
+    pub version: String,
+    pub git_commit: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub principal_id: String,
+    pub model: String,
+    pub provider: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub tool_count: usize,
+    pub storage: String,
+    pub storage_backend: crate::config::StorageBackend,
+    pub permission_mode: crate::permission::PermissionMode,
+    pub sandbox_mode: SandboxMode,
+    pub reviewer: ReviewerKind,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeRecoveryStatus {
+    pub preserved_execution_jobs: usize,
+    pub requeued_execution_jobs: usize,
+    pub lost_execution_jobs: usize,
+    pub recovered_background_outboxes: usize,
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
 /// Shared query contract for the Rust SDK, CLI and HTTP scheduler read model.
 /// All presentation layers consume the same [`SchedulerSnapshot`]; none may
 /// reconstruct scheduler truth from events or process-local task maps.
@@ -200,6 +313,7 @@ pub struct MorphzRuntimeBuilder {
     tool_policy: RuntimeToolPolicy,
     approval_provider: Option<Arc<dyn ApprovalProvider>>,
     identity_provider: Option<Arc<dyn IdentityProvider>>,
+    execution_target_backends: Vec<Arc<dyn crate::execution_target::ExecutionTargetBackend>>,
 }
 
 impl MorphzRuntimeBuilder {
@@ -212,6 +326,7 @@ impl MorphzRuntimeBuilder {
             tool_policy: RuntimeToolPolicy::from_environment(),
             approval_provider: None,
             identity_provider: None,
+            execution_target_backends: Vec::new(),
             config,
             client,
         }
@@ -247,6 +362,17 @@ impl MorphzRuntimeBuilder {
 
     pub fn identity_provider(mut self, provider: Arc<dyn IdentityProvider>) -> Self {
         self.identity_provider = Some(provider);
+        self
+    }
+
+    /// Adds a physical execution transport without coupling the SDK or model
+    /// tool surface to its implementation (Edge Node, managed SSH, cloud
+    /// worker, and so on).
+    pub fn execution_target_backend(
+        mut self,
+        backend: Arc<dyn crate::execution_target::ExecutionTargetBackend>,
+    ) -> Self {
+        self.execution_target_backends.push(backend);
         self
     }
 
@@ -336,6 +462,12 @@ impl MorphzRuntimeBuilder {
                 Arc::clone(&store) as Arc<dyn crate::memory::CognitiveClockStore>
             )
             .with_objective_store(Arc::clone(&store) as Arc<dyn ObjectiveStore>)
+            .with_execution_target_store(
+                Arc::clone(&store) as Arc<dyn crate::memory::ExecutionTargetStore>
+            )
+            .with_execution_target_authorization_store(
+                Arc::clone(&store) as Arc<dyn crate::memory::ExecutionTargetAuthorizationStore>
+            )
             .with_worker_coordination_mode(store.worker_coordination_mode()),
         );
         let execution_jobs = Arc::new(ExecutionJobManager::new(
@@ -414,6 +546,46 @@ impl MorphzRuntimeBuilder {
             config: &self.config,
             policy: self.tool_policy,
         });
+        registry.register(Arc::new(crate::execution_target::ListTargetsTool::new(
+            Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
+        )));
+        registry.register(Arc::new(crate::execution_target::InspectTargetTool::new(
+            Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
+        )));
+        registry.register(Arc::new(crate::execution_target::ResolveTargetTool::new(
+            Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
+        )));
+        let workspace_root = permissions
+            .profile()
+            .workspace_root
+            .to_str()
+            .map(str::to_string);
+        store
+            .register_execution_target(crate::execution_target::local_default_registration(
+                workspace_root,
+                registry.physical_tool_names(),
+                permissions.policy_digest(),
+            ))
+            .await?;
+        let execution_targets = Arc::new(crate::execution_target::ExecutionTargetDispatcher::new(
+            Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
+            Arc::clone(&store) as Arc<dyn crate::memory::ExecutionTargetAuthorizationStore>,
+        ));
+        execution_targets
+            .register_backend(Arc::new(crate::execution_target::InProcessLocalBackend));
+        execution_targets.register_backend(Arc::new(
+            crate::execution_target::EdgeNodeBackend::new(
+                Arc::clone(&store) as Arc<dyn crate::memory::EdgeExecutionStore>
+            ),
+        ));
+        execution_targets.register_backend(Arc::new(
+            crate::execution_target::EdgeNodeBackend::managed_ssh(
+                Arc::clone(&store) as Arc<dyn crate::memory::EdgeExecutionStore>
+            ),
+        ));
+        for backend in self.execution_target_backends {
+            execution_targets.register_backend(backend);
+        }
         let runtime_client = Arc::clone(&self.client);
         let orchestrator = Orchestrator::assemble_with_scheduler_kernel(
             Arc::clone(&bus),
@@ -427,13 +599,17 @@ impl MorphzRuntimeBuilder {
             Arc::clone(&timer_engine),
             Some(Arc::clone(&thread_scheduler)),
             Some(Arc::clone(&execution_jobs)),
+            Some(execution_targets),
             Some(Arc::clone(&store) as Arc<dyn crate::memory::ActionGroupStore>),
             Some(Arc::clone(&background_scheduler)),
             Some(DurableApprovalServices::new(
                 Arc::clone(&permissions),
                 Arc::clone(&store) as Arc<dyn ApprovalStore>,
                 Arc::clone(&store) as Arc<dyn ExecutionApprovalStore>,
+                Arc::clone(&store) as Arc<dyn crate::memory::CapabilityLeaseStore>,
                 human_approval_hub.clone(),
+                self.config.edge_execution.capability_leases_enabled,
+                self.config.edge_execution.capability_lease_ttl.as_secs(),
             )),
         )?;
         Ok(MorphzRuntime {
@@ -441,6 +617,7 @@ impl MorphzRuntimeBuilder {
                 config: self.config,
                 identity: self.identity,
                 identity_provider,
+                permissions,
                 sqlite_database_path,
                 storage_label,
                 client: runtime_client,
@@ -455,6 +632,8 @@ impl MorphzRuntimeBuilder {
                 background_scheduler,
                 timer_engine,
                 human_approval_hub,
+                process_started_at: chrono::Utc::now(),
+                recovery: std::sync::RwLock::new(RuntimeRecoveryStatus::default()),
                 started: AtomicBool::new(false),
                 start_lock: tokio::sync::Mutex::new(()),
             }),
@@ -567,6 +746,7 @@ struct RuntimeInner {
     config: AppConfig,
     identity: RuntimeIdentity,
     identity_provider: Arc<dyn IdentityProvider>,
+    permissions: Arc<PermissionBroker>,
     sqlite_database_path: Option<String>,
     storage_label: String,
     client: Arc<dyn Client>,
@@ -581,6 +761,8 @@ struct RuntimeInner {
     background_scheduler: Arc<BackgroundTaskScheduler>,
     timer_engine: Arc<TimerEngine>,
     human_approval_hub: HumanApprovalHub,
+    process_started_at: chrono::DateTime<chrono::Utc>,
+    recovery: std::sync::RwLock<RuntimeRecoveryStatus>,
     started: AtomicBool,
     start_lock: tokio::sync::Mutex<()>,
 }
@@ -646,6 +828,15 @@ impl MorphzRuntime {
             .background_scheduler
             .recover_terminal_background_outboxes()
             .await?;
+        if let Ok(mut recovery) = self.inner.recovery.write() {
+            *recovery = RuntimeRecoveryStatus {
+                preserved_execution_jobs: execution_recovery.preserved_job_ids.len(),
+                requeued_execution_jobs: execution_recovery.requeue_receipts.len(),
+                lost_execution_jobs: execution_recovery.lost_receipts.len(),
+                recovered_background_outboxes,
+                completed_at: Some(chrono::Utc::now()),
+            };
+        }
         tracing::info!(
             preserved = execution_recovery.preserved_job_ids.len(),
             requeued = execution_recovery.requeue_receipts.len(),
@@ -657,6 +848,49 @@ impl MorphzRuntime {
         Arc::clone(&self.inner.objective_supervisor).start().await?;
         self.inner.thread_scheduler.recover().await?;
         self.inner.timer_engine.start();
+        let edge_store = Arc::clone(&self.inner.store);
+        let reconcile_interval = std::time::Duration::from_secs(
+            self.inner
+                .config
+                .edge_execution
+                .reconcile_interval
+                .as_secs()
+                .max(1),
+        );
+        let node_stale_after = self
+            .inner
+            .config
+            .edge_execution
+            .node_stale_after
+            .as_secs()
+            .max(1);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(reconcile_interval);
+            // Do not classify a freshly started Node before it has one full
+            // heartbeat window to reconnect.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let now = chrono::Utc::now();
+                let stale_before = now
+                    - chrono::Duration::seconds(
+                        i64::try_from(node_stale_after).unwrap_or(i64::MAX),
+                    );
+                match edge_store.reconcile_edge_execution(now, stale_before).await {
+                    Ok(report) if report != crate::memory::EdgeReconciliationReport::default() => {
+                        tracing::info!(
+                            nodes_offline = report.nodes_marked_offline,
+                            targets_offline = report.targets_marked_offline,
+                            commands_requeued = report.commands_requeued,
+                            commands_lost = report.commands_marked_lost,
+                            "Edge execution reconciliation completed"
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(%error, "Edge execution reconciliation failed"),
+                }
+            }
+        });
         self.inner.started.store(true, Ordering::Release);
         Ok(())
     }
@@ -843,6 +1077,146 @@ impl MorphzRuntime {
             .collect()
     }
 
+    pub fn physical_tool_names(&self) -> Vec<String> {
+        self.inner.registry.physical_tool_names()
+    }
+
+    pub fn execution_policy_digest(&self) -> String {
+        self.inner.permissions.policy_digest()
+    }
+
+    pub(crate) fn edge_tool_approval_requirement(
+        &self,
+        command: &crate::memory::EdgeCommandRecord,
+    ) -> Result<Option<ApprovalRequirement>, RuntimeError> {
+        let tool = self
+            .inner
+            .registry
+            .get(&command.tool_name)
+            .ok_or_else(|| format!("Edge Node 未注册物理工具 '{}'", command.tool_name))?;
+        if tool.execution_class() != crate::tool::ToolExecutionClass::PhysicalJob {
+            return Err(format!(
+                "Edge Node 拒绝审批 Runtime 逻辑工具 '{}'",
+                command.tool_name
+            )
+            .into());
+        }
+        tool.approval_requirement(&command.arguments)
+    }
+
+    /// Invoke the Node-local reviewer. The request is constructed from the
+    /// cloud Job's immutable authority scope plus the local Tool preflight;
+    /// cloud approval decisions are deliberately not accepted here.
+    pub(crate) async fn review_edge_tool_permission(
+        &self,
+        request: &ApprovalRequest,
+    ) -> Result<ApprovalDecision, RuntimeError> {
+        self.inner
+            .permissions
+            .review(request)
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Executes one cloud-issued Edge command inside this Runtime's local
+    /// permission broker and native sandbox. The Edge transport owns the
+    /// durable remote Job; this method deliberately does not create a second
+    /// local Execution Job or let the caller bypass Tool classification.
+    pub async fn execute_edge_tool(
+        &self,
+        command: &crate::memory::EdgeCommandRecord,
+    ) -> Result<String, RuntimeError> {
+        self.execute_edge_tool_with_local_authority(command, false)
+            .await
+    }
+
+    /// Executes a command whose Provider-local Target configuration is itself
+    /// the user's durable authorization for the exact generated boundary
+    /// expansion (for example a managed SSH endpoint using ssh-agent). This
+    /// never weakens protected paths and never trusts a cloud-provided grant:
+    /// the boolean is supplied only by the local Edge control plane after it
+    /// reads an explicitly approved local endpoint descriptor.
+    pub(crate) async fn execute_edge_tool_with_local_authority(
+        &self,
+        command: &crate::memory::EdgeCommandRecord,
+        provider_local_preauthorized: bool,
+    ) -> Result<String, RuntimeError> {
+        self.execute_edge_tool_streaming(command, provider_local_preauthorized, None)
+            .await
+    }
+
+    pub(crate) async fn execute_edge_tool_streaming(
+        &self,
+        command: &crate::memory::EdgeCommandRecord,
+        provider_local_preauthorized: bool,
+        output_sink: Option<tokio::sync::mpsc::Sender<crate::tool::ToolOutputChunk>>,
+    ) -> Result<String, RuntimeError> {
+        let tool = self
+            .inner
+            .registry
+            .get(&command.tool_name)
+            .ok_or_else(|| format!("Edge Node 未注册物理工具 '{}'", command.tool_name))?;
+        if tool.execution_class() != crate::tool::ToolExecutionClass::PhysicalJob {
+            return Err(format!(
+                "Edge Node 拒绝执行 Runtime 逻辑工具 '{}'；远程协议只接受物理工具",
+                command.tool_name
+            )
+            .into());
+        }
+        let node_scope = command.provider_node_id.clone();
+        let target_scope = command.target_id.clone();
+        let job_scope = command.job_id.clone();
+        let principal_scope = Some(self.inner.identity.principal_id.clone());
+        let durable_grant = if provider_local_preauthorized {
+            tool.approval_requirement(&command.arguments)?
+                .map(|requirement| crate::permission::DurableApprovalGrant {
+                    approval_id: format!("edge-local-authority:{}", command.target_id),
+                    grant_id: format!(
+                        "edge-local-authority:{}:{}",
+                        command.target_id, command.job_id
+                    ),
+                    policy_digest: self.inner.permissions.policy_digest(),
+                    action: requirement.action,
+                    requested: requirement.requested,
+                })
+        } else {
+            None
+        };
+        crate::tool::CURRENT_TOOL_OUTPUT_SINK
+            .scope(output_sink, async move {
+                crate::tool::CURRENT_PRINCIPAL_ID
+                    .scope(principal_scope, async move {
+                        crate::permission::CURRENT_DURABLE_APPROVAL
+                            .scope(durable_grant, async move {
+                                crate::tool::CURRENT_ATTEMPT_ID
+                                    .scope(job_scope.clone(), async move {
+                                        crate::tool::CURRENT_CONTEXT_ID
+                                            .scope(
+                                                format!("edge-context:{node_scope}"),
+                                                async move {
+                                                    crate::tool::CURRENT_SESSION_ID
+                                                        .scope(
+                                                            format!("edge-session:{target_scope}"),
+                                                            async move {
+                                                                tool.execute(&command.arguments)
+                                                                    .await
+                                                                    .map_err(Into::into)
+                                                            },
+                                                        )
+                                                        .await
+                                                },
+                                            )
+                                            .await
+                                    })
+                                    .await
+                            })
+                            .await
+                    })
+                    .await
+            })
+            .await
+    }
+
     pub fn agent(&self, id: impl Into<String>) -> AgentHandle {
         AgentHandle {
             runtime: self.clone(),
@@ -932,6 +1306,353 @@ impl MorphzRuntime {
         archived: bool,
     ) -> Result<Vec<CognitiveContextRecord>, RuntimeError> {
         self.inner.store.list_contexts(archived).await
+    }
+
+    pub async fn register_execution_target(
+        &self,
+        registration: ExecutionTargetRegistration,
+    ) -> Result<ExecutionTargetRecord, RuntimeError> {
+        self.inner
+            .store
+            .register_execution_target(registration)
+            .await
+    }
+
+    pub async fn get_execution_target(
+        &self,
+        target_id: &str,
+    ) -> Result<Option<ExecutionTargetRecord>, RuntimeError> {
+        self.inner.store.get_execution_target(target_id).await
+    }
+
+    pub async fn list_execution_targets(
+        &self,
+        filter: ExecutionTargetFilter,
+    ) -> Result<Vec<ExecutionTargetRecord>, RuntimeError> {
+        self.inner.store.list_execution_targets(filter).await
+    }
+
+    pub async fn set_execution_target_status(
+        &self,
+        target_id: &str,
+        expected_revision: u64,
+        status: ExecutionTargetStatus,
+    ) -> Result<ExecutionTargetMutation, RuntimeError> {
+        self.inner
+            .store
+            .set_execution_target_status(target_id, expected_revision, status)
+            .await
+    }
+
+    pub async fn authorize_execution_target(
+        &self,
+        authorization: NewExecutionTargetAuthorization,
+    ) -> Result<ExecutionTargetAuthorizationMutation, RuntimeError> {
+        self.inner
+            .store
+            .authorize_execution_target(authorization)
+            .await
+    }
+
+    pub async fn get_execution_target_authorization(
+        &self,
+        authorization_id: &str,
+    ) -> Result<Option<ExecutionTargetAuthorizationRecord>, RuntimeError> {
+        self.inner
+            .store
+            .get_execution_target_authorization(authorization_id)
+            .await
+    }
+
+    pub async fn list_execution_target_authorizations(
+        &self,
+        filter: ExecutionTargetAuthorizationFilter,
+    ) -> Result<Vec<ExecutionTargetAuthorizationRecord>, RuntimeError> {
+        self.inner
+            .store
+            .list_execution_target_authorizations(filter)
+            .await
+    }
+
+    pub async fn revoke_execution_target_authorization(
+        &self,
+        authorization_id: &str,
+        expected_revision: u64,
+        reason: &str,
+    ) -> Result<ExecutionTargetAuthorizationMutation, RuntimeError> {
+        self.inner
+            .store
+            .revoke_execution_target_authorization(authorization_id, expected_revision, reason)
+            .await
+    }
+
+    pub async fn create_node_pairing_code(
+        &self,
+        pairing: NewNodePairingCode,
+    ) -> Result<(), RuntimeError> {
+        self.inner.store.create_node_pairing_code(pairing).await
+    }
+
+    pub async fn pair_execution_node(
+        &self,
+        request: PairExecutionNode,
+    ) -> Result<ExecutionNodeRecord, RuntimeError> {
+        self.inner.store.pair_execution_node(request).await
+    }
+
+    pub async fn create_execution_node_challenge(
+        &self,
+        challenge: NewExecutionNodeChallenge,
+    ) -> Result<(), RuntimeError> {
+        self.inner
+            .store
+            .create_execution_node_challenge(challenge)
+            .await
+    }
+
+    pub async fn consume_execution_node_challenge(
+        &self,
+        node_id: &str,
+        challenge_id: &str,
+        nonce_hash: &str,
+    ) -> Result<Option<ExecutionNodeRecord>, RuntimeError> {
+        self.inner
+            .store
+            .consume_execution_node_challenge(node_id, challenge_id, nonce_hash)
+            .await
+    }
+
+    pub async fn issue_execution_node_connection_token(
+        &self,
+        node_id: &str,
+        token_hash: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<ExecutionNodeRecord>, RuntimeError> {
+        self.inner
+            .store
+            .issue_execution_node_connection_token(node_id, token_hash, expires_at)
+            .await
+    }
+
+    pub async fn authenticate_execution_node(
+        &self,
+        node_id: &str,
+        device_token_hash: &str,
+    ) -> Result<Option<ExecutionNodeRecord>, RuntimeError> {
+        self.inner
+            .store
+            .authenticate_execution_node(node_id, device_token_hash)
+            .await
+    }
+
+    pub async fn heartbeat_execution_node(
+        &self,
+        node_id: &str,
+        platform: Option<String>,
+        capabilities: Vec<String>,
+        metadata: Value,
+    ) -> Result<Option<ExecutionNodeRecord>, RuntimeError> {
+        self.inner
+            .store
+            .heartbeat_execution_node(node_id, platform, capabilities, metadata)
+            .await
+    }
+
+    pub async fn list_execution_nodes(
+        &self,
+        owner_principal_id: &str,
+    ) -> Result<Vec<ExecutionNodeRecord>, RuntimeError> {
+        self.inner
+            .store
+            .list_execution_nodes(owner_principal_id)
+            .await
+    }
+
+    pub async fn revoke_execution_node(
+        &self,
+        node_id: &str,
+        owner_principal_id: &str,
+        expected_revision: u64,
+    ) -> Result<Option<ExecutionNodeRecord>, RuntimeError> {
+        self.inner
+            .store
+            .revoke_execution_node(node_id, owner_principal_id, expected_revision)
+            .await
+    }
+
+    pub async fn rotate_execution_node_key(
+        &self,
+        node_id: &str,
+        expected_revision: u64,
+        device_key_fingerprint: &str,
+        device_public_key: &str,
+    ) -> Result<ExecutionNodeMutation, RuntimeError> {
+        self.inner
+            .store
+            .rotate_execution_node_key(
+                node_id,
+                expected_revision,
+                device_key_fingerprint,
+                device_public_key,
+            )
+            .await
+    }
+
+    pub async fn claim_edge_command(
+        &self,
+        provider_node_id: &str,
+        worker_id: &str,
+        claim_token: &str,
+        lease_expires_at: chrono::DateTime<chrono::Utc>,
+        max_in_flight: usize,
+    ) -> Result<Option<EdgeCommandRecord>, RuntimeError> {
+        self.inner
+            .store
+            .claim_edge_command(
+                provider_node_id,
+                worker_id,
+                claim_token,
+                lease_expires_at,
+                max_in_flight,
+            )
+            .await
+    }
+
+    pub async fn get_edge_command(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<EdgeCommandRecord>, RuntimeError> {
+        self.inner.store.get_edge_command(job_id).await
+    }
+
+    pub async fn heartbeat_edge_command(
+        &self,
+        job_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        lease_expires_at: chrono::DateTime<chrono::Utc>,
+        side_effect_started: bool,
+        progress: Option<String>,
+    ) -> Result<EdgeCommandMutation, RuntimeError> {
+        self.inner
+            .store
+            .heartbeat_edge_command(
+                job_id,
+                expected_revision,
+                claim_token,
+                lease_expires_at,
+                side_effect_started,
+                progress,
+            )
+            .await
+    }
+
+    pub async fn finish_edge_command(
+        &self,
+        job_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        status: EdgeCommandStatus,
+        output: Option<String>,
+        error: Option<String>,
+    ) -> Result<EdgeCommandMutation, RuntimeError> {
+        self.inner
+            .store
+            .finish_edge_command(
+                job_id,
+                expected_revision,
+                claim_token,
+                status,
+                output,
+                error,
+            )
+            .await
+    }
+
+    pub async fn append_edge_command_output(
+        &self,
+        job_id: &str,
+        claim_token: &str,
+        stream: EdgeOutputStream,
+        text: &str,
+    ) -> Result<EdgeCommandOutputChunk, RuntimeError> {
+        self.inner
+            .store
+            .append_edge_command_output(job_id, claim_token, stream, text)
+            .await
+    }
+
+    pub async fn list_edge_command_output(
+        &self,
+        job_id: &str,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<EdgeCommandOutputChunk>, RuntimeError> {
+        self.inner
+            .store
+            .list_edge_command_output(job_id, after_sequence, limit)
+            .await
+    }
+
+    pub async fn request_edge_command_cancel(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<EdgeCommandRecord>, RuntimeError> {
+        self.inner.store.request_edge_command_cancel(job_id).await
+    }
+
+    pub async fn get_execution_job(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<ExecutionJobRecord>, RuntimeError> {
+        self.inner.store.get_execution_job(job_id).await
+    }
+
+    pub async fn list_execution_jobs(
+        &self,
+        filter: ExecutionJobFilter,
+    ) -> Result<Vec<ExecutionJobRecord>, RuntimeError> {
+        self.inner.store.list_execution_jobs(filter).await
+    }
+
+    pub async fn request_execution_job_cancel(
+        &self,
+        job_id: &str,
+        expected_revision: u64,
+        reason: Option<&str>,
+    ) -> Result<crate::execution::JobReceipt, RuntimeError> {
+        let receipt = self
+            .inner
+            .execution_jobs
+            .request_cancel(job_id, expected_revision, reason)
+            .await?;
+        if matches!(
+            &receipt,
+            crate::execution::JobReceipt::Applied { .. }
+                | crate::execution::JobReceipt::Existing { .. }
+        ) {
+            let _ = self.inner.store.request_edge_command_cancel(job_id).await?;
+        }
+        Ok(receipt)
+    }
+
+    pub async fn list_capability_leases(
+        &self,
+        filter: CapabilityLeaseFilter,
+    ) -> Result<Vec<CapabilityLeaseRecord>, RuntimeError> {
+        self.inner.store.list_capability_leases(filter).await
+    }
+
+    pub async fn revoke_capability_lease(
+        &self,
+        lease_id: &str,
+        expected_revision: u64,
+        reason: &str,
+    ) -> Result<CapabilityLeaseMutation, RuntimeError> {
+        self.inner
+            .store
+            .revoke_capability_lease(lease_id, expected_revision, reason)
+            .await
     }
 
     pub async fn create_session(&self, session: NewSession) -> Result<SessionRecord, RuntimeError> {
@@ -1341,13 +2062,76 @@ impl MorphzRuntime {
             let Ok(Some(job)) = self.inner.store.get_execution_job(&record.job_id).await else {
                 continue;
             };
-            let Ok(action) = serde_json::from_value(record.action.clone()) else {
+            let Ok(Some(activation)) = self
+                .inner
+                .store
+                .get_thread_activation(&job.activation_id)
+                .await
+            else {
+                tracing::error!(
+                    approval_id = %record.id,
+                    activation_id = %job.activation_id,
+                    "待审批请求缺少因果 Activation"
+                );
+                continue;
+            };
+            let Ok(action) =
+                serde_json::from_value::<crate::approval::ApprovalAction>(record.action.clone())
+            else {
                 tracing::error!(approval_id = %record.id, "待审批 action 无法解码");
                 continue;
             };
-            let Ok(requested) = serde_json::from_value(record.requested.clone()) else {
+            let Ok(requested) = serde_json::from_value::<crate::approval::CapabilityDelta>(
+                record.requested.clone(),
+            ) else {
                 tracing::error!(approval_id = %record.id, "待审批 capability delta 无法解码");
                 continue;
+            };
+            let lease_offer = if self.inner.config.edge_execution.capability_leases_enabled
+                && self
+                    .inner
+                    .config
+                    .edge_execution
+                    .capability_lease_ttl
+                    .as_secs()
+                    > 0
+            {
+                match (
+                    job.initiating_principal_id.as_ref(),
+                    self.inner.store.get_thread(&job.thread_id).await,
+                    self.inner.store.get_execution_target(&job.target_id).await,
+                ) {
+                    (Some(principal_id), Ok(Some(thread)), Ok(Some(target)))
+                        if thread.lifecycle == crate::memory::ThreadLifecycle::Open =>
+                    {
+                        Some(CapabilityLeaseOffer {
+                            principal_id: principal_id.clone(),
+                            agent_id: job.agent_id.clone(),
+                            thread_id: job.thread_id.clone(),
+                            target_id: job.target_id.clone(),
+                            capability: action.lease_capability(),
+                            requested: requested.clone(),
+                            policy_digest: capability_lease_policy_digest(
+                                &self.inner.permissions.policy_digest(),
+                                &target.policy_digest,
+                            ),
+                            expires_at: record.created_at
+                                + chrono::Duration::seconds(
+                                    i64::try_from(
+                                        self.inner
+                                            .config
+                                            .edge_execution
+                                            .capability_lease_ttl
+                                            .as_secs(),
+                                    )
+                                    .unwrap_or(i64::MAX),
+                                ),
+                        })
+                    }
+                    _ => None,
+                }
+            } else {
+                None
             };
             pending.push(PendingHumanApproval {
                 request: crate::approval::ApprovalRequest {
@@ -1355,9 +2139,14 @@ impl MorphzRuntime {
                     context_id: job.context_id,
                     session_id: job.session_id,
                     attempt_id: job.activation_id,
+                    thread_id: job.thread_id,
+                    root_turn_id: activation.root_turn_id,
+                    trigger_event_id: activation.trigger_event_id,
+                    trigger_sequence: activation.trigger_sequence,
                     action,
                     requested,
                     justification: record.justification,
+                    lease_offer,
                 },
                 requested_at: record.created_at,
             });
@@ -1386,6 +2175,35 @@ impl MorphzRuntime {
                 rationale: rationale.clone(),
                 risk_tags: risk_tags.clone(),
             },
+            ApprovalDecision::AllowLease {
+                rationale,
+                risk_tags,
+            } => {
+                if !self.inner.config.edge_execution.capability_leases_enabled {
+                    return Err("Runtime 已关闭 Capability Lease".to_string());
+                }
+                let job = self
+                    .inner
+                    .store
+                    .get_execution_job(&current.job_id)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("Approval '{}' 缺少 Execution Job", current.id))?;
+                if job.initiating_principal_id.is_none() {
+                    return Err("没有权威 Principal 的请求不能批准 Capability Lease".to_string());
+                }
+                let mut risk_tags = risk_tags.clone();
+                if !risk_tags
+                    .iter()
+                    .any(|tag| tag == CAPABILITY_LEASE_APPROVED_RISK_TAG)
+                {
+                    risk_tags.push(CAPABILITY_LEASE_APPROVED_RISK_TAG.to_string());
+                }
+                ApprovalResolution::Allow {
+                    rationale: rationale.clone(),
+                    risk_tags,
+                }
+            }
             ApprovalDecision::Deny {
                 rationale,
                 risk_tags,
@@ -1394,7 +2212,7 @@ impl MorphzRuntime {
                 risk_tags: risk_tags.clone(),
             },
             ApprovalDecision::AskHuman { .. } => {
-                return Err("人工审批结果只能是 allow_once 或 deny".to_string());
+                return Err("人工审批结果只能是 allow_once、allow_lease 或 deny".to_string());
             }
         };
         let commit = self
@@ -1466,6 +2284,23 @@ impl MorphzRuntime {
         self.inner
             .orchestrator
             .get_context_encoding(&session.context_id, session_id)
+            .await
+    }
+
+    /// Structured projection for operator surfaces. Unlike
+    /// [`Self::inspect_session_context_view`], this does not duplicate the
+    /// projection as a rendered model-facing S-expression.
+    pub async fn inspect_session_context_projection(
+        &self,
+        session_id: &str,
+    ) -> Result<ContextView, RuntimeError> {
+        let session = self
+            .inner
+            .store
+            .get_session(session_id)
+            .await?
+            .ok_or_else(|| format!("Session '{}' 不存在", session_id))?;
+        self.context_projection(&session.context_id, session_id)
             .await
     }
 
@@ -1767,16 +2602,21 @@ impl MorphzRuntime {
                 .iter()
                 .filter(|signal| signal.status == ThreadSignalStatus::Pending)
                 .count();
-        let all_job_snapshots = threads
+        // Summary counters describe executable work, not merely non-terminal
+        // child rows. A legacy/inconsistent Job whose Activation or Thread is
+        // already terminal must remain visible in the causal history, but it
+        // must not make the Runtime appear active or ask the user to approve an
+        // Action which no longer has a live result route.
+        let live_job_snapshots = threads
             .iter()
+            .filter(|thread| !thread.thread.lifecycle.is_terminal())
             .flat_map(|thread| thread.activations.iter())
-            .chain(orphan_activations.iter())
-            .flat_map(|activation| activation.jobs.iter())
-            .chain(orphan_jobs.iter());
+            .filter(|activation| !activation.activation.status.is_terminal())
+            .flat_map(|activation| activation.jobs.iter());
         let mut active_jobs = 0;
         let mut waiting_approval_jobs = 0;
         let mut pending_approvals = 0;
-        for job in all_job_snapshots {
+        for job in live_job_snapshots {
             if !job.job.status.is_terminal() {
                 active_jobs += 1;
             }
@@ -1838,6 +2678,387 @@ impl MorphzRuntime {
         })
     }
 
+    pub async fn context_overview(
+        &self,
+        context_id: &str,
+        query: ContextOverviewQuery,
+    ) -> Result<ContextOverview, RuntimeError> {
+        let context = self
+            .inner
+            .store
+            .get_context(context_id)
+            .await?
+            .ok_or_else(|| format!("Context '{context_id}' 不存在"))?;
+        let agent = self.inner.store.get_agent(&context.agent_id).await?;
+        let objectives = self.list_context_objectives(context_id, false).await?;
+        let scheduler = self
+            .scheduler_snapshot(
+                context_id,
+                SchedulerQuery {
+                    include_terminal: false,
+                    limit: 100,
+                },
+            )
+            .await?;
+
+        let view = if let Some(session_id) = query.active_session_id.as_deref() {
+            let session = self
+                .inner
+                .store
+                .get_session(session_id)
+                .await?
+                .ok_or_else(|| format!("Session '{session_id}' 不存在"))?;
+            if session.context_id != context_id {
+                return Err(format!("Session '{session_id}' 不属于 Context '{context_id}'").into());
+            }
+            Some(
+                self.inner
+                    .orchestrator
+                    .get_context_projection(context_id, session_id)
+                    .await?,
+            )
+        } else {
+            None
+        };
+
+        let (
+            active_session_id,
+            sessions,
+            working_set,
+            mind_revision,
+            active_frames,
+            retiring_frames,
+            retired_items,
+            pressure,
+        ) = if let Some(view) = view {
+            let retired = &view.state.retired;
+            (
+                Some(view.active_session_id),
+                view.sessions,
+                Some(view.session_working_set),
+                view.state.version,
+                view.state
+                    .frames
+                    .iter()
+                    .filter(|frame| !retired.contains(&frame.id))
+                    .count(),
+                view.state.retiring.len(),
+                retired.len(),
+                Some(view.pressure),
+            )
+        } else {
+            (
+                None,
+                Vec::new(),
+                None,
+                self.mind_version(context_id).await?,
+                0,
+                0,
+                0,
+                None,
+            )
+        };
+
+        Ok(ContextOverview {
+            context,
+            agent,
+            generated_at: chrono::Utc::now(),
+            active_session_id,
+            sessions,
+            working_set,
+            mind_revision,
+            active_frames,
+            retiring_frames,
+            retired_items,
+            pressure,
+            objectives,
+            scheduler: scheduler.summary,
+        })
+    }
+
+    pub async fn thread_detail(
+        &self,
+        context_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<ThreadDetail>, RuntimeError> {
+        let Some(thread) = self.inner.store.get_thread(thread_id).await? else {
+            return Ok(None);
+        };
+        if thread.context_id != context_id {
+            return Ok(None);
+        }
+
+        // A deep link is an exact aggregate read, not a search through the
+        // bounded Scheduler board. Otherwise an old terminal Thread would
+        // become uninspectable as soon as enough newer history exists.
+        let mut activations = self
+            .inner
+            .store
+            .list_context_thread_activations(context_id, true)
+            .await?
+            .into_iter()
+            .filter(|activation| activation.root_turn_id == thread.root_turn_id)
+            .collect::<Vec<_>>();
+        activations.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        let mut jobs = self
+            .inner
+            .store
+            .list_execution_jobs(ExecutionJobFilter {
+                context_id: Some(context_id.to_string()),
+                thread_id: Some(thread_id.to_string()),
+                include_terminal: true,
+                ..ExecutionJobFilter::default()
+            })
+            .await?;
+        jobs.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let job_ids = jobs
+            .iter()
+            .map(|job| job.id.clone())
+            .collect::<HashSet<_>>();
+        let mut approval_by_job = self
+            .inner
+            .store
+            .list_context_approvals(context_id)
+            .await?
+            .into_iter()
+            .filter(|approval| job_ids.contains(&approval.job_id))
+            .map(|approval| (approval.job_id.clone(), approval))
+            .collect::<HashMap<_, _>>();
+        let mut jobs_by_activation = HashMap::<String, Vec<SchedulerJobSnapshot>>::new();
+        for job in jobs {
+            jobs_by_activation
+                .entry(job.activation_id.clone())
+                .or_default()
+                .push(scheduler_job_snapshot(job, &mut approval_by_job));
+        }
+
+        let mut activation_snapshots = Vec::with_capacity(activations.len());
+        let mut claimed_signal_ids = HashSet::new();
+        for activation in activations {
+            let signals = self
+                .inner
+                .store
+                .list_activation_signals(&activation.id)
+                .await?;
+            claimed_signal_ids.extend(signals.iter().map(|signal| signal.id.clone()));
+            let jobs = jobs_by_activation
+                .remove(&activation.id)
+                .unwrap_or_default();
+            activation_snapshots.push(SchedulerActivationSnapshot {
+                activation,
+                signals,
+                jobs,
+            });
+        }
+
+        let mut pending_signals = self
+            .inner
+            .store
+            .list_context_thread_signals(context_id, None)
+            .await?
+            .into_iter()
+            .filter(|signal| {
+                signal.thread_id == thread_id && !claimed_signal_ids.contains(&signal.id)
+            })
+            .collect::<Vec<_>>();
+        pending_signals.sort_by(|left, right| {
+            left.sequence
+                .cmp(&right.sequence)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let mut schedules = self
+            .inner
+            .store
+            .list_context_schedules(context_id)
+            .await?
+            .into_iter()
+            .filter(|schedule| schedule.thread_id == thread_id)
+            .collect::<Vec<_>>();
+        schedules.sort_by(|left, right| {
+            left.created_at
+                .cmp(&right.created_at)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        let phase =
+            scheduler_thread_phase(&thread, &pending_signals, &activation_snapshots, &schedules);
+        let mut model_attempt_events = Vec::new();
+        for topic in [
+            "runtime/model_attempt_state",
+            "runtime/model_reasoning_summary",
+        ] {
+            model_attempt_events.extend(
+                self.query_events(QueryFilter {
+                    context_id: Some(context_id.to_string()),
+                    session_id: Some(thread.session_id.clone()),
+                    topic: Some(topic.to_string()),
+                    search_query: Some(thread_id.to_string()),
+                    latest_k: Some(2_048),
+                    ..QueryFilter::default()
+                })
+                .await?
+                .into_iter()
+                .filter(|event| {
+                    event.payload.get("thread_id").and_then(Value::as_str) == Some(thread_id)
+                }),
+            );
+        }
+        model_attempt_events.sort_by(|left, right| {
+            left.sequence
+                .cmp(&right.sequence)
+                .then_with(|| left.timestamp.cmp(&right.timestamp))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+
+        Ok(Some(ThreadDetail {
+            context_id: context_id.to_string(),
+            generated_at: chrono::Utc::now(),
+            snapshot: SchedulerThreadSnapshot {
+                thread,
+                phase,
+                pending_signals,
+                activations: activation_snapshots,
+                schedules,
+            },
+            model_attempt_events,
+        }))
+    }
+
+    pub async fn query_ledger(&self, query: LedgerQuery) -> Result<LedgerQueryPage, RuntimeError> {
+        if self
+            .inner
+            .store
+            .get_context(&query.context_id)
+            .await?
+            .is_none()
+        {
+            return Err(format!("Context '{}' 不存在", query.context_id).into());
+        }
+        let limit = if query.limit == 0 { 100 } else { query.limit }.clamp(1, 500);
+        let requires_payload_scope_scan = query.principal_id.is_some()
+            || query.thread_id.is_some()
+            || query.activation_id.is_some();
+        let scan_limit = if requires_payload_scope_scan {
+            limit.saturating_mul(20).clamp(limit, 20_000)
+        } else {
+            limit
+        };
+        let fetch_limit = scan_limit.saturating_add(1);
+        let forward_scan = query.after_sequence.is_some() && query.before_sequence.is_none();
+        let mut filter = QueryFilter {
+            context_id: Some(query.context_id.clone()),
+            session_id: query.session_id.clone(),
+            after_sequence: query.after_sequence,
+            before_sequence: query.before_sequence,
+            start_time: query.start_time,
+            end_time: query.end_time,
+            actors: query.actor.clone().into_iter().collect(),
+            types: query.event_type.clone().into_iter().collect(),
+            topic: query.topic.clone(),
+            search_query: query.search_query.clone(),
+            ..QueryFilter::default()
+        };
+        if forward_scan {
+            filter.top_k = Some(fetch_limit);
+        } else {
+            filter.latest_k = Some(fetch_limit);
+        }
+        let mut scanned = self.query_events(filter).await?;
+        let has_more_in_scan_direction = scanned.len() > scan_limit;
+        if has_more_in_scan_direction {
+            if forward_scan {
+                scanned.truncate(scan_limit);
+            } else {
+                let overflow = scanned.len().saturating_sub(scan_limit);
+                scanned.drain(..overflow);
+            }
+        }
+        let scanned_count = scanned.len();
+        let scanned_first_sequence = scanned.first().and_then(|event| event.sequence);
+        let scanned_last_sequence = scanned.last().and_then(|event| event.sequence);
+        let mut matching = scanned
+            .into_iter()
+            .filter(|event| ledger_event_matches_causal_scope(event, &query))
+            .collect::<Vec<_>>();
+        let (events, next_after_sequence, next_before_sequence) = if forward_scan {
+            let has_more_matches = matching.len() > limit;
+            matching.truncate(limit);
+            let next_after = if has_more_matches {
+                matching.last().and_then(|event| event.sequence)
+            } else if has_more_in_scan_direction {
+                scanned_last_sequence
+            } else {
+                None
+            };
+            (matching, next_after, None)
+        } else {
+            let matching_start = matching.len().saturating_sub(limit);
+            let events = matching.split_off(matching_start);
+            let next_before = if matching_start > 0 {
+                events.first().and_then(|event| event.sequence)
+            } else if has_more_in_scan_direction {
+                scanned_first_sequence
+            } else {
+                None
+            };
+            // The newest scanned sequence remains useful as a live-refresh
+            // cursor even though backward pagination uses next_before_sequence.
+            (events, scanned_last_sequence, next_before)
+        };
+        Ok(LedgerQueryPage {
+            context_id: query.context_id,
+            generated_at: chrono::Utc::now(),
+            events,
+            scanned_count,
+            scan_exhaustive: !has_more_in_scan_direction,
+            next_after_sequence,
+            next_before_sequence,
+        })
+    }
+
+    pub fn runtime_status(&self) -> RuntimeStatus {
+        let generated_at = chrono::Utc::now();
+        let uptime_seconds = generated_at
+            .signed_duration_since(self.inner.process_started_at)
+            .num_seconds()
+            .max(0) as u64;
+        RuntimeStatus {
+            generated_at,
+            started: self.inner.started.load(Ordering::Acquire),
+            uptime_seconds,
+            recovery: self
+                .inner
+                .recovery
+                .read()
+                .map(|recovery| recovery.clone())
+                .unwrap_or_default(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            git_commit: env!("MORPHZ_GIT_COMMIT").to_string(),
+            agent_id: self.inner.identity.agent_id.clone(),
+            context_id: self.inner.identity.context_id.clone(),
+            principal_id: self.inner.identity.principal_id.clone(),
+            model: self.inner.config.llm.model.clone(),
+            provider: self.inner.config.llm.provider.clone(),
+            reasoning_effort: self
+                .reasoning_effort()
+                .map(|effort| effort.as_str().to_string()),
+            tool_count: self.tool_names().len(),
+            storage: self.inner.storage_label.clone(),
+            storage_backend: self.inner.config.storage.backend,
+            permission_mode: self.inner.config.permissions.mode,
+            sandbox_mode: self.inner.config.permissions.sandbox_mode,
+            reviewer: self.inner.config.permissions.reviewer,
+        }
+    }
+
     pub async fn mind_version(&self, context_id: &str) -> Result<u64, RuntimeError> {
         self.inner.orchestrator.mind_version(context_id).await
     }
@@ -1872,6 +3093,17 @@ impl MorphzRuntime {
         self.inner
             .orchestrator
             .get_context_encoding(context_id, session_id)
+            .await
+    }
+
+    pub async fn context_projection(
+        &self,
+        context_id: &str,
+        session_id: &str,
+    ) -> Result<ContextView, RuntimeError> {
+        self.inner
+            .orchestrator
+            .get_context_projection(context_id, session_id)
             .await
     }
 
@@ -1936,6 +3168,36 @@ fn scheduler_job_snapshot(
         approval,
         result,
     }
+}
+
+fn ledger_event_matches_causal_scope(event: &Event, query: &LedgerQuery) -> bool {
+    fn payload_string<'a>(event: &'a Event, key: &str) -> Option<&'a str> {
+        event
+            .payload
+            .get(key)
+            .and_then(|value| value.as_str())
+            .or_else(|| {
+                event
+                    .payload
+                    .get("route")
+                    .and_then(|value| value.as_object())
+                    .and_then(|route| route.get(key))
+                    .and_then(|value| value.as_str())
+            })
+    }
+
+    query
+        .principal_id
+        .as_deref()
+        .is_none_or(|expected| payload_string(event, "principal_id") == Some(expected))
+        && query
+            .thread_id
+            .as_deref()
+            .is_none_or(|expected| payload_string(event, "thread_id") == Some(expected))
+        && query
+            .activation_id
+            .as_deref()
+            .is_none_or(|expected| payload_string(event, "activation_id") == Some(expected))
 }
 
 fn scheduler_thread_phase(
@@ -2304,6 +3566,12 @@ mod tests {
         calls: AtomicU64,
         path: String,
         expected_rejected: bool,
+        observed_result: Arc<AtomicBool>,
+    }
+
+    struct PreflightRejectedExecClient {
+        calls: AtomicU64,
+        protected_path: String,
         observed_result: Arc<AtomicBool>,
     }
 
@@ -2734,6 +4002,55 @@ mod tests {
                     Ok(text_response("approval-work-complete"))
                 }
                 _ => Err("交互式审批工具产生了冗余 Delivery 模型求值".into()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for PreflightRejectedExecClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(tools.iter().any(|tool| tool.name == "exec"));
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "protected-path-exec".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "exec".to_string(),
+                            arguments: json!({
+                                "command": "true",
+                                "sandbox_permissions": "require_escalated",
+                                "requested_permissions": {
+                                    "read_paths": [self.protected_path.clone()]
+                                },
+                                "justification": "exercise protected path preflight"
+                            })
+                            .to_string(),
+                        }],
+                    })
+                }
+                1 => {
+                    let tool_text = messages
+                        .iter()
+                        .find(|message| message.role == "tool")
+                        .map(|message| message.content.as_str())
+                        .unwrap_or_default();
+                    let observed = tool_text.contains("执行拒绝")
+                        && tool_text.contains("PROTECTED_PATH")
+                        && tool_text.contains("protected_paths")
+                        && tool_text.contains("未开始执行");
+                    self.observed_result.store(observed, Ordering::SeqCst);
+                    if !observed {
+                        return Err(format!("未观测到权限预检拒绝工具结果: {tool_text}").into());
+                    }
+                    Ok(text_response("preflight-rejection-observed"))
+                }
+                _ => Err("权限预检拒绝产生了冗余模型求值".into()),
             }
         }
     }
@@ -3404,6 +4721,7 @@ mod tests {
                 kind: crate::memory::ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap();
@@ -3479,6 +4797,7 @@ mod tests {
                 context_id: runtime.identity().context_id.clone(),
                 session_id: "session-scheduler-snapshot".to_string(),
                 initiating_principal_id: None,
+                target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
                 tool_call_id: "call-scheduler-snapshot".to_string(),
                 tool_name: "exec".to_string(),
                 request: json!({"command": "cargo test"}),
@@ -3523,6 +4842,37 @@ mod tests {
                 interval_seconds: None,
                 dependency_thread_ids: Vec::new(),
             })
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .append(Event::new(
+                "attempt-state-scheduler-snapshot".to_string(),
+                "Runtime-Orchestrator".to_string(),
+                "runtime_control".to_string(),
+                "runtime/model_attempt_state".to_string(),
+                [
+                    (
+                        "context_id".to_string(),
+                        json!(runtime.identity().context_id),
+                    ),
+                    (
+                        "session_id".to_string(),
+                        json!("session-scheduler-snapshot"),
+                    ),
+                    ("thread_id".to_string(), json!(thread.id.clone())),
+                    ("activation_id".to_string(), json!(activation.id.clone())),
+                    (
+                        "attempt_id".to_string(),
+                        json!("attempt-scheduler-snapshot"),
+                    ),
+                    ("state".to_string(), json!("running")),
+                    ("terminal".to_string(), json!(false)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
             .await
             .unwrap();
 
@@ -3572,6 +4922,21 @@ mod tests {
         assert!(!encoded.contains("work_item"));
         assert!(!encoded.contains("scheduled_intent"));
 
+        let detail = runtime
+            .thread_detail(runtime.identity().context_id.as_str(), &thread.id)
+            .await
+            .unwrap()
+            .expect("exact Thread aggregate must be addressable independently of list limits");
+        assert_eq!(detail.snapshot.thread.id, thread.id);
+        assert_eq!(detail.snapshot.activations.len(), 1);
+        assert_eq!(detail.snapshot.activations[0].jobs.len(), 1);
+        assert_eq!(detail.snapshot.schedules[0].id, schedule.id);
+        assert_eq!(detail.model_attempt_events.len(), 1);
+        assert_eq!(
+            detail.model_attempt_events[0].payload["attempt_id"],
+            json!("attempt-scheduler-snapshot")
+        );
+
         let paused = runtime
             .pause_schedule(&schedule.id, schedule.revision)
             .await
@@ -3588,6 +4953,246 @@ mod tests {
                 .unwrap(),
             ScheduleMutation::Conflict { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn startup_closes_approved_job_whose_causal_owner_is_terminal() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime
+            .ensure_agent(NewAgent {
+                id: runtime.identity().agent_id.clone(),
+                title: "Recovery agent".to_string(),
+                root_context_id: runtime.identity().context_id.clone(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_context(NewCognitiveContext {
+                id: runtime.identity().context_id.clone(),
+                agent_id: runtime.identity().agent_id.clone(),
+                title: "Recovery context".to_string(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-orphaned-approved-job".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Orphaned approved Job".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let thread = runtime
+            .inner
+            .store
+            .ensure_thread(crate::memory::NewThread {
+                id: "thread-orphaned-approved-job".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-orphaned-approved-job".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-orphaned-approved-job".to_string(),
+                kind: crate::memory::ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+            })
+            .await
+            .unwrap();
+        let event = Event::new(
+            "event-orphaned-approved-job".to_string(),
+            "User-Test".to_string(),
+            "user_message".to_string(),
+            "chat/user_message".to_string(),
+            json!({
+                "context_id": runtime.identity().context_id,
+                "session_id": "session-orphaned-approved-job",
+                "text": "run protected action",
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        runtime.inner.store.append(event.clone()).await.unwrap();
+        let sequence = runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                event_id: Some(event.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        let activation = runtime
+            .inner
+            .store
+            .claim_thread_signal_batch(
+                crate::memory::NewThreadSignal {
+                    id: "signal-orphaned-approved-job".to_string(),
+                    thread_id: thread.id.clone(),
+                    event_id: event.id.clone(),
+                    principal_id: None,
+                    sequence,
+                    kind: event.topic,
+                    parent_activation_id: None,
+                },
+                crate::memory::NewThreadActivation {
+                    id: "activation-orphaned-approved-job".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "session-orphaned-approved-job".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: event.id,
+                    trigger_sequence: sequence,
+                    trigger_kind: "chat/user_message".to_string(),
+                    parent_activation_id: None,
+                    root_turn_id: "root-orphaned-approved-job".to_string(),
+                },
+                32,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .update_thread_activation(
+                &activation.id,
+                activation.revision,
+                crate::memory::ThreadActivationStatus::Failed,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .update_thread(
+                &thread.id,
+                thread.revision,
+                None,
+                Some(crate::memory::ThreadLifecycle::Cancelled),
+                Some("seed terminal owner"),
+                Some("thread-terminal-orphaned-approved-job"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let job = runtime
+            .inner
+            .store
+            .create_execution_job(crate::memory::NewExecutionJob {
+                id: "job-orphaned-approved-job".to_string(),
+                activation_id: activation.id.clone(),
+                thread_id: thread.id.clone(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-orphaned-approved-job".to_string(),
+                initiating_principal_id: None,
+                target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+                tool_call_id: "call-orphaned-approved-job".to_string(),
+                tool_name: "exec".to_string(),
+                request: json!({"command": "echo must-not-run"}),
+                retry_safety: crate::memory::ExecutionRetrySafety::AtMostOnce,
+                requires_approval: true,
+            })
+            .await
+            .unwrap();
+        let action = json!({"kind": "shell", "command": "echo must-not-run"});
+        let requested = json!({"network": false});
+        let identity = crate::approval_authority::stable_approval_identity(
+            &job.id,
+            &action,
+            &requested,
+            "permission-profile-v1",
+        )
+        .unwrap();
+        runtime
+            .inner
+            .store
+            .ensure_approval_request(crate::memory::NewApprovalRequest {
+                id: identity.approval_id.clone(),
+                job_id: job.id.clone(),
+                request_digest: identity.request_digest,
+                policy_digest: identity.policy_digest,
+                action,
+                requested,
+                justification: "seed an allowed but unconsumed grant".to_string(),
+                pending_status: crate::memory::ApprovalStatus::PendingHuman,
+            })
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .commit_approval_decision(
+                &identity.approval_id,
+                1,
+                crate::memory::ApprovalResolution::Allow {
+                    rationale: "approved before the Activation failed".to_string(),
+                    risk_tags: vec!["fixture".to_string()],
+                },
+            )
+            .await
+            .unwrap();
+
+        runtime.start().await.unwrap();
+
+        let recovered_job = runtime
+            .inner
+            .store
+            .get_execution_job(&job.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            recovered_job.status,
+            crate::memory::ExecutionJobStatus::Cancelled
+        );
+        let recovered_approval = runtime
+            .inner
+            .store
+            .get_approval(&identity.approval_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            recovered_approval.status,
+            crate::memory::ApprovalStatus::Cancelled
+        );
+        let snapshot = runtime
+            .scheduler_snapshot(
+                runtime.identity().context_id.as_str(),
+                SchedulerQuery {
+                    include_terminal: true,
+                    limit: 100,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(snapshot.summary.active_jobs, 0);
+        assert_eq!(snapshot.summary.waiting_approval_jobs, 0);
+        assert_eq!(snapshot.summary.pending_approvals, 0);
     }
 
     #[tokio::test]
@@ -3637,6 +5242,7 @@ mod tests {
             .unwrap();
         assert_eq!(reply.payload["text"], "physical-batch-complete");
         assert_eq!(reply.payload["thread_kind"], "execution");
+        assert_eq!(reply.payload["delivery_kind"], "turn_reply");
         assert!(observed_complete_batch.load(Ordering::SeqCst));
         assert_eq!(client.calls.load(Ordering::SeqCst), 2);
 
@@ -3727,6 +5333,7 @@ mod tests {
             };
         assert_eq!(reply.payload["text"], "detached execution complete");
         assert_eq!(reply.payload["delivery_strategy"], "passthrough");
+        assert_eq!(reply.payload["delivery_kind"], "thread_delivery");
         assert_eq!(client.calls.load(Ordering::SeqCst), 3);
         let jobs = runtime
             .inner
@@ -3865,6 +5472,97 @@ mod tests {
             true,
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn protected_path_preflight_rejection_returns_to_the_same_thread() {
+        let database = NamedTempFile::new().unwrap();
+        let protected = tempfile::tempdir().unwrap();
+        let protected_path = protected.path().to_string_lossy().into_owned();
+        let observed_result = Arc::new(AtomicBool::new(false));
+        let client = Arc::new(PreflightRejectedExecClient {
+            calls: AtomicU64::new(0),
+            protected_path: protected_path.clone(),
+            observed_result: Arc::clone(&observed_result),
+        });
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        config.permissions.protected_paths.push(protected_path);
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-preflight-rejected".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Preflight rejection".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        session
+            .send(
+                "try the protected path",
+                "User-Test",
+                Some("client-preflight-rejected".to_string()),
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "preflight-rejection-observed");
+        assert!(observed_result.load(Ordering::SeqCst));
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+
+        let tool_outputs = runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                session_id: Some(session.id.clone()),
+                topic: Some("chat/tool_output".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(tool_outputs.len(), 1);
+        assert_eq!(tool_outputs[0].payload["tool_status"], "rejected");
+        assert_eq!(tool_outputs[0].payload["rejection_code"], "PROTECTED_PATH");
+        assert_eq!(tool_outputs[0].payload["executed"], false);
+        assert_eq!(tool_outputs[0].payload["wake_policy"], "immediate");
+
+        let jobs = runtime
+            .inner
+            .store
+            .list_execution_jobs(crate::memory::ExecutionJobFilter {
+                session_id: Some(session.id.clone()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(jobs.is_empty(), "preflight rejection must not create a Job");
+        let activations = runtime
+            .inner
+            .store
+            .list_context_thread_activations(&runtime.identity().context_id, true)
+            .await
+            .unwrap();
+        assert!(activations.iter().all(|activation| {
+            activation.status != crate::memory::ThreadActivationStatus::Failed
+        }));
     }
 
     #[tokio::test]
@@ -4218,6 +5916,7 @@ mod tests {
                     kind: crate::memory::ThreadKind::Execution,
                     executor_kind: "self".to_string(),
                     executor_id: None,
+                    target_id: None,
                 })
                 .await
                 .unwrap();
@@ -4490,6 +6189,7 @@ mod tests {
                     kind: crate::memory::ThreadKind::Execution,
                     executor_kind: "self".to_string(),
                     executor_id: None,
+                    target_id: None,
                 })
                 .await
                 .unwrap();
@@ -4618,6 +6318,7 @@ mod tests {
                     kind: crate::memory::ThreadKind::Execution,
                     executor_kind: "self".to_string(),
                     executor_id: None,
+                    target_id: None,
                 })
                 .await
                 .unwrap();
@@ -4668,6 +6369,7 @@ mod tests {
                 kind: crate::memory::ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap();
@@ -5071,6 +6773,7 @@ mod tests {
                 kind: crate::memory::ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap();
@@ -5621,6 +7324,7 @@ mod tests {
             context_id: runtime.identity().context_id.clone(),
             session_id: session.id().to_string(),
             initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
             tool_call_id: "objective-scoped-physical-call".to_string(),
             tool_name: "test-physical-tool".to_string(),
             request: json!({"probe": true}),

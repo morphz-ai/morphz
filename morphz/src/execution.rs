@@ -34,6 +34,7 @@ pub struct ExecutionJobSpec {
     pub context_id: String,
     pub session_id: String,
     pub initiating_principal_id: Option<String>,
+    pub target_id: String,
     pub tool_call_id: String,
     pub tool_name: String,
     pub request: serde_json::Value,
@@ -44,6 +45,7 @@ pub struct ExecutionJobSpec {
 impl ExecutionJobSpec {
     pub fn into_new_job(self) -> ExecutionResult<NewExecutionJob> {
         let id = deterministic_job_id(&self.activation_id, &self.tool_call_id)?;
+        validate_identity_part("target_id", &self.target_id)?;
         Ok(NewExecutionJob {
             id,
             activation_id: self.activation_id,
@@ -52,6 +54,7 @@ impl ExecutionJobSpec {
             context_id: self.context_id,
             session_id: self.session_id,
             initiating_principal_id: self.initiating_principal_id,
+            target_id: self.target_id,
             tool_call_id: self.tool_call_id,
             tool_name: self.tool_name,
             request: self.request,
@@ -597,6 +600,7 @@ mod tests {
             context_id: "context_1".to_string(),
             session_id: "session_1".to_string(),
             initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
             tool_call_id: "call_1".to_string(),
             tool_name: "exec".to_string(),
             request: json!({"command": "true"}),

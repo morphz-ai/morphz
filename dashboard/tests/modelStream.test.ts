@@ -89,7 +89,7 @@ test('reasoning completion is distinct from final response completion', () => {
   assert.equal(state.attempts['attempt-a'].text, '')
 })
 
-test('durable attempt snapshot restores active state and terminal transition clears it', () => {
+test('physical terminal state keeps the draft until a durable semantic outcome resolves it', () => {
   let state = createLiveModelState('session-a')
   state = modelStreamReducer(state, {
     type: 'snapshot',
@@ -107,6 +107,13 @@ test('durable attempt snapshot restores active state and terminal transition cle
   assert.equal(state.attempts['attempt-a'].runtimeState, 'waiting_final_output')
 
   state = modelStreamReducer(state, {
+    type: 'stream_batch',
+    sessionId: 'session-a',
+    nowMs: 8,
+    items: [stream('attempt-a', 'dialogue-a', { kind: 'text_delta', text: 'durable soon' })],
+  })
+
+  state = modelStreamReducer(state, {
     type: 'attempt_state',
     sessionId: 'session-a',
     nowMs: 9,
@@ -118,6 +125,15 @@ test('durable attempt snapshot restores active state and terminal transition cle
       terminal: true,
       timestamp: '2026-07-17T00:00:01Z',
     },
+  })
+  assert.equal(state.attempts['attempt-a'].text, 'durable soon')
+  assert.equal(state.attempts['attempt-a'].status, 'settling')
+
+  state = modelStreamReducer(state, {
+    type: 'resolve',
+    sessionId: 'session-a',
+    causalId: 'dialogue-a',
+    nowMs: 10,
   })
   assert.equal(state.attempts['attempt-a'], undefined)
 })

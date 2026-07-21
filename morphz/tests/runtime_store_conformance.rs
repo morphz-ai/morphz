@@ -8,21 +8,31 @@ use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
     ActionGroupFilter, ActionGroupMemberStatus, ActionGroupStatus, ActionGroupStore,
     ActivationOutcomeCommit, ApprovalMutation, ApprovalResolution, ApprovalStatus, ApprovalStore,
+    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseStatus, CapabilityLeaseStore,
     CognitiveClockStore, DelegationStatus, DelegationStore, DeliveryFlushCommit,
     DeliveryIngressStore, DeliveryStatus, EventAppend, EventStore, ExecutionApprovalMutation,
     ExecutionApprovalStore, ExecutionJobMutation, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim, MindProjectionCommit,
+    ExecutionJobTerminal, ExecutionRetrySafety, ExecutionTargetAuthorizationFilter,
+    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationScope,
+    ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
+    ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRegistration,
+    ExecutionTargetStatus, ExecutionTargetStore, MessageClaim, MindProjectionCommit,
     MindProjectionStore, NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
-    NewCognitiveContext, NewDelegation, NewExecutionJob, NewMindProjection, NewObjective,
-    NewRuntimeTimer, NewSession, NewThread, NewThreadActivation, NewThreadSignal,
-    ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
-    RecallDocument, RecallDocumentKind, RecallProjectionStore, RuntimeTimerKind,
-    RuntimeTimerStatus, ScheduleMutation, ScheduleStatus, ScheduleStore, SessionAttentionState,
-    SessionAttentionUpdate, SessionMountKind, SessionProjectionMutation, SessionProjectionStore,
-    SessionStatus, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadStore, TimerStore,
+    NewCapabilityLease, NewCognitiveContext, NewDelegation, NewEdgeCommand, NewExecutionJob,
+    NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewMindProjection,
+    NewNodePairingCode, NewObjective, NewRuntimeTimer, NewSession, NewThread, NewThreadActivation,
+    NewThreadSignal, ObjectiveMutation, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
+    PairExecutionNode, QueryFilter, RecallDocument, RecallDocumentKind, RecallProjectionStore,
+    RuntimeTimerKind, RuntimeTimerStatus, ScheduleMutation, ScheduleStatus, ScheduleStore,
+    SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionProjectionMutation,
+    SessionProjectionStore, SessionStatus, SessionUpdate, SignalOutboxStatus,
+    ThreadActivationMutation, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadStore, TimerStore,
 };
-use morphz::memory::{ActivationStore, SessionDirectoryStore};
+use morphz::memory::{
+    ActivationStore, EdgeCommandMutation, EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream,
+    ExecutionNodeMutation, ExecutionNodeStatus, SessionDirectoryStore,
+};
 use morphz::permission::{PermissionMode, ReviewerKind};
 use morphz::runtime::{MorphzRuntime, RuntimeIdentity, RuntimeToolPolicy};
 use serde_json::json;
@@ -356,6 +366,7 @@ where
         kind: ThreadKind::Execution,
         executor_kind: "runtime".to_string(),
         executor_id: None,
+        target_id: None,
     };
     let first = {
         let store = Arc::clone(&store);
@@ -367,14 +378,29 @@ where
         let thread = thread.clone();
         tokio::spawn(async move { store.ensure_thread(thread).await })
     };
-    assert_eq!(
-        first.await.unwrap().unwrap(),
-        second.await.unwrap().unwrap()
-    );
+    let first = first.await.unwrap().unwrap();
+    let second = second.await.unwrap().unwrap();
+    assert_eq!(first, second);
     let mut conflicting = thread.clone();
     conflicting.id = "different-thread-id".to_string();
     conflicting.context_id = "conformance-other-context".to_string();
     assert!(store.ensure_thread(conflicting).await.is_err());
+    let bound = match store
+        .bind_thread_target(&first.id, first.revision, "target-affinity-a")
+        .await
+        .unwrap()
+    {
+        ThreadMutation::Updated(thread) => thread,
+        mutation => panic!("unexpected Thread target bind mutation: {mutation:?}"),
+    };
+    assert_eq!(bound.target_id.as_deref(), Some("target-affinity-a"));
+    assert!(matches!(
+        store
+            .bind_thread_target(&bound.id, 1, "target-affinity-b")
+            .await
+            .unwrap(),
+        ThreadMutation::Conflict { .. }
+    ));
 
     let cas_thread = store
         .ensure_thread(NewThread {
@@ -387,6 +413,7 @@ where
             kind: ThreadKind::DialogueTurn,
             executor_kind: "model".to_string(),
             executor_id: None,
+            target_id: None,
         })
         .await
         .unwrap();
@@ -528,6 +555,7 @@ where
             kind: ThreadKind::DialogueTurn,
             executor_kind: "model".to_string(),
             executor_id: None,
+            target_id: None,
         })
         .await
         .unwrap();
@@ -695,6 +723,7 @@ where
             kind: ThreadKind::Execution,
             executor_kind: "runtime".to_string(),
             executor_id: None,
+            target_id: None,
         })
         .await
         .unwrap();
@@ -775,6 +804,7 @@ where
                 kind,
                 executor_kind: "runtime".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap();
@@ -966,6 +996,7 @@ where
                 kind: ThreadKind::Execution,
                 executor_kind: "runtime".to_string(),
                 executor_id: None,
+                target_id: None,
             }],
             &[morphz::memory::NewSchedule {
                 id: "conformance-invalid-schedule".to_string(),
@@ -1129,6 +1160,7 @@ where
             kind: ThreadKind::Delivery,
             executor_kind: "runtime".to_string(),
             executor_id: None,
+            target_id: None,
         })
         .await
         .unwrap();
@@ -2222,6 +2254,14 @@ where
 }
 
 fn execution_job(id: &str, tool_call_id: &str) -> NewExecutionJob {
+    execution_job_on_target(
+        id,
+        tool_call_id,
+        morphz::execution_target::DEFAULT_EXECUTION_TARGET_ID,
+    )
+}
+
+fn execution_job_on_target(id: &str, tool_call_id: &str, target_id: &str) -> NewExecutionJob {
     NewExecutionJob {
         id: id.to_string(),
         activation_id: "conformance-activation".to_string(),
@@ -2230,12 +2270,557 @@ fn execution_job(id: &str, tool_call_id: &str) -> NewExecutionJob {
         context_id: "conformance-context".to_string(),
         session_id: "conformance-session".to_string(),
         initiating_principal_id: None,
+        target_id: target_id.to_string(),
         tool_call_id: tool_call_id.to_string(),
         tool_name: "read".to_string(),
         request: json!({"path": "README.md"}),
         retry_safety: ExecutionRetrySafety::Idempotent,
         requires_approval: false,
     }
+}
+
+async fn assert_edge_execution_conformance<S>(store: Arc<S>)
+where
+    S: EdgeExecutionStore + ExecutionJobStore + Send + Sync + 'static,
+{
+    store
+        .create_node_pairing_code(NewNodePairingCode {
+            code_hash: "pairing-hash-conformance".to_string(),
+            owner_principal_id: "principal:conformance".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(1),
+        })
+        .await
+        .unwrap();
+    let node = store
+        .pair_execution_node(PairExecutionNode {
+            code_hash: "pairing-hash-conformance".to_string(),
+            node_id: "node-conformance".to_string(),
+            name: "Conformance Node".to_string(),
+            device_key_fingerprint: "sha256:device-conformance".to_string(),
+            device_public_key: "00112233".to_string(),
+            protocol_version: 1,
+            platform: Some("linux-x86_64".to_string()),
+            capabilities: vec!["read".to_string(), "exec".to_string()],
+            metadata: json!({"transport": "test"}),
+        })
+        .await
+        .unwrap();
+    assert_eq!(node.status, ExecutionNodeStatus::Online);
+    assert!(store
+        .authenticate_execution_node("node-conformance", "sha256:wrong")
+        .await
+        .unwrap()
+        .is_none());
+    store
+        .create_execution_node_challenge(NewExecutionNodeChallenge {
+            id: "challenge-conformance".to_string(),
+            node_id: "node-conformance".to_string(),
+            nonce_hash: "nonce-conformance".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(1),
+        })
+        .await
+        .unwrap();
+    assert!(store
+        .consume_execution_node_challenge(
+            "node-conformance",
+            "challenge-conformance",
+            "nonce-conformance",
+        )
+        .await
+        .unwrap()
+        .is_some());
+    assert!(store
+        .consume_execution_node_challenge(
+            "node-conformance",
+            "challenge-conformance",
+            "nonce-conformance",
+        )
+        .await
+        .unwrap()
+        .is_none());
+    store
+        .issue_execution_node_connection_token(
+            "node-conformance",
+            "sha256:token-conformance",
+            chrono::Utc::now() + chrono::Duration::minutes(1),
+        )
+        .await
+        .unwrap();
+    assert!(store
+        .authenticate_execution_node("node-conformance", "sha256:token-conformance")
+        .await
+        .unwrap()
+        .is_some());
+    let heartbeat_node = store
+        .heartbeat_execution_node(
+            "node-conformance",
+            Some("linux-x86_64".to_string()),
+            vec!["exec".to_string(), "read".to_string()],
+            json!({"transport": "test"}),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let rotated = match store
+        .rotate_execution_node_key(
+            "node-conformance",
+            heartbeat_node.revision,
+            "sha256:rotated-device-conformance",
+            "aabbccdd",
+        )
+        .await
+        .unwrap()
+    {
+        ExecutionNodeMutation::Updated(node) => node,
+        mutation => panic!("unexpected key rotation mutation: {mutation:?}"),
+    };
+    assert_eq!(rotated.device_public_key, "aabbccdd");
+    assert!(
+        store
+            .authenticate_execution_node("node-conformance", "sha256:token-conformance")
+            .await
+            .unwrap()
+            .is_none(),
+        "key rotation must revoke existing connection tokens"
+    );
+    assert!(matches!(
+        store
+            .rotate_execution_node_key(
+                "node-conformance",
+                heartbeat_node.revision,
+                "sha256:stale",
+                "11223344",
+            )
+            .await
+            .unwrap(),
+        ExecutionNodeMutation::Conflict { .. }
+    ));
+
+    store
+        .create_execution_job(execution_job_on_target(
+            "conformance-edge-job",
+            "tool-call-edge",
+            "conformance-edge-target",
+        ))
+        .await
+        .unwrap();
+    let queued = store
+        .create_edge_command(NewEdgeCommand {
+            job_id: "conformance-edge-job".to_string(),
+            target_id: "conformance-edge-target".to_string(),
+            provider_node_id: "node-conformance".to_string(),
+            tool_name: "read".to_string(),
+            arguments: r#"{"path":"README.md"}"#.to_string(),
+            route: json!({
+                "route_id": "route:conformance-edge-target:r1",
+                "target_id": "conformance-edge-target",
+                "target_revision": 1,
+                "provider_node_id": "node-conformance",
+                "backend_kind": "edge_node",
+                "endpoint_ref": null,
+                "policy_digest": "policy:conformance"
+            }),
+        })
+        .await
+        .unwrap();
+    assert_eq!(queued.status, EdgeCommandStatus::Queued);
+    assert_eq!(
+        store
+            .create_edge_command(NewEdgeCommand {
+                job_id: "conformance-edge-job".to_string(),
+                target_id: "conformance-edge-target".to_string(),
+                provider_node_id: "node-conformance".to_string(),
+                tool_name: "read".to_string(),
+                arguments: r#"{"path":"README.md"}"#.to_string(),
+                route: queued.route.clone(),
+            })
+            .await
+            .unwrap(),
+        queued,
+        "same job command replay must be idempotent"
+    );
+    let claimed = store
+        .claim_edge_command(
+            "node-conformance",
+            "worker-conformance",
+            "claim-conformance",
+            chrono::Utc::now() + chrono::Duration::seconds(30),
+            8,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(claimed.status, EdgeCommandStatus::Claimed);
+    assert!(matches!(
+        store
+            .heartbeat_edge_command(
+                &claimed.job_id,
+                claimed.revision,
+                "stale-claim",
+                chrono::Utc::now() + chrono::Duration::seconds(30),
+                false,
+                None,
+            )
+            .await
+            .unwrap(),
+        EdgeCommandMutation::Conflict { .. }
+    ));
+    let heartbeat = match store
+        .heartbeat_edge_command(
+            &claimed.job_id,
+            claimed.revision,
+            "claim-conformance",
+            chrono::Utc::now() + chrono::Duration::seconds(30),
+            true,
+            Some("reading README".to_string()),
+        )
+        .await
+        .unwrap()
+    {
+        EdgeCommandMutation::Updated(command) => command,
+        mutation => panic!("unexpected Edge heartbeat mutation: {mutation:?}"),
+    };
+    assert!(heartbeat.side_effect_started_at.is_some());
+    let stdout = store
+        .append_edge_command_output(
+            &heartbeat.job_id,
+            "claim-conformance",
+            EdgeOutputStream::Stdout,
+            "first\n",
+        )
+        .await
+        .unwrap();
+    let stderr = store
+        .append_edge_command_output(
+            &heartbeat.job_id,
+            "claim-conformance",
+            EdgeOutputStream::Stderr,
+            "second\n",
+        )
+        .await
+        .unwrap();
+    assert_eq!(stdout.sequence, 1);
+    assert_eq!(stderr.sequence, 2);
+    assert!(store
+        .append_edge_command_output(
+            &heartbeat.job_id,
+            "stale-claim",
+            EdgeOutputStream::Stdout,
+            "forbidden",
+        )
+        .await
+        .is_err());
+    let chunks = store
+        .list_edge_command_output(&heartbeat.job_id, 0, 20)
+        .await
+        .unwrap();
+    assert_eq!(chunks, vec![stdout, stderr]);
+    assert!(matches!(
+        store
+            .finish_edge_command(
+                &heartbeat.job_id,
+                heartbeat.revision - 1,
+                "claim-conformance",
+                EdgeCommandStatus::Succeeded,
+                Some("done".to_string()),
+                None,
+            )
+            .await
+            .unwrap(),
+        EdgeCommandMutation::Conflict { .. }
+    ));
+    let finished = match store
+        .finish_edge_command(
+            &heartbeat.job_id,
+            heartbeat.revision,
+            "claim-conformance",
+            EdgeCommandStatus::Succeeded,
+            Some("done".to_string()),
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        EdgeCommandMutation::Updated(command) => command,
+        mutation => panic!("unexpected Edge terminal mutation: {mutation:?}"),
+    };
+    assert_eq!(finished.status, EdgeCommandStatus::Succeeded);
+    assert!(store
+        .append_edge_command_output(
+            &finished.job_id,
+            "claim-conformance",
+            EdgeOutputStream::Stdout,
+            "must not append after terminal",
+        )
+        .await
+        .is_err());
+    assert!(matches!(
+        store
+            .finish_edge_command(
+                &finished.job_id,
+                finished.revision,
+                "claim-conformance",
+                EdgeCommandStatus::Failed,
+                None,
+                Some("must not replace success".to_string()),
+            )
+            .await
+            .unwrap(),
+        EdgeCommandMutation::Conflict { .. }
+    ));
+
+    store
+        .create_execution_job(execution_job_on_target(
+            "conformance-edge-cancel-job",
+            "tool-call-edge-cancel",
+            "conformance-edge-target",
+        ))
+        .await
+        .unwrap();
+    store
+        .create_edge_command(NewEdgeCommand {
+            job_id: "conformance-edge-cancel-job".to_string(),
+            target_id: "conformance-edge-target".to_string(),
+            provider_node_id: "node-conformance".to_string(),
+            tool_name: "read".to_string(),
+            arguments: "{}".to_string(),
+            route: json!({
+                "route_id": "route:conformance-edge-target:r1",
+                "target_id": "conformance-edge-target",
+                "target_revision": 1,
+                "provider_node_id": "node-conformance",
+                "backend_kind": "edge_node",
+                "endpoint_ref": null,
+                "policy_digest": "policy:conformance"
+            }),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .request_edge_command_cancel("conformance-edge-cancel-job")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        EdgeCommandStatus::Cancelled
+    );
+}
+
+async fn assert_execution_target_conformance<S>(store: Arc<S>)
+where
+    S: ExecutionTargetStore + Send + Sync + 'static,
+{
+    let registration = ExecutionTargetRegistration {
+        id: "conformance-edge-target".to_string(),
+        owner_principal_id: Some("principal:conformance".to_string()),
+        provider_node_id: Some("node-conformance".to_string()),
+        kind: ExecutionTargetKind::EdgeNode,
+        name: "Conformance Edge Target".to_string(),
+        status: ExecutionTargetStatus::Online,
+        platform: Some("linux-x86_64".to_string()),
+        workspace_root: Some("workspace-conformance".to_string()),
+        capabilities: vec!["read".to_string(), "exec".to_string(), "read".to_string()],
+        metadata: json!({"backend": "edge_node", "endpoint_ref": "workspace-a"}),
+        policy_digest: "policy-conformance-v1".to_string(),
+        last_seen_at: Some(chrono::Utc::now()),
+    };
+    let created = store
+        .register_execution_target(registration.clone())
+        .await
+        .unwrap();
+    assert_eq!(created.revision, 1);
+    assert_eq!(created.capabilities, vec!["exec", "read"]);
+    let heartbeat = store
+        .register_execution_target(registration.clone())
+        .await
+        .unwrap();
+    assert_eq!(heartbeat.revision, 1, "pure heartbeat is idempotent");
+    let mut refreshed_registration = registration.clone();
+    refreshed_registration.name = "Conformance Edge Target v2".to_string();
+    let refreshed = store
+        .register_execution_target(refreshed_registration)
+        .await
+        .unwrap();
+    assert_eq!(refreshed.revision, 2);
+    assert_eq!(
+        store
+            .list_execution_targets(ExecutionTargetFilter {
+                owner_principal_id: Some("principal:conformance".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let stale = store
+        .set_execution_target_status(
+            &created.id,
+            created.revision,
+            ExecutionTargetStatus::Offline,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(stale, ExecutionTargetMutation::Conflict { .. }));
+    let offline = store
+        .set_execution_target_status(
+            &refreshed.id,
+            refreshed.revision,
+            ExecutionTargetStatus::Offline,
+        )
+        .await
+        .unwrap();
+    let ExecutionTargetMutation::Updated(offline) = offline else {
+        panic!("matching revision must update the target")
+    };
+    assert_eq!(offline.status, ExecutionTargetStatus::Offline);
+
+    let mut illegal = registration;
+    illegal.kind = ExecutionTargetKind::ManagedSsh;
+    assert!(store.register_execution_target(illegal).await.is_err());
+}
+
+async fn assert_execution_target_authorization_conformance<S>(store: Arc<S>)
+where
+    S: ExecutionTargetAuthorizationStore + Send + Sync + 'static,
+{
+    let authorization = NewExecutionTargetAuthorization {
+        id: "target-auth-conformance".to_string(),
+        target_id: "conformance-edge-target".to_string(),
+        owner_principal_id: "principal:conformance".to_string(),
+        scope: ExecutionTargetAuthorizationScope::Thread,
+        scope_id: "conformance-thread".to_string(),
+    };
+    let created = match store
+        .authorize_execution_target(authorization.clone())
+        .await
+        .unwrap()
+    {
+        ExecutionTargetAuthorizationMutation::Created(record) => record,
+        mutation => panic!("unexpected Target authorization create mutation: {mutation:?}"),
+    };
+    assert_eq!(created.status, ExecutionTargetAuthorizationStatus::Active);
+    assert!(store
+        .has_execution_target_authorization_history("conformance-edge-target")
+        .await
+        .unwrap());
+    assert!(matches!(
+        store
+            .authorize_execution_target(authorization.clone())
+            .await
+            .unwrap(),
+        ExecutionTargetAuthorizationMutation::Existing(_)
+    ));
+    assert_eq!(
+        store
+            .list_execution_target_authorizations(ExecutionTargetAuthorizationFilter {
+                target_id: Some("conformance-edge-target".to_string()),
+                owner_principal_id: Some("principal:conformance".to_string()),
+                active_only: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let revoked = match store
+        .revoke_execution_target_authorization(&created.id, created.revision, "conformance revoke")
+        .await
+        .unwrap()
+    {
+        ExecutionTargetAuthorizationMutation::Updated(record) => record,
+        mutation => panic!("unexpected Target authorization revoke mutation: {mutation:?}"),
+    };
+    assert_eq!(revoked.status, ExecutionTargetAuthorizationStatus::Revoked);
+    assert!(store
+        .list_execution_target_authorizations(ExecutionTargetAuthorizationFilter {
+            target_id: Some("conformance-edge-target".to_string()),
+            active_only: true,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
+    let reactivated = match store
+        .authorize_execution_target(authorization)
+        .await
+        .unwrap()
+    {
+        ExecutionTargetAuthorizationMutation::Updated(record) => record,
+        mutation => panic!("unexpected Target authorization reactivate mutation: {mutation:?}"),
+    };
+    assert_eq!(reactivated.revision, revoked.revision + 1);
+    assert_eq!(
+        reactivated.status,
+        ExecutionTargetAuthorizationStatus::Active
+    );
+}
+
+async fn assert_capability_lease_conformance<S>(store: Arc<S>)
+where
+    S: CapabilityLeaseStore + Send + Sync + 'static,
+{
+    let lease = NewCapabilityLease {
+        id: "lease-conformance".to_string(),
+        principal_id: "principal:conformance".to_string(),
+        agent_id: "conformance-agent".to_string(),
+        thread_id: "conformance-thread".to_string(),
+        target_id: "conformance-edge-target".to_string(),
+        capabilities: vec!["exec".to_string()],
+        requested: json!({
+            "network": true,
+            "read_roots": ["/tmp/conformance"],
+            "write_roots": [],
+            "secret_env": []
+        }),
+        policy_digest: "policy:conformance".to_string(),
+        issued_by_approval_id: None,
+        expires_at: chrono::Utc::now() + chrono::Duration::minutes(10),
+    };
+    let created = match store.ensure_capability_lease(lease.clone()).await.unwrap() {
+        CapabilityLeaseMutation::Created(lease) => lease,
+        mutation => panic!("unexpected Capability Lease create mutation: {mutation:?}"),
+    };
+    assert_eq!(created.status, CapabilityLeaseStatus::Active);
+    assert!(matches!(
+        store.ensure_capability_lease(lease).await.unwrap(),
+        CapabilityLeaseMutation::Existing(_)
+    ));
+    assert_eq!(
+        store
+            .list_capability_leases(CapabilityLeaseFilter {
+                principal_id: Some("principal:conformance".to_string()),
+                thread_id: Some("conformance-thread".to_string()),
+                target_id: Some("conformance-edge-target".to_string()),
+                active_at: Some(chrono::Utc::now()),
+                ..CapabilityLeaseFilter::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    let revoked = match store
+        .revoke_capability_lease(&created.id, created.revision, "conformance revoke")
+        .await
+        .unwrap()
+    {
+        CapabilityLeaseMutation::Updated(lease) => lease,
+        mutation => panic!("unexpected Capability Lease revoke mutation: {mutation:?}"),
+    };
+    assert_eq!(revoked.status, CapabilityLeaseStatus::Revoked);
+    assert!(store
+        .list_capability_leases(CapabilityLeaseFilter {
+            principal_id: Some("principal:conformance".to_string()),
+            active_at: Some(chrono::Utc::now()),
+            ..CapabilityLeaseFilter::default()
+        })
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 async fn assert_execution_job_conformance<S>(store: Arc<S>)
@@ -2742,6 +3327,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
             kind: ThreadKind::Execution,
             executor_kind: "runtime".to_string(),
             executor_id: None,
+            target_id: None,
         })
         .await
         .unwrap();
@@ -2800,6 +3386,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
             context_id: context_id.clone(),
             session_id: session_id.clone(),
             initiating_principal_id: None,
+            target_id: morphz::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
             tool_call_id: format!("multi-worker-tool-call-{suffix}"),
             tool_name: "read".to_string(),
             request: json!({"path": "README.md"}),
@@ -2868,6 +3455,7 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
             context_id: context_id.clone(),
             session_id: session_id.clone(),
             initiating_principal_id: None,
+            target_id: morphz::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
             tool_call_id: format!("multi-worker-expired-tool-call-{suffix}"),
             tool_name: "read".to_string(),
             request: json!({"path": "README.md"}),
@@ -3171,6 +3759,10 @@ async fn sqlite_runtime_store_satisfies_context_transaction_conformance() {
         .await
         .unwrap();
     assert_action_group_conformance(Arc::clone(&store)).await;
+    assert_execution_target_conformance(Arc::clone(&store)).await;
+    assert_execution_target_authorization_conformance(Arc::clone(&store)).await;
+    assert_capability_lease_conformance(Arc::clone(&store)).await;
+    assert_edge_execution_conformance(Arc::clone(&store)).await;
     assert_execution_job_conformance(Arc::clone(&store)).await;
     assert_approval_grant_conformance(store).await;
 }
@@ -3210,6 +3802,8 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260720_02_cognitive_clock",
         "20260719_02_action_groups",
         "20260718_02_execution_jobs",
+        "20260721_01_execution_targets",
+        "20260721_02_edge_execution",
         "20260718_03_approvals",
         "20260718_04_threads",
         "20260718_05_activations",
@@ -3283,6 +3877,10 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         .await
         .unwrap();
     assert_action_group_conformance(Arc::clone(&store)).await;
+    assert_execution_target_conformance(Arc::clone(&store)).await;
+    assert_execution_target_authorization_conformance(Arc::clone(&store)).await;
+    assert_capability_lease_conformance(Arc::clone(&store)).await;
+    assert_edge_execution_conformance(Arc::clone(&store)).await;
     assert_execution_job_conformance(Arc::clone(&store)).await;
     assert_approval_grant_conformance(Arc::clone(&store)).await;
 

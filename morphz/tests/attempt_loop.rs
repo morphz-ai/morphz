@@ -966,6 +966,7 @@ async fn runtime_start_interrupts_unfinished_dialogue_activations() {
             kind: ThreadKind::Execution,
             executor_kind: "self".to_string(),
             executor_id: None,
+            target_id: None,
         })
         .await
         .unwrap();
@@ -1433,6 +1434,7 @@ async fn runtime_restart_resumes_context_tx_continuation_until_final_reply() {
             kind: ThreadKind::DialogueTurn,
             executor_kind: "self".to_string(),
             executor_id: None,
+            target_id: None,
         })
         .await
         .unwrap();

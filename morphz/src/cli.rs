@@ -39,6 +39,22 @@ const VALUE_OPTIONS: &[&str] = &[
     "reason",
     "token-budget",
     "network",
+    "server-url",
+    "pairing-code",
+    "node-name",
+    "node-id",
+    "credential-file",
+    "target-id",
+    "target-name",
+    "workers",
+    "status",
+    "scope",
+    "scope-id",
+    "revision",
+    "thread-id",
+    "context-id",
+    "ttl",
+    "after",
 ];
 
 const SWITCH_OPTIONS: &[&str] = &[
@@ -55,6 +71,10 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "resume",
     "serve",
     "dashboard",
+    "edge",
+    "target",
+    "lease",
+    "execution",
     "setup",
     "provider",
     "model",
@@ -177,13 +197,15 @@ impl CommandLineParser {
         if invocation.command_path.is_empty() && !raw.iter().any(|value| value == "--") {
             if let Some(typed) = invocation.prompt_args.first() {
                 if let Some(suggestion) = nearest_command(typed) {
-                    let mut command = self.command.clone();
-                    return Err(command.error(
-                        ErrorKind::InvalidSubcommand,
-                        format!(
-                            "unrecognized subcommand '{typed}'\n\n  tip: a similar subcommand exists: '{suggestion}'"
-                        ),
-                    ));
+                    if looks_like_top_level_command_typo(&self.command, suggestion, &raw) {
+                        let mut command = self.command.clone();
+                        return Err(command.error(
+                            ErrorKind::InvalidSubcommand,
+                            format!(
+                                "unrecognized subcommand '{typed}'\n\n  tip: a similar subcommand exists: '{suggestion}'"
+                            ),
+                        ));
+                    }
                 }
             }
         }
@@ -231,6 +253,10 @@ pub fn morphz_command_for(locale: Locale) -> Command {
             resume_command("resume", locale),
             serve_command(locale),
             dashboard_command(locale),
+            edge_command(locale),
+            target_command(locale),
+            capability_lease_command(locale),
+            execution_command(locale),
             Command::new("setup")
                 .about(locale.text(
                     "Configure a model provider interactively",
@@ -637,6 +663,445 @@ fn dashboard_command(locale: Locale) -> Command {
             )),
         "Examples:\n  morphz dashboard\n  morphz dashboard --bind=0.0.0.0:8080",
     )
+}
+
+fn edge_command(locale: Locale) -> Command {
+    Command::new("edge")
+        .about(locale.text(
+            "Pair and run an outbound Execution Node",
+            "配对并运行主动出站的执行节点",
+        ))
+        .subcommands([
+            output_examples(
+                locale,
+                Command::new("pairing-code")
+                    .about(locale.text(
+                        "Create a short-lived pairing code for the current Principal",
+                        "为当前身份创建短期执行节点配对码",
+                    ))
+                    .arg(local_value_arg(
+                        "ttl",
+                        "ttl",
+                        "SECONDS",
+                        locale.text("Pairing code lifetime", "配对码有效秒数"),
+                    )),
+                "Example:\n  morphz edge pairing-code --ttl=300",
+            ),
+            output_examples(
+                locale,
+                Command::new("nodes").about(locale.text(
+                    "List Execution Nodes owned by the current Principal",
+                    "列出当前身份拥有的执行节点",
+                )),
+                "Example:\n  morphz edge nodes --format=json",
+            ),
+            output_examples(
+                locale,
+                Command::new("revoke")
+                    .about(locale.text(
+                        "Revoke one paired Execution Node",
+                        "撤销一个已配对执行节点",
+                    ))
+                    .arg(prompt_arg("NODE_ID", 1, Some(1)).help(locale.text(
+                        "Execution Node ID",
+                        "执行节点标识",
+                    )))
+                    .arg(
+                        local_value_arg(
+                            "revision",
+                            "revision",
+                            "N",
+                            locale.text("Expected Node revision", "预期的节点版本"),
+                        )
+                        .required(true),
+                    ),
+                "Example:\n  morphz edge revoke node_123 --revision=4",
+            ),
+            output_examples(
+                locale,
+                Command::new("local-leases")
+                    .about(locale.text(
+                        "List Provider-local capability leases for this Node",
+                        "列出当前节点本地保存的能力租约",
+                    ))
+                    .arg(local_value_arg(
+                        "credential-file",
+                        "credential-file",
+                        "FILE",
+                        locale.text("Paired device credential file", "已配对设备的凭证文件"),
+                    )),
+                "Example:\n  morphz edge local-leases --format=json",
+            ),
+            output_examples(
+                locale,
+                Command::new("revoke-local-lease")
+                    .about(locale.text(
+                        "Revoke one Provider-local capability lease",
+                        "撤销一个节点本地能力租约",
+                    ))
+                    .arg(prompt_arg("LEASE_ID", 1, Some(1)).help(locale.text(
+                        "Provider-local capability lease ID",
+                        "节点本地能力租约标识",
+                    )))
+                    .arg(local_value_arg(
+                        "credential-file",
+                        "credential-file",
+                        "FILE",
+                        locale.text("Paired device credential file", "已配对设备的凭证文件"),
+                    )),
+                "Example:\n  morphz edge revoke-local-lease edge_local_lease_xxx",
+            ),
+            output_examples(
+                locale,
+                Command::new("pair")
+                    .about(locale.text(
+                        "Pair this device with a Morphz Gateway",
+                        "将此设备与 Morphz 网关配对",
+                    ))
+                    .arg(local_value_arg(
+                        "server-url",
+                        "server-url",
+                        "URL",
+                        locale.text("Morphz Gateway base URL", "Morphz 网关基础地址"),
+                    ).required(true))
+                    .arg(local_value_arg(
+                        "pairing-code",
+                        "pairing-code",
+                        "CODE",
+                        locale.text("Short-lived pairing code", "短期一次性配对码"),
+                    ).required(true))
+                    .arg(local_value_arg(
+                        "node-name",
+                        "node-name",
+                        "NAME",
+                        locale.text("Human-readable device name", "设备显示名称"),
+                    ))
+                    .arg(local_value_arg(
+                        "node-id",
+                        "node-id",
+                        "ID",
+                        locale.text("Optional stable Node ID", "可选的稳定节点标识"),
+                    ))
+                    .arg(local_value_arg(
+                        "credential-file",
+                        "credential-file",
+                        "FILE",
+                        locale.text("Device credential output file", "设备凭证输出文件"),
+                    )),
+                "Examples:\n  morphz edge pair --server-url=https://agent.example.com --pairing-code=pair_xxx\n  morphz edge pair --server-url=http://127.0.0.1:8080 --pairing-code=pair_xxx --node-name=my-mac",
+            ),
+            output_examples(
+                locale,
+                Command::new("run")
+                    .about(locale.text(
+                        "Run the authenticated outbound Edge worker",
+                        "运行经过认证的主动出站边缘执行器",
+                    ))
+                    .arg(local_value_arg(
+                        "credential-file",
+                        "credential-file",
+                        "FILE",
+                        locale.text("Paired device credential file", "已配对设备的凭证文件"),
+                    ))
+                    .arg(local_value_arg(
+                        "target-id",
+                        "target-id",
+                        "ID",
+                        locale.text("Published Target ID", "发布的执行目标标识"),
+                    ))
+                    .arg(local_value_arg(
+                        "target-name",
+                        "target-name",
+                        "NAME",
+                        locale.text("Published Target display name", "发布的执行目标名称"),
+                    ))
+                    .arg(local_value_arg(
+                        "workers",
+                        "workers",
+                        "N",
+                        locale.text("Concurrent local workers", "本地并发执行器数量"),
+                    )),
+                "Examples:\n  morphz edge run\n  morphz edge run --target-id=target-my-mac-morphz --workers=4",
+            ),
+            output_examples(
+                locale,
+                Command::new("rotate-key")
+                    .about(locale.text(
+                        "Rotate this Node's device identity key",
+                        "轮换此执行节点的设备身份密钥",
+                    ))
+                    .arg(local_value_arg(
+                        "credential-file",
+                        "credential-file",
+                        "FILE",
+                        locale.text("Paired device credential file", "已配对设备的凭证文件"),
+                    )),
+                "Example:\n  morphz edge rotate-key",
+            ),
+            Command::new("status")
+                .about(locale.text(
+                    "Show the paired Node credential and local Target identity",
+                    "显示已配对节点和本地执行目标身份",
+                ))
+                .arg(local_value_arg(
+                    "credential-file",
+                    "credential-file",
+                    "FILE",
+                    locale.text("Paired device credential file", "已配对设备的凭证文件"),
+                )),
+        ])
+}
+
+fn execution_command(locale: Locale) -> Command {
+    Command::new("execution")
+        .about(locale.text(
+            "Inspect and control durable physical Execution Jobs",
+            "检查和控制持久化物理执行任务",
+        ))
+        .subcommands([
+            Command::new("list")
+                .about(locale.text("List Execution Jobs", "列出物理执行任务"))
+                .arg(local_value_arg(
+                    "context-id",
+                    "context-id",
+                    "ID",
+                    locale.text("Filter by Context", "按上下文筛选"),
+                ))
+                .arg(local_value_arg(
+                    "thread-id",
+                    "thread-id",
+                    "ID",
+                    locale.text("Filter by Thread", "按线程筛选"),
+                ))
+                .arg(local_value_arg(
+                    "target-id",
+                    "target-id",
+                    "ID",
+                    locale.text("Filter by Execution Target", "按执行目标筛选"),
+                ))
+                .arg(local_switch_arg(
+                    "include-terminal",
+                    "include-terminal",
+                    locale.text("Include terminal Jobs", "包含已结束任务"),
+                ))
+                .arg(local_value_arg(
+                    "limit",
+                    "limit",
+                    "N",
+                    locale.text("Maximum rows", "最大返回条数"),
+                )),
+            Command::new("show")
+                .about(locale.text("Inspect one Execution Job", "查看一个物理执行任务"))
+                .arg(
+                    prompt_arg("JOB_ID", 1, Some(1))
+                        .help(locale.text("Execution Job ID", "物理执行任务标识")),
+                ),
+            Command::new("output")
+                .about(locale.text(
+                    "Read durable stdout/stderr chunks for one Job",
+                    "读取一个任务持久化的标准输出和错误输出",
+                ))
+                .arg(
+                    prompt_arg("JOB_ID", 1, Some(1))
+                        .help(locale.text("Execution Job ID", "物理执行任务标识")),
+                )
+                .arg(local_value_arg(
+                    "after",
+                    "after",
+                    "SEQUENCE",
+                    locale.text("Read after output sequence", "读取指定输出序号之后的内容"),
+                ))
+                .arg(local_value_arg(
+                    "limit",
+                    "limit",
+                    "N",
+                    locale.text("Maximum chunks", "最大输出分片数"),
+                )),
+            Command::new("cancel")
+                .about(locale.text(
+                    "Request cancellation of one Job",
+                    "请求取消一个物理执行任务",
+                ))
+                .arg(
+                    prompt_arg("JOB_ID", 1, Some(1))
+                        .help(locale.text("Execution Job ID", "物理执行任务标识")),
+                )
+                .arg(
+                    local_value_arg(
+                        "revision",
+                        "revision",
+                        "N",
+                        locale.text("Expected Job revision", "预期的任务版本"),
+                    )
+                    .required(true),
+                )
+                .arg(local_value_arg(
+                    "reason",
+                    "reason",
+                    "TEXT",
+                    locale.text("Audit reason", "审计原因"),
+                )),
+        ])
+}
+
+fn target_command(locale: Locale) -> Command {
+    Command::new("target")
+        .about(locale.text(
+            "Inspect and administer Execution Targets",
+            "检查和管理执行目标",
+        ))
+        .subcommands([
+            Command::new("list").about(locale.text(
+                "List Targets visible to the current Principal",
+                "列出当前身份可见的执行目标",
+            )),
+            Command::new("show")
+                .about(locale.text("Inspect one Target", "查看一个执行目标"))
+                .arg(
+                    prompt_arg("TARGET_ID", 1, Some(1))
+                        .help(locale.text("Execution Target ID", "执行目标标识")),
+                ),
+            Command::new("enable")
+                .about(locale.text("Enable one Target", "启用一个执行目标"))
+                .arg(
+                    prompt_arg("TARGET_ID", 1, Some(1))
+                        .help(locale.text("Execution Target ID", "执行目标标识")),
+                )
+                .arg(
+                    local_value_arg(
+                        "revision",
+                        "revision",
+                        "N",
+                        locale.text("Expected Target revision", "预期的执行目标版本"),
+                    )
+                    .required(true),
+                ),
+            Command::new("disable")
+                .about(locale.text("Disable one Target", "禁用一个执行目标"))
+                .arg(
+                    prompt_arg("TARGET_ID", 1, Some(1))
+                        .help(locale.text("Execution Target ID", "执行目标标识")),
+                )
+                .arg(
+                    local_value_arg(
+                        "revision",
+                        "revision",
+                        "N",
+                        locale.text("Expected Target revision", "预期的执行目标版本"),
+                    )
+                    .required(true),
+                ),
+            Command::new("authorize")
+                .about(locale.text(
+                    "Restrict a Target to an Agent, Context or Thread scope",
+                    "将执行目标限制到代理、上下文或线程范围",
+                ))
+                .arg(
+                    prompt_arg("TARGET_ID", 1, Some(1))
+                        .help(locale.text("Execution Target ID", "执行目标标识")),
+                )
+                .arg(
+                    local_value_arg(
+                        "scope",
+                        "scope",
+                        "KIND",
+                        locale.text(
+                            "Scope: agent, context or thread",
+                            "范围：agent、context 或 thread",
+                        ),
+                    )
+                    .required(true)
+                    .value_parser(["agent", "context", "thread"]),
+                )
+                .arg(
+                    local_value_arg(
+                        "scope-id",
+                        "scope-id",
+                        "ID",
+                        locale.text("Stable ID of the selected scope", "所选范围的稳定标识"),
+                    )
+                    .required(true),
+                ),
+            Command::new("authorizations")
+                .about(locale.text(
+                    "List scoped Target authorizations",
+                    "列出执行目标的范围授权",
+                ))
+                .arg(
+                    prompt_arg("TARGET_ID", 0, Some(1))
+                        .help(locale.text("Optional Execution Target ID", "可选的执行目标标识")),
+                ),
+            Command::new("revoke-authorization")
+                .about(locale.text(
+                    "Revoke one scoped Target authorization",
+                    "撤销一个执行目标范围授权",
+                ))
+                .arg(
+                    prompt_arg("AUTHORIZATION_ID", 1, Some(1)).help(
+                        locale.text("Scoped Target authorization ID", "执行目标范围授权标识"),
+                    ),
+                )
+                .arg(
+                    local_value_arg(
+                        "revision",
+                        "revision",
+                        "N",
+                        locale.text("Expected authorization revision", "预期的授权版本"),
+                    )
+                    .required(true),
+                )
+                .arg(local_value_arg(
+                    "reason",
+                    "reason",
+                    "TEXT",
+                    locale.text("Audit reason", "审计原因"),
+                )),
+        ])
+}
+
+fn capability_lease_command(locale: Locale) -> Command {
+    Command::new("lease")
+        .about(locale.text(
+            "Inspect and revoke Target capability leases",
+            "检查和撤销执行目标能力租约",
+        ))
+        .subcommands([
+            Command::new("list")
+                .about(locale.text("List active capability leases", "列出有效的能力租约"))
+                .arg(local_value_arg(
+                    "target-id",
+                    "target-id",
+                    "ID",
+                    locale.text("Filter by Target", "按执行目标筛选"),
+                ))
+                .arg(local_value_arg(
+                    "thread-id",
+                    "thread-id",
+                    "ID",
+                    locale.text("Filter by Thread", "按线程筛选"),
+                )),
+            Command::new("revoke")
+                .about(locale.text("Revoke one capability lease", "撤销一个能力租约"))
+                .arg(
+                    prompt_arg("LEASE_ID", 1, Some(1))
+                        .help(locale.text("Capability lease ID", "能力租约标识")),
+                )
+                .arg(
+                    local_value_arg(
+                        "revision",
+                        "revision",
+                        "N",
+                        locale.text("Expected lease revision", "预期的租约版本"),
+                    )
+                    .required(true),
+                )
+                .arg(local_value_arg(
+                    "reason",
+                    "reason",
+                    "TEXT",
+                    locale.text("Audit reason", "审计原因"),
+                )),
+        ])
 }
 
 fn provider_command(locale: Locale) -> Command {
@@ -1358,6 +1823,26 @@ fn nearest_command(typed: &str) -> Option<&'static str> {
         .map(|(candidate, _)| candidate)
 }
 
+fn looks_like_top_level_command_typo(
+    command: &Command,
+    suggestion: &str,
+    raw: &[OsString],
+) -> bool {
+    let Some(second) = raw.get(1).and_then(|value| value.to_str()) else {
+        return true;
+    };
+    if second.starts_with('-') {
+        return true;
+    }
+    command
+        .find_subcommand(suggestion)
+        .is_some_and(|candidate| {
+            candidate
+                .get_subcommands()
+                .any(|subcommand| subcommand.get_name() == second)
+        })
+}
+
 fn damerau_levenshtein(left: &str, right: &str) -> usize {
     let left = left.as_bytes();
     let right = right.as_bytes();
@@ -1428,6 +1913,66 @@ mod tests {
             invocation.option("format").unwrap().last_value(),
             Some("json")
         );
+    }
+
+    #[test]
+    fn edge_pair_and_run_keep_device_options_on_their_subcommands() {
+        let pair = parse(&[
+            "edge",
+            "pair",
+            "--server-url=https://morphz.example",
+            "--pairing-code=pair-once",
+            "--node-name=workstation",
+        ]);
+        assert_eq!(pair.command_path(), ["edge", "pair"]);
+        assert_eq!(
+            pair.option("server-url").unwrap().last_value(),
+            Some("https://morphz.example")
+        );
+        let run = parse(&[
+            "edge",
+            "run",
+            "--target-id=target-workstation",
+            "--workers=4",
+        ]);
+        assert_eq!(run.command_path(), ["edge", "run"]);
+        assert_eq!(
+            run.option("target-id").unwrap().last_value(),
+            Some("target-workstation")
+        );
+    }
+
+    #[test]
+    fn execution_plane_commands_keep_authority_and_pagination_options() {
+        let pairing = parse(&["edge", "pairing-code", "--ttl=180"]);
+        assert_eq!(pairing.command_path(), ["edge", "pairing-code"]);
+        assert_eq!(pairing.option("ttl").unwrap().last_value(), Some("180"));
+
+        let jobs = parse(&[
+            "execution",
+            "list",
+            "--context-id=context-a",
+            "--target-id=target-a",
+            "--include-terminal",
+            "--limit=50",
+        ]);
+        assert_eq!(jobs.command_path(), ["execution", "list"]);
+        assert_eq!(
+            jobs.option("context-id").unwrap().last_value(),
+            Some("context-a")
+        );
+        assert!(jobs.option("include-terminal").is_some());
+
+        let cancel = parse(&[
+            "execution",
+            "cancel",
+            "job-a",
+            "--revision=3",
+            "--reason=user-request",
+        ]);
+        assert_eq!(cancel.command_path(), ["execution", "cancel"]);
+        assert_eq!(cancel.prompt_args(), ["job-a"]);
+        assert_eq!(cancel.option("revision").unwrap().last_value(), Some("3"));
     }
 
     #[test]

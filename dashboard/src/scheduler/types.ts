@@ -94,6 +94,7 @@ export interface ExecutionJobRecord {
   agent_id: string
   context_id: string
   session_id: string
+  target_id: string
   tool_call_id: string
   tool_name: string
   request: unknown
@@ -147,6 +148,21 @@ export interface SchedulerThreadSnapshot {
   schedules: ScheduleRecord[]
 }
 
+export interface ThreadDetailResponse {
+  context_id: string
+  generated_at: string
+  snapshot: SchedulerThreadSnapshot
+  model_attempt_events: Array<{
+    id: string
+    sequence?: number
+    timestamp: string
+    actor: string
+    type: string
+    topic: string
+    payload: Record<string, unknown>
+  }>
+}
+
 export interface SchedulerSummary {
   open_threads: number
   pending_signals: number
@@ -182,6 +198,9 @@ export interface SchedulerSnapshot {
   generated_at: string
   summary: SchedulerSummary
   admission: SchedulerAdmissionSnapshot
+  event_writer: Record<string, unknown>
+  model_provider: Record<string, unknown>
+  context_capacity: Record<string, unknown>
   threads: SchedulerThreadSnapshot[]
   orphan_activations: SchedulerActivationSnapshot[]
   orphan_signals: ThreadSignalRecord[]

@@ -5,8 +5,10 @@ import type { TFunction } from 'i18next'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
+import { useLocation, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
+  Bell,
   Brain,
   Check,
   ChevronDown,
@@ -19,6 +21,8 @@ import {
   Layers3,
   LoaderCircle,
   MessageSquare,
+  Monitor,
+  Moon,
   Palette,
   Play,
   Plus,
@@ -26,14 +30,15 @@ import {
   RefreshCw,
   Send,
   Square,
+  Sun,
   Trash2,
+  X,
 } from 'lucide-react'
 import './App.css'
 import { nextDashboardLanguage } from './i18n/language'
 import {
   createLiveModelState,
   findReasoningSummaryChainForPayload,
-  groupReasoningSummariesByActivation,
   isModelStreamEvent,
   liveReasoningSummaryText,
   modelStreamReducer,
@@ -42,27 +47,54 @@ import {
   selectDurableReasoningSummaries,
   selectReasoningContinuationSummaries,
   visibleLiveModelAttempts,
+  type LiveModelAttempt,
   type ModelAttemptStateItem,
   type ModelStreamBatchItem,
 } from './modelStream'
 import {
+  actionableSchedulerJobs,
   pendingHumanApprovals,
+  schedulerApprovalAnomalies,
+  schedulerAttentionJobs,
   schedulerAttentionCount,
-  schedulerJobs,
   schedulerSchedules,
+  threadCarriesExecution,
 } from './scheduler/model'
 import { findTurnSettlement } from './turnSettlement'
 import type {
   ApprovalRecord,
   ScheduleRecord,
-  SchedulerActivationSnapshot,
-  SchedulerJobSnapshot,
   SchedulerSnapshot,
   SchedulerThreadSnapshot,
+  ThreadDetailResponse,
   ThreadActivationRecord,
   ThreadSignalRecord,
   ThreadRecord,
 } from './scheduler/types'
+import {
+  dashboardPath,
+  parseDashboardRoute,
+  threadPath,
+  type CognitionView,
+  type DashboardView,
+} from './app/routes'
+import { LedgerPage } from './pages/LedgerPage'
+import type { LedgerFilters } from './pages/LedgerPage'
+import { OverviewPage } from './pages/OverviewPage'
+import { RuntimePage } from './pages/RuntimePage'
+import { DashboardApiClient } from './api/client'
+import { invalidatedQueriesForTopic } from './app/invalidation'
+import {
+  compactTokens,
+  conversationEventKind,
+  formatAgo,
+  formatTime,
+  shortId,
+  statusLabel,
+  summarizeToolCall,
+  threadKindLabel,
+} from './app/presentation'
+import { ThreadCausalCard } from './pages/ThreadCausalCard'
 
 const configuredHttpUrl = import.meta.env.VITE_MORPHZ_HTTP_URL as string | undefined
 const configuredWsUrl = import.meta.env.VITE_MORPHZ_WS_URL as string | undefined
@@ -72,9 +104,10 @@ const locationToken = new URLSearchParams(window.location.hash.replace(/^#/, '')
   ?? new URLSearchParams(window.location.search).get('token')
   ?? undefined
 const CORE_TOKEN = locationToken ?? (import.meta.env.VITE_MORPHZ_TOKEN as string | undefined)
+const DASHBOARD_API = new DashboardApiClient({ baseUrl: CORE_HTTP_URL, token: CORE_TOKEN })
 
-type View = 'conversation' | 'work' | 'mind'
 type AccentTheme = 'iris' | 'cyan' | 'coral' | 'mono'
+type AppearanceMode = 'system' | 'dark' | 'light'
 type ContextInspectTab = 'encoding' | 'messages' | 'tools' | 'mind' | 'inbox' | 'metadata'
 
 const accentThemes: Array<{ id: AccentTheme; labelKey: string; descKey: string }> = [
@@ -94,6 +127,20 @@ function initialAccentTheme(): AccentTheme {
   return 'cyan'
 }
 
+function initialAppearanceMode(): AppearanceMode {
+  try {
+    const saved = window.localStorage.getItem('morphz.dashboard.appearance')
+    if (saved === 'system' || saved === 'dark' || saved === 'light') return saved
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+  return 'system'
+}
+
+function initialSystemPrefersDark(): boolean {
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? true
+}
+
 function initialShowReasoningSummary(): boolean {
   try {
     return readReasoningSummaryPreference(window.localStorage)
@@ -102,10 +149,34 @@ function initialShowReasoningSummary(): boolean {
   }
 }
 
+function initialBooleanPreference(key: string, fallback: boolean): boolean {
+  try {
+    const saved = window.localStorage.getItem(key)
+    if (saved === 'true') return true
+    if (saved === 'false') return false
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+  return fallback
+}
+
+function useStoredDisclosure(key: string, fallback: boolean) {
+  const [open, setOpen] = useState(() => initialBooleanPreference(key, fallback))
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(key, String(open))
+    } catch {
+      // The disclosure remains usable for the current page lifetime.
+    }
+  }, [key, open])
+  return [open, setOpen] as const
+}
+
 const MESSAGE_PAGE_SIZE = 100
 const MODEL_STREAM_RENDER_INTERVAL_MS = 50
 const WORK_HISTORY_THREAD_LIMIT = 60
-const TOOL_TIMELINE_RENDER_LIMIT = 100
+const SCHEDULER_HISTORY_PAGE_SIZE = 60
+const DIALOGUE_ACTIVITY_HISTORY_LIMIT = 12
 
 function MarkdownInline({ children }: { children: string }) {
   return (
@@ -204,6 +275,9 @@ interface SessionRecord {
   title: string
   status: 'active' | 'archived'
   attention_state?: string
+  attention_revision?: number
+  attention_reason?: string
+  attention_changed_at?: string
   mount_kind?: string
   created_at: string
   updated_at: string
@@ -213,12 +287,91 @@ interface SessionRecord {
 type ReasoningEffortSetting = 'none' | 'low' | 'medium' | 'high' | 'max'
 
 interface RuntimeStatus {
+  generated_at: string
+  started: boolean
+  uptime_seconds: number
+  recovery: {
+    preserved_execution_jobs: number
+    requeued_execution_jobs: number
+    lost_execution_jobs: number
+    recovered_background_outboxes: number
+    completed_at?: string
+  }
+  version: string
+  git_commit: string
   agent_id: string
   context_id: string
+  principal_id: string
   model: string
   provider?: string
   reasoning_effort?: ReasoningEffortSetting | null
   tool_count: number
+  storage: string
+  storage_backend: string
+  permission_mode: string
+  sandbox_mode: string
+  reviewer: string
+}
+
+interface ExecutionTargetSummary {
+  id: string
+  revision: number
+  name: string
+  kind: string
+  status: string
+  platform?: string
+  workspace_root?: string
+  provider_node_id?: string
+  capabilities: string[]
+}
+
+interface ExecutionNodeSummary {
+  id: string
+  revision: number
+  name: string
+  status: string
+  platform?: string
+  protocol_version: number
+  capabilities: string[]
+  last_seen_at?: string
+}
+
+interface CapabilityLeaseSummary {
+  id: string
+  revision: number
+  thread_id: string
+  target_id: string
+  capabilities: string[]
+  status: string
+  expires_at: string
+}
+
+interface ExecutionJobSummary {
+  id: string
+  revision: number
+  thread_id: string
+  target_id: string
+  tool_name: string
+  status: string
+  claimed_by?: string
+  progress_ref?: string
+  created_at: string
+}
+
+interface MindProjectionAudit {
+  context_id: string
+  ledger_revision: number
+  projection_revision?: number
+  snapshot_revision?: number
+  ledger_hash: string
+  projection_hash?: string
+  events_scanned: number
+  incremental_transactions_scanned?: number
+  incremental_matches?: boolean
+  full_replay_micros: number
+  incremental_replay_micros?: number
+  projection_validation_micros: number
+  matches: boolean
 }
 
 function inferredProviderReasoningEffort(model?: string): ReasoningEffortSetting | 'default' {
@@ -286,6 +439,13 @@ interface ContextFrame {
   id: string
   body: string
   sources: string[]
+  provenance: {
+    formed_principal_id?: string
+    formed_session_id?: string
+    source_principal_ids: string[]
+    source_session_ids: string[]
+    state: 'unknown' | 'unattributed' | 'attributed'
+  }
   revision: number
   created_version: number
   updated_version: number
@@ -371,13 +531,41 @@ interface ObjectiveRecord {
 interface ProjectedSession {
   session: SessionRecord
   projection: string
+  principal_ids?: string[]
   active_activation_ids?: string[]
   active_objective_ids?: string[]
+}
+
+interface ContextOverviewResponse {
+  context: ContextRecord
+  agent?: AgentRecord
+  generated_at: string
+  active_session_id?: string
+  sessions: ProjectedSession[]
+  working_set?: SessionWorkingSet
+  mind_revision: number
+  active_frames: number
+  retiring_frames: number
+  retired_items: number
+  pressure?: ContextPressure
+  objectives: ObjectiveRecord[]
+  scheduler: SchedulerSnapshot['summary']
+}
+
+interface LedgerQueryResponse {
+  context_id: string
+  generated_at: string
+  events: MorphzEvent[]
+  scanned_count: number
+  scan_exhaustive: boolean
+  next_after_sequence?: number
+  next_before_sequence?: number
 }
 
 interface ContextViewResponse {
   context_id: string
   active_session_id: string
+  active_principal_id?: string
   sessions: ProjectedSession[]
   session_working_set: SessionWorkingSet
   active_activations: ThreadActivationRecord[]
@@ -390,7 +578,14 @@ interface ContextViewResponse {
   state: MindState
   observations: ContextObservation[]
   pressure: ContextPressure
-  sexpr: string
+  sexpr?: string
+}
+
+interface ContextEncodingResponse {
+  context_id: string
+  session_id: string
+  mind_revision: number
+  encoding: string
 }
 
 interface RecallSearchHit {
@@ -442,124 +637,321 @@ interface ToolTimelineItem extends ToolCallPreview {
   result?: string
 }
 
-interface ToolCallSummary {
-  title: string
-  target: string
-  detail: string
+function DialogueActivityDock({
+  open,
+  objectives,
+  threads,
+  historyThreads,
+  delegations,
+  currentSessionId,
+  expandedThreadId,
+  threadDetail,
+  liveModelAttempts,
+  showReasoningSummary,
+  t,
+  onOpenChange,
+  onThreadToggle,
+  onReasoningOpenChange,
+  onInspectThread,
+}: {
+  open: boolean
+  objectives: ObjectiveRecord[]
+  threads: SchedulerThreadSnapshot[]
+  historyThreads: SchedulerThreadSnapshot[]
+  delegations: DelegationRecord[]
+  currentSessionId: string
+  expandedThreadId: string
+  threadDetail: ThreadDetailResponse | null
+  liveModelAttempts: LiveModelAttempt[]
+  showReasoningSummary: boolean
+  t: TFunction
+  onOpenChange: (open: boolean) => void
+  onThreadToggle: (threadId: string) => void
+  onReasoningOpenChange: (open: boolean) => void
+  onInspectThread: (threadId: string) => void
+}) {
+  const [objectivesOpen, setObjectivesOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.objectives', false)
+  const [threadsOpen, setThreadsOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.threads', true)
+  const [backgroundOpen, setBackgroundOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.background', true)
+  const [delegationsOpen, setDelegationsOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.delegations', true)
+  const [historyOpen, setHistoryOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.history', false)
+  const backgroundProcesses = threads.flatMap(snapshot => (
+    snapshot.activations.flatMap(activation => (
+      activation.jobs
+        .filter(item => item.job.tool_name === 'exec/background' && !['succeeded', 'failed', 'cancelled', 'lost'].includes(item.job.status))
+        .map(item => ({ snapshot, item }))
+    ))
+  ))
+
+  return (
+    <aside className={`dialogue-activity-dock ${open ? 'is-open' : 'is-collapsed'}`} aria-label={t('conversation.activity.title')}>
+      <button
+        className="dialogue-activity-toggle"
+        type="button"
+        aria-expanded={open}
+        onClick={() => onOpenChange(!open)}
+      >
+        <span><Radio size={13} /><strong>{t('conversation.activity.title')}</strong></span>
+        <small>{t('conversation.activity.summary', { objectives: objectives.length, threads: threads.length, delegations: delegations.length })}</small>
+        <ChevronDown size={14} />
+      </button>
+
+      {open && (
+        <div className="dialogue-activity-content">
+          <details
+            className="dialogue-activity-section"
+            open={objectivesOpen}
+            onToggle={event => setObjectivesOpen(event.currentTarget.open)}
+          >
+            <summary>
+              <span>{t('conversation.activity.objectives')}</span>
+              <b>{objectives.length}</b>
+              <ChevronDown size={12} />
+            </summary>
+            <div className="dialogue-objective-list">
+              {objectives.map(objective => {
+                const currentSession = objective.coordinator_session_id === currentSessionId
+                  || objective.delivery_session_id === currentSessionId
+                return (
+                  <article className={`dialogue-objective-card ${objective.status}`} key={objective.id}>
+                    <div>
+                      <span className={`activity-status ${objective.status}`}><i />{statusLabel(objective.status, t)}</span>
+                      <time>{formatAgo(objective.updated_at, t)}</time>
+                    </div>
+                    <strong>{objective.stated_objective}</strong>
+                    {objective.status_reason && <p>{objective.status_reason}</p>}
+                    <footer>
+                      <code>r{objective.revision}</code>
+                      <span>{currentSession ? t('conversation.activity.currentSession') : t('conversation.activity.otherSession', { id: shortId(objective.coordinator_session_id, 14) })}</span>
+                    </footer>
+                  </article>
+                )
+              })}
+              {objectives.length === 0 && <div className="dialogue-activity-empty">{t('conversation.activity.noObjectives')}</div>}
+            </div>
+          </details>
+
+          <details
+            className="dialogue-activity-section thread-section"
+            open={threadsOpen}
+            onToggle={event => setThreadsOpen(event.currentTarget.open)}
+          >
+            <summary>
+              <span>{t('conversation.activity.threads')}</span>
+              <b>{threads.length}</b>
+              <ChevronDown size={12} />
+            </summary>
+            <div className="dialogue-thread-list">
+              {threads.map(snapshot => {
+                const expanded = expandedThreadId === snapshot.thread.id
+                const effective = expanded && threadDetail?.snapshot.thread.id === snapshot.thread.id
+                  ? threadDetail.snapshot
+                  : snapshot
+                const activationIds = new Set(effective.activations.map(item => item.activation.id))
+                const attempts = liveModelAttempts.filter(attempt => activationIds.has(attempt.activationId))
+                const jobs = effective.activations.flatMap(item => item.jobs)
+                const activeJob = jobs.find(item => ['queued', 'waiting_approval', 'running'].includes(item.job.status))
+                  ?? jobs.at(-1)
+                const jobSummary = activeJob
+                  ? summarizeToolCall(activeJob.job.tool_name, JSON.stringify(activeJob.job.request), t)
+                  : null
+                const currentSession = effective.thread.session_id === currentSessionId
+                const displayState = effective.phase === 'idle' ? effective.thread.lifecycle : effective.phase
+                return (
+                  <article className={`dialogue-thread-card phase-${effective.phase} ${expanded ? 'is-expanded' : ''}`} key={effective.thread.id}>
+                    <button
+                      className="dialogue-thread-summary"
+                      type="button"
+                      aria-expanded={expanded}
+                      onClick={() => onThreadToggle(effective.thread.id)}
+                    >
+                      <span className={`activity-status ${displayState}`}><i />{statusLabel(displayState, t)}</span>
+                      <span className="dialogue-thread-identity">
+                        <strong>{threadKindLabel(effective.thread.kind, t)}</strong>
+                        <small>{jobSummary ? `${jobSummary.title}${jobSummary.target ? ` · ${jobSummary.target}` : ''}` : shortId(effective.thread.id, 20)}</small>
+                      </span>
+                      <span className="dialogue-thread-counts">{effective.activations.length}A · {jobs.length}J</span>
+                      <ChevronDown size={13} />
+                    </button>
+                    <div className="dialogue-thread-origin">
+                      <span>{currentSession ? t('conversation.activity.currentSession') : t('conversation.activity.otherSession', { id: shortId(effective.thread.session_id, 14) })}</span>
+                      <time>{formatAgo(effective.thread.updated_at, t)}</time>
+                    </div>
+
+                    {expanded && (
+                      <div className="dialogue-thread-runtime">
+                        {attempts.map(attempt => (
+                          <section className="dialogue-live-attempt" key={attempt.attemptId}>
+                            <header><Brain size={12} /><strong>{t('conversation.activity.modelEvaluation')}</strong><span>{statusLabel(attempt.runtimeState, t)}</span></header>
+                            <ReasoningSummaryBlock
+                              summary={attempt.reasoningSummary}
+                              live
+                              open={showReasoningSummary}
+                              onOpenChange={onReasoningOpenChange}
+                              title={t('reasoningSummary.title')}
+                              liveLabel={t('reasoningSummary.live')}
+                              persistedLabel={t('reasoningSummary.persisted')}
+                            />
+                          </section>
+                        ))}
+
+                        {effective.pending_signals.map(signal => (
+                          <div className="dialogue-thread-signal" key={signal.id}>
+                            <Radio size={11} /><span>{signal.kind}</span><code>#{signal.sequence}</code>
+                          </div>
+                        ))}
+
+                        {effective.activations.map(activation => (
+                          <section className="dialogue-activation" key={activation.activation.id}>
+                            <header>
+                              <span className={`activity-status ${activation.activation.status}`}><i />{statusLabel(activation.activation.status, t)}</span>
+                              <code>{shortId(activation.activation.id, 17)}</code>
+                              <small>{activation.activation.trigger_kind}</small>
+                            </header>
+                            {activation.jobs.map(jobSnapshot => {
+                              const summary = summarizeToolCall(jobSnapshot.job.tool_name, JSON.stringify(jobSnapshot.job.request), t)
+                              return (
+                                <details className={`dialogue-job ${jobSnapshot.job.status}`} key={jobSnapshot.job.id} open={['running', 'waiting_approval', 'failed', 'lost'].includes(jobSnapshot.job.status)}>
+                                  <summary>
+                                    <i>{jobSnapshot.job.status === 'running' ? <LoaderCircle size={11} /> : jobSnapshot.job.status === 'succeeded' ? <Check size={11} /> : <CircleDot size={10} />}</i>
+                                    <span><strong>{summary.title}</strong><small>{summary.target || shortId(jobSnapshot.job.id, 15)}</small></span>
+                                    <em>{statusLabel(jobSnapshot.job.status, t)}</em>
+                                    <ChevronDown size={11} />
+                                  </summary>
+                                  <div>
+                                    <pre>{JSON.stringify(jobSnapshot.job.request, null, 2)}</pre>
+                                    {jobSnapshot.approval && <p>{t('conversation.activity.approval', { status: statusLabel(jobSnapshot.approval.status, t) })}</p>}
+                                    {jobSnapshot.result?.error && <p className="error">{jobSnapshot.result.error}</p>}
+                                  </div>
+                                </details>
+                              )
+                            })}
+                          </section>
+                        ))}
+
+                        {attempts.length === 0 && effective.activations.length === 0 && (
+                          <div className="dialogue-activity-empty">{t('conversation.activity.waitingForExecution')}</div>
+                        )}
+                        <footer className="dialogue-thread-delivery">
+                          <span>{t('conversation.activity.delivery')}</span>
+                          <b>{statusLabel(effective.thread.delivery_status, t)}</b>
+                        </footer>
+                        <button className="dialogue-thread-inspect" type="button" onClick={() => onInspectThread(effective.thread.id)}>
+                          <GitBranch size={12} /> {t('conversation.activity.openFullThread')}
+                        </button>
+                      </div>
+                    )}
+                  </article>
+                )
+              })}
+              {threads.length === 0 && <div className="dialogue-activity-empty">{t('conversation.activity.noThreads')}</div>}
+            </div>
+          </details>
+
+          <details
+            className="dialogue-activity-section background-section"
+            open={backgroundOpen}
+            onToggle={event => setBackgroundOpen(event.currentTarget.open)}
+          >
+            <summary>
+              <span>{t('conversation.activity.backgroundProcesses')}</span>
+              <b>{backgroundProcesses.length}</b>
+              <ChevronDown size={12} />
+            </summary>
+            <div className="dialogue-background-list">
+              {backgroundProcesses.map(({ snapshot, item }) => {
+                const request = item.job.request && typeof item.job.request === 'object'
+                  ? item.job.request as Record<string, unknown>
+                  : {}
+                const command = typeof request.command === 'string' ? request.command : ''
+                return (
+                  <article className={`dialogue-background-card ${item.job.status}`} key={item.job.id}>
+                    <header>
+                      <span className={`activity-status ${item.job.status}`}><i />{statusLabel(item.job.status, t)}</span>
+                      <time>{formatAgo(item.job.updated_at, t)}</time>
+                    </header>
+                    <strong>{command || t('conversation.activity.backgroundTask')}</strong>
+                    <footer>
+                      <code>{shortId(item.job.id, 18)}</code>
+                      <button type="button" onClick={() => onInspectThread(snapshot.thread.id)}>{t('conversation.activity.openFullThread')}</button>
+                    </footer>
+                  </article>
+                )
+              })}
+              {backgroundProcesses.length === 0 && <div className="dialogue-activity-empty">{t('conversation.activity.noBackgroundProcesses')}</div>}
+            </div>
+          </details>
+
+          <details
+            className="dialogue-activity-section delegation-section"
+            open={delegationsOpen}
+            onToggle={event => setDelegationsOpen(event.currentTarget.open)}
+          >
+            <summary>
+              <span>{t('conversation.activity.delegations')}</span>
+              <b>{delegations.length}</b>
+              <ChevronDown size={12} />
+            </summary>
+            <div className="dialogue-delegation-list">
+              {delegations.map(delegation => {
+                const currentSession = delegation.parent_session_id === currentSessionId
+                return (
+                  <article className={`dialogue-delegation-card ${delegation.status}`} key={delegation.id}>
+                    <header>
+                      <span className={`activity-status ${delegation.status}`}><i />{statusLabel(delegation.status, t)}</span>
+                      <time>{formatAgo(delegation.updated_at, t)}</time>
+                    </header>
+                    <strong>{delegation.task}</strong>
+                    <footer>
+                      <span><GitBranch size={10} /> {shortId(delegation.child_session_id, 18)}</span>
+                      <span>{currentSession ? t('conversation.activity.currentSession') : t('conversation.activity.otherSession', { id: shortId(delegation.parent_session_id, 14) })}</span>
+                    </footer>
+                  </article>
+                )
+              })}
+              {delegations.length === 0 && <div className="dialogue-activity-empty">{t('conversation.activity.noDelegations')}</div>}
+            </div>
+          </details>
+
+          <details
+            className="dialogue-activity-section history-section"
+            open={historyOpen}
+            onToggle={event => setHistoryOpen(event.currentTarget.open)}
+          >
+            <summary>
+              <span>{t('conversation.activity.history')}</span>
+              <b>{historyThreads.length}</b>
+              <ChevronDown size={12} />
+            </summary>
+            <div className="dialogue-history-list">
+              {historyThreads.map(snapshot => {
+                const jobs = snapshot.activations.flatMap(item => item.jobs)
+                const latestJob = jobs.at(-1)
+                const summary = latestJob
+                  ? summarizeToolCall(latestJob.job.tool_name, JSON.stringify(latestJob.job.request), t)
+                  : null
+                return (
+                  <button className="dialogue-history-card" type="button" key={snapshot.thread.id} onClick={() => onInspectThread(snapshot.thread.id)}>
+                    <span className={`activity-status ${snapshot.thread.lifecycle}`}><i />{statusLabel(snapshot.thread.lifecycle, t)}</span>
+                    <span>
+                      <strong>{threadKindLabel(snapshot.thread.kind, t)}</strong>
+                      <small>{summary ? `${summary.title}${summary.target ? ` · ${summary.target}` : ''}` : shortId(snapshot.thread.id, 20)}</small>
+                    </span>
+                    <time>{formatAgo(snapshot.thread.updated_at, t)}</time>
+                  </button>
+                )
+              })}
+              {historyThreads.length === 0 && <div className="dialogue-activity-empty">{t('conversation.activity.noHistory')}</div>}
+            </div>
+          </details>
+        </div>
+      )}
+    </aside>
+  )
 }
 
 const terminalObjectiveStatuses = new Set(['completed', 'cancelled', 'failed'])
 const terminalTaskStatuses = new Set(['completed', 'cancelled', 'failed', 'succeeded', 'killed'])
-
-function formatTime(value: string | undefined, locale: string) {
-  if (!value) return ''
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toLocaleTimeString([locale], { hour: '2-digit', minute: '2-digit' })
-}
-
-function formatAgo(value: string | undefined, t: TFunction) {
-  if (!value) return '—'
-  const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000))
-  if (seconds < 60) return t('time.ago.seconds', { count: seconds })
-  if (seconds < 3600) return t('time.ago.minutes', { count: Math.floor(seconds / 60) })
-  if (seconds < 86400) return t('time.ago.hours', { count: Math.floor(seconds / 3600) })
-  return t('time.ago.days', { count: Math.floor(seconds / 86400) })
-}
-
-function compactTokens(value?: number) {
-  if (value === undefined) return '—'
-  if (value < 1000) return String(value)
-  return `${Math.round(value / 100) / 10}k`
-}
-
-function shortId(value?: string, size = 15) {
-  if (!value) return '—'
-  if (value.length <= size) return value
-  return `…${value.slice(-(size - 1))}`
-}
-
-function objectFromJson(value: string): Record<string, unknown> {
-  try {
-    const parsed = JSON.parse(value)
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : {}
-  } catch {
-    return {}
-  }
-}
-
-function stringField(value: Record<string, unknown>, ...names: string[]) {
-  for (const name of names) {
-    const field = value[name]
-    if (typeof field === 'string' && field.trim()) return field.trim()
-  }
-  return ''
-}
-
-function statusLabel(value: string, t: TFunction) {
-  const key = `status.${value}`
-  const translated = t(key)
-  return translated === key ? value : translated
-}
-
-function threadKindLabel(kind: ThreadRecord['kind'], t: TFunction) {
-  return t(`work.threadKind.${kind}`)
-}
-
-function summarizeToolCall(name: string, rawArguments: string, t: TFunction): ToolCallSummary {
-  const argumentsValue = objectFromJson(rawArguments)
-  const path = stringField(argumentsValue, 'path', 'file_path', 'file')
-  const query = stringField(argumentsValue, 'query', 'pattern', 'search_query')
-  const command = stringField(argumentsValue, 'command', 'cmd')
-  const task = stringField(argumentsValue, 'task', 'prompt')
-  const taskId = stringField(argumentsValue, 'task_id')
-  const session = stringField(argumentsValue, 'session_id', 'target_session_id')
-  const content = stringField(argumentsValue, 'content', 'message', 'text')
-  const startLine = argumentsValue.start_line
-  const endLine = argumentsValue.end_line
-  const range = typeof startLine === 'number'
-    ? `${startLine}${typeof endLine === 'number' ? `–${endLine}` : ''}`
-    : ''
-  const lines = range ? t('toolCall.lines', { range }) : ''
-
-  switch (name) {
-    case 'read':
-      return { title: t('toolCall.read'), target: `${path || t('toolCall.unspecifiedFile')}${lines ? ` · ${lines}` : ''}`, detail: name }
-    case 'write':
-      return { title: t('toolCall.write'), target: path || t('toolCall.unspecifiedFile'), detail: name }
-    case 'edit':
-    case 'apply_patch':
-      return { title: t('toolCall.edit'), target: path || stringField(argumentsValue, 'patch') || t('toolCall.viewArgs'), detail: name }
-    case 'exec':
-    case 'exec_command':
-      return { title: t('toolCall.exec'), target: command || t('toolCall.unspecifiedCommand'), detail: name }
-    case 'search':
-      return { title: t('toolCall.search'), target: query || path || t('toolCall.unspecifiedQuery'), detail: name }
-    case 'list_files':
-      return { title: t('toolCall.listFiles'), target: path || stringField(argumentsValue, 'glob') || t('toolCall.workspace'), detail: name }
-    case 'recall':
-      return { title: t('toolCall.recall'), target: query || stringField(argumentsValue, 'ref') || t('toolCall.contextLedger'), detail: name }
-    case 'context_tx':
-      return { title: t('toolCall.contextTx'), target: 'Context Transaction', detail: name }
-    case 'delegate':
-      return { title: t('toolCall.delegate'), target: task || t('toolCall.subAgent'), detail: name }
-    case 'check_task_after':
-    case 'wait_task':
-      return { title: t('toolCall.waitTask'), target: taskId || t('toolCall.backgroundTask'), detail: name }
-    case 'task_status':
-      return { title: t('toolCall.taskStatus'), target: taskId || t('toolCall.backgroundTask'), detail: name }
-    case 'kill_task':
-      return { title: t('toolCall.killTask'), target: taskId || t('toolCall.backgroundTask'), detail: name }
-    case 'send_message':
-      return { title: t('toolCall.sendMessage'), target: `${session || t('toolCall.targetSession')}${content ? ` · ${content}` : ''}`, detail: name }
-    case 'no_reply':
-      return { title: t('toolCall.noReply'), target: t('toolCall.noMessage'), detail: name }
-    default:
-      return { title: name, target: path || query || command || task || taskId || content || t('toolCall.viewArgs'), detail: name }
-  }
-}
 
 function summarizeActivation(
   item: ThreadActivationRecord,
@@ -607,185 +999,7 @@ function summarizeActivation(
 }
 
 function eventKind(event: MorphzEvent) {
-  if (event.topic === 'chat/user_message') return 'user'
-  if (event.topic === 'chat/reply') {
-    const threadKind = typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue_turn'
-    return threadKind === 'dialogue_turn' ? 'agent' : 'background'
-  }
-  if (event.topic === 'chat/outbound_message') return 'agent'
-  if (event.topic === 'chat/progress') return 'progress'
-  if (event.topic === 'chat/assistant_call' && event.payload.terminal_outcome !== true) return 'reasoning'
-  if (event.topic === 'chat/cancelled') return 'system'
-  return null
-}
-
-function ExecutionJobRow({
-  snapshot,
-  t,
-  locale,
-  decidingApprovalId,
-  onApproval,
-}: {
-  snapshot: SchedulerJobSnapshot
-  t: TFunction
-  locale: string
-  decidingApprovalId: string
-  onApproval: (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => void
-}) {
-  const { job, approval, result } = snapshot
-  const summary = summarizeToolCall(job.tool_name, JSON.stringify(job.request), t)
-  const failed = job.status === 'failed' || job.status === 'lost'
-  return (
-    <details className={`causal-job ${failed ? 'failed' : job.status}`} open={job.status === 'running' || job.status === 'waiting_approval'}>
-      <summary>
-        <i>{job.status === 'running' ? <LoaderCircle size={13} /> : failed ? '!' : job.status === 'succeeded' ? '✓' : <CircleDot size={12} />}</i>
-        <span><strong>{summary.title}</strong><small>{summary.target}</small></span>
-        <code>{job.status} · {shortId(job.id, 18)}</code>
-        <time>{formatTime(job.updated_at, locale)}</time>
-        <ChevronDown size={13} />
-      </summary>
-      <div className="causal-job-detail">
-        <section><header>{t('work.causal.request')}</header><pre>{JSON.stringify(job.request, null, 2)}</pre></section>
-        <dl>
-          <div><dt>{t('work.causal.retrySafety')}</dt><dd>{job.retry_safety}</dd></div>
-          <div><dt>{t('work.causal.revision')}</dt><dd>r{job.revision}</dd></div>
-          {job.claimed_by && <div><dt>{t('work.causal.worker')}</dt><dd>{job.claimed_by}</dd></div>}
-        </dl>
-        {approval && (
-          <section className={`inline-approval ${approval.status}`}>
-            <header><span>{t('work.approvals.title')}</span><b>{statusLabel(approval.status, t)}</b></header>
-            <p>{approval.justification}</p>
-            <details><summary>{t('work.approvals.capability')}</summary><pre>{JSON.stringify({ action: approval.action, requested: approval.requested }, null, 2)}</pre></details>
-            {approval.risk_tags.length > 0 && <small>{approval.risk_tags.join(' · ')}</small>}
-            {approval.status === 'pending_human' && (
-              <div className="approval-actions">
-                <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => onApproval(approval, 'allow_once')}><Check size={13} /> {t('work.approvals.allowOnce')}</button>
-                <button disabled={decidingApprovalId === approval.id} className="danger" type="button" onClick={() => onApproval(approval, 'deny')}><Square size={12} /> {t('work.approvals.deny')}</button>
-              </div>
-            )}
-          </section>
-        )}
-        {result && (
-          <section className={`job-result ${result.status}`}>
-            <header>{t('work.causal.result')} · {statusLabel(result.status, t)}</header>
-            {result.error && <p>{result.error}</p>}
-            {result.exit_code !== undefined && <small>{t('work.causal.exitCode', { code: result.exit_code })}</small>}
-            {result.refs.length > 0 && <ul>{result.refs.map(ref => <li key={ref}><code>{ref}</code></li>)}</ul>}
-            {result.event_id && <code>{shortId(result.event_id, 30)}</code>}
-          </section>
-        )}
-      </div>
-    </details>
-  )
-}
-
-function ActivationGroup({
-  snapshot,
-  t,
-  locale,
-  decidingApprovalId,
-  onApproval,
-}: {
-  snapshot: SchedulerActivationSnapshot
-  t: TFunction
-  locale: string
-  decidingApprovalId: string
-  onApproval: (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => void
-}) {
-  return (
-    <section className="causal-activation">
-      <header>
-        <span className={`status-pill ${snapshot.activation.status}`}>{statusLabel(snapshot.activation.status, t)}</span>
-        <strong>{t('work.causal.activation')}</strong>
-        <code>{shortId(snapshot.activation.id, 22)}</code>
-        <small>{snapshot.activation.trigger_kind}</small>
-      </header>
-      {snapshot.signals.map(signal => (
-        <div className="causal-signal" key={signal.id}>
-          <Radio size={12} /><span>{signal.kind}</span><code>#{signal.sequence} · {shortId(signal.event_id, 18)}</code>
-        </div>
-      ))}
-      <div className="causal-jobs">
-        {snapshot.jobs.map(job => (
-          <ExecutionJobRow
-            key={job.job.id}
-            snapshot={job}
-            t={t}
-            locale={locale}
-            decidingApprovalId={decidingApprovalId}
-            onApproval={onApproval}
-          />
-        ))}
-        {snapshot.jobs.length === 0 && <div className="small-empty">{t('work.causal.noJobs')}</div>}
-      </div>
-    </section>
-  )
-}
-
-function ThreadCausalCard({
-  snapshot,
-  t,
-  locale,
-  decidingApprovalId,
-  mutatingScheduleId,
-  onApproval,
-  onSchedule,
-}: {
-  snapshot: SchedulerThreadSnapshot
-  t: TFunction
-  locale: string
-  decidingApprovalId: string
-  mutatingScheduleId: string
-  onApproval: (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => void
-  onSchedule: (schedule: ScheduleRecord, action: 'pause' | 'resume' | 'reschedule' | 'cancel') => void
-}) {
-  const { thread } = snapshot
-  const active = snapshot.phase !== 'idle' || thread.lifecycle === 'open'
-  return (
-    <details className={`causal-thread ${snapshot.phase}`} open={active}>
-      <summary>
-        <span className={`status-pill ${snapshot.phase}`}>{statusLabel(snapshot.phase, t)}</span>
-        <div><strong>{threadKindLabel(thread.kind, t)}</strong><small>{shortId(thread.id, 30)} · {t('header.session')} {shortId(thread.session_id, 18)}</small></div>
-        <span className="causal-counts">{snapshot.activations.length}A · {snapshot.activations.reduce((sum, item) => sum + item.jobs.length, 0)}J</span>
-        <em>{thread.delivery_status}</em>
-        <ChevronDown size={14} />
-      </summary>
-      <div className="causal-thread-body">
-        {snapshot.pending_signals.map(signal => (
-          <div className="causal-signal pending" key={signal.id}>
-            <Radio size={12} /><span>{signal.kind}</span><code>#{signal.sequence} · {shortId(signal.event_id, 20)}</code>
-          </div>
-        ))}
-        {snapshot.activations.map(activation => (
-          <ActivationGroup
-            key={activation.activation.id}
-            snapshot={activation}
-            t={t}
-            locale={locale}
-            decidingApprovalId={decidingApprovalId}
-            onApproval={onApproval}
-          />
-        ))}
-        {snapshot.schedules.map(schedule => (
-          <article className="inline-schedule" key={schedule.id}>
-            <Clock3 size={14} />
-            <div><strong>{schedule.intent}</strong><small>{schedule.not_before ? new Date(schedule.not_before).toLocaleString(locale) : t('work.scheduler.immediate')} · r{schedule.revision}</small></div>
-            <span className={`status-pill ${schedule.status}`}>{statusLabel(schedule.status, t)}</span>
-            <div className="schedule-actions">
-              {schedule.status === 'queued' && <button disabled={mutatingScheduleId === schedule.id} type="button" onClick={() => onSchedule(schedule, 'pause')}>{t('work.schedules.pause')}</button>}
-              {schedule.status === 'paused' && <button disabled={mutatingScheduleId === schedule.id} type="button" onClick={() => onSchedule(schedule, 'resume')}>{t('work.schedules.resume')}</button>}
-              {!['completed', 'cancelled', 'dispatched'].includes(schedule.status) && <button disabled={mutatingScheduleId === schedule.id} type="button" onClick={() => onSchedule(schedule, 'reschedule')}>{t('work.schedules.reschedule')}</button>}
-              {!['completed', 'cancelled'].includes(schedule.status) && <button disabled={mutatingScheduleId === schedule.id} className="danger" type="button" onClick={() => onSchedule(schedule, 'cancel')}>{t('work.schedules.cancel')}</button>}
-            </div>
-          </article>
-        ))}
-        <footer className={`delivery-state ${thread.delivery_status}`}>
-          <span>{t('work.causal.delivery')}</span><b>{statusLabel(thread.delivery_status, t)}</b>
-          {thread.result_text && <p>{thread.result_text}</p>}
-        </footer>
-      </div>
-    </details>
-  )
+  return conversationEventKind(event.topic, event.payload)
 }
 
 // Selection changes can fire many times while the pointer is moving. Keeping
@@ -998,17 +1212,42 @@ const Composer = memo(function Composer({
 
 export default function App() {
   const { t, i18n } = useTranslation()
-  const [view, setView] = useState<View>('conversation')
+  const location = useLocation()
+  const navigate = useNavigate()
+  const route = useMemo(() => parseDashboardRoute(location.pathname), [location.pathname])
+  const view = route.view
+  const cognitionView = route.cognitionView ?? 'mind'
   const [accentTheme, setAccentTheme] = useState<AccentTheme>(initialAccentTheme)
+  const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(initialAppearanceMode)
+  const [systemPrefersDark, setSystemPrefersDark] = useState(initialSystemPrefersDark)
   const [showReasoningSummary, setShowReasoningSummary] = useState(initialShowReasoningSummary)
   const [themeMenuOpen, setThemeMenuOpen] = useState(false)
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
+  const [catalogReady, setCatalogReady] = useState(false)
   const [agents, setAgents] = useState<AgentRecord[]>([])
   const [contexts, setContexts] = useState<ContextRecord[]>([])
   const [sessions, setSessions] = useState<SessionRecord[]>([])
   const [delegations, setDelegations] = useState<DelegationRecord[]>([])
+  const [executionTargets, setExecutionTargets] = useState<ExecutionTargetSummary[]>([])
+  const [executionNodes, setExecutionNodes] = useState<ExecutionNodeSummary[]>([])
+  const [capabilityLeases, setCapabilityLeases] = useState<CapabilityLeaseSummary[]>([])
+  const [executionJobs, setExecutionJobs] = useState<ExecutionJobSummary[]>([])
   const [schedulerSnapshot, setSchedulerSnapshot] = useState<SchedulerSnapshot | null>(null)
+  const [schedulerHistoryLimit, setSchedulerHistoryLimit] = useState(SCHEDULER_HISTORY_PAGE_SIZE)
+  const [threadDetail, setThreadDetail] = useState<ThreadDetailResponse | null>(null)
+  const [dialogueActivityOpen, setDialogueActivityOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.open', true)
+  const [expandedDialogueThreadId, setExpandedDialogueThreadId] = useState('')
+  const [dialogueThreadDetail, setDialogueThreadDetail] = useState<ThreadDetailResponse | null>(null)
+  const [projectionAudit, setProjectionAudit] = useState<MindProjectionAudit | null>(null)
+  const [auditingProjection, setAuditingProjection] = useState(false)
+  const [contextOverview, setContextOverview] = useState<ContextOverviewResponse | null>(null)
+  const [ledgerPage, setLedgerPage] = useState<LedgerQueryResponse | null>(null)
+  const [mindTransactionPage, setMindTransactionPage] = useState<LedgerQueryResponse | null>(null)
+  const [ledgerFilters, setLedgerFilters] = useState<LedgerFilters>({ sessionId: '', principalId: '', threadId: '', activationId: '', actor: '', topic: '', search: '', afterSequence: '', startTime: '', endTime: '' })
+  const [ledgerBeforeSequence, setLedgerBeforeSequence] = useState('')
+  const [ledgerCursorHistory, setLedgerCursorHistory] = useState<string[]>([])
   const [contextView, setContextView] = useState<ContextViewResponse | null>(null)
+  const [contextEncoding, setContextEncoding] = useState<ContextEncodingResponse | null>(null)
   const [events, setEvents] = useState<MorphzEvent[]>([])
   const [eventsSessionId, setEventsSessionId] = useState('')
   const [latestContextInspect, setLatestContextInspect] = useState<MorphzEvent | null>(null)
@@ -1051,8 +1290,6 @@ export default function App() {
   const conversationPinnedToEnd = useRef(true)
   const lastProgrammaticScroll = useRef(0)
   const viewFrameRef = useRef<HTMLDivElement>(null)
-  const toolTimelineList = useRef<HTMLDivElement>(null)
-  const toolTimelinePinnedToEnd = useRef(true)
   const sessionLoadInFlight = useRef(false)
   const sessionLoadQueued = useRef<{ sessionId: string, contextId: string } | null>(null)
   const loadSessionRef = useRef<(sessionId: string, contextId: string) => Promise<void>>(async () => {})
@@ -1060,6 +1297,26 @@ export default function App() {
   const sessionSelectorRef = useRef<HTMLDivElement>(null)
   const themeSelectorRef = useRef<HTMLDivElement>(null)
   const selectedScopeRef = useRef({ sessionId: '', contextId: '' })
+  const activeViewRef = useRef(view)
+  const schedulerHistoryLimitRef = useRef(schedulerHistoryLimit)
+  const authoritativeRefreshRef = useRef<(topic: string) => void>(() => {})
+
+  useEffect(() => {
+    activeViewRef.current = view
+  }, [view])
+
+  useEffect(() => {
+    schedulerHistoryLimitRef.current = schedulerHistoryLimit
+  }, [schedulerHistoryLimit])
+
+  const setView = useCallback((next: DashboardView | ((current: DashboardView) => DashboardView)) => {
+    const resolved = typeof next === 'function' ? next(view) : next
+    navigate(dashboardPath(resolved, selectedContextId, selectedSessionId, cognitionView))
+  }, [cognitionView, navigate, selectedContextId, selectedSessionId, view])
+
+  const selectCognitionView = useCallback((next: CognitionView) => {
+    navigate(dashboardPath('cognition', selectedContextId, selectedSessionId, next))
+  }, [navigate, selectedContextId, selectedSessionId])
 
   const apiHeaders = useCallback((json = false) => {
     const headers: Record<string, string> = {}
@@ -1070,24 +1327,30 @@ export default function App() {
 
   const loadCatalog = useCallback(async () => {
     try {
-      const [statusResponse, agentsResponse, contextsResponse, sessionsResponse, delegationsResponse] = await Promise.all([
-        fetch(`${CORE_HTTP_URL}/api/status`, { headers: apiHeaders() }),
-        fetch(`${CORE_HTTP_URL}/api/agents?include_archived=true`, { headers: apiHeaders() }),
-        fetch(`${CORE_HTTP_URL}/api/contexts?include_archived=true`, { headers: apiHeaders() }),
-        fetch(`${CORE_HTTP_URL}/api/sessions?include_archived=true`, { headers: apiHeaders() }),
-        fetch(`${CORE_HTTP_URL}/api/delegations`, { headers: apiHeaders() }),
+      const [nextStatus, agentsResult, contextsResult, sessionsResult, delegationsResult, targetsResult, nodesResult, leasesResult, jobsResult] = await Promise.all([
+        DASHBOARD_API.get<RuntimeStatus>('/api/status'),
+        DASHBOARD_API.tryGet<{ agents?: AgentRecord[] }>('/api/agents?include_archived=true'),
+        DASHBOARD_API.tryGet<{ contexts?: ContextRecord[] }>('/api/contexts?include_archived=true'),
+        DASHBOARD_API.tryGet<{ sessions?: SessionRecord[] }>('/api/sessions?include_archived=true'),
+        DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[] }>('/api/delegations'),
+        DASHBOARD_API.tryGet<{ targets?: ExecutionTargetSummary[] }>('/api/execution-targets'),
+        DASHBOARD_API.tryGet<{ nodes?: ExecutionNodeSummary[] }>('/api/edge/nodes'),
+        DASHBOARD_API.tryGet<{ leases?: CapabilityLeaseSummary[] }>('/api/capability-leases?active_only=true'),
+        DASHBOARD_API.tryGet<{ jobs?: ExecutionJobSummary[] }>('/api/execution-jobs?include_terminal=true&newest_first=true&limit=100'),
       ])
-      if (!statusResponse.ok) throw new Error(t('errors.statusHttp', { status: statusResponse.status }))
-      const nextStatus = await statusResponse.json() as RuntimeStatus
-      const nextAgents = agentsResponse.ok ? ((await agentsResponse.json() as { agents?: AgentRecord[] }).agents ?? []) : []
-      const nextContexts = contextsResponse.ok ? ((await contextsResponse.json() as { contexts?: ContextRecord[] }).contexts ?? []) : []
-      const nextSessions = sessionsResponse.ok ? ((await sessionsResponse.json() as { sessions?: SessionRecord[] }).sessions ?? []) : []
-      const nextDelegations = delegationsResponse.ok ? ((await delegationsResponse.json() as { delegations?: DelegationRecord[] }).delegations ?? []) : []
+      const nextAgents = agentsResult?.agents ?? []
+      const nextContexts = contextsResult?.contexts ?? []
+      const nextSessions = sessionsResult?.sessions ?? []
+      const nextDelegations = delegationsResult?.delegations ?? []
       setStatus(nextStatus)
       setAgents(nextAgents)
       setContexts(nextContexts)
       setSessions(nextSessions)
       setDelegations(nextDelegations)
+      setExecutionTargets(targetsResult?.targets ?? [])
+      setExecutionNodes(nodesResult?.nodes ?? [])
+      setCapabilityLeases(leasesResult?.leases ?? [])
+      setExecutionJobs(jobsResult?.jobs ?? [])
       setSelectedAgentId(current => current || nextStatus.agent_id || nextAgents[0]?.id || '')
       setSelectedContextId(current => current || nextStatus.context_id || nextContexts[0]?.id || '')
       setSelectedSessionId(current => {
@@ -1100,8 +1363,57 @@ export default function App() {
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setCatalogReady(true)
     }
-  }, [apiHeaders, t])
+  }, [])
+
+  const setExecutionTargetStatus = useCallback(async (targetId: string, revision: number, status: 'online' | 'disabled') => {
+    try {
+      await DASHBOARD_API.command(`/api/execution-targets/${encodeURIComponent(targetId)}`, 'PATCH', {
+        expected_revision: revision,
+        status,
+      })
+      await loadCatalog()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [loadCatalog])
+
+  const revokeExecutionNode = useCallback(async (nodeId: string, revision: number) => {
+    try {
+      await DASHBOARD_API.command(`/api/edge/nodes/${encodeURIComponent(nodeId)}`, 'DELETE', {
+        expected_revision: revision,
+      })
+      await loadCatalog()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [loadCatalog])
+
+  const revokeCapabilityLease = useCallback(async (leaseId: string, revision: number) => {
+    try {
+      await DASHBOARD_API.command(`/api/capability-leases/${encodeURIComponent(leaseId)}`, 'DELETE', {
+        expected_revision: revision,
+        reason: 'Revoked from Dashboard',
+      })
+      await loadCatalog()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [loadCatalog])
+
+  const cancelExecutionJob = useCallback(async (jobId: string, revision: number) => {
+    try {
+      await DASHBOARD_API.command(`/api/execution-jobs/${encodeURIComponent(jobId)}/cancel`, 'POST', {
+        expected_revision: revision,
+        reason: 'Cancelled from Dashboard',
+      })
+      await loadCatalog()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [loadCatalog])
 
   const loadSession = useCallback(async (sessionId: string, contextId: string) => {
     if (!sessionId || !contextId) return
@@ -1114,49 +1426,89 @@ export default function App() {
     }
     sessionLoadInFlight.current = true
     try {
-      const [eventsResponse, contextResponse, schedulerResponse, delegationsResponse] = await Promise.all([
-        fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(sessionId)}/events?limit=1000`, { headers: apiHeaders() }),
-        fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(sessionId)}/context`, { headers: apiHeaders() }),
-        fetch(`${CORE_HTTP_URL}/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=true&limit=300`, { headers: apiHeaders() }),
-        fetch(`${CORE_HTTP_URL}/api/delegations`, { headers: apiHeaders() }),
-      ])
-      const selectedScope = selectedScopeRef.current
-      if (selectedScope.sessionId !== sessionId || selectedScope.contextId !== contextId) return
-      if (!contextResponse.ok) throw new Error(t('errors.contextHttp', { status: contextResponse.status }))
-      if (eventsResponse.ok) {
-        const result = await eventsResponse.json() as { events?: MorphzEvent[] }
-        const nextEvents = result.events ?? []
-        setEvents(nextEvents)
-        setEventsSessionId(sessionId)
-        for (const summary of selectDurableReasoningSummaries(nextEvents)) {
-          dispatchModelStream({ type: 'persisted', sessionId, causalId: summary.attemptId })
+      const isCurrentScope = () => {
+        const selectedScope = selectedScopeRef.current
+        return selectedScope.sessionId === sessionId && selectedScope.contextId === contextId
+      }
+      const currentView = activeViewRef.current
+      const includeTerminal = currentView === 'scheduler' || currentView === 'dialogue'
+      const schedulerLimit = currentView === 'scheduler'
+        ? schedulerHistoryLimitRef.current
+        : currentView === 'dialogue'
+          ? 40
+          : 50
+      const applySchedulerSnapshot = (snapshot: SchedulerSnapshot) => {
+        if (!isCurrentScope()) return
+        setSchedulerSnapshot(snapshot)
+        const activeActivationIds = snapshot.threads
+          .flatMap(thread => thread.activations)
+          .map(activation => activation.activation)
+          .filter(activation => activation.status === 'queued' || activation.status === 'running')
+          .map(activation => activation.id)
+        // Keep drafts that are still actively streaming. Snapshot rows can
+        // lag behind the live stream, so filtering purely by the snapshot
+        // kills bubbles mid-generation and breaks auto-scroll.
+        dispatchModelStream({
+          type: 'reconcile',
+          sessionId,
+          activeActivationIds,
+          cutoffMs: Date.now() - 10_000,
+        })
+      }
+      const overviewRequest = DASHBOARD_API.get<ContextOverviewResponse>(
+        `/api/contexts/${encodeURIComponent(contextId)}/overview?session_id=${encodeURIComponent(sessionId)}`,
+      ).then(async snapshot => {
+        if (!isCurrentScope()) return
+        setContextOverview(snapshot)
+        if (includeTerminal) return
+        const summary = snapshot.scheduler
+        const needsSchedulerDetail = summary.open_threads > 0
+          || summary.pending_signals > 0
+          || summary.queued_activations > 0
+          || summary.running_activations > 0
+          || summary.active_jobs > 0
+          || summary.pending_approvals > 0
+          || summary.active_schedules > 0
+        if (!needsSchedulerDetail) {
+          setSchedulerSnapshot(null)
+          return
         }
-      }
-      const nextContext = await contextResponse.json() as ContextViewResponse
-      setContextView(nextContext)
-      if (!schedulerResponse.ok) throw new Error(t('errors.schedulerHttp', { status: schedulerResponse.status }))
-      setSchedulerSnapshot(await schedulerResponse.json() as SchedulerSnapshot)
-      const activeActivations = new Set(nextContext.active_activations.map(item => item.id))
-      const reconcileCutoffMs = Date.now() - 10_000
-      // Keep drafts that are still actively streaming. Snapshot rows can lag
-      // behind the live stream, so filtering purely by the snapshot kills
-      // bubbles mid-generation and breaks auto-scroll.
-      dispatchModelStream({
-        type: 'reconcile',
-        sessionId,
-        activeActivationIds: [...activeActivations],
-        cutoffMs: reconcileCutoffMs,
+        const scheduler = await DASHBOARD_API.get<SchedulerSnapshot>(
+          `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=false&limit=${schedulerLimit}`,
+        )
+        applySchedulerSnapshot(scheduler)
       })
-      if (delegationsResponse.ok) {
-        const result = await delegationsResponse.json() as { delegations?: DelegationRecord[] }
-        setDelegations(result.delegations ?? [])
+      const requests = [
+        DASHBOARD_API.tryGet<{ events?: MorphzEvent[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/events?limit=1000`)
+          .then(eventsResult => {
+            if (!eventsResult || !isCurrentScope()) return
+            const nextEvents = eventsResult.events ?? []
+            setEvents(nextEvents)
+            setEventsSessionId(sessionId)
+            for (const summary of selectDurableReasoningSummaries(nextEvents)) {
+              dispatchModelStream({ type: 'persisted', sessionId, causalId: summary.attemptId })
+            }
+          }),
+        overviewRequest,
+        ...(includeTerminal
+          ? [DASHBOARD_API.get<SchedulerSnapshot>(
+              `/api/contexts/${encodeURIComponent(contextId)}/scheduler?include_terminal=true&limit=${schedulerLimit}`,
+            ).then(applySchedulerSnapshot)]
+          : []),
+        DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[] }>('/api/delegations')
+          .then(delegationsResult => {
+            if (delegationsResult && isCurrentScope()) {
+              setDelegations(delegationsResult.delegations ?? [])
+            }
+          }),
+      ]
+      const results = await Promise.allSettled(requests)
+      const failure = results.find(result => result.status === 'rejected')
+      if (failure?.status === 'rejected' && isCurrentScope()) {
+        setError(failure.reason instanceof Error ? failure.reason.message : String(failure.reason))
+      } else if (isCurrentScope()) {
+        setError('')
       }
-      setSelectedFrameId(current => current && nextContext.state.frames.some(frame => frame.id === current)
-        ? current
-        : nextContext.state.frames[0]?.id ?? '')
-      setError('')
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       sessionLoadInFlight.current = false
       const queued = sessionLoadQueued.current
@@ -1168,7 +1520,109 @@ export default function App() {
         )
       }
     }
-  }, [apiHeaders, t])
+  }, [])
+
+  const loadContextProjection = useCallback(async (sessionId: string, contextId: string) => {
+    if (!sessionId || !contextId) return
+    try {
+      const projection = await DASHBOARD_API.get<ContextViewResponse>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/context/projection`,
+      )
+      const selectedScope = selectedScopeRef.current
+      if (selectedScope.sessionId !== sessionId || selectedScope.contextId !== contextId) return
+      setContextView(projection)
+      setSelectedFrameId(current => current && projection.state.frames.some(frame => frame.id === current)
+        ? current
+        : projection.state.frames[0]?.id ?? '')
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [])
+
+  const loadContextEncoding = useCallback(async (sessionId: string, contextId: string) => {
+    if (!sessionId || !contextId) return
+    try {
+      const encoding = await DASHBOARD_API.get<ContextEncodingResponse>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/context/encoding`,
+      )
+      const selectedScope = selectedScopeRef.current
+      if (selectedScope.sessionId !== sessionId || selectedScope.contextId !== contextId) return
+      setContextEncoding(encoding)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [])
+
+  const loadOverview = useCallback(async (contextId: string, sessionId: string) => {
+    if (!contextId) return
+    try {
+      const query = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+      const snapshot = await DASHBOARD_API.get<ContextOverviewResponse>(
+        `/api/contexts/${encodeURIComponent(contextId)}/overview${query}`,
+      )
+      if (selectedScopeRef.current.contextId !== contextId) return
+      setContextOverview(snapshot)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [])
+
+  const loadLedger = useCallback(async (contextId: string, filters: LedgerFilters, beforeSequence = '') => {
+    if (!contextId) return
+    try {
+      const query = new URLSearchParams({ limit: '200' })
+      if (filters.sessionId) query.set('session_id', filters.sessionId)
+      if (filters.principalId) query.set('principal_id', filters.principalId)
+      if (filters.threadId) query.set('thread_id', filters.threadId)
+      if (filters.activationId) query.set('activation_id', filters.activationId)
+      if (filters.actor) query.set('actor', filters.actor)
+      if (filters.topic) query.set('topic', filters.topic)
+      if (filters.search) query.set('query', filters.search)
+      if (filters.afterSequence) query.set('after_sequence', filters.afterSequence)
+      if (beforeSequence) query.set('before_sequence', beforeSequence)
+      if (filters.startTime) query.set('start_time', new Date(filters.startTime).toISOString())
+      if (filters.endTime) query.set('end_time', new Date(filters.endTime).toISOString())
+      const page = await DASHBOARD_API.get<LedgerQueryResponse>(
+        `/api/contexts/${encodeURIComponent(contextId)}/ledger?${query}`,
+      )
+      if (selectedScopeRef.current.contextId !== contextId) return
+      setLedgerPage(page)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [])
+
+  const loadThreadDetail = useCallback(async (contextId: string, threadId: string) => {
+    if (!contextId || !threadId) return
+    try {
+      const detail = await DASHBOARD_API.get<ThreadDetailResponse>(
+        `/api/contexts/${encodeURIComponent(contextId)}/threads/${encodeURIComponent(threadId)}`,
+      )
+      if (selectedScopeRef.current.contextId !== contextId) return
+      setThreadDetail(detail)
+      setError('')
+    } catch (reason) {
+      setThreadDetail(null)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [])
+
+  const loadMindTransactions = useCallback(async (contextId: string) => {
+    if (!contextId) return
+    const query = new URLSearchParams({ topic: 'chat/context_tx_committed', limit: '50' })
+    try {
+      const page = await DASHBOARD_API.get<LedgerQueryResponse>(
+        `/api/contexts/${encodeURIComponent(contextId)}/ledger?${query}`,
+      )
+      if (selectedScopeRef.current.contextId === contextId) setMindTransactionPage(page)
+    } catch {
+      // Mind projection remains usable when optional transaction history fails.
+    }
+  }, [])
 
   useEffect(() => {
     loadSessionRef.current = loadSession
@@ -1210,17 +1664,21 @@ export default function App() {
         },
       )
       if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`)
-      await loadSessionRef.current(selectedSessionId, selectedContextId)
+      setContextEncoding(null)
+      await Promise.all([
+        loadContextProjection(selectedSessionId, selectedContextId),
+        loadOverview(selectedContextId, selectedSessionId),
+      ])
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setMutatingFrameId('')
     }
-  }, [apiHeaders, contextView, selectedContextId, selectedSessionId])
+  }, [apiHeaders, contextView, loadContextProjection, loadOverview, selectedContextId, selectedSessionId])
 
   useEffect(() => {
-    if (view !== 'mind' || !selectedContextId) return
+    if (view !== 'cognition' || !selectedContextId) return
     let cancelled = false
     void fetch(
       `${CORE_HTTP_URL}/api/contexts/${encodeURIComponent(selectedContextId)}/recall/index`,
@@ -1232,7 +1690,7 @@ export default function App() {
   }, [apiHeaders, selectedContextId, view])
 
   useEffect(() => {
-    if (view !== 'mind' || !selectedContextId || !selectedFrameId) return
+    if (view !== 'cognition' || !selectedContextId || !selectedFrameId) return
     let cancelled = false
     void fetch(
       `${CORE_HTTP_URL}/api/contexts/${encodeURIComponent(selectedContextId)}/frames/${encodeURIComponent(selectedFrameId)}/recall?depth=2&direction=both&include_bodies=false&max_nodes=64`,
@@ -1253,6 +1711,31 @@ export default function App() {
 
   useEffect(() => {
     try {
+      window.localStorage.setItem('morphz.dashboard.appearance', appearanceMode)
+    } catch {
+      // The visual preference remains valid for the current page lifetime.
+    }
+  }, [appearanceMode])
+
+  useEffect(() => {
+    const media = window.matchMedia?.('(prefers-color-scheme: dark)')
+    if (!media) return
+    const update = (event: MediaQueryListEvent) => setSystemPrefersDark(event.matches)
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+
+  const resolvedAppearanceMode = appearanceMode === 'system'
+    ? (systemPrefersDark ? 'dark' : 'light')
+    : appearanceMode
+
+  useEffect(() => {
+    document.documentElement.dataset.colorMode = resolvedAppearanceMode
+    document.documentElement.style.colorScheme = resolvedAppearanceMode
+  }, [resolvedAppearanceMode])
+
+  useEffect(() => {
+    try {
       window.localStorage.setItem(reasoningSummaryStorageKey, String(showReasoningSummary))
     } catch {
       // Storage can be unavailable in privacy-restricted browser contexts.
@@ -1265,16 +1748,71 @@ export default function App() {
   }, [loadCatalog])
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (route.contextId) setSelectedContextId(route.contextId)
+      if (route.sessionId) setSelectedSessionId(route.sessionId)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [route.contextId, route.sessionId])
+
+  useEffect(() => {
+    if (!selectedContextId || sessions.length === 0) return
+    const selectedBelongsToContext = sessions.some(session => (
+      session.id === selectedSessionId
+      && session.context_id === selectedContextId
+      && session.status === 'active'
+    ))
+    if (selectedBelongsToContext) return
+    const nextSession = sessions
+      .filter(session => session.context_id === selectedContextId && session.status === 'active')
+      .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))[0]
+    const timer = window.setTimeout(() => {
+      setSelectedSessionId(nextSession?.id ?? '')
+      if (view === 'dialogue' && nextSession) {
+        navigate(dashboardPath('dialogue', selectedContextId, nextSession.id), { replace: true })
+      }
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [navigate, selectedContextId, selectedSessionId, sessions, view])
+
+  useEffect(() => {
+    const context = contexts.find(item => item.id === selectedContextId)
+    if (!context || context.agent_id === selectedAgentId) return
+    const timer = window.setTimeout(() => setSelectedAgentId(context.agent_id), 0)
+    return () => window.clearTimeout(timer)
+  }, [contexts, selectedAgentId, selectedContextId])
+
+  useEffect(() => {
+    if (location.pathname !== '/' || !selectedContextId) return
+    navigate(dashboardPath('overview', selectedContextId, selectedSessionId), { replace: true })
+  }, [location.pathname, navigate, selectedContextId, selectedSessionId])
+
+  useEffect(() => {
     selectedScopeRef.current = { sessionId: selectedSessionId, contextId: selectedContextId }
   }, [selectedContextId, selectedSessionId])
+
+  useEffect(() => {
+    const reset = window.setTimeout(() => {
+      setLedgerPage(null)
+      setLedgerBeforeSequence('')
+      setLedgerCursorHistory([])
+    }, 0)
+    return () => window.clearTimeout(reset)
+  }, [selectedContextId])
 
   useEffect(() => {
     const resetTimer = window.setTimeout(() => {
       dispatchModelStream({ type: 'reset_session', sessionId: selectedSessionId })
       setEventsSessionId('')
       setLatestContextInspect(null)
+      setContextView(null)
+      setContextEncoding(null)
+      setContextOverview(current => current?.active_session_id === selectedSessionId ? current : null)
       setContextInspectTab('encoding')
       setContextInspectCopied(false)
+      setSchedulerHistoryLimit(SCHEDULER_HISTORY_PAGE_SIZE)
+      setExpandedDialogueThreadId('')
+      setDialogueThreadDetail(null)
     }, 0)
     return () => window.clearTimeout(resetTimer)
   }, [selectedSessionId])
@@ -1287,7 +1825,164 @@ export default function App() {
       window.clearTimeout(initial)
       window.clearInterval(interval)
     }
-  }, [loadSession, selectedContextId, selectedSessionId])
+  }, [loadSession, schedulerHistoryLimit, selectedContextId, selectedSessionId, view])
+
+  useEffect(() => {
+    if (!selectedContextId || selectedSessionId) return
+    const initial = window.setTimeout(() => void loadOverview(selectedContextId, ''), 0)
+    const interval = window.setInterval(() => void loadOverview(selectedContextId, ''), 15000)
+    return () => {
+      window.clearTimeout(initial)
+      window.clearInterval(interval)
+    }
+  }, [loadOverview, selectedContextId, selectedSessionId])
+
+  useEffect(() => {
+    if (view !== 'cognition' || !selectedContextId || !selectedSessionId) return
+    const initial = window.setTimeout(
+      () => void loadContextProjection(selectedSessionId, selectedContextId),
+      0,
+    )
+    const interval = window.setInterval(
+      () => void loadContextProjection(selectedSessionId, selectedContextId),
+      30000,
+    )
+    return () => {
+      window.clearTimeout(initial)
+      window.clearInterval(interval)
+    }
+  }, [loadContextProjection, selectedContextId, selectedSessionId, view])
+
+  useEffect(() => {
+    if (view !== 'cognition' || contextInspectTab !== 'encoding' || !selectedContextId || !selectedSessionId) return
+    const inspectPayload = latestContextInspect?.payload
+    const hasLiveEncoding = inspectPayload?.session_id === selectedSessionId && typeof inspectPayload.text === 'string'
+    const hasCurrentEncoding = contextEncoding?.session_id === selectedSessionId
+      && (!contextView || contextEncoding.mind_revision === contextView.state.version)
+    if (hasLiveEncoding || hasCurrentEncoding) return
+    const timer = window.setTimeout(
+      () => void loadContextEncoding(selectedSessionId, selectedContextId),
+      0,
+    )
+    return () => window.clearTimeout(timer)
+  }, [
+    contextEncoding,
+    contextInspectTab,
+    contextView,
+    latestContextInspect,
+    loadContextEncoding,
+    selectedContextId,
+    selectedSessionId,
+    view,
+  ])
+
+  useEffect(() => {
+    if (view !== 'ledger' || !selectedContextId) return
+    const initial = window.setTimeout(() => void loadLedger(selectedContextId, ledgerFilters, ledgerBeforeSequence), 0)
+    const interval = window.setInterval(() => void loadLedger(selectedContextId, ledgerFilters, ledgerBeforeSequence), 15000)
+    return () => {
+      window.clearTimeout(initial)
+      window.clearInterval(interval)
+    }
+  }, [ledgerBeforeSequence, ledgerFilters, loadLedger, selectedContextId, view])
+
+  useEffect(() => {
+    if (view !== 'scheduler' || !selectedContextId || !route.threadId) {
+      const reset = window.setTimeout(() => setThreadDetail(null), 0)
+      return () => window.clearTimeout(reset)
+    }
+    const initial = window.setTimeout(
+      () => void loadThreadDetail(selectedContextId, route.threadId ?? ''),
+      0,
+    )
+    const interval = window.setInterval(
+      () => void loadThreadDetail(selectedContextId, route.threadId ?? ''),
+      5000,
+    )
+    return () => {
+      window.clearTimeout(initial)
+      window.clearInterval(interval)
+    }
+  }, [loadThreadDetail, route.threadId, selectedContextId, view])
+
+  useEffect(() => {
+    if (view !== 'dialogue' || !dialogueActivityOpen || !selectedContextId || !expandedDialogueThreadId) {
+      const reset = window.setTimeout(() => setDialogueThreadDetail(null), 0)
+      return () => window.clearTimeout(reset)
+    }
+    let cancelled = false
+    const load = async () => {
+      try {
+        const detail = await DASHBOARD_API.get<ThreadDetailResponse>(
+          `/api/contexts/${encodeURIComponent(selectedContextId)}/threads/${encodeURIComponent(expandedDialogueThreadId)}`,
+        )
+        if (!cancelled && selectedScopeRef.current.contextId === selectedContextId) {
+          setDialogueThreadDetail(detail)
+          setError('')
+        }
+      } catch (reason) {
+        if (!cancelled) {
+          setDialogueThreadDetail(null)
+          setError(reason instanceof Error ? reason.message : String(reason))
+        }
+      }
+    }
+    const initial = window.setTimeout(() => void load(), 0)
+    const interval = window.setInterval(() => void load(), 3000)
+    return () => {
+      cancelled = true
+      window.clearTimeout(initial)
+      window.clearInterval(interval)
+    }
+  }, [dialogueActivityOpen, expandedDialogueThreadId, selectedContextId, view])
+
+  useEffect(() => {
+    if (view !== 'cognition' || cognitionView !== 'mind' || !selectedContextId) return
+    const initial = window.setTimeout(() => void loadMindTransactions(selectedContextId), 0)
+    const interval = window.setInterval(() => void loadMindTransactions(selectedContextId), 15000)
+    return () => {
+      window.clearTimeout(initial)
+      window.clearInterval(interval)
+    }
+  }, [cognitionView, loadMindTransactions, selectedContextId, view])
+
+  useEffect(() => {
+    authoritativeRefreshRef.current = (topic: string) => {
+      const invalidated = invalidatedQueriesForTopic(topic)
+      const refreshesSession = invalidated.includes('session')
+      if (refreshesSession) void loadSession(selectedSessionId, selectedContextId)
+      if (!refreshesSession && invalidated.includes('overview')) {
+        void loadOverview(selectedContextId, selectedSessionId)
+      }
+      if (view === 'cognition' && invalidated.includes('session')) {
+        setContextEncoding(null)
+        void loadContextProjection(selectedSessionId, selectedContextId)
+      }
+      if (view === 'ledger' && invalidated.includes('ledger')) {
+        void loadLedger(selectedContextId, ledgerFilters, ledgerBeforeSequence)
+      }
+      if (view === 'cognition' && cognitionView === 'mind' && invalidated.includes('mind-transactions')) {
+        void loadMindTransactions(selectedContextId)
+      }
+      if (view === 'scheduler' && route.threadId && invalidated.includes('thread')) {
+        void loadThreadDetail(selectedContextId, route.threadId)
+      }
+    }
+  }, [
+    cognitionView,
+    ledgerBeforeSequence,
+    ledgerFilters,
+    loadLedger,
+    loadMindTransactions,
+    loadOverview,
+    loadContextProjection,
+    loadSession,
+    loadThreadDetail,
+    route.threadId,
+    selectedContextId,
+    selectedSessionId,
+    view,
+  ])
 
   useEffect(() => {
     if (!selectedSessionId) return
@@ -1297,6 +1992,13 @@ export default function App() {
     let streamTimer: number | undefined
     let pendingStreamEvents: ModelStreamBatchItem[] = []
     let disposed = false
+    const scheduleAuthoritativeRefresh = (topic: string) => {
+      if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
+      refreshTimer = window.setTimeout(
+        () => authoritativeRefreshRef.current(topic),
+        750,
+      )
+    }
     const flushStreamEvents = () => {
       streamTimer = undefined
       const batch = pendingStreamEvents
@@ -1359,7 +2061,20 @@ export default function App() {
             if (attemptId && activationId) {
               const terminal = event.payload.terminal === true
               if (terminal) {
-                pendingStreamEvents = pendingStreamEvents.filter(item => item.attemptId !== attemptId)
+                const matchingStreamEvents = pendingStreamEvents.filter(item => (
+                  item.attemptId === attemptId || item.activationId === activationId
+                ))
+                pendingStreamEvents = pendingStreamEvents.filter(item => (
+                  item.attemptId !== attemptId && item.activationId !== activationId
+                ))
+                if (matchingStreamEvents.length > 0) {
+                  dispatchModelStream({
+                    type: 'stream_batch',
+                    sessionId: selectedSessionId,
+                    items: matchingStreamEvents,
+                    nowMs: Date.now(),
+                  })
+                }
                 if (pendingStreamEvents.length === 0 && streamTimer !== undefined) {
                   window.clearTimeout(streamTimer)
                   streamTimer = undefined
@@ -1380,6 +2095,7 @@ export default function App() {
                 },
               })
             }
+            scheduleAuthoritativeRefresh(event.topic)
             return
           }
           if (event.topic === 'runtime/model_stream') {
@@ -1449,11 +2165,7 @@ export default function App() {
               nowMs: Date.now(),
             })
           }
-          if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
-          refreshTimer = window.setTimeout(
-            () => void loadSession(selectedSessionId, selectedContextId),
-            750,
-          )
+          scheduleAuthoritativeRefresh(event.topic)
         } catch {
           setError(t('errors.websocketParse'))
         }
@@ -1484,12 +2196,12 @@ export default function App() {
     const handleKey = (event: KeyboardEvent) => {
       if (event.ctrlKey && event.key.toLowerCase() === 't') {
         event.preventDefault()
-        setView(current => current === 'work' ? 'conversation' : 'work')
+        setView(current => current === 'scheduler' ? 'dialogue' : 'scheduler')
       } else if (event.ctrlKey && event.key.toLowerCase() === 'm') {
         event.preventDefault()
-        setView(current => current === 'mind' ? 'conversation' : 'mind')
+        setView(current => current === 'cognition' ? 'dialogue' : 'cognition')
       } else if (event.key === 'Escape') {
-        setView('conversation')
+        setView('dialogue')
         setContextMenuOpen(false)
         setSessionMenuOpen(false)
         setThemeMenuOpen(false)
@@ -1497,7 +2209,7 @@ export default function App() {
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [])
+  }, [setView])
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -1583,18 +2295,6 @@ export default function App() {
     () => streamingAttempts.filter(attempt => ['dialogue_turn', 'objective', 'delivery'].includes(attempt.threadKind)),
     [streamingAttempts],
   )
-  const liveWorkStreamingAttempts = useMemo(
-    () => Object.values(liveModelAttempts)
-      .filter(attempt => attempt.threadKind === 'work' && attempt.status !== 'failed')
-      .sort((left, right) => left.startedAt.localeCompare(right.startedAt)),
-    [liveModelAttempts],
-  )
-  const durableWorkReasoningSummaries = useMemo(
-    () => groupReasoningSummariesByActivation(
-      durableReasoningSummaries.filter(summary => summary.threadKind === 'execution'),
-    ),
-    [durableReasoningSummaries],
-  )
   const turnSettlement = useMemo(
     () => findTurnSettlement(sessionEvents, pendingTurn?.rootTurnId ?? null),
     [pendingTurn?.rootTurnId, sessionEvents],
@@ -1646,7 +2346,7 @@ export default function App() {
     }
     return [...calls.values()].sort((left, right) => left.timestamp.localeCompare(right.timestamp))
   }, [sessionEvents])
-  const objectives = contextView?.objectives ?? []
+  const objectives = contextOverview?.objectives ?? contextView?.objectives ?? []
   const activeObjectives = objectives.filter(item => !terminalObjectiveStatuses.has(item.status))
   const runningObjectives = activeObjectives.filter(item => item.status === 'active')
   const blockedObjectives = activeObjectives.filter(item => item.status === 'blocked')
@@ -1655,6 +2355,37 @@ export default function App() {
     () => schedulerSnapshot?.threads ?? [],
     [schedulerSnapshot],
   )
+  const dialogueActivityObjectives = [...activeObjectives].sort((left, right) => {
+    const leftCurrent = left.coordinator_session_id === selectedSessionId || left.delivery_session_id === selectedSessionId
+    const rightCurrent = right.coordinator_session_id === selectedSessionId || right.delivery_session_id === selectedSessionId
+    if (leftCurrent !== rightCurrent) return leftCurrent ? -1 : 1
+    return right.updated_at.localeCompare(left.updated_at)
+  })
+  const { dialogueActivityThreads, dialogueActivityHistoryThreads } = useMemo(() => {
+    const phaseRank: Record<SchedulerThreadSnapshot['phase'], number> = { running: 0, runnable: 1, waiting: 2, idle: 3 }
+    const executionBearingThreads = schedulerThreads.filter(threadCarriesExecution)
+    const active = executionBearingThreads.filter(snapshot => (
+        snapshot.phase !== 'idle'
+        || snapshot.thread.lifecycle === 'open'
+    ))
+    const activeIds = new Set(active.map(snapshot => snapshot.thread.id))
+    const history = executionBearingThreads
+      .filter(snapshot => !activeIds.has(snapshot.thread.id))
+      .sort((left, right) => right.thread.updated_at.localeCompare(left.thread.updated_at))
+      .slice(0, DIALOGUE_ACTIVITY_HISTORY_LIMIT)
+    const sortThreads = (items: SchedulerThreadSnapshot[]) => items.sort((left, right) => {
+        const leftCurrent = left.thread.session_id === selectedSessionId
+        const rightCurrent = right.thread.session_id === selectedSessionId
+        if (leftCurrent !== rightCurrent) return leftCurrent ? -1 : 1
+        if (phaseRank[left.phase] !== phaseRank[right.phase]) return phaseRank[left.phase] - phaseRank[right.phase]
+        return right.thread.updated_at.localeCompare(left.thread.updated_at)
+      })
+    return {
+      dialogueActivityThreads: sortThreads(active),
+      dialogueActivityHistoryThreads: sortThreads(history),
+    }
+  }, [schedulerThreads, selectedSessionId])
+  const showDialogueActivity = Boolean(selectedContextId && selectedSessionId)
   const visibleSchedulerThreads = useMemo(() => {
     const active = schedulerThreads.filter(snapshot => (
       snapshot.phase !== 'idle' || snapshot.thread.lifecycle === 'open'
@@ -1667,21 +2398,67 @@ export default function App() {
     return [...active, ...recentHistory]
   }, [schedulerThreads])
   const hiddenSchedulerThreadCount = schedulerThreads.length - visibleSchedulerThreads.length
-  const visibleToolTimeline = useMemo(
-    () => toolTimeline.slice(-TOOL_TIMELINE_RENDER_LIMIT),
-    [toolTimeline],
-  )
-  const hiddenToolCallCount = toolTimeline.length - visibleToolTimeline.length
+  const schedulerHistoryPageFull = view === 'scheduler'
+    && schedulerThreads.length >= schedulerHistoryLimit
+    && schedulerThreads.some(snapshot => snapshot.thread.lifecycle !== 'open')
+  const schedulerThreadGroups = useMemo(() => {
+    const groups: Record<'attention' | 'running' | 'runnable' | 'waiting' | 'recent', SchedulerThreadSnapshot[]> = {
+      attention: [],
+      running: [],
+      runnable: [],
+      waiting: [],
+      recent: [],
+    }
+    for (const snapshot of visibleSchedulerThreads) {
+      const jobs = snapshot.activations.flatMap(activation => activation.jobs)
+      const needsAttention = jobs.some(job => (
+        job.approval?.status === 'pending_human'
+        || job.job.status === 'failed'
+        || job.job.status === 'lost'
+      )) || (
+        snapshot.thread.lifecycle === 'completed'
+        && !['none', 'delivered'].includes(snapshot.thread.delivery_status)
+      )
+      if (needsAttention) groups.attention.push(snapshot)
+      else if (snapshot.phase === 'running') groups.running.push(snapshot)
+      else if (snapshot.phase === 'runnable') groups.runnable.push(snapshot)
+      else if (snapshot.phase === 'waiting' || snapshot.thread.lifecycle === 'open') groups.waiting.push(snapshot)
+      else groups.recent.push(snapshot)
+    }
+    return (Object.entries(groups) as Array<[keyof typeof groups, SchedulerThreadSnapshot[]]>)
+      .filter(([, snapshots]) => snapshots.length > 0)
+  }, [visibleSchedulerThreads])
+  const derivedThreadsByRootTurn = useMemo(() => {
+    const byRootTurn = new Map<string, SchedulerThreadSnapshot[]>()
+    for (const snapshot of schedulerThreads) {
+      if (snapshot.thread.kind === 'dialogue_turn') continue
+      const existing = byRootTurn.get(snapshot.thread.root_turn_id) ?? []
+      existing.push(snapshot)
+      byRootTurn.set(snapshot.thread.root_turn_id, existing)
+    }
+    for (const snapshots of byRootTurn.values()) {
+      snapshots.sort((left, right) => left.thread.created_at.localeCompare(right.thread.created_at))
+    }
+    return byRootTurn
+  }, [schedulerThreads])
+  const threadDetailLiveAttempts = useMemo(() => {
+    if (!threadDetail) return []
+    const activationIds = new Set(
+      threadDetail.snapshot.activations.map(snapshot => snapshot.activation.id),
+    )
+    return streamingAttempts.filter(attempt => activationIds.has(attempt.activationId))
+  }, [streamingAttempts, threadDetail])
   const activations = schedulerThreads.flatMap(thread => thread.activations.map(item => item.activation))
   const threadSignals = schedulerThreads.flatMap(thread => [
     ...thread.pending_signals,
     ...thread.activations.flatMap(activation => activation.signals),
   ])
   const schedules = schedulerSchedules(schedulerSnapshot)
-  const schedulerJobRows = schedulerJobs(schedulerSnapshot)
+  const actionableJobRows = actionableSchedulerJobs(schedulerSnapshot)
   const pendingApprovals = pendingHumanApprovals(schedulerSnapshot)
+  const approvalAnomalies = schedulerApprovalAnomalies(schedulerSnapshot)
   const attentionCount = schedulerAttentionCount(schedulerSnapshot)
-  const failedSchedulerJobs = schedulerJobRows.filter(item => item.job.status === 'failed' || item.job.status === 'lost')
+  const failedSchedulerJobs = schedulerAttentionJobs(schedulerSnapshot)
   const failedDeliveries = schedulerThreads.filter(item => (
     item.thread.lifecycle === 'completed'
     && item.thread.delivery_status !== 'none'
@@ -1691,17 +2468,29 @@ export default function App() {
   const contextDelegations = delegations.filter(item => item.parent_context_id === selectedContextId)
   const liveDelegations = contextDelegations.filter(item => !terminalTaskStatuses.has(item.status))
   const runningDelegations = liveDelegations.filter(item => item.status === 'queued' || item.status === 'running')
+  const dialogueActivityDelegations = [...liveDelegations].sort((left, right) => {
+    const leftCurrent = left.parent_session_id === selectedSessionId
+    const rightCurrent = right.parent_session_id === selectedSessionId
+    if (leftCurrent !== rightCurrent) return leftCurrent ? -1 : 1
+    return right.updated_at.localeCompare(left.updated_at)
+  })
   const activeWorkCount = schedulerSnapshot
     ? schedulerSnapshot.summary.running_activations + schedulerSnapshot.summary.queued_activations
     : 0
   const waitingCount = schedulerSnapshot
-    ? schedulerSnapshot.summary.waiting_approval_jobs + schedulerSnapshot.summary.active_schedules
+    ? actionableJobRows.filter(item => item.job.status === 'waiting_approval').length
+      + schedulerSnapshot.summary.active_schedules
     : runningObjectives.filter(item => Boolean(item.wait_condition)).length
   const selectedFrame = contextView?.state.frames.find(frame => frame.id === selectedFrameId)
+  const activePrincipalId = contextView?.active_principal_id
+    ?? contextOverview?.sessions.find(session => session.session.id === selectedSessionId)?.principal_ids?.[0]
+    ?? contextView?.sessions.find(session => session.session.id === selectedSessionId)?.principal_ids?.[0]
+    ?? status?.principal_id
   const selectedFrameLineage = frameLineage?.root_frame_id === selectedFrameId ? frameLineage : null
   const retired = new Set(contextView?.state.retired ?? [])
   const retiring = contextView?.state.retiring ?? {}
-  const activeFrameCount = (contextView?.state.frames ?? []).filter(frame => !retired.has(frame.id)).length
+  const activeFrameCount = contextOverview?.active_frames
+    ?? (contextView?.state.frames ?? []).filter(frame => !retired.has(frame.id)).length
   const retiringFrameCount = Object.keys(retiring).length
   const selectedRetirement = selectedFrame ? retiring[selectedFrame.id] : undefined
   const hasExactContextInspect = latestContextInspect !== null
@@ -1713,7 +2502,9 @@ export default function App() {
       case 'encoding':
         return typeof contextInspectPayload?.text === 'string'
           ? contextInspectPayload.text
-          : contextView?.sexpr ?? ''
+          : contextEncoding?.session_id === selectedSessionId
+            ? contextEncoding.encoding
+            : contextView?.sexpr ?? ''
       case 'messages':
         return contextInspectPayload?.messages === undefined
           ? t('mindView.contextInspect.notRetained')
@@ -1765,7 +2556,7 @@ export default function App() {
   }, [visibleCount])
 
   useEffect(() => {
-    if (view !== 'conversation') {
+    if (view !== 'dialogue') {
       conversationPinnedToEnd.current = true
       return
     }
@@ -1782,7 +2573,7 @@ export default function App() {
   }, [conversationEvents.length, conversationStreamingAttempts, turnPending, view])
 
   useEffect(() => {
-    if (view !== 'conversation') return
+    if (view !== 'dialogue') return
     const container = viewFrameRef.current
     if (!container) return
     const handleWheel = (event: WheelEvent) => {
@@ -1797,19 +2588,6 @@ export default function App() {
     return () => container.removeEventListener('wheel', handleWheel)
   }, [view])
 
-  useEffect(() => {
-    if (view !== 'work') {
-      toolTimelinePinnedToEnd.current = true
-      return
-    }
-    if (!toolTimelinePinnedToEnd.current) return
-    const frame = window.requestAnimationFrame(() => {
-      const list = toolTimelineList.current
-      if (list) list.scrollTop = list.scrollHeight
-    })
-    return () => window.cancelAnimationFrame(frame)
-  }, [toolTimeline.length, view])
-
   const activateContext = useCallback((context: ContextRecord) => {
     const nextSession = sessions
       .filter(item => item.context_id === context.id && item.status === 'active')
@@ -1819,6 +2597,8 @@ export default function App() {
     setSelectedContextId(context.id)
     setSelectedSessionId(nextSession?.id ?? '')
     setContextView(null)
+    setContextEncoding(null)
+    setContextOverview(null)
     setSchedulerSnapshot(null)
     setEvents([])
     setEventsSessionId('')
@@ -1826,9 +2606,9 @@ export default function App() {
     setSelectedFrameId('')
     setContextMenuOpen(false)
     setSessionMenuOpen(false)
-    setView('conversation')
+    navigate(dashboardPath(nextSession ? 'dialogue' : 'overview', context.id, nextSession?.id))
     window.setTimeout(() => composerInputRef.current?.focus(), 0)
-  }, [sessions])
+  }, [navigate, sessions])
 
   const createContext = useCallback(async (): Promise<ContextRecord | null> => {
     if (creatingContext) return null
@@ -1891,7 +2671,7 @@ export default function App() {
       setSelectedSessionId(session.id)
       setContextMenuOpen(false)
       setSessionMenuOpen(false)
-      setView('conversation')
+      navigate(dashboardPath('dialogue', session.context_id, session.id))
       setError('')
       window.setTimeout(() => composerInputRef.current?.focus(), 0)
       return session
@@ -1901,7 +2681,7 @@ export default function App() {
     } finally {
       setCreatingSession(false)
     }
-  }, [apiHeaders, creatingSession, selectedAgentId, selectedContext, selectedContextId, sessions, status?.agent_id, t])
+  }, [apiHeaders, creatingSession, navigate, selectedAgentId, selectedContext, selectedContextId, sessions, status?.agent_id, t])
 
   const chooseSession = (session: SessionRecord) => {
     if (session.id !== selectedSessionId) {
@@ -1912,7 +2692,7 @@ export default function App() {
     setSelectedContextId(session.context_id)
     setSelectedSessionId(session.id)
     setSessionMenuOpen(false)
-    setView('conversation')
+    navigate(dashboardPath('dialogue', session.context_id, session.id))
   }
 
   const copyMessage = async (text: string, messageId: string) => {
@@ -2031,6 +2811,23 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setChangingReasoning(false)
+    }
+  }
+
+  const auditMindProjection = async () => {
+    if (!selectedContextId || auditingProjection) return
+    setAuditingProjection(true)
+    try {
+      const audit = await DASHBOARD_API.command<MindProjectionAudit>(
+        `/api/contexts/${encodeURIComponent(selectedContextId)}/projection-audit`,
+        'POST',
+      )
+      setProjectionAudit(audit)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setAuditingProjection(false)
     }
   }
 
@@ -2176,7 +2973,7 @@ export default function App() {
   const activationSummary = leadingActivation
     ? summarizeActivation(leadingActivation, sessionEvents, toolTimeline, t).title
     : ''
-  const primaryJob = schedulerJobRows.find(item => (
+  const primaryJob = actionableJobRows.find(item => (
     item.job.status === 'running'
     || item.job.status === 'queued'
     || item.job.status === 'waiting_approval'
@@ -2196,7 +2993,13 @@ export default function App() {
       : primaryJob
         ? {
             state: primaryJob.job.status === 'waiting_approval' ? 'waiting' : 'running',
-            label: primaryJob.job.status === 'waiting_approval' ? t('composer.status.approvalRequired') : t('composer.status.executing'),
+            label: primaryJob.job.status === 'waiting_approval'
+              ? primaryJob.approval?.status === 'allowed'
+                ? t('composer.status.approvalGranted')
+                : primaryJob.approval?.status === 'pending_auto'
+                  ? t('composer.status.approvalReviewing')
+                  : t('composer.status.approvalStateInvalid')
+              : t('composer.status.executing'),
             summary: primaryJobSummary ? `${primaryJobSummary.title} · ${primaryJobSummary.target}` : primaryJob.job.tool_name,
           }
         : schedulerSnapshot && schedulerSnapshot.admission.context_deferred > 0
@@ -2242,22 +3045,40 @@ export default function App() {
 
   const currentTheme = accentThemes.find(theme => theme.id === accentTheme)
   const currentLangCode = i18n.language?.startsWith('zh') ? 'ZH' : 'EN'
+  const applyLedgerFilters = (filters: LedgerFilters) => {
+    setLedgerPage(null)
+    setLedgerBeforeSequence('')
+    setLedgerCursorHistory([])
+    setLedgerFilters(filters)
+  }
+  const loadOlderLedgerPage = () => {
+    const next = ledgerPage?.next_before_sequence
+    if (next === undefined) return
+    setLedgerCursorHistory(current => [...current, ledgerBeforeSequence])
+    setLedgerBeforeSequence(String(next))
+  }
+  const loadNewerLedgerPage = () => {
+    const previous = ledgerCursorHistory.at(-1)
+    if (previous === undefined) return
+    setLedgerCursorHistory(current => current.slice(0, -1))
+    setLedgerBeforeSequence(previous)
+  }
 
   return (
-    <main className="page-shell" data-accent={accentTheme}>
+    <main className="page-shell" data-accent={accentTheme} data-color-mode={resolvedAppearanceMode}>
       <section className="morphz-shell" data-accent={accentTheme} data-view={view}>
         <header className="runtime-header">
-          <button className="brand" type="button" onClick={() => setView('conversation')}>
+          <button className="brand" type="button" onClick={() => setView('overview')}>
             <span className="brand-mark">◆</span>
             <span><strong>Morphz</strong><small>{t('header.agentLabel', { title: selectedAgent?.title ?? (selectedAgentId || 'default') })}</small></span>
           </button>
 
           <div className="identity-trail">
             <div className="context-selector" ref={contextSelectorRef}>
-              <button className={`identity-chip context-chip ${view === 'mind' ? 'is-active' : ''} ${!selectedContext ? 'unset' : ''}`} type="button" onClick={() => setContextMenuOpen(open => !open)}>
+              <button className={`identity-chip context-chip ${view === 'cognition' ? 'is-active' : ''} ${!selectedContext ? 'unset' : ''}`} type="button" onClick={() => setContextMenuOpen(open => !open)}>
                 <small>{t('header.context').toUpperCase()}</small>
                 <strong>{selectedContext?.title ?? (selectedContextId || t('header.noContext'))}</strong>
-                <span>{t('common.shared')} · r{contextView?.state.version ?? 0}</span>
+                <span>{t('common.shared')} · r{contextOverview?.mind_revision ?? contextView?.state.version ?? 0}</span>
                 <ChevronDown size={13} />
               </button>
               {contextMenuOpen && (
@@ -2274,18 +3095,12 @@ export default function App() {
                     {visibleContexts.length === 0 && <div className="catalog-empty">{t('header.noVisibleContexts')}</div>}
                   </div>
                   <footer className="catalog-popover-footer">
-                    <button type="button" onClick={() => { setContextMenuOpen(false); setView('mind') }} disabled={!selectedContextId}><Brain size={13} />{t('header.inspectContext')}</button>
+                    <button type="button" onClick={() => { setContextMenuOpen(false); setView('cognition') }} disabled={!selectedContextId}><Brain size={13} />{t('header.inspectContext')}</button>
                     <button type="button" onClick={() => void createContext()} disabled={creatingContext}><Plus size={13} />{creatingContext ? t('header.creatingContext') : t('header.createContext')}</button>
                   </footer>
                 </div>
               )}
             </div>
-            <span className="trail-separator">/</span>
-            <button className={`identity-chip tasks-chip ${view === 'work' ? 'is-active' : ''}`} type="button" onClick={() => setView('work')}>
-              <small>{t('work.title').toUpperCase()}</small>
-              <strong>{activeWorkCount > 0 ? t('work.executingCount', { count: activeWorkCount }) : t('work.heading')}</strong>
-              <span>{t('work.taskSummary', { waiting: waitingCount, objectives: activeObjectives.length })}</span>
-            </button>
             <span className="trail-separator">/</span>
             <div className="session-selector" ref={sessionSelectorRef}>
               <button className={`identity-chip session-chip ${!selectedSession ? 'unset' : ''}`} type="button" onClick={() => setSessionMenuOpen(open => !open)}>
@@ -2314,6 +3129,12 @@ export default function App() {
                 </div>
               )}
             </div>
+            <span className="trail-separator">/</span>
+            <div className={`identity-chip principal-chip ${activePrincipalId ? '' : 'unset'}`}>
+              <small>{t('header.principal').toUpperCase()}</small>
+              <strong>{activePrincipalId ? shortId(activePrincipalId, 26) : t('header.noPrincipal')}</strong>
+              <span>{t('header.runtimeVerified')}</span>
+            </div>
           </div>
 
           <div className="runtime-side">
@@ -2325,7 +3146,12 @@ export default function App() {
               </button>
               {themeMenuOpen && (
                 <div className="theme-popover">
-                  <header><span>{t('theme.title').toUpperCase()}</span><strong>{t('theme.hint')}</strong></header>
+                  <header><span>{t('theme.title').toUpperCase()}</span></header>
+                  <div className="appearance-mode-selector" role="group" aria-label={t('theme.appearance.title')}>
+                    <button className={appearanceMode === 'system' ? 'is-selected' : ''} type="button" onClick={() => setAppearanceMode('system')} title={t('theme.appearance.systemHint')}><Monitor size={13} /><span>{t('theme.appearance.system')}</span></button>
+                    <button className={appearanceMode === 'dark' ? 'is-selected' : ''} type="button" onClick={() => setAppearanceMode('dark')}><Moon size={13} /><span>{t('theme.appearance.dark')}</span></button>
+                    <button className={appearanceMode === 'light' ? 'is-selected' : ''} type="button" onClick={() => setAppearanceMode('light')}><Sun size={13} /><span>{t('theme.appearance.light')}</span></button>
+                  </div>
                   {accentThemes.map(theme => (
                     <button className={theme.id === accentTheme ? 'is-selected' : ''} key={theme.id} type="button" onClick={() => { setAccentTheme(theme.id); setThemeMenuOpen(false) }}>
                       <i className={`theme-swatch ${theme.id}`} />
@@ -2363,6 +3189,16 @@ export default function App() {
               <span>{t('reasoningSummary.toggle')}</span>
             </button>
             <button
+              className={`theme-button global-attention ${attentionCount > 0 ? 'has-attention' : ''}`}
+              type="button"
+              title={t('header.globalAttention')}
+              onClick={() => setView('scheduler')}
+            >
+              <Bell size={15} />
+              <span>{t('header.attention')}</span>
+              {attentionCount > 0 && <em>{attentionCount}</em>}
+            </button>
+            <button
               className="theme-button"
               type="button"
               title={t('language.toggle')}
@@ -2374,11 +3210,32 @@ export default function App() {
           </div>
         </header>
 
+        <nav className="runtime-navigation" aria-label={t('navigation.label')}>
+          <button className={view === 'overview' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('overview')} aria-current={view === 'overview' ? 'page' : undefined}>
+            <CircleDot size={14} /><span>{t('navigation.overview')}</span>
+          </button>
+          <button className={view === 'dialogue' ? 'is-active' : ''} type="button" disabled={!selectedSessionId} onClick={() => setView('dialogue')} aria-current={view === 'dialogue' ? 'page' : undefined}>
+            <MessageSquare size={14} /><span>{t('navigation.dialogue')}</span>
+          </button>
+          <button className={view === 'scheduler' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('scheduler')} aria-current={view === 'scheduler' ? 'page' : undefined}>
+            <GitBranch size={14} /><span>{t('navigation.scheduler')}</span>{attentionCount > 0 && <em>{attentionCount}</em>}
+          </button>
+          <button className={view === 'cognition' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('cognition')} aria-current={view === 'cognition' ? 'page' : undefined}>
+            <Brain size={14} /><span>{t('navigation.cognition')}</span>
+          </button>
+          <button className={view === 'ledger' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('ledger')} aria-current={view === 'ledger' ? 'page' : undefined}>
+            <Database size={14} /><span>{t('navigation.ledger')}</span>
+          </button>
+          <button className={view === 'runtime' ? 'is-active' : ''} type="button" onClick={() => setView('runtime')} aria-current={view === 'runtime' ? 'page' : undefined}>
+            <Radio size={14} /><span>{t('navigation.runtime')}</span>
+          </button>
+        </nav>
+
         <div
           className="view-frame"
           ref={viewFrameRef}
           onScroll={event => {
-            if (view !== 'conversation') return
+            if (view !== 'dialogue') return
             // Ignore the scroll events fired by our own programmatic scrolling;
             // content growth between the scroll and the event would otherwise
             // look like the user scrolled away from the bottom.
@@ -2398,8 +3255,82 @@ export default function App() {
             }
           }}
         >
-          <section className="conversation-view" hidden={view !== 'conversation'}>
+          {!catalogReady && (
+            <div className="runtime-initial-loading" role="status" aria-live="polite">
+              <LoaderCircle size={18} />
+              <span><strong>{t('runtime.loading')}</strong><small>{t('runtime.loadingHint')}</small></span>
+            </div>
+          )}
+          {view === 'overview' && (
+            <OverviewPage
+              contextTitle={contextOverview?.context.title ?? selectedContext?.title}
+              sessionTitle={selectedSession?.title}
+              sessionCount={contextOverview?.sessions.length ?? visibleSessions.length}
+              mindRevision={contextOverview?.mind_revision ?? contextView?.state.version ?? 0}
+              frames={contextOverview ? {
+                active: contextOverview.active_frames,
+                retiring: contextOverview.retiring_frames,
+                retired: contextOverview.retired_items,
+              } : { active: activeFrameCount, retiring: retiringFrameCount, retired: retired.size }}
+              scheduling={{
+                openThreads: contextOverview?.scheduler.open_threads ?? schedulerSnapshot?.summary.open_threads ?? 0,
+                pendingSignals: contextOverview?.scheduler.pending_signals ?? schedulerSnapshot?.summary.pending_signals ?? 0,
+                activeSchedules: contextOverview?.scheduler.active_schedules ?? schedulerSnapshot?.summary.active_schedules ?? 0,
+              }}
+              execution={{
+                activeJobs: contextOverview?.scheduler.active_jobs ?? schedulerSnapshot?.summary.active_jobs ?? 0,
+                activeEvaluations: activeWorkCount,
+                pendingApprovals: pendingApprovals.length,
+              }}
+              attention={{
+                approvals: pendingApprovals.length,
+                failedJobs: failedSchedulerJobs.length,
+                failedDeliveries: failedDeliveries.length,
+                inactiveObjectives: blockedObjectives.length + pausedObjectives.length,
+              }}
+              activities={schedulerThreads
+                .filter(item => item.thread.lifecycle === 'open')
+                .slice(0, 8)
+                .map(snapshot => ({
+                  id: snapshot.thread.id,
+                  displayId: shortId(snapshot.thread.id, 28),
+                  kind: threadKindLabel(snapshot.thread.kind, t),
+                  phase: snapshot.phase,
+                  phaseLabel: statusLabel(snapshot.phase, t),
+                  executor: snapshot.thread.executor_kind,
+                  updatedAgo: formatAgo(snapshot.thread.updated_at, t),
+                }))}
+              canRefresh={Boolean(selectedContextId)}
+              onRefresh={() => void loadOverview(selectedContextId, selectedSessionId)}
+              onNavigate={setView}
+              onOpenMind={() => selectCognitionView('mind')}
+            />
+          )}
+
+          <section className={`conversation-view ${showDialogueActivity ? 'has-activity' : ''}`} hidden={view !== 'dialogue'}>
               <header className="section-heading"><span>{t('conversation.heading', { title: selectedSession?.title ?? shortId(selectedSessionId) })}</span></header>
+              {showDialogueActivity && (
+                <DialogueActivityDock
+                  open={dialogueActivityOpen}
+                  objectives={dialogueActivityObjectives}
+                  threads={dialogueActivityThreads}
+                  historyThreads={dialogueActivityHistoryThreads}
+                  delegations={dialogueActivityDelegations}
+                  currentSessionId={selectedSessionId}
+                  expandedThreadId={expandedDialogueThreadId}
+                  threadDetail={dialogueThreadDetail}
+                  liveModelAttempts={streamingAttempts}
+                  showReasoningSummary={showReasoningSummary}
+                  t={t}
+                  onOpenChange={setDialogueActivityOpen}
+                  onThreadToggle={threadId => {
+                    setExpandedDialogueThreadId(current => current === threadId ? '' : threadId)
+                    setDialogueThreadDetail(null)
+                  }}
+                  onReasoningOpenChange={setShowReasoningSummary}
+                  onInspectThread={threadId => navigate(threadPath(selectedContextId, threadId))}
+                />
+              )}
               <div className="message-list">
                 {conversationEvents.length === 0 && conversationStreamingAttempts.length === 0 && (
                   <div className="empty-state conversation-empty">
@@ -2419,7 +3350,6 @@ export default function App() {
                   if (kind === 'progress') {
                     return <div className="progress-note" key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                   }
-                  const threadKind = typeof event.payload.thread_kind === 'string' ? event.payload.thread_kind : 'dialogue_turn'
                   const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
                   if (kind === 'reasoning') {
                     if (!persistedReasoningSummary) return null
@@ -2442,9 +3372,10 @@ export default function App() {
                     : kind === 'agent'
                       ? t('conversation.roleAgent')
                       : kind === 'background'
-                        ? threadKind === 'objective' ? t('conversation.roleObjective') : t('conversation.roleWork')
+                        ? t('conversation.roleDelivery')
                         : t('conversation.roleRuntime')
                   const showRole = kind === 'background' || kind === 'system'
+                  const derivedThreads = derivedThreadsByRootTurn.get(event.id) ?? []
                   return (
                     <article className={`message-row ${kind}`} key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
                       {showRole && (
@@ -2470,6 +3401,29 @@ export default function App() {
                           ? <MarkdownBody text={event.payload.text} />
                           : t('conversation.noText')}
                       </div>
+                      {derivedThreads.length > 0 && (
+                        <div className="message-thread-capsules" aria-label={t('conversation.derivedThreads')}>
+                          {derivedThreads.map(snapshot => {
+                            const jobCount = snapshot.activations.reduce((count, activation) => count + activation.jobs.length, 0)
+                            return (
+                              <button
+                                className={`message-thread-capsule phase-${snapshot.phase}`}
+                                type="button"
+                                key={snapshot.thread.id}
+                                onClick={() => navigate(threadPath(selectedContextId, snapshot.thread.id))}
+                                title={t('conversation.openThread')}
+                              >
+                                <GitBranch size={13} aria-hidden="true" />
+                                <span>
+                                  <strong>{threadKindLabel(snapshot.thread.kind, t)}</strong>
+                                  <small>{statusLabel(snapshot.phase, t)} · {t('conversation.threadJobs', { count: jobCount })}</small>
+                                </span>
+                                <span className="message-thread-id">{shortId(snapshot.thread.id, 18)}</span>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      )}
                       {quotes.map((q, qi) => q.eventId === event.id ? (
                             <span key={q.id} style={{ position: 'absolute', top: q.badgeTop, left: q.badgeLeft, zIndex: 10 }}>
                               <button
@@ -2521,18 +3475,15 @@ export default function App() {
                       liveLabel={t('reasoningSummary.live')}
                       persistedLabel={t('reasoningSummary.persisted')}
                     />
-                    <div className="message-body">
-                      {attempt.text.trim()
-                        ? <MarkdownBody text={attempt.text} />
-                        : attempt.error
-                          ?? (attempt.runtimeState === 'waiting_final_output'
-                            ? t('conversation.waitingFinalOutput')
-                            : attempt.runtimeState === 'queued'
-                              ? t('conversation.waitingForModel')
-                              : t('conversation.streaming'))}
-                      {attempt.status !== 'failed' && <span className="stream-caret" aria-hidden="true" />}
-                    </div>
-                    <div className="message-meta stream-meta">
+                    {attempt.text.trim() && (
+                      <div className="message-body">
+                        <MarkdownBody text={attempt.text} />
+                        {attempt.status !== 'failed' && <span className="stream-caret" aria-hidden="true" />}
+                      </div>
+                    )}
+                    {attempt.error && !attempt.text.trim() && <div className="message-body stream-error">{attempt.error}</div>}
+                    <div className={`stream-status ${attempt.status === 'failed' ? 'is-failed' : ''}`}>
+                      {attempt.status !== 'failed' && <span className="stream-typing" aria-hidden="true"><b /><b /><b /></span>}
                       <span>{attempt.status === 'failed'
                         ? t('conversation.streamFailed')
                         : attempt.runtimeState === 'waiting_final_output'
@@ -2545,10 +3496,8 @@ export default function App() {
                 ))}
                 {turnPending && conversationStreamingAttempts.length === 0 && (
                   <article className="message-row agent streaming" role="status" aria-live="polite">
-                    <div className="message-body">
+                    <div className="stream-status">
                       <span className="stream-typing" aria-hidden="true"><b /><b /><b /></span>
-                    </div>
-                    <div className="message-meta stream-meta">
                       <span>{turnStatus}</span>
                     </div>
                   </article>
@@ -2557,15 +3506,44 @@ export default function App() {
               </div>
           </section>
 
-          {view === 'work' && (
-            <section className="work-view">
+          {view === 'scheduler' && (
+            <section className="scheduler-view">
               <header className="workspace-heading">
                 <div><span>{t('work.title').toUpperCase()}</span><h1>{t('work.heading')}</h1><p>{t('work.description')}</p></div>
                 <div className="workspace-actions">
                   <button type="button" onClick={() => void loadSession(selectedSessionId, selectedContextId)}><RefreshCw size={14} /> {t('work.refresh')}</button>
-                  <button type="button" onClick={() => setView('conversation')}><ArrowLeft size={14} /> {t('work.backToChat')}</button>
+                  <button type="button" onClick={() => setView('dialogue')}><ArrowLeft size={14} /> {t('work.backToChat')}</button>
                 </div>
               </header>
+
+              {route.threadId && (
+                <section className="thread-detail-view">
+                  <header>
+                    <div>
+                      <span>{t('work.causal.detail').toUpperCase()}</span>
+                      <h2>{shortId(route.threadId, 64)}</h2>
+                    </div>
+                    <button type="button" onClick={() => navigate(dashboardPath('scheduler', selectedContextId))}>
+                      <ArrowLeft size={14} /> {t('work.causal.backToBoard')}
+                    </button>
+                  </header>
+                  {threadDetail?.snapshot.thread.id === route.threadId ? (
+                    <ThreadCausalCard
+                      snapshot={threadDetail.snapshot}
+                      modelAttemptEvents={threadDetail.model_attempt_events}
+                      liveModelAttempts={threadDetailLiveAttempts}
+                      t={t}
+                      locale={i18n.language}
+                      decidingApprovalId={decidingApprovalId}
+                      mutatingScheduleId={mutatingScheduleId}
+                      onApproval={(approval, decision) => void decideApproval(approval, decision)}
+                      onSchedule={(schedule, action) => void mutateSchedule(schedule, action)}
+                    />
+                  ) : <div className="small-empty">{t('work.causal.loadingDetail')}</div>}
+                </section>
+              )}
+
+              {!route.threadId && (<>
 
               <div className="work-metrics">
                 <div><CircleDot size={17} /><span><small>{t('work.metrics.active').toUpperCase()}</small><strong>{activeWorkCount}</strong></span></div>
@@ -2573,66 +3551,6 @@ export default function App() {
                 <div><Radio size={17} /><span><small>{t('work.metrics.pendingSignals').toUpperCase()}</small><strong>{threadSignals.length}</strong></span></div>
                 <div><Layers3 size={17} /><span><small>{t('work.metrics.objectives').toUpperCase()}</small><strong>{activeObjectives.length}</strong></span></div>
               </div>
-
-              {liveWorkStreamingAttempts.length > 0 && (
-                <section className="model-evaluation-board live">
-                  <header>
-                    <span>{t('reasoningSummary.workLiveTitle').toUpperCase()}</span>
-                    <b>{liveWorkStreamingAttempts.length}</b>
-                    <small>{t('reasoningSummary.workLiveSubtitle')}</small>
-                  </header>
-                  <div className="model-evaluation-list">
-                    {liveWorkStreamingAttempts.map(attempt => (
-                      <article className="model-evaluation-row" key={`work-stream-${attempt.attemptId}`}>
-                        <div className="model-evaluation-meta">
-                          <span className="status-pill running">{t('reasoningSummary.streaming')}</span>
-                          <strong>{shortId(attempt.activationId, 28)}</strong>
-                          <small>{t('reasoningSummary.toolCalls', { count: attempt.toolCallCount })}</small>
-                        </div>
-                        <ReasoningSummaryBlock
-                          summary={liveReasoningSummaryText(reasoningContinuationSummaries, attempt)}
-                          live
-                          open={showReasoningSummary}
-                          onOpenChange={setShowReasoningSummary}
-                          title={t('reasoningSummary.title')}
-                          liveLabel={t('reasoningSummary.live')}
-                          persistedLabel={t('reasoningSummary.persisted')}
-                        />
-                      </article>
-                    ))}
-                  </div>
-                </section>
-              )}
-
-              {durableWorkReasoningSummaries.length > 0 && (
-                <section className="model-evaluation-board persisted">
-                  <header>
-                    <span>{t('reasoningSummary.workHistoryTitle').toUpperCase()}</span>
-                    <b>{durableWorkReasoningSummaries.length}</b>
-                    <small>{t('reasoningSummary.workHistorySubtitle')}</small>
-                  </header>
-                  <div className="model-evaluation-list">
-                    {durableWorkReasoningSummaries.slice(-12).reverse().map(summary => (
-                      <article className="model-evaluation-row" key={summary.eventId}>
-                        <div className="model-evaluation-meta">
-                          <span className="status-pill completed">{t('reasoningSummary.persistedShort')}</span>
-                          <strong>{shortId(summary.activationId, 28)}</strong>
-                          <time>{formatTime(summary.timestamp, i18n.language)}</time>
-                        </div>
-                        <ReasoningSummaryBlock
-                          summary={summary.text}
-                          live={false}
-                          open={showReasoningSummary}
-                          onOpenChange={setShowReasoningSummary}
-                          title={t('reasoningSummary.title')}
-                          liveLabel={t('reasoningSummary.live')}
-                          persistedLabel={t('reasoningSummary.persisted')}
-                        />
-                      </article>
-                    ))}
-                  </div>
-                </section>
-              )}
 
               {attentionCount > 0 && (
                 <section className="attention-board">
@@ -2647,6 +3565,17 @@ export default function App() {
                           <button disabled={decidingApprovalId === approval.id} type="button" onClick={() => void decideApproval(approval, 'allow_once')}><Check size={13} /> {t('work.approvals.allowOnce')}</button>
                           <button disabled={decidingApprovalId === approval.id} className="danger" type="button" onClick={() => void decideApproval(approval, 'deny')}><Square size={12} /> {t('work.approvals.deny')}</button>
                         </div>
+                      </article>
+                    ))}
+                    {approvalAnomalies.map(snapshot => (
+                      <article className="attention-card failure" key={`approval-anomaly-${snapshot.job.id}`}>
+                        <div><span className="status-pill failed">{t('work.attention.stateMismatch')}</span><time>{formatAgo(snapshot.job.updated_at, t)}</time></div>
+                        <h2>{snapshot.job.tool_name}</h2>
+                        <p>{snapshot.approval?.status === 'allowed'
+                          ? t('work.attention.approvedWithoutOwner')
+                          : snapshot.approval
+                            ? t('work.attention.terminalApprovalMismatch', { status: statusLabel(snapshot.approval.status, t) })
+                            : t('work.attention.missingApproval')}</p>
                       </article>
                     ))}
                     {failedSchedulerJobs.map(snapshot => (
@@ -2705,17 +3634,43 @@ export default function App() {
                 </div>
               </section>
 
+              <section className="schedule-board">
+                <header><span>{t('work.schedules.title').toUpperCase()}</span><b>{schedules.length}</b><small>{t('work.schedules.subtitle')}</small></header>
+                <div className="schedule-control-list">
+                  {schedules.map(schedule => (
+                    <article key={schedule.id}>
+                      <Clock3 size={15} />
+                      <span>
+                        <strong>{schedule.intent}</strong>
+                        <small>{shortId(schedule.id, 24)} · {t('work.schedules.thread')} {shortId(schedule.thread_id, 18)}</small>
+                      </span>
+                      <span className={`status-pill ${schedule.status}`}>{statusLabel(schedule.status, t)}</span>
+                      <time>{schedule.not_before ? formatAgo(schedule.not_before, t) : t('work.schedules.noDeadline')}</time>
+                      <div className="schedule-actions">
+                        {schedule.status === 'queued' && <button disabled={mutatingScheduleId === schedule.id} type="button" onClick={() => void mutateSchedule(schedule, 'pause')}>{t('work.schedules.pause')}</button>}
+                        {schedule.status === 'paused' && <button disabled={mutatingScheduleId === schedule.id} type="button" onClick={() => void mutateSchedule(schedule, 'resume')}>{t('work.schedules.resume')}</button>}
+                        {!['completed', 'cancelled'].includes(schedule.status) && <button className="danger" disabled={mutatingScheduleId === schedule.id} type="button" onClick={() => void mutateSchedule(schedule, 'cancel')}>{t('work.schedules.cancel')}</button>}
+                      </div>
+                    </article>
+                  ))}
+                  {schedules.length === 0 && <div className="small-empty">{t('work.schedules.empty')}</div>}
+                </div>
+              </section>
+
               {schedulerSnapshot && (
-                <section className={`admission-board ${schedulerSnapshot.admission.context_deferred > 0 ? 'pressured' : ''}`}>
-                  <header><span>{t('work.admission.title').toUpperCase()}</span><b>{schedulerSnapshot.admission.context_in_flight}/{schedulerSnapshot.admission.total_slots}</b><small>{t('work.admission.subtitle')}</small></header>
-                  <div className="admission-line">
-                    <span>{t('work.admission.inFlight', { count: schedulerSnapshot.admission.context_in_flight })}</span>
-                    <span>{t('work.admission.loaded', { count: schedulerSnapshot.admission.context_loaded_queued })}</span>
-                    <span>{t('work.admission.durable', { count: schedulerSnapshot.admission.context_durable_queued })}</span>
-                    <span className={schedulerSnapshot.admission.context_deferred > 0 ? 'warning' : ''}>{t('work.admission.deferred', { count: schedulerSnapshot.admission.context_deferred })}</span>
-                    <span>{t('work.admission.reserved', { count: schedulerSnapshot.admission.dialogue_delivery_slots })}</span>
+                <details className={`kernel-diagnostics ${schedulerSnapshot.admission.context_deferred > 0 ? 'pressured' : ''}`}>
+                  <summary>{t('work.kernelDiagnostics')} · {schedulerSnapshot.admission.context_in_flight}/{schedulerSnapshot.admission.total_slots}</summary>
+                  <div className="admission-board">
+                    <header><span>{t('work.admission.title').toUpperCase()}</span><small>{t('work.admission.subtitle')}</small></header>
+                    <div className="admission-line">
+                      <span>{t('work.admission.inFlight', { count: schedulerSnapshot.admission.context_in_flight })}</span>
+                      <span>{t('work.admission.loaded', { count: schedulerSnapshot.admission.context_loaded_queued })}</span>
+                      <span>{t('work.admission.durable', { count: schedulerSnapshot.admission.context_durable_queued })}</span>
+                      <span className={schedulerSnapshot.admission.context_deferred > 0 ? 'warning' : ''}>{t('work.admission.deferred', { count: schedulerSnapshot.admission.context_deferred })}</span>
+                      <span>{t('work.admission.reserved', { count: schedulerSnapshot.admission.dialogue_delivery_slots })}</span>
+                    </div>
                   </div>
-                </section>
+                </details>
               )}
 
               <section className="causal-board">
@@ -2724,19 +3679,34 @@ export default function App() {
                   {hiddenSchedulerThreadCount > 0 && (
                     <div className="history-hint">{t('work.causal.historyLimited', { count: hiddenSchedulerThreadCount })}</div>
                   )}
-                  {visibleSchedulerThreads.map(snapshot => (
-                    <ThreadCausalCard
-                      key={snapshot.thread.id}
-                      snapshot={snapshot}
-                      t={t}
-                      locale={i18n.language}
-                      decidingApprovalId={decidingApprovalId}
-                      mutatingScheduleId={mutatingScheduleId}
-                      onApproval={(approval, decision) => void decideApproval(approval, decision)}
-                      onSchedule={(schedule, action) => void mutateSchedule(schedule, action)}
-                    />
+                  {schedulerThreadGroups.map(([group, snapshots]) => (
+                    <section className={`thread-phase-group ${group}`} key={group}>
+                      <header><strong>{t(`work.threadGroups.${group}`)}</strong><span>{snapshots.length}</span></header>
+                      {snapshots.map(snapshot => (
+                        <ThreadCausalCard
+                          key={snapshot.thread.id}
+                          snapshot={snapshot}
+                          t={t}
+                          locale={i18n.language}
+                          decidingApprovalId={decidingApprovalId}
+                          mutatingScheduleId={mutatingScheduleId}
+                          onApproval={(approval, decision) => void decideApproval(approval, decision)}
+                          onSchedule={(schedule, action) => void mutateSchedule(schedule, action)}
+                          onInspect={(threadId) => navigate(threadPath(selectedContextId, threadId))}
+                        />
+                      ))}
+                    </section>
                   ))}
                   {visibleSchedulerThreads.length === 0 && <div className="small-empty">{t('work.causal.empty')}</div>}
+                  {schedulerHistoryPageFull && (
+                    <button
+                      className="history-more"
+                      type="button"
+                      onClick={() => setSchedulerHistoryLimit(current => current + SCHEDULER_HISTORY_PAGE_SIZE)}
+                    >
+                      {t('work.causal.loadMore')}
+                    </button>
+                  )}
                 </div>
                 {schedulerSnapshot && (
                   schedulerSnapshot.orphan_activations.length > 0
@@ -2756,79 +3726,118 @@ export default function App() {
                 )}
               </section>
 
-              <section className="delegation-board">
-                <header><span>{t('work.delegations.title').toUpperCase()}</span><b>{contextDelegations.length}</b><small>{t('work.delegations.subtitle')}</small></header>
-                <div className="delegation-list">
-                  {contextDelegations.slice(0, 50).map(delegation => (
-                    <article className="work-card compact" key={delegation.id}>
-                      <div className="card-line"><span className={`status-pill ${delegation.status}`}>{statusLabel(delegation.status, t)}</span><time>{formatAgo(delegation.updated_at, t)}</time></div>
-                      <h2 title={delegation.task}><MarkdownInline>{delegation.task}</MarkdownInline></h2>
-                      <footer><span>{shortId(delegation.parent_session_id)}</span><span>→</span><span>{shortId(delegation.child_session_id)}</span></footer>
-                    </article>
-                  ))}
-                  {contextDelegations.length === 0 && <div className="small-empty">{t('work.delegations.empty')}</div>}
-                </div>
-              </section>
+              </>)}
 
-              <section className="tool-timeline">
-                <header><span>{t('work.toolTimeline.title').toUpperCase()}</span><b>{toolTimeline.length}</b><small>{t('work.toolTimeline.subtitle')}</small></header>
-                <div
-                  className="tool-timeline-list"
-                  ref={toolTimelineList}
-                  tabIndex={0}
-                  aria-label={t('work.toolTimeline.ariaLabel')}
-                  onScroll={event => {
-                    const list = event.currentTarget
-                    toolTimelinePinnedToEnd.current = list.scrollHeight - list.scrollTop - list.clientHeight < 48
-                  }}
-                >
-                  {hiddenToolCallCount > 0 && (
-                    <div className="history-hint">{t('work.toolTimeline.historyLimited', { count: hiddenToolCallCount })}</div>
-                  )}
-                  {visibleToolTimeline.map(call => {
-                    const failed = ['error', 'timeout', 'rejected', 'failed'].includes(call.status)
-                    const summary = summarizeToolCall(call.name, call.arguments, t)
-                    return (
-                      <details className={`tool-step ${failed ? 'failed' : call.status === 'running' ? 'running' : 'completed'}`} key={call.id} open={call.status === 'running'}>
-                        <summary>
-                          <i>{call.status === 'running' ? <LoaderCircle size={13} /> : failed ? '!' : '✓'}</i>
-                          <span className="tool-step-summary">
-                            <strong>{summary.title}</strong>
-                            <small>{summary.target}</small>
-                            <code>{summary.detail} · {shortId(call.id, 20)}</code>
-                          </span>
-                          <em>{statusLabel(call.status, t)}</em>
-                          <time>{formatTime(call.timestamp, i18n.language)}</time>
-                          <ChevronDown size={13} />
-                        </summary>
-                        <div className="tool-step-detail">
-                          <section><header>{t('work.toolTimeline.parameters')}{call.truncated ? t('work.toolTimeline.truncated', { chars: call.arguments_chars ?? '?' }) : ''}</header><pre>{call.arguments}</pre></section>
-                          {call.result !== undefined && <section><header>{t('work.toolTimeline.result', { status: statusLabel(call.status, t) })}</header><pre>{call.result.slice(0, 6000) || t('work.toolTimeline.noOutput')}</pre></section>}
-                        </div>
-                      </details>
-                    )
-                  })}
-                  {toolTimeline.length === 0 && <div className="small-empty">{t('work.toolTimeline.empty')}</div>}
-                </div>
-              </section>
             </section>
           )}
 
-          {view === 'mind' && (
-            <section className="mind-view">
+          {view === 'ledger' && (
+            <LedgerPage
+              key={selectedContextId}
+              contextTitle={selectedContext?.title ?? shortId(selectedContextId)}
+              sessionTitle={ledgerFilters.sessionId
+                ? sessions.find(session => session.id === ledgerFilters.sessionId)?.title ?? shortId(ledgerFilters.sessionId)
+                : t('ledger.allSessions')}
+              events={(ledgerPage?.events ?? []).map(event => ({
+                id: event.id,
+                sequence: event.sequence,
+                timestamp: event.timestamp,
+                timeLabel: formatTime(event.timestamp, i18n.language),
+                actor: event.actor,
+                type: event.type,
+                topic: event.topic,
+                payload: event.payload,
+              }))}
+              scannedCount={ledgerPage?.scanned_count ?? 0}
+              scanExhaustive={ledgerPage?.scan_exhaustive ?? true}
+              pageNumber={ledgerCursorHistory.length + 1}
+              canLoadNewer={ledgerCursorHistory.length > 0}
+              canLoadOlder={ledgerPage?.next_before_sequence !== undefined}
+              sessions={sessions.filter(session => session.context_id === selectedContextId).map(session => ({ id: session.id, title: session.title }))}
+              filters={ledgerFilters}
+              canRefresh={Boolean(selectedContextId)}
+              onRefresh={() => void loadLedger(selectedContextId, ledgerFilters, ledgerBeforeSequence)}
+              onApplyFilters={applyLedgerFilters}
+              onLoadNewer={loadNewerLedgerPage}
+              onLoadOlder={loadOlderLedgerPage}
+              onOpenThread={(threadId) => navigate(threadPath(selectedContextId, threadId))}
+              onOpenSession={(sessionId) => { setSelectedSessionId(sessionId); navigate(dashboardPath('dialogue', selectedContextId, sessionId)) }}
+              onOpenFrame={(frameId) => { setSelectedFrameId(frameId); navigate(dashboardPath('cognition', selectedContextId, undefined, 'mind')) }}
+            />
+          )}
+
+          {view === 'runtime' && (
+            <RuntimePage
+              connection={t(`connection.${wsStatus}`)}
+              endpoint={CORE_HTTP_URL}
+              model={status?.model ?? t('model.unavailable')}
+              provider={status?.provider ?? t('runtime.providerUnknown')}
+              toolCount={status?.tool_count ?? 0}
+              reasoning={String(status?.reasoning_effort ?? inferredProviderReasoningEffort(status?.model))}
+              pressure={statusLabel(contextView?.pressure.level ?? contextOverview?.pressure?.level ?? 'normal', t)}
+              estimatedTokens={compactTokens(contextView?.pressure.estimated_tokens ?? contextOverview?.pressure?.estimated_tokens)}
+              softLimit={compactTokens(contextView?.pressure.soft_limit ?? contextOverview?.pressure?.soft_limit)}
+              hardLimit={compactTokens(contextView?.pressure.hard_limit ?? contextOverview?.pressure?.hard_limit)}
+              tokenSource={contextView?.pressure.token_source ?? contextOverview?.pressure?.token_source ?? '—'}
+              schedulerGeneratedAgo={schedulerSnapshot?.generated_at ? formatAgo(schedulerSnapshot.generated_at, t) : '—'}
+              totalSlots={schedulerSnapshot?.admission.total_slots ?? '—'}
+              inFlight={schedulerSnapshot?.admission.context_in_flight ?? '—'}
+              durableQueued={schedulerSnapshot?.admission.context_durable_queued ?? '—'}
+              deferred={schedulerSnapshot?.admission.context_deferred ?? '—'}
+              reservedSlots={schedulerSnapshot?.admission.dialogue_delivery_slots ?? '—'}
+              version={`${status?.version ?? '—'} · ${status?.git_commit ?? '—'}`}
+              uptimeSeconds={status?.uptime_seconds ?? 0}
+              recovery={status?.recovery ?? { preserved_execution_jobs: 0, requeued_execution_jobs: 0, lost_execution_jobs: 0, recovered_background_outboxes: 0 }}
+              projectionAudit={projectionAudit?.context_id === selectedContextId ? projectionAudit : null}
+              auditingProjection={auditingProjection}
+              storage={status?.storage ?? '—'}
+              sandbox={`${status?.sandbox_mode ?? '—'} · ${status?.permission_mode ?? '—'}`}
+              identity={status?.principal_id ?? '—'}
+              eventWriter={schedulerSnapshot?.event_writer ?? {}}
+              modelProvider={schedulerSnapshot?.model_provider ?? {}}
+              contextCapacity={schedulerSnapshot?.context_capacity ?? {}}
+              executionTargets={executionTargets}
+              executionNodes={executionNodes}
+              capabilityLeases={capabilityLeases}
+              executionJobs={executionJobs}
+              onRefresh={() => void loadCatalog()}
+              onAuditProjection={() => void auditMindProjection()}
+              onSetTargetStatus={(targetId, revision, nextStatus) => void setExecutionTargetStatus(targetId, revision, nextStatus)}
+              onRevokeNode={(nodeId, revision) => void revokeExecutionNode(nodeId, revision)}
+              onRevokeLease={(leaseId, revision) => void revokeCapabilityLease(leaseId, revision)}
+              onCancelJob={(jobId, revision) => void cancelExecutionJob(jobId, revision)}
+            />
+          )}
+
+          {view === 'cognition' && (
+            <section className="cognition-view">
               <header className="workspace-heading">
                 <div><span>{t('mindView.title').toUpperCase()}</span><h1>{t('mindView.heading')}</h1><p>{t('mindView.description')}</p></div>
-                <button type="button" onClick={() => setView('conversation')}><ArrowLeft size={14} /> {t('mindView.backToChat')}</button>
+                <button type="button" onClick={() => setView('dialogue')}><ArrowLeft size={14} /> {t('mindView.backToChat')}</button>
               </header>
 
+              <nav className="cognition-navigation" aria-label={t('cognition.navigationLabel')}>
+                {(['mind', 'attention', 'encoding', 'recall'] as CognitionView[]).map(item => (
+                  <button className={cognitionView === item ? 'is-active' : ''} key={item} type="button" onClick={() => selectCognitionView(item)} aria-current={cognitionView === item ? 'page' : undefined}>
+                    {t(`cognition.tabs.${item}`)}
+                  </button>
+                ))}
+              </nav>
+
               <div className="mind-metrics">
-                <div><Brain size={18} /><span><small>{t('mindView.metrics.frames').toUpperCase()}</small><strong>{activeFrameCount} · {retiringFrameCount} · {retired.size}</strong></span></div>
+                <div><Brain size={18} /><span><small>{t('mindView.metrics.frames').toUpperCase()}</small><strong className="frame-lifecycle-counts" aria-label={t('mindView.metrics.frameLifecycle.summary', { active: activeFrameCount, retiring: retiringFrameCount, retired: retired.size })}>
+                  <span className="frame-lifecycle-value" tabIndex={0} title={t('mindView.metrics.frameLifecycle.active', { count: activeFrameCount })}>{activeFrameCount}</span>
+                  <i aria-hidden="true">·</i>
+                  <span className="frame-lifecycle-value" tabIndex={0} title={t('mindView.metrics.frameLifecycle.retiring', { count: retiringFrameCount })}>{retiringFrameCount}</span>
+                  <i aria-hidden="true">·</i>
+                  <span className="frame-lifecycle-value" tabIndex={0} title={t('mindView.metrics.frameLifecycle.retired', { count: retired.size })}>{retired.size}</span>
+                </strong></span></div>
                 <div><GitBranch size={18} /><span><small>{t('mindView.metrics.relations').toUpperCase()}</small><strong>{contextView?.state.relations.length ?? 0}</strong></span></div>
                 <div><Database size={18} /><span><small>{t('mindView.metrics.observations').toUpperCase()}</small><strong>{contextView?.observations.length ?? 0}</strong></span></div>
                 <div><Clock3 size={18} /><span><small>{t('mindView.metrics.cognitiveTick').toUpperCase()}</small><strong>{contextView?.cognitive_clock.tick ?? 0}</strong></span></div>
               </div>
 
-              <details className="context-inspect-view">
+              {cognitionView === 'encoding' && <details className="context-inspect-view" open>
                 <summary>
                   <span className="context-inspect-title">
                     <Brain size={15} />
@@ -2879,20 +3888,24 @@ export default function App() {
                       : t('mindView.contextInspect.reconstructedNotice')}
                   </footer>
                 </div>
-              </details>
+              </details>}
 
-              <form className="recall-search" onSubmit={event => { event.preventDefault(); void searchRecall() }}>
-                <input value={recallQuery} onChange={event => setRecallQuery(event.target.value)} placeholder={t('mindView.searchPlaceholder')} />
-                <button type="submit" disabled={recallBusy || !recallQuery.trim()}><Database size={14} /> {recallBusy ? t('mindView.searching') : t('mindView.search')}</button>
-                {recallIndex && <small className={recallIndex.capability.indexed ? 'indexed' : 'degraded'}>{recallIndex.capability.mode} · {recallIndex.event_documents + recallIndex.frame_documents}</small>}
-              </form>
-              {recallMatches.length > 0 && <div className="recall-results">{recallMatches.map(hit => (
-                <button key={`${hit.document_kind}-${hit.document_id}`} type="button" onClick={() => hit.document_kind === 'frame' && setSelectedFrameId(hit.document_id)}>
-                  <span><b>{hit.document_kind}</b><strong>{hit.document_id}</strong>{hit.retired && <em>{t('mindView.retired')}</em>}</span>
-                  <small>{hit.preview}</small>
-                </button>
-              ))}</div>}
+              {cognitionView === 'recall' && <>
+                <form className="recall-search" onSubmit={event => { event.preventDefault(); void searchRecall() }}>
+                  <input value={recallQuery} onChange={event => setRecallQuery(event.target.value)} placeholder={t('mindView.searchPlaceholder')} />
+                  <button type="submit" disabled={recallBusy || !recallQuery.trim()}><Database size={14} /> {recallBusy ? t('mindView.searching') : t('mindView.search')}</button>
+                  {recallIndex && <small className={recallIndex.capability.indexed ? 'indexed' : 'degraded'}>{recallIndex.capability.mode} · {recallIndex.event_documents + recallIndex.frame_documents}</small>}
+                </form>
+                {recallMatches.length > 0 && <div className="recall-results">{recallMatches.map(hit => (
+                  <button key={`${hit.document_kind}-${hit.document_id}`} type="button" onClick={() => hit.document_kind === 'frame' && setSelectedFrameId(hit.document_id)}>
+                    <span><b>{hit.document_kind}</b><strong>{hit.document_id}</strong>{hit.retired && <em>{t('mindView.retired')}</em>}</span>
+                    <small>{hit.preview}</small>
+                  </button>
+                ))}</div>}
+                {recallMatches.length === 0 && <div className="cognition-empty-panel"><Database size={20} /><strong>{t('cognition.recall.emptyTitle')}</strong><span>{t('cognition.recall.emptyDescription')}</span></div>}
+              </>}
 
+              {cognitionView === 'mind' && <>
               <div className="mind-grid">
                 <div className="frame-library">
                   <header><span>{t('mindView.frameLibrary').toUpperCase()}</span><b>r{contextView?.state.version ?? 0}</b></header>
@@ -2924,39 +3937,130 @@ export default function App() {
                         <div><small>{t('mindView.updated').toUpperCase()}</small><strong>v{selectedFrame.updated_version}</strong></div>
                         <div><small>{t('mindView.sources').toUpperCase()}</small><strong>{selectedFrame.sources.length}</strong></div>
                         <div><small>{t('mindView.protected').toUpperCase()}</small><strong>{contextView?.state.protected.includes(selectedFrame.id) ? t('mindView.yes') : t('mindView.no')}</strong></div>
+                        <div><small>{t('mindView.provenance.state').toUpperCase()}</small><strong>{t(`mindView.provenance.states.${selectedFrame.provenance.state}`)}</strong></div>
+                        <div><small>{t('mindView.provenance.formedPrincipal').toUpperCase()}</small><strong>{selectedFrame.provenance.formed_principal_id ? shortId(selectedFrame.provenance.formed_principal_id, 24) : '—'}</strong></div>
+                        <div><small>{t('mindView.provenance.formedSession').toUpperCase()}</small><strong>{selectedFrame.provenance.formed_session_id ? shortId(selectedFrame.provenance.formed_session_id, 24) : '—'}</strong></div>
+                        <div><small>{t('mindView.provenance.evidence').toUpperCase()}</small><strong>{selectedFrame.provenance.source_principal_ids.length}P · {selectedFrame.provenance.source_session_ids.length}S</strong></div>
                       </div>
                       {selectedFrame.sources.length > 0 && <div className="source-list">{selectedFrame.sources.map(source => <span key={source}>{source}</span>)}</div>}
+                      {(selectedFrame.provenance.source_principal_ids.length > 0 || selectedFrame.provenance.source_session_ids.length > 0) && (
+                        <section className="frame-provenance">
+                          <h3>{t('mindView.provenance.lineage').toUpperCase()}</h3>
+                          <div>{selectedFrame.provenance.source_principal_ids.map(id => <span key={`principal-${id}`}>P · {id}</span>)}</div>
+                          <div>{selectedFrame.provenance.source_session_ids.map(id => <span key={`session-${id}`}>S · {id}</span>)}</div>
+                        </section>
+                      )}
                       <section className="relations"><h3>{t('mindView.relationsTitle').toUpperCase()}</h3>{(contextView?.state.relations ?? []).filter(item => item.subject === selectedFrame.id || item.object === selectedFrame.id).map((item, index) => <div key={`${item.subject}-${item.relation}-${item.object}-${index}`}><span>{item.subject}</span><b>{item.relation}</b><span>{item.object}</span></div>)}</section>
                       <section className="relations lineage"><h3>{t('mindView.lineage').toUpperCase()}</h3>{(selectedFrameLineage?.edges ?? []).map((item, index) => <div key={`${item.subject}-${item.relation}-${item.object}-${index}`}><span>{item.subject}</span><b>{item.relation}</b><span>{item.object}</span></div>)}{selectedFrameLineage?.truncated && <small>{t('mindView.lineageTruncated')}</small>}</section>
                     </>
                   ) : <div className="small-empty">{t('mindView.emptyFrame')}</div>}
                 </article>
               </div>
-
-              <section className="context-facts">
-                <div><small>{t('mindView.sessionWindow').toUpperCase()}</small><strong>{Math.round((contextView?.session_working_set.active_window_secs ?? 0) / 3600)}h</strong><span>{t('mindView.sessionWindowDetail', { count: contextView?.session_working_set.max_sessions ?? 0 })}</span></div>
-                <div><small>{t('mindView.pressure').toUpperCase()}</small><strong>{statusLabel(contextView?.pressure.level ?? 'normal', t)}</strong><span>{contextView?.pressure.token_accuracy ?? 'estimate'}</span></div>
-                <div><small>{t('mindView.checkpoints').toUpperCase()}</small><strong>{contextView?.state.checkpoints.length ?? 0}</strong><span>{t('mindView.checkpointsDetail')}</span></div>
-                <div><small>{t('mindView.recallIndex').toUpperCase()}</small><strong>{recallIndex?.capability.indexed ? t('mindView.indexed') : t('mindView.degraded')}</strong><span>{recallIndex?.capability.detail ?? t('mindView.indexUnknown')}</span></div>
+              <section className="mind-transaction-history">
+                <header><span>{t('mindView.transactions.title').toUpperCase()}</span><small>{t('mindView.transactions.subtitle')}</small></header>
+                <div>
+                  {(mindTransactionPage?.events ?? []).slice().reverse().map(event => (
+                    <details key={event.id}>
+                      <summary><code>#{event.sequence ?? '—'}</code><strong>{String(event.payload.reason ?? t('mindView.transactions.updated'))}</strong><time>{formatTime(event.timestamp, i18n.language)}</time><ChevronDown size={13} /></summary>
+                      <pre>{JSON.stringify(event.payload, null, 2)}</pre>
+                    </details>
+                  ))}
+                  {(mindTransactionPage?.events.length ?? 0) === 0 && <div className="small-empty">{t('mindView.transactions.empty')}</div>}
+                </div>
               </section>
+              </>}
+
+              {cognitionView === 'attention' && <div className="attention-view">
+                <section className="context-facts cognition-attention">
+                  <div><small>{t('mindView.sessionWindow').toUpperCase()}</small><strong>{Math.round((contextView?.session_working_set.active_window_secs ?? 0) / 3600)}h</strong><span>{t('mindView.sessionWindowDetail', { count: contextView?.session_working_set.max_sessions ?? 0 })}</span></div>
+                  <div><small>{t('mindView.pressure').toUpperCase()}</small><strong>{statusLabel(contextView?.pressure.level ?? 'normal', t)}</strong><span>{contextView?.pressure.token_accuracy ?? 'estimate'}</span></div>
+                  <div><small>{t('mindView.checkpoints').toUpperCase()}</small><strong>{contextView?.state.checkpoints.length ?? 0}</strong><span>{t('mindView.checkpointsDetail')}</span></div>
+                  <div><small>{t('mindView.recallIndex').toUpperCase()}</small><strong>{recallIndex?.capability.indexed ? t('mindView.indexed') : t('mindView.degraded')}</strong><span>{recallIndex?.capability.detail ?? t('mindView.indexUnknown')}</span></div>
+                </section>
+                <section className="working-set-board">
+                  <header>
+                    <div><span>{t('mindView.attention.workingSet').toUpperCase()}</span><strong>{contextView?.session_working_set.selection ?? '—'}</strong></div>
+                    <small>{t('mindView.attention.population', {
+                      full: contextView?.session_working_set.full_session_ids.length ?? 0,
+                      metadata: contextView?.session_working_set.metadata_only_session_ids.length ?? 0,
+                    })}</small>
+                  </header>
+                  <div className="working-set-exclusions">
+                    {Object.entries(contextView?.session_working_set.excluded ?? {}).map(([reason, count]) => (
+                      <span key={reason}>{t(`mindView.attention.exclusions.${reason}`)} <b>{count}</b></span>
+                    ))}
+                  </div>
+                  <div className="working-set-sessions">
+                    {(contextView?.sessions ?? []).map(projected => (
+                      <article key={projected.session.id}>
+                        <span className={`projection-state ${projected.projection}`}>{projected.projection}</span>
+                        <div>
+                          <strong>{projected.session.title}</strong>
+                          <small>{shortId(projected.session.id, 32)} · {projected.principal_ids?.length ?? 0}P · {formatAgo(projected.session.last_activity_at, t)}</small>
+                          {projected.session.attention_reason && <p>{projected.session.attention_reason}</p>}
+                        </div>
+                        <span className={`attention-state ${projected.session.attention_state ?? 'active'}`}>{projected.session.attention_state ?? 'active'}</span>
+                      </article>
+                    ))}
+                    {(contextView?.sessions.length ?? 0) === 0 && <div className="small-empty">{t('mindView.attention.empty')}</div>}
+                  </div>
+                </section>
+                <section className="observation-board">
+                  <header><span>{t('mindView.attention.observations').toUpperCase()}</span><small>{t('mindView.attention.observationHint')}</small></header>
+                  <div>
+                    {(contextView?.observations ?? []).slice(-40).reverse().map(observation => (
+                      <article key={observation.id}>
+                        <code>{observation.reference}</code>
+                        <span><strong>{observation.topic}</strong><small>{observation.actor} · {observation.session_id ? shortId(observation.session_id, 22) : t('mindView.attention.contextScope')}</small></span>
+                        <p>{observation.preview}</p>
+                        {observation.protected && <em>{t('mindView.attention.protected')}</em>}
+                      </article>
+                    ))}
+                    {(contextView?.observations.length ?? 0) === 0 && <div className="small-empty">{t('mindView.attention.noObservations')}</div>}
+                  </div>
+                </section>
+              </div>}
             </section>
           )}
         </div>
 
         <footer className="composer-area">
-          <div className="composer-status">
-            <button className={`composer-task-status ${taskStrip.state}`} type="button" onClick={() => setView(current => current === 'work' ? 'conversation' : 'work')} title={t('nav.toggleTasks')}>
+          <div className={`composer-status ${pendingApprovals.length > 0 ? 'has-approval' : ''}`}>
+            <button className={`composer-task-status ${taskStrip.state}`} type="button" onClick={() => setView(current => current === 'scheduler' ? 'dialogue' : 'scheduler')} title={t('nav.toggleTasks')}>
               <i className={activeWorkCount || turnPending ? 'busy' : taskStrip.state} />
               <strong>{turnPending ? turnStatus : taskStrip.label}</strong>
               {!turnPending && <span>{taskStrip.summary}</span>}
               <em>{t('composer.status.summary', { executing: activeWorkCount, waiting: waitingCount })}</em>
             </button>
+            {pendingApprovals[0] && (
+              <div className="composer-approval-actions" aria-label={t('work.approvals.quickActions')}>
+                <button
+                  className="allow"
+                  disabled={Boolean(decidingApprovalId)}
+                  type="button"
+                  onClick={() => void decideApproval(pendingApprovals[0], 'allow_once')}
+                >
+                  <Check size={12} /> {t('work.approvals.allowOnce')}
+                </button>
+                <button type="button" onClick={() => setView('scheduler')}>
+                  {t('work.approvals.viewAll', { count: pendingApprovals.length })}
+                </button>
+                <button
+                  className="deny"
+                  disabled={Boolean(decidingApprovalId)}
+                  type="button"
+                  onClick={() => void decideApproval(pendingApprovals[0], 'deny')}
+                >
+                  <Square size={11} /> {t('work.approvals.deny')}
+                </button>
+              </div>
+            )}
             <div className="composer-runtime-meta">
               <span
-                className={`token-usage pressure-${contextView?.pressure.level ?? 'normal'}`}
-                title={t('model.tokens', { used: compactTokens(contextView?.pressure.estimated_tokens), limit: compactTokens(contextView?.pressure.hard_limit) })}
+                className={`token-usage pressure-${contextView?.pressure.level ?? contextOverview?.pressure?.level ?? 'normal'}`}
+                title={t('model.tokens', { used: compactTokens(contextView?.pressure.estimated_tokens ?? contextOverview?.pressure?.estimated_tokens), limit: compactTokens(contextView?.pressure.hard_limit ?? contextOverview?.pressure?.hard_limit) })}
               >
-                {compactTokens(contextView?.pressure.estimated_tokens)} / {compactTokens(contextView?.pressure.hard_limit)}
+                {compactTokens(contextView?.pressure.estimated_tokens ?? contextOverview?.pressure?.estimated_tokens)} / {compactTokens(contextView?.pressure.hard_limit ?? contextOverview?.pressure?.hard_limit)}
               </span>
               <span className={`model-status ${status?.model ? 'ok' : ''}`}>{status?.model ?? t('model.unavailable')}</span>
               <span className="connection-status" title={t('nav.connection')}><i className={`status-dot ${wsStatus === 'connected' ? '' : wsStatus === 'connecting' ? 'connecting' : 'disconnected'}`} />{t(`connection.${wsStatus}`)}</span>
@@ -2977,7 +4081,12 @@ export default function App() {
             onCancel={cancelCurrentSession}
           />
           <div className="shortcut-row"><span>{t('composer.shortcuts.send')}</span><span>{t('composer.shortcuts.newline')}</span><span>{t('composer.shortcuts.tasks')}</span><span>{t('composer.shortcuts.mind')}</span><span>{t('composer.shortcuts.back')}</span></div>
-          {error && <div className="error-banner">{error}</div>}
+          {error && (
+            <div className="error-banner" role="alert">
+              <span>{error}</span>
+              <button type="button" aria-label={t('errors.dismiss')} onClick={() => setError('')}><X size={12} /></button>
+            </div>
+          )}
         </footer>
         <SelectionQuotePopup label={t('conversation.addToChat')} onAdd={addQuote} />
       </section>

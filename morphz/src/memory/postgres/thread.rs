@@ -71,6 +71,7 @@ pub(super) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
         lifecycle: parse_lifecycle(&row.get::<String, _>("status"))?,
         executor_kind: row.get("executor_kind"),
         executor_id: row.get("executor_id"),
+        target_id: row.get("target_id"),
         result_text: row.get("result_text"),
         result_event_id: row.get("result_event_id"),
         delivery_status: parse_delivery(&row.get::<String, _>("delivery_status"))?,
@@ -90,9 +91,9 @@ impl ThreadStore for PostgresStore {
         sqlx::query(
             r#"INSERT INTO threads
                (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
-                kind, status, executor_kind, executor_id, delivery_status,
+                kind, status, executor_kind, executor_id, target_id, delivery_status,
                 created_at, updated_at)
-               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, 'open', $8, $9, 'none', $10, $10)
+               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, 'open', $8, $9, $10, 'none', $11, $11)
                ON CONFLICT DO NOTHING"#,
         )
         .bind(&thread.id)
@@ -104,6 +105,7 @@ impl ThreadStore for PostgresStore {
         .bind(thread.kind.as_str())
         .bind(&thread.executor_kind)
         .bind(&thread.executor_id)
+        .bind(&thread.target_id)
         .bind(now)
         .execute(&self.pool)
         .await?;
@@ -525,6 +527,38 @@ impl ThreadStore for PostgresStore {
         if result.rows_affected() == 1 {
             return Ok(ThreadMutation::Updated(
                 self.get_thread(id).await?.ok_or("Thread 更新后无法读取")?,
+            ));
+        }
+        Ok(match self.get_thread(id).await? {
+            Some(current) => ThreadMutation::Conflict { current },
+            None => ThreadMutation::NotFound,
+        })
+    }
+
+    async fn bind_thread_target(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        target_id: &str,
+    ) -> Result<ThreadMutation, StoreError> {
+        let expected_revision = i64::try_from(expected_revision)?;
+        let result = sqlx::query(
+            r#"UPDATE threads SET revision = revision + 1,
+               target_id = $1, updated_at = $2
+               WHERE id = $3 AND revision = $4
+                 AND (target_id IS NULL OR target_id = $1)"#,
+        )
+        .bind(target_id)
+        .bind(now_text())
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ThreadMutation::Updated(
+                self.get_thread(id)
+                    .await?
+                    .ok_or("Thread Target 绑定后无法读取")?,
             ));
         }
         Ok(match self.get_thread(id).await? {

@@ -2,10 +2,191 @@
   "common": {
     "shared": "共享"
   },
+  "navigation": {
+    "label": "运行时控制台导航",
+    "overview": "总览",
+    "dialogue": "对话",
+    "scheduler": "调度",
+    "cognition": "认知",
+    "ledger": "账本",
+    "runtime": "运行时"
+  },
+  "overview": {
+    "eyebrow": "上下文指挥台",
+    "heading": "运行时总览",
+    "description": "从交互、认知、调度和执行四个平面观察当前上下文的权威状态。",
+    "refresh": "刷新权威状态",
+    "attention": {
+      "title": "需要关注",
+      "subtitle": "只提升需要人类决定、恢复或处理的事实",
+      "approvals": "{{count}} 项审批等待决定",
+      "approvalsHint": "现实能力扩张尚未获得许可",
+      "failedJobs": "{{count}} 个执行作业失败",
+      "failedJobsHint": "查看错误、退出码和重试安全性",
+      "deliveries": "{{count}} 项结果尚未交付",
+      "deliveriesHint": "工作已经终结，但目标会话尚未收到结果",
+      "objectives": "{{count}} 个目标暂停或受阻",
+      "objectivesHint": "查看状态原因和恢复条件",
+      "clear": "当前没有需要处理的异常",
+      "clearHint": "运行时权威投影未发现待审批、失败或受阻项"
+    },
+    "planes": {
+      "interaction": "交互",
+      "sessions": "活跃会话",
+      "cognition": "认知",
+      "mindRevision": "心智修订",
+      "frames": "{{active}} 活跃 · {{retiring}} 退役中 · {{retired}} 已退役",
+      "scheduling": "调度",
+      "threads": "开放线程",
+      "schedulerDetail": "{{signals}} 待处理信号 · {{schedules}} 活跃计划",
+      "execution": "执行",
+      "jobs": "活跃作业",
+      "executionDetail": "{{activations}} 次求值 · {{approvals}} 项待审批"
+    },
+    "activity": {
+      "title": "实时活动",
+      "subtitle": "按线程聚合，而不是混合工具流水",
+      "openScheduler": "打开调度器",
+      "empty": "当前没有开放线程"
+    }
+  },
+  "cognition": {
+    "navigationLabel": "认知工作台",
+    "tabs": {
+      "mind": "心智",
+      "attention": "注意力",
+      "encoding": "上下文编码",
+      "recall": "召回"
+    },
+    "recall": {
+      "emptyTitle": "从事实账本和认知框架中召回",
+      "emptyDescription": "输入查询后，结果会保留来源、修订和退役状态。"
+    }
+  },
+  "ledger": {
+    "eyebrow": "不可变事实",
+    "heading": "事件账本",
+    "description": "查看运行时认定已经发生的事件，并沿事件 ID 追踪因果来源。",
+    "refresh": "刷新",
+    "loading": "正在连接 Morphz 运行时",
+    "loadingHint": "读取 Agent、Context、Session 与权威 Projection…",
+    "sequence": "序列",
+    "allSessions": "全部会话",
+    "queryNotice": "本次扫描 {{count}} 条事实 · {{exhaustive}}",
+    "exhaustive": "范围完整",
+    "bounded": "有界结果",
+    "filters": {
+      "session": "会话范围",
+      "principal": "身份主体",
+      "thread": "线程",
+      "activation": "求值激活",
+      "actor": "参与者",
+      "actorPlaceholder": "用户、代理或运行时",
+      "topic": "主题",
+      "afterSequence": "起始序列之后",
+      "startTime": "开始时间",
+      "endTime": "结束时间",
+      "search": "内容检索",
+      "searchPlaceholder": "事件正文或参数…",
+      "apply": "应用筛选",
+      "clear": "清空"
+    },
+    "eventId": "事件 ID",
+    "timestamp": "时间",
+    "actor": "参与者",
+    "topic": "主题",
+    "openThread": "打开线程",
+    "openSession": "打开会话",
+    "openFrame": "打开认知框架",
+    "pagination": {
+      "label": "账本分页",
+      "newer": "较新的事件",
+      "older": "更早的事件",
+      "page": "第 {{page}} 页"
+    },
+    "emptyTitle": "当前范围没有事件",
+    "emptyDescription": "当前上下文尚未产生匹配的持久事实。"
+  },
+  "runtime": {
+    "eyebrow": "系统控制面",
+    "heading": "运行时状态",
+    "description": "模型提供方、模型、容量、上下文压力和服务连接的统一权威视图。",
+    "refresh": "刷新",
+    "connection": "连接",
+    "model": "模型",
+    "providerUnknown": "模型提供方未知",
+    "tools": "工具",
+    "registeredTools": "已注册能力",
+    "reasoning": "推理强度",
+    "reasoningHint": "只影响后续模型请求",
+    "executionPlane": "执行平面",
+    "executionPlaneHint": "目标、物理节点、执行作业与能力租约的权威控制面",
+    "executionTargets": "执行目标",
+    "executionNodes": "执行节点",
+    "executionJobs": "执行作业",
+    "capabilityLeases": "能力租约",
+    "noExecutionTargets": "当前没有可用执行目标",
+    "noExecutionNodes": "当前身份没有已配对执行节点",
+    "noExecutionJobs": "当前没有执行作业",
+    "noCapabilityLeases": "当前没有有效能力租约",
+    "enable": "启用",
+    "disable": "禁用",
+    "revoke": "撤销",
+    "cancel": "取消",
+    "contextCapacity": "上下文容量",
+    "schedulerCapacity": "调度容量",
+    "host": "宿主与边界",
+    "hostHint": "构建、存储、沙箱和权威身份",
+    "version": "版本",
+    "uptime": "运行时长",
+    "uptimeSeconds": "{{count}} 秒",
+    "recovery": "启动恢复",
+    "notStarted": "尚未完成",
+    "recoveryPreserved": "保留执行作业",
+    "recoveryRequeued": "重新排队作业",
+    "recoveryLost": "丢失作业",
+    "recoveryOutboxes": "恢复后台发件箱",
+    "projectionAudit": "Mind Projection 完整性审计",
+    "projectionAuditHint": "显式重放账本，不进入正常请求热路径",
+    "runProjectionAudit": "运行审计",
+    "auditingProjection": "正在审计…",
+    "projectionAuditNotRun": "尚未运行审计。在线 Projection 仍在正常使用；这里只显示显式验证结果。",
+    "auditResult": "结果",
+    "auditMatches": "账本、Projection 与 Snapshot 一致",
+    "auditMismatch": "检测到不一致，需要人工处理",
+    "auditRevisions": "修订版本",
+    "auditScanned": "全量事件 / 增量事务",
+    "auditLatency": "全量 / 增量 / Projection 校验耗时",
+    "storage": "存储",
+    "sandbox": "沙箱 / 审批",
+    "identity": "默认身份",
+    "kernelDiagnostics": "内核与容量诊断",
+    "eventWriter": "事件写入器",
+    "modelProviderMetrics": "模型提供方队列",
+    "contextCapacityMetrics": "上下文容量计数器",
+    "authoritativeProjection": "当前权威投影",
+    "pressure": "压力",
+    "estimatedTokens": "估算词元",
+    "softLimit": "警告阈值",
+    "hardLimit": "硬上限",
+    "tokenSource": "估算来源",
+    "totalSlots": "总槽位",
+    "inFlight": "执行中",
+    "durableQueued": "持久排队",
+    "deferred": "窗口外等待",
+    "reservedSlots": "对话/交付预留",
+    "boundaryTitle": "运行时页面不从前端猜测系统状态",
+    "boundaryDescription": "当前缺少的存储、沙箱、身份和恢复统计会先成为运行时开发接口的查询对象，再由此页面呈现。"
+  },
   "header": {
     "context": "上下文",
     "runtimeTasks": "运行时任务",
     "session": "会话",
+    "principal": "身份主体",
+    "noPrincipal": "没有权威身份",
+    "runtimeVerified": "运行时权威绑定",
+    "attention": "需要关注",
+    "globalAttention": "查看所有需要人工关注的运行时事实",
     "noContext": "未选择上下文",
     "noSession": "未选择会话",
     "visibleContexts": "可用上下文",
@@ -28,7 +209,13 @@
   },
   "theme": {
     "title": "强调色主题",
-    "hint": "仅影响当前浏览器",
+    "appearance": {
+      "title": "外观模式",
+      "system": "跟随系统",
+      "systemHint": "跟随操作系统的亮色或暗色设置",
+      "dark": "暗色",
+      "light": "亮色"
+    },
     "iris": {
       "label": "鸢尾紫",
       "description": "克制、认知感"
@@ -66,11 +253,7 @@
     "persisted": "已保存 · 非回复正文",
     "persistedShort": "已保存",
     "streaming": "求值中",
-    "toolCalls": "{{count}} 个工具调用",
-    "workLiveTitle": "实时模型求值",
-    "workLiveSubtitle": "只展示正在运行的工作求值；摘要不会进入聊天正文",
-    "workHistoryTitle": "工作推理摘要",
-    "workHistorySubtitle": "同一次求值的多段推理会连续合并显示"
+    "toolCalls": "{{count}} 个工具调用"
   },
   "model": {
     "unavailable": "模型不可用",
@@ -92,7 +275,7 @@
     "roleYou": "你",
     "roleAgent": "Morphz",
     "roleObjective": "目标",
-    "roleWork": "工作",
+    "roleDelivery": "任务结果",
     "roleRuntime": "运行时",
     "noText": "（无文本）",
     "historyHint": "向上滚动加载更早的 {{count}} 条消息",
@@ -106,12 +289,38 @@
     "reasoningCompleted": "推理已结束 · 等待最终输出",
     "waitingFinalOutput": "推理已经结束，模型尚未产生最终正文或工具调用。",
     "streamFailed": "流式响应失败",
-    "pendingHint": "你可以继续发送消息，当前执行不会阻塞对话。"
+    "pendingHint": "你可以继续发送消息，当前执行不会阻塞对话。",
+    "derivedThreads": "这条消息派生的运行时线程",
+    "openThread": "打开完整因果链",
+    "threadJobs": "{{count}} 个执行作业",
+    "activity": {
+      "title": "任务活动",
+      "summary": "{{objectives}} 个目标 · {{threads}} 个执行 · {{delegations}} 个子智能体",
+      "objectives": "目标",
+      "threads": "当前执行",
+      "backgroundProcesses": "后台进程",
+      "backgroundTask": "后台长任务",
+      "delegations": "子智能体",
+      "history": "执行历史",
+      "currentSession": "当前会话",
+      "otherSession": "会话 {{id}}",
+      "noObjectives": "当前没有非终态目标",
+      "noThreads": "当前没有正在执行的线程",
+      "noBackgroundProcesses": "当前没有后台进程",
+      "noDelegations": "当前没有活跃的子智能体",
+      "noHistory": "还没有可展示的执行历史",
+      "modelEvaluation": "模型求值",
+      "approval": "审批：{{status}}",
+      "waitingForExecution": "线程已经建立，正在等待可执行信号。",
+      "delivery": "交付",
+      "openFullThread": "查看完整因果链"
+    }
   },
   "work": {
     "title": "运行时任务",
     "heading": "任务与执行",
     "description": "这里只展示运行时可验证的目标、求值、后台进程和委派；普通认知框架不会被猜成任务。",
+    "kernelDiagnostics": "内核诊断",
     "refresh": "刷新",
     "backToChat": "返回对话",
     "executingCount": "{{count}} 执行中",
@@ -165,16 +374,29 @@
       "objective": "目标线程",
       "delivery": "交付线程"
     },
+    "threadGroups": {
+      "attention": "需要关注",
+      "running": "正在执行",
+      "runnable": "可以求值",
+      "waiting": "正在等待",
+      "recent": "最近结束"
+    },
     "attention": {
       "title": "需要关注",
       "subtitle": "只有需要用户决定或执行失败的事实才会提升到这里",
       "jobFailed": "执行作业失败，但没有记录错误正文",
-      "deliveryFailed": "工作已完成，但结果尚未成功交付"
+      "deliveryFailed": "工作已完成，但结果尚未成功交付",
+      "stateMismatch": "状态异常",
+      "approvedWithoutOwner": "审批已经通过，但对应的求值或线程已经结束，结果已无处交付；运行时将在恢复阶段安全收口该作业。",
+      "terminalApprovalMismatch": "执行作业仍在等待审批，但审批权威状态已经是 {{status}}；这不是可再次审批的请求。",
+      "missingApproval": "执行作业声称正在等待审批，但没有对应的审批权威记录；这不是可操作的审批请求。"
     },
     "approvals": {
       "title": "能力审批",
       "needsYou": "等待你的决定",
       "capability": "查看申请的能力边界",
+      "quickActions": "当前待审批请求的快捷操作",
+      "viewAll": "查看审批（{{count}}）",
       "allowOnce": "仅允许这一次",
       "deny": "拒绝"
     },
@@ -188,6 +410,11 @@
       "reserved": "对话/交付预留槽 {{count}}"
     },
     "schedules": {
+      "title": "调度规则",
+      "subtitle": "定时、依赖与下一次唤醒",
+      "thread": "线程",
+      "noDeadline": "等待触发",
+      "empty": "当前没有调度规则",
       "pause": "暂停",
       "resume": "恢复",
       "reschedule": "重新定时",
@@ -197,33 +424,26 @@
       "title": "调度因果链",
       "subtitle": "线程 → 信号 → 求值激活 → 执行作业 → 审批 → 结果 → 交付",
       "activation": "求值激活",
+      "executor": "执行器",
       "noJobs": "本次激活没有产生执行作业",
       "request": "权威请求参数",
+      "target": "执行目标",
       "retrySafety": "重试安全性",
       "revision": "修订",
       "worker": "执行节点",
       "result": "物理执行结果",
       "exitCode": "退出码 {{code}}",
       "delivery": "结果交付",
+      "inspect": "打开线程详情",
+      "detail": "线程详情",
+      "backToBoard": "返回线程看板",
+      "loadingDetail": "正在读取线程的完整因果链…",
       "empty": "当前上下文没有可展示的调度线程",
       "historyLimited": "为保持页面流畅，已隐藏更早的 {{count}} 条已结束线程",
-      "diagnostics": "未挂接的调度诊断数据"
-    },
-    "delegations": {
-      "title": "委派",
-      "subtitle": "委派任务 · 独立滚动，不影响上方布局",
-      "empty": "没有委派"
-    },
-    "toolTimeline": {
-      "title": "工具调用时间线",
-      "subtitle": "运行时真实执行事件 · 自动滚动到底部",
-      "parameters": "参数",
-      "truncated": " · 原始 {{chars}} 字符",
-      "result": "结果 · {{status}}",
-      "noOutput": "（工具没有输出）",
-      "empty": "当前会话还没有工具调用记录",
-      "historyLimited": "为保持页面流畅，已隐藏更早的 {{count}} 条工具调用",
-      "ariaLabel": "工具调用时间线，可在区域内滚动"
+      "loadMore": "加载更早的线程",
+      "diagnostics": "未挂接的调度诊断数据",
+      "modelAttempts": "模型求值尝试",
+      "modelAttemptsCount": "{{count}} 条持久状态与推理摘要"
     }
   },
   "mindView": {
@@ -236,7 +456,13 @@
       "relations": "关系",
       "observations": "观察",
       "residentSessions": "驻留会话",
-      "cognitiveTick": "认知活动时钟"
+      "cognitiveTick": "认知活动时钟",
+      "frameLifecycle": {
+        "summary": "{{active}} 个活跃框架，{{retiring}} 个退役中框架，{{retired}} 个已退役框架",
+        "active": "{{count}} 个活跃框架：仍会进入当前 Mind 和上下文编码",
+        "retiring": "{{count}} 个退役中框架：已进入退役流程，但生命周期尚未完成",
+        "retired": "{{count}} 个已退役框架：保留在历史账本中，默认不再进入当前认知"
+      }
     },
     "contextInspect": {
       "eyebrow": "求值上下文",
@@ -273,11 +499,29 @@
     "updated": "更新",
     "sources": "来源",
     "protected": "受保护",
+    "provenance": {
+      "state": "来源状态",
+      "formedPrincipal": "形成身份",
+      "formedSession": "形成会话",
+      "evidence": "证据范围",
+      "lineage": "身份来源链",
+      "states": {
+        "unknown": "来源未知",
+        "unattributed": "无外部归因",
+        "attributed": "可验证来源"
+      }
+    },
     "yes": "是",
     "no": "否",
     "relationsTitle": "关系",
     "lineage": "两层认知血缘",
     "lineageTruncated": "结果已截断，可通过 Recall API 继续分页",
+    "transactions": {
+      "title": "最近认知事务",
+      "subtitle": "来自不可变账本的 Context Transaction 历史",
+      "updated": "认知投影已更新",
+      "empty": "当前上下文还没有认知事务"
+    },
     "remainingTicks": "剩余 {{count}} 个认知活动刻度",
     "restore": "恢复",
     "protect": "保护",
@@ -296,7 +540,24 @@
     "recallIndex": "召回索引",
     "indexed": "已索引",
     "degraded": "降级检索",
-    "indexUnknown": "尚未读取索引能力"
+    "indexUnknown": "尚未读取索引能力",
+    "attention": {
+      "workingSet": "会话工作集",
+      "population": "{{full}} 个完整 · {{metadata}} 个仅元数据",
+      "empty": "当前编码没有驻留会话",
+      "observations": "当前观察与收件箱来源",
+      "observationHint": "只展示当前投影中仍活跃的事实；完整历史在账本中",
+      "contextScope": "上下文范围",
+      "protected": "受保护",
+      "noObservations": "当前没有活跃观察",
+      "exclusions": {
+        "archived": "已归档",
+        "retired": "已换出",
+        "outside_window": "窗口外",
+        "over_count": "超过数量",
+        "token_budget": "词元预算"
+      }
+    }
   },
   "composer": {
     "placeholder": "输入消息…",
@@ -316,6 +577,9 @@
       "noWork": "当前没有进行中的工作",
       "executing": "正在执行",
       "approvalRequired": "需要审批",
+      "approvalGranted": "审批已通过，等待执行",
+      "approvalReviewing": "自动审批中",
+      "approvalStateInvalid": "审批状态异常",
       "deliveryFailed": "结果待交付",
       "backpressure": "调度背压",
       "deferredCount": "{{count}} 个求值激活正在持久队列中等待载入",
@@ -448,7 +712,8 @@
     "invalidScheduleDate": "请输入有效的标准时间或本地日期时间",
     "invalidScheduleInterval": "周期秒数必须是正整数",
     "websocketParse": "实时连接返回了无法解析的事件",
-    "copyFailed": "复制失败"
+    "copyFailed": "复制失败",
+    "dismiss": "关闭错误提示"
   },
   "reason": {
     "resumeByUser": "用户通过控制台显式恢复目标",

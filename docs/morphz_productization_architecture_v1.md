@@ -2,6 +2,8 @@
 
 > 状态：v1 已实现
 > 更新时间：2026-07-13
+>
+> 历史边界说明：本文记录 2026-07-13 完成的 Core/Extension/Eval/Application API 收口，相关依赖方向仍然有效；其中把 Dashboard 称为“可选 Inspector”的产品定位已被后续规划取代。当前产品界面与交付边界以[产品界面与交付架构 v1](./morphz_product_surfaces_and_delivery_architecture_v1.md)为准，Dashboard 详细定位以[Dashboard / Runtime Console 设计 v1](./morphz_dashboard_runtime_console_design_v1.md)为准。
 
 ## 1. 目标
 

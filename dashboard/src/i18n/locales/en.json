@@ -2,10 +2,191 @@
   "common": {
     "shared": "shared"
   },
+  "navigation": {
+    "label": "Runtime Console navigation",
+    "overview": "Overview",
+    "dialogue": "Dialogue",
+    "scheduler": "Scheduler",
+    "cognition": "Cognition",
+    "ledger": "Ledger",
+    "runtime": "Runtime"
+  },
+  "overview": {
+    "eyebrow": "Context command center",
+    "heading": "Runtime overview",
+    "description": "Observe the authoritative Context state across interaction, cognition, scheduling and execution planes.",
+    "refresh": "Refresh authoritative state",
+    "attention": {
+      "title": "Needs attention",
+      "subtitle": "Only facts requiring a human decision, recovery or intervention are promoted",
+      "approvals": "{{count}} approvals need a decision",
+      "approvalsHint": "A real-world capability expansion has not been authorized",
+      "failedJobs": "{{count}} Execution Jobs failed",
+      "failedJobsHint": "Inspect errors, exit codes and retry safety",
+      "deliveries": "{{count}} results are not delivered",
+      "deliveriesHint": "Work terminated but the target Session has not received the result",
+      "objectives": "{{count}} Objectives are paused or blocked",
+      "objectivesHint": "Inspect status reasons and recovery conditions",
+      "clear": "Nothing currently needs intervention",
+      "clearHint": "The authoritative Runtime projection reports no approvals, failures or blocked work"
+    },
+    "planes": {
+      "interaction": "Interaction",
+      "sessions": "active Sessions",
+      "cognition": "Cognition",
+      "mindRevision": "Mind revision",
+      "frames": "{{active}} active · {{retiring}} retiring · {{retired}} retired",
+      "scheduling": "Scheduling",
+      "threads": "open Threads",
+      "schedulerDetail": "{{signals}} pending Signals · {{schedules}} active Schedules",
+      "execution": "Execution",
+      "jobs": "active Jobs",
+      "executionDetail": "{{activations}} evaluations · {{approvals}} pending approvals"
+    },
+    "activity": {
+      "title": "Live activity",
+      "subtitle": "Grouped by Thread instead of mixing global tool traffic",
+      "openScheduler": "Open Scheduler",
+      "empty": "No open Threads"
+    }
+  },
+  "cognition": {
+    "navigationLabel": "Cognition workbench",
+    "tabs": {
+      "mind": "Mind",
+      "attention": "Attention",
+      "encoding": "Context Encoding",
+      "recall": "Recall"
+    },
+    "recall": {
+      "emptyTitle": "Recall from the factual Ledger and cognitive Frames",
+      "emptyDescription": "Results retain provenance, revision and retirement state."
+    }
+  },
+  "ledger": {
+    "eyebrow": "Immutable facts",
+    "heading": "Event Ledger",
+    "description": "Inspect events the Runtime considers to have happened and follow their causal identity.",
+    "refresh": "Refresh",
+    "loading": "Connecting to Morphz Runtime",
+    "loadingHint": "Loading Agents, Contexts, Sessions and authoritative Projections…",
+    "sequence": "Sequence",
+    "allSessions": "All Sessions",
+    "queryNotice": "Scanned {{count}} facts · {{exhaustive}}",
+    "exhaustive": "complete range",
+    "bounded": "bounded result",
+    "filters": {
+      "session": "Session Scope",
+      "principal": "Principal",
+      "thread": "Thread",
+      "activation": "Activation",
+      "actor": "Actor",
+      "actorPlaceholder": "User, Agent or Runtime",
+      "topic": "Topic",
+      "afterSequence": "After Sequence",
+      "startTime": "Start Time",
+      "endTime": "End Time",
+      "search": "Content Search",
+      "searchPlaceholder": "Event text or parameters…",
+      "apply": "Apply filters",
+      "clear": "Clear"
+    },
+    "eventId": "Event ID",
+    "timestamp": "Timestamp",
+    "actor": "Actor",
+    "topic": "Topic",
+    "openThread": "Open Thread",
+    "openSession": "Open Session",
+    "openFrame": "Open Frame",
+    "pagination": {
+      "label": "Ledger pagination",
+      "newer": "Newer events",
+      "older": "Older events",
+      "page": "Page {{page}}"
+    },
+    "emptyTitle": "No events in the current scope",
+    "emptyDescription": "The current Context has no matching durable facts yet."
+  },
+  "runtime": {
+    "eyebrow": "System control plane",
+    "heading": "Runtime status",
+    "description": "A unified authoritative view of Provider, model, capacity, Context pressure and service connectivity.",
+    "refresh": "Refresh",
+    "connection": "Connection",
+    "model": "Model",
+    "providerUnknown": "Provider unknown",
+    "tools": "Tools",
+    "registeredTools": "registered capabilities",
+    "reasoning": "Reasoning effort",
+    "reasoningHint": "Only affects future model requests",
+    "executionPlane": "Execution Plane",
+    "executionPlaneHint": "Authoritative control plane for Targets, physical Nodes, Execution Jobs and Capability Leases",
+    "executionTargets": "Execution Targets",
+    "executionNodes": "Execution Nodes",
+    "executionJobs": "Execution Jobs",
+    "capabilityLeases": "Capability Leases",
+    "noExecutionTargets": "No Execution Targets are available",
+    "noExecutionNodes": "No Execution Nodes are paired for this Principal",
+    "noExecutionJobs": "No Execution Jobs",
+    "noCapabilityLeases": "No active Capability Leases",
+    "enable": "Enable",
+    "disable": "Disable",
+    "revoke": "Revoke",
+    "cancel": "Cancel",
+    "contextCapacity": "Context capacity",
+    "schedulerCapacity": "Scheduler capacity",
+    "host": "Host and boundaries",
+    "hostHint": "Build, storage, sandbox and authoritative identity",
+    "version": "Version",
+    "uptime": "Uptime",
+    "uptimeSeconds": "{{count}} seconds",
+    "recovery": "Startup Recovery",
+    "notStarted": "Not completed",
+    "recoveryPreserved": "Preserved Execution Jobs",
+    "recoveryRequeued": "Requeued Jobs",
+    "recoveryLost": "Lost Jobs",
+    "recoveryOutboxes": "Recovered background outboxes",
+    "projectionAudit": "Mind Projection Integrity Audit",
+    "projectionAuditHint": "Explicit Ledger replay; never runs on the request hot path",
+    "runProjectionAudit": "Run audit",
+    "auditingProjection": "Auditing…",
+    "projectionAuditNotRun": "No audit has been run. The online Projection remains active; this area only presents explicit verification results.",
+    "auditResult": "Result",
+    "auditMatches": "Ledger, Projection and Snapshot match",
+    "auditMismatch": "Mismatch detected; operator attention is required",
+    "auditRevisions": "Revisions",
+    "auditScanned": "Full events / incremental transactions",
+    "auditLatency": "Full / incremental / Projection validation latency",
+    "storage": "Storage",
+    "sandbox": "Sandbox / approval",
+    "identity": "Default identity",
+    "kernelDiagnostics": "Kernel and capacity diagnostics",
+    "eventWriter": "Event Writer",
+    "modelProviderMetrics": "Model Provider Queue",
+    "contextCapacityMetrics": "Context Capacity Counters",
+    "authoritativeProjection": "Current authoritative projection",
+    "pressure": "Pressure",
+    "estimatedTokens": "Estimated tokens",
+    "softLimit": "Warning threshold",
+    "hardLimit": "Hard limit",
+    "tokenSource": "Estimate source",
+    "totalSlots": "Total slots",
+    "inFlight": "In flight",
+    "durableQueued": "Durably queued",
+    "deferred": "Outside window",
+    "reservedSlots": "Dialogue/delivery reserve",
+    "boundaryTitle": "The Runtime page does not infer system state in the browser",
+    "boundaryDescription": "Missing Storage, Sandbox, Identity and recovery statistics will first become Runtime/SDK query objects, then be presented here."
+  },
   "header": {
     "context": "Context",
     "runtimeTasks": "Runtime Tasks",
     "session": "Session",
+    "principal": "Principal",
+    "noPrincipal": "No authoritative Principal",
+    "runtimeVerified": "Runtime authoritative binding",
+    "attention": "Attention",
+    "globalAttention": "Inspect all Runtime facts that require human attention",
     "noContext": "No Context selected",
     "noSession": "No Session selected",
     "visibleContexts": "Available Contexts",
@@ -28,7 +209,13 @@
   },
   "theme": {
     "title": "Accent Theme",
-    "hint": "Only affects this browser",
+    "appearance": {
+      "title": "Appearance mode",
+      "system": "System",
+      "systemHint": "Follow the operating system light or dark appearance",
+      "dark": "Dark",
+      "light": "Light"
+    },
     "iris": {
       "label": "Iris",
       "description": "Restrained, cognitive"
@@ -66,11 +253,7 @@
     "persisted": "saved · not reply text",
     "persistedShort": "saved",
     "streaming": "evaluating",
-    "toolCalls": "{{count}} tool calls",
-    "workLiveTitle": "Live model evaluations",
-    "workLiveSubtitle": "Only running work evaluations; summaries never enter chat text",
-    "workHistoryTitle": "Work reasoning summaries",
-    "workHistorySubtitle": "Reasoning segments from one evaluation are shown as one continuous stream"
+    "toolCalls": "{{count}} tool calls"
   },
   "model": {
     "unavailable": "model unavailable",
@@ -92,7 +275,7 @@
     "roleYou": "You",
     "roleAgent": "Morphz",
     "roleObjective": "Objective",
-    "roleWork": "Work",
+    "roleDelivery": "Task result",
     "roleRuntime": "Runtime",
     "noText": "(no text)",
     "historyHint": "Scroll up to load {{count}} earlier messages",
@@ -106,12 +289,39 @@
     "reasoningCompleted": "Reasoning ended · waiting for final output",
     "waitingFinalOutput": "Reasoning has ended; final text or tool calls have not arrived yet.",
     "streamFailed": "Streaming response failed",
-    "pendingHint": "You can keep sending messages; current execution will not block the dialogue."
+    "pendingHint": "You can keep sending messages; current execution will not block the dialogue.",
+    "derivedThreads": "Runtime Threads derived from this message",
+    "openThread": "Open the complete causal chain",
+    "threadJobs_one": "{{count}} Execution Job",
+    "threadJobs_other": "{{count}} Execution Jobs",
+    "activity": {
+      "title": "Task activity",
+      "summary": "{{objectives}} objectives · {{threads}} executions · {{delegations}} sub-agents",
+      "objectives": "Objectives",
+      "threads": "Current execution",
+      "backgroundProcesses": "Background processes",
+      "backgroundTask": "Background task",
+      "delegations": "Sub-agents",
+      "history": "Execution history",
+      "currentSession": "Current Session",
+      "otherSession": "Session {{id}}",
+      "noObjectives": "No non-terminal Objectives",
+      "noThreads": "No Execution Threads are currently active",
+      "noBackgroundProcesses": "No background processes are currently active",
+      "noDelegations": "No sub-agents are currently active",
+      "noHistory": "No execution history to show yet",
+      "modelEvaluation": "Model evaluation",
+      "approval": "Approval: {{status}}",
+      "waitingForExecution": "The Thread exists and is waiting for an executable signal.",
+      "delivery": "Delivery",
+      "openFullThread": "Open complete causal chain"
+    }
   },
   "work": {
     "title": "Runtime Tasks",
     "heading": "Tasks & Execution",
     "description": "Only Runtime-verifiable Objectives, evaluations, background processes and Delegations are shown; ordinary Frames are not guessed as tasks.",
+    "kernelDiagnostics": "Kernel diagnostics",
     "refresh": "Refresh",
     "backToChat": "Back to chat",
     "executingCount": "{{count}} running",
@@ -164,16 +374,29 @@
       "objective": "Objective Thread",
       "delivery": "Delivery Thread"
     },
+    "threadGroups": {
+      "attention": "Needs Attention",
+      "running": "Running",
+      "runnable": "Runnable",
+      "waiting": "Waiting",
+      "recent": "Recent Terminal"
+    },
     "attention": {
       "title": "Needs Attention",
       "subtitle": "Only user decisions and verified failures are promoted here",
       "jobFailed": "Execution Job failed without a recorded error message",
-      "deliveryFailed": "Work completed, but its result has not been delivered"
+      "deliveryFailed": "Work completed, but its result has not been delivered",
+      "stateMismatch": "State mismatch",
+      "approvedWithoutOwner": "Approval was granted, but the owning evaluation or Thread has already ended and can no longer receive the result. Runtime recovery will safely close this Job.",
+      "terminalApprovalMismatch": "The Execution Job still says it is waiting for approval, but the approval authority is already {{status}}. This request cannot be approved again.",
+      "missingApproval": "The Execution Job says it is waiting for approval, but no approval authority record exists. This is not an actionable approval request."
     },
     "approvals": {
       "title": "Capability Approval",
       "needsYou": "Your decision is required",
       "capability": "Inspect requested capability boundary",
+      "quickActions": "Quick actions for the current approval request",
+      "viewAll": "View approvals ({{count}})",
       "allowOnce": "Allow once",
       "deny": "Deny"
     },
@@ -187,6 +410,11 @@
       "reserved": "{{count}} dialogue/delivery slots reserved"
     },
     "schedules": {
+      "title": "Schedules",
+      "subtitle": "Timers, dependencies and next wake-up",
+      "thread": "Thread",
+      "noDeadline": "Awaiting trigger",
+      "empty": "No Schedules in this Context",
       "pause": "Pause",
       "resume": "Resume",
       "reschedule": "Reschedule",
@@ -196,33 +424,26 @@
       "title": "Scheduler Causality",
       "subtitle": "Thread → Signal → Activation → Execution Job → Approval → Result → Delivery",
       "activation": "Evaluation Activation",
+      "executor": "Executor",
       "noJobs": "This Activation produced no Execution Jobs",
       "request": "Authoritative request",
+      "target": "Execution target",
       "retrySafety": "Retry safety",
       "revision": "Revision",
       "worker": "Execution worker",
       "result": "Physical result",
       "exitCode": "Exit code {{code}}",
       "delivery": "Result delivery",
+      "inspect": "Open Thread detail",
+      "detail": "Thread Detail",
+      "backToBoard": "Back to Thread Board",
+      "loadingDetail": "Loading the complete Thread causal chain…",
       "empty": "No scheduler Threads to display for this Context",
       "historyLimited": "{{count}} older completed Threads are hidden to keep this view responsive",
-      "diagnostics": "Unattached scheduler diagnostics"
-    },
-    "delegations": {
-      "title": "Delegations",
-      "subtitle": "Delegation tasks · independent scroll, does not affect layout above",
-      "empty": "No Delegations"
-    },
-    "toolTimeline": {
-      "title": "Tool Call Timeline",
-      "subtitle": "Runtime real execution events · auto-scrolls to bottom",
-      "parameters": "PARAMETERS",
-      "truncated": " · raw {{chars}} chars",
-      "result": "RESULT · {{status}}",
-      "noOutput": "(Tool produced no output)",
-      "empty": "No tool call records for current Session",
-      "historyLimited": "{{count}} older tool calls are hidden to keep this view responsive",
-      "ariaLabel": "Tool call timeline, scrollable within this area"
+      "loadMore": "Load older Threads",
+      "diagnostics": "Unattached scheduler diagnostics",
+      "modelAttempts": "Model Attempts",
+      "modelAttemptsCount": "{{count}} durable state transitions and reasoning summaries"
     }
   },
   "mindView": {
@@ -235,7 +456,13 @@
       "relations": "Relations",
       "observations": "Observations",
       "residentSessions": "Resident Sessions",
-      "cognitiveTick": "Cognitive Activity Tick"
+      "cognitiveTick": "Cognitive Activity Tick",
+      "frameLifecycle": {
+        "summary": "{{active}} active Frames, {{retiring}} retiring Frames, {{retired}} retired Frames",
+        "active": "{{count}} active Frames: still included in the current Mind and Context Encoding",
+        "retiring": "{{count}} retiring Frames: retirement has started, but their lifecycle is not complete",
+        "retired": "{{count}} retired Frames: retained in the historical Ledger and omitted from current cognition by default"
+      }
     },
     "contextInspect": {
       "eyebrow": "Evaluation Context",
@@ -271,11 +498,29 @@
     "updated": "Updated",
     "sources": "Sources",
     "protected": "Protected",
+    "provenance": {
+      "state": "Provenance State",
+      "formedPrincipal": "Formed Principal",
+      "formedSession": "Formed Session",
+      "evidence": "Evidence Scope",
+      "lineage": "Identity Provenance",
+      "states": {
+        "unknown": "Unknown",
+        "unattributed": "Unattributed",
+        "attributed": "Attributed"
+      }
+    },
     "yes": "yes",
     "no": "no",
     "relationsTitle": "Relations",
     "lineage": "Two-hop lineage",
     "lineageTruncated": "Results are truncated; continue through the Recall API",
+    "transactions": {
+      "title": "Recent Cognitive Transactions",
+      "subtitle": "Context Transaction history from the immutable Ledger",
+      "updated": "Cognitive projection updated",
+      "empty": "This Context has no cognitive transactions yet"
+    },
     "remainingTicks": "{{count}} cognitive ticks remaining",
     "restore": "Restore",
     "protect": "Protect",
@@ -294,7 +539,24 @@
     "recallIndex": "Recall Index",
     "indexed": "Indexed",
     "degraded": "Degraded",
-    "indexUnknown": "Index capability not loaded"
+    "indexUnknown": "Index capability not loaded",
+    "attention": {
+      "workingSet": "Session Working Set",
+      "population": "{{full}} full · {{metadata}} metadata-only",
+      "empty": "No Sessions are resident in the current encoding",
+      "observations": "Active Observations and Inbox Sources",
+      "observationHint": "Only active projected facts are shown; complete history remains in the Ledger",
+      "contextScope": "Context scope",
+      "protected": "Protected",
+      "noObservations": "No active Observations",
+      "exclusions": {
+        "archived": "Archived",
+        "retired": "Swapped out",
+        "outside_window": "Outside window",
+        "over_count": "Over count",
+        "token_budget": "Token budget"
+      }
+    }
   },
   "composer": {
     "placeholder": "Type a message…",
@@ -314,6 +576,9 @@
       "noWork": "No work in progress",
       "executing": "Executing",
       "approvalRequired": "Approval required",
+      "approvalGranted": "Approved, waiting to execute",
+      "approvalReviewing": "Automatic review in progress",
+      "approvalStateInvalid": "Approval state mismatch",
       "deliveryFailed": "Result awaiting delivery",
       "backpressure": "Scheduler backpressure",
       "deferredCount": "{{count}} Activations are waiting in the durable queue",
@@ -441,7 +706,8 @@
     "invalidScheduleDate": "Enter a valid ISO timestamp or local date-time",
     "invalidScheduleInterval": "Interval seconds must be a positive integer",
     "websocketParse": "WebSocket returned an unparseable event",
-    "copyFailed": "Copy failed"
+    "copyFailed": "Copy failed",
+    "dismiss": "Dismiss error"
   },
   "reason": {
     "resumeByUser": "User explicitly resumed Objective via Dashboard",

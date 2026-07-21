@@ -3,13 +3,17 @@ use crate::event::{
     Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use crate::memory::{
-    CognitiveClockStore, ContextCognitiveClock, DeliveryStatus, EventStore, MindProjectionCommit,
-    MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewMindProjection,
-    ObjectiveRecord, ObjectiveStore, QueryFilter, RecallDocument, RecallDocumentKind,
-    RecallIndexAudit, RecallProjectionStore, RecallSearchHit, ScheduleRecord, ScheduleStatus,
-    SessionAttentionState, SessionAttentionUpdate, SessionProjectionMutation,
-    SessionProjectionStore, SessionRecord, SessionStatus, SessionStore, ThreadActivationRecord,
-    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, WorkerCoordinationMode,
+    CognitiveClockStore, ContextCognitiveClock, DeliveryStatus, EventStore,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationRecord,
+    ExecutionTargetAuthorizationScope, ExecutionTargetAuthorizationStatus,
+    ExecutionTargetAuthorizationStore, ExecutionTargetFilter, ExecutionTargetRecord,
+    ExecutionTargetStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
+    MindSnapshotRecord, NewMindProjection, ObjectiveRecord, ObjectiveStore, QueryFilter,
+    RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallProjectionStore, RecallSearchHit,
+    ScheduleRecord, ScheduleStatus, SessionAttentionState, SessionAttentionUpdate,
+    SessionProjectionMutation, SessionProjectionStore, SessionRecord, SessionStatus, SessionStore,
+    ThreadActivationRecord, ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
+    WorkerCoordinationMode,
 };
 use crate::orchestrator::context_contract::{
     render_context_tx_epistemic_guidance, ContractClause, EPISTEMIC_CONTRACT,
@@ -29,7 +33,7 @@ use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 22;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 23;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 const FRAME_RECALL_PAGE_CHAR_BUDGET: usize = 24_000;
 
@@ -729,17 +733,38 @@ pub struct ContextView {
     pub concurrent_activations: Vec<ConcurrentActivationView>,
     pub background_tasks: Vec<BackgroundTaskView>,
     pub objectives: Vec<ObjectiveRecord>,
+    /// Compact, Runtime-authoritative index of execution environments visible
+    /// to the active Principal. Detailed metadata remains discoverable through
+    /// `inspect_target` instead of inflating every model request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_targets: Vec<ExecutionTargetRecord>,
+    /// Runtime-authoritative access mode for the compact Target index. The
+    /// model never has to infer scoped authorization from conversational
+    /// history, and a scoped-but-unauthorized Target is omitted from
+    /// `execution_targets` for model-facing Activations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub execution_target_access: Vec<ExecutionTargetAccessView>,
     pub cognitive_clock: ContextCognitiveClock,
     pub state: MindState,
     pub observations: Vec<ContextObservation>,
     pub pressure: ContextPressure,
     pub turn_budget: TurnBudget,
     pub wake: WakeSignal,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sexpr: String,
     /// Cached while this view is alive so pressure re-rendering does not reload
     /// and deserialize the whole Ledger a second time.
     #[serde(skip)]
     references: ContextReferences,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionTargetAccessView {
+    pub target_id: String,
+    /// `global`, `owner_wide`, `scoped_authorized`, or `scoped_unknown`.
+    pub authorization_mode: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matching_scopes: Vec<ExecutionTargetAuthorizationScope>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -978,6 +1003,8 @@ pub struct ContextEngine {
     recall_projection_store: Option<Arc<dyn RecallProjectionStore>>,
     cognitive_clock_store: Option<Arc<dyn CognitiveClockStore>>,
     objective_store: Option<Arc<dyn ObjectiveStore>>,
+    execution_target_store: Option<Arc<dyn ExecutionTargetStore>>,
+    execution_target_authorization_store: Option<Arc<dyn ExecutionTargetAuthorizationStore>>,
     worker_coordination_mode: WorkerCoordinationMode,
     config: OrchestratorConfig,
     context_locks: DashMap<String, Arc<Mutex<()>>>,
@@ -1006,6 +1033,8 @@ impl ContextEngine {
             recall_projection_store: None,
             cognitive_clock_store: None,
             objective_store: None,
+            execution_target_store: None,
+            execution_target_authorization_store: None,
             worker_coordination_mode: WorkerCoordinationMode::ExclusiveProcess,
             config,
             context_locks: DashMap::new(),
@@ -1053,6 +1082,22 @@ impl ContextEngine {
 
     pub fn with_objective_store(mut self, objective_store: Arc<dyn ObjectiveStore>) -> Self {
         self.objective_store = Some(objective_store);
+        self
+    }
+
+    pub fn with_execution_target_store(
+        mut self,
+        execution_target_store: Arc<dyn ExecutionTargetStore>,
+    ) -> Self {
+        self.execution_target_store = Some(execution_target_store);
+        self
+    }
+
+    pub fn with_execution_target_authorization_store(
+        mut self,
+        store: Arc<dyn ExecutionTargetAuthorizationStore>,
+    ) -> Self {
+        self.execution_target_authorization_store = Some(store);
         self
     }
 
@@ -1970,6 +2015,28 @@ impl ContextEngine {
             active_session_id,
             excluded_observation_ids,
             None,
+            true,
+        )
+        .await
+    }
+
+    /// Build the structured Context projection used by operator surfaces
+    /// without rendering a second, potentially multi-megabyte S-expression.
+    /// The model-facing encoding remains available through
+    /// [`Self::build_context_encoding`] and is loaded explicitly by diagnostic
+    /// clients when needed.
+    pub async fn build_context_projection(
+        &self,
+        context_id: &str,
+        active_session_id: &str,
+        excluded_observation_ids: &HashSet<String>,
+    ) -> Result<ContextView, DynError> {
+        self.build_context_encoding_for_session(
+            context_id,
+            active_session_id,
+            excluded_observation_ids,
+            None,
+            false,
         )
         .await
     }
@@ -1985,6 +2052,7 @@ impl ContextEngine {
             &activation.session_id,
             excluded_observation_ids,
             Some(activation),
+            true,
         )
         .await
     }
@@ -1995,6 +2063,7 @@ impl ContextEngine {
         active_session_id: &str,
         excluded_observation_ids: &HashSet<String>,
         activation_record: Option<&ThreadActivationRecord>,
+        include_encoding: bool,
     ) -> Result<ContextView, DynError> {
         self.finalize_due_frame_retirements(context_id, active_session_id)
             .await?;
@@ -2373,30 +2442,102 @@ impl ContextEngine {
                         .and_then(|principals| principals.first().cloned())
                 }),
         };
-        let sexpr = render_context(ContextRenderInput {
-            context_id,
-            active_session_id,
-            active_principal_id: active_principal_id.as_deref(),
-            parent_session_id: parent_session_id.as_deref(),
-            sessions: &sessions,
-            session_working_set: &session_working_set,
-            active_activations: &active_activations,
-            threads: &threads,
-            thread_signals: &thread_signals,
-            schedules: &schedules,
-            activation: activation.as_ref(),
-            concurrent_activations: &concurrent_activations,
-            background_tasks: &background_tasks,
-            objectives: &objectives,
-            cognitive_clock: &cognitive_clock,
-            frame_retirement_cooling_ticks: self.config.frame_retirement.cooling_ticks,
-            state: &state,
-            observations: &observations,
-            pressure: &pressure,
-            turn_budget: &turn_budget,
-            wake: &wake,
-            references: &references,
-        });
+        let mut execution_targets = match &self.execution_target_store {
+            Some(store) => store
+                .list_execution_targets(ExecutionTargetFilter {
+                    limit: Some(16),
+                    ..Default::default()
+                })
+                .await?
+                .into_iter()
+                .filter(|target| {
+                    target.owner_principal_id.is_none()
+                        || target.owner_principal_id.as_deref() == active_principal_id.as_deref()
+                })
+                .collect::<Vec<_>>(),
+            None => Vec::new(),
+        };
+        let target_authorizations = match (
+            &self.execution_target_authorization_store,
+            active_principal_id.as_deref(),
+        ) {
+            (Some(store), Some(principal_id)) => {
+                store
+                    .list_execution_target_authorizations(ExecutionTargetAuthorizationFilter {
+                        owner_principal_id: Some(principal_id.to_string()),
+                        limit: Some(1_000),
+                        ..Default::default()
+                    })
+                    .await?
+            }
+            _ => Vec::new(),
+        };
+        let current_thread_id = activation_signals
+            .first()
+            .map(|signal| signal.thread_id.as_str())
+            .or_else(|| {
+                activation_record.and_then(|activation| {
+                    threads
+                        .iter()
+                        .find(|thread| {
+                            thread.root_turn_id == activation.root_turn_id
+                                && thread.session_id == activation.session_id
+                        })
+                        .map(|thread| thread.id.as_str())
+                })
+            });
+        let current_agent_id = activation_record.map(|activation| activation.agent_id.as_str());
+        let mut execution_target_access = execution_targets
+            .iter()
+            .map(|target| {
+                execution_target_access_view(
+                    target,
+                    &target_authorizations,
+                    current_agent_id,
+                    context_id,
+                    current_thread_id,
+                )
+            })
+            .collect::<Vec<_>>();
+        if activation_record.is_some() {
+            let allowed = execution_target_access
+                .iter()
+                .filter(|access| access.authorization_mode != "scoped_denied")
+                .map(|access| access.target_id.clone())
+                .collect::<HashSet<_>>();
+            execution_targets.retain(|target| allowed.contains(target.id.as_str()));
+            execution_target_access.retain(|access| access.authorization_mode != "scoped_denied");
+        }
+        let sexpr = include_encoding
+            .then(|| {
+                render_context(ContextRenderInput {
+                    context_id,
+                    active_session_id,
+                    active_principal_id: active_principal_id.as_deref(),
+                    parent_session_id: parent_session_id.as_deref(),
+                    sessions: &sessions,
+                    session_working_set: &session_working_set,
+                    active_activations: &active_activations,
+                    threads: &threads,
+                    thread_signals: &thread_signals,
+                    schedules: &schedules,
+                    activation: activation.as_ref(),
+                    concurrent_activations: &concurrent_activations,
+                    background_tasks: &background_tasks,
+                    objectives: &objectives,
+                    execution_targets: &execution_targets,
+                    execution_target_access: &execution_target_access,
+                    cognitive_clock: &cognitive_clock,
+                    frame_retirement_cooling_ticks: self.config.frame_retirement.cooling_ticks,
+                    state: &state,
+                    observations: &observations,
+                    pressure: &pressure,
+                    turn_budget: &turn_budget,
+                    wake: &wake,
+                    references: &references,
+                })
+            })
+            .unwrap_or_default();
 
         Ok(ContextView {
             context_id: context_id.to_string(),
@@ -2414,6 +2555,8 @@ impl ContextEngine {
             concurrent_activations,
             background_tasks,
             objectives,
+            execution_targets,
+            execution_target_access,
             cognitive_clock,
             state,
             observations,
@@ -2521,6 +2664,9 @@ impl ContextEngine {
         pressure.token_scope = "full-work-prompt".to_string();
         pressure.token_model = Some(count.model.clone());
         view.pressure = pressure;
+        if view.sexpr.is_empty() {
+            return Ok(());
+        }
         view.sexpr = render_context(ContextRenderInput {
             context_id: &view.context_id,
             active_session_id: &view.active_session_id,
@@ -2536,6 +2682,8 @@ impl ContextEngine {
             concurrent_activations: &view.concurrent_activations,
             background_tasks: &view.background_tasks,
             objectives: &view.objectives,
+            execution_targets: &view.execution_targets,
+            execution_target_access: &view.execution_target_access,
             cognitive_clock: &view.cognitive_clock,
             frame_retirement_cooling_ticks: self.config.frame_retirement.cooling_ticks,
             state: &view.state,
@@ -4436,6 +4584,8 @@ struct ContextRenderInput<'a> {
     concurrent_activations: &'a [ConcurrentActivationView],
     background_tasks: &'a [BackgroundTaskView],
     objectives: &'a [ObjectiveRecord],
+    execution_targets: &'a [ExecutionTargetRecord],
+    execution_target_access: &'a [ExecutionTargetAccessView],
     cognitive_clock: &'a ContextCognitiveClock,
     frame_retirement_cooling_ticks: u64,
     state: &'a MindState,
@@ -4752,6 +4902,9 @@ fn render_thread_scheduler(
             if let Some(executor_id) = &thread.executor_id {
                 fields.push(pair("executor-id", atom(executor_id)));
             }
+            if let Some(target_id) = &thread.target_id {
+                fields.push(pair("execution-target", atom(target_id)));
+            }
             if let Some(result) = &thread.result_text {
                 let (preview, truncated) = preview_text(result, 640);
                 fields.push(pair("result", atom(&preview)));
@@ -4981,6 +5134,115 @@ fn render_objective_wait(wait: &crate::memory::ObjectiveWaitCondition) -> SExpr 
     }
 }
 
+fn execution_target_access_view(
+    target: &ExecutionTargetRecord,
+    authorizations: &[ExecutionTargetAuthorizationRecord],
+    agent_id: Option<&str>,
+    context_id: &str,
+    thread_id: Option<&str>,
+) -> ExecutionTargetAccessView {
+    if target.owner_principal_id.is_none() {
+        return ExecutionTargetAccessView {
+            target_id: target.id.clone(),
+            authorization_mode: "global".to_string(),
+            matching_scopes: Vec::new(),
+        };
+    }
+    let target_authorizations = authorizations
+        .iter()
+        .filter(|authorization| authorization.target_id == target.id)
+        .collect::<Vec<_>>();
+    if target_authorizations.is_empty() {
+        return ExecutionTargetAccessView {
+            target_id: target.id.clone(),
+            authorization_mode: "owner_wide".to_string(),
+            matching_scopes: Vec::new(),
+        };
+    }
+    let mut matching_scopes = target_authorizations
+        .into_iter()
+        .filter(|authorization| authorization.status == ExecutionTargetAuthorizationStatus::Active)
+        .filter_map(|authorization| {
+            let matches = match authorization.scope {
+                ExecutionTargetAuthorizationScope::Agent => {
+                    agent_id.is_some_and(|id| id == authorization.scope_id)
+                }
+                ExecutionTargetAuthorizationScope::Context => context_id == authorization.scope_id,
+                ExecutionTargetAuthorizationScope::Thread => {
+                    thread_id.is_some_and(|id| id == authorization.scope_id)
+                }
+            };
+            matches.then_some(authorization.scope)
+        })
+        .collect::<Vec<_>>();
+    matching_scopes.sort_by_key(|scope| scope.as_str());
+    matching_scopes.dedup();
+    ExecutionTargetAccessView {
+        target_id: target.id.clone(),
+        authorization_mode: if agent_id.is_none() {
+            "scoped_unknown"
+        } else if matching_scopes.is_empty() {
+            "scoped_denied"
+        } else {
+            "scoped_authorized"
+        }
+        .to_string(),
+        matching_scopes,
+    }
+}
+
+fn render_execution_targets(
+    targets: &[ExecutionTargetRecord],
+    access: &[ExecutionTargetAccessView],
+) -> SExpr {
+    let default_id = targets
+        .iter()
+        .find(|target| target.id == crate::execution_target::DEFAULT_EXECUTION_TARGET_ID)
+        .map(|target| target.id.as_str())
+        .unwrap_or("none");
+    let mut fields = vec![pair("default", atom(default_id))];
+    fields.extend(targets.iter().map(|target| {
+        let access = access.iter().find(|entry| entry.target_id == target.id);
+        let mut target_fields = vec![
+            pair("id", atom(&target.id)),
+            pair("status", atom(target.status.as_str())),
+            pair("kind", atom(target.kind.as_str())),
+            pair(
+                "authorization",
+                atom(
+                    access
+                        .map(|entry| entry.authorization_mode.as_str())
+                        .unwrap_or("unknown"),
+                ),
+            ),
+        ];
+        if let Some(access) = access.filter(|entry| !entry.matching_scopes.is_empty()) {
+            target_fields.push(list(
+                "matching-scopes",
+                access
+                    .matching_scopes
+                    .iter()
+                    .map(|scope| atom(scope.as_str()))
+                    .collect(),
+            ));
+        }
+        if let Some(platform) = target.platform.as_deref() {
+            target_fields.push(pair("platform", atom(platform)));
+        }
+        if let Some(provider_node_id) = target.provider_node_id.as_deref() {
+            target_fields.push(pair("provider-node", atom(provider_node_id)));
+        }
+        if !target.capabilities.is_empty() {
+            target_fields.push(list(
+                "capabilities",
+                target.capabilities.iter().map(atom).collect(),
+            ));
+        }
+        list("target", target_fields)
+    }));
+    list("execution-targets", fields)
+}
+
 fn render_context(input: ContextRenderInput<'_>) -> String {
     let ContextRenderInput {
         context_id,
@@ -4997,6 +5259,8 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         concurrent_activations,
         background_tasks,
         objectives,
+        execution_targets,
+        execution_target_access,
         cognitive_clock,
         frame_retirement_cooling_ticks,
         state,
@@ -5027,6 +5291,12 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
         kernel.push(pair("parent-session", atom(parent)));
     }
     kernel.push(pair("version", atom(state.version.to_string())));
+    if !execution_targets.is_empty() {
+        kernel.push(render_execution_targets(
+            execution_targets,
+            execution_target_access,
+        ));
+    }
     kernel.push(list(
         "cognitive-clock",
         vec![
@@ -7687,6 +7957,7 @@ mod tests {
                 kind: ThreadKind::DialogueTurn,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap();
@@ -7766,6 +8037,7 @@ mod tests {
                 kind: ThreadKind::DialogueTurn,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap();
@@ -8633,6 +8905,8 @@ mod tests {
             concurrent_activations: &concurrent_activations,
             background_tasks: &[],
             objectives: &[],
+            execution_targets: &[],
+            execution_target_access: &[],
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
             state: &state,
@@ -8724,6 +8998,8 @@ mod tests {
             concurrent_activations: &concurrent_activations,
             background_tasks: &[],
             objectives: &[],
+            execution_targets: &[],
+            execution_target_access: &[],
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
             state: &state,
@@ -8757,6 +9033,8 @@ mod tests {
             concurrent_activations: &concurrent_activations,
             background_tasks: &[],
             objectives: &[],
+            execution_targets: &[],
+            execution_target_access: &[],
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
             state: &state,
@@ -9929,6 +10207,7 @@ mod tests {
                     kind: crate::memory::ThreadKind::DialogueTurn,
                     executor_kind: "self".to_string(),
                     executor_id: None,
+                    target_id: None,
                 })
                 .await
                 .unwrap();
@@ -10586,5 +10865,62 @@ mod tests {
             .unwrap();
         assert_eq!(view.observations.len(), 5);
         assert_eq!(view.pressure.level, "critical");
+    }
+
+    #[test]
+    fn target_access_is_derived_from_runtime_scopes_not_model_text() {
+        let now = Utc::now();
+        let target = ExecutionTargetRecord {
+            id: "target-a".to_string(),
+            revision: 1,
+            owner_principal_id: Some("principal-a".to_string()),
+            provider_node_id: Some("node-a".to_string()),
+            kind: crate::memory::ExecutionTargetKind::EdgeNode,
+            name: "Laptop".to_string(),
+            status: crate::memory::ExecutionTargetStatus::Online,
+            platform: Some("macos-arm64".to_string()),
+            workspace_root: None,
+            capabilities: vec!["exec".to_string()],
+            metadata: serde_json::json!({}),
+            policy_digest: "policy-a".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_seen_at: Some(now),
+        };
+        let grant = ExecutionTargetAuthorizationRecord {
+            id: "authorization-a".to_string(),
+            revision: 1,
+            target_id: target.id.clone(),
+            owner_principal_id: "principal-a".to_string(),
+            scope: ExecutionTargetAuthorizationScope::Thread,
+            scope_id: "thread-a".to_string(),
+            status: ExecutionTargetAuthorizationStatus::Active,
+            created_at: now,
+            updated_at: now,
+            revoked_at: None,
+            revoke_reason: None,
+        };
+
+        let allowed = execution_target_access_view(
+            &target,
+            std::slice::from_ref(&grant),
+            Some("agent-a"),
+            "context-a",
+            Some("thread-a"),
+        );
+        assert_eq!(allowed.authorization_mode, "scoped_authorized");
+        assert_eq!(
+            allowed.matching_scopes,
+            vec![ExecutionTargetAuthorizationScope::Thread]
+        );
+
+        let denied = execution_target_access_view(
+            &target,
+            &[grant],
+            Some("agent-a"),
+            "context-a",
+            Some("thread-b"),
+        );
+        assert_eq!(denied.authorization_mode, "scoped_denied");
     }
 }

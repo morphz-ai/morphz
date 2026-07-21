@@ -31,6 +31,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             status TEXT NOT NULL,
             executor_kind TEXT NOT NULL,
             executor_id TEXT,
+            target_id TEXT,
             result_text TEXT,
             result_event_id TEXT,
             delivery_status TEXT NOT NULL DEFAULT 'none',
@@ -58,6 +59,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             updated_at TEXT NOT NULL
         )"#,
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS target_id TEXT"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
         r#"CREATE TABLE IF NOT EXISTS execution_jobs (
             id TEXT PRIMARY KEY,
@@ -160,6 +162,7 @@ pub(super) fn execution_job_from_row(row: &PgRow) -> Result<ExecutionJobRecord, 
         context_id: row.get("context_id"),
         session_id: row.get("session_id"),
         initiating_principal_id: row.get("initiating_principal_id"),
+        target_id: row.get("target_id"),
         tool_call_id: row.get("tool_call_id"),
         tool_name: row.get("tool_name"),
         request: row.get("request_json"),
@@ -200,6 +203,7 @@ pub(super) fn validate_new_job(job: &NewExecutionJob) -> Result<(), StoreError> 
         ("agent_id", job.agent_id.as_str()),
         ("context_id", job.context_id.as_str()),
         ("session_id", job.session_id.as_str()),
+        ("target_id", job.target_id.as_str()),
         ("tool_call_id", job.tool_call_id.as_str()),
         ("tool_name", job.tool_name.as_str()),
     ] {
@@ -258,13 +262,22 @@ pub(super) async fn ensure_job_in_tx(
     {
         return Err("Execution Job 的 Agent/Context/Session/Root Turn 因果边界不一致".into());
     }
+    let target_status =
+        sqlx::query_scalar::<_, String>("SELECT status FROM execution_targets WHERE id = $1")
+            .bind(&job.target_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or("Execution Job 引用的 Execution Target 不存在")?;
+    if target_status == "disabled" {
+        return Err("Execution Job 引用的 Execution Target 已禁用".into());
+    }
     let inserted = sqlx::query(
         r#"INSERT INTO execution_jobs
            (id, revision, activation_id, thread_id, agent_id, context_id,
-            session_id, initiating_principal_id, tool_call_id, tool_name, request_json, status,
+            session_id, initiating_principal_id, target_id, tool_call_id, tool_name, request_json, status,
             retry_safety, result_refs_json, created_at, updated_at)
-           VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                   '[]'::jsonb, $13, $13)
+           VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                   '[]'::jsonb, $14, $14)
            ON CONFLICT DO NOTHING"#,
     )
     .bind(&job.id)
@@ -274,6 +287,7 @@ pub(super) async fn ensure_job_in_tx(
     .bind(&job.context_id)
     .bind(&job.session_id)
     .bind(&job.initiating_principal_id)
+    .bind(&job.target_id)
     .bind(&job.tool_call_id)
     .bind(&job.tool_name)
     .bind(&job.request)
@@ -299,6 +313,7 @@ pub(super) async fn ensure_job_in_tx(
         || existing.agent_id != job.agent_id
         || existing.context_id != job.context_id
         || existing.session_id != job.session_id
+        || existing.target_id != job.target_id
         || existing.tool_name != job.tool_name
         || existing.request != job.request
         || pending_status_conflict
@@ -408,6 +423,9 @@ impl ExecutionJobStore for PostgresStore {
         }
         if let Some(activation_id) = filter.activation_id {
             query.push(" AND activation_id = ").push_bind(activation_id);
+        }
+        if let Some(target_id) = filter.target_id {
+            query.push(" AND target_id = ").push_bind(target_id);
         }
         if let Some(status) = filter.status {
             query.push(" AND status = ").push_bind(status.as_str());

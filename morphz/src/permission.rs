@@ -402,6 +402,10 @@ pub struct ApprovalContext {
     pub context_id: String,
     pub session_id: String,
     pub attempt_id: String,
+    pub thread_id: String,
+    pub root_turn_id: String,
+    pub trigger_event_id: String,
+    pub trigger_sequence: u64,
 }
 
 pub struct PermissionBroker {
@@ -576,15 +580,23 @@ impl PermissionBroker {
                 context_id: nonempty(context.context_id, "default-context"),
                 session_id: nonempty(context.session_id, "default-session"),
                 attempt_id: nonempty(context.attempt_id, "unknown-attempt"),
+                thread_id: nonempty(context.thread_id, "unknown-thread"),
+                root_turn_id: nonempty(context.root_turn_id, "unknown-root-turn"),
+                trigger_event_id: nonempty(context.trigger_event_id, "unknown-trigger"),
+                trigger_sequence: context.trigger_sequence,
                 action,
                 requested,
                 justification,
+                lease_offer: None,
             })
             .await?;
         match decision {
             ApprovalDecision::AllowOnce { rationale, .. } => {
                 tracing::info!(%rationale, "权限代理允许一次性能力扩张");
                 Ok(())
+            }
+            ApprovalDecision::AllowLease { .. } => {
+                Err("当前直接权限请求没有 Capability Lease offer，审批者不能批准租约".into())
             }
             ApprovalDecision::Deny { rationale, .. } => {
                 Err(format!("权限审批拒绝本次操作: {rationale}").into())

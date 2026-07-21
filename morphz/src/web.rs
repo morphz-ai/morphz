@@ -4,19 +4,26 @@ use crate::event::Event;
 use crate::identity::PrincipalAssertion;
 use crate::llm::ReasoningEffort;
 use crate::memory::{
-    DelegationStatus, NewAgent, NewCognitiveContext, NewSession, ObjectiveMutation,
-    ObjectiveStatus, QueryFilter, ScheduleMutation, SessionMountKind, SessionStatus, SessionUpdate,
+    DelegationStatus, ExecutionTargetRegistration, ExecutionTargetStatus, NewAgent,
+    NewCognitiveContext, NewSession, ObjectiveMutation, ObjectiveStatus, QueryFilter,
+    ScheduleMutation, SessionMountKind, SessionStatus, SessionUpdate,
 };
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
-use crate::runtime::{MorphzRuntime, SchedulerQuery};
-use crate::sdk::{MorphzSdk, SdkError, SdkErrorCode, SendMessageCommand, SessionEventsQuery};
+use crate::runtime::{ContextOverviewQuery, LedgerQuery, MorphzRuntime, SchedulerQuery};
+use crate::sdk::{
+    AppendEdgeOutputCommand, AuthorizeExecutionTargetCommand, ClaimEdgeCommand,
+    ConnectExecutionNodeCommand, CreateNodePairingCodeCommand, ExecutionJobQuery,
+    ExecutionNodeHeartbeatCommand, FinishEdgeCommand, HeartbeatEdgeCommand, MorphzSdk,
+    PairExecutionNodeCommand, RotateExecutionNodeKeyCommand, SdkError, SdkErrorCode,
+    SendMessageCommand, SessionEventsQuery,
+};
 use axum::{
     body::Body,
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
-    http::{header, HeaderMap, Method, StatusCode},
+    http::{header, HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
     Json, Router,
@@ -27,7 +34,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast;
-use tower_http::cors::CorsLayer;
+use tower_http::{compression::CompressionLayer, cors::CorsLayer};
 
 const DASHBOARD_INDEX: &[u8] = include_bytes!("../../dashboard/dist/index.html");
 const DASHBOARD_APP_JS: &[u8] = include_bytes!("../../dashboard/dist/assets/app.js");
@@ -163,6 +170,81 @@ struct ResumeObjectiveRequest {
     reason: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct MutateExecutionTargetRequest {
+    expected_revision: u64,
+    status: ExecutionTargetStatus,
+}
+
+#[derive(serde::Deserialize)]
+struct RevokeExecutionNodeRequest {
+    expected_revision: u64,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct CapabilityLeaseQuery {
+    token: Option<String>,
+    principal_id: Option<String>,
+    thread_id: Option<String>,
+    target_id: Option<String>,
+    #[serde(default)]
+    active_only: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct RevokeCapabilityLeaseRequest {
+    expected_revision: u64,
+    reason: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct TargetAuthorizationQuery {
+    token: Option<String>,
+    principal_id: Option<String>,
+    target_id: Option<String>,
+    #[serde(default)]
+    active_only: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct RevokeTargetAuthorizationRequest {
+    expected_revision: u64,
+    reason: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ExecutionJobHttpQuery {
+    token: Option<String>,
+    principal_id: Option<String>,
+    context_id: Option<String>,
+    thread_id: Option<String>,
+    target_id: Option<String>,
+    status: Option<crate::memory::ExecutionJobStatus>,
+    #[serde(default)]
+    include_terminal: bool,
+    #[serde(default)]
+    newest_first: bool,
+    limit: Option<usize>,
+}
+
+#[derive(serde::Deserialize)]
+struct CancelExecutionJobRequest {
+    expected_revision: u64,
+    reason: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct EdgeClaimQuery {
+    wait_seconds: Option<u64>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct EdgeOutputQuery {
+    token: Option<String>,
+    after_sequence: Option<u64>,
+    limit: Option<usize>,
+}
+
 #[derive(Default, serde::Deserialize)]
 struct RecallSearchHttpQuery {
     token: Option<String>,
@@ -202,6 +284,30 @@ struct SchedulerSnapshotHttpQuery {
     #[serde(default)]
     include_terminal: bool,
     #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ContextOverviewHttpQuery {
+    token: Option<String>,
+    session_id: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct LedgerHttpQuery {
+    token: Option<String>,
+    session_id: Option<String>,
+    principal_id: Option<String>,
+    thread_id: Option<String>,
+    activation_id: Option<String>,
+    actor: Option<String>,
+    event_type: Option<String>,
+    topic: Option<String>,
+    query: Option<String>,
+    after_sequence: Option<u64>,
+    before_sequence: Option<u64>,
+    start_time: Option<chrono::DateTime<chrono::Utc>>,
+    end_time: Option<chrono::DateTime<chrono::Utc>>,
     limit: Option<usize>,
 }
 
@@ -381,8 +487,89 @@ impl Server {
                 get(handle_list_contexts).post(handle_create_context),
             )
             .route(
+                "/api/execution-targets",
+                get(handle_list_execution_targets).post(handle_register_execution_target),
+            )
+            .route(
+                "/api/execution-targets/:target_id",
+                get(handle_inspect_execution_target).patch(handle_mutate_execution_target),
+            )
+            .route(
+                "/api/execution-target-authorizations",
+                get(handle_list_execution_target_authorizations)
+                    .post(handle_authorize_execution_target),
+            )
+            .route(
+                "/api/execution-target-authorizations/:authorization_id",
+                delete(handle_revoke_execution_target_authorization),
+            )
+            .route("/api/capability-leases", get(handle_list_capability_leases))
+            .route(
+                "/api/capability-leases/:lease_id",
+                delete(handle_revoke_capability_lease),
+            )
+            .route(
+                "/api/edge/pairing-codes",
+                post(handle_create_node_pairing_code),
+            )
+            .route("/api/edge/pair", post(handle_pair_execution_node))
+            .route(
+                "/api/edge/nodes/:node_id/challenge",
+                post(handle_create_execution_node_challenge),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/connect",
+                post(handle_connect_execution_node),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/rotate-key",
+                post(handle_rotate_execution_node_key),
+            )
+            .route("/api/edge/nodes", get(handle_list_execution_nodes))
+            .route(
+                "/api/edge/nodes/:node_id",
+                delete(handle_revoke_execution_node),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/heartbeat",
+                post(handle_heartbeat_execution_node),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/claim",
+                post(handle_claim_edge_command),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/heartbeat",
+                post(handle_heartbeat_edge_command),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/output",
+                post(handle_append_edge_command_output),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/finish",
+                post(handle_finish_edge_command),
+            )
+            .route(
+                "/api/execution-jobs/:job_id/output",
+                get(handle_list_edge_command_output),
+            )
+            .route("/api/execution-jobs", get(handle_list_execution_jobs))
+            .route(
+                "/api/execution-jobs/:job_id",
+                get(handle_inspect_execution_job),
+            )
+            .route(
+                "/api/execution-jobs/:job_id/cancel",
+                post(handle_cancel_execution_job),
+            )
+            .route(
                 "/api/contexts/:context_id/working-set",
                 get(handle_get_context_working_set),
+            )
+            .route(
+                "/api/contexts/:context_id/overview",
+                get(handle_get_context_overview),
             )
             .route(
                 "/api/contexts/:context_id/activations",
@@ -391,6 +578,15 @@ impl Server {
             .route(
                 "/api/contexts/:context_id/scheduler",
                 get(handle_get_scheduler_snapshot),
+            )
+            .route(
+                "/api/contexts/:context_id/threads/:thread_id",
+                get(handle_get_thread_detail),
+            )
+            .route("/api/contexts/:context_id/ledger", get(handle_query_ledger))
+            .route(
+                "/api/contexts/:context_id/projection-audit",
+                post(handle_audit_mind_projection),
             )
             .route(
                 "/api/contexts/:context_id/recall/search",
@@ -441,6 +637,14 @@ impl Server {
                 get(handle_get_session_context),
             )
             .route(
+                "/api/sessions/:session_id/context/projection",
+                get(handle_get_session_context_projection),
+            )
+            .route(
+                "/api/sessions/:session_id/context/encoding",
+                get(handle_get_session_context_encoding),
+            )
+            .route(
                 "/api/sessions/:session_id/cancel",
                 post(handle_cancel_session),
             )
@@ -465,6 +669,8 @@ impl Server {
             .route("/api/approvals/:approval_id", post(handle_decide_approval))
             .route("/api/schedules/:schedule_id", post(handle_mutate_schedule))
             .route("/ws", get(handle_ws_upgrade))
+            .fallback(handle_dashboard_fallback)
+            .layer(CompressionLayer::new())
             .layer(cors)
             .with_state(Arc::clone(&state));
 
@@ -497,6 +703,13 @@ async fn handle_dashboard_index() -> Response {
     embedded_asset("text/html; charset=utf-8", DASHBOARD_INDEX)
 }
 
+async fn handle_dashboard_fallback(uri: Uri) -> Response {
+    if uri.path().starts_with("/api/") || uri.path() == "/api" || uri.path() == "/ws" {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    handle_dashboard_index().await
+}
+
 async fn handle_dashboard_app_js() -> Response {
     embedded_asset("text/javascript; charset=utf-8", DASHBOARD_APP_JS)
 }
@@ -521,15 +734,7 @@ async fn handle_status(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    Json(json!({
-        "agent_id": state.default_agent_id,
-        "context_id": state.default_context_id,
-        "model": state.runtime.config().llm.model,
-        "provider": state.runtime.config().llm.provider,
-        "reasoning_effort": state.runtime.reasoning_effort().map(ReasoningEffort::as_str),
-        "tool_count": state.runtime.tool_names().len(),
-    }))
-    .into_response()
+    Json(state.sdk.runtime_status()).into_response()
 }
 
 async fn handle_search_recall(
@@ -746,6 +951,10 @@ async fn handle_decide_approval(
             rationale,
             risk_tags: vec!["human-approved".to_string()],
         },
+        "allow_lease" | "approve_lease" => ApprovalDecision::AllowLease {
+            rationale,
+            risk_tags: vec!["human-approved".to_string()],
+        },
         "deny" | "reject" => ApprovalDecision::Deny {
             rationale,
             risk_tags: vec!["human-denied".to_string()],
@@ -753,7 +962,7 @@ async fn handle_decide_approval(
         _ => {
             return error_response(
                 StatusCode::BAD_REQUEST,
-                "decision 只支持 allow_once 或 deny",
+                "decision 只支持 allow_once、allow_lease 或 deny",
             )
         }
     };
@@ -1153,6 +1362,611 @@ async fn handle_list_contexts(
     }
 }
 
+async fn handle_list_execution_targets(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .list_execution_targets(&principal.principal_id)
+        .await
+    {
+        Ok(targets) => Json(json!({ "targets": targets })).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_register_execution_target(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(registration): Json<ExecutionTargetRegistration>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .register_execution_target(&principal.principal_id, registration)
+        .await
+    {
+        Ok(target) => (StatusCode::CREATED, Json(target)).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_inspect_execution_target(
+    State(state): State<Arc<AppState>>,
+    Path(target_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .inspect_execution_target(&principal.principal_id, &target_id)
+        .await
+    {
+        Ok(target) => Json(target).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_mutate_execution_target(
+    State(state): State<Arc<AppState>>,
+    Path(target_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<MutateExecutionTargetRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .set_execution_target_status(
+            &principal.principal_id,
+            &target_id,
+            request.expected_revision,
+            request.status,
+        )
+        .await
+    {
+        Ok(target) => Json(target).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_authorize_execution_target(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(command): Json<AuthorizeExecutionTargetCommand>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .authorize_execution_target(&principal.principal_id, command)
+        .await
+    {
+        Ok(authorization) => (StatusCode::CREATED, Json(authorization)).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_list_execution_target_authorizations(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<TargetAuthorizationQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .list_execution_target_authorizations(
+            &principal.principal_id,
+            query.target_id,
+            query.active_only,
+        )
+        .await
+    {
+        Ok(authorizations) => Json(json!({ "authorizations": authorizations })).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_revoke_execution_target_authorization(
+    State(state): State<Arc<AppState>>,
+    Path(authorization_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<RevokeTargetAuthorizationRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let reason = request
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("由当前 Principal 主动撤销");
+    match state
+        .sdk
+        .revoke_execution_target_authorization(
+            &principal.principal_id,
+            &authorization_id,
+            request.expected_revision,
+            reason,
+        )
+        .await
+    {
+        Ok(authorization) => Json(authorization).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_list_capability_leases(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<CapabilityLeaseQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .list_capability_leases(
+            &principal.principal_id,
+            query.thread_id,
+            query.target_id,
+            query.active_only,
+        )
+        .await
+    {
+        Ok(leases) => Json(json!({ "leases": leases })).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_revoke_capability_lease(
+    State(state): State<Arc<AppState>>,
+    Path(lease_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<RevokeCapabilityLeaseRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let reason = request
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("由当前 Principal 主动撤销");
+    match state
+        .sdk
+        .revoke_capability_lease(
+            &principal.principal_id,
+            &lease_id,
+            request.expected_revision,
+            reason,
+        )
+        .await
+    {
+        Ok(lease) => Json(lease).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_create_node_pairing_code(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(command): Json<CreateNodePairingCodeCommand>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .create_node_pairing_code(&principal.principal_id, command)
+        .await
+    {
+        Ok(pairing) => (StatusCode::CREATED, Json(pairing)).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_pair_execution_node(
+    State(state): State<Arc<AppState>>,
+    Json(command): Json<PairExecutionNodeCommand>,
+) -> impl IntoResponse {
+    // The one-shot, short-lived pairing code is the authority for this route.
+    // Requiring the Dashboard bearer token here would prevent a new device
+    // from pairing before it owns a device credential.
+    match state.sdk.pair_execution_node(command).await {
+        Ok(paired) => (StatusCode::CREATED, Json(paired)).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_create_execution_node_challenge(
+    State(state): State<Arc<AppState>>,
+    Path(node_id): Path<String>,
+) -> impl IntoResponse {
+    // A challenge has no authority by itself. Only a valid signature from the
+    // paired device key can exchange it for a short-lived connection token.
+    match state
+        .sdk
+        .create_execution_node_identity_challenge(&node_id)
+        .await
+    {
+        Ok(challenge) => Json(challenge).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_connect_execution_node(
+    State(state): State<Arc<AppState>>,
+    Path(node_id): Path<String>,
+    Json(command): Json<ConnectExecutionNodeCommand>,
+) -> impl IntoResponse {
+    match state.sdk.connect_execution_node(&node_id, command).await {
+        Ok(connection) => Json(connection).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_rotate_execution_node_key(
+    State(state): State<Arc<AppState>>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+    Json(command): Json<RotateExecutionNodeKeyCommand>,
+) -> impl IntoResponse {
+    let device_token = match node_device_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    match state
+        .sdk
+        .rotate_execution_node_key(&node_id, device_token, command)
+        .await
+    {
+        Ok(node) => Json(node).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_list_execution_nodes(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .list_execution_nodes(&principal.principal_id)
+        .await
+    {
+        Ok(nodes) => Json(json!({ "nodes": nodes })).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_revoke_execution_node(
+    State(state): State<Arc<AppState>>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<RevokeExecutionNodeRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .revoke_execution_node(&principal.principal_id, &node_id, request.expected_revision)
+        .await
+    {
+        Ok(node) => Json(node).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_heartbeat_execution_node(
+    State(state): State<Arc<AppState>>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+    Json(command): Json<ExecutionNodeHeartbeatCommand>,
+) -> impl IntoResponse {
+    let device_token = match node_device_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    match state
+        .sdk
+        .heartbeat_execution_node(&node_id, device_token, command)
+        .await
+    {
+        Ok(node) => Json(node).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_claim_edge_command(
+    State(state): State<Arc<AppState>>,
+    Path(node_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<EdgeClaimQuery>,
+    Json(command): Json<ClaimEdgeCommand>,
+) -> impl IntoResponse {
+    let device_token = match node_device_token(&headers) {
+        Ok(token) => token.to_string(),
+        Err(response) => return response,
+    };
+    let wait = std::time::Duration::from_secs(query.wait_seconds.unwrap_or(20).min(25));
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        match state
+            .sdk
+            .claim_edge_command(&node_id, &device_token, command.clone())
+            .await
+        {
+            Ok(Some(job)) => return Json(json!({ "job": job })).into_response(),
+            Ok(None) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+            Ok(None) => return StatusCode::NO_CONTENT.into_response(),
+            Err(error) => return sdk_error_response(error),
+        }
+    }
+}
+
+async fn handle_heartbeat_edge_command(
+    State(state): State<Arc<AppState>>,
+    Path((node_id, job_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(command): Json<HeartbeatEdgeCommand>,
+) -> impl IntoResponse {
+    let device_token = match node_device_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    match state
+        .sdk
+        .heartbeat_edge_command(&node_id, device_token, &job_id, command)
+        .await
+    {
+        Ok(job) => Json(job).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_finish_edge_command(
+    State(state): State<Arc<AppState>>,
+    Path((node_id, job_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(command): Json<FinishEdgeCommand>,
+) -> impl IntoResponse {
+    let device_token = match node_device_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    match state
+        .sdk
+        .finish_edge_command(&node_id, device_token, &job_id, command)
+        .await
+    {
+        Ok(job) => Json(job).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_append_edge_command_output(
+    State(state): State<Arc<AppState>>,
+    Path((node_id, job_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(command): Json<AppendEdgeOutputCommand>,
+) -> impl IntoResponse {
+    let device_token = match node_device_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    match state
+        .sdk
+        .append_edge_command_output(&node_id, device_token, &job_id, command)
+        .await
+    {
+        Ok(chunk) => Json(chunk).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_list_edge_command_output(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<EdgeOutputQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .list_edge_command_output(
+            &job_id,
+            query.after_sequence.unwrap_or(0),
+            query.limit.unwrap_or(200),
+        )
+        .await
+    {
+        Ok(chunks) => Json(json!({ "chunks": chunks })).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_list_execution_jobs(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ExecutionJobHttpQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .list_execution_jobs(
+            &principal.principal_id,
+            ExecutionJobQuery {
+                context_id: query.context_id,
+                thread_id: query.thread_id,
+                target_id: query.target_id,
+                status: query.status,
+                include_terminal: query.include_terminal,
+                newest_first: query.newest_first,
+                limit: query.limit,
+            },
+        )
+        .await
+    {
+        Ok(jobs) => Json(json!({ "jobs": jobs })).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_inspect_execution_job(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .inspect_execution_job(&principal.principal_id, &job_id)
+        .await
+    {
+        Ok(job) => Json(job).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_cancel_execution_job(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<CancelExecutionJobRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .cancel_execution_job(
+            &principal.principal_id,
+            &job_id,
+            request.expected_revision,
+            request.reason.as_deref(),
+        )
+        .await
+    {
+        Ok(job) => Json(job).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+fn node_device_token(headers: &HeaderMap) -> Result<&str, Response> {
+    let token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            error_response(
+                StatusCode::UNAUTHORIZED,
+                "Edge Node 需要 Authorization: Bearer <device-token>",
+            )
+        })?;
+    Ok(token)
+}
+
 async fn handle_get_context_working_set(
     State(state): State<Arc<AppState>>,
     Path(context_id): Path<String>,
@@ -1241,6 +2055,30 @@ async fn handle_get_context_activations(
     }
 }
 
+async fn handle_get_context_overview(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<ContextOverviewHttpQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .context_overview(
+            &context_id,
+            ContextOverviewQuery {
+                active_session_id: query.session_id,
+            },
+        )
+        .await
+    {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
 async fn handle_get_scheduler_snapshot(
     State(state): State<Arc<AppState>>,
     Path(context_id): Path<String>,
@@ -1251,7 +2089,7 @@ async fn handle_get_scheduler_snapshot(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match state
-        .runtime
+        .sdk
         .scheduler_snapshot(
             &context_id,
             SchedulerQuery {
@@ -1266,6 +2104,70 @@ async fn handle_get_scheduler_snapshot(
             error_response(StatusCode::NOT_FOUND, error.to_string())
         }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_get_thread_detail(
+    State(state): State<Arc<AppState>>,
+    Path((context_id, thread_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.sdk.thread_detail(&context_id, &thread_id).await {
+        Ok(detail) => Json(detail).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_query_ledger(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<LedgerHttpQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .query_ledger(LedgerQuery {
+            context_id,
+            session_id: query.session_id,
+            principal_id: query.principal_id,
+            thread_id: query.thread_id,
+            activation_id: query.activation_id,
+            actor: query.actor,
+            event_type: query.event_type,
+            topic: query.topic,
+            search_query: query.query,
+            after_sequence: query.after_sequence,
+            before_sequence: query.before_sequence,
+            start_time: query.start_time,
+            end_time: query.end_time,
+            limit: query.limit.unwrap_or(100),
+        })
+        .await
+    {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_audit_mind_projection(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.sdk.audit_mind_projection(&context_id).await {
+        Ok(audit) => Json(audit).into_response(),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -1736,6 +2638,74 @@ async fn handle_get_session_context(
         .await
     {
         Ok(context) => Json(context).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_get_session_context_projection(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let session = match state
+        .sdk
+        .get_session(&principal.principal_id, &session_id)
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .runtime
+        .context_projection(&session.context_id, &session_id)
+        .await
+    {
+        Ok(context) => Json(context).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_get_session_context_encoding(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let session = match state
+        .sdk
+        .get_session(&principal.principal_id, &session_id)
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .runtime
+        .context_encoding(&session.context_id, &session_id)
+        .await
+    {
+        Ok(context) => Json(json!({
+            "context_id": context.context_id,
+            "session_id": context.active_session_id,
+            "mind_revision": context.state.version,
+            "encoding": context.sexpr,
+        }))
+        .into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
@@ -2528,6 +3498,24 @@ mod tests {
             .contains("<svg"));
     }
 
+    #[tokio::test]
+    async fn dashboard_fallback_serves_spa_routes_but_never_masks_missing_api() {
+        let route = handle_dashboard_fallback(
+            "/contexts/context-a/threads/thread-b"
+                .parse::<Uri>()
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(route.status(), StatusCode::OK);
+        assert_eq!(
+            route.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+
+        let missing_api = handle_dashboard_fallback("/api/not-real".parse::<Uri>().unwrap()).await;
+        assert_eq!(missing_api.status(), StatusCode::NOT_FOUND);
+    }
+
     #[test]
     fn dashboard_auth_requires_matching_bearer_or_query_token() {
         let mut headers = HeaderMap::new();
@@ -3079,6 +4067,84 @@ mod tests {
         assert!(working_set_json.get("working_set").is_some());
         assert!(working_set_json.get("session_directory").is_some());
 
+        let overview = handle_get_context_overview(
+            State(Arc::clone(&state)),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(ContextOverviewHttpQuery {
+                token: None,
+                session_id: Some("api-observability-session".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(overview.status(), StatusCode::OK);
+        let overview_body = axum::body::to_bytes(overview.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let overview_json: serde_json::Value = serde_json::from_slice(&overview_body).unwrap();
+        assert_eq!(overview_json["context"]["id"], json!("context-test"));
+        assert_eq!(
+            overview_json["active_session_id"],
+            json!("api-observability-session")
+        );
+        assert!(overview_json["scheduler"].is_object());
+
+        let full_context = handle_get_session_context(
+            State(Arc::clone(&state)),
+            Path("api-observability-session".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(full_context.status(), StatusCode::OK);
+        let full_context_body = axum::body::to_bytes(full_context.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let full_context_json: serde_json::Value =
+            serde_json::from_slice(&full_context_body).unwrap();
+        assert!(full_context_json["sexpr"].as_str().is_some());
+
+        let projection = handle_get_session_context_projection(
+            State(Arc::clone(&state)),
+            Path("api-observability-session".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(projection.status(), StatusCode::OK);
+        let projection_body = axum::body::to_bytes(projection.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let projection_json: serde_json::Value = serde_json::from_slice(&projection_body).unwrap();
+        assert_eq!(projection_json["context_id"], json!("context-test"));
+        assert!(projection_json.get("state").is_some());
+        assert!(projection_json.get("sexpr").is_none());
+
+        let encoding = handle_get_session_context_encoding(
+            State(Arc::clone(&state)),
+            Path("api-observability-session".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(encoding.status(), StatusCode::OK);
+        let encoding_body = axum::body::to_bytes(encoding.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let encoding_json: serde_json::Value = serde_json::from_slice(&encoding_body).unwrap();
+        assert_eq!(encoding_json["context_id"], json!("context-test"));
+        assert_eq!(
+            encoding_json["session_id"],
+            json!("api-observability-session")
+        );
+        assert!(encoding_json["encoding"]
+            .as_str()
+            .is_some_and(|value| value.starts_with("(context")));
+
         let activations = handle_get_context_activations(
             State(Arc::clone(&state)),
             Path("context-test".to_string()),
@@ -3118,6 +4184,45 @@ mod tests {
         assert!(scheduler_json["model_provider"].is_object());
         assert!(scheduler_json["context_capacity"].is_object());
 
+        let ledger = handle_query_ledger(
+            State(Arc::clone(&state)),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(LedgerHttpQuery {
+                token: None,
+                session_id: Some("api-observability-session".to_string()),
+                limit: Some(50),
+                ..LedgerHttpQuery::default()
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(ledger.status(), StatusCode::OK);
+        let ledger_body = axum::body::to_bytes(ledger.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let ledger_json: serde_json::Value = serde_json::from_slice(&ledger_body).unwrap();
+        assert_eq!(ledger_json["context_id"], json!("context-test"));
+        assert!(ledger_json["events"].is_array());
+        assert!(ledger_json["scanned_count"].is_number());
+
+        let projection_audit = handle_audit_mind_projection(
+            State(Arc::clone(&state)),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+        )
+        .await
+        .into_response();
+        assert_eq!(projection_audit.status(), StatusCode::OK);
+        let projection_audit_body = axum::body::to_bytes(projection_audit.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let projection_audit_json: serde_json::Value =
+            serde_json::from_slice(&projection_audit_body).unwrap();
+        assert_eq!(projection_audit_json["context_id"], json!("context-test"));
+        assert_eq!(projection_audit_json["matches"], json!(true));
+
         let status = handle_status(
             State(Arc::clone(&state)),
             HeaderMap::new(),
@@ -3132,6 +4237,73 @@ mod tests {
         let status_json: serde_json::Value = serde_json::from_slice(&status_body).unwrap();
         assert_eq!(status_json["agent_id"], json!("agent-test"));
         assert_eq!(status_json["model"], json!("gpt-4o-mini"));
+        assert_eq!(status_json["storage_backend"], json!("sqlite"));
+        assert!(status_json["git_commit"].is_string());
+        assert!(status_json["uptime_seconds"].is_number());
+        assert!(status_json["recovery"].is_object());
+    }
+
+    #[tokio::test]
+    async fn ledger_query_returns_the_latest_page_and_pages_backward_without_overlap() {
+        let (_, runtime) = test_state().await;
+        for index in 1..=5 {
+            runtime
+                .publish(Event::new(
+                    format!("ledger-page-{index}"),
+                    "Ledger-Pagination-Test".to_string(),
+                    "ledger_test".to_string(),
+                    "test/ledger-pagination".to_string(),
+                    vec![
+                        ("context_id".to_string(), json!("context-test")),
+                        ("ordinal".to_string(), json!(index)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+                .await
+                .unwrap();
+        }
+
+        let latest = runtime
+            .query_ledger(LedgerQuery {
+                context_id: "context-test".to_string(),
+                actor: Some("Ledger-Pagination-Test".to_string()),
+                limit: 2,
+                ..LedgerQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            latest
+                .events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ledger-page-4", "ledger-page-5"]
+        );
+        let older_cursor = latest
+            .next_before_sequence
+            .expect("an older page must exist");
+
+        let older = runtime
+            .query_ledger(LedgerQuery {
+                context_id: "context-test".to_string(),
+                actor: Some("Ledger-Pagination-Test".to_string()),
+                before_sequence: Some(older_cursor),
+                limit: 2,
+                ..LedgerQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            older
+                .events
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ledger-page-2", "ledger-page-3"]
+        );
+        assert!(older.next_before_sequence.is_some());
     }
 
     #[tokio::test]
@@ -3165,6 +4337,7 @@ mod tests {
                 kind: ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap();

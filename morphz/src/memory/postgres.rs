@@ -35,9 +35,11 @@ mod activation;
 mod approval;
 mod delegation;
 mod delivery;
+mod edge;
 mod execution;
 mod schedule;
 mod session;
+mod target;
 mod thread;
 
 pub struct PostgresStore {
@@ -86,6 +88,27 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20260718_02_execution_jobs",
                     execution::migrate(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260721_01_execution_targets",
+                    target::migrate(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260721_04_execution_target_authorizations",
+                    target::migrate(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration("20260721_02_edge_execution", edge::migrate(&store.pool))
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260721_03_edge_device_identity",
+                    edge::migrate(&store.pool),
                 )
                 .await?;
             store
@@ -1070,6 +1093,11 @@ impl EventStore for PostgresStore {
             builder
                 .push(" AND sequence > ")
                 .push_bind(i64::try_from(after).unwrap_or(i64::MAX));
+        }
+        if let Some(before) = filter.before_sequence {
+            builder
+                .push(" AND sequence < ")
+                .push_bind(i64::try_from(before).unwrap_or(i64::MAX));
         }
         if let Some(start) = filter.start_time {
             builder

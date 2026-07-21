@@ -3,7 +3,11 @@ use crate::activation_admission::{
     ActivationAdmissionPermit, RestoreQueuedOutcome,
 };
 use crate::admission::{AdmissionClass, AdmissionKey};
-use crate::approval::{ApprovalDecision, ApprovalRequest, HumanApprovalHub};
+use crate::approval::{
+    capability_lease_policy_digest, capability_lease_was_approved, stable_capability_lease_id,
+    ApprovalDecision, ApprovalRequest, CapabilityLeaseOffer, HumanApprovalHub,
+    CAPABILITY_LEASE_APPROVED_RISK_TAG,
+};
 use crate::approval_authority::stable_approval_identity;
 use crate::config::OrchestratorConfig;
 use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
@@ -14,15 +18,16 @@ use crate::llm::{Client, Message, PromptTokenAccuracy, PromptTokenCount, ToolDef
 use crate::memory::{
     ActionGroupMemberStatus, ActionGroupStore, ActivationOutcomeCommit, ApprovalFilter,
     ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
-    DelegationStatus, DeliveryFlushCommit, EventAppend, EventStore, ExecutionApprovalMutation,
+    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseStore, DelegationStatus,
+    DeliveryFlushCommit, EventAppend, EventStore, ExecutionApprovalMutation,
     ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
     ExecutionJobStore, NewActionGroup, NewActionGroupMember, NewApprovalRequest,
-    NewCognitiveContext, NewDelegation, NewExecutionJob, NewRuntimeTimer, NewSession, NewThread,
-    NewThreadActivation, NewThreadSignal, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
-    ScheduleStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus,
-    SessionStore, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadRecord,
+    NewCapabilityLease, NewCognitiveContext, NewDelegation, NewExecutionJob, NewRuntimeTimer,
+    NewSession, NewThread, NewThreadActivation, NewThreadSignal, QueryFilter, RuntimeTimerKind,
+    RuntimeTimerRecord, ScheduleStatus, SessionAttentionState, SessionAttentionUpdate,
+    SessionMountKind, SessionStatus, SessionStore, SessionUpdate, SignalOutboxStatus,
+    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadKind,
+    ThreadLifecycle, ThreadMutation, ThreadRecord,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{ContextEngine, ContextView};
@@ -45,6 +50,9 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
+
+const DELIVERY_KIND_TURN_REPLY: &str = "turn_reply";
+const DELIVERY_KIND_THREAD_DELIVERY: &str = "thread_delivery";
 
 struct DurableEventWriteRequest {
     entry: EventAppend,
@@ -268,6 +276,7 @@ Context 的状态分为三个权限域：
 15. kernel.objectives 与 evaluate.objective-context 让你看到当前 Session 的 Objective 物理状态，但“可见”不等于“已绑定”。仅当 evaluate.objective-binding 指向某个 Objective 时，本轮才属于它的 Objective Thread 并可推进它；binding=none 时只可用这些状态回答用户的进度问题，不得为其调用工具。绑定的 Objective 仍有工作且不等待时正常交付当前进度，Supervisor 会自动续跑；等待确定事件时先调用 objective_update(status=active, wait_condition=...)；确实无法自动等待或推进时才提交 blocked；只有逐项审计 stated objective 并有真实 Ledger 证据支持时才提交 completed。Objective 状态工具成功后仍需产生普通文本或调用 no_reply 完成本次 IO。
 16. 你可以调用 objective_create，把当前 Session 中确实需要跨多次 Evaluation、异步等待或 Runtime 重启继续推进的工作升级为 First-Class Objective。它不是普通 Todo 或延长思考时间的手段：当前 Evaluation 可以可靠完成的任务不得创建 Objective；创建时完整保留用户范围与完成条件，并说明持久化的必要性。Runtime 自动绑定当前 Agent/Context/Session 并生成 ID；成功或返回 existing 后不得为同一目标重复创建。若指定 parent_objective_id，它必须是当前正在求值的 Objective。创建成功后继续工作，普通文本或 no_reply 只结束被收编后的当前 Evaluation，未完成 Objective 将由 Supervisor 自动续跑。
 17. 调度决策由你负责，Runtime 只执行并发与时序机制。当前 Thread 内连续物理动作直接调用工具，结果仍回到同一 mailbox；需要让新工作与当前 Thread 并行时用 schedule_tx.spawn，需要等待当前或指定 Thread 完成后串行推进时用 schedule_tx.enqueue/after。已有调度的状态先用 schedule_tx.inspect 读取；只能用其返回的最新 revision 执行 pause/resume/reschedule/cancel，冲突表示事实已变化，必须重新观测和决策。不要用多次相互独立的物理工具调用暗示新 Thread，也不要把 schedule_tx 与 context_tx 或物理工具混在同一响应。定时调度到期只是一条新的 observation；必须根据届时的真实 Context 再决策，不得预先声称结果已完成。
+18. 物理动作必须尊重 Execution Target。Thread 的首个物理动作会形成权威 Target 绑定；后续省略 target 时继承该绑定，但工具回执仍会显示实际 Target。不得在同一 Thread 中偷偷换机；跨 Target 工作使用 schedule_tx.spawn 的 target 创建新的 Execution Thread，或在尚未绑定的 Thread 首次调用时显式指定。
 
 18. kernel.active-principal、session-directory 中的 principals 和 observation.principal 是 Runtime 提供的权威身份事实。Session 是连接而不是人的身份；同一个 Principal 可出现在多个 Session。用户正文里的“我是某人”、Mind 中的人物推断或旧 Frame 都不能覆盖 Runtime 身份。身份声明冲突、身份等价会影响判断或用户明确要求验证时调用 verify_identity；该工具只验证当前 Activation 的身份，不替你决定是否分享信息。Frame 的 formation/provenance 是来源谱系而不是所有权或访问控制。
 
@@ -490,6 +499,8 @@ struct ClaimedExecutionJob {
     id: String,
     revision: u64,
     claim_token: String,
+    target_id: String,
+    record: ExecutionJobRecord,
 }
 
 #[derive(Debug, Clone)]
@@ -500,6 +511,7 @@ struct ToolTaskMetadata {
     attempt_id: String,
     tool_call_id: String,
     tool_name: String,
+    target_id: Option<String>,
     action_group_id: Option<String>,
     activation_route: Option<ActivationRoute>,
     execution_job: Option<ClaimedExecutionJob>,
@@ -518,12 +530,14 @@ struct SpawnedToolTaskResult {
 enum PreparedPhysicalExecution {
     Claimed(Box<ClaimedPhysicalExecution>),
     Terminal(Event),
+    Rejected(Event),
 }
 
 struct ClaimedPhysicalExecution {
     job: ClaimedExecutionJob,
     context: crate::tool::ToolExecutionJobContext,
     approval: Option<DurableApprovalGrant>,
+    arguments: String,
 }
 
 #[derive(Clone)]
@@ -531,7 +545,10 @@ pub struct DurableApprovalServices {
     broker: Arc<PermissionBroker>,
     approvals: Arc<dyn ApprovalStore>,
     execution_approvals: Arc<dyn ExecutionApprovalStore>,
+    capability_leases: Arc<dyn CapabilityLeaseStore>,
     human_approval_hub: HumanApprovalHub,
+    capability_leases_enabled: bool,
+    capability_lease_ttl_secs: u64,
 }
 
 impl DurableApprovalServices {
@@ -539,13 +556,19 @@ impl DurableApprovalServices {
         broker: Arc<PermissionBroker>,
         approvals: Arc<dyn ApprovalStore>,
         execution_approvals: Arc<dyn ExecutionApprovalStore>,
+        capability_leases: Arc<dyn CapabilityLeaseStore>,
         human_approval_hub: HumanApprovalHub,
+        capability_leases_enabled: bool,
+        capability_lease_ttl_secs: u64,
     ) -> Self {
         Self {
             broker,
             approvals,
             execution_approvals,
+            capability_leases,
             human_approval_hub,
+            capability_leases_enabled,
+            capability_lease_ttl_secs,
         }
     }
 }
@@ -889,6 +912,7 @@ pub struct Orchestrator {
     timer_engine: Arc<TimerEngine>,
     thread_scheduler: Option<Arc<ThreadScheduler>>,
     execution_jobs: Option<Arc<ExecutionJobManager<dyn ExecutionJobStore>>>,
+    execution_targets: Option<Arc<crate::execution_target::ExecutionTargetDispatcher>>,
     action_groups: Option<Arc<dyn ActionGroupStore>>,
     background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
     durable_approvals: Option<DurableApprovalServices>,
@@ -1094,6 +1118,7 @@ impl Orchestrator {
         timer_engine: Arc<TimerEngine>,
         thread_scheduler: Option<Arc<ThreadScheduler>>,
         execution_jobs: Option<Arc<ExecutionJobManager<dyn ExecutionJobStore>>>,
+        execution_targets: Option<Arc<crate::execution_target::ExecutionTargetDispatcher>>,
         action_groups: Option<Arc<dyn ActionGroupStore>>,
         background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
         durable_approvals: Option<DurableApprovalServices>,
@@ -1144,6 +1169,7 @@ impl Orchestrator {
             timer_engine,
             thread_scheduler,
             execution_jobs,
+            execution_targets,
             action_groups,
             background_scheduler,
             durable_approvals,
@@ -1180,6 +1206,7 @@ impl Orchestrator {
             Arc::new(ObjectiveEvaluationRegistry::default()),
             None,
             timer_engine,
+            None,
             None,
             None,
             Some(action_groups),
@@ -1421,6 +1448,7 @@ impl Orchestrator {
         self.recover_pending_thread_signals().await?;
         self.recover_delegations().await?;
         self.reconcile_orphaned_threads().await?;
+        self.reconcile_orphaned_execution_jobs().await?;
         self.recover_pending_delivery_flushes().await?;
         self.refill_activation_admission_queue().await?;
         self.start_activation_admission_refill();
@@ -1872,6 +1900,11 @@ impl Orchestrator {
                     .await?
                 {
                     ThreadMutation::Updated(_) => {
+                        self.revoke_thread_capability_leases(
+                            &thread.id,
+                            "Runtime reconciled an orphan Thread as cancelled",
+                        )
+                        .await;
                         if let Some(scheduler) = &self.thread_scheduler {
                             scheduler.dependency_completed(&thread.id).await?;
                         }
@@ -1908,6 +1941,74 @@ impl Orchestrator {
                     ThreadMutation::Conflict { .. } | ThreadMutation::NotFound => {}
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// Close non-terminal physical Actions whose causal owner has already
+    /// reached a terminal state. Older Runtime versions could persist an
+    /// Approval decision and then fail the Activation before consuming the
+    /// grant, leaving a `waiting_approval` Job alive forever. Such a Job is not
+    /// resumable work: its Activation/Thread can no longer receive the result.
+    async fn reconcile_orphaned_execution_jobs(&self) -> Result<(), DynError> {
+        let Some(session_store) = self.context_engine.session_store() else {
+            return Ok(());
+        };
+        let Some(manager) = self.execution_jobs.as_ref() else {
+            return Ok(());
+        };
+        let jobs = manager
+            .store()
+            .list_execution_jobs(ExecutionJobFilter {
+                include_terminal: false,
+                ..Default::default()
+            })
+            .await?;
+        let mut reconciled_activations = HashSet::new();
+        for job in jobs {
+            let activation = session_store
+                .get_thread_activation(&job.activation_id)
+                .await?;
+            let thread = session_store.get_thread(&job.thread_id).await?;
+            let reason = match (&activation, &thread) {
+                (None, _) => Some(format!(
+                    "Runtime 启动恢复时发现 Execution Job '{}' 的 Activation '{}' 不存在",
+                    job.id, job.activation_id
+                )),
+                (_, None) => Some(format!(
+                    "Runtime 启动恢复时发现 Execution Job '{}' 的 Thread '{}' 不存在",
+                    job.id, job.thread_id
+                )),
+                (Some(activation), _) if activation.status.is_terminal() => Some(format!(
+                    "Runtime 启动恢复时发现 Execution Job '{}' 的 Activation '{}' 已处于终态 {}",
+                    job.id,
+                    activation.id,
+                    activation.status.as_str()
+                )),
+                (_, Some(thread)) if thread.lifecycle.is_terminal() => Some(format!(
+                    "Runtime 启动恢复时发现 Execution Job '{}' 的 Thread '{}' 已处于终态 {}",
+                    job.id,
+                    thread.id,
+                    thread.lifecycle.as_str()
+                )),
+                _ => None,
+            };
+            let Some(reason) = reason else {
+                continue;
+            };
+            if !reconciled_activations.insert(job.activation_id.clone()) {
+                continue;
+            }
+            let cancelled = self
+                .request_cancel_execution_jobs_for_activation(&job.activation_id, &reason)
+                .await?;
+            tracing::warn!(
+                activation_id = %job.activation_id,
+                thread_id = %job.thread_id,
+                cancelled_jobs = cancelled,
+                reason,
+                "Runtime 启动时已收口失去因果 Owner 的 Execution Job"
+            );
         }
         Ok(())
     }
@@ -2653,6 +2754,22 @@ impl Orchestrator {
             self.release_dialogue_thread(&session_id, &activation.root_turn_id)
                 .await;
         }
+        if final_status == ThreadActivationStatus::Failed {
+            let reason = format!(
+                "Activation '{}' 求值失败；未完成的物理 Action 已失去可接收结果的因果 Owner",
+                activation.id
+            );
+            if let Err(cancellation_error) = self
+                .request_cancel_execution_jobs_for_activation(&activation.id, &reason)
+                .await
+            {
+                tracing::error!(
+                    activation_id = %activation.id,
+                    error = %cancellation_error,
+                    "Activation 已失败，但未能完整收口其非终态 Execution Job"
+                );
+            }
+        }
         if let Err(error) = self
             .finish_thread_activation(&activation, final_status)
             .await
@@ -2887,6 +3004,7 @@ impl Orchestrator {
                 kind: initial_thread_kind,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await?;
         let digest = Sha256::digest(event.id.as_bytes());
@@ -4850,6 +4968,10 @@ impl Orchestrator {
             ("disposition".to_string(), json!("no_reply")),
             ("text".to_string(), json!("")),
             (
+                "delivery_kind".to_string(),
+                json!(self.delivery_kind_for_attempt(attempt_id)),
+            ),
+            (
                 "active_background_tasks".to_string(),
                 json!(active_background_tasks),
             ),
@@ -4913,6 +5035,10 @@ impl Orchestrator {
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
             ("disposition".to_string(), json!("deliver")),
+            (
+                "delivery_kind".to_string(),
+                json!(self.delivery_kind_for_attempt(attempt_id)),
+            ),
             ("text".to_string(), json!(content)),
         ];
         if let Some(model_attempt_id) = model_attempt_id {
@@ -5132,6 +5258,10 @@ impl Orchestrator {
                     ("attempt_id".to_string(), json!(direct_event_id)),
                     ("root_turn_id".to_string(), json!(direct_event_id)),
                     ("thread_kind".to_string(), json!("delivery")),
+                    (
+                        "delivery_kind".to_string(),
+                        json!(DELIVERY_KIND_THREAD_DELIVERY),
+                    ),
                     ("disposition".to_string(), json!("deliver")),
                     ("delivery_strategy".to_string(), json!(strategy)),
                     (
@@ -5298,6 +5428,11 @@ impl Orchestrator {
         {
             ActivationOutcomeCommit::Committed => {
                 self.bus.dispatch_persisted(event.clone()).await?;
+                self.revoke_thread_capability_leases(
+                    &route.thread_id,
+                    "owning Thread reached a terminal outcome",
+                )
+                .await;
                 if let Some(scheduler) = &self.thread_scheduler {
                     if let Err(error) = scheduler.dependency_completed(&route.thread_id).await {
                         // The terminal Thread and outcome are already
@@ -5321,6 +5456,54 @@ impl Orchestrator {
                     "抑制同一 Thread Activation 的重复终态输出"
                 );
                 Ok(false)
+            }
+        }
+    }
+
+    async fn revoke_thread_capability_leases(&self, thread_id: &str, reason: &str) {
+        let Some(services) = &self.durable_approvals else {
+            return;
+        };
+        let leases = match services
+            .capability_leases
+            .list_capability_leases(CapabilityLeaseFilter {
+                thread_id: Some(thread_id.to_string()),
+                active_at: Some(Utc::now()),
+                limit: Some(1_000),
+                ..CapabilityLeaseFilter::default()
+            })
+            .await
+        {
+            Ok(leases) => leases,
+            Err(error) => {
+                tracing::error!(thread_id, %error, "读取 Thread Capability Lease 失败");
+                return;
+            }
+        };
+        for lease in leases {
+            match services
+                .capability_leases
+                .revoke_capability_lease(&lease.id, lease.revision, reason)
+                .await
+            {
+                Ok(
+                    CapabilityLeaseMutation::Updated(_)
+                    | CapabilityLeaseMutation::Existing(_)
+                    | CapabilityLeaseMutation::NotFound,
+                ) => {}
+                Ok(CapabilityLeaseMutation::Conflict { current }) => {
+                    tracing::debug!(
+                        lease_id = %current.id,
+                        revision = current.revision,
+                        "Capability Lease 已被并发修改，无需覆盖最新状态"
+                    );
+                }
+                Ok(CapabilityLeaseMutation::Created(_)) => {
+                    tracing::error!(lease_id = %lease.id, "revoke Capability Lease 不应创建记录");
+                }
+                Err(error) => {
+                    tracing::error!(lease_id = %lease.id, %error, "撤销 Thread Capability Lease 失败");
+                }
             }
         }
     }
@@ -5582,12 +5765,189 @@ impl Orchestrator {
             .execution_jobs
             .as_ref()
             .ok_or("Physical Execution 缺少 ExecutionJobManager")?;
-        let request = serde_json::from_str(&call.arguments).unwrap_or_else(|_| {
+        let invocation = match crate::execution_target::split_target_argument(&call.arguments) {
+            Ok(invocation) => invocation,
+            Err(error) => {
+                let mut output = physical_execution_preflight_rejected_tool_output(
+                    output_id,
+                    context_id,
+                    session_id,
+                    attempt_id,
+                    call,
+                    route,
+                    action_group_id,
+                    error.as_ref(),
+                );
+                self.stamp_objective_activation_route(attempt_id, &mut output.payload);
+                return Ok(PreparedPhysicalExecution::Rejected(output));
+            }
+        };
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Physical Execution 需要持久化 ThreadStore")?;
+        let thread = session_store
+            .get_thread(thread_id)
+            .await?
+            .ok_or_else(|| format!("Physical Execution Thread '{thread_id}' 不存在"))?;
+        let effective_target_id = if invocation.explicit_target {
+            invocation.target_id.clone()
+        } else {
+            thread
+                .target_id
+                .clone()
+                .unwrap_or_else(|| crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string())
+        };
+        if let Some(bound_target_id) = thread.target_id.as_deref() {
+            if bound_target_id != effective_target_id {
+                let reason = format!(
+                    "Thread '{}' 已绑定 Execution Target '{}'，不能隐式切换为 '{}'；请用 schedule_tx.spawn 创建绑定新 Target 的 Execution Thread",
+                    thread.id, bound_target_id, effective_target_id
+                );
+                let rejection = std::io::Error::other(reason);
+                let mut output = physical_execution_preflight_rejected_tool_output(
+                    output_id,
+                    context_id,
+                    session_id,
+                    attempt_id,
+                    call,
+                    route,
+                    action_group_id,
+                    &rejection,
+                );
+                output
+                    .payload
+                    .insert("target_id".to_string(), json!(effective_target_id));
+                output
+                    .payload
+                    .insert("bound_target_id".to_string(), json!(bound_target_id));
+                self.stamp_objective_activation_route(attempt_id, &mut output.payload);
+                return Ok(PreparedPhysicalExecution::Rejected(output));
+            }
+        } else {
+            match session_store
+                .bind_thread_target(&thread.id, thread.revision, &effective_target_id)
+                .await?
+            {
+                ThreadMutation::Updated(_) => {}
+                ThreadMutation::Conflict { current }
+                    if current.target_id.as_deref() == Some(effective_target_id.as_str()) => {}
+                ThreadMutation::Conflict { current } => {
+                    let reason = format!(
+                        "Thread '{}' 的 Execution Target 并发绑定冲突：当前为 '{}'，请求为 '{}'；请依据最新 Thread 状态重新调度",
+                        current.id,
+                        current.target_id.as_deref().unwrap_or("unbound"),
+                        effective_target_id
+                    );
+                    let rejection = std::io::Error::other(reason);
+                    let mut output = physical_execution_preflight_rejected_tool_output(
+                        output_id,
+                        context_id,
+                        session_id,
+                        attempt_id,
+                        call,
+                        route,
+                        action_group_id,
+                        &rejection,
+                    );
+                    output
+                        .payload
+                        .insert("target_id".to_string(), json!(effective_target_id));
+                    output
+                        .payload
+                        .insert("bound_target_id".to_string(), json!(current.target_id));
+                    self.stamp_objective_activation_route(attempt_id, &mut output.payload);
+                    return Ok(PreparedPhysicalExecution::Rejected(output));
+                }
+                ThreadMutation::NotFound => {
+                    return Err(format!(
+                        "Physical Execution Thread '{}' 在绑定 Target 时消失",
+                        thread.id
+                    )
+                    .into());
+                }
+            }
+        }
+        let deterministic_job_id =
+            crate::execution::deterministic_job_id(&route.activation_id, &call.id)?;
+        if let Some(existing) = manager
+            .store()
+            .get_execution_job(&deterministic_job_id)
+            .await?
+        {
+            if let Some(event) = self.terminal_execution_event(&existing).await? {
+                return Ok(PreparedPhysicalExecution::Terminal(event));
+            }
+        }
+        let target = match self
+            .execution_targets
+            .as_ref()
+            .ok_or("Physical Execution 缺少 ExecutionTargetDispatcher")?
+            .validate_for_tool(
+                &effective_target_id,
+                tool.name(),
+                route.initiating_principal_id.as_deref(),
+                agent_id,
+                context_id,
+                thread_id,
+            )
+            .await
+        {
+            Ok(target) => target,
+            Err(error) => {
+                let mut output = physical_execution_preflight_rejected_tool_output(
+                    output_id,
+                    context_id,
+                    session_id,
+                    attempt_id,
+                    call,
+                    route,
+                    action_group_id,
+                    error.as_ref(),
+                );
+                output
+                    .payload
+                    .insert("target_id".to_string(), json!(effective_target_id));
+                self.stamp_objective_activation_route(attempt_id, &mut output.payload);
+                return Ok(PreparedPhysicalExecution::Rejected(output));
+            }
+        };
+        let mut request = serde_json::from_str(&invocation.tool_arguments).unwrap_or_else(|_| {
             json!({
-                "raw_arguments": call.arguments,
+                "raw_arguments": invocation.tool_arguments,
             })
         });
-        let requirement = tool.approval_requirement(&call.arguments)?;
+        crate::execution_target::attach_route_snapshot(
+            &mut request,
+            &crate::execution_target::ExecutionRouteSnapshot::freeze(&target),
+        )?;
+        let requirement_result =
+            if target.kind == crate::memory::ExecutionTargetKind::InProcessLocal {
+                tool.approval_requirement(&invocation.tool_arguments)
+            } else {
+                crate::execution_target::remote_target_approval_requirement(
+                    tool.name(),
+                    &invocation.tool_arguments,
+                )
+                .map(Some)
+            };
+        let requirement = match requirement_result {
+            Ok(requirement) => requirement,
+            Err(error) => {
+                let mut output = physical_execution_preflight_rejected_tool_output(
+                    output_id,
+                    context_id,
+                    session_id,
+                    attempt_id,
+                    call,
+                    route,
+                    action_group_id,
+                    error.as_ref(),
+                );
+                self.stamp_objective_activation_route(attempt_id, &mut output.payload);
+                return Ok(PreparedPhysicalExecution::Rejected(output));
+            }
+        };
         let spec = ExecutionJobSpec {
             activation_id: route.activation_id.clone(),
             thread_id: thread_id.to_string(),
@@ -5595,6 +5955,7 @@ impl Orchestrator {
             context_id: context_id.to_string(),
             session_id: session_id.to_string(),
             initiating_principal_id: route.initiating_principal_id.clone(),
+            target_id: effective_target_id,
             tool_call_id: call.id.clone(),
             tool_name: call.func_name.clone(),
             request,
@@ -5650,6 +6011,58 @@ impl Orchestrator {
                 let new_job = spec.into_new_job()?;
                 let action = serde_json::to_value(&requirement.action)?;
                 let requested = serde_json::to_value(&requirement.requested)?;
+                let lease_policy_digest = capability_lease_policy_digest(
+                    &services.broker.policy_digest(),
+                    &target.policy_digest,
+                );
+                let mut lease_offer = route
+                    .initiating_principal_id
+                    .as_ref()
+                    .filter(|_| {
+                        services.capability_leases_enabled
+                            && services.capability_lease_ttl_secs > 0
+                            && thread.lifecycle == ThreadLifecycle::Open
+                    })
+                    .map(|principal_id| CapabilityLeaseOffer {
+                        principal_id: principal_id.clone(),
+                        agent_id: agent_id.to_string(),
+                        thread_id: thread.id.clone(),
+                        target_id: new_job.target_id.clone(),
+                        capability: requirement.action.lease_capability(),
+                        requested: requirement.requested.clone(),
+                        policy_digest: lease_policy_digest.clone(),
+                        expires_at: Utc::now()
+                            + chrono::Duration::seconds(
+                                i64::try_from(services.capability_lease_ttl_secs)
+                                    .unwrap_or(i64::MAX),
+                            ),
+                    });
+                let covering_lease = match lease_offer.as_ref() {
+                    Some(offer) => services
+                        .capability_leases
+                        .list_capability_leases(CapabilityLeaseFilter {
+                            principal_id: Some(offer.principal_id.clone()),
+                            agent_id: Some(offer.agent_id.clone()),
+                            thread_id: Some(offer.thread_id.clone()),
+                            target_id: Some(offer.target_id.clone()),
+                            active_at: Some(Utc::now()),
+                            limit: Some(100),
+                        })
+                        .await?
+                        .into_iter()
+                        .find(|lease| {
+                            lease.policy_digest == offer.policy_digest
+                                && lease
+                                    .capabilities
+                                    .iter()
+                                    .any(|capability| capability == &offer.capability)
+                                && serde_json::from_value::<crate::approval::CapabilityDelta>(
+                                    lease.requested.clone(),
+                                )
+                                .is_ok_and(|granted| offer.requested.is_subset_of(&granted))
+                        }),
+                    None => None,
+                };
                 let identity = stable_approval_identity(
                     &new_job.id,
                     &action,
@@ -5675,6 +6088,12 @@ impl Orchestrator {
                         .await?,
                     "create approval authority",
                 )?;
+                if let Some(offer) = lease_offer.as_mut() {
+                    offer.expires_at = approval.created_at
+                        + chrono::Duration::seconds(
+                            i64::try_from(services.capability_lease_ttl_secs).unwrap_or(i64::MAX),
+                        );
+                }
                 // A persisted request is an immutable fact, but UI delivery is
                 // process-local. Re-dispatch an exact still-pending replay so
                 // restart never leaves a human Approval invisible merely
@@ -5687,18 +6106,33 @@ impl Orchestrator {
                 }
 
                 if approval.status.is_pending() {
-                    let decision = services
-                        .broker
-                        .review(&ApprovalRequest {
-                            approval_id: approval.id.clone(),
-                            context_id: context_id.to_string(),
-                            session_id: session_id.to_string(),
-                            attempt_id: attempt_id.to_string(),
-                            action: requirement.action.clone(),
-                            requested: requirement.requested.clone(),
-                            justification: requirement.justification.clone(),
-                        })
-                        .await?;
+                    let decision = if let Some(lease) = &covering_lease {
+                        ApprovalDecision::AllowOnce {
+                            rationale: format!(
+                                "请求完全包含于有效的 Thread + Target Capability Lease '{}'",
+                                lease.id
+                            ),
+                            risk_tags: vec![format!("capability-lease-used:{}", lease.id)],
+                        }
+                    } else {
+                        services
+                            .broker
+                            .review(&ApprovalRequest {
+                                approval_id: approval.id.clone(),
+                                context_id: context_id.to_string(),
+                                session_id: session_id.to_string(),
+                                attempt_id: attempt_id.to_string(),
+                                thread_id: route.thread_id.clone(),
+                                root_turn_id: route.root_turn_id.clone(),
+                                trigger_event_id: route.trigger_event_id.clone(),
+                                trigger_sequence: route.trigger_sequence,
+                                action: requirement.action.clone(),
+                                requested: requirement.requested.clone(),
+                                justification: requirement.justification.clone(),
+                                lease_offer: lease_offer.clone(),
+                            })
+                            .await?
+                    };
                     let resolution = match decision {
                         ApprovalDecision::AllowOnce {
                             rationale,
@@ -5707,6 +6141,24 @@ impl Orchestrator {
                             rationale,
                             risk_tags,
                         },
+                        ApprovalDecision::AllowLease {
+                            rationale,
+                            mut risk_tags,
+                        } => {
+                            if lease_offer.is_none() {
+                                return Err(
+                                    "Approval provider 在没有 lease_offer 时批准 Capability Lease"
+                                        .into(),
+                                );
+                            }
+                            if !capability_lease_was_approved(&risk_tags) {
+                                risk_tags.push(CAPABILITY_LEASE_APPROVED_RISK_TAG.to_string());
+                            }
+                            ApprovalResolution::Allow {
+                                rationale,
+                                risk_tags,
+                            }
+                        }
                         ApprovalDecision::Deny {
                             rationale,
                             risk_tags,
@@ -5735,6 +6187,47 @@ impl Orchestrator {
                             .event
                             .ok_or("Approval 审计 Event 已原子创建，但 Store 未返回持久化投影")?;
                         self.bus.dispatch_persisted(decision_event).await?;
+                    }
+                }
+
+                if approval.status == ApprovalStatus::Allowed
+                    && capability_lease_was_approved(&approval.risk_tags)
+                {
+                    let offer = lease_offer.as_ref().ok_or(
+                        "Allowed Approval 标记为 Capability Lease，但当前请求缺少 lease_offer",
+                    )?;
+                    let lease = NewCapabilityLease {
+                        id: stable_capability_lease_id(&approval.id),
+                        principal_id: offer.principal_id.clone(),
+                        agent_id: offer.agent_id.clone(),
+                        thread_id: offer.thread_id.clone(),
+                        target_id: offer.target_id.clone(),
+                        capabilities: vec![offer.capability.clone()],
+                        requested: serde_json::to_value(&offer.requested)?,
+                        policy_digest: offer.policy_digest.clone(),
+                        issued_by_approval_id: Some(approval.id.clone()),
+                        expires_at: offer.expires_at,
+                    };
+                    match services
+                        .capability_leases
+                        .ensure_capability_lease(lease)
+                        .await?
+                    {
+                        CapabilityLeaseMutation::Created(_)
+                        | CapabilityLeaseMutation::Existing(_) => {}
+                        CapabilityLeaseMutation::Conflict { current } => {
+                            return Err(format!(
+                                "Capability Lease '{}' 幂等内容冲突（revision {}）",
+                                current.id, current.revision
+                            )
+                            .into());
+                        }
+                        CapabilityLeaseMutation::Updated(_) => {
+                            return Err("ensure_capability_lease 不应返回 Updated".into());
+                        }
+                        CapabilityLeaseMutation::NotFound => {
+                            return Err("ensure_capability_lease 不应返回 NotFound".into());
+                        }
                     }
                 }
 
@@ -5858,6 +6351,12 @@ impl Orchestrator {
                 if let Some(group_id) = action_group_id {
                     payload.insert("action_group_id".to_string(), json!(group_id));
                 }
+                stamp_execution_route_facts(
+                    &mut payload,
+                    &job.target_id,
+                    &job.request,
+                    job.claimed_by.as_deref(),
+                );
                 let mut output = Event::new(
                     output_id.to_string(),
                     "Runtime-ObjectiveFence".to_string(),
@@ -5884,6 +6383,8 @@ impl Orchestrator {
                     id: job.id.clone(),
                     revision: job.revision,
                     claim_token: claim_token.clone(),
+                    target_id: job.target_id.clone(),
+                    record: job.clone(),
                 };
                 finish_claimed_physical_job(
                     manager.as_ref(),
@@ -5921,14 +6422,18 @@ impl Orchestrator {
                     context_id: context_id.to_string(),
                     session_id: session_id.to_string(),
                     initiating_principal_id: route.initiating_principal_id.clone(),
+                    target_id: job.target_id.clone(),
                     tool_call_id: call.id.clone(),
                 },
                 job: ClaimedExecutionJob {
-                    id: job.id,
+                    id: job.id.clone(),
                     revision: job.revision,
                     claim_token,
+                    target_id: job.target_id.clone(),
+                    record: job,
                 },
                 approval: durable_grant,
+                arguments: invocation.tool_arguments,
             },
         )))
     }
@@ -6612,6 +7117,7 @@ impl Orchestrator {
             let mut claimed_execution_job = None;
             let mut tool_execution_job_context = None;
             let mut durable_approval_grant = None;
+            let mut execution_arguments = call.arguments.clone();
             if let (Some(tool), Some(route), Some((agent_id, thread_id))) = (
                 tool.as_ref().filter(|tool| {
                     self.execution_jobs.is_some()
@@ -6638,12 +7144,17 @@ impl Orchestrator {
                     .await;
                 match prepared? {
                     PreparedPhysicalExecution::Claimed(claimed) => {
+                        execution_arguments = claimed.arguments;
                         claimed_execution_job = Some(claimed.job);
                         tool_execution_job_context = Some(claimed.context);
                         durable_approval_grant = claimed.approval;
                     }
                     PreparedPhysicalExecution::Terminal(event) => {
                         outputs.push((event, true));
+                        continue;
+                    }
+                    PreparedPhysicalExecution::Rejected(event) => {
+                        outputs.push((event, false));
                         continue;
                     }
                 }
@@ -6672,11 +7183,15 @@ impl Orchestrator {
                 attempt_id: attempt_id.clone(),
                 tool_call_id: call.id.clone(),
                 tool_name: call.func_name.clone(),
+                target_id: claimed_execution_job
+                    .as_ref()
+                    .map(|job| job.target_id.clone()),
                 action_group_id: task_action_group_id.clone(),
                 activation_route: activation_route.clone(),
                 execution_job: claimed_execution_job.clone(),
             };
             let execution_jobs = self.execution_jobs.clone();
+            let execution_targets = self.execution_targets.clone();
             let action_groups = self.action_groups.clone();
             let settled_event = action_group_settled.clone();
             let event_bus = Arc::clone(&self.bus);
@@ -6711,27 +7226,42 @@ impl Orchestrator {
                                                             _ => true,
                                                         };
                                                         let (output, tool_status) = if fence_current {
-                                                            let result = tokio::time::timeout(
-                                                                tokio::time::Duration::from_secs(
-                                                                    timeout_secs,
-                                                                ),
-                                                                async {
-                                                                    match tool {
-                                                                        Some(tool) => {
-                                                                            tool.execute(
-                                                                                &call.arguments,
+                                                            let execution = async {
+                                                                match tool {
+                                                                    Some(tool) => match claimed_execution_job.as_ref() {
+                                                                        Some(job) => execution_targets
+                                                                            .as_ref()
+                                                                            .ok_or("Physical Execution 缺少 ExecutionTargetDispatcher")?
+                                                                            .execute(
+                                                                                &job.record,
+                                                                                Arc::clone(&tool),
+                                                                                &execution_arguments,
                                                                             )
-                                                                            .await
-                                                                        }
-                                                                        None => Err(format!(
-                                                                            "未注册的工具: {}",
-                                                                            call.func_name
-                                                                        )
-                                                                        .into()),
-                                                                    }
-                                                                },
-                                                            )
-                                                            .await;
+                                                                            .await,
+                                                                        None => tool
+                                                                            .execute(&execution_arguments)
+                                                                            .await,
+                                                                    },
+                                                                    None => Err(format!(
+                                                                        "未注册的工具: {}",
+                                                                        call.func_name
+                                                                    )
+                                                                    .into()),
+                                                                }
+                                                            };
+                                                            // Physical backends own their deadline/lease semantics.
+                                                            // In particular, an offline Edge Target is a durable wait,
+                                                            // not a local wall-clock timeout. Logical inline tools keep
+                                                            // the Runtime safety timeout.
+                                                            let result = if claimed_execution_job.is_some() {
+                                                                Ok(execution.await)
+                                                            } else {
+                                                                tokio::time::timeout(
+                                                                    tokio::time::Duration::from_secs(timeout_secs),
+                                                                    execution,
+                                                                )
+                                                                .await
+                                                            };
                                                             match result {
                                                                 Ok(Ok(output)) => {
                                                                     let status =
@@ -6832,6 +7362,20 @@ impl Orchestrator {
                                                             payload.insert(
                                                                 "principal_id".to_string(),
                                                                 json!(principal_id),
+                                                            );
+                                                        }
+                                                        if let Some(job) =
+                                                            claimed_execution_job.as_ref()
+                                                        {
+                                                            payload.insert(
+                                                                "execution_job_id".to_string(),
+                                                                json!(job.id),
+                                                            );
+                                                            stamp_execution_route_facts(
+                                                                &mut payload,
+                                                                &job.target_id,
+                                                                &job.record.request,
+                                                                job.record.claimed_by.as_deref(),
                                                             );
                                                         }
                                                         if let Some(route) = activation_route {
@@ -7222,6 +7766,17 @@ impl Orchestrator {
                         self.activation_routes.get(base).map(|route| route.clone())
                     })
             })
+    }
+
+    fn delivery_kind_for_attempt(&self, attempt_id: &str) -> &'static str {
+        if self
+            .activation_route(attempt_id)
+            .is_some_and(|route| route.thread_kind == "delivery")
+        {
+            DELIVERY_KIND_THREAD_DELIVERY
+        } else {
+            DELIVERY_KIND_TURN_REPLY
+        }
     }
 
     async fn principal_for_activation_route(
@@ -7696,6 +8251,21 @@ impl Orchestrator {
         Ok(view)
     }
 
+    pub async fn get_context_projection(
+        &self,
+        context_id: &str,
+        active_session_id: &str,
+    ) -> Result<ContextView, DynError> {
+        self.session_contexts
+            .insert(active_session_id.to_string(), context_id.to_string());
+        let mut view = self
+            .context_engine
+            .build_context_projection(context_id, active_session_id, &HashSet::new())
+            .await?;
+        self.restore_prompt_pressure_measurement(&mut view).await?;
+        Ok(view)
+    }
+
     pub async fn seed_context_from_mind(
         &self,
         source_context_id: &str,
@@ -8051,10 +8621,19 @@ fn approval_request_event(
         ("attempt_id".to_string(), json!(attempt_id)),
         ("tool_call_id".to_string(), json!(job.tool_call_id)),
         ("tool_name".to_string(), json!(job.tool_name)),
+        ("target_id".to_string(), json!(job.target_id)),
         ("action".to_string(), approval.action.clone()),
         ("requested".to_string(), approval.requested.clone()),
         ("justification".to_string(), json!(approval.justification)),
         ("root_turn_id".to_string(), json!(route.root_turn_id)),
+        (
+            "trigger_event_id".to_string(),
+            json!(route.trigger_event_id),
+        ),
+        (
+            "trigger_sequence".to_string(),
+            json!(route.trigger_sequence),
+        ),
         (
             "text".to_string(),
             json!(format!(
@@ -8066,6 +8645,7 @@ fn approval_request_event(
     if let Some(principal_id) = &route.initiating_principal_id {
         payload.insert("principal_id".to_string(), json!(principal_id));
     }
+    stamp_execution_route_facts(&mut payload, &job.target_id, &job.request, None);
     Event::new(
         format!("approval_requested_{}", approval.id),
         "System-ApprovalAuthority".to_string(),
@@ -8118,6 +8698,82 @@ fn approval_denied_tool_output(
     Event::new(
         output_id.to_string(),
         "System-ApprovalAuthority".to_string(),
+        TYPE_TOOL_OUTPUT.to_string(),
+        "chat/tool_output".to_string(),
+        payload,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn physical_execution_preflight_rejected_tool_output(
+    output_id: &str,
+    context_id: &str,
+    session_id: &str,
+    attempt_id: &str,
+    call: &crate::llm::ToolCallRepr,
+    route: &ActivationRoute,
+    action_group_id: Option<&str>,
+    error: &(dyn std::error::Error + Send + Sync),
+) -> Event {
+    let error = error.to_string();
+    let protected_path = error.contains("protected_paths");
+    let rejection_code = if protected_path {
+        "PROTECTED_PATH"
+    } else {
+        "EXECUTION_PREFLIGHT_REJECTED"
+    };
+    let guidance = if protected_path {
+        "该路径受 Runtime protected_paths 保护，不能通过重复 require_escalated 覆盖。请改用不读取受保护路径的方案，或明确告知用户需要修改 Runtime 权限配置。"
+    } else {
+        "请根据预检错误修正工具参数或权限申请；不要原样重复同一次调用。"
+    };
+    let mut payload = serde_json::Map::from_iter([
+        ("context_id".to_string(), json!(context_id)),
+        ("session_id".to_string(), json!(session_id)),
+        ("attempt_id".to_string(), json!(attempt_id)),
+        ("tool_call_id".to_string(), json!(call.id)),
+        ("caused_by".to_string(), json!(call.id)),
+        ("tool_name".to_string(), json!(call.func_name)),
+        ("tool_status".to_string(), json!("rejected")),
+        ("executed".to_string(), json!(false)),
+        ("wake_policy".to_string(), json!("immediate")),
+        ("output_empty".to_string(), json!(false)),
+        ("rejection_code".to_string(), json!(rejection_code)),
+        ("preflight_stage".to_string(), json!("approval_requirement")),
+        ("retryable_unchanged".to_string(), json!(false)),
+        ("error".to_string(), json!(error)),
+        ("guidance".to_string(), json!(guidance)),
+        ("thread_id".to_string(), json!(route.thread_id)),
+        ("activation_id".to_string(), json!(route.activation_id)),
+        ("root_turn_id".to_string(), json!(route.root_turn_id)),
+        (
+            "trigger_event_id".to_string(),
+            json!(route.trigger_event_id),
+        ),
+        (
+            "trigger_sequence".to_string(),
+            json!(route.trigger_sequence),
+        ),
+        (
+            "text".to_string(),
+            json!(format!(
+                "执行拒绝: 工具 '{}' 未开始执行；Runtime 权限预检失败（{}）：{}\n处理建议：{}",
+                call.func_name, rejection_code, error, guidance
+            )),
+        ),
+    ]);
+    if let Some(principal_id) = &route.initiating_principal_id {
+        payload.insert("principal_id".to_string(), json!(principal_id));
+    }
+    if let Some(version) = route.context_snapshot_version {
+        payload.insert("context_snapshot_version".to_string(), json!(version));
+    }
+    if let Some(group_id) = action_group_id {
+        payload.insert("action_group_id".to_string(), json!(group_id));
+    }
+    Event::new(
+        output_id.to_string(),
+        "Runtime-ExecutionPreflight".to_string(),
         TYPE_TOOL_OUTPUT.to_string(),
         "chat/tool_output".to_string(),
         payload,
@@ -8349,6 +9005,7 @@ fn lost_tool_output(metadata: &ToolTaskMetadata, reason: &str) -> Event {
             json!(metadata.tool_call_id.clone()),
         ),
         ("tool_name".to_string(), json!(metadata.tool_name.clone())),
+        ("target_id".to_string(), json!(metadata.target_id.clone())),
         ("tool_status".to_string(), json!("lost")),
         ("wake_policy".to_string(), json!("immediate")),
         ("output_empty".to_string(), json!(false)),
@@ -8372,6 +9029,14 @@ fn lost_tool_output(metadata: &ToolTaskMetadata, reason: &str) -> Event {
     }
     if let Some(group_id) = &metadata.action_group_id {
         payload.insert("action_group_id".to_string(), json!(group_id));
+    }
+    if let Some(job) = &metadata.execution_job {
+        stamp_execution_route_facts(
+            &mut payload,
+            &job.target_id,
+            &job.record.request,
+            job.record.claimed_by.as_deref(),
+        );
     }
     Event::new(
         metadata.output_id.clone(),
@@ -8454,6 +9119,7 @@ fn unstarted_cancelled_tool_output(job: &ExecutionJobRecord, reason: &str) -> Ev
         ("tool_call_id".to_string(), json!(job.tool_call_id)),
         ("caused_by".to_string(), json!(job.tool_call_id)),
         ("tool_name".to_string(), json!(job.tool_name)),
+        ("target_id".to_string(), json!(job.target_id)),
         ("tool_status".to_string(), json!("cancelled")),
         ("executed".to_string(), json!(false)),
         ("wake_policy".to_string(), json!("none")),
@@ -8470,6 +9136,12 @@ fn unstarted_cancelled_tool_output(job: &ExecutionJobRecord, reason: &str) -> Ev
     if let Some(principal_id) = &job.initiating_principal_id {
         payload.insert("principal_id".to_string(), json!(principal_id));
     }
+    stamp_execution_route_facts(
+        &mut payload,
+        &job.target_id,
+        &job.request,
+        job.claimed_by.as_deref(),
+    );
     Event::new(
         format!("output_cancelled_{}", job.id),
         "System-Executor".to_string(),
@@ -8477,6 +9149,42 @@ fn unstarted_cancelled_tool_output(job: &ExecutionJobRecord, reason: &str) -> Ev
         "chat/tool_output".to_string(),
         payload,
     )
+}
+
+/// Copies the immutable physical route selected at Job creation into the
+/// Event projection. The opaque endpoint reference identifies a Node-local
+/// connection profile; credentials are never stored in the Job or Event.
+fn stamp_execution_route_facts(
+    payload: &mut serde_json::Map<String, serde_json::Value>,
+    target_id: &str,
+    request: &serde_json::Value,
+    worker_id: Option<&str>,
+) {
+    payload.insert("target_id".to_string(), json!(target_id));
+    let route = request
+        .get(crate::execution_target::EXECUTION_ROUTE_REQUEST_KEY)
+        .cloned()
+        .and_then(|value| {
+            serde_json::from_value::<crate::execution_target::ExecutionRouteSnapshot>(value).ok()
+        });
+    if let Some(route) = route {
+        payload.insert("route_id".to_string(), json!(route.route_id));
+        payload.insert("target_revision".to_string(), json!(route.target_revision));
+        payload.insert("backend_kind".to_string(), json!(route.backend_kind));
+        payload.insert(
+            "target_policy_digest".to_string(),
+            json!(route.policy_digest),
+        );
+        if let Some(provider_node_id) = route.provider_node_id {
+            payload.insert("provider_node_id".to_string(), json!(provider_node_id));
+        }
+        if let Some(endpoint_ref) = route.endpoint_ref {
+            payload.insert("endpoint_ref".to_string(), json!(endpoint_ref));
+        }
+    }
+    if let Some(worker_id) = worker_id {
+        payload.insert("worker_id".to_string(), json!(worker_id));
+    }
 }
 
 fn extend_exec_output_facts(

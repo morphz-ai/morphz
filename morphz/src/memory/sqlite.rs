@@ -8,24 +8,34 @@ use crate::memory::{
     ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationOutcomeCommit,
     ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
     ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
-    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock, DelegationRecord,
-    DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
-    EventAppend, EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
+    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus,
+    CapabilityLeaseStore, CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
+    DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore,
+    DeliveryStatus, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
+    EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
+    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
     ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionJobTerminal, ExecutionRetrySafety, MessageClaim, MindProjectionCommit,
-    MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewActionGroup,
-    NewActionGroupMember, NewAgent, NewApprovalRequest, NewCognitiveContext, NewDelegation,
-    NewExecutionJob, NewMindProjection, NewObjective, NewPrincipal, NewRuntimeTimer, NewSchedule,
-    NewSession, NewThread, NewThreadActivation, NewThreadSignal, ObjectiveMutation,
-    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PrincipalRecord,
-    QueryFilter, RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallIndexCapability,
-    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
-    RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus, ScheduleStore,
-    SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind,
-    SessionPrincipalBinding, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
-    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore, TimerStore,
+    ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
+    ExecutionRetrySafety, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
+    ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
+    ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
+    ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore, MessageClaim,
+    MindProjectionCommit, MindProjectionRecord, MindProjectionStore, MindSnapshotRecord,
+    NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest, NewCapabilityLease,
+    NewCognitiveContext, NewDelegation, NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge,
+    NewExecutionTargetAuthorization, NewMindProjection, NewNodePairingCode, NewObjective,
+    NewPrincipal, NewRuntimeTimer, NewSchedule, NewSession, NewThread, NewThreadActivation,
+    NewThreadSignal, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, PairExecutionNode, PrincipalRecord, QueryFilter, RecallDocument,
+    RecallDocumentKind, RecallIndexAudit, RecallIndexCapability, RecallProjectionStore,
+    RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation,
+    ScheduleRecord, ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate,
+    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
+    SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -487,6 +497,7 @@ impl SqliteStore {
             status TEXT NOT NULL CHECK(status IN ('open', 'completed', 'failed', 'cancelled')),
             executor_kind TEXT NOT NULL,
             executor_id TEXT,
+            target_id TEXT,
             result_text TEXT,
             result_event_id TEXT,
             delivery_status TEXT NOT NULL DEFAULT 'none' CHECK(delivery_status IN ('none', 'pending', 'deferred', 'delivered')),
@@ -500,6 +511,89 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_threads_session_delivery
             ON threads(session_id, delivery_status, updated_at);
 
+        CREATE TABLE IF NOT EXISTS execution_targets (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            owner_principal_id TEXT,
+            provider_node_id TEXT,
+            kind TEXT NOT NULL CHECK(kind IN (
+                'in_process_local', 'edge_node', 'managed_ssh', 'managed_cloud_worker'
+            )),
+            name TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('online', 'offline', 'disabled')),
+            platform TEXT,
+            workspace_root TEXT,
+            capabilities_json TEXT NOT NULL DEFAULT '[]',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            policy_digest TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_execution_targets_owner_status
+            ON execution_targets(owner_principal_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_execution_targets_provider_status
+            ON execution_targets(provider_node_id, status, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS execution_target_authorizations (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            target_id TEXT NOT NULL,
+            owner_principal_id TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK(scope IN ('agent', 'context', 'thread')),
+            scope_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('active', 'revoked')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            revoked_at TEXT,
+            revoke_reason TEXT,
+            UNIQUE(target_id, owner_principal_id, scope, scope_id),
+            FOREIGN KEY(target_id) REFERENCES execution_targets(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_target_authorizations_lookup
+            ON execution_target_authorizations(target_id, owner_principal_id, status, scope, scope_id);
+
+        CREATE TABLE IF NOT EXISTS execution_nodes (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            owner_principal_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('online', 'offline', 'revoked')),
+            device_key_fingerprint TEXT NOT NULL,
+            device_public_key TEXT NOT NULL DEFAULT '',
+            device_token_hash TEXT NOT NULL,
+            device_token_expires_at TEXT,
+            protocol_version INTEGER NOT NULL,
+            platform TEXT,
+            capabilities_json TEXT NOT NULL DEFAULT '[]',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_seen_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_execution_nodes_owner_status
+            ON execution_nodes(owner_principal_id, status, updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS execution_node_pairing_codes (
+            code_hash TEXT PRIMARY KEY,
+            owner_principal_id TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            consumed_at TEXT,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS execution_node_challenges (
+            id TEXT PRIMARY KEY,
+            node_id TEXT NOT NULL,
+            nonce_hash TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            consumed_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(node_id) REFERENCES execution_nodes(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_execution_node_challenges_node_expiry
+            ON execution_node_challenges(node_id, expires_at);
+
         CREATE TABLE IF NOT EXISTS execution_jobs (
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
@@ -509,6 +603,7 @@ impl SqliteStore {
             context_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
             initiating_principal_id TEXT,
+            target_id TEXT NOT NULL DEFAULT 'target-default',
             tool_call_id TEXT NOT NULL,
             tool_name TEXT NOT NULL,
             request_json TEXT NOT NULL,
@@ -539,7 +634,8 @@ impl SqliteStore {
             UNIQUE(activation_id, tool_call_id),
             FOREIGN KEY(activation_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
             FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE,
-            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+            FOREIGN KEY(target_id) REFERENCES execution_targets(id)
         );
         CREATE INDEX IF NOT EXISTS idx_execution_jobs_queue
             ON execution_jobs(status, created_at, id);
@@ -547,6 +643,8 @@ impl SqliteStore {
             ON execution_jobs(context_id, status, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_execution_jobs_thread_status
             ON execution_jobs(thread_id, status, created_at, id);
+        CREATE INDEX IF NOT EXISTS idx_execution_jobs_target_status
+            ON execution_jobs(target_id, status, created_at, id);
         CREATE INDEX IF NOT EXISTS idx_execution_jobs_lease
             ON execution_jobs(status, lease_expires_at, id);
         CREATE TRIGGER IF NOT EXISTS execution_jobs_terminal_status_is_irreversible
@@ -556,6 +654,57 @@ impl SqliteStore {
         BEGIN
             SELECT RAISE(ABORT, 'execution job terminal status is irreversible');
         END;
+
+        CREATE TABLE IF NOT EXISTS edge_execution_commands (
+            job_id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            target_id TEXT NOT NULL,
+            provider_node_id TEXT NOT NULL,
+            tool_name TEXT NOT NULL,
+            arguments TEXT NOT NULL,
+            route_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'queued', 'claimed', 'succeeded', 'failed',
+                'cancel_requested', 'cancelled', 'lost'
+            )),
+            claimed_by TEXT,
+            claim_token TEXT,
+            lease_expires_at TEXT,
+            heartbeat_at TEXT,
+            side_effect_started_at TEXT,
+            progress TEXT,
+            output TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            finished_at TEXT,
+            FOREIGN KEY(job_id) REFERENCES execution_jobs(id) ON DELETE CASCADE,
+            FOREIGN KEY(target_id) REFERENCES execution_targets(id),
+            FOREIGN KEY(provider_node_id) REFERENCES execution_nodes(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_edge_commands_node_queue
+            ON edge_execution_commands(provider_node_id, status, created_at, job_id);
+        CREATE INDEX IF NOT EXISTS idx_edge_commands_lease
+            ON edge_execution_commands(status, lease_expires_at, job_id);
+        CREATE TRIGGER IF NOT EXISTS edge_commands_terminal_status_is_irreversible
+        BEFORE UPDATE OF status ON edge_execution_commands
+        WHEN OLD.status IN ('succeeded', 'failed', 'cancelled', 'lost')
+             AND NEW.status <> OLD.status
+        BEGIN
+            SELECT RAISE(ABORT, 'edge command terminal status is irreversible');
+        END;
+
+        CREATE TABLE IF NOT EXISTS edge_command_output_chunks (
+            job_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL CHECK(sequence >= 1),
+            stream TEXT NOT NULL CHECK(stream IN ('stdout', 'stderr')),
+            text TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(job_id, sequence),
+            FOREIGN KEY(job_id) REFERENCES edge_execution_commands(job_id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_edge_output_job_sequence
+            ON edge_command_output_chunks(job_id, sequence);
 
         CREATE TABLE IF NOT EXISTS action_groups (
             id TEXT PRIMARY KEY,
@@ -661,6 +810,32 @@ impl SqliteStore {
             SELECT RAISE(ABORT, 'approval terminal status is irreversible');
         END;
 
+        CREATE TABLE IF NOT EXISTS capability_leases (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            principal_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            capabilities_json TEXT NOT NULL,
+            requested_json TEXT NOT NULL,
+            policy_digest TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('active', 'revoked')),
+            issued_by_approval_id TEXT,
+            issued_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            revoked_at TEXT,
+            revoke_reason TEXT,
+            FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE,
+            FOREIGN KEY(target_id) REFERENCES execution_targets(id),
+            FOREIGN KEY(issued_by_approval_id) REFERENCES approval_requests(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_capability_leases_scope
+            ON capability_leases(principal_id, agent_id, thread_id, target_id, status, expires_at);
+        CREATE INDEX IF NOT EXISTS idx_capability_leases_approval
+            ON capability_leases(issued_by_approval_id);
+
         CREATE TABLE IF NOT EXISTS thread_signals (
             id TEXT PRIMARY KEY,
             thread_id TEXT NOT NULL,
@@ -739,11 +914,14 @@ impl SqliteStore {
         "#;
 
         sqlx::query(ddl).execute(&pool).await?;
+        migrate_execution_targets(&pool).await?;
+        migrate_edge_execution(&pool).await?;
         for (table, column) in [
             ("thread_activations", "initiating_principal_id"),
             ("threads", "initiating_principal_id"),
             ("thread_signals", "principal_id"),
             ("execution_jobs", "initiating_principal_id"),
+            ("threads", "target_id"),
         ] {
             let columns = sqlx::query(&format!("PRAGMA table_info({table})"))
                 .fetch_all(&pool)
@@ -930,6 +1108,124 @@ async fn migrate_recall_projection(
     )
     .execute(pool)
     .await?;
+    Ok(())
+}
+
+const EXECUTION_TARGET_MIGRATION: &str = "20260721_01_execution_targets";
+const EDGE_EXECUTION_MIGRATION: &str = "20260721_02_edge_execution";
+
+async fn migrate_execution_targets(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // The default row must exist before old Jobs are backfilled or a fresh
+    // Runtime creates its first Job. Startup later refreshes this placeholder
+    // with the real platform, workspace, capabilities and policy digest.
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    sqlx::query(
+        r#"INSERT OR IGNORE INTO execution_targets
+           (id, revision, kind, name, status, capabilities_json, metadata_json,
+            policy_digest, created_at, updated_at, last_seen_at)
+           VALUES ('target-default', 1, 'in_process_local',
+                   'Default local execution environment', 'online', '[]', '{}',
+                   '', ?, ?, ?)"#,
+    )
+    .bind(&now)
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?;
+
+    let columns = sqlx::query("PRAGMA table_info(execution_jobs)")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<std::collections::HashSet<_>>();
+    if !columns.contains("target_id") {
+        sqlx::query(
+            "ALTER TABLE execution_jobs ADD COLUMN target_id TEXT NOT NULL DEFAULT 'target-default'",
+        )
+        .execute(pool)
+        .await?;
+    }
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_execution_jobs_target_status ON execution_jobs(target_id, status, created_at, id)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+        .bind(EXECUTION_TARGET_MIGRATION)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+async fn migrate_edge_execution(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Development builds may have created an early command projection before
+    // the side-effect boundary became explicit. Additive migration keeps that
+    // database readable without replaying or deleting any command.
+    let columns = sqlx::query("PRAGMA table_info(edge_execution_commands)")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<std::collections::HashSet<_>>();
+    if !columns.contains("side_effect_started_at") {
+        sqlx::query("ALTER TABLE edge_execution_commands ADD COLUMN side_effect_started_at TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if !columns.contains("route_json") {
+        sqlx::query(
+            "ALTER TABLE edge_execution_commands ADD COLUMN route_json TEXT NOT NULL DEFAULT '{}'",
+        )
+        .execute(pool)
+        .await?;
+    }
+    let node_columns = sqlx::query("PRAGMA table_info(execution_nodes)")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<std::collections::HashSet<_>>();
+    if !node_columns.contains("device_public_key") {
+        sqlx::query(
+            "ALTER TABLE execution_nodes ADD COLUMN device_public_key TEXT NOT NULL DEFAULT ''",
+        )
+        .execute(pool)
+        .await?;
+    }
+    if !node_columns.contains("device_token_expires_at") {
+        sqlx::query("ALTER TABLE execution_nodes ADD COLUMN device_token_expires_at TEXT")
+            .execute(pool)
+            .await?;
+    }
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS execution_node_challenges (
+            id TEXT PRIMARY KEY,
+            node_id TEXT NOT NULL,
+            nonce_hash TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            consumed_at TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(node_id) REFERENCES execution_nodes(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_execution_node_challenges_node_expiry ON execution_node_challenges(node_id, expires_at)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+        .bind(EDGE_EXECUTION_MIGRATION)
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -1601,6 +1897,7 @@ fn thread_from_row(
         lifecycle: parse_thread_lifecycle(&row.get::<String, _>("status"))?,
         executor_kind: row.get("executor_kind"),
         executor_id: row.get("executor_id"),
+        target_id: row.get("target_id"),
         result_text: row.get("result_text"),
         result_event_id: row.get("result_event_id"),
         delivery_status: parse_delivery_status(&row.get::<String, _>("delivery_status"))?,
@@ -1737,6 +2034,33 @@ fn parse_execution_job_status(
     }
 }
 
+fn parse_execution_target_kind(
+    value: &str,
+) -> Result<ExecutionTargetKind, Box<dyn std::error::Error + Send + Sync>> {
+    ExecutionTargetKind::parse(value)
+        .ok_or_else(|| format!("未知 Execution Target 类型: {value}").into())
+}
+
+fn parse_execution_target_status(
+    value: &str,
+) -> Result<ExecutionTargetStatus, Box<dyn std::error::Error + Send + Sync>> {
+    ExecutionTargetStatus::parse(value)
+        .ok_or_else(|| format!("未知 Execution Target 状态: {value}").into())
+}
+
+fn parse_execution_node_status(
+    value: &str,
+) -> Result<ExecutionNodeStatus, Box<dyn std::error::Error + Send + Sync>> {
+    ExecutionNodeStatus::parse(value)
+        .ok_or_else(|| format!("未知 Execution Node 状态: {value}").into())
+}
+
+fn parse_edge_command_status(
+    value: &str,
+) -> Result<EdgeCommandStatus, Box<dyn std::error::Error + Send + Sync>> {
+    EdgeCommandStatus::parse(value).ok_or_else(|| format!("未知 Edge Command 状态: {value}").into())
+}
+
 fn parse_execution_retry_safety(
     value: &str,
 ) -> Result<ExecutionRetrySafety, Box<dyn std::error::Error + Send + Sync>> {
@@ -1869,6 +2193,33 @@ fn approval_from_row(
     })
 }
 
+fn capability_lease_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<CapabilityLeaseRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(CapabilityLeaseRecord {
+        id: row.get("id"),
+        revision: sqlite_u64(row, "revision")?,
+        principal_id: row.get("principal_id"),
+        agent_id: row.get("agent_id"),
+        thread_id: row.get("thread_id"),
+        target_id: row.get("target_id"),
+        capabilities: serde_json::from_str(&row.get::<String, _>("capabilities_json"))?,
+        requested: serde_json::from_str(&row.get::<String, _>("requested_json"))?,
+        policy_digest: row.get("policy_digest"),
+        status: CapabilityLeaseStatus::parse(&row.get::<String, _>("status"))
+            .ok_or("未知 Capability Lease status")?,
+        issued_by_approval_id: row.get("issued_by_approval_id"),
+        issued_at: parse_time(&row.get::<String, _>("issued_at")),
+        expires_at: parse_time(&row.get::<String, _>("expires_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+        revoked_at: row
+            .get::<Option<String>, _>("revoked_at")
+            .as_deref()
+            .map(parse_time),
+        revoke_reason: row.get("revoke_reason"),
+    })
+}
+
 fn execution_job_from_row(
     row: &sqlx::sqlite::SqliteRow,
 ) -> Result<ExecutionJobRecord, Box<dyn std::error::Error + Send + Sync>> {
@@ -1881,6 +2232,7 @@ fn execution_job_from_row(
         context_id: row.get("context_id"),
         session_id: row.get("session_id"),
         initiating_principal_id: row.get("initiating_principal_id"),
+        target_id: row.get("target_id"),
         tool_call_id: row.get("tool_call_id"),
         tool_name: row.get("tool_name"),
         request: serde_json::from_str(&row.get::<String, _>("request_json"))?,
@@ -1921,6 +2273,129 @@ fn execution_job_from_row(
             .get::<Option<String>, _>("finished_at")
             .as_deref()
             .map(parse_time),
+    })
+}
+
+fn execution_target_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<ExecutionTargetRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ExecutionTargetRecord {
+        id: row.get("id"),
+        revision: sqlite_u64(row, "revision")?,
+        owner_principal_id: row.get("owner_principal_id"),
+        provider_node_id: row.get("provider_node_id"),
+        kind: parse_execution_target_kind(&row.get::<String, _>("kind"))?,
+        name: row.get("name"),
+        status: parse_execution_target_status(&row.get::<String, _>("status"))?,
+        platform: row.get("platform"),
+        workspace_root: row.get("workspace_root"),
+        capabilities: serde_json::from_str(&row.get::<String, _>("capabilities_json"))?,
+        metadata: serde_json::from_str(&row.get::<String, _>("metadata_json"))?,
+        policy_digest: row.get("policy_digest"),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+        last_seen_at: row
+            .get::<Option<String>, _>("last_seen_at")
+            .as_deref()
+            .map(parse_time),
+    })
+}
+
+fn execution_target_authorization_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<ExecutionTargetAuthorizationRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ExecutionTargetAuthorizationRecord {
+        id: row.get("id"),
+        revision: sqlite_u64(row, "revision")?,
+        target_id: row.get("target_id"),
+        owner_principal_id: row.get("owner_principal_id"),
+        scope: ExecutionTargetAuthorizationScope::parse(&row.get::<String, _>("scope"))
+            .ok_or("未知 Execution Target authorization scope")?,
+        scope_id: row.get("scope_id"),
+        status: ExecutionTargetAuthorizationStatus::parse(&row.get::<String, _>("status"))
+            .ok_or("未知 Execution Target authorization status")?,
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+        revoked_at: row
+            .get::<Option<String>, _>("revoked_at")
+            .as_deref()
+            .map(parse_time),
+        revoke_reason: row.get("revoke_reason"),
+    })
+}
+
+fn execution_node_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<ExecutionNodeRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(ExecutionNodeRecord {
+        id: row.get("id"),
+        revision: sqlite_u64(row, "revision")?,
+        owner_principal_id: row.get("owner_principal_id"),
+        name: row.get("name"),
+        status: parse_execution_node_status(&row.get::<String, _>("status"))?,
+        device_key_fingerprint: row.get("device_key_fingerprint"),
+        device_public_key: row.get("device_public_key"),
+        protocol_version: u32::try_from(row.get::<i64, _>("protocol_version"))?,
+        platform: row.get("platform"),
+        capabilities: serde_json::from_str(&row.get::<String, _>("capabilities_json"))?,
+        metadata: serde_json::from_str(&row.get::<String, _>("metadata_json"))?,
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+        last_seen_at: row
+            .get::<Option<String>, _>("last_seen_at")
+            .as_deref()
+            .map(parse_time),
+    })
+}
+
+fn edge_command_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<EdgeCommandRecord, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(EdgeCommandRecord {
+        job_id: row.get("job_id"),
+        revision: sqlite_u64(row, "revision")?,
+        target_id: row.get("target_id"),
+        provider_node_id: row.get("provider_node_id"),
+        tool_name: row.get("tool_name"),
+        arguments: row.get("arguments"),
+        route: serde_json::from_str(&row.get::<String, _>("route_json"))?,
+        status: parse_edge_command_status(&row.get::<String, _>("status"))?,
+        claimed_by: row.get("claimed_by"),
+        claim_token: row.get("claim_token"),
+        lease_expires_at: row
+            .get::<Option<String>, _>("lease_expires_at")
+            .as_deref()
+            .map(parse_time),
+        heartbeat_at: row
+            .get::<Option<String>, _>("heartbeat_at")
+            .as_deref()
+            .map(parse_time),
+        side_effect_started_at: row
+            .get::<Option<String>, _>("side_effect_started_at")
+            .as_deref()
+            .map(parse_time),
+        progress: row.get("progress"),
+        output: row.get("output"),
+        error: row.get("error"),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
+        updated_at: parse_time(&row.get::<String, _>("updated_at")),
+        finished_at: row
+            .get::<Option<String>, _>("finished_at")
+            .as_deref()
+            .map(parse_time),
+    })
+}
+
+fn edge_output_chunk_from_row(
+    row: &sqlx::sqlite::SqliteRow,
+) -> Result<EdgeCommandOutputChunk, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(EdgeCommandOutputChunk {
+        job_id: row.get("job_id"),
+        sequence: sqlite_u64(row, "sequence")?,
+        stream: EdgeOutputStream::parse(&row.get::<String, _>("stream"))
+            .ok_or("unknown Edge output stream")?,
+        text: row.get("text"),
+        created_at: parse_time(&row.get::<String, _>("created_at")),
     })
 }
 
@@ -4411,9 +4886,9 @@ impl ThreadStore for SqliteStore {
         sqlx::query(
             r#"INSERT OR IGNORE INTO threads
                (id, revision, agent_id, context_id, session_id, initiating_principal_id, root_turn_id,
-                kind, status, executor_kind, executor_id, delivery_status,
+                kind, status, executor_kind, executor_id, target_id, delivery_status,
                 created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, 'none', ?, ?)"#,
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, 'none', ?, ?)"#,
         )
         .bind(&thread.id)
         .bind(&thread.agent_id)
@@ -4424,6 +4899,7 @@ impl ThreadStore for SqliteStore {
         .bind(thread.kind.as_str())
         .bind(&thread.executor_kind)
         .bind(&thread.executor_id)
+        .bind(&thread.target_id)
         .bind(&now)
         .bind(&now)
         .execute(&self.pool)
@@ -4882,6 +5358,40 @@ impl ThreadStore for SqliteStore {
         if result.rows_affected() == 1 {
             return Ok(ThreadMutation::Updated(
                 self.get_thread(id).await?.ok_or("Thread 更新后无法读取")?,
+            ));
+        }
+        Ok(match self.get_thread(id).await? {
+            Some(current) => ThreadMutation::Conflict { current },
+            None => ThreadMutation::NotFound,
+        })
+    }
+
+    async fn bind_thread_target(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        target_id: &str,
+    ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Thread revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE threads
+               SET revision = revision + 1, target_id = ?, updated_at = ?
+               WHERE id = ? AND revision = ? AND (target_id IS NULL OR target_id = ?)"#,
+        )
+        .bind(target_id)
+        .bind(now)
+        .bind(id)
+        .bind(expected_revision)
+        .bind(target_id)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ThreadMutation::Updated(
+                self.get_thread(id)
+                    .await?
+                    .ok_or("Thread Target 绑定后无法读取")?,
             ));
         }
         Ok(match self.get_thread(id).await? {
@@ -6779,6 +7289,1162 @@ impl ActionGroupStore for SqliteStore {
     }
 }
 
+fn validate_execution_target_registration(
+    registration: &ExecutionTargetRegistration,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if registration.id.trim().is_empty() || registration.name.trim().is_empty() {
+        return Err("Execution Target id/name 不能为空".into());
+    }
+    if !registration.metadata.is_object() {
+        return Err("Execution Target metadata 必须是 JSON object".into());
+    }
+    fn contains_secret(value: &JsonValue) -> bool {
+        match value {
+            JsonValue::Object(object) => object.iter().any(|(key, value)| {
+                matches!(
+                    key.to_ascii_lowercase().as_str(),
+                    "token"
+                        | "api_key"
+                        | "apikey"
+                        | "password"
+                        | "private_key"
+                        | "secret"
+                        | "credential"
+                ) || contains_secret(value)
+            }),
+            JsonValue::Array(values) => values.iter().any(contains_secret),
+            _ => false,
+        }
+    }
+    if contains_secret(&registration.metadata) {
+        return Err("Execution Target metadata 禁止包含凭证值".into());
+    }
+    if registration
+        .capabilities
+        .iter()
+        .any(|capability| capability.trim().is_empty())
+    {
+        return Err("Execution Target capability 不能为空".into());
+    }
+    Ok(())
+}
+
+#[async_trait::async_trait]
+impl ExecutionTargetStore for SqliteStore {
+    async fn register_execution_target(
+        &self,
+        mut registration: ExecutionTargetRegistration,
+    ) -> Result<ExecutionTargetRecord, Box<dyn std::error::Error + Send + Sync>> {
+        validate_execution_target_registration(&registration)?;
+        registration.capabilities.sort();
+        registration.capabilities.dedup();
+        let capabilities_json = serde_json::to_string(&registration.capabilities)?;
+        let metadata_json = serde_json::to_string(&registration.metadata)?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let last_seen_at = registration
+            .last_seen_at
+            .map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+
+        let mut tx = self.pool.begin().await?;
+        let inserted = sqlx::query(
+            r#"INSERT OR IGNORE INTO execution_targets
+               (id, revision, owner_principal_id, provider_node_id, kind, name, status,
+                platform, workspace_root, capabilities_json, metadata_json, policy_digest,
+                created_at, updated_at, last_seen_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(&registration.id)
+        .bind(&registration.owner_principal_id)
+        .bind(&registration.provider_node_id)
+        .bind(registration.kind.as_str())
+        .bind(&registration.name)
+        .bind(registration.status.as_str())
+        .bind(&registration.platform)
+        .bind(&registration.workspace_root)
+        .bind(&capabilities_json)
+        .bind(&metadata_json)
+        .bind(&registration.policy_digest)
+        .bind(&now)
+        .bind(&now)
+        .bind(&last_seen_at)
+        .execute(&mut *tx)
+        .await?;
+
+        let row = sqlx::query("SELECT * FROM execution_targets WHERE id = ?")
+            .bind(&registration.id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let current = execution_target_from_row(&row)?;
+        if inserted.rows_affected() == 0 {
+            if current.kind != registration.kind
+                || current.owner_principal_id != registration.owner_principal_id
+            {
+                return Err(format!(
+                    "Execution Target '{}' 已被不同 kind/owner 占用",
+                    registration.id
+                )
+                .into());
+            }
+            // A durable administrative disable cannot be undone by a stale
+            // provider heartbeat. Re-enable requires the CAS control method.
+            if current.status == ExecutionTargetStatus::Disabled
+                && registration.status != ExecutionTargetStatus::Disabled
+            {
+                tx.commit().await?;
+                return Ok(current);
+            }
+            let descriptor_changed = current.provider_node_id != registration.provider_node_id
+                || current.name != registration.name
+                || current.status != registration.status
+                || current.platform != registration.platform
+                || current.workspace_root != registration.workspace_root
+                || current.capabilities != registration.capabilities
+                || current.metadata != registration.metadata
+                || current.policy_digest != registration.policy_digest;
+            if descriptor_changed {
+                sqlx::query(
+                    r#"UPDATE execution_targets
+                       SET revision = revision + 1, provider_node_id = ?, name = ?, status = ?,
+                           platform = ?, workspace_root = ?, capabilities_json = ?,
+                           metadata_json = ?, policy_digest = ?, updated_at = ?, last_seen_at = ?
+                       WHERE id = ? AND revision = ?"#,
+                )
+                .bind(&registration.provider_node_id)
+                .bind(&registration.name)
+                .bind(registration.status.as_str())
+                .bind(&registration.platform)
+                .bind(&registration.workspace_root)
+                .bind(&capabilities_json)
+                .bind(&metadata_json)
+                .bind(&registration.policy_digest)
+                .bind(&now)
+                .bind(&last_seen_at)
+                .bind(&registration.id)
+                .bind(i64::try_from(current.revision)?)
+                .execute(&mut *tx)
+                .await?;
+            } else if last_seen_at.is_some() {
+                sqlx::query("UPDATE execution_targets SET last_seen_at = ? WHERE id = ?")
+                    .bind(&last_seen_at)
+                    .bind(&registration.id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
+        let row = sqlx::query("SELECT * FROM execution_targets WHERE id = ?")
+            .bind(&registration.id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let target = execution_target_from_row(&row)?;
+        tx.commit().await?;
+        Ok(target)
+    }
+
+    async fn get_execution_target(
+        &self,
+        id: &str,
+    ) -> Result<Option<ExecutionTargetRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM execution_targets WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(execution_target_from_row)
+            .transpose()
+    }
+
+    async fn list_execution_targets(
+        &self,
+        filter: ExecutionTargetFilter,
+    ) -> Result<Vec<ExecutionTargetRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if filter.limit == Some(0) {
+            return Ok(Vec::new());
+        }
+        let mut query =
+            QueryBuilder::<sqlx::Sqlite>::new("SELECT * FROM execution_targets WHERE 1=1");
+        if let Some(owner) = filter.owner_principal_id {
+            query.push(" AND owner_principal_id = ").push_bind(owner);
+        }
+        if let Some(provider) = filter.provider_node_id {
+            query.push(" AND provider_node_id = ").push_bind(provider);
+        }
+        if let Some(status) = filter.status {
+            query.push(" AND status = ").push_bind(status.as_str());
+        }
+        query.push(" ORDER BY updated_at DESC, id");
+        if let Some(limit) = filter.limit {
+            query
+                .push(" LIMIT ")
+                .push_bind(i64::try_from(limit).map_err(|_| "Target 查询上限过大")?);
+        }
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(execution_target_from_row).collect()
+    }
+
+    async fn set_execution_target_status(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        status: ExecutionTargetStatus,
+    ) -> Result<ExecutionTargetMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(current) = self.get_execution_target(id).await? else {
+            return Ok(ExecutionTargetMutation::NotFound);
+        };
+        if current.revision != expected_revision {
+            return Ok(ExecutionTargetMutation::Conflict { current });
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let updated = sqlx::query(
+            "UPDATE execution_targets SET revision = revision + 1, status = ?, updated_at = ? WHERE id = ? AND revision = ?",
+        )
+        .bind(status.as_str())
+        .bind(&now)
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .execute(&self.pool)
+        .await?;
+        let current = self
+            .get_execution_target(id)
+            .await?
+            .ok_or("Execution Target 在状态更新后消失")?;
+        if updated.rows_affected() == 1 {
+            Ok(ExecutionTargetMutation::Updated(current))
+        } else {
+            Ok(ExecutionTargetMutation::Conflict { current })
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ExecutionTargetAuthorizationStore for SqliteStore {
+    async fn authorize_execution_target(
+        &self,
+        authorization: NewExecutionTargetAuthorization,
+    ) -> Result<ExecutionTargetAuthorizationMutation, Box<dyn std::error::Error + Send + Sync>>
+    {
+        if authorization.id.trim().is_empty()
+            || authorization.target_id.trim().is_empty()
+            || authorization.owner_principal_id.trim().is_empty()
+            || authorization.scope_id.trim().is_empty()
+        {
+            return Err("Execution Target authorization 字段不能为空".into());
+        }
+        let mut tx = self.pool.begin().await?;
+        let target = sqlx::query("SELECT owner_principal_id FROM execution_targets WHERE id = ?")
+            .bind(&authorization.target_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or("Execution Target 不存在")?;
+        if target
+            .get::<Option<String>, _>("owner_principal_id")
+            .as_deref()
+            != Some(authorization.owner_principal_id.as_str())
+        {
+            return Err("只有 Target 所有者可以创建 scoped authorization".into());
+        }
+        let existing = sqlx::query(
+            r#"SELECT * FROM execution_target_authorizations
+               WHERE target_id = ? AND owner_principal_id = ? AND scope = ? AND scope_id = ?"#,
+        )
+        .bind(&authorization.target_id)
+        .bind(&authorization.owner_principal_id)
+        .bind(authorization.scope.as_str())
+        .bind(&authorization.scope_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        if let Some(row) = existing {
+            let current = execution_target_authorization_from_row(&row)?;
+            if current.status == ExecutionTargetAuthorizationStatus::Active {
+                tx.commit().await?;
+                return Ok(ExecutionTargetAuthorizationMutation::Existing(current));
+            }
+            let updated = sqlx::query(
+                r#"UPDATE execution_target_authorizations
+                   SET revision = revision + 1, status = 'active', updated_at = ?,
+                       revoked_at = NULL, revoke_reason = NULL
+                   WHERE id = ? AND revision = ?"#,
+            )
+            .bind(&now)
+            .bind(&current.id)
+            .bind(i64::try_from(current.revision)?)
+            .execute(&mut *tx)
+            .await?;
+            let row = sqlx::query("SELECT * FROM execution_target_authorizations WHERE id = ?")
+                .bind(&current.id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let latest = execution_target_authorization_from_row(&row)?;
+            tx.commit().await?;
+            return Ok(if updated.rows_affected() == 1 {
+                ExecutionTargetAuthorizationMutation::Updated(latest)
+            } else {
+                ExecutionTargetAuthorizationMutation::Conflict { current: latest }
+            });
+        }
+        sqlx::query(
+            r#"INSERT INTO execution_target_authorizations
+               (id, revision, target_id, owner_principal_id, scope, scope_id, status,
+                created_at, updated_at)
+               VALUES (?, 1, ?, ?, ?, ?, 'active', ?, ?)"#,
+        )
+        .bind(&authorization.id)
+        .bind(&authorization.target_id)
+        .bind(&authorization.owner_principal_id)
+        .bind(authorization.scope.as_str())
+        .bind(&authorization.scope_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query("SELECT * FROM execution_target_authorizations WHERE id = ?")
+            .bind(&authorization.id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let created = execution_target_authorization_from_row(&row)?;
+        tx.commit().await?;
+        Ok(ExecutionTargetAuthorizationMutation::Created(created))
+    }
+
+    async fn get_execution_target_authorization(
+        &self,
+        id: &str,
+    ) -> Result<Option<ExecutionTargetAuthorizationRecord>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        sqlx::query("SELECT * FROM execution_target_authorizations WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(execution_target_authorization_from_row)
+            .transpose()
+    }
+
+    async fn list_execution_target_authorizations(
+        &self,
+        filter: ExecutionTargetAuthorizationFilter,
+    ) -> Result<Vec<ExecutionTargetAuthorizationRecord>, Box<dyn std::error::Error + Send + Sync>>
+    {
+        if filter.limit == Some(0) {
+            return Ok(Vec::new());
+        }
+        let mut query = QueryBuilder::<sqlx::Sqlite>::new(
+            "SELECT * FROM execution_target_authorizations WHERE 1=1",
+        );
+        if let Some(target_id) = filter.target_id {
+            query.push(" AND target_id = ").push_bind(target_id);
+        }
+        if let Some(owner) = filter.owner_principal_id {
+            query.push(" AND owner_principal_id = ").push_bind(owner);
+        }
+        if let Some(scope) = filter.scope {
+            query.push(" AND scope = ").push_bind(scope.as_str());
+        }
+        if let Some(scope_id) = filter.scope_id {
+            query.push(" AND scope_id = ").push_bind(scope_id);
+        }
+        if filter.active_only {
+            query.push(" AND status = 'active'");
+        }
+        query.push(" ORDER BY updated_at DESC, id");
+        if let Some(limit) = filter.limit {
+            query.push(" LIMIT ").push_bind(i64::try_from(limit)?);
+        }
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter()
+            .map(execution_target_authorization_from_row)
+            .collect()
+    }
+
+    async fn revoke_execution_target_authorization(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: &str,
+    ) -> Result<ExecutionTargetAuthorizationMutation, Box<dyn std::error::Error + Send + Sync>>
+    {
+        let Some(current) = self.get_execution_target_authorization(id).await? else {
+            return Ok(ExecutionTargetAuthorizationMutation::NotFound);
+        };
+        if current.status == ExecutionTargetAuthorizationStatus::Revoked {
+            return Ok(ExecutionTargetAuthorizationMutation::Existing(current));
+        }
+        if current.revision != expected_revision {
+            return Ok(ExecutionTargetAuthorizationMutation::Conflict { current });
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let updated = sqlx::query(
+            r#"UPDATE execution_target_authorizations
+               SET revision = revision + 1, status = 'revoked', updated_at = ?,
+                   revoked_at = ?, revoke_reason = ?
+               WHERE id = ? AND revision = ? AND status = 'active'"#,
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(reason)
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .execute(&self.pool)
+        .await?;
+        let current = self
+            .get_execution_target_authorization(id)
+            .await?
+            .ok_or("Execution Target authorization 在撤销后消失")?;
+        Ok(if updated.rows_affected() == 1 {
+            ExecutionTargetAuthorizationMutation::Updated(current)
+        } else {
+            ExecutionTargetAuthorizationMutation::Conflict { current }
+        })
+    }
+
+    async fn has_execution_target_authorization_history(
+        &self,
+        target_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM execution_target_authorizations WHERE target_id = ?",
+        )
+        .bind(target_id)
+        .fetch_one(&self.pool)
+        .await?
+            > 0)
+    }
+}
+
+#[async_trait::async_trait]
+impl EdgeExecutionStore for SqliteStore {
+    async fn create_node_pairing_code(
+        &self,
+        pairing: NewNodePairingCode,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if pairing.code_hash.trim().is_empty() || pairing.owner_principal_id.trim().is_empty() {
+            return Err("Node pairing code hash/owner 不能为空".into());
+        }
+        let now = Utc::now();
+        if pairing.expires_at <= now {
+            return Err("Node pairing code 必须在未来过期".into());
+        }
+        sqlx::query(
+            "INSERT INTO execution_node_pairing_codes (code_hash, owner_principal_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .bind(pairing.code_hash)
+        .bind(pairing.owner_principal_id)
+        .bind(pairing.expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .bind(now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn pair_execution_node(
+        &self,
+        mut request: PairExecutionNode,
+    ) -> Result<ExecutionNodeRecord, Box<dyn std::error::Error + Send + Sync>> {
+        for (field, value) in [
+            ("code_hash", request.code_hash.as_str()),
+            ("node_id", request.node_id.as_str()),
+            ("name", request.name.as_str()),
+            (
+                "device_key_fingerprint",
+                request.device_key_fingerprint.as_str(),
+            ),
+            ("device_public_key", request.device_public_key.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!("Pair Execution Node {field} 不能为空").into());
+            }
+        }
+        if !request.metadata.is_object() {
+            return Err("Execution Node metadata 必须是 JSON object".into());
+        }
+        request.capabilities.sort();
+        request.capabilities.dedup();
+        let capabilities_json = serde_json::to_string(&request.capabilities)?;
+        let metadata_json = serde_json::to_string(&request.metadata)?;
+        let now = Utc::now();
+        let now_text = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        let pairing = sqlx::query(
+            "SELECT owner_principal_id, expires_at, consumed_at FROM execution_node_pairing_codes WHERE code_hash = ?",
+        )
+        .bind(&request.code_hash)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or("Node pairing code 无效")?;
+        if pairing.get::<Option<String>, _>("consumed_at").is_some() {
+            return Err("Node pairing code 已使用".into());
+        }
+        if parse_time(&pairing.get::<String, _>("expires_at")) <= now {
+            return Err("Node pairing code 已过期".into());
+        }
+        let owner_principal_id: String = pairing.get("owner_principal_id");
+        sqlx::query(
+            r#"INSERT INTO execution_nodes
+               (id, revision, owner_principal_id, name, status, device_key_fingerprint,
+                device_public_key, device_token_hash, protocol_version, platform, capabilities_json,
+                metadata_json, created_at, updated_at, last_seen_at)
+               VALUES (?, 1, ?, ?, 'online', ?, ?, '', ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(&request.node_id)
+        .bind(owner_principal_id)
+        .bind(&request.name)
+        .bind(&request.device_key_fingerprint)
+        .bind(&request.device_public_key)
+        .bind(i64::from(request.protocol_version))
+        .bind(&request.platform)
+        .bind(capabilities_json)
+        .bind(metadata_json)
+        .bind(&now_text)
+        .bind(&now_text)
+        .bind(&now_text)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE execution_node_pairing_codes SET consumed_at = ? WHERE code_hash = ? AND consumed_at IS NULL",
+        )
+        .bind(&now_text)
+        .bind(&request.code_hash)
+        .execute(&mut *tx)
+        .await?;
+        let row = sqlx::query("SELECT * FROM execution_nodes WHERE id = ?")
+            .bind(&request.node_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let node = execution_node_from_row(&row)?;
+        tx.commit().await?;
+        Ok(node)
+    }
+
+    async fn create_execution_node_challenge(
+        &self,
+        challenge: NewExecutionNodeChallenge,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if challenge.id.trim().is_empty()
+            || challenge.node_id.trim().is_empty()
+            || challenge.nonce_hash.trim().is_empty()
+            || challenge.expires_at <= Utc::now()
+        {
+            return Err("Execution Node challenge 参数无效".into());
+        }
+        let inserted = sqlx::query(
+            r#"INSERT INTO execution_node_challenges
+               (id, node_id, nonce_hash, expires_at, created_at)
+               SELECT ?, ?, ?, ?, ? WHERE EXISTS (
+                 SELECT 1 FROM execution_nodes WHERE id = ? AND status <> 'revoked'
+               )"#,
+        )
+        .bind(&challenge.id)
+        .bind(&challenge.node_id)
+        .bind(&challenge.nonce_hash)
+        .bind(challenge.expires_at.to_rfc3339())
+        .bind(Utc::now().to_rfc3339())
+        .bind(&challenge.node_id)
+        .execute(&self.pool)
+        .await?;
+        if inserted.rows_affected() != 1 {
+            return Err("Execution Node 不存在或已撤销".into());
+        }
+        Ok(())
+    }
+
+    async fn consume_execution_node_challenge(
+        &self,
+        node_id: &str,
+        challenge_id: &str,
+        nonce_hash: &str,
+    ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339();
+        let mut tx = self.pool.begin().await?;
+        let updated = sqlx::query(
+            r#"UPDATE execution_node_challenges SET consumed_at = ?
+               WHERE id = ? AND node_id = ? AND nonce_hash = ?
+                 AND consumed_at IS NULL AND expires_at > ?"#,
+        )
+        .bind(&now)
+        .bind(challenge_id)
+        .bind(node_id)
+        .bind(nonce_hash)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        let node = if updated.rows_affected() == 1 {
+            sqlx::query("SELECT * FROM execution_nodes WHERE id = ? AND status <> 'revoked'")
+                .bind(node_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .as_ref()
+                .map(execution_node_from_row)
+                .transpose()?
+        } else {
+            None
+        };
+        tx.commit().await?;
+        Ok(node)
+    }
+
+    async fn issue_execution_node_connection_token(
+        &self,
+        node_id: &str,
+        token_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if token_hash.trim().is_empty() || expires_at <= Utc::now() {
+            return Err("Execution Node connection token 参数无效".into());
+        }
+        sqlx::query(
+            r#"UPDATE execution_nodes
+               SET device_token_hash = ?, device_token_expires_at = ?
+               WHERE id = ? AND status <> 'revoked'"#,
+        )
+        .bind(token_hash)
+        .bind(expires_at.to_rfc3339())
+        .bind(node_id)
+        .execute(&self.pool)
+        .await?;
+        self.authenticate_execution_node(node_id, token_hash).await
+    }
+
+    async fn authenticate_execution_node(
+        &self,
+        node_id: &str,
+        device_token_hash: &str,
+    ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query(
+            "SELECT * FROM execution_nodes WHERE id = ? AND device_token_hash = ? AND device_token_expires_at > ? AND status <> 'revoked'",
+        )
+        .bind(node_id)
+        .bind(device_token_hash)
+        .bind(Utc::now().to_rfc3339())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.as_ref().map(execution_node_from_row).transpose()
+    }
+
+    async fn heartbeat_execution_node(
+        &self,
+        node_id: &str,
+        platform: Option<String>,
+        mut capabilities: Vec<String>,
+        metadata: JsonValue,
+    ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if !metadata.is_object() {
+            return Err("Execution Node metadata 必须是 JSON object".into());
+        }
+        capabilities.sort();
+        capabilities.dedup();
+        let Some(current_row) = sqlx::query("SELECT * FROM execution_nodes WHERE id = ?")
+            .bind(node_id)
+            .fetch_optional(&self.pool)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let current = execution_node_from_row(&current_row)?;
+        if current.status == ExecutionNodeStatus::Revoked {
+            return Ok(Some(current));
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let changed = current.status != ExecutionNodeStatus::Online
+            || current.platform != platform
+            || current.capabilities != capabilities
+            || current.metadata != metadata;
+        let revision_delta = if changed { 1_i64 } else { 0_i64 };
+        sqlx::query(
+            r#"UPDATE execution_nodes SET revision = revision + ?, status = 'online',
+               platform = ?, capabilities_json = ?, metadata_json = ?,
+               updated_at = CASE WHEN ? THEN ? ELSE updated_at END, last_seen_at = ?
+               WHERE id = ? AND status <> 'revoked'"#,
+        )
+        .bind(revision_delta)
+        .bind(platform)
+        .bind(serde_json::to_string(&capabilities)?)
+        .bind(serde_json::to_string(&metadata)?)
+        .bind(changed)
+        .bind(&now)
+        .bind(&now)
+        .bind(node_id)
+        .execute(&self.pool)
+        .await?;
+        let row = sqlx::query("SELECT * FROM execution_nodes WHERE id = ?")
+            .bind(node_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        row.as_ref().map(execution_node_from_row).transpose()
+    }
+
+    async fn list_execution_nodes(
+        &self,
+        owner_principal_id: &str,
+    ) -> Result<Vec<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query(
+            "SELECT * FROM execution_nodes WHERE owner_principal_id = ? ORDER BY updated_at DESC, id",
+        )
+        .bind(owner_principal_id)
+        .fetch_all(&self.pool)
+        .await?
+        .iter()
+        .map(execution_node_from_row)
+        .collect()
+    }
+
+    async fn revoke_execution_node(
+        &self,
+        node_id: &str,
+        owner_principal_id: &str,
+        expected_revision: u64,
+    ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"UPDATE execution_nodes SET revision = revision + 1, status = 'revoked', updated_at = ?
+               WHERE id = ? AND owner_principal_id = ? AND revision = ?"#,
+        )
+        .bind(now)
+        .bind(node_id)
+        .bind(owner_principal_id)
+        .bind(i64::try_from(expected_revision)?)
+        .execute(&self.pool)
+        .await?;
+        let row =
+            sqlx::query("SELECT * FROM execution_nodes WHERE id = ? AND owner_principal_id = ?")
+                .bind(node_id)
+                .bind(owner_principal_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        row.as_ref().map(execution_node_from_row).transpose()
+    }
+
+    async fn rotate_execution_node_key(
+        &self,
+        node_id: &str,
+        expected_revision: u64,
+        device_key_fingerprint: &str,
+        device_public_key: &str,
+    ) -> Result<ExecutionNodeMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let row = sqlx::query("SELECT * FROM execution_nodes WHERE id = ?")
+            .bind(node_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else {
+            return Ok(ExecutionNodeMutation::NotFound);
+        };
+        let current = execution_node_from_row(&row)?;
+        if current.revision != expected_revision || current.status == ExecutionNodeStatus::Revoked {
+            return Ok(ExecutionNodeMutation::Conflict { current });
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let updated = sqlx::query(
+            r#"UPDATE execution_nodes SET revision = revision + 1,
+               device_key_fingerprint = ?, device_public_key = ?,
+               device_token_hash = '', device_token_expires_at = NULL, updated_at = ?
+               WHERE id = ? AND revision = ? AND status <> 'revoked'"#,
+        )
+        .bind(device_key_fingerprint)
+        .bind(device_public_key)
+        .bind(now)
+        .bind(node_id)
+        .bind(i64::try_from(expected_revision)?)
+        .execute(&self.pool)
+        .await?;
+        let row = sqlx::query("SELECT * FROM execution_nodes WHERE id = ?")
+            .bind(node_id)
+            .fetch_one(&self.pool)
+            .await?;
+        let current = execution_node_from_row(&row)?;
+        if updated.rows_affected() == 1 {
+            Ok(ExecutionNodeMutation::Updated(current))
+        } else {
+            Ok(ExecutionNodeMutation::Conflict { current })
+        }
+    }
+
+    async fn create_edge_command(
+        &self,
+        command: NewEdgeCommand,
+    ) -> Result<EdgeCommandRecord, Box<dyn std::error::Error + Send + Sync>> {
+        for (field, value) in [
+            ("job_id", command.job_id.as_str()),
+            ("target_id", command.target_id.as_str()),
+            ("provider_node_id", command.provider_node_id.as_str()),
+            ("tool_name", command.tool_name.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!("Edge Command {field} 不能为空").into());
+            }
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT OR IGNORE INTO edge_execution_commands
+               (job_id, revision, target_id, provider_node_id, tool_name, arguments, route_json,
+                status, created_at, updated_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
+        )
+        .bind(&command.job_id)
+        .bind(&command.target_id)
+        .bind(&command.provider_node_id)
+        .bind(&command.tool_name)
+        .bind(&command.arguments)
+        .bind(serde_json::to_string(&command.route)?)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        let row = sqlx::query("SELECT * FROM edge_execution_commands WHERE job_id = ?")
+            .bind(&command.job_id)
+            .fetch_one(&self.pool)
+            .await?;
+        let current = edge_command_from_row(&row)?;
+        if current.target_id != command.target_id
+            || current.provider_node_id != command.provider_node_id
+            || current.tool_name != command.tool_name
+            || current.arguments != command.arguments
+            || current.route != command.route
+        {
+            return Err(format!(
+                "Edge Command '{}' 的确定性身份被不同请求复用",
+                command.job_id
+            )
+            .into());
+        }
+        Ok(current)
+    }
+
+    async fn get_edge_command(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<EdgeCommandRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM edge_execution_commands WHERE job_id = ?")
+            .bind(job_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(edge_command_from_row)
+            .transpose()
+    }
+
+    async fn claim_edge_command(
+        &self,
+        provider_node_id: &str,
+        worker_id: &str,
+        claim_token: &str,
+        lease_expires_at: DateTime<Utc>,
+        max_in_flight: usize,
+    ) -> Result<Option<EdgeCommandRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if max_in_flight == 0 {
+            return Err("Edge Node max_in_flight 必须大于 0".into());
+        }
+        let now = Utc::now();
+        let now_text = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let lease_text = lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            r#"UPDATE edge_execution_commands
+               SET revision = revision + 1,
+                   status = CASE WHEN side_effect_started_at IS NULL THEN 'queued' ELSE 'lost' END,
+                   claimed_by = CASE WHEN side_effect_started_at IS NULL THEN NULL ELSE claimed_by END,
+                   claim_token = CASE WHEN side_effect_started_at IS NULL THEN NULL ELSE claim_token END,
+                   lease_expires_at = CASE WHEN side_effect_started_at IS NULL THEN NULL ELSE lease_expires_at END,
+                   finished_at = CASE WHEN side_effect_started_at IS NULL THEN NULL ELSE ? END,
+                   error = CASE WHEN side_effect_started_at IS NULL THEN error ELSE 'Edge Worker lease expired after side-effect boundary' END,
+                   updated_at = ?
+               WHERE provider_node_id = ? AND status = 'claimed' AND lease_expires_at <= ?"#,
+        )
+        .bind(&now_text)
+        .bind(&now_text)
+        .bind(provider_node_id)
+        .bind(&now_text)
+        .execute(&mut *tx)
+        .await?;
+        let active = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM edge_execution_commands WHERE provider_node_id = ? AND status IN ('claimed', 'cancel_requested')",
+        )
+        .bind(provider_node_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if usize::try_from(active)? >= max_in_flight {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let candidate = sqlx::query(
+            r#"SELECT job_id, revision FROM edge_execution_commands
+               WHERE provider_node_id = ? AND status = 'queued'
+               ORDER BY created_at, job_id LIMIT 1"#,
+        )
+        .bind(provider_node_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(candidate) = candidate else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let job_id: String = candidate.get("job_id");
+        let revision: i64 = candidate.get("revision");
+        let updated = sqlx::query(
+            r#"UPDATE edge_execution_commands SET revision = revision + 1, status = 'claimed',
+               claimed_by = ?, claim_token = ?, lease_expires_at = ?, heartbeat_at = ?, updated_at = ?
+               WHERE job_id = ? AND revision = ? AND status = 'queued'"#,
+        )
+        .bind(worker_id)
+        .bind(claim_token)
+        .bind(lease_text)
+        .bind(&now_text)
+        .bind(&now_text)
+        .bind(&job_id)
+        .bind(revision)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() == 0 {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let row = sqlx::query("SELECT * FROM edge_execution_commands WHERE job_id = ?")
+            .bind(job_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let command = edge_command_from_row(&row)?;
+        tx.commit().await?;
+        Ok(Some(command))
+    }
+
+    async fn heartbeat_edge_command(
+        &self,
+        job_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        lease_expires_at: DateTime<Utc>,
+        side_effect_started: bool,
+        progress: Option<String>,
+    ) -> Result<EdgeCommandMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let Some(current) = self.get_edge_command(job_id).await? else {
+            return Ok(EdgeCommandMutation::NotFound);
+        };
+        if current.revision != expected_revision
+            || current.claim_token.as_deref() != Some(claim_token)
+            || current.status != EdgeCommandStatus::Claimed
+        {
+            return Ok(EdgeCommandMutation::Conflict { current });
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let updated = sqlx::query(
+            r#"UPDATE edge_execution_commands SET revision = revision + 1,
+               lease_expires_at = ?, heartbeat_at = ?,
+               side_effect_started_at = CASE WHEN ? THEN COALESCE(side_effect_started_at, ?) ELSE side_effect_started_at END,
+               progress = COALESCE(?, progress), updated_at = ?
+               WHERE job_id = ? AND revision = ? AND status = 'claimed' AND claim_token = ?"#,
+        )
+        .bind(lease_expires_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .bind(&now)
+        .bind(side_effect_started)
+        .bind(&now)
+        .bind(progress)
+        .bind(&now)
+        .bind(job_id)
+        .bind(i64::try_from(expected_revision)?)
+        .bind(claim_token)
+        .execute(&self.pool)
+        .await?;
+        let current = self
+            .get_edge_command(job_id)
+            .await?
+            .ok_or("Edge Command 在 heartbeat 后消失")?;
+        if updated.rows_affected() == 1 {
+            Ok(EdgeCommandMutation::Updated(current))
+        } else {
+            Ok(EdgeCommandMutation::Conflict { current })
+        }
+    }
+
+    async fn append_edge_command_output(
+        &self,
+        job_id: &str,
+        claim_token: &str,
+        stream: EdgeOutputStream,
+        text: &str,
+    ) -> Result<EdgeCommandOutputChunk, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let row = sqlx::query(
+            r#"INSERT INTO edge_command_output_chunks
+               (job_id, sequence, stream, text, created_at)
+               SELECT ?, COALESCE((SELECT MAX(sequence) FROM edge_command_output_chunks WHERE job_id = ?), 0) + 1,
+                      ?, ?, ?
+               WHERE EXISTS (
+                   SELECT 1 FROM edge_execution_commands
+                   WHERE job_id = ? AND status = 'claimed' AND claim_token = ?
+               )
+               RETURNING *"#,
+        )
+        .bind(job_id)
+        .bind(job_id)
+        .bind(stream.as_str())
+        .bind(text)
+        .bind(now)
+        .bind(job_id)
+        .bind(claim_token)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(row) => edge_output_chunk_from_row(&row),
+            None => Err(format!(
+                "Edge Command '{}' 不存在、未处于 claimed，或 claim token 已失效",
+                job_id
+            )
+            .into()),
+        }
+    }
+
+    async fn list_edge_command_output(
+        &self,
+        job_id: &str,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<EdgeCommandOutputChunk>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT * FROM edge_command_output_chunks
+               WHERE job_id = ? AND sequence > ?
+               ORDER BY sequence ASC LIMIT ?"#,
+        )
+        .bind(job_id)
+        .bind(i64::try_from(after_sequence)?)
+        .bind(i64::try_from(limit.clamp(1, 1_000))?)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(edge_output_chunk_from_row).collect()
+    }
+
+    async fn finish_edge_command(
+        &self,
+        job_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        status: EdgeCommandStatus,
+        output: Option<String>,
+        error: Option<String>,
+    ) -> Result<EdgeCommandMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if !status.is_terminal() {
+            return Err("finish Edge Command 只接受终态".into());
+        }
+        let Some(current) = self.get_edge_command(job_id).await? else {
+            return Ok(EdgeCommandMutation::NotFound);
+        };
+        if current.revision != expected_revision
+            || current.claim_token.as_deref() != Some(claim_token)
+            || !matches!(
+                current.status,
+                EdgeCommandStatus::Claimed | EdgeCommandStatus::CancelRequested
+            )
+        {
+            return Ok(EdgeCommandMutation::Conflict { current });
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let updated = sqlx::query(
+            r#"UPDATE edge_execution_commands SET revision = revision + 1, status = ?, output = ?,
+               error = ?, updated_at = ?, finished_at = ?
+               WHERE job_id = ? AND revision = ? AND claim_token = ?
+                 AND status IN ('claimed', 'cancel_requested')"#,
+        )
+        .bind(status.as_str())
+        .bind(output)
+        .bind(error)
+        .bind(&now)
+        .bind(&now)
+        .bind(job_id)
+        .bind(i64::try_from(expected_revision)?)
+        .bind(claim_token)
+        .execute(&self.pool)
+        .await?;
+        let current = self
+            .get_edge_command(job_id)
+            .await?
+            .ok_or("Edge Command 在终态提交后消失")?;
+        if updated.rows_affected() == 1 {
+            Ok(EdgeCommandMutation::Updated(current))
+        } else {
+            Ok(EdgeCommandMutation::Conflict { current })
+        }
+    }
+
+    async fn request_edge_command_cancel(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<EdgeCommandRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"UPDATE edge_execution_commands SET revision = revision + 1,
+               status = CASE WHEN status = 'queued' THEN 'cancelled' ELSE 'cancel_requested' END,
+               finished_at = CASE WHEN status = 'queued' THEN ? ELSE finished_at END,
+               updated_at = ? WHERE job_id = ? AND status IN ('queued', 'claimed')"#,
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(job_id)
+        .execute(&self.pool)
+        .await?;
+        self.get_edge_command(job_id).await
+    }
+
+    async fn reconcile_edge_execution(
+        &self,
+        now: DateTime<Utc>,
+        node_stale_before: DateTime<Utc>,
+    ) -> Result<EdgeReconciliationReport, Box<dyn std::error::Error + Send + Sync>> {
+        let now = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let stale_before = node_stale_before.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        let nodes = sqlx::query(
+            r#"UPDATE execution_nodes SET revision = revision + 1, status = 'offline', updated_at = ?
+               WHERE status = 'online' AND (last_seen_at IS NULL OR last_seen_at < ?)"#,
+        )
+        .bind(&now)
+        .bind(&stale_before)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let targets = sqlx::query(
+            r#"UPDATE execution_targets SET revision = revision + 1, status = 'offline', updated_at = ?
+               WHERE status = 'online' AND provider_node_id IN (
+                   SELECT id FROM execution_nodes WHERE status IN ('offline', 'revoked')
+               )"#,
+        )
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let requeued = sqlx::query(
+            r#"UPDATE edge_execution_commands SET revision = revision + 1, status = 'queued',
+               claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL,
+               heartbeat_at = NULL, updated_at = ?
+               WHERE status = 'claimed' AND lease_expires_at <= ?
+                 AND side_effect_started_at IS NULL"#,
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let lost = sqlx::query(
+            r#"UPDATE edge_execution_commands SET revision = revision + 1, status = 'lost',
+               error = 'Edge Worker lease expired after side-effect boundary or cancellation request',
+               finished_at = ?, updated_at = ?
+               WHERE lease_expires_at <= ? AND (
+                   (status = 'claimed' AND side_effect_started_at IS NOT NULL)
+                   OR status = 'cancel_requested'
+               )"#,
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        tx.commit().await?;
+        Ok(EdgeReconciliationReport {
+            nodes_marked_offline: nodes,
+            targets_marked_offline: targets,
+            commands_requeued: requeued,
+            commands_marked_lost: lost,
+        })
+    }
+}
+
 fn validate_new_execution_job(
     job: &NewExecutionJob,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -6789,6 +8455,7 @@ fn validate_new_execution_job(
         ("agent_id", job.agent_id.as_str()),
         ("context_id", job.context_id.as_str()),
         ("session_id", job.session_id.as_str()),
+        ("target_id", job.target_id.as_str()),
         ("tool_call_id", job.tool_call_id.as_str()),
         ("tool_name", job.tool_name.as_str()),
     ] {
@@ -6869,13 +8536,24 @@ async fn ensure_execution_job_in_transaction(
         return Err("Execution Job 的 Agent/Context/Session/Root Turn 因果边界不一致".into());
     }
 
+    let target = sqlx::query("SELECT status FROM execution_targets WHERE id = ?")
+        .bind(&job.target_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or("Execution Job 引用的 Execution Target 不存在")?;
+    if parse_execution_target_status(&target.get::<String, _>("status"))?
+        == ExecutionTargetStatus::Disabled
+    {
+        return Err("Execution Job 引用的 Execution Target 已禁用".into());
+    }
+
     let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
     let inserted = sqlx::query(
         r#"INSERT OR IGNORE INTO execution_jobs
            (id, revision, activation_id, thread_id, agent_id, context_id,
-            session_id, initiating_principal_id, tool_call_id, tool_name, request_json, status,
+            session_id, initiating_principal_id, target_id, tool_call_id, tool_name, request_json, status,
             retry_safety, result_refs_json, created_at, updated_at)
-           VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)"#,
+           VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)"#,
     )
     .bind(&job.id)
     .bind(&job.activation_id)
@@ -6884,6 +8562,7 @@ async fn ensure_execution_job_in_transaction(
     .bind(&job.context_id)
     .bind(&job.session_id)
     .bind(&job.initiating_principal_id)
+    .bind(&job.target_id)
     .bind(&job.tool_call_id)
     .bind(&job.tool_name)
     .bind(&request_json)
@@ -6910,6 +8589,7 @@ async fn ensure_execution_job_in_transaction(
         || existing.agent_id != job.agent_id
         || existing.context_id != job.context_id
         || existing.session_id != job.session_id
+        || existing.target_id != job.target_id
         || existing.tool_name != job.tool_name
         || existing.request != job.request
         || pending_status_conflict
@@ -6968,6 +8648,9 @@ impl ExecutionJobStore for SqliteStore {
         }
         if let Some(activation_id) = filter.activation_id {
             query.push(" AND activation_id = ").push_bind(activation_id);
+        }
+        if let Some(target_id) = filter.target_id {
+            query.push(" AND target_id = ").push_bind(target_id);
         }
         if let Some(status) = filter.status {
             query.push(" AND status = ").push_bind(status.as_str());
@@ -8027,6 +9710,182 @@ impl ApprovalStore for SqliteStore {
     }
 }
 
+#[async_trait::async_trait]
+impl CapabilityLeaseStore for SqliteStore {
+    async fn ensure_capability_lease(
+        &self,
+        lease: NewCapabilityLease,
+    ) -> Result<CapabilityLeaseMutation, Box<dyn std::error::Error + Send + Sync>> {
+        for (field, value) in [
+            ("id", lease.id.as_str()),
+            ("principal_id", lease.principal_id.as_str()),
+            ("agent_id", lease.agent_id.as_str()),
+            ("thread_id", lease.thread_id.as_str()),
+            ("target_id", lease.target_id.as_str()),
+            ("policy_digest", lease.policy_digest.as_str()),
+        ] {
+            if value.trim().is_empty() {
+                return Err(format!("Capability Lease {field} 不能为空").into());
+            }
+        }
+        if lease.capabilities.is_empty()
+            || lease
+                .capabilities
+                .iter()
+                .any(|value| value.trim().is_empty())
+        {
+            return Err("Capability Lease 至少需要一个非空 capability".into());
+        }
+        let now = Utc::now();
+        if lease.expires_at <= now {
+            return Err("Capability Lease expires_at 必须晚于当前时间".into());
+        }
+        let capabilities_json = serde_json::to_string(&lease.capabilities)?;
+        let requested_json = serde_json::to_string(&lease.requested)?;
+        let now = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let inserted = sqlx::query(
+            r#"INSERT OR IGNORE INTO capability_leases
+               (id, revision, principal_id, agent_id, thread_id, target_id,
+                capabilities_json, requested_json, policy_digest, status,
+                issued_by_approval_id, issued_at, expires_at, updated_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)"#,
+        )
+        .bind(&lease.id)
+        .bind(&lease.principal_id)
+        .bind(&lease.agent_id)
+        .bind(&lease.thread_id)
+        .bind(&lease.target_id)
+        .bind(&capabilities_json)
+        .bind(&requested_json)
+        .bind(&lease.policy_digest)
+        .bind(&lease.issued_by_approval_id)
+        .bind(&now)
+        .bind(
+            lease
+                .expires_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        )
+        .bind(&now)
+        .execute(&self.pool)
+        .await?;
+        let current = self
+            .get_capability_lease(&lease.id)
+            .await?
+            .ok_or("Capability Lease insert 后不可见")?;
+        let exact = current.principal_id == lease.principal_id
+            && current.agent_id == lease.agent_id
+            && current.thread_id == lease.thread_id
+            && current.target_id == lease.target_id
+            && current.capabilities == lease.capabilities
+            && current.requested == lease.requested
+            && current.policy_digest == lease.policy_digest
+            && current.issued_by_approval_id == lease.issued_by_approval_id
+            && current.expires_at == lease.expires_at;
+        if !exact {
+            return Ok(CapabilityLeaseMutation::Conflict { current });
+        }
+        if inserted.rows_affected() == 1 {
+            Ok(CapabilityLeaseMutation::Created(current))
+        } else {
+            Ok(CapabilityLeaseMutation::Existing(current))
+        }
+    }
+
+    async fn get_capability_lease(
+        &self,
+        id: &str,
+    ) -> Result<Option<CapabilityLeaseRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        sqlx::query("SELECT * FROM capability_leases WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?
+            .as_ref()
+            .map(capability_lease_from_row)
+            .transpose()
+    }
+
+    async fn list_capability_leases(
+        &self,
+        filter: CapabilityLeaseFilter,
+    ) -> Result<Vec<CapabilityLeaseRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if filter.limit == Some(0) {
+            return Ok(Vec::new());
+        }
+        let mut query =
+            QueryBuilder::<sqlx::Sqlite>::new("SELECT * FROM capability_leases WHERE 1=1");
+        if let Some(value) = filter.principal_id {
+            query.push(" AND principal_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.agent_id {
+            query.push(" AND agent_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.thread_id {
+            query.push(" AND thread_id = ").push_bind(value);
+        }
+        if let Some(value) = filter.target_id {
+            query.push(" AND target_id = ").push_bind(value);
+        }
+        if let Some(active_at) = filter.active_at {
+            query
+                .push(" AND status = 'active' AND expires_at > ")
+                .push_bind(active_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
+        }
+        query.push(" ORDER BY issued_at DESC, id");
+        if let Some(limit) = filter.limit {
+            query.push(" LIMIT ").push_bind(i64::try_from(limit)?);
+        }
+        let rows = query.build().fetch_all(&self.pool).await?;
+        rows.iter().map(capability_lease_from_row).collect()
+    }
+
+    async fn revoke_capability_lease(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: &str,
+    ) -> Result<CapabilityLeaseMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err("Capability Lease revoke reason 不能为空".into());
+        }
+        let Some(current) = self.get_capability_lease(id).await? else {
+            return Ok(CapabilityLeaseMutation::NotFound);
+        };
+        if current.status == CapabilityLeaseStatus::Revoked
+            && current.revoke_reason.as_deref() == Some(reason)
+        {
+            return Ok(CapabilityLeaseMutation::Existing(current));
+        }
+        if current.revision != expected_revision || current.status != CapabilityLeaseStatus::Active
+        {
+            return Ok(CapabilityLeaseMutation::Conflict { current });
+        }
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE capability_leases
+               SET revision = revision + 1, status = 'revoked', revoke_reason = ?,
+                   revoked_at = ?, updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'active'"#,
+        )
+        .bind(reason)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .execute(&self.pool)
+        .await?;
+        let updated = self
+            .get_capability_lease(id)
+            .await?
+            .ok_or("Capability Lease revoke 后不可见")?;
+        if result.rows_affected() == 1 {
+            Ok(CapabilityLeaseMutation::Updated(updated))
+        } else {
+            Ok(CapabilityLeaseMutation::Conflict { current: updated })
+        }
+    }
+}
+
 fn approval_event_payload_str<'a>(
     event: &'a Event,
     key: &str,
@@ -8454,6 +10313,11 @@ impl EventStore for SqliteStore {
         if let Some(after_sequence) = filter.after_sequence {
             builder.push(" AND rowid > ");
             builder.push_bind(i64::try_from(after_sequence).unwrap_or(i64::MAX));
+        }
+
+        if let Some(before_sequence) = filter.before_sequence {
+            builder.push(" AND rowid < ");
+            builder.push_bind(i64::try_from(before_sequence).unwrap_or(i64::MAX));
         }
 
         if let Some(st) = filter.start_time {
@@ -9002,6 +10866,7 @@ mod tests {
                 kind: ThreadKind::DialogueTurn,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap();
@@ -9049,6 +10914,7 @@ mod tests {
                 kind: ThreadKind::DialogueTurn,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap_err();
@@ -9225,6 +11091,7 @@ mod tests {
                     kind: ThreadKind::Execution,
                     executor_kind: "self".to_string(),
                     executor_id: None,
+                    target_id: None,
                 })
                 .await
                 .unwrap();
@@ -9283,6 +11150,7 @@ mod tests {
                         kind: ThreadKind::Execution,
                         executor_kind: "self".to_string(),
                         executor_id: None,
+                        target_id: None,
                     })
                     .await
                     .unwrap(),
@@ -9746,6 +11614,7 @@ mod tests {
                 kind: ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap();
@@ -9772,6 +11641,7 @@ mod tests {
             context_id,
             session_id,
             initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
             tool_call_id: format!("call-{suffix}"),
             tool_name: "exec".to_string(),
             request: serde_json::json!({"command": "printf ok"}),
@@ -10935,6 +12805,7 @@ mod tests {
                 context_id: created.context_id.clone(),
                 session_id: created.session_id.clone(),
                 initiating_principal_id: None,
+                target_id: created.target_id.clone(),
                 tool_call_id: created.tool_call_id.clone(),
                 tool_name: created.tool_name.clone(),
                 request: created.request.clone(),
@@ -10953,6 +12824,7 @@ mod tests {
                 context_id: created.context_id.clone(),
                 session_id: created.session_id.clone(),
                 initiating_principal_id: None,
+                target_id: created.target_id.clone(),
                 tool_call_id: created.tool_call_id.clone(),
                 tool_name: "read".to_string(),
                 request: serde_json::json!({"path": "other"}),
@@ -11015,6 +12887,7 @@ mod tests {
                 context_id: created.context_id.clone(),
                 session_id: created.session_id.clone(),
                 initiating_principal_id: None,
+                target_id: created.target_id.clone(),
                 tool_call_id: created.tool_call_id.clone(),
                 tool_name: created.tool_name.clone(),
                 request: created.request.clone(),
@@ -12285,6 +14158,7 @@ mod tests {
                 kind: ThreadKind::DialogueTurn,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap();
@@ -12503,6 +14377,7 @@ mod tests {
                     kind: ThreadKind::Execution,
                     executor_kind: "self".to_string(),
                     executor_id: None,
+                    target_id: None,
                 })
                 .await
                 .unwrap();
@@ -12771,6 +14646,7 @@ mod tests {
                 kind: ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap();

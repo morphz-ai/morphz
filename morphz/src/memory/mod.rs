@@ -682,6 +682,612 @@ pub struct NewRuntimeTimer {
     pub payload: serde_json::Value,
 }
 
+/// Stable logical destination for physical tools. A Target is not a Worker or
+/// a live network connection: it survives process replacement and may be
+/// provided by an in-process executor, an Edge Node or a managed route.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionTargetKind {
+    InProcessLocal,
+    EdgeNode,
+    ManagedSsh,
+    ManagedCloudWorker,
+}
+
+impl ExecutionTargetKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InProcessLocal => "in_process_local",
+            Self::EdgeNode => "edge_node",
+            Self::ManagedSsh => "managed_ssh",
+            Self::ManagedCloudWorker => "managed_cloud_worker",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "in_process_local" => Some(Self::InProcessLocal),
+            "edge_node" => Some(Self::EdgeNode),
+            "managed_ssh" => Some(Self::ManagedSsh),
+            "managed_cloud_worker" => Some(Self::ManagedCloudWorker),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionTargetStatus {
+    Online,
+    Offline,
+    Disabled,
+}
+
+impl ExecutionTargetStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Online => "online",
+            Self::Offline => "offline",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    pub fn accepts_jobs(self) -> bool {
+        self == Self::Online
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "online" => Some(Self::Online),
+            "offline" => Some(Self::Offline),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExecutionTargetRecord {
+    pub id: String,
+    pub revision: u64,
+    pub owner_principal_id: Option<String>,
+    pub provider_node_id: Option<String>,
+    pub kind: ExecutionTargetKind,
+    pub name: String,
+    pub status: ExecutionTargetStatus,
+    pub platform: Option<String>,
+    pub workspace_root: Option<String>,
+    pub capabilities: Vec<String>,
+    pub metadata: serde_json::Value,
+    pub policy_digest: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub last_seen_at: Option<DateTime<Utc>>,
+}
+
+/// Registration/heartbeat projection supplied by the authoritative Target
+/// provider. Credential material is forbidden from `metadata`; only opaque
+/// local references may be published by future remote backends.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExecutionTargetRegistration {
+    pub id: String,
+    pub owner_principal_id: Option<String>,
+    pub provider_node_id: Option<String>,
+    pub kind: ExecutionTargetKind,
+    pub name: String,
+    pub status: ExecutionTargetStatus,
+    pub platform: Option<String>,
+    pub workspace_root: Option<String>,
+    pub capabilities: Vec<String>,
+    pub metadata: serde_json::Value,
+    pub policy_digest: String,
+    pub last_seen_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExecutionTargetFilter {
+    pub owner_principal_id: Option<String>,
+    pub provider_node_id: Option<String>,
+    pub status: Option<ExecutionTargetStatus>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ExecutionTargetMutation {
+    Updated(ExecutionTargetRecord),
+    Conflict { current: ExecutionTargetRecord },
+    NotFound,
+}
+
+/// Optional narrowing layer below Principal ownership. A Target without any
+/// authorization history remains available to its owner. Once the first
+/// scoped authorization is created, only matching active scopes may use it;
+/// revoking the last authorization therefore closes the Target instead of
+/// accidentally restoring owner-wide access.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionTargetAuthorizationScope {
+    Agent,
+    Context,
+    Thread,
+}
+
+impl ExecutionTargetAuthorizationScope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Context => "context",
+            Self::Thread => "thread",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "agent" => Some(Self::Agent),
+            "context" => Some(Self::Context),
+            "thread" => Some(Self::Thread),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionTargetAuthorizationStatus {
+    Active,
+    Revoked,
+}
+
+impl ExecutionTargetAuthorizationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Revoked => "revoked",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "revoked" => Some(Self::Revoked),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExecutionTargetAuthorizationRecord {
+    pub id: String,
+    pub revision: u64,
+    pub target_id: String,
+    pub owner_principal_id: String,
+    pub scope: ExecutionTargetAuthorizationScope,
+    pub scope_id: String,
+    pub status: ExecutionTargetAuthorizationStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub revoke_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewExecutionTargetAuthorization {
+    pub id: String,
+    pub target_id: String,
+    pub owner_principal_id: String,
+    pub scope: ExecutionTargetAuthorizationScope,
+    pub scope_id: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExecutionTargetAuthorizationFilter {
+    pub target_id: Option<String>,
+    pub owner_principal_id: Option<String>,
+    pub scope: Option<ExecutionTargetAuthorizationScope>,
+    pub scope_id: Option<String>,
+    pub active_only: bool,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ExecutionTargetAuthorizationMutation {
+    Created(ExecutionTargetAuthorizationRecord),
+    Existing(ExecutionTargetAuthorizationRecord),
+    Updated(ExecutionTargetAuthorizationRecord),
+    Conflict {
+        current: ExecutionTargetAuthorizationRecord,
+    },
+    NotFound,
+}
+
+/// Durable registry for stable physical destinations. Registration is an
+/// idempotent descriptor/heartbeat projection; it never carries credentials.
+#[async_trait::async_trait]
+pub trait ExecutionTargetStore: Send + Sync {
+    async fn register_execution_target(
+        &self,
+        registration: ExecutionTargetRegistration,
+    ) -> Result<ExecutionTargetRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_execution_target(
+        &self,
+        id: &str,
+    ) -> Result<Option<ExecutionTargetRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_execution_targets(
+        &self,
+        filter: ExecutionTargetFilter,
+    ) -> Result<Vec<ExecutionTargetRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Revision-fenced administrative state transition. Heartbeats use
+    /// registration; disabling a target must not be undone by a stale Node.
+    async fn set_execution_target_status(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        status: ExecutionTargetStatus,
+    ) -> Result<ExecutionTargetMutation, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+#[async_trait::async_trait]
+pub trait ExecutionTargetAuthorizationStore: Send + Sync {
+    async fn authorize_execution_target(
+        &self,
+        authorization: NewExecutionTargetAuthorization,
+    ) -> Result<ExecutionTargetAuthorizationMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_execution_target_authorization(
+        &self,
+        id: &str,
+    ) -> Result<Option<ExecutionTargetAuthorizationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_execution_target_authorizations(
+        &self,
+        filter: ExecutionTargetAuthorizationFilter,
+    ) -> Result<Vec<ExecutionTargetAuthorizationRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn revoke_execution_target_authorization(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: &str,
+    ) -> Result<ExecutionTargetAuthorizationMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// True after the Target has ever entered scoped mode, including when all
+    /// grants are now revoked.
+    async fn has_execution_target_authorization_history(
+        &self,
+        target_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionNodeStatus {
+    Online,
+    Offline,
+    Revoked,
+}
+
+impl ExecutionNodeStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Online => "online",
+            Self::Offline => "offline",
+            Self::Revoked => "revoked",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "online" => Some(Self::Online),
+            "offline" => Some(Self::Offline),
+            "revoked" => Some(Self::Revoked),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExecutionNodeRecord {
+    pub id: String,
+    pub revision: u64,
+    pub owner_principal_id: String,
+    pub name: String,
+    pub status: ExecutionNodeStatus,
+    pub device_key_fingerprint: String,
+    /// Hex-encoded Ed25519 public key. This is an identity verifier, never a
+    /// secret or an authorization bearer credential.
+    pub device_public_key: String,
+    pub protocol_version: u32,
+    pub platform: Option<String>,
+    pub capabilities: Vec<String>,
+    pub metadata: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub last_seen_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ExecutionNodeMutation {
+    Updated(ExecutionNodeRecord),
+    Conflict { current: ExecutionNodeRecord },
+    NotFound,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewNodePairingCode {
+    pub code_hash: String,
+    pub owner_principal_id: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PairExecutionNode {
+    pub code_hash: String,
+    pub node_id: String,
+    pub name: String,
+    pub device_key_fingerprint: String,
+    pub device_public_key: String,
+    pub protocol_version: u32,
+    pub platform: Option<String>,
+    pub capabilities: Vec<String>,
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewExecutionNodeChallenge {
+    pub id: String,
+    pub node_id: String,
+    pub nonce_hash: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeCommandStatus {
+    Queued,
+    Claimed,
+    Succeeded,
+    Failed,
+    CancelRequested,
+    Cancelled,
+    Lost,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeOutputStream {
+    Stdout,
+    Stderr,
+}
+
+impl EdgeOutputStream {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "stdout" => Some(Self::Stdout),
+            "stderr" => Some(Self::Stderr),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EdgeCommandOutputChunk {
+    pub job_id: String,
+    pub sequence: u64,
+    pub stream: EdgeOutputStream,
+    pub text: String,
+    pub created_at: DateTime<Utc>,
+}
+
+impl EdgeCommandStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Claimed => "claimed",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::CancelRequested => "cancel_requested",
+            Self::Cancelled => "cancelled",
+            Self::Lost => "lost",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "queued" => Some(Self::Queued),
+            "claimed" => Some(Self::Claimed),
+            "succeeded" => Some(Self::Succeeded),
+            "failed" => Some(Self::Failed),
+            "cancel_requested" => Some(Self::CancelRequested),
+            "cancelled" => Some(Self::Cancelled),
+            "lost" => Some(Self::Lost),
+            _ => None,
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Lost
+        )
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EdgeCommandRecord {
+    pub job_id: String,
+    pub revision: u64,
+    pub target_id: String,
+    pub provider_node_id: String,
+    pub tool_name: String,
+    pub arguments: String,
+    /// Frozen Execution Route copied from the parent Job. The Edge Node uses
+    /// this authority to distinguish a local Target from a Proxy Target; it
+    /// must never re-resolve the route from a later heartbeat.
+    pub route: serde_json::Value,
+    pub status: EdgeCommandStatus,
+    pub claimed_by: Option<String>,
+    pub claim_token: Option<String>,
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    pub heartbeat_at: Option<DateTime<Utc>>,
+    pub side_effect_started_at: Option<DateTime<Utc>>,
+    pub progress: Option<String>,
+    pub output: Option<String>,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewEdgeCommand {
+    pub job_id: String,
+    pub target_id: String,
+    pub provider_node_id: String,
+    pub tool_name: String,
+    pub arguments: String,
+    pub route: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum EdgeCommandMutation {
+    Updated(EdgeCommandRecord),
+    Conflict { current: EdgeCommandRecord },
+    NotFound,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EdgeReconciliationReport {
+    pub nodes_marked_offline: u64,
+    pub targets_marked_offline: u64,
+    pub commands_requeued: u64,
+    pub commands_marked_lost: u64,
+}
+
+/// Durable authority for the outbound Edge protocol. Pairing codes and signed
+/// challenges are one-shot, short-lived connection credentials are stored
+/// only as hashes, and every command transition is fenced by revision plus
+/// claim token.
+#[async_trait::async_trait]
+pub trait EdgeExecutionStore: Send + Sync {
+    async fn create_node_pairing_code(
+        &self,
+        pairing: NewNodePairingCode,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn pair_execution_node(
+        &self,
+        request: PairExecutionNode,
+    ) -> Result<ExecutionNodeRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn create_execution_node_challenge(
+        &self,
+        challenge: NewExecutionNodeChallenge,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    async fn consume_execution_node_challenge(
+        &self,
+        node_id: &str,
+        challenge_id: &str,
+        nonce_hash: &str,
+    ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn issue_execution_node_connection_token(
+        &self,
+        node_id: &str,
+        token_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn authenticate_execution_node(
+        &self,
+        node_id: &str,
+        device_token_hash: &str,
+    ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn heartbeat_execution_node(
+        &self,
+        node_id: &str,
+        platform: Option<String>,
+        capabilities: Vec<String>,
+        metadata: serde_json::Value,
+    ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_execution_nodes(
+        &self,
+        owner_principal_id: &str,
+    ) -> Result<Vec<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn revoke_execution_node(
+        &self,
+        node_id: &str,
+        owner_principal_id: &str,
+        expected_revision: u64,
+    ) -> Result<Option<ExecutionNodeRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Revision-fenced device-key rotation. Existing connection credentials
+    /// are invalidated atomically with the public-key update.
+    async fn rotate_execution_node_key(
+        &self,
+        node_id: &str,
+        expected_revision: u64,
+        device_key_fingerprint: &str,
+        device_public_key: &str,
+    ) -> Result<ExecutionNodeMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn create_edge_command(
+        &self,
+        command: NewEdgeCommand,
+    ) -> Result<EdgeCommandRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_edge_command(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<EdgeCommandRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn claim_edge_command(
+        &self,
+        provider_node_id: &str,
+        worker_id: &str,
+        claim_token: &str,
+        lease_expires_at: DateTime<Utc>,
+        max_in_flight: usize,
+    ) -> Result<Option<EdgeCommandRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn heartbeat_edge_command(
+        &self,
+        job_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        lease_expires_at: DateTime<Utc>,
+        side_effect_started: bool,
+        progress: Option<String>,
+    ) -> Result<EdgeCommandMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Append one immutable output chunk under the active claim token. Output
+    /// does not mutate Command revision, so heartbeat and pipe transport can
+    /// proceed concurrently; claim-token fencing still rejects stale Workers.
+    async fn append_edge_command_output(
+        &self,
+        job_id: &str,
+        claim_token: &str,
+        stream: EdgeOutputStream,
+        text: &str,
+    ) -> Result<EdgeCommandOutputChunk, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_edge_command_output(
+        &self,
+        job_id: &str,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<EdgeCommandOutputChunk>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn finish_edge_command(
+        &self,
+        job_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        status: EdgeCommandStatus,
+        output: Option<String>,
+        error: Option<String>,
+    ) -> Result<EdgeCommandMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn request_edge_command_cancel(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<EdgeCommandRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn reconcile_edge_execution(
+        &self,
+        now: DateTime<Utc>,
+        node_stale_before: DateTime<Utc>,
+    ) -> Result<EdgeReconciliationReport, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 /// Authoritative lifecycle of one physical execution attempt materialized from
 /// a model Action. Cancellation is requested separately: a running process is
 /// not `cancelled` until an executor or reconciler proves that it stopped.
@@ -751,6 +1357,9 @@ pub struct ExecutionJobRecord {
     pub context_id: String,
     pub session_id: String,
     pub initiating_principal_id: Option<String>,
+    /// Immutable physical destination selected before the Job becomes
+    /// claimable. Retries and recovery must never silently move the Action.
+    pub target_id: String,
     pub tool_call_id: String,
     pub tool_name: String,
     pub request: serde_json::Value,
@@ -788,6 +1397,7 @@ pub struct NewExecutionJob {
     pub context_id: String,
     pub session_id: String,
     pub initiating_principal_id: Option<String>,
+    pub target_id: String,
     pub tool_call_id: String,
     pub tool_name: String,
     pub request: serde_json::Value,
@@ -801,6 +1411,7 @@ pub struct ExecutionJobFilter {
     pub session_id: Option<String>,
     pub thread_id: Option<String>,
     pub activation_id: Option<String>,
+    pub target_id: Option<String>,
     pub status: Option<ExecutionJobStatus>,
     /// When no exact status is selected, terminal rows are omitted by default.
     pub include_terminal: bool,
@@ -1078,6 +1689,83 @@ pub struct NewApprovalRequest {
     pub pending_status: ApprovalStatus,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityLeaseStatus {
+    Active,
+    Revoked,
+}
+
+impl CapabilityLeaseStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Revoked => "revoked",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "active" => Some(Self::Active),
+            "revoked" => Some(Self::Revoked),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CapabilityLeaseRecord {
+    pub id: String,
+    pub revision: u64,
+    pub principal_id: String,
+    pub agent_id: String,
+    pub thread_id: String,
+    pub target_id: String,
+    pub capabilities: Vec<String>,
+    pub requested: serde_json::Value,
+    pub policy_digest: String,
+    pub status: CapabilityLeaseStatus,
+    pub issued_by_approval_id: Option<String>,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub revoked_at: Option<DateTime<Utc>>,
+    pub revoke_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewCapabilityLease {
+    pub id: String,
+    pub principal_id: String,
+    pub agent_id: String,
+    pub thread_id: String,
+    pub target_id: String,
+    pub capabilities: Vec<String>,
+    pub requested: serde_json::Value,
+    pub policy_digest: String,
+    pub issued_by_approval_id: Option<String>,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CapabilityLeaseFilter {
+    pub principal_id: Option<String>,
+    pub agent_id: Option<String>,
+    pub thread_id: Option<String>,
+    pub target_id: Option<String>,
+    pub active_at: Option<DateTime<Utc>>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum CapabilityLeaseMutation {
+    Created(CapabilityLeaseRecord),
+    Existing(CapabilityLeaseRecord),
+    Updated(CapabilityLeaseRecord),
+    Conflict { current: CapabilityLeaseRecord },
+    NotFound,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ApprovalFilter {
     pub job_id: Option<String>,
@@ -1257,6 +1945,9 @@ pub struct ThreadRecord {
     pub lifecycle: ThreadLifecycle,
     pub executor_kind: String,
     pub executor_id: Option<String>,
+    /// Stable physical destination inherited by physical actions in this
+    /// Thread. `None` means no physical destination has been chosen yet.
+    pub target_id: Option<String>,
     pub result_text: Option<String>,
     pub result_event_id: Option<String>,
     pub delivery_status: DeliveryStatus,
@@ -1276,6 +1967,7 @@ pub struct NewThread {
     pub kind: ThreadKind,
     pub executor_kind: String,
     pub executor_id: Option<String>,
+    pub target_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1549,6 +2241,10 @@ pub struct QueryFilter {
     pub include_context_wide: bool,
     /// Only return events physically appended after this sequence (SQLite rowid).
     pub after_sequence: Option<u64>,
+    /// Only return events physically appended before this sequence. Combined
+    /// with `latest_k`, this provides stable backward pagination over the
+    /// immutable Ledger without offset scans.
+    pub before_sequence: Option<u64>,
     pub start_time: Option<DateTime<Utc>>,
     pub end_time: Option<DateTime<Utc>>,
     pub actors: Vec<String>,
@@ -1869,6 +2565,32 @@ pub trait ApprovalStore: Send + Sync {
         expected_revision: u64,
         reason: &str,
     ) -> Result<ApprovalAuditCommit, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// Reusable but narrowly scoped physical authority. A lease never replaces
+/// the immutable per-Job Approval audit: it only lets Runtime derive an exact
+/// one-use Job grant without invoking another reviewer when the requested
+/// boundary is a subset of the active Thread + Target scope.
+#[async_trait::async_trait]
+pub trait CapabilityLeaseStore: Send + Sync {
+    async fn ensure_capability_lease(
+        &self,
+        lease: NewCapabilityLease,
+    ) -> Result<CapabilityLeaseMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_capability_lease(
+        &self,
+        id: &str,
+    ) -> Result<Option<CapabilityLeaseRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_capability_leases(
+        &self,
+        filter: CapabilityLeaseFilter,
+    ) -> Result<Vec<CapabilityLeaseRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn revoke_capability_lease(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: &str,
+    ) -> Result<CapabilityLeaseMutation, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Atomic boundary between durable physical work and its one-use authority.
@@ -2197,6 +2919,14 @@ pub trait ThreadStore: Send + Sync {
         delivery_status: Option<DeliveryStatus>,
         delivery_event_id: Option<&str>,
     ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Revision-fenced first binding of a Thread to one physical destination.
+    /// A bound Thread cannot be silently moved to a different Target.
+    async fn bind_thread_target(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        target_id: &str,
+    ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Durable scheduling intentions and their revision-fenced dispatches.
@@ -2464,9 +3194,13 @@ pub enum WorkerCoordinationMode {
 pub trait RuntimeStore:
     EventStore
     + TimerStore
+    + ExecutionTargetStore
+    + ExecutionTargetAuthorizationStore
+    + EdgeExecutionStore
     + ExecutionJobStore
     + ActionGroupStore
     + ApprovalStore
+    + CapabilityLeaseStore
     + ExecutionApprovalStore
     + SessionStore
     + ObjectiveStore

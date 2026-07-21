@@ -2,12 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  actionableSchedulerJobs,
   activeSchedulerThreads,
   pendingHumanApprovals,
   schedulerApprovals,
+  schedulerApprovalAnomalies,
+  schedulerAttentionJobs,
   schedulerAttentionCount,
   schedulerJobs,
   schedulerSchedules,
+  threadCarriesExecution,
 } from '../src/scheduler/model.ts'
 import type { SchedulerSnapshot } from '../src/scheduler/types.ts'
 
@@ -159,6 +163,7 @@ function fixture(): SchedulerSnapshot {
 test('scheduler model flattens the authoritative causal projection exactly once', () => {
   const snapshot = fixture()
   assert.deepEqual(schedulerJobs(snapshot).map(item => item.job.id), ['job-1', 'job-orphan'])
+  assert.deepEqual(actionableSchedulerJobs(snapshot).map(item => item.job.id), ['job-1'])
   assert.deepEqual(schedulerApprovals(snapshot).map(item => item.id), ['approval-1'])
   assert.deepEqual(pendingHumanApprovals(snapshot).map(item => item.id), ['approval-1'])
   assert.deepEqual(schedulerSchedules(snapshot).map(item => item.id), ['schedule-1'])
@@ -168,4 +173,42 @@ test('scheduler model flattens the authoritative causal projection exactly once'
 test('attention counts pending approval and durable failures, not ordinary activity', () => {
   assert.equal(schedulerAttentionCount(fixture()), 2)
   assert.equal(schedulerAttentionCount(null), 0)
+})
+
+test('terminal owners make waiting approvals invariant violations rather than user actions', () => {
+  const snapshot = fixture()
+  snapshot.threads[0].thread.lifecycle = 'cancelled'
+  snapshot.threads[0].activations[0].activation.status = 'failed'
+  snapshot.threads[0].activations[0].jobs[0].approval!.status = 'allowed'
+  snapshot.summary.active_jobs = 0
+  snapshot.summary.waiting_approval_jobs = 0
+  snapshot.summary.pending_approvals = 0
+
+  assert.deepEqual(actionableSchedulerJobs(snapshot), [])
+  assert.deepEqual(pendingHumanApprovals(snapshot), [])
+  assert.deepEqual(schedulerApprovalAnomalies(snapshot).map(item => item.job.id), ['job-1'])
+  assert.deepEqual(schedulerAttentionJobs(snapshot).map(item => item.job.id), ['job-orphan'])
+  assert.equal(schedulerAttentionCount(snapshot), 2)
+})
+
+test('handled failures in terminal Thread history do not remain in needs-attention forever', () => {
+  const snapshot = fixture()
+  const owned = snapshot.threads[0].activations[0].jobs[0]
+  owned.job.status = 'failed'
+  owned.job.error = 'handled by a later model continuation'
+  delete owned.approval
+  snapshot.threads[0].thread.lifecycle = 'completed'
+  snapshot.threads[0].activations[0].activation.status = 'succeeded'
+
+  assert.deepEqual(schedulerAttentionJobs(snapshot).map(item => item.job.id), ['job-orphan'])
+})
+
+test('dialogue Threads become visible task activity when they carry Execution Jobs', () => {
+  const snapshot = fixture()
+  const thread = snapshot.threads[0]
+  thread.thread.kind = 'dialogue_turn'
+
+  assert.equal(threadCarriesExecution(thread), true)
+  thread.activations[0].jobs = []
+  assert.equal(threadCarriesExecution(thread), false)
 })

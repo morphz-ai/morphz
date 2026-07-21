@@ -7,10 +7,10 @@ use crate::execution::{
 };
 use crate::llm::ToolDefinition;
 use crate::memory::{
-    EventStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionRetrySafety, NewRuntimeTimer, NewSchedule, NewThread, QueryFilter, RuntimeTimerKind,
-    RuntimeTimerRecord, ScheduleMutation, ScheduleRecord, ScheduleStatus, SessionStatus,
-    SessionStore, ThreadKind,
+    EdgeOutputStream, EventStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
+    ExecutionJobStore, ExecutionRetrySafety, NewRuntimeTimer, NewSchedule, NewThread, QueryFilter,
+    RuntimeTimerKind, RuntimeTimerRecord, ScheduleMutation, ScheduleRecord, ScheduleStatus,
+    SessionStatus, SessionStore, ThreadKind,
 };
 use crate::permission::{
     ApprovalContext, ApprovalRequirement, FilesystemAccess, PermissionBroker, PermissionConfig,
@@ -43,6 +43,13 @@ tokio::task_local! {
     pub static CURRENT_ATTEMPT_ID: String;
     pub static CURRENT_CAUSAL_ROUTE: Option<ToolCausalRoute>;
     pub static CURRENT_EXECUTION_JOB: Option<ToolExecutionJobContext>;
+    pub static CURRENT_TOOL_OUTPUT_SINK: Option<tokio::sync::mpsc::Sender<ToolOutputChunk>>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolOutputChunk {
+    pub stream: EdgeOutputStream,
+    pub text: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +155,7 @@ pub struct ToolExecutionJobContext {
     pub context_id: String,
     pub session_id: String,
     pub initiating_principal_id: Option<String>,
+    pub target_id: String,
     pub tool_call_id: String,
 }
 
@@ -178,6 +186,7 @@ fn extend_causal_route(
 }
 
 fn approval_context() -> ApprovalContext {
+    let route = CURRENT_CAUSAL_ROUTE.try_with(Clone::clone).ok().flatten();
     ApprovalContext {
         session_id: CURRENT_SESSION_ID
             .try_with(Clone::clone)
@@ -187,6 +196,22 @@ fn approval_context() -> ApprovalContext {
             .unwrap_or_default(),
         attempt_id: CURRENT_ATTEMPT_ID
             .try_with(Clone::clone)
+            .unwrap_or_default(),
+        thread_id: route
+            .as_ref()
+            .map(|route| route.thread_id.clone())
+            .unwrap_or_default(),
+        root_turn_id: route
+            .as_ref()
+            .map(|route| route.root_turn_id.clone())
+            .unwrap_or_default(),
+        trigger_event_id: route
+            .as_ref()
+            .map(|route| route.trigger_event_id.clone())
+            .unwrap_or_default(),
+        trigger_sequence: route
+            .as_ref()
+            .map(|route| route.trigger_sequence)
             .unwrap_or_default(),
     }
 }
@@ -302,8 +327,41 @@ impl Registry {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
-            .map(|entry| entry.definition.clone())
+            .map(|entry| {
+                let mut definition = entry.definition.clone();
+                if entry.tool.execution_class() == ToolExecutionClass::PhysicalJob {
+                    if let Some(properties) = definition
+                        .parameters
+                        .get_mut("properties")
+                        .and_then(serde_json::Value::as_object_mut)
+                    {
+                        properties.insert(
+                            "target".to_string(),
+                            serde_json::json!({
+                                "type": "string",
+                                "description": "可选 Execution Target ID。未绑定 Thread 首次省略时绑定 target-default；已绑定 Thread 省略时继承其 Target。显式值若与 Thread 绑定不同会被拒绝，跨 Target 请用 schedule_tx.spawn 新建 Execution Thread。"
+                            }),
+                        );
+                    }
+                }
+                definition
+            })
             .collect()
+    }
+
+    /// Stable capability projection for Execution Target discovery. Logical
+    /// Context/Scheduler tools never appear in a physical Target descriptor.
+    pub fn physical_tool_names(&self) -> Vec<String> {
+        let mut names = self
+            .tools
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter(|(_, entry)| entry.tool.execution_class() == ToolExecutionClass::PhysicalJob)
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>();
+        names.sort();
+        names
     }
 }
 
@@ -558,6 +616,7 @@ impl BackgroundTaskScheduler {
                 context_id: parent.context_id.clone(),
                 session_id: parent.session_id.clone(),
                 initiating_principal_id: parent.initiating_principal_id.clone(),
+                target_id: parent.target_id.clone(),
                 tool_call_id: child_tool_call_id,
                 tool_name: "exec/background".to_string(),
                 request,
@@ -1842,6 +1901,8 @@ enum ScheduleOperation {
         every_seconds: Option<u64>,
         #[serde(default)]
         after: Vec<String>,
+        #[serde(default)]
+        target: Option<String>,
     },
     Inspect {
         schedule_id: String,
@@ -1929,7 +1990,8 @@ impl Tool for ScheduleTxTool {
                                         "not_before": {"type": "string", "description": "RFC 3339 绝对时间"},
                                         "delay_seconds": {"type": "integer", "minimum": 0},
                                         "every_seconds": {"type": "integer", "minimum": 1, "description": "固定间隔周期；每次到期生成独立 occurrence Thread"},
-                                        "after": {"type": "array", "items": {"type": "string"}}
+                                        "after": {"type": "array", "items": {"type": "string"}},
+                                        "target": {"type": "string", "description": "新 Execution Thread 绑定的稳定 Execution Target ID；省略时保持未绑定，首个物理动作决定"}
                                     },
                                     "required": ["op", "intent"],
                                     "additionalProperties": false
@@ -2059,7 +2121,10 @@ impl Tool for ScheduleTxTool {
         let mut prepared = Vec::new();
         let mut local_refs = HashMap::<String, String>::new();
         for (index, operation) in args.operations.iter().enumerate() {
-            if let ScheduleOperation::Spawn { client_id, .. } = operation {
+            if let ScheduleOperation::Spawn {
+                client_id, target, ..
+            } = operation
+            {
                 let seed = format!(
                     "{attempt_id}\0{index}\0{}",
                     client_id.as_deref().unwrap_or("")
@@ -2083,6 +2148,7 @@ impl Tool for ScheduleTxTool {
                     kind: ThreadKind::Execution,
                     executor_kind: "self".to_string(),
                     executor_id: None,
+                    target_id: target.clone(),
                 });
                 prepared.push(thread_id);
             } else {
@@ -2375,6 +2441,7 @@ fn background_execution_snapshot(
     serde_json::json!({
         "task_id": job.id,
         "execution_job_id": job.id,
+        "target_id": job.target_id,
         "revision": job.revision,
         "status": status,
         "command": job.request.get("command"),
@@ -2519,7 +2586,7 @@ struct ExecutionBuffer {
 }
 
 impl ExecutionBuffer {
-    fn append(self: &Arc<Self>, text: &str, publish: bool) {
+    fn append(self: &Arc<Self>, text: &str, publish: bool) -> String {
         // Only values explicitly injected into this child are isolated on the return path.
         // Runtime never guesses whether arbitrary text "looks like" a secret.
         let safe_text = isolate_injected_secret_output(text, &self.injected_secret_values);
@@ -2567,6 +2634,7 @@ impl ExecutionBuffer {
                 tokio::spawn(async move { buffer.flush_output_events().await });
             }
         }
+        safe_text
     }
 
     async fn flush_output_events(self: Arc<Self>) {
@@ -2680,8 +2748,13 @@ impl ExecutionBuffer {
     }
 }
 
-async fn monitor_pipe<R>(reader: R, buffer: Arc<ExecutionBuffer>, publish_ref: Arc<AtomicBool>)
-where
+async fn monitor_pipe<R>(
+    reader: R,
+    buffer: Arc<ExecutionBuffer>,
+    publish_ref: Arc<AtomicBool>,
+    stream: EdgeOutputStream,
+    output_sink: Option<tokio::sync::mpsc::Sender<ToolOutputChunk>>,
+) where
     R: tokio::io::AsyncRead + Unpin,
 {
     let mut reader = BufReader::new(reader);
@@ -2691,7 +2764,19 @@ where
             break;
         }
         let publish = publish_ref.load(Ordering::SeqCst);
-        buffer.append(&line, publish);
+        let safe_text = buffer.append(&line, publish);
+        if let Some(output_sink) = &output_sink {
+            if output_sink
+                .send(ToolOutputChunk {
+                    stream,
+                    text: safe_text,
+                })
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
         line.clear();
     }
 }
@@ -4350,6 +4435,53 @@ fn terminate_residual_process_group(
     }
 }
 
+/// Fail-closed lifetime guard for one foreground shell process group.
+///
+/// A physical Tool future can be cancelled by an Objective fence, an Edge
+/// command cancellation or Runtime shutdown. Dropping `tokio::process::Child`
+/// alone is not a sufficient process-tree boundary: descendants may keep
+/// running after the shell exits. Keeping this guard in the same future makes
+/// cancellation terminate the whole process group even when normal async
+/// cleanup code is never polled again.
+struct ProcessGroupGuard {
+    pgid: i32,
+    armed: bool,
+    task_id: Option<String>,
+}
+
+impl ProcessGroupGuard {
+    fn new(pgid: i32) -> Self {
+        Self {
+            pgid,
+            armed: true,
+            task_id: None,
+        }
+    }
+
+    fn track_task(&mut self, task_id: &str) {
+        self.task_id = Some(task_id.to_string());
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let _ = nix::sys::signal::killpg(
+            nix::unistd::Pid::from_raw(self.pgid),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        if let Some(task_id) = self.task_id.as_deref() {
+            get_tasks_map().remove(task_id);
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ExecuteCommandArgs {
@@ -4670,6 +4802,7 @@ impl Tool for ExecuteCommandTool {
         let mut cmd = prepared.into_tokio_command();
         cmd.current_dir(&exec_cwd)
             .env("TMPDIR", &sandbox_tmp)
+            .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if profile.shell_environment_policy == ShellEnvironmentPolicy::RemoveSensitive {
@@ -4720,6 +4853,7 @@ impl Tool for ExecuteCommandTool {
 
         let mut child = cmd.spawn()?;
         let pid = child.id().ok_or("无法获取进程 ID")? as i32;
+        let mut process_group_guard = ProcessGroupGuard::new(pid);
 
         let task_id = match (
             self.background_scheduler.as_ref(),
@@ -4735,6 +4869,7 @@ impl Tool for ExecuteCommandTool {
             ),
         };
         let archive_path = artifact_dir.join(format!("{}.log", task_id));
+        process_group_guard.track_task(&task_id);
         // Publish the live PGID immediately after spawn. Objective cancellation
         // can now always find this process even while archive/pipes/background
         // attachment are still being prepared.
@@ -4836,17 +4971,36 @@ impl Tool for ExecuteCommandTool {
 
         // 共享的“是否开启事件发布”标志 (前 N 秒同步时不发布，转入后台时才发布)
         let publish_flag = Arc::new(AtomicBool::new(false));
+        let output_sink = CURRENT_TOOL_OUTPUT_SINK
+            .try_with(Clone::clone)
+            .ok()
+            .flatten();
 
         let buffer_out = Arc::clone(&buffer);
         let publish_out = Arc::clone(&publish_flag);
+        let stdout_sink = output_sink.clone();
         let stdout_task = tokio::spawn(async move {
-            monitor_pipe(stdout, buffer_out, publish_out).await;
+            monitor_pipe(
+                stdout,
+                buffer_out,
+                publish_out,
+                EdgeOutputStream::Stdout,
+                stdout_sink,
+            )
+            .await;
         });
 
         let buffer_err = Arc::clone(&buffer);
         let publish_err = Arc::clone(&publish_flag);
         let stderr_task = tokio::spawn(async move {
-            monitor_pipe(stderr, buffer_err, publish_err).await;
+            monitor_pipe(
+                stderr,
+                buffer_err,
+                publish_err,
+                EdgeOutputStream::Stderr,
+                output_sink,
+            )
+            .await;
         });
 
         // 同步等待设定时间
@@ -4861,6 +5015,7 @@ impl Tool for ExecuteCommandTool {
             Ok(exit_status_res) => {
                 // 命令在同步时间内直接执行完成
                 tasks.remove(&task_id);
+                process_group_guard.disarm();
                 // `/bin/sh -c 'command &'` can exit while descendants keep running. The lexical
                 // guard above catches normal cases; this process-group check is the fail-closed
                 // backstop for dynamically constructed shell commands.
@@ -4951,6 +5106,7 @@ impl Tool for ExecuteCommandTool {
                 let background_scheduler_cleanup = self.background_scheduler.clone();
                 tokio::spawn(async move {
                     let wait_res = child.wait().await;
+                    process_group_guard.disarm();
                     let residual_cleanup = terminate_residual_process_group(pid);
                     let _ = stdout_task.await;
                     let _ = stderr_task.await;
@@ -6084,6 +6240,7 @@ mod tests {
                 kind: ThreadKind::Execution,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap();
@@ -6112,6 +6269,7 @@ mod tests {
                 context_id: parent.context_id.clone(),
                 session_id: parent.session_id.clone(),
                 initiating_principal_id: None,
+                target_id: parent.target_id.clone(),
                 tool_call_id: parent.tool_call_id.clone(),
                 tool_name: "exec".to_string(),
                 request: serde_json::json!({"command": "test-parent-exec"}),
@@ -6286,6 +6444,7 @@ mod tests {
                 kind: ThreadKind::DialogueTurn,
                 executor_kind: "self".to_string(),
                 executor_id: None,
+                target_id: None,
             })
             .await
             .unwrap();
@@ -6404,6 +6563,7 @@ mod tests {
                     kind: ThreadKind::Execution,
                     executor_kind: "self".to_string(),
                     executor_id: None,
+                    target_id: None,
                 })
                 .await
                 .unwrap();
@@ -8153,6 +8313,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelling_exec_future_terminates_the_whole_process_group() {
+        let workspace = TempDir::new().unwrap();
+        let artifacts = workspace.path().join("artifacts");
+        let started = workspace.path().join("started");
+        let completed = workspace.path().join("completed");
+        let tool = Arc::new(ExecuteCommandTool::new_with_configs(
+            Arc::new(crate::event::InMemoryEventBus::new()),
+            Arc::new(BackgroundTaskConfig {
+                artifact_dir: artifacts.to_string_lossy().into_owned(),
+                ..BackgroundTaskConfig::default()
+            }),
+            permissive_security(),
+            30,
+        ));
+        let arguments = serde_json::json!({
+            "command": format!(
+                "touch '{}' && sleep 1 && touch '{}'",
+                started.display(),
+                completed.display()
+            ),
+            "wait_ms": 10_000
+        })
+        .to_string();
+        let execution = {
+            let tool = Arc::clone(&tool);
+            tokio::spawn(async move { tool.execute(&arguments).await })
+        };
+
+        tokio::time::timeout(tokio::time::Duration::from_secs(2), async {
+            while !started.exists() {
+                tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("exec process should start before cancellation");
+        execution.abort();
+        let _ = execution.await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(1_200)).await;
+
+        assert!(started.exists());
+        assert!(
+            !completed.exists(),
+            "aborted exec future left a descendant process running"
+        );
+    }
+
+    #[tokio::test]
     async fn durable_background_process_completion_commits_one_terminal_event_and_outbox() {
         let database = NamedTempFile::new().unwrap();
         let store = Arc::new(
@@ -8195,6 +8402,7 @@ mod tests {
             context_id: "context-durable-background-success".to_string(),
             session_id: "session-durable-background-success".to_string(),
             initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
             tool_call_id: "exec-call-durable-background-success".to_string(),
         };
         seed_test_execution_route(
@@ -8316,6 +8524,7 @@ mod tests {
             context_id: "context-durable-background".to_string(),
             session_id: "session-durable-background".to_string(),
             initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
             tool_call_id: "exec-call-durable-background".to_string(),
         };
         seed_test_execution_route(
@@ -8554,6 +8763,7 @@ mod tests {
             context_id: "context-restart-background".to_string(),
             session_id: "session-restart-background".to_string(),
             initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
             tool_call_id: "exec-call-restart-background".to_string(),
         };
         seed_test_execution_route(
@@ -8573,6 +8783,7 @@ mod tests {
                 context_id: parent.context_id.clone(),
                 session_id: parent.session_id.clone(),
                 initiating_principal_id: None,
+                target_id: parent.target_id.clone(),
                 tool_call_id: child_call_id,
                 tool_name: "exec/background".to_string(),
                 request: serde_json::json!({

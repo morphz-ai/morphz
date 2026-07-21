@@ -191,10 +191,22 @@ function reduceAttemptState(
   nowMs: number,
 ): Record<string, LiveModelAttempt> {
   if (item.terminal) {
-    if (!previous[item.attemptId]) return previous
-    const next = { ...previous }
-    delete next[item.attemptId]
-    return next
+    const current = previous[item.attemptId]
+    if (!current) return previous
+    // A physical Provider request ending is not the same thing as the
+    // Activation publishing its semantic outcome. Keep the streamed draft
+    // visible until chat/reply, chat/no_reply, tool selection, or a Runtime
+    // failure resolves the Activation.
+    return {
+      ...previous,
+      [item.attemptId]: {
+        ...current,
+        lastEventMs: nowMs,
+        status: item.state === 'failed' ? 'failed' : 'settling',
+        runtimeState: 'settling',
+        error: item.state === 'failed' ? item.detail ?? current.error : current.error,
+      },
+    }
   }
   const runtimeState = item.state === 'queued'
     ? 'queued'
