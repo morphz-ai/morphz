@@ -57,7 +57,10 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             policy_digest, created_at, updated_at, last_seen_at)
            VALUES ('target-default', 1, 'in_process_local',
                    'Default local execution environment', 'online', '[]'::jsonb, '{}'::jsonb,
-                   '', CURRENT_TIMESTAMP::text, CURRENT_TIMESTAMP::text, CURRENT_TIMESTAMP::text)
+                   '',
+                   to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+                   to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+                   to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))
            ON CONFLICT (id) DO NOTHING"#,
         r#"ALTER TABLE execution_jobs ADD COLUMN IF NOT EXISTS target_id TEXT"#,
         r#"UPDATE execution_jobs SET target_id = 'target-default' WHERE target_id IS NULL"#,

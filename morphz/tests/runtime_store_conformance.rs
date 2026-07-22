@@ -3574,7 +3574,11 @@ async fn assert_two_postgres_runtimes_deliver_one_dialogue_once(
         .await
         .unwrap();
     let separator = if database_url.contains('?') { '&' } else { '?' };
-    let scoped_url = format!("{database_url}{separator}options=-csearch_path%3D{schema}");
+    // Keep `public` visible because PostgreSQL extensions (for example
+    // `pg_trgm`) are database-scoped and are commonly installed there. A
+    // schema-isolated conformance run must isolate Morphz tables without
+    // hiding extension functions from later test schemas.
+    let scoped_url = format!("{database_url}{separator}options=-csearch_path%3D{schema}%2Cpublic");
     let first = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
     let second = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
     let agent_id = format!("runtime-worker-agent-{suffix}");
@@ -3781,12 +3785,23 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         .expect("current timestamp must fit i64");
     let schema = format!("morphz_conformance_{}_{suffix}", std::process::id());
     let administration_pool = sqlx::PgPool::connect(&database_url).await.unwrap();
+    // Extensions are database-scoped rather than tenant-schema-scoped. Keep
+    // pg_trgm in `public` so every isolated Morphz schema can resolve the same
+    // functions and operator classes while its own tables remain isolated.
+    if let Err(error) = sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public")
+        .execute(&administration_pool)
+        .await
+    {
+        eprintln!("pg_trgm is unavailable to this test role; exercising degraded Recall: {error}");
+    }
     sqlx::query(&format!("CREATE SCHEMA {schema}"))
         .execute(&administration_pool)
         .await
         .unwrap();
     let separator = if database_url.contains('?') { '&' } else { '?' };
-    let scoped_url = format!("{database_url}{separator}options=-csearch_path%3D{schema}");
+    // Morphz tables live in the per-run schema, while extension functions
+    // remain available from `public` across repeated conformance runs.
+    let scoped_url = format!("{database_url}{separator}options=-csearch_path%3D{schema}%2Cpublic");
     let store = Arc::new(PostgresStore::new(&scoped_url, 8).await.unwrap());
     let applied_migrations =
         sqlx::query_scalar::<_, String>("SELECT version FROM schema_migrations ORDER BY version")
@@ -3936,5 +3951,8 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         Arc::clone(&independent_store),
     )
     .await;
-    assert_two_postgres_runtimes_deliver_one_dialogue_once(&scoped_url, &store).await;
+    // This helper creates another isolated schema, so it must derive that
+    // schema from the base database URL instead of stacking a second
+    // `options=search_path` parameter on this run's already-scoped URL.
+    assert_two_postgres_runtimes_deliver_one_dialogue_once(&database_url, &store).await;
 }

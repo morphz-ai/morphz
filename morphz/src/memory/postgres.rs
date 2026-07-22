@@ -540,7 +540,15 @@ fn now_text() -> String {
 }
 
 fn parse_time(value: &str) -> Result<DateTime<Utc>, StoreError> {
-    Ok(DateTime::parse_from_rfc3339(value)?.with_timezone(&Utc))
+    // Morphz writes RFC 3339 timestamps, but the first PostgreSQL Execution
+    // Target migration used `CURRENT_TIMESTAMP::text`, whose stable server
+    // representation uses a space separator and may use an hour-only offset
+    // (for example `2026-07-22 01:01:28.08005+00`). Accept that legacy value
+    // so existing databases remain readable while all new writes stay RFC
+    // 3339.
+    let parsed = DateTime::parse_from_rfc3339(value)
+        .or_else(|_| DateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f%#z"))?;
+    Ok(parsed.with_timezone(&Utc))
 }
 
 fn projection_from_row(row: &PgRow) -> Result<MindProjectionRecord, StoreError> {
@@ -2404,5 +2412,18 @@ impl MindProjectionStore for PostgresStore {
         Ok(MindProjectionCommit::Committed {
             projection: committed,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_time;
+
+    #[test]
+    fn parses_legacy_postgres_timestamp_text_and_rfc3339() {
+        let legacy = parse_time("2026-07-22 01:01:28.08005+00").unwrap();
+        let canonical = parse_time("2026-07-22T01:01:28.080050Z").unwrap();
+
+        assert_eq!(legacy, canonical);
     }
 }
