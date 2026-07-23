@@ -2571,6 +2571,10 @@ impl MorphzRuntime {
             .iter()
             .map(|thread| thread.id.clone())
             .collect::<HashSet<_>>();
+        let all_context_thread_roots = context_threads
+            .iter()
+            .map(|thread| thread.root_turn_id.clone())
+            .collect::<HashSet<_>>();
         let mut all_threads = context_threads
             .iter()
             .filter(|thread| !thread.lifecycle.is_terminal())
@@ -2605,6 +2609,10 @@ impl MorphzRuntime {
             .store
             .list_context_thread_activations(context_id, true)
             .await?;
+        let all_context_activation_ids = all_context_activations
+            .iter()
+            .map(|activation| activation.id.clone())
+            .collect::<HashSet<_>>();
         let durable_queued_ids = all_context_activations
             .iter()
             .filter(|activation| activation.status == ThreadActivationStatus::Queued)
@@ -2716,7 +2724,12 @@ impl MorphzRuntime {
                     .entry(snapshot.job.activation_id.clone())
                     .or_default()
                     .push(snapshot);
-            } else {
+            } else if !all_context_activation_ids.contains(&snapshot.job.activation_id) {
+                // A bounded Scheduler query may omit an older terminal
+                // Activation while still selecting one of its Jobs through
+                // the independently bounded Job history. That is pagination,
+                // not a broken causal edge. Only records whose parent truly
+                // does not exist in the Context authority are orphans.
                 orphan_jobs.push(snapshot);
             }
         }
@@ -2741,7 +2754,10 @@ impl MorphzRuntime {
                     .entry(thread_id.clone())
                     .or_default()
                     .push(snapshot);
-            } else {
+            } else if !all_context_thread_roots.contains(&snapshot.activation.root_turn_id) {
+                // As above, an Activation whose owning Thread lies outside
+                // this history page is not an orphan. Calling it one makes
+                // operator attention depend on the page size.
                 orphan_activations.push(snapshot);
             }
         }
@@ -5469,6 +5485,161 @@ mod tests {
                 .unwrap(),
             ScheduleMutation::Conflict { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn scheduler_snapshot_does_not_call_paginated_parents_orphans() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-scheduler-pagination".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Scheduler pagination".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+
+        let root_turn_id = "root-scheduler-pagination";
+        let thread = runtime
+            .inner
+            .store
+            .ensure_thread(crate::memory::NewThread {
+                id: "thread-scheduler-pagination".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-scheduler-pagination".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: root_turn_id.to_string(),
+                kind: crate::memory::ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+            })
+            .await
+            .unwrap();
+
+        // limit=1 admits four terminal Activations but ten Jobs. The fifth
+        // Job therefore has a real parent outside the bounded response. It
+        // must be omitted from this page rather than mislabeled as an orphan.
+        for index in 0..5 {
+            let event = Event::new(
+                format!("event-scheduler-pagination-{index}"),
+                "User-Test".to_string(),
+                "user_message".to_string(),
+                "chat/user_message".to_string(),
+                json!({
+                    "context_id": runtime.identity().context_id,
+                    "session_id": "session-scheduler-pagination",
+                    "text": format!("message {index}"),
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            );
+            runtime.inner.store.append(event.clone()).await.unwrap();
+            let sequence = runtime
+                .inner
+                .store
+                .query(QueryFilter {
+                    event_id: Some(event.id.clone()),
+                    ..QueryFilter::default()
+                })
+                .await
+                .unwrap()[0]
+                .sequence
+                .unwrap();
+            let activation = runtime
+                .inner
+                .store
+                .claim_thread_signal_batch(
+                    crate::memory::NewThreadSignal {
+                        id: format!("signal-scheduler-pagination-{index}"),
+                        thread_id: thread.id.clone(),
+                        event_id: event.id.clone(),
+                        principal_id: None,
+                        sequence,
+                        kind: event.topic,
+                        parent_activation_id: None,
+                    },
+                    crate::memory::NewThreadActivation {
+                        id: format!("activation-scheduler-pagination-{index}"),
+                        agent_id: runtime.identity().agent_id.clone(),
+                        context_id: runtime.identity().context_id.clone(),
+                        session_id: "session-scheduler-pagination".to_string(),
+                        initiating_principal_id: None,
+                        trigger_event_id: event.id,
+                        trigger_sequence: sequence,
+                        trigger_kind: "chat/user_message".to_string(),
+                        parent_activation_id: None,
+                        root_turn_id: root_turn_id.to_string(),
+                    },
+                    32,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            runtime
+                .inner
+                .store
+                .update_thread_activation(
+                    &activation.id,
+                    activation.revision,
+                    crate::memory::ThreadActivationStatus::Failed,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            runtime
+                .inner
+                .store
+                .create_execution_job(crate::memory::NewExecutionJob {
+                    id: format!("job-scheduler-pagination-{index}"),
+                    activation_id: activation.id,
+                    thread_id: thread.id.clone(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "session-scheduler-pagination".to_string(),
+                    initiating_principal_id: None,
+                    target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+                    tool_call_id: format!("call-scheduler-pagination-{index}"),
+                    tool_name: "read".to_string(),
+                    request: json!({"path": format!("file-{index}.txt")}),
+                    retry_safety: crate::memory::ExecutionRetrySafety::Idempotent,
+                    requires_approval: false,
+                })
+                .await
+                .unwrap();
+        }
+
+        let snapshot = runtime
+            .scheduler_snapshot(
+                runtime.identity().context_id.as_str(),
+                SchedulerQuery {
+                    include_terminal: true,
+                    limit: 1,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(snapshot.threads.len(), 1);
+        assert_eq!(snapshot.threads[0].activations.len(), 4);
+        assert!(snapshot.orphan_activations.is_empty());
+        assert!(snapshot.orphan_jobs.is_empty());
     }
 
     #[tokio::test]

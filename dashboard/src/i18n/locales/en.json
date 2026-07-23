@@ -310,6 +310,9 @@
     "openThread": "Open the complete causal chain",
     "threadJobs_one": "{{count}} Execution Job",
     "threadJobs_other": "{{count}} Execution Jobs",
+    "threadToolChain": "Tool call chain",
+    "threadToolChainEmpty": "The Thread exists but has not produced a tool call yet.",
+    "threadToolChainHint": "Open the complete causal chain",
     "activity": {
       "title": "Task activity",
       "summary": "{{objectives}} objectives · {{threads}} executions · {{delegations}} sub-agents",

@@ -13,6 +13,7 @@ import {
   Brain,
   Check,
   ChevronDown,
+  ChevronRight,
   CircleDot,
   Clock3,
   Copy,
@@ -86,6 +87,7 @@ import { LedgerPage } from './pages/LedgerPage'
 import type { LedgerFilters } from './pages/LedgerPage'
 import { OverviewPage } from './pages/OverviewPage'
 import { RuntimePage } from './pages/RuntimePage'
+import { ThreadCausalCard } from './pages/ThreadCausalCard'
 import { DashboardApiClient } from './api/client'
 import { resolveDashboardToken } from './api/auth'
 import { invalidatedQueriesForTopic } from './app/invalidation'
@@ -100,7 +102,82 @@ import {
   summarizeToolCall,
   threadKindLabel,
 } from './app/presentation'
-import { ThreadCausalCard } from './pages/ThreadCausalCard'
+
+function MessageThreadReference({
+  snapshot,
+  onOpen,
+  t,
+}: {
+  snapshot: SchedulerThreadSnapshot
+  onOpen: () => void
+  t: TFunction
+}) {
+  const jobs = snapshot.activations
+    .flatMap((activation, activationIndex) => activation.jobs.map((job, jobIndex) => ({
+      snapshot: job,
+      order: activationIndex * 10_000 + jobIndex,
+    })))
+    .sort((left, right) => left.snapshot.job.created_at.localeCompare(right.snapshot.job.created_at) || left.order - right.order)
+  const displayState = snapshot.phase === 'idle' ? snapshot.thread.lifecycle : snapshot.phase
+  const previewId = `thread-tool-chain-${snapshot.thread.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+
+  return (
+    <div className={`message-thread-reference phase-${snapshot.phase}`}>
+      <button
+        className="message-thread-capsule"
+        type="button"
+        onClick={onOpen}
+        aria-describedby={previewId}
+        aria-label={`${threadKindLabel(snapshot.thread.kind, t)} · ${statusLabel(displayState, t)} · ${t('conversation.threadJobs', { count: jobs.length })}`}
+      >
+        <span className="message-thread-mark" aria-hidden="true"><GitBranch size={13} /></span>
+        <span className="message-thread-copy">
+          <strong>{threadKindLabel(snapshot.thread.kind, t)}</strong>
+          <small><i className={`thread-state-dot ${displayState}`} />{statusLabel(displayState, t)} · {t('conversation.threadJobs', { count: jobs.length })}</small>
+        </span>
+        <code>{shortId(snapshot.thread.id, 18)}</code>
+        <ChevronRight className="message-thread-open" size={13} aria-hidden="true" />
+      </button>
+
+      <aside className="message-thread-toolchain" id={previewId} role="tooltip">
+        <header>
+          <span><GitBranch size={12} />{t('conversation.threadToolChain')}</span>
+          <small>{t('conversation.threadJobs', { count: jobs.length })}</small>
+        </header>
+        {jobs.length > 0 ? (
+          <ol>
+            {jobs.map(({ snapshot: jobSnapshot }) => {
+              const { job } = jobSnapshot
+              const summary = summarizeToolCall(job.tool_name, JSON.stringify(job.request), t)
+              const failed = job.status === 'failed' || job.status === 'lost'
+              return (
+                <li className={job.status} key={job.id}>
+                  <span className="toolchain-step" aria-hidden="true">
+                    {job.status === 'running'
+                      ? <LoaderCircle size={11} />
+                      : job.status === 'succeeded'
+                        ? <Check size={11} />
+                        : failed
+                          ? <X size={11} />
+                          : <CircleDot size={10} />}
+                  </span>
+                  <span className="toolchain-copy">
+                    <strong>{summary.title}</strong>
+                    <small>{summary.target || shortId(job.id, 16)}</small>
+                  </span>
+                  <em>{statusLabel(job.status, t)}</em>
+                </li>
+              )
+            })}
+          </ol>
+        ) : (
+          <p>{t('conversation.threadToolChainEmpty')}</p>
+        )}
+        <footer>{t('conversation.threadToolChainHint')}</footer>
+      </aside>
+    </div>
+  )
+}
 
 const configuredHttpUrl = import.meta.env.VITE_MORPHZ_HTTP_URL as string | undefined
 const configuredWsUrl = import.meta.env.VITE_MORPHZ_WS_URL as string | undefined
@@ -1578,6 +1655,11 @@ export default function App() {
 
   const setView = useCallback((next: DashboardView | ((current: DashboardView) => DashboardView)) => {
     const resolved = typeof next === 'function' ? next(view) : next
+    // Navigation and an incoming Runtime event can occur in the same browser
+    // turn. Publish the requested view before changing the route so an
+    // immediate authoritative refresh cannot use the previous view's query
+    // contract and later overwrite the new page with that response.
+    activeViewRef.current = resolved
     navigate(dashboardPath(resolved, selectedContextId, selectedSessionId, cognitionView))
   }, [cognitionView, navigate, selectedContextId, selectedSessionId, view])
 
@@ -1703,11 +1785,12 @@ export default function App() {
       }
       const currentView = activeViewRef.current
       const includeTerminal = currentView === 'scheduler' || currentView === 'dialogue'
-      const schedulerLimit = currentView === 'scheduler'
-        ? schedulerHistoryLimitRef.current
-        : currentView === 'dialogue'
-          ? 40
-          : 50
+      // Dialogue and Scheduler render two surfaces of the same authoritative
+      // read model. Re-querying that model with a different history boundary
+      // on navigation used to make derived attention facts appear or vanish.
+      // Keep one window for both views; "load more" then remains stable when
+      // the operator returns to Dialogue and opens Scheduler again.
+      const schedulerLimit = includeTerminal ? schedulerHistoryLimitRef.current : 50
       const applySchedulerSnapshot = (snapshot: SchedulerSnapshot) => {
         if (!isCurrentScope()) return
         setSchedulerSnapshot(snapshot)
@@ -3917,25 +4000,14 @@ export default function App() {
                       </div>
                       {derivedThreads.length > 0 && (
                         <div className="message-thread-capsules" aria-label={t('conversation.derivedThreads')}>
-                          {derivedThreads.map(snapshot => {
-                            const jobCount = snapshot.activations.reduce((count, activation) => count + activation.jobs.length, 0)
-                            return (
-                              <button
-                                className={`message-thread-capsule phase-${snapshot.phase}`}
-                                type="button"
-                                key={snapshot.thread.id}
-                                onClick={() => navigate(threadPath(selectedContextId, snapshot.thread.id))}
-                                title={t('conversation.openThread')}
-                              >
-                                <GitBranch size={13} aria-hidden="true" />
-                                <span>
-                                  <strong>{threadKindLabel(snapshot.thread.kind, t)}</strong>
-                                  <small>{statusLabel(snapshot.phase, t)} · {t('conversation.threadJobs', { count: jobCount })}</small>
-                                </span>
-                                <span className="message-thread-id">{shortId(snapshot.thread.id, 18)}</span>
-                              </button>
-                            )
-                          })}
+                          {derivedThreads.map(snapshot => (
+                            <MessageThreadReference
+                              key={snapshot.thread.id}
+                              snapshot={snapshot}
+                              onOpen={() => navigate(threadPath(selectedContextId, snapshot.thread.id))}
+                              t={t}
+                            />
+                          ))}
                         </div>
                       )}
                       {quotes.map((q, qi) => q.eventId === event.id ? (

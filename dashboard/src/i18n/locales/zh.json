@@ -309,6 +309,9 @@
     "derivedThreads": "这条消息派生的运行时线程",
     "openThread": "打开完整因果链",
     "threadJobs": "{{count}} 个执行作业",
+    "threadToolChain": "工具调用链",
+    "threadToolChainEmpty": "线程已经建立，尚未产生工具调用。",
+    "threadToolChainHint": "点击打开完整因果链",
     "activity": {
       "title": "任务活动",
       "summary": "{{objectives}} 个目标 · {{threads}} 个执行 · {{delegations}} 个子智能体",
