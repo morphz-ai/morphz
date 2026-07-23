@@ -191,7 +191,7 @@ pub fn context_tx_tool_description() -> String {
         .collect::<Vec<_>>()
         .join("；");
     format!(
-        "原子修改你拥有的 Mind Context 与 Session attention。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。Session ID 不是 observation ref，必须使用 session-directory 中的原始 ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且 Mind 修改与 retire-session/restore-session 整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Observation 的 retire 会立即释放其活动编码；容量压力下优先清理已消化且不再需要的 Observation。当前 Activation 尚未交付的根请求受 Runtime 因果保护，不得 retire；已经被当前 Attempt 消费的独立 trigger observation 可以在同一事务中总结并 retire。普通 Frame 的 retire 只进入整理期，当前释放量为 0；Frame 必须按语义价值、有效性、使用和关系判断，不能仅因体积较大而退休。整理期应优先 revise、derive 或建立 sources + supersedes 的 successor；安全 successor 可让来源 Frame 在同一事务立即退休。Frame 数量本身不是退休理由；被退休内容没有删除，可按关键词、ID 和关系链 recall。Context 修改不是给用户的最终回复。提交 BODY 时还必须遵守由协议单一事实源生成的认识契约：{}",
+        "原子修改你拥有的 Mind Context 与 Session attention。参数 transaction 是版本化 SExpr：(context-tx (base-version N) (reason \"...\") OP...)。Mind version 是全局物理提交序列，Frame revision 是认知修改的 MVCC 边界；并发事务只修改不同 Frame 时 Runtime 可安全自动 rebase，目标或来源 Frame 已在 base-version 后变化时才要求重新读取并做语义合并。支持：{operations}。Context observation 使用 @eN 形式的确定性短引用；在 from/retire/restore/protect/unprotect/relate/unrelate 中原样使用 ref，Runtime 会在提交前解析为完整 Ledger ID。Session ID 不是 observation ref，必须使用 session-directory 中的原始 ID。create/derive/revise 可直接并列一个或多个 BODY；多项会被确定性规范化为 (context-body BODY...)。重要：revise 是完整替换 frame body，绝不是局部 merge；仍需保留的旧字段必须在新 BODY 中重述。create 不接受 from；有证据来源必须写 (derive ID (from SOURCE...) BODY...)。高风险改组前可先 (checkpoint ID)；需要恢复时用带 reason 的 (rollback ID)，确认不再需要时用 (drop-checkpoint ID...)。一个 transaction 可以顺序包含多个不同 operation，并且 Mind 修改与 retire-session/restore-session 整体成功或整体回滚。不要为了表达多个修改而并行调用多次 context_tx。reason 是事务级字段，retire/retire-session/unprotect/unrelate/rollback/drop-checkpoint 必须提供；不要把 reason 放进操作参数。Observation 的 retire 会立即释放其活动编码；容量压力下优先清理已消化且不再需要的 Observation。当前 Activation 尚未交付的根请求受 Runtime 因果保护，不得 retire；已经被当前 Attempt 消费的独立 trigger observation 可以在同一事务中总结并 retire。普通 Frame 的 retire 只进入整理期，当前释放量为 0；Frame 必须按语义价值、有效性、使用和关系判断，不能仅因体积较大而退休。整理期应优先 revise、derive 或建立 sources + supersedes 的 successor；安全 successor 可让来源 Frame 在同一事务立即退休。Frame 数量本身不是退休理由；被退休内容没有删除，可按关键词、ID 和关系链 recall。Context 修改不是给用户的最终回复。提交 BODY 时还必须遵守由协议单一事实源生成的认识契约：{}",
         render_context_tx_epistemic_guidance()
     )
 }
@@ -413,6 +413,7 @@ pub struct ContextCapacityMetricsSnapshot {
     pub context_transactions_total: u64,
     pub context_commits_total: u64,
     pub context_tx_conflicts_total: u64,
+    pub context_tx_auto_rebases_total: u64,
     pub context_commit_latency_micros_total: u64,
     pub context_commit_latency_micros_max: u64,
     pub mind_projection_loads_total: u64,
@@ -428,6 +429,7 @@ struct ContextCapacityMetrics {
     context_transactions_total: AtomicU64,
     context_commits_total: AtomicU64,
     context_tx_conflicts_total: AtomicU64,
+    context_tx_auto_rebases_total: AtomicU64,
     context_commit_latency_micros_total: AtomicU64,
     context_commit_latency_micros_max: AtomicU64,
     mind_projection_loads_total: AtomicU64,
@@ -473,6 +475,9 @@ impl ContextCapacityMetrics {
             context_transactions_total: self.context_transactions_total.load(Ordering::Relaxed),
             context_commits_total: self.context_commits_total.load(Ordering::Relaxed),
             context_tx_conflicts_total: self.context_tx_conflicts_total.load(Ordering::Relaxed),
+            context_tx_auto_rebases_total: self
+                .context_tx_auto_rebases_total
+                .load(Ordering::Relaxed),
             context_commit_latency_micros_total: self
                 .context_commit_latency_micros_total
                 .load(Ordering::Relaxed),
@@ -1447,10 +1452,48 @@ impl ContextEngine {
         allow_runtime_lifecycle_ops: bool,
         causally_protected_ids: &BTreeSet<String>,
     ) -> Result<ContextCommit, DynError> {
-        let transaction_started = std::time::Instant::now();
+        const MAX_PROJECTION_CAS_RETRIES: usize = 64;
+
         self.capacity_metrics
             .context_transactions_total
             .fetch_add(1, Ordering::Relaxed);
+        for attempt in 0..=MAX_PROJECTION_CAS_RETRIES {
+            match self
+                .apply_context_transaction_authorized_once(
+                    context_id,
+                    acting_session_id,
+                    acting_principal_id,
+                    transaction,
+                    allow_runtime_lifecycle_ops,
+                    causally_protected_ids,
+                )
+                .await
+            {
+                Err(error)
+                    if error
+                        .to_string()
+                        .starts_with("Context transaction CAS 冲突")
+                        && attempt < MAX_PROJECTION_CAS_RETRIES =>
+                {
+                    let backoff_millis = 1_u64 << attempt.min(3);
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff_millis)).await;
+                }
+                outcome => return outcome,
+            }
+        }
+        unreachable!("Context transaction CAS retry loop must return")
+    }
+
+    async fn apply_context_transaction_authorized_once(
+        &self,
+        context_id: &str,
+        acting_session_id: &str,
+        acting_principal_id: Option<&str>,
+        transaction: &str,
+        allow_runtime_lifecycle_ops: bool,
+        causally_protected_ids: &BTreeSet<String>,
+    ) -> Result<ContextCommit, DynError> {
+        let transaction_started = std::time::Instant::now();
         let mut parsed = parse_transaction(transaction)?;
         if !allow_runtime_lifecycle_ops
             && parsed.operations.iter().any(|operation| {
@@ -1478,13 +1521,21 @@ impl ContextEngine {
             );
         }
         reject_causally_protected_retirements(&parsed, causally_protected_ids)?;
-        let canonical_transaction = render_parsed_transaction(&parsed);
         let current = self.load_current_mind(context_id, None).await?;
-        if current.version != parsed.base_version {
+        let requested_base_version = parsed.base_version;
+        let auto_rebased = if current.version != requested_base_version {
             self.capacity_metrics
                 .context_tx_conflicts_total
                 .fetch_add(1, Ordering::Relaxed);
-        }
+            rebase_stale_frame_transaction(&current, &mut parsed)?;
+            self.capacity_metrics
+                .context_tx_auto_rebases_total
+                .fetch_add(1, Ordering::Relaxed);
+            true
+        } else {
+            false
+        };
+        let canonical_transaction = render_parsed_transaction(&parsed);
         let observation_ids = observation_ids(&referenced_observations);
         let cognitive_tick = match &self.cognitive_clock_store {
             Some(store) => store.get_context_cognitive_clock(context_id).await?.tick,
@@ -1543,6 +1594,11 @@ impl ContextEngine {
             ("frame_provenance_version".to_string(), json!(1)),
             ("transaction_id".to_string(), json!(tx_id)),
             ("transaction".to_string(), json!(&canonical_transaction)),
+            (
+                "requested_base_version".to_string(),
+                json!(requested_base_version),
+            ),
+            ("auto_rebased".to_string(), json!(auto_rebased)),
             ("before_version".to_string(), json!(current.version)),
             ("after_version".to_string(), json!(next.version)),
             ("reason".to_string(), json!(&parsed.reason)),
@@ -1599,9 +1655,6 @@ impl ContextEngine {
             {
                 MindProjectionCommit::Committed { .. } => {}
                 MindProjectionCommit::Conflict { current_revision } => {
-                    self.capacity_metrics
-                        .context_tx_conflicts_total
-                        .fetch_add(1, Ordering::Relaxed);
                     return Err(format!(
                         "Context transaction CAS 冲突：请求 base-version {}，当前 Projection revision {:?}；请基于最新 Context Encoding 重试",
                         current.version, current_revision
@@ -1632,6 +1685,16 @@ impl ContextEngine {
             &self.capacity_metrics.context_commit_latency_micros_max,
             commit_micros,
         );
+        if auto_rebased {
+            tracing::info!(
+                context_id,
+                session_id = acting_session_id,
+                requested_base_version,
+                effective_base_version = current.version,
+                after_version = next.version,
+                "Context transaction 按 Frame MVCC 自动 rebase"
+            );
+        }
         for change in &changes {
             match change.operation.as_str() {
                 "retire-frame-requested" => tracing::info!(
@@ -4040,6 +4103,152 @@ fn render_parsed_transaction(transaction: &ParsedTransaction) -> String {
     }
     items.extend(transaction.operations.iter().cloned());
     SExpr::List(items).to_string()
+}
+
+/// Rebase a stale transaction when its semantic read/write set is confined to
+/// Frames that have not changed since the model's Context Encoding. The global
+/// Mind version remains the physical commit sequence; Frame `updated_version`
+/// is the MVCC conflict boundary for cognition authored by the model.
+///
+/// Lifecycle, ordering, relationship, checkpoint and Session-attention
+/// operations intentionally remain conservative because their state is not
+/// fully represented by `ContextFrame::updated_version`.
+fn rebase_stale_frame_transaction(
+    current: &MindState,
+    transaction: &mut ParsedTransaction,
+) -> Result<(), String> {
+    let requested_base = transaction.base_version;
+    if requested_base > current.version {
+        return Err(format!(
+            "Context transaction 基于未来版本 {}，当前 Mind version 为 {}",
+            requested_base, current.version
+        ));
+    }
+    if requested_base == current.version {
+        return Ok(());
+    }
+
+    let mut frames_created_in_transaction = BTreeSet::new();
+    for operation in &transaction.operations {
+        let items = as_list(operation, "context operation")?;
+        let name = atom_at(items, 0, "operation name")?;
+        match name {
+            "create" => {
+                let id = atom_at(items, 1, "frame id")?;
+                if current.frames.iter().any(|frame| frame.id == id) {
+                    return Err(format!(
+                        "Frame MVCC 冲突：事务准备 create '{}'，但该 ID 已在 Mind version {} 中存在",
+                        id, current.version
+                    ));
+                }
+                frames_created_in_transaction.insert(id.to_string());
+            }
+            "derive" => {
+                let id = atom_at(items, 1, "frame id")?;
+                if current.frames.iter().any(|frame| frame.id == id) {
+                    return Err(format!(
+                        "Frame MVCC 冲突：事务准备 derive '{}'，但该 ID 已在 Mind version {} 中存在",
+                        id, current.version
+                    ));
+                }
+                let sources = parse_sources(items.get(2).ok_or("derive 缺少 from")?)?;
+                for source in &sources {
+                    ensure_frame_read_is_current(
+                        current,
+                        source,
+                        requested_base,
+                        &frames_created_in_transaction,
+                    )?;
+                }
+                frames_created_in_transaction.insert(id.to_string());
+            }
+            "revise" => {
+                let id = atom_at(items, 1, "frame id")?;
+                ensure_frame_write_is_current(
+                    current,
+                    id,
+                    requested_base,
+                    &frames_created_in_transaction,
+                )?;
+                if items.len() == 4 {
+                    let sources = parse_sources(items.get(2).ok_or("revise 缺少 from")?)?;
+                    for source in &sources {
+                        ensure_frame_read_is_current(
+                            current,
+                            source,
+                            requested_base,
+                            &frames_created_in_transaction,
+                        )?;
+                    }
+                }
+            }
+            other => {
+                return Err(format!(
+                    "Context version 已从 {} 前进到 {}；事务包含全局或生命周期操作 '{}'，Runtime 不能按 Frame MVCC 自动合并，请基于最新 Context Encoding 重试",
+                    requested_base, current.version, other
+                ));
+            }
+        }
+    }
+
+    transaction.base_version = current.version;
+    Ok(())
+}
+
+fn ensure_frame_read_is_current(
+    current: &MindState,
+    id: &str,
+    requested_base: u64,
+    frames_created_in_transaction: &BTreeSet<String>,
+) -> Result<(), String> {
+    if frames_created_in_transaction.contains(id) {
+        return Ok(());
+    }
+    let Some(frame) = current.frames.iter().find(|frame| frame.id == id) else {
+        // Observation IDs are immutable Ledger references and are validated by
+        // the normal transaction application path after rebase.
+        return Ok(());
+    };
+    if frame.created_version > requested_base || frame.updated_version > requested_base {
+        return Err(format!(
+            "Frame MVCC 冲突：来源 Frame '{}' 在事务读取的 Mind version {} 之后已变为 r{}（updated at version {}），请重新读取后做语义合并",
+            id, requested_base, frame.revision, frame.updated_version
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_frame_write_is_current(
+    current: &MindState,
+    id: &str,
+    requested_base: u64,
+    frames_created_in_transaction: &BTreeSet<String>,
+) -> Result<(), String> {
+    if frames_created_in_transaction.contains(id) {
+        return Ok(());
+    }
+    let frame = current
+        .frames
+        .iter()
+        .find(|frame| frame.id == id)
+        .ok_or_else(|| format!("Frame MVCC 冲突：revise 目标 '{}' 已不存在", id))?;
+    if frame.created_version > requested_base || frame.updated_version > requested_base {
+        return Err(format!(
+            "Frame MVCC 冲突：目标 Frame '{}' 在事务读取的 Mind version {} 之后已变为 r{}（updated at version {}），请重新读取后做语义合并",
+            id, requested_base, frame.revision, frame.updated_version
+        ));
+    }
+    if current
+        .retiring
+        .get(id)
+        .is_some_and(|retirement| retirement.generation > requested_base)
+    {
+        return Err(format!(
+            "Frame MVCC 冲突：目标 Frame '{}' 在 Mind version {} 之后进入 retiring 状态，请基于最新生命周期状态决策",
+            id, requested_base
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -9167,6 +9376,117 @@ mod tests {
     }
 
     #[test]
+    fn stale_create_is_rebased_onto_latest_mind_version() {
+        let state = MindState {
+            version: 4,
+            frames: vec![ContextFrame {
+                id: "concurrent-frame".to_string(),
+                body: "(fact concurrent)".to_string(),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: 4,
+                updated_version: 4,
+            }],
+            ..Default::default()
+        };
+        let mut tx =
+            parse_transaction("(context-tx (base-version 3) (create mine (fact independent)))")
+                .unwrap();
+
+        rebase_stale_frame_transaction(&state, &mut tx).unwrap();
+        assert_eq!(tx.base_version, 4);
+        let (next, _) = apply_parsed_transaction(&state, &tx, &HashSet::new()).unwrap();
+        assert_eq!(next.version, 5);
+        assert!(next.frames.iter().any(|frame| frame.id == "mine"));
+    }
+
+    #[test]
+    fn stale_revise_of_unchanged_frame_is_rebased() {
+        let state = MindState {
+            version: 7,
+            frames: vec![
+                ContextFrame {
+                    id: "mine".to_string(),
+                    body: "(status old)".to_string(),
+                    sources: Vec::new(),
+                    provenance: FrameIdentityProvenance::default(),
+                    revision: 1,
+                    created_version: 2,
+                    updated_version: 2,
+                },
+                ContextFrame {
+                    id: "other".to_string(),
+                    body: "(status concurrent)".to_string(),
+                    sources: Vec::new(),
+                    provenance: FrameIdentityProvenance::default(),
+                    revision: 1,
+                    created_version: 7,
+                    updated_version: 7,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut tx =
+            parse_transaction("(context-tx (base-version 6) (revise mine (status new)))").unwrap();
+
+        rebase_stale_frame_transaction(&state, &mut tx).unwrap();
+        let (next, _) = apply_parsed_transaction(&state, &tx, &HashSet::new()).unwrap();
+        let mine = next.frames.iter().find(|frame| frame.id == "mine").unwrap();
+        assert_eq!(mine.revision, 2);
+        assert_eq!(mine.body, "(status new)");
+    }
+
+    #[test]
+    fn stale_revise_of_changed_frame_is_a_semantic_conflict() {
+        let state = MindState {
+            version: 7,
+            frames: vec![ContextFrame {
+                id: "shared".to_string(),
+                body: "(status concurrent-update)".to_string(),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 3,
+                created_version: 2,
+                updated_version: 7,
+            }],
+            ..Default::default()
+        };
+        let mut tx =
+            parse_transaction("(context-tx (base-version 6) (revise shared (status mine)))")
+                .unwrap();
+
+        let error = rebase_stale_frame_transaction(&state, &mut tx).unwrap_err();
+        assert!(error.contains("Frame MVCC 冲突"));
+        assert!(error.contains("shared"));
+        assert_eq!(tx.base_version, 6);
+    }
+
+    #[test]
+    fn stale_global_lifecycle_operation_remains_conservative() {
+        let state = MindState {
+            version: 7,
+            frames: vec![ContextFrame {
+                id: "shared".to_string(),
+                body: "(status current)".to_string(),
+                sources: Vec::new(),
+                provenance: FrameIdentityProvenance::default(),
+                revision: 1,
+                created_version: 2,
+                updated_version: 2,
+            }],
+            ..Default::default()
+        };
+        let mut tx =
+            parse_transaction("(context-tx (base-version 6) (reason cleanup) (retire shared))")
+                .unwrap();
+
+        let error = rebase_stale_frame_transaction(&state, &mut tx).unwrap_err();
+        assert!(error.contains("不能按 Frame MVCC 自动合并"));
+        assert!(error.contains("retire"));
+    }
+
+    #[test]
     fn canonical_transaction_replays_multilingual_body_atoms() {
         let input = r#"(context-tx (base-version 0) (reason "从案例 A 提炼可复用证据优先级策略，长期维护") (create EVIDENCE-AUTHORITY-BEFORE-RECENCY (context-body (strategy "判断相互冲突的证据时，按以下优先级排序：1) 明确取代关系（supersedes）最优先；2) 权威性与批准状态高于单纯到达顺序；3) 到达先后仅作为同权威同批准状态下的次要参考。") (applicability 适用于来源权威性或批准状态可明确区分的证据冲突场景。) (boundary 本策略不否定已批准的更新证据合法取代旧结论——当新证据同样获得同等或更高权威批准时，应采信新证据。权威与批准状态始终是核心判据，到达顺序仅在权威和批准状态均相当时才作为参考。) (non-absolute "不可将权威优先绝对化为'旧权威永远正确'；若新证据已获同等或更高批准，则取代有效。") (derived-from case-a-decision))))"#;
         let parsed = parse_transaction(input).unwrap();
@@ -10132,6 +10452,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn context_engine_auto_rebases_disjoint_frame_commits() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("frame-mvcc.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        );
+
+        engine
+            .apply_context_transaction(
+                "frame-mvcc-context",
+                "session-a",
+                "(context-tx (base-version 0) (create frame-a (fact a)))",
+            )
+            .await
+            .unwrap();
+        let rebased = engine
+            .apply_context_transaction(
+                "frame-mvcc-context",
+                "session-b",
+                "(context-tx (base-version 0) (create frame-b (fact b)))",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(rebased.before_version, 1);
+        assert_eq!(rebased.after_version, 2);
+        let state = engine
+            .load_current_mind("frame-mvcc-context", None)
+            .await
+            .unwrap();
+        assert_eq!(state.version, 2);
+        assert!(state.frames.iter().any(|frame| frame.id == "frame-a"));
+        assert!(state.frames.iter().any(|frame| frame.id == "frame-b"));
+        let committed = store
+            .query(QueryFilter {
+                topic: Some("chat/context_tx_committed".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let rebased_event = committed
+            .iter()
+            .find(|event| event.payload["after_version"] == json!(2))
+            .unwrap();
+        assert_eq!(rebased_event.payload["requested_base_version"], json!(0));
+        assert_eq!(rebased_event.payload["before_version"], json!(1));
+        assert_eq!(rebased_event.payload["auto_rebased"], json!(true));
+        assert!(rebased_event.payload["transaction"]
+            .as_str()
+            .unwrap()
+            .contains("(base-version 1)"));
+        let metrics = engine.capacity_metrics();
+        assert_eq!(metrics.context_tx_conflicts_total, 1);
+        assert_eq!(metrics.context_tx_auto_rebases_total, 1);
+    }
+
+    #[tokio::test]
     async fn event_recall_chunks_are_not_previewed_a_second_time() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("recall-preview.db");
@@ -10906,7 +11288,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_transactions_are_single_writer_and_version_checked() {
+    async fn concurrent_disjoint_frame_transactions_rebase_across_engines() {
         let tmp = TempDir::new().unwrap();
         let db = tmp.path().join("context-concurrency.db");
         let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
@@ -10959,14 +11341,16 @@ mod tests {
         };
 
         let outcomes = [left.await.unwrap(), right.await.unwrap()];
-        assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 1);
-        assert_eq!(outcomes.iter().filter(|result| result.is_err()).count(), 1);
+        assert_eq!(outcomes.iter().filter(|result| result.is_ok()).count(), 2);
+        assert_eq!(outcomes.iter().filter(|result| result.is_err()).count(), 0);
         let view = engine_left
             .build_context_encoding("shared-context", "session-left", &HashSet::new())
             .await
             .unwrap();
-        assert_eq!(view.state.version, 1);
-        assert_eq!(view.state.frames.len(), 1);
+        assert_eq!(view.state.version, 2);
+        assert_eq!(view.state.frames.len(), 2);
+        assert!(view.state.frames.iter().any(|frame| frame.id == "left"));
+        assert!(view.state.frames.iter().any(|frame| frame.id == "right"));
         let left_metrics = engine_left.capacity_metrics();
         let right_metrics = engine_right.capacity_metrics();
         assert_eq!(
@@ -10975,16 +11359,85 @@ mod tests {
         );
         assert_eq!(
             left_metrics.context_commits_total + right_metrics.context_commits_total,
-            1
+            2
         );
         assert_eq!(
             left_metrics.context_tx_conflicts_total + right_metrics.context_tx_conflicts_total,
+            1
+        );
+        assert_eq!(
+            left_metrics.context_tx_auto_rebases_total
+                + right_metrics.context_tx_auto_rebases_total,
             1
         );
         assert!(left_metrics.mind_projection_loads_total >= 2);
         assert!(
             engine_left
                 .audit_mind_projection("shared-context")
+                .await
+                .unwrap()
+                .matches
+        );
+    }
+
+    #[tokio::test]
+    async fn many_concurrent_disjoint_frame_transactions_converge_without_model_retries() {
+        const WRITERS: usize = 12;
+
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp.path().join("context-many-writers.db").to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        store
+            .create_context(NewCognitiveContext {
+                id: "many-writers-context".to_string(),
+                agent_id: "many-writers-agent".to_string(),
+                title: "Many Writers Context".to_string(),
+            })
+            .await
+            .unwrap();
+
+        let mut handles = Vec::with_capacity(WRITERS);
+        for index in 0..WRITERS {
+            let engine = Arc::new(
+                ContextEngine::new(
+                    Arc::clone(&store) as Arc<dyn EventStore>,
+                    OrchestratorConfig::default(),
+                )
+                .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>),
+            );
+            handles.push(tokio::spawn(async move {
+                engine
+                    .apply_context_transaction(
+                        "many-writers-context",
+                        &format!("session-{index}"),
+                        &format!(
+                            "(context-tx (base-version 0) (create frame-{index} (writer {index})))"
+                        ),
+                    )
+                    .await
+            }));
+        }
+
+        for handle in handles {
+            handle.await.unwrap().unwrap();
+        }
+        let verifier = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>);
+        let view = verifier
+            .build_context_encoding("many-writers-context", "session-0", &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(view.state.version, WRITERS as u64);
+        assert_eq!(view.state.frames.len(), WRITERS);
+        assert!(
+            verifier
+                .audit_mind_projection("many-writers-context")
                 .await
                 .unwrap()
                 .matches

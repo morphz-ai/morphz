@@ -47,7 +47,7 @@ pub(crate) const REALITY_CONTRACT: &[ContractClause] = &[
     },
     ContractClause {
         key: "transaction",
-        meaning: "Context transaction 原子且版本化，冲突不会静默覆盖；Runtime 保证物理提交，Agent 决定语义合并",
+        meaning: "Context transaction 原子且版本化；Mind version 是物理提交序列，Frame revision 是认知修改的 MVCC 边界。Runtime 可自动 rebase 未触碰同一 Frame 的 create/derive/revise，同一 Frame 已变化时拒绝静默覆盖并由 Agent 决定语义合并",
     },
     ContractClause {
         key: "resource-limits",
