@@ -1,5 +1,5 @@
 export interface DashboardApiErrorBody {
-  error?: string
+  error?: string | { message?: string }
   message?: string
 }
 
@@ -82,7 +82,9 @@ export class DashboardApiClient {
     let detail = `HTTP ${response.status}`
     try {
       const body = await response.json() as DashboardApiErrorBody
-      detail = body.error ?? body.message ?? detail
+      detail = typeof body.error === 'string'
+        ? body.error
+        : body.error?.message ?? body.message ?? detail
     } catch {
       // Some gateways return an empty or HTML error response.
     }

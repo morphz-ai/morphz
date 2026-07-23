@@ -80,7 +80,31 @@ export function schedulerSchedules(snapshot: SchedulerSnapshot | null): Schedule
 
 export function activeSchedulerThreads(snapshot: SchedulerSnapshot | null): SchedulerThreadSnapshot[] {
   if (!snapshot) return []
-  return snapshot.threads.filter(thread => thread.thread.lifecycle === 'open')
+  return snapshot.threads.filter(thread => thread.phase !== 'idle')
+}
+
+export function attentionJobKey(
+  kind: 'approval_anomaly' | 'execution_job',
+  snapshot: SchedulerJobSnapshot,
+): string {
+  const approval = snapshot.approval
+  return [
+    kind,
+    snapshot.job.id,
+    `r${snapshot.job.revision}`,
+    snapshot.job.status,
+    approval ? `a${approval.revision}:${approval.status}` : 'approval:none',
+  ].join(':')
+}
+
+export function attentionDeliveryKey(snapshot: SchedulerThreadSnapshot): string {
+  return [
+    'delivery',
+    snapshot.thread.id,
+    `r${snapshot.thread.revision}`,
+    snapshot.thread.lifecycle,
+    snapshot.thread.delivery_status,
+  ].join(':')
 }
 
 /**

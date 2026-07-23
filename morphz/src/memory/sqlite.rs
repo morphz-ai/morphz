@@ -10,13 +10,14 @@ use crate::memory::{
     ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus,
     CapabilityLeaseStore, CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
-    DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore,
-    DeliveryStatus, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
-    EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
-    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
-    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
-    ExecutionRetrySafety, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit,
+    DeliveryIngressStore, DeliveryStatus, EdgeCommandMutation, EdgeCommandOutputChunk,
+    EdgeCommandRecord, EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream,
+    EdgeReconciliationReport, EventAppend, EventStore, ExecutionApprovalMutation,
+    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal, ExecutionNodeMutation,
+    ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
@@ -38,12 +39,39 @@ use crate::memory::{
     ThreadSignalStatus, ThreadStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
+// SQLx supplies the Rust FFI surface; hotbundle supplies a current SQLite
+// amalgamation to the release binary instead of relying on the host library.
+use libsqlite3_hotbundle as _;
 use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
 use sqlx::{Acquire, QueryBuilder, Row, SqlitePool};
 
 pub struct SqliteStore {
     pool: SqlitePool,
+}
+
+fn sqlite_has_wal_reset_fix(version: &str) -> bool {
+    let components = version
+        .split('.')
+        .take(3)
+        .map(|component| {
+            component
+                .chars()
+                .take_while(|ch| ch.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u64>()
+        })
+        .collect::<Result<Vec<_>, _>>();
+    let Ok(components) = components else {
+        return false;
+    };
+    let [major, minor, patch] = components.as_slice() else {
+        return false;
+    };
+
+    (*major, *minor, *patch) >= (3, 51, 3)
+        || (*major == 3 && *minor == 50 && *patch >= 7)
+        || (*major == 3 && *minor == 44 && *patch >= 6)
 }
 
 impl SqliteStore {
@@ -67,6 +95,22 @@ impl SqliteStore {
             .max_connections(config.max_connections.max(1))
             .connect_with(options)
             .await?;
+
+        let sqlite_version: String = sqlx::query_scalar("SELECT sqlite_version()")
+            .fetch_one(&pool)
+            .await?;
+        if !sqlite_has_wal_reset_fix(&sqlite_version) {
+            pool.close().await;
+            return Err(format!(
+                "SQLite {sqlite_version} 存在已知 WAL-reset 并发竞态；Morphz 要求 SQLite 3.51.3+（或官方回移版本 3.50.7 / 3.44.6）"
+            )
+            .into());
+        }
+        tracing::info!(
+            sqlite_version = %sqlite_version,
+            max_connections = config.max_connections.max(1),
+            "SQLite WAL Storage 已启用"
+        );
 
         // 启用外键约束，以支持 ON DELETE CASCADE 级联删除
         sqlx::query("PRAGMA foreign_keys = ON;")
@@ -643,8 +687,10 @@ impl SqliteStore {
             ON execution_jobs(context_id, status, updated_at DESC);
         CREATE INDEX IF NOT EXISTS idx_execution_jobs_thread_status
             ON execution_jobs(thread_id, status, created_at, id);
-        CREATE INDEX IF NOT EXISTS idx_execution_jobs_target_status
-            ON execution_jobs(target_id, status, created_at, id);
+        -- idx_execution_jobs_target_status is intentionally created by
+        -- migrate_execution_targets after legacy execution_jobs tables have
+        -- received target_id. Creating it in the base DDL would make startup
+        -- fail before the additive migration can run.
         CREATE INDEX IF NOT EXISTS idx_execution_jobs_lease
             ON execution_jobs(status, lease_expires_at, id);
         CREATE TRIGGER IF NOT EXISTS execution_jobs_terminal_status_is_irreversible
@@ -1036,6 +1082,8 @@ impl SqliteStore {
     }
 }
 
+const RECALL_FTS_BACKFILL_MIGRATION: &str = "20260722_01_recall_fts_backfill";
+
 async fn migrate_recall_projection(
     pool: &SqlitePool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -1094,8 +1142,22 @@ async fn migrate_recall_projection(
     ] {
         sqlx::query(statement).execute(pool).await?;
     }
+
     // A crash or an older build may have populated the ordinary projection
-    // before FTS became available. Repair only the missing derived rows.
+    // before FTS became available. This is a schema/data migration, not a
+    // startup integrity audit: triggers keep both projections synchronized in
+    // the same SQLite transaction after the one-time backfill completes.
+    let mut tx = pool.begin().await?;
+    let claimed =
+        sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+            .bind(RECALL_FTS_BACKFILL_MIGRATION)
+            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .execute(&mut *tx)
+            .await?;
+    if claimed.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(());
+    }
     sqlx::query(
         r#"INSERT INTO recall_documents_fts(context_id, document_kind, document_id, searchable_text)
            SELECT d.context_id, d.document_kind, d.document_id, d.searchable_text
@@ -1106,8 +1168,9 @@ async fn migrate_recall_projection(
                AND f.document_id = d.document_id
            )"#,
     )
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -3660,6 +3723,47 @@ impl SessionDirectoryStore for SqliteStore {
                 .await?
         };
         Ok(rows.iter().map(context_from_row).collect())
+    }
+
+    async fn update_context(
+        &self,
+        id: &str,
+        update: ContextUpdate,
+    ) -> Result<Option<CognitiveContextRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        if update.title.is_none() && update.status.is_none() {
+            return self.get_context(id).await;
+        }
+        let Some(existing) = self.get_context(id).await? else {
+            return Ok(None);
+        };
+        let title = update.title.unwrap_or(existing.title);
+        let status = update.status.unwrap_or(existing.status);
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+        let result = sqlx::query(
+            "UPDATE cognitive_contexts SET title = ?, status = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(title)
+        .bind(status.as_str())
+        .bind(&now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+        if status == SessionStatus::Archived {
+            sqlx::query(
+                "UPDATE sessions SET status = 'archived', updated_at = ? WHERE context_id = ? AND status != 'archived'",
+            )
+            .bind(&now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        self.get_context(id).await
     }
 
     async fn set_context_seed(
@@ -10702,6 +10806,38 @@ mod tests {
     use std::sync::Arc;
     use tempfile::NamedTempFile;
 
+    #[test]
+    fn wal_reset_fix_version_gate_matches_upstream_backports() {
+        assert!(!sqlite_has_wal_reset_fix("3.46.0"));
+        assert!(!sqlite_has_wal_reset_fix("3.51.2"));
+        assert!(sqlite_has_wal_reset_fix("3.44.6"));
+        assert!(sqlite_has_wal_reset_fix("3.50.7"));
+        assert!(sqlite_has_wal_reset_fix("3.51.3"));
+        assert!(sqlite_has_wal_reset_fix("3.53.3"));
+        assert!(!sqlite_has_wal_reset_fix("invalid"));
+    }
+
+    #[tokio::test]
+    async fn linked_sqlite_contains_wal_reset_fix() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(":memory:")
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        let version: String = sqlx::query_scalar("SELECT sqlite_version()")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(
+            sqlite_has_wal_reset_fix(&version),
+            "linked SQLite {version} is vulnerable to the WAL-reset race"
+        );
+    }
+
     async fn seed_identity_directory(store: &SqliteStore) {
         store
             .create_agent_bundle(
@@ -11047,6 +11183,82 @@ mod tests {
         let audit = store.inspect_recall_index("recall-context").await.unwrap();
         assert_eq!(audit.event_documents, 1);
         assert_eq!(audit.frame_documents, 1);
+    }
+
+    #[tokio::test]
+    async fn recall_fts_backfill_runs_once_and_records_its_migration() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap().to_string();
+        let store = SqliteStore::new(&path).await.unwrap();
+
+        // Simulate a database written by a build that already had the ordinary
+        // Recall Projection but had not yet completed the FTS backfill.
+        sqlx::query(
+            r#"INSERT INTO recall_documents
+               (context_id, document_kind, document_id, revision,
+                searchable_text, preview, retired, updated_sequence, state_hash)
+               VALUES ('legacy-context', 'frame', 'legacy-frame', 1,
+                       'legacy searchable text', 'legacy', 0, 1, 'legacy-hash')"#,
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "DELETE FROM recall_documents_fts WHERE context_id = 'legacy-context' AND document_id = 'legacy-frame'",
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM schema_migrations WHERE version = ?")
+            .bind(RECALL_FTS_BACKFILL_MIGRATION)
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        store.pool.close().await;
+        drop(store);
+
+        let migrated = SqliteStore::new(&path).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM recall_documents_fts WHERE context_id = 'legacy-context' AND document_id = 'legacy-frame'",
+            )
+            .fetch_one(&migrated.pool)
+            .await
+            .unwrap(),
+            1
+        );
+        let first_applied_at = sqlx::query_scalar::<_, String>(
+            "SELECT applied_at FROM schema_migrations WHERE version = ?",
+        )
+        .bind(RECALL_FTS_BACKFILL_MIGRATION)
+        .fetch_one(&migrated.pool)
+        .await
+        .unwrap();
+        migrated.pool.close().await;
+        drop(migrated);
+
+        let reopened = SqliteStore::new(&path).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = ?",
+            )
+            .bind(RECALL_FTS_BACKFILL_MIGRATION)
+            .fetch_one(&reopened.pool)
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, String>(
+                "SELECT applied_at FROM schema_migrations WHERE version = ?",
+            )
+            .bind(RECALL_FTS_BACKFILL_MIGRATION)
+            .fetch_one(&reopened.pool)
+            .await
+            .unwrap(),
+            first_applied_at,
+            "subsequent startup must not rerun or rewrite the backfill marker"
+        );
     }
 
     async fn seed_schedule(store: &SqliteStore, suffix: &str) -> ScheduleRecord {
@@ -11405,6 +11617,108 @@ mod tests {
                 .status,
             ScheduleStatus::Completed
         );
+    }
+
+    #[tokio::test]
+    async fn migrates_pre_target_execution_jobs_before_creating_target_index() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let path = tmp_file.path().to_str().unwrap();
+        let legacy = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(path)
+                    .create_if_missing(true),
+            )
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"CREATE TABLE execution_jobs (
+                id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+                activation_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                context_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                initiating_principal_id TEXT,
+                tool_call_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                request_json TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN (
+                    'queued', 'waiting_approval', 'running', 'succeeded',
+                    'failed', 'cancelled', 'lost'
+                )),
+                retry_safety TEXT NOT NULL CHECK(retry_safety IN (
+                    'idempotent', 'reconcile_required', 'at_most_once'
+                )),
+                claimed_by TEXT,
+                claim_token TEXT,
+                lease_expires_at TEXT,
+                heartbeat_at TEXT,
+                approval_ref TEXT,
+                side_effect_started_at TEXT,
+                cancel_requested_at TEXT,
+                cancel_reason TEXT,
+                progress_ref TEXT,
+                result_event_id TEXT,
+                result_refs_json TEXT NOT NULL DEFAULT '[]',
+                error TEXT,
+                exit_code INTEGER,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                updated_at TEXT NOT NULL,
+                finished_at TEXT,
+                UNIQUE(activation_id, tool_call_id)
+            )"#,
+        )
+        .execute(&legacy)
+        .await
+        .unwrap();
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT INTO execution_jobs
+               (id, revision, activation_id, thread_id, agent_id, context_id,
+                session_id, tool_call_id, tool_name, request_json, status,
+                retry_safety, result_refs_json, created_at, updated_at)
+               VALUES ('legacy-job', 4, 'legacy-activation', 'legacy-thread',
+                       'legacy-agent', 'legacy-context', 'legacy-session',
+                       'legacy-call', 'read', '{}', 'succeeded', 'idempotent',
+                       '[]', ?, ?)"#,
+        )
+        .bind(&now)
+        .bind(&now)
+        .execute(&legacy)
+        .await
+        .unwrap();
+        legacy.close().await;
+
+        let migrated = SqliteStore::new(path).await.unwrap();
+        let target_id = sqlx::query_scalar::<_, String>(
+            "SELECT target_id FROM execution_jobs WHERE id = 'legacy-job'",
+        )
+        .fetch_one(&migrated.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            target_id,
+            crate::execution_target::DEFAULT_EXECUTION_TARGET_ID
+        );
+        let target_index = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_execution_jobs_target_status'",
+        )
+        .fetch_one(&migrated.pool)
+        .await
+        .unwrap();
+        assert_eq!(target_index, 1);
+        let migration_record = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM schema_migrations WHERE version = ?",
+        )
+        .bind(EXECUTION_TARGET_MIGRATION)
+        .fetch_one(&migrated.pool)
+        .await
+        .unwrap();
+        assert_eq!(migration_record, 1);
     }
 
     #[tokio::test]
@@ -15217,6 +15531,91 @@ mod tests {
                 .unwrap()
                 .status,
             SessionStatus::Archived
+        );
+    }
+
+    #[tokio::test]
+    async fn archiving_context_atomically_archives_its_sessions_without_deleting_history() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "context-archive-1".to_string(),
+                agent_id: "agent-main".to_string(),
+                title: "可归档 Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "session-archive-1".to_string(),
+                agent_id: "agent-main".to_string(),
+                context_id: "context-archive-1".to_string(),
+                parent_session_id: None,
+                title: "仍有历史的会话".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        store
+            .append(Event::new(
+                "event-archive-1".to_string(),
+                "user".to_string(),
+                crate::event::TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                [
+                    (
+                        "context_id".to_string(),
+                        serde_json::json!("context-archive-1"),
+                    ),
+                    (
+                        "session_id".to_string(),
+                        serde_json::json!("session-archive-1"),
+                    ),
+                    ("text".to_string(), serde_json::json!("保留我")),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await
+            .unwrap();
+
+        let archived = store
+            .update_context(
+                "context-archive-1",
+                ContextUpdate {
+                    title: Some("已归档 Context".to_string()),
+                    status: Some(SessionStatus::Archived),
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(archived.title, "已归档 Context");
+        assert_eq!(archived.status, SessionStatus::Archived);
+        assert!(store.list_contexts(false).await.unwrap().is_empty());
+        assert_eq!(
+            store
+                .get_session("session-archive-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SessionStatus::Archived
+        );
+        assert_eq!(
+            store
+                .query(QueryFilter {
+                    session_id: Some("session-archive-1".to_string()),
+                    ..QueryFilter::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
         );
     }
 

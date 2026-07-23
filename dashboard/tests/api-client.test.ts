@@ -41,6 +41,25 @@ test('DashboardApiClient preserves status and Runtime error detail', async () =>
   )
 })
 
+test('DashboardApiClient reads the structured SDK error envelope', async () => {
+  const client = new DashboardApiClient({
+    baseUrl: 'http://runtime.test',
+    fetchImpl: (async () => new Response(JSON.stringify({
+      error: { code: 'conflict', message: '根 Context 不能归档' },
+    }), {
+      status: 409,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch,
+  })
+
+  await assert.rejects(
+    client.command('/api/contexts/context-default', 'PATCH', { status: 'archived' }),
+    (error: unknown) => error instanceof DashboardApiError
+      && error.status === 409
+      && error.message === '根 Context 不能归档',
+  )
+})
+
 test('DashboardApiClient invokes a host fetch without rebinding its receiver', async () => {
   const hostFetch = function (this: unknown) {
     assert.equal(this, undefined)

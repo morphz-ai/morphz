@@ -1,8 +1,9 @@
 use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT};
 use crate::llm::ToolDefinition;
 use crate::memory::{
-    EventStore, NewObjective, NewRuntimeTimer, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
+    EventStore, ExecutionJobRecord, ExecutionJobStore, NewObjective, NewRuntimeTimer,
+    ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
+    QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
 };
 use crate::orchestrator::context::ContextEngine;
 use crate::timer::{TimerDisposition, TimerEngine};
@@ -410,7 +411,10 @@ impl Tool for ObjectiveUpdateTool {
                                 "type": "object",
                                 "properties": {
                                     "kind": { "const": "tool_task" },
-                                    "task_id": { "type": "string" }
+                                    "task_id": {
+                                        "type": "string",
+                                        "description": "只能原样使用 exec 返回 execution=background 时明确给出的 task_id。同步 execution=completed 没有可等待任务；禁止使用 artifact_path 文件名、execution_job_id 或自行推测的 ID。"
+                                    }
                                 },
                                 "required": ["kind", "task_id"]
                             },
@@ -546,6 +550,9 @@ impl Tool for ObjectiveUpdateTool {
                 let wait_condition = args.wait_condition.ok_or(
                     "status=active 的 objective_update 必须携带确定性 wait_condition；无需等待时继续执行，不要提交空状态更新",
                 )?;
+                self.supervisor
+                    .validate_wait_condition(&objective, &wait_condition)
+                    .await?;
                 (ObjectiveStatus::Active, Some(wait_condition))
             }
         };
@@ -784,6 +791,7 @@ fn canonical_activation_id(attempt_id: &str) -> &str {
 pub struct ObjectiveSupervisor {
     store: Arc<dyn ObjectiveStore>,
     audit_store: Arc<dyn EventStore>,
+    execution_jobs: Option<Arc<dyn ExecutionJobStore>>,
     bus: Arc<InMemoryEventBus>,
     evaluations: Arc<ObjectiveEvaluationRegistry>,
     timers: Arc<TimerEngine>,
@@ -807,6 +815,7 @@ impl ObjectiveSupervisor {
         Self {
             store,
             audit_store,
+            execution_jobs: None,
             bus,
             evaluations,
             timers,
@@ -815,6 +824,90 @@ impl ObjectiveSupervisor {
             external_wait_subscriptions: DashMap::new(),
             started: AtomicBool::new(false),
         }
+    }
+
+    /// Attach the authoritative physical execution projection.  Objective
+    /// `tool_task` waits are control-plane dependencies, so an arbitrary model
+    /// supplied string must never become a durable wait without resolving to a
+    /// real Runtime-managed background ExecutionJob.
+    pub fn with_execution_job_store(mut self, store: Arc<dyn ExecutionJobStore>) -> Self {
+        self.execution_jobs = Some(store);
+        self
+    }
+
+    async fn resolve_tool_task_wait(
+        &self,
+        objective: &ObjectiveRecord,
+        task_id: &str,
+    ) -> Result<ExecutionJobRecord, DynError> {
+        let task_id = task_id.trim();
+        if task_id.is_empty() {
+            return Err("tool_task.task_id 不能为空".into());
+        }
+        let store = self
+            .execution_jobs
+            .as_ref()
+            .ok_or("当前 Runtime 未配置 ExecutionJob Store，不能建立可验证的 tool_task 等待")?;
+        let job = store
+            .get_execution_job(task_id)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "tool_task '{}' 不存在。只能使用 execution=background 工具结果中 Runtime 明确返回的 task_id；不能使用 artifact_path、同步命令 ID 或自行推测的 ID",
+                    task_id
+                )
+            })?;
+        if job.context_id != objective.context_id
+            || job.session_id != objective.coordinator_session_id
+            || job.agent_id != objective.agent_id
+        {
+            return Err(format!(
+                "tool_task '{}' 不属于当前 Objective 的 Agent/Context/Session，拒绝建立跨路由等待",
+                task_id
+            )
+            .into());
+        }
+        if objective.initiating_principal_id.is_some()
+            && job.initiating_principal_id != objective.initiating_principal_id
+        {
+            return Err(format!(
+                "tool_task '{}' 不属于当前 Objective 的身份主体，拒绝建立跨身份等待",
+                task_id
+            )
+            .into());
+        }
+        if job.tool_name != "exec/background" {
+            return Err(format!(
+                "ExecutionJob '{}' 是 '{}'，不是可等待的 Runtime 后台任务；只有 execution=background 返回的 task_id 可用于 tool_task",
+                task_id, job.tool_name
+            )
+            .into());
+        }
+        Ok(job)
+    }
+
+    pub async fn validate_wait_condition(
+        &self,
+        objective: &ObjectiveRecord,
+        wait: &ObjectiveWaitCondition,
+    ) -> Result<(), DynError> {
+        let ObjectiveWaitCondition::ToolTask { task_id } = wait else {
+            return Ok(());
+        };
+        let job = self.resolve_tool_task_wait(objective, task_id).await?;
+        if job.status.is_terminal() {
+            return Err(format!(
+                "tool_task '{}' 已经结束（status={}{}），不能再登记等待；请根据现有结果继续推进 Objective",
+                task_id,
+                job.status.as_str(),
+                job.result_event_id
+                    .as_deref()
+                    .map(|event_id| format!(", result_event_id={event_id}"))
+                    .unwrap_or_default()
+            )
+            .into());
+        }
+        Ok(())
     }
 
     pub fn register_timer_handlers(self: &Arc<Self>) -> Result<(), DynError> {
@@ -1402,6 +1495,17 @@ impl ObjectiveSupervisor {
         if let Some(wait) = &objective.wait_condition {
             self.cancel_lease_timer(&objective.id).await?;
             match wait {
+                ObjectiveWaitCondition::ToolTask { task_id } => {
+                    let task_id = task_id.clone();
+                    self.cancel_wait_timer(&objective.id).await?;
+                    self.remove_external_wait_subscription(&objective.id);
+                    if self
+                        .reconcile_tool_task_wait(objective.clone(), &task_id)
+                        .await?
+                    {
+                        return Ok(());
+                    }
+                }
                 ObjectiveWaitCondition::Timer { deadline } => {
                     self.remove_external_wait_subscription(&objective.id);
                     self.schedule_wait_timer(&objective, *deadline).await?;
@@ -1431,6 +1535,110 @@ impl ObjectiveSupervisor {
             self.revoke_local_evaluation(&objective);
         }
         self.schedule(objective.id).await
+    }
+
+    /// Reconcile the durable Objective wait against the authoritative
+    /// ExecutionJob projection.  This closes both races around wait
+    /// installation and the restart gap where a terminal result Event was
+    /// committed before this process subscribed to the EventBus.
+    ///
+    /// Returns `true` when the wait was consumed (or a concurrent Objective
+    /// revision was reconciled) and `false` when a live task still owns it.
+    async fn reconcile_tool_task_wait(
+        self: &Arc<Self>,
+        objective: ObjectiveRecord,
+        task_id: &str,
+    ) -> Result<bool, DynError> {
+        let Some(store) = self.execution_jobs.as_ref() else {
+            // Tests and embedders which do not enable physical execution keep
+            // their previous event-driven behavior.  The production Runtime
+            // always attaches its ExecutionJob Store.
+            return Ok(false);
+        };
+        let job = store.get_execution_job(task_id).await?;
+        let (event_kind, caused_by, reason) = match job {
+            Some(job)
+                if job.context_id == objective.context_id
+                    && job.session_id == objective.coordinator_session_id
+                    && job.agent_id == objective.agent_id
+                    && (objective.initiating_principal_id.is_none()
+                        || job.initiating_principal_id == objective.initiating_principal_id)
+                    && job.tool_name == "exec/background"
+                    && !job.status.is_terminal() =>
+            {
+                return Ok(false);
+            }
+            Some(job)
+                if job.context_id == objective.context_id
+                    && job.session_id == objective.coordinator_session_id
+                    && job.agent_id == objective.agent_id
+                    && (objective.initiating_principal_id.is_none()
+                        || job.initiating_principal_id == objective.initiating_principal_id)
+                    && job.tool_name == "exec/background"
+                    && job.status.is_terminal() =>
+            {
+                (
+                    "wait_satisfied",
+                    job.result_event_id.clone(),
+                    format!(
+                        "后台工具任务 '{}' 已处于终态 {}{}；Runtime 已解除等待并继续求值",
+                        task_id,
+                        job.status.as_str(),
+                        job.result_event_id
+                            .as_deref()
+                            .map(|event_id| format!("，结果事件 {event_id}"))
+                            .unwrap_or_default()
+                    ),
+                )
+            }
+            Some(job) => (
+                "wait_invalidated",
+                None,
+                format!(
+                    "tool_task '{}' 指向不属于当前 Objective 的可等待后台任务（tool={}, status={}）；Runtime 已取消无效等待",
+                    task_id,
+                    job.tool_name,
+                    job.status.as_str()
+                ),
+            ),
+            None => (
+                "wait_invalidated",
+                None,
+                format!(
+                    "tool_task '{}' 不存在；Runtime 已取消旧版或无效等待。只能使用 execution=background 明确返回的 task_id",
+                    task_id
+                ),
+            ),
+        };
+        let mutation = self
+            .store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Active,
+                None,
+                Some(&reason),
+            )
+            .await?;
+        match mutation {
+            ObjectiveMutation::Updated(woken) => {
+                tracing::warn!(
+                    objective_id = %woken.id,
+                    task_id,
+                    event_kind,
+                    reason,
+                    "Objective tool_task 等待已由 ExecutionJob 权威状态收口"
+                );
+                self.publish_state_event(event_kind, &woken, caused_by.as_deref())
+                    .await?;
+                Box::pin(self.reconcile(woken)).await?;
+            }
+            ObjectiveMutation::Conflict { current } => {
+                Box::pin(self.reconcile(current)).await?;
+            }
+            ObjectiveMutation::NotFound => {}
+        }
+        Ok(true)
     }
 
     async fn claim_routed_evaluation(
@@ -1903,7 +2111,15 @@ fn wait_matches_event(wait: &ObjectiveWaitCondition, event: &Event) -> bool {
             payload_str("task_id") == Some(task_id.as_str())
                 && matches!(
                     payload_str("task_status"),
-                    Some("succeeded" | "failed" | "killed")
+                    Some(
+                        "success"
+                            | "succeeded"
+                            | "failed"
+                            | "cancelled"
+                            | "killed"
+                            | "lost"
+                            | "timeout"
+                    )
                 )
         }
         ObjectiveWaitCondition::Delegation { delegation_id } => {
@@ -1939,10 +2155,113 @@ mod tests {
     use super::*;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        NewAgent, NewCognitiveContext, NewSession, SessionDirectoryStore as _, SessionMountKind,
-        TimerStore,
+        ActivationStore as _, ExecutionJobStatus, ExecutionJobTerminal, ExecutionRetrySafety,
+        NewAgent, NewCognitiveContext, NewExecutionJob, NewSession, NewThread, NewThreadActivation,
+        SessionDirectoryStore as _, SessionMountKind, ThreadKind, ThreadStore as _, TimerStore,
     };
     use tempfile::NamedTempFile;
+
+    async fn seed_objective_bundle(store: &SqliteStore, suffix: &str) -> ObjectiveRecord {
+        let agent_id = format!("agent-{suffix}");
+        let context_id = format!("context-{suffix}");
+        let session_id = format!("session-{suffix}");
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: agent_id.clone(),
+                    title: "Objective Agent".to_string(),
+                    root_context_id: context_id.clone(),
+                },
+                NewCognitiveContext {
+                    id: context_id.clone(),
+                    agent_id: agent_id.clone(),
+                    title: "Objective Context".to_string(),
+                },
+                NewSession {
+                    id: session_id.clone(),
+                    agent_id: agent_id.clone(),
+                    context_id: context_id.clone(),
+                    parent_session_id: None,
+                    title: "Objective Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .create_objective(NewObjective {
+                id: format!("objective-{suffix}"),
+                agent_id,
+                context_id,
+                coordinator_session_id: session_id.clone(),
+                delivery_session_id: session_id,
+                parent_objective_id: None,
+                source_event_id: format!("source-{suffix}"),
+                initiating_principal_id: None,
+                stated_objective: "验证后台任务等待".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap()
+    }
+
+    async fn seed_background_execution_job(
+        store: &SqliteStore,
+        objective: &ObjectiveRecord,
+        suffix: &str,
+    ) -> ExecutionJobRecord {
+        let thread_id = format!("thread-{suffix}");
+        let activation_id = format!("activation-{suffix}");
+        let root_turn_id = format!("root-{suffix}");
+        store
+            .ensure_thread(NewThread {
+                id: thread_id.clone(),
+                agent_id: objective.agent_id.clone(),
+                context_id: objective.context_id.clone(),
+                session_id: objective.coordinator_session_id.clone(),
+                initiating_principal_id: objective.initiating_principal_id.clone(),
+                root_turn_id: root_turn_id.clone(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+            })
+            .await
+            .unwrap();
+        store
+            .ensure_thread_activation(NewThreadActivation {
+                id: activation_id.clone(),
+                agent_id: objective.agent_id.clone(),
+                context_id: objective.context_id.clone(),
+                session_id: objective.coordinator_session_id.clone(),
+                initiating_principal_id: objective.initiating_principal_id.clone(),
+                trigger_event_id: format!("trigger-{suffix}"),
+                trigger_sequence: 1,
+                trigger_kind: "chat/tool_output".to_string(),
+                parent_activation_id: None,
+                root_turn_id,
+            })
+            .await
+            .unwrap();
+        store
+            .create_execution_job(NewExecutionJob {
+                id: format!("job-{suffix}"),
+                activation_id,
+                thread_id,
+                agent_id: objective.agent_id.clone(),
+                context_id: objective.context_id.clone(),
+                session_id: objective.coordinator_session_id.clone(),
+                initiating_principal_id: objective.initiating_principal_id.clone(),
+                target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+                tool_call_id: format!("call-{suffix}"),
+                tool_name: "exec/background".to_string(),
+                request: json!({"kind":"background_exec"}),
+                retry_safety: ExecutionRetrySafety::ReconcileRequired,
+                requires_approval: false,
+            })
+            .await
+            .unwrap()
+    }
 
     #[tokio::test]
     async fn startup_recovers_a_persisted_external_wake_that_was_never_dispatched() {
@@ -2085,6 +2404,212 @@ mod tests {
                 .get("principal_id")
                 .and_then(serde_json::Value::as_str),
             Some("principal:recovery-user")
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_task_wait_accepts_only_live_runtime_background_jobs() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "tool-wait-validation").await;
+        let job = seed_background_execution_job(&store, &objective, "tool-wait-live").await;
+        let supervisor = ObjectiveSupervisor::new(
+            Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            Arc::new(InMemoryEventBus::new()),
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+            Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+            std::time::Duration::from_secs(600),
+        )
+        .with_execution_job_store(Arc::clone(&store) as Arc<dyn ExecutionJobStore>);
+
+        supervisor
+            .validate_wait_condition(
+                &objective,
+                &ObjectiveWaitCondition::ToolTask {
+                    task_id: job.id.clone(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let missing = supervisor
+            .validate_wait_condition(
+                &objective,
+                &ObjectiveWaitCondition::ToolTask {
+                    task_id: "job-from-artifact-name".to_string(),
+                },
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(missing.contains("不存在"));
+        assert!(missing.contains("execution=background"));
+
+        let terminal = store
+            .finish_execution_job(
+                &job.id,
+                job.revision,
+                None,
+                ExecutionJobTerminal {
+                    status: ExecutionJobStatus::Cancelled,
+                    result_event_id: Some("result-tool-wait-live".to_string()),
+                    result_refs: Vec::new(),
+                    error: Some("cancelled by test".to_string()),
+                    exit_code: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            terminal,
+            crate::memory::ExecutionJobMutation::Updated(_)
+        ));
+        let ended = supervisor
+            .validate_wait_condition(
+                &objective,
+                &ObjectiveWaitCondition::ToolTask { task_id: job.id },
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(ended.contains("已经结束"));
+        assert!(ended.contains("result-tool-wait-live"));
+    }
+
+    #[tokio::test]
+    async fn startup_invalidates_a_missing_tool_task_wait_and_resumes_objective() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "missing-tool-wait").await;
+        let waiting = store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Active,
+                Some(ObjectiveWaitCondition::ToolTask {
+                    task_id: "job-from-synchronous-artifact".to_string(),
+                }),
+                Some("旧版 Runtime 接受了未经验证的 task_id"),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(waiting, ObjectiveMutation::Updated(_)));
+
+        let supervisor = Arc::new(
+            ObjectiveSupervisor::new(
+                Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::new(InMemoryEventBus::new()),
+                Arc::new(ObjectiveEvaluationRegistry::default()),
+                Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+                std::time::Duration::from_secs(600),
+            )
+            .with_execution_job_store(Arc::clone(&store) as Arc<dyn ExecutionJobStore>),
+        );
+        supervisor.start().await.unwrap();
+
+        let recovered = store.get_objective(&objective.id).await.unwrap().unwrap();
+        assert!(recovered.wait_condition.is_none());
+        assert!(recovered.active_evaluation_id.is_some());
+        assert!(recovered
+            .status_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("不存在")));
+        let invalidated = store
+            .query(QueryFilter {
+                context_id: Some(objective.context_id),
+                topic: Some("objective/wait_invalidated".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(invalidated.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn startup_consumes_a_terminal_tool_task_wait_from_execution_projection() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "terminal-tool-wait").await;
+        let job = seed_background_execution_job(&store, &objective, "terminal-tool-wait").await;
+        let terminal = store
+            .finish_execution_job(
+                &job.id,
+                job.revision,
+                None,
+                ExecutionJobTerminal {
+                    status: ExecutionJobStatus::Cancelled,
+                    result_event_id: Some("terminal-tool-result".to_string()),
+                    result_refs: Vec::new(),
+                    error: Some("cancelled before wait registration".to_string()),
+                    exit_code: None,
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            terminal,
+            crate::memory::ExecutionJobMutation::Updated(_)
+        ));
+        store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Active,
+                Some(ObjectiveWaitCondition::ToolTask { task_id: job.id }),
+                Some("模拟任务终态与等待登记竞态"),
+            )
+            .await
+            .unwrap();
+
+        let supervisor = Arc::new(
+            ObjectiveSupervisor::new(
+                Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::new(InMemoryEventBus::new()),
+                Arc::new(ObjectiveEvaluationRegistry::default()),
+                Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+                std::time::Duration::from_secs(600),
+            )
+            .with_execution_job_store(Arc::clone(&store) as Arc<dyn ExecutionJobStore>),
+        );
+        supervisor.start().await.unwrap();
+
+        let recovered = store.get_objective(&objective.id).await.unwrap().unwrap();
+        assert!(recovered.wait_condition.is_none());
+        assert!(recovered.active_evaluation_id.is_some());
+        assert!(recovered
+            .status_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("terminal-tool-result")));
+        let satisfied = store
+            .query(QueryFilter {
+                context_id: Some(objective.context_id),
+                topic: Some("objective/wait_satisfied".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(satisfied.len(), 1);
+        assert_eq!(
+            satisfied[0]
+                .payload
+                .get("reason")
+                .and_then(serde_json::Value::as_str),
+            Some("terminal-tool-result")
         );
     }
 
@@ -2327,6 +2852,14 @@ mod tests {
         };
         assert!(!wait_matches_event(&task_wait, &running));
         assert!(wait_matches_event(&task_wait, &completed));
+        assert!(wait_matches_event(
+            &task_wait,
+            &event(
+                TYPE_TOOL_OUTPUT,
+                "chat/tool_output",
+                json!({"task_id":"task-1","task_status":"cancelled"}),
+            )
+        ));
 
         let user_wait = ObjectiveWaitCondition::UserInput {
             session_id: "session-b".to_string(),

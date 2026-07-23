@@ -366,6 +366,7 @@ async fn parent() -> Result<(), ProbeError> {
             kind: ThreadKind::Execution,
             executor_kind: "runtime".to_string(),
             executor_id: None,
+            target_id: None,
         })
         .await?;
     let activation = store
@@ -391,6 +392,7 @@ async fn parent() -> Result<(), ProbeError> {
             context_id: context_id.clone(),
             session_id: session_id.clone(),
             initiating_principal_id: None,
+            target_id: morphz::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
             tool_call_id: format!("process-probe-crash-call-{suffix}"),
             tool_name: "read".to_string(),
             request: json!({"path": "README.md"}),

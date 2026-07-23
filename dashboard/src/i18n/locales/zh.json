@@ -191,15 +191,27 @@
     "noSession": "未选择会话",
     "visibleContexts": "可用上下文",
     "contextsForAgent": "当前代理有 {{count}} 个",
+    "contextCount": "{{count}} 个上下文",
     "noVisibleContexts": "当前代理还没有可用上下文",
     "inspectContext": "查看认知",
+    "inspectNamedContext": "查看上下文“{{title}}”的认知",
+    "renameContext": "重命名上下文",
+    "renameNamedContext": "重命名上下文“{{title}}”",
+    "archiveContext": "归档上下文",
+    "archiveNamedContext": "归档上下文“{{title}}”",
+    "rootContextCannotArchive": "Agent 的根上下文不能归档",
     "createContext": "新建上下文",
     "creatingContext": "正在创建…",
     "newContextTitle": "新上下文 {{count}}",
     "visibleSessions": "可见会话",
     "sessionsInContext": "此上下文中有 {{count}} 个",
+    "sessionCount": "{{count}} 个会话",
     "noVisibleSessions": "当前上下文还没有会话",
     "createSession": "新建会话",
+    "renameSession": "重命名会话",
+    "renameNamedSession": "重命名会话“{{title}}”",
+    "archiveSession": "归档会话",
+    "archiveNamedSession": "归档会话“{{title}}”",
     "creatingSession": "正在创建…",
     "newSessionTitle": "新会话 {{count}}",
     "active": "活跃",
@@ -257,7 +269,11 @@
   },
   "model": {
     "unavailable": "模型不可用",
-    "tokens": "{{used}} / {{limit}}"
+    "tokens": "{{used}} / {{limit}}",
+    "pressureTokens": "Prompt 压力估算：{{used}} / {{limit}} · {{source}}",
+    "actualUsageTitle": "Provider 真实用量（最近 {{attempts}} 次）：输入 {{input}}，输出 {{output}}，缓存命中 {{cached}}",
+    "actualCost": "费用 {{amount}} {{currency}}（价格版本 {{version}}）",
+    "costUnavailable": "未配置价格，只统计真实词元"
   },
   "connection": {
     "connected": "已连接",
@@ -389,7 +405,10 @@
       "stateMismatch": "状态异常",
       "approvedWithoutOwner": "审批已经通过，但对应的求值或线程已经结束，结果已无处交付；运行时将在恢复阶段安全收口该作业。",
       "terminalApprovalMismatch": "执行作业仍在等待审批，但审批权威状态已经是 {{status}}；这不是可再次审批的请求。",
-      "missingApproval": "执行作业声称正在等待审批，但没有对应的审批权威记录；这不是可操作的审批请求。"
+      "missingApproval": "执行作业声称正在等待审批，但没有对应的审批权威记录；这不是可操作的审批请求。",
+      "inspect": "查看因果链",
+      "acknowledge": "确认已知",
+      "acknowledging": "正在确认"
     },
     "approvals": {
       "title": "能力审批",
@@ -473,6 +492,7 @@
       "tabsLabel": "求值上下文组成",
       "tabs": {
         "encoding": "上下文编码",
+        "attribution": "占用归因",
         "messages": "消息",
         "tools": "工具",
         "mind": "心智",
@@ -718,18 +738,37 @@
   "reason": {
     "resumeByUser": "用户通过控制台显式恢复目标",
     "deleteByUser": "用户通过控制台删除目标",
+    "attentionAcknowledged": "用户已查看该精确版本的问题并确认已知；保留审计历史",
     "approval": {
       "allow_once": "用户通过控制台仅批准这一次能力申请",
       "deny": "用户通过控制台拒绝能力申请"
     }
   },
   "dialog": {
+    "nameLabel": "名称",
+    "optional": "可留空",
+    "renameContext": "输入新的上下文名称",
+    "archiveContext": "归档上下文“{{title}}”？\n\n其中的会话也会一并归档；事件账本、认知投影和审计记录仍会保留。",
+    "renameSession": "输入新的会话名称",
+    "archiveSession": "归档会话“{{title}}”？\n\n历史消息与审计记录仍会保留。",
     "deleteObjectiveTitle": "删除这个目标？",
     "deleteObjectiveBody": "{{objective}}\n\n删除会立即停止它的自动续跑；审计历史仍会保留。",
+    "denyApprovalTitle": "拒绝能力申请？",
     "denyApproval": "拒绝后该执行作业将无法使用申请的能力。确定拒绝？",
+    "cancelScheduleTitle": "取消调度计划？",
     "cancelSchedule": "取消后这个调度计划不会再触发。确定取消？",
     "rescheduleAt": "新的触发时间（标准时间或本地日期时间）",
-    "rescheduleInterval": "周期秒数；留空表示单次执行"
+    "rescheduleInterval": "周期秒数；留空表示单次执行",
+    "actions": {
+      "save": "保存",
+      "archive": "归档",
+      "delete": "删除",
+      "deny": "拒绝",
+      "continue": "继续",
+      "cancel": "取消",
+      "cancelSchedule": "取消计划",
+      "keep": "保留计划"
+    }
   },
   "nav": {
     "tasks": "打开任务视图 (Ctrl+T)",

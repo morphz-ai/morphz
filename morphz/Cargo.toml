@@ -14,7 +14,12 @@ reqwest = { version = "0.11", features = ["json", "stream"] }
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "5.5"
 futures-util = "0.3"
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "postgres", "chrono", "json"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "sqlite", "postgres", "chrono", "json"] }
+# SQLx 0.8.6's `sqlite` feature bundles SQLite 3.46.0. That release contains
+# the WAL-reset race fixed in 3.51.3. Keep SQLx's FFI surface and link a current
+# process-wide amalgamation; startup and a link-level test verify which version
+# actually won symbol resolution.
+libsqlite3-hotbundle = "1.530300.0"
 async-trait = "0.1"
 tower-http = { version = "0.5", features = ["compression-gzip", "cors"] }
 nix = { version = "0.31.3", features = ["signal", "process", "poll"] }

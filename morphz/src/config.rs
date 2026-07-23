@@ -268,6 +268,13 @@ pub struct OrchestratorConfig {
     /// 等待模型 Provider 并发槽位的最长时间。它只限制排队，不限制
     /// 已经持续产生流式数据的物理请求。
     pub model_provider_queue_timeout_secs: u64,
+    /// Thread Activation 的可续租 lease 时长（秒）。
+    ///
+    /// 这是故障检测窗口，不是模型或工具执行超时。持有进程内执行权的
+    /// Runtime 会在 lease 到期前续租；进程退出后，其他 Runtime 最多等待
+    /// 该窗口即可安全接管，避免把一次模型请求的完整时限误当成故障检测时限。
+    #[serde(deserialize_with = "deserialize_positive_u64")]
+    pub activation_lease_secs: u64,
     /// 单次物理模型请求的可选绝对墙钟上限。None 表示不设置 hard
     /// deadline；流式停滞仍由 Provider 的 idle timeout 检测。
     pub model_attempt_hard_timeout_secs: Option<u64>,
@@ -312,6 +319,7 @@ impl Default for OrchestratorConfig {
             reply_wait_notice_secs: 120,
             tool_timeout_secs: 30,
             model_provider_queue_timeout_secs: 180,
+            activation_lease_secs: 30,
             model_attempt_hard_timeout_secs: None,
             reasoning_continuation_safety_limit: Some(64),
             max_stalled_reasoning_continuations: 3,
@@ -637,6 +645,36 @@ impl Default for LlmConfig {
     }
 }
 
+/// Optional, operator-supplied pricing catalog. Morphz never guesses model
+/// prices: without an exact model entry the accounting API exposes tokens but
+/// leaves monetary cost absent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct UsagePricingConfig {
+    pub currency: String,
+    pub models: BTreeMap<String, ModelUsagePrice>,
+}
+
+impl Default for UsagePricingConfig {
+    fn default() -> Self {
+        Self {
+            currency: "USD".to_string(),
+            models: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelUsagePrice {
+    /// Operator-defined catalog version, for example `2026-07-01`.
+    pub version: String,
+    pub input_per_million: Option<f64>,
+    pub cached_input_per_million: Option<f64>,
+    pub cache_write_input_per_million: Option<f64>,
+    pub output_per_million: Option<f64>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModelProtocol {
@@ -837,6 +875,7 @@ pub struct AppConfig {
     pub storage: StorageConfig,
     pub orchestrator: OrchestratorConfig,
     pub llm: LlmConfig,
+    pub usage_pricing: UsagePricingConfig,
     pub providers: BTreeMap<String, ProviderConfig>,
     pub credentials: BTreeMap<String, CredentialConfig>,
     pub permissions: PermissionConfig,
@@ -1567,6 +1606,10 @@ impl AppConfig {
             "MORPHZ_REPLY_WAIT_NOTICE_SECS",
             &mut self.orchestrator.reply_wait_notice_secs,
         )?;
+        apply_u64_env(
+            "MORPHZ_ACTIVATION_LEASE_SECS",
+            &mut self.orchestrator.activation_lease_secs,
+        )?;
         apply_usize_env(
             "MORPHZ_ATTEMPT_SOFT_CHECKPOINT_INTERVAL",
             &mut self.orchestrator.attempt_soft_checkpoint_interval,
@@ -2048,6 +2091,7 @@ mod tests {
         assert_eq!(cfg.llm.max_output_tokens, None);
         assert_eq!(cfg.llm.reasoning_effort, None);
         assert_eq!(cfg.orchestrator.reply_wait_notice_secs, 120);
+        assert_eq!(cfg.orchestrator.activation_lease_secs, 30);
         assert_eq!(cfg.orchestrator.attempt_soft_checkpoint_interval, 90);
         assert_eq!(
             cfg.orchestrator

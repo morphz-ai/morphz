@@ -2,8 +2,8 @@ use crate::config::{
     AppConfig, CredentialConfig, CredentialSource, LlmConfig, ModelProtocol, ProviderConfig,
 };
 use crate::llm::{
-    Client, Message, ModelStreamEvent, ModelStreamSender, PromptTokenAccuracy, PromptTokenCount,
-    ReasoningEffort, Response, ToolCallRepr, ToolDefinition,
+    Client, Message, ModelStreamEvent, ModelStreamSender, ModelUsage, PromptTokenAccuracy,
+    PromptTokenCount, ReasoningEffort, Response, ToolCallRepr, ToolDefinition,
 };
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -822,15 +822,36 @@ fn signed_token_delta(value: usize, baseline: usize) -> i64 {
     }
 }
 
-fn anthropic_prompt_tokens(usage: &Value) -> Option<u64> {
-    [
-        "input_tokens",
-        "cache_creation_input_tokens",
-        "cache_read_input_tokens",
+fn subtract_optional(total: Option<u64>, subset: Option<u64>) -> Option<u64> {
+    match (total, subset) {
+        (Some(total), Some(subset)) => Some(total.saturating_sub(subset)),
+        (Some(total), None) => Some(total),
+        _ => None,
+    }
+}
+
+fn anthropic_usage(usage: &Value) -> ModelUsage {
+    let uncached_input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
+    let cache_write_input_tokens = usage
+        .get("cache_creation_input_tokens")
+        .and_then(Value::as_u64);
+    let cached_input_tokens = usage.get("cache_read_input_tokens").and_then(Value::as_u64);
+    let input_tokens = [
+        uncached_input_tokens,
+        cache_write_input_tokens,
+        cached_input_tokens,
     ]
     .into_iter()
-    .filter_map(|field| usage.get(field).and_then(Value::as_u64))
-    .reduce(u64::saturating_add)
+    .flatten()
+    .reduce(u64::saturating_add);
+    ModelUsage {
+        input_tokens,
+        uncached_input_tokens,
+        cached_input_tokens,
+        cache_write_input_tokens,
+        raw: vec![usage.clone()],
+        ..ModelUsage::default()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -840,6 +861,7 @@ struct StreamAccumulator {
     gemini_tool_index: usize,
     terminal: bool,
     prompt_tokens: Option<u64>,
+    usage: ModelUsage,
 }
 
 #[derive(Debug, Default)]
@@ -942,22 +964,13 @@ impl StreamAccumulator {
         }
     }
 
-    fn usage(
-        &mut self,
-        prompt_tokens: Option<u64>,
-        completion_tokens: Option<u64>,
-        total_tokens: Option<u64>,
-        stream: &ModelStreamSender,
-    ) {
-        if let Some(prompt_tokens) = prompt_tokens {
-            self.prompt_tokens = Some(prompt_tokens);
+    fn usage(&mut self, usage: ModelUsage, stream: &ModelStreamSender) {
+        if let Some(input_tokens) = usage.input_tokens {
+            self.prompt_tokens = Some(input_tokens);
         }
-        if prompt_tokens.is_some() || completion_tokens.is_some() || total_tokens.is_some() {
-            let _ = stream.send(ModelStreamEvent::Usage {
-                prompt_tokens,
-                completion_tokens,
-                total_tokens,
-            });
+        if usage.has_usage() {
+            self.usage.merge_from(&usage);
+            let _ = stream.send(ModelStreamEvent::Usage { usage });
         }
     }
 
@@ -981,10 +994,23 @@ impl StreamAccumulator {
         stream: &ModelStreamSender,
     ) -> Result<(), ProviderError> {
         if let Some(usage) = event.get("usage") {
+            let input_tokens = usage.get("prompt_tokens").and_then(Value::as_u64);
+            let cached_input_tokens = usage
+                .pointer("/prompt_tokens_details/cached_tokens")
+                .and_then(Value::as_u64);
             self.usage(
-                usage.get("prompt_tokens").and_then(Value::as_u64),
-                usage.get("completion_tokens").and_then(Value::as_u64),
-                usage.get("total_tokens").and_then(Value::as_u64),
+                ModelUsage {
+                    input_tokens,
+                    uncached_input_tokens: subtract_optional(input_tokens, cached_input_tokens),
+                    cached_input_tokens,
+                    output_tokens: usage.get("completion_tokens").and_then(Value::as_u64),
+                    reasoning_tokens: usage
+                        .pointer("/completion_tokens_details/reasoning_tokens")
+                        .and_then(Value::as_u64),
+                    total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+                    raw: vec![usage.clone()],
+                    ..ModelUsage::default()
+                },
                 stream,
             );
         }
@@ -1121,10 +1147,26 @@ impl StreamAccumulator {
             "response.completed" => {
                 self.terminal = true;
                 if let Some(usage) = event.pointer("/response/usage") {
+                    let input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
+                    let cached_input_tokens = usage
+                        .pointer("/input_tokens_details/cached_tokens")
+                        .and_then(Value::as_u64);
                     self.usage(
-                        usage.get("input_tokens").and_then(Value::as_u64),
-                        usage.get("output_tokens").and_then(Value::as_u64),
-                        usage.get("total_tokens").and_then(Value::as_u64),
+                        ModelUsage {
+                            input_tokens,
+                            uncached_input_tokens: subtract_optional(
+                                input_tokens,
+                                cached_input_tokens,
+                            ),
+                            cached_input_tokens,
+                            output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
+                            reasoning_tokens: usage
+                                .pointer("/output_tokens_details/reasoning_tokens")
+                                .and_then(Value::as_u64),
+                            total_tokens: usage.get("total_tokens").and_then(Value::as_u64),
+                            raw: vec![usage.clone()],
+                            ..ModelUsage::default()
+                        },
                         stream,
                     );
                 }
@@ -1149,7 +1191,7 @@ impl StreamAccumulator {
         match kind {
             "message_start" => {
                 let usage = event.pointer("/message/usage").unwrap_or(&Value::Null);
-                self.usage(anthropic_prompt_tokens(usage), None, None, stream);
+                self.usage(anthropic_usage(usage), stream);
             }
             "content_block_start" => {
                 let index = event.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
@@ -1197,12 +1239,13 @@ impl StreamAccumulator {
                 {
                     return Err("Anthropic 流因 max_tokens 被截断".into());
                 }
+                let usage = event.pointer("/usage").unwrap_or(&Value::Null);
                 self.usage(
-                    None,
-                    event
-                        .pointer("/usage/output_tokens")
-                        .and_then(Value::as_u64),
-                    None,
+                    ModelUsage {
+                        output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
+                        raw: vec![usage.clone()],
+                        ..ModelUsage::default()
+                    },
                     stream,
                 );
             }
@@ -1220,9 +1263,21 @@ impl StreamAccumulator {
     ) -> Result<(), ProviderError> {
         if let Some(usage) = event.get("usageMetadata") {
             self.usage(
-                usage.get("promptTokenCount").and_then(Value::as_u64),
-                usage.get("candidatesTokenCount").and_then(Value::as_u64),
-                usage.get("totalTokenCount").and_then(Value::as_u64),
+                ModelUsage {
+                    input_tokens: usage.get("promptTokenCount").and_then(Value::as_u64),
+                    cached_input_tokens: usage
+                        .get("cachedContentTokenCount")
+                        .and_then(Value::as_u64),
+                    uncached_input_tokens: subtract_optional(
+                        usage.get("promptTokenCount").and_then(Value::as_u64),
+                        usage.get("cachedContentTokenCount").and_then(Value::as_u64),
+                    ),
+                    output_tokens: usage.get("candidatesTokenCount").and_then(Value::as_u64),
+                    reasoning_tokens: usage.get("thoughtsTokenCount").and_then(Value::as_u64),
+                    total_tokens: usage.get("totalTokenCount").and_then(Value::as_u64),
+                    raw: vec![usage.clone()],
+                    ..ModelUsage::default()
+                },
                 stream,
             );
         }
@@ -2392,6 +2447,28 @@ mod tests {
                 event,
                 ModelStreamEvent::ToolArgumentsDelta { delta, .. } if delta.contains("done")
             )));
+            let mut normalized_usage = ModelUsage::default();
+            for event in &events {
+                if let ModelStreamEvent::Usage { usage } = event {
+                    normalized_usage.merge_from(usage);
+                }
+            }
+            assert_eq!(
+                normalized_usage.input_tokens,
+                Some(10),
+                "protocol={protocol:?}"
+            );
+            assert_eq!(
+                normalized_usage.output_tokens,
+                Some(4),
+                "protocol={protocol:?}"
+            );
+            assert_eq!(
+                normalized_usage.total_tokens,
+                Some(14),
+                "protocol={protocol:?}"
+            );
+            assert!(!normalized_usage.raw.is_empty(), "protocol={protocol:?}");
             let reasoning_summaries = events
                 .iter()
                 .filter_map(|event| match event {

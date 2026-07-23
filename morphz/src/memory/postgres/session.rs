@@ -1,9 +1,9 @@
 use super::{now_text, parse_time, PostgresStore, StoreError};
 use crate::memory::{
-    AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, NewAgent, NewCognitiveContext,
-    NewPrincipal, NewSession, PrincipalRecord, SessionAttentionState, SessionAttentionUpdate,
-    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionRecord, SessionStatus,
-    SessionUpdate,
+    AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, ContextUpdate, NewAgent,
+    NewCognitiveContext, NewPrincipal, NewSession, PrincipalRecord, SessionAttentionState,
+    SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
+    SessionRecord, SessionStatus, SessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgRow;
@@ -499,6 +499,47 @@ impl SessionDirectoryStore for PostgresStore {
             .iter()
             .map(context_from_row)
             .collect()
+    }
+
+    async fn update_context(
+        &self,
+        id: &str,
+        update: ContextUpdate,
+    ) -> Result<Option<CognitiveContextRecord>, StoreError> {
+        if update.title.is_none() && update.status.is_none() {
+            return self.get_context(id).await;
+        }
+        let Some(existing) = self.get_context(id).await? else {
+            return Ok(None);
+        };
+        let title = update.title.unwrap_or(existing.title);
+        let status = update.status.unwrap_or(existing.status);
+        let now = now_text();
+        let mut tx = self.pool.begin().await?;
+        let result = sqlx::query(
+            "UPDATE cognitive_contexts SET title = $1, status = $2, updated_at = $3 WHERE id = $4",
+        )
+        .bind(title)
+        .bind(status.as_str())
+        .bind(&now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+        if status == SessionStatus::Archived {
+            sqlx::query(
+                "UPDATE sessions SET status = 'archived', updated_at = $1 WHERE context_id = $2 AND status != 'archived'",
+            )
+            .bind(&now)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        self.get_context(id).await
     }
 
     async fn set_context_seed(

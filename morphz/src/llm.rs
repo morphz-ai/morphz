@@ -77,6 +77,93 @@ pub struct Response {
     pub tool_calls: Vec<ToolCallRepr>,
 }
 
+/// Provider 返回的一次模型请求真实用量的规范化表示。
+///
+/// 这些值是计费与审计事实，不参与伪装成精确值的本地 Prompt 估算。
+/// `raw` 保留 Provider 原始 usage 对象，以免规范化暂未覆盖的新字段丢失。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ModelUsage {
+    /// Provider 计入本次请求的全部输入 Token，包含缓存命中部分。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    /// 未从 Provider 缓存读取的输入 Token（若协议可区分）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncached_input_tokens: Option<u64>,
+    /// 从 Provider 缓存读取的输入 Token（若协议可区分）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<u64>,
+    /// 本次写入 Provider 缓存的输入 Token（若协议可区分）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    /// 输出 Token 中用于推理的子集（若协议可区分）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raw: Vec<JsonValue>,
+}
+
+impl ModelUsage {
+    pub fn has_usage(&self) -> bool {
+        self.input_tokens.is_some()
+            || self.uncached_input_tokens.is_some()
+            || self.cached_input_tokens.is_some()
+            || self.cache_write_input_tokens.is_some()
+            || self.output_tokens.is_some()
+            || self.reasoning_tokens.is_some()
+            || self.total_tokens.is_some()
+            || !self.raw.is_empty()
+    }
+
+    /// 合并流式协议分多次返回的 usage。标量字段采用最新非空值，原始
+    /// Provider 对象全部保留，保证 Anthropic 等分段 usage 可被完整审计。
+    pub fn merge_from(&mut self, newer: &Self) {
+        self.input_tokens = newer.input_tokens.or(self.input_tokens);
+        self.uncached_input_tokens = newer.uncached_input_tokens.or(self.uncached_input_tokens);
+        self.cached_input_tokens = newer.cached_input_tokens.or(self.cached_input_tokens);
+        self.cache_write_input_tokens = newer
+            .cache_write_input_tokens
+            .or(self.cache_write_input_tokens);
+        self.output_tokens = newer.output_tokens.or(self.output_tokens);
+        self.reasoning_tokens = newer.reasoning_tokens.or(self.reasoning_tokens);
+        self.total_tokens = newer.total_tokens.or(self.total_tokens);
+        self.raw.extend(newer.raw.iter().cloned());
+        // Anthropic 等协议会把输入与输出 usage 分别放在流首、流尾，且不
+        // 一定提供 total。两部分都是 Provider 原始事实时，其算术和仍是
+        // 精确值，不能在统计层错误地显示为 0。
+        if self.total_tokens.is_none() {
+            self.total_tokens = self
+                .input_tokens
+                .zip(self.output_tokens)
+                .map(|(input, output)| input.saturating_add(output));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ModelUsage;
+
+    #[test]
+    fn split_provider_usage_merges_into_an_exact_total() {
+        let mut usage = ModelUsage {
+            input_tokens: Some(10),
+            raw: vec![serde_json::json!({"input_tokens": 10})],
+            ..Default::default()
+        };
+        usage.merge_from(&ModelUsage {
+            output_tokens: Some(4),
+            raw: vec![serde_json::json!({"output_tokens": 4})],
+            ..Default::default()
+        });
+        assert_eq!(usage.total_tokens, Some(14));
+        assert_eq!(usage.raw.len(), 2);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ModelStreamEvent {
@@ -106,9 +193,7 @@ pub enum ModelStreamEvent {
         index: usize,
     },
     Usage {
-        prompt_tokens: Option<u64>,
-        completion_tokens: Option<u64>,
-        total_tokens: Option<u64>,
+        usage: ModelUsage,
     },
     Completed,
     Failed {

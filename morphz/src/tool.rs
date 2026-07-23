@@ -891,6 +891,12 @@ impl BackgroundTaskScheduler {
             {
                 JobReceipt::Applied { .. } | JobReceipt::Existing { .. } => {
                     self.events.append_with_signal_outbox(event.clone()).await?;
+                    // The in-memory task must remain non-terminal until its
+                    // completion Event is durable. Otherwise an Evaluation
+                    // finishing concurrently can observe "0 active tasks",
+                    // commit no_reply, and terminalize the Thread before this
+                    // causal result reaches its mailbox.
+                    mark_background_task_terminal(task_id, exit_code);
                     self.bus.dispatch_persisted(event).await?;
                     return Ok(true);
                 }
@@ -2491,6 +2497,28 @@ pub(crate) fn active_background_task_count_for_root(
         })
         .filter(|task| !task.status.is_terminal())
         .count()
+}
+
+fn mark_background_task_terminal(task_id: &str, exit_code: i32) -> BackgroundTaskStatus {
+    let tasks = get_tasks_map();
+    let status = if tasks
+        .get(task_id)
+        .is_some_and(|task| task.status == BackgroundTaskStatus::KillRequested)
+    {
+        BackgroundTaskStatus::Killed
+    } else if exit_code == 0 {
+        BackgroundTaskStatus::Succeeded
+    } else {
+        BackgroundTaskStatus::Failed
+    };
+    if let Some(mut task) = tasks.get_mut(task_id) {
+        task.status = status;
+        task.exit_code = Some(exit_code);
+        task.ended_at = Some(chrono::Utc::now());
+        task.wake_generation = task.wake_generation.wrapping_add(1);
+        task.next_wakeup_at = None;
+    }
+    status
 }
 
 const MAX_TASK_WAIT_SECS: u64 = 365 * 24 * 60 * 60;
@@ -5120,23 +5148,6 @@ impl Tool for ExecuteCommandTool {
                         Ok(false) => "",
                         Err(_) => "\n[Runtime 无法确认 Shell 退出后的进程组是否已完整清理。]",
                     };
-                    let final_status = if tasks_cleanup
-                        .get(&task_id_cleanup)
-                        .is_some_and(|task| task.status == BackgroundTaskStatus::KillRequested)
-                    {
-                        BackgroundTaskStatus::Killed
-                    } else if code == 0 {
-                        BackgroundTaskStatus::Succeeded
-                    } else {
-                        BackgroundTaskStatus::Failed
-                    };
-                    if let Some(mut task) = tasks_cleanup.get_mut(&task_id_cleanup) {
-                        task.status = final_status;
-                        task.exit_code = Some(code);
-                        task.ended_at = Some(chrono::Utc::now());
-                        task.wake_generation = task.wake_generation.wrapping_add(1);
-                        task.next_wakeup_at = None;
-                    }
                     if let Some(scheduler) = &background_scheduler_cleanup {
                         if scheduler.execution_jobs.is_some() {
                             match scheduler
@@ -5160,6 +5171,12 @@ impl Tool for ExecuteCommandTool {
                         }
                         scheduler.cancel(&task_id_cleanup).await;
                     }
+                    // Legacy (non-ExecutionJob) tasks publish directly through
+                    // the EventBus, so finalize them immediately before that
+                    // publication. The durable ExecutionJob path above is
+                    // finalized inside finish_background_execution only after
+                    // its completion Event has been appended atomically.
+                    let final_status = mark_background_task_terminal(&task_id_cleanup, code);
                     let effective_boundary = tasks_cleanup.get(&task_id_cleanup).map(|task| {
                         serde_json::json!({
                             "network_enabled": task.effective_network,
@@ -5940,6 +5957,129 @@ impl Tool for DelegateTool {
 // ==========================================
 pub struct ListSkillsTool;
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct SkillCatalogEntry {
+    name: String,
+    description: String,
+    path: String,
+}
+
+fn unquote_frontmatter_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        trimmed[1..trimmed.len() - 1].to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn parse_skill_frontmatter(default_name: &str, content: &str) -> (String, String) {
+    let mut name = default_name.to_string();
+    let mut description = "无详细描述".to_string();
+    let Some(stripped) = content.strip_prefix("---") else {
+        return (name, description);
+    };
+    let Some(end_idx) = stripped.find("---") else {
+        return (name, description);
+    };
+    let lines = stripped[..end_idx].lines().collect::<Vec<_>>();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        let Some((raw_key, raw_value)) = line.split_once(':') else {
+            index += 1;
+            continue;
+        };
+        let key = raw_key.trim();
+        let value = raw_value.trim();
+        if key == "name" {
+            let parsed = unquote_frontmatter_value(value);
+            if !parsed.is_empty() {
+                name = parsed;
+            }
+        } else if key == "description" {
+            if value == ">" || value == "|-" || value == "|" || value == ">-" {
+                let literal = value.starts_with('|');
+                let mut parts = Vec::new();
+                index += 1;
+                while index < lines.len() {
+                    let continuation = lines[index];
+                    if continuation.trim().is_empty() {
+                        index += 1;
+                        continue;
+                    }
+                    if !continuation.starts_with(' ') && !continuation.starts_with('\t') {
+                        index -= 1;
+                        break;
+                    }
+                    parts.push(continuation.trim());
+                    index += 1;
+                }
+                let parsed = if literal {
+                    parts.join("\n")
+                } else {
+                    parts.join(" ")
+                };
+                if !parsed.is_empty() {
+                    description = parsed;
+                }
+            } else {
+                let parsed = unquote_frontmatter_value(value);
+                if !parsed.is_empty() {
+                    description = parsed;
+                }
+            }
+        }
+        index += 1;
+    }
+    (name, description)
+}
+
+async fn discover_skills_in_roots(
+    roots: &[PathBuf],
+) -> Result<Vec<SkillCatalogEntry>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut skills = Vec::new();
+    for skills_dir in roots {
+        if !skills_dir.exists() {
+            continue;
+        }
+        let mut entries = match tokio::fs::read_dir(skills_dir).await {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let skill_md_path = path.join("SKILL.md");
+            if !skill_md_path.exists() {
+                continue;
+            }
+            let content = tokio::fs::read_to_string(&skill_md_path).await?;
+            let default_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("unknown");
+            let (name, description) = parse_skill_frontmatter(default_name, &content);
+            skills.push(SkillCatalogEntry {
+                name,
+                description,
+                path: skill_md_path.to_string_lossy().into_owned(),
+            });
+        }
+    }
+    skills.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok(skills)
+}
+
 #[async_trait::async_trait]
 impl Tool for ListSkillsTool {
     fn name(&self) -> &str {
@@ -5958,7 +6098,7 @@ impl Tool for ListSkillsTool {
 
         ToolDefinition {
             name: "list_skills".to_string(),
-            description: "扫描 ~/.agents/skills/ 和 ~/.morphz/skills/ 目录并列出当前可用的心智技能描述。大模型优先调用此工具发现新技能。".to_string(),
+            description: "按需发现当前安装的 Skill 能力目录。当本轮已有 Function Calling 工具不能直接满足当前意图，或直接能力明确失败时，在断言能力不可用之前调用。返回紧凑的 name/description/path 索引；选择最相关的一项后用 read 读取其 SKILL.md，并按说明调用真实工具。不要预读全部 Skill。".to_string(),
             parameters: params_json,
         }
     }
@@ -5973,65 +6113,19 @@ impl Tool for ListSkillsTool {
             paths_to_scan.push(home_path.join(".agents").join("skills"));
             paths_to_scan.push(home_path.join(".morphz").join("skills"));
         }
-
-        let mut skill_list = Vec::new();
-
-        for skills_dir in paths_to_scan {
-            if !skills_dir.exists() {
-                continue;
+        let skills = discover_skills_in_roots(&paths_to_scan).await?;
+        Ok(serde_json::json!({
+            "status": if skills.is_empty() { "empty" } else { "ok" },
+            "skills": skills,
+            "guidance": if paths_to_scan.is_empty() {
+                "HOME 未配置，无法定位 Skill 目录。"
+            } else if skills.is_empty() {
+                "当前 Skill 目录为空；如果本轮直接工具也不能满足意图，才可说明缺少对应能力。"
+            } else {
+                "按当前意图选择最相关的一项，用 read 读取其 path 指向的 SKILL.md；不要预读全部 Skill。"
             }
-
-            let mut entries = match tokio::fs::read_dir(&skills_dir).await {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-
-            while let Some(entry) = entries.next_entry().await? {
-                let path = entry.path();
-                if path.is_dir() {
-                    let skill_md_path = path.join("SKILL.md");
-                    if skill_md_path.exists() {
-                        let content = tokio::fs::read_to_string(&skill_md_path).await?;
-                        let mut name = path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown")
-                            .to_string();
-                        let mut description = "无详细描述".to_string();
-
-                        if let Some(stripped) = content.strip_prefix("---") {
-                            if let Some(end_idx) = stripped.find("---") {
-                                let yaml_part = &stripped[..end_idx];
-                                for line in yaml_part.lines() {
-                                    let parts: Vec<&str> = line.splitn(2, ':').collect();
-                                    if parts.len() == 2 {
-                                        let key = parts[0].trim();
-                                        let val = parts[1].trim().trim_matches('"');
-                                        if key == "name" {
-                                            name = val.to_string();
-                                        } else if key == "description" {
-                                            description = val.to_string();
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        skill_list.push(format!(
-                            "- 技能名称: {}\n  描述: {}\n  路径: {}",
-                            name,
-                            description,
-                            skill_md_path.to_string_lossy()
-                        ));
-                    }
-                }
-            }
-        }
-
-        if skill_list.is_empty() {
-            Ok("目前标准技能库 (~/.agents/skills/ 和 ~/.morphz/skills/) 目录为空，暂无可用的外部技能。".to_string())
-        } else {
-            Ok(format!("发现以下可用技能：\n\n{}", skill_list.join("\n")))
-        }
+        })
+        .to_string())
     }
 }
 
@@ -6063,6 +6157,73 @@ mod tests {
     #[cfg(target_os = "macos")]
     static MACOS_SANDBOX_EXEC_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     static SECRET_ENV_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[test]
+    fn skill_frontmatter_parser_supports_inline_and_folded_descriptions() {
+        let inline = r#"---
+name: compact-search
+description: "Find information using the smallest relevant capability."
+---
+Body
+"#;
+        assert_eq!(
+            parse_skill_frontmatter("fallback", inline),
+            (
+                "compact-search".to_string(),
+                "Find information using the smallest relevant capability.".to_string()
+            )
+        );
+
+        let folded = r#"---
+name: capability-router
+description: >
+  Discover a relevant capability only when direct tools are insufficient.
+  Read only the selected operational description.
+---
+Body
+"#;
+        assert_eq!(
+            parse_skill_frontmatter("fallback", folded),
+            (
+                "capability-router".to_string(),
+                "Discover a relevant capability only when direct tools are insufficient. Read only the selected operational description.".to_string()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_catalog_is_compact_structured_and_deterministic() {
+        let tmp = TempDir::new().unwrap();
+        for (directory, name, description) in [
+            ("z-last", "zeta", "Last capability"),
+            ("a-first", "alpha", "First capability"),
+        ] {
+            let skill_dir = tmp.path().join(directory);
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {description}\n---\n"),
+            )
+            .unwrap();
+        }
+
+        let skills = discover_skills_in_roots(&[tmp.path().to_path_buf()])
+            .await
+            .unwrap();
+        assert_eq!(
+            skills
+                .iter()
+                .map(|skill| skill.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "zeta"]
+        );
+        let encoded = serde_json::to_value(&skills).unwrap();
+        assert_eq!(encoded[0]["description"], "First capability");
+        assert!(encoded[0]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("a-first/SKILL.md"));
+    }
 
     #[tokio::test]
     async fn verify_identity_uses_runtime_route_not_model_supplied_session() {

@@ -191,15 +191,27 @@
     "noSession": "No Session selected",
     "visibleContexts": "Available Contexts",
     "contextsForAgent": "{{count}} for this Agent",
+    "contextCount": "{{count}} Contexts",
     "noVisibleContexts": "No available Contexts for this Agent",
     "inspectContext": "Inspect Mind",
+    "inspectNamedContext": "Inspect the Mind of Context “{{title}}”",
+    "renameContext": "Rename Context",
+    "renameNamedContext": "Rename Context “{{title}}”",
+    "archiveContext": "Archive Context",
+    "archiveNamedContext": "Archive Context “{{title}}”",
+    "rootContextCannotArchive": "An Agent's root Context cannot be archived",
     "createContext": "New Context",
     "creatingContext": "Creating…",
     "newContextTitle": "New Context {{count}}",
     "visibleSessions": "Visible Sessions",
     "sessionsInContext": "{{count}} in this Context",
+    "sessionCount": "{{count}} Sessions",
     "noVisibleSessions": "No Sessions in this Context yet",
     "createSession": "New Session",
+    "renameSession": "Rename Session",
+    "renameNamedSession": "Rename Session “{{title}}”",
+    "archiveSession": "Archive Session",
+    "archiveNamedSession": "Archive Session “{{title}}”",
     "creatingSession": "Creating…",
     "newSessionTitle": "New Session {{count}}",
     "active": "Active",
@@ -257,7 +269,11 @@
   },
   "model": {
     "unavailable": "model unavailable",
-    "tokens": "{{used}} / {{limit}}"
+    "tokens": "{{used}} / {{limit}}",
+    "pressureTokens": "Estimated prompt pressure: {{used}} / {{limit}} · {{source}}",
+    "actualUsageTitle": "Actual provider usage (latest {{attempts}} attempts): input {{input}}, output {{output}}, cache hits {{cached}}",
+    "actualCost": "Cost {{amount}} {{currency}} (pricing {{version}})",
+    "costUnavailable": "No pricing configured; only actual tokens are counted"
   },
   "connection": {
     "connected": "connected",
@@ -389,7 +405,10 @@
       "stateMismatch": "State mismatch",
       "approvedWithoutOwner": "Approval was granted, but the owning evaluation or Thread has already ended and can no longer receive the result. Runtime recovery will safely close this Job.",
       "terminalApprovalMismatch": "The Execution Job still says it is waiting for approval, but the approval authority is already {{status}}. This request cannot be approved again.",
-      "missingApproval": "The Execution Job says it is waiting for approval, but no approval authority record exists. This is not an actionable approval request."
+      "missingApproval": "The Execution Job says it is waiting for approval, but no approval authority record exists. This is not an actionable approval request.",
+      "inspect": "Inspect causal chain",
+      "acknowledge": "Acknowledge",
+      "acknowledging": "Acknowledging"
     },
     "approvals": {
       "title": "Capability Approval",
@@ -473,6 +492,7 @@
       "tabsLabel": "Evaluation context components",
       "tabs": {
         "encoding": "Context Encoding",
+        "attribution": "Attribution",
         "messages": "Messages",
         "tools": "Tools",
         "mind": "Mind",
@@ -712,18 +732,37 @@
   "reason": {
     "resumeByUser": "User explicitly resumed Objective via Dashboard",
     "deleteByUser": "User deleted Objective via Dashboard",
+    "attentionAcknowledged": "User reviewed and acknowledged this exact issue revision; audit history is retained",
     "approval": {
       "allow_once": "User allowed this capability request once via Dashboard",
       "deny": "User denied the capability request via Dashboard"
     }
   },
   "dialog": {
+    "nameLabel": "Name",
+    "optional": "Optional",
+    "renameContext": "Enter a new Context name",
+    "archiveContext": "Archive Context “{{title}}”?\n\nIts Sessions will be archived with it; the Event Ledger, cognition projections and audit records remain intact.",
+    "renameSession": "Enter a new Session name",
+    "archiveSession": "Archive Session “{{title}}”?\n\nMessage history and audit records remain intact.",
     "deleteObjectiveTitle": "Delete this Objective?",
     "deleteObjectiveBody": "{{objective}}\n\nDeletion will stop automatic reruns immediately; audit history is retained.",
+    "denyApprovalTitle": "Deny capability request?",
     "denyApproval": "Denying prevents this Execution Job from using the requested capability. Continue?",
+    "cancelScheduleTitle": "Cancel this Schedule?",
     "cancelSchedule": "This Schedule will not fire again after cancellation. Continue?",
     "rescheduleAt": "New trigger time (ISO or local date-time)",
-    "rescheduleInterval": "Interval in seconds; leave empty for one-shot"
+    "rescheduleInterval": "Interval in seconds; leave empty for one-shot",
+    "actions": {
+      "save": "Save",
+      "archive": "Archive",
+      "delete": "Delete",
+      "deny": "Deny",
+      "continue": "Continue",
+      "cancel": "Cancel",
+      "cancelSchedule": "Cancel Schedule",
+      "keep": "Keep Schedule"
+    }
   },
   "nav": {
     "tasks": "Open Tasks view (Ctrl+T)",

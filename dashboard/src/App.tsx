@@ -8,6 +8,7 @@ import remarkBreaks from 'remark-breaks'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
+  Archive,
   Bell,
   Brain,
   Check,
@@ -16,6 +17,7 @@ import {
   Clock3,
   Copy,
   Database,
+  Eye,
   GitBranch,
   Globe,
   Layers3,
@@ -24,6 +26,7 @@ import {
   Monitor,
   Moon,
   Palette,
+  Pencil,
   Play,
   Plus,
   Radio,
@@ -52,11 +55,12 @@ import {
   type ModelStreamBatchItem,
 } from './modelStream'
 import {
+  attentionDeliveryKey,
+  attentionJobKey,
   actionableSchedulerJobs,
   pendingHumanApprovals,
   schedulerApprovalAnomalies,
   schedulerAttentionJobs,
-  schedulerAttentionCount,
   schedulerSchedules,
   threadCarriesExecution,
 } from './scheduler/model'
@@ -83,7 +87,9 @@ import type { LedgerFilters } from './pages/LedgerPage'
 import { OverviewPage } from './pages/OverviewPage'
 import { RuntimePage } from './pages/RuntimePage'
 import { DashboardApiClient } from './api/client'
+import { resolveDashboardToken } from './api/auth'
 import { invalidatedQueriesForTopic } from './app/invalidation'
+import { copyTextToClipboard } from './utils/clipboard'
 import {
   compactTokens,
   conversationEventKind,
@@ -100,15 +106,60 @@ const configuredHttpUrl = import.meta.env.VITE_MORPHZ_HTTP_URL as string | undef
 const configuredWsUrl = import.meta.env.VITE_MORPHZ_WS_URL as string | undefined
 const CORE_HTTP_URL = (configuredHttpUrl ?? window.location.origin).replace(/\/$/, '')
 const CORE_WS_URL = configuredWsUrl ?? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
-const locationToken = new URLSearchParams(window.location.hash.replace(/^#/, '')).get('token')
-  ?? new URLSearchParams(window.location.search).get('token')
-  ?? undefined
-const CORE_TOKEN = locationToken ?? (import.meta.env.VITE_MORPHZ_TOKEN as string | undefined)
+let dashboardTokenStorage: Storage | undefined
+try {
+  dashboardTokenStorage = window.sessionStorage
+} catch {
+  // Sandboxed/privacy-restricted documents can deny sessionStorage entirely.
+}
+const CORE_TOKEN = resolveDashboardToken(
+  window.location,
+  dashboardTokenStorage,
+  import.meta.env.VITE_MORPHZ_TOKEN as string | undefined,
+)
 const DASHBOARD_API = new DashboardApiClient({ baseUrl: CORE_HTTP_URL, token: CORE_TOKEN })
 
 type AccentTheme = 'iris' | 'cyan' | 'coral' | 'mono'
 type AppearanceMode = 'system' | 'dark' | 'light'
-type ContextInspectTab = 'encoding' | 'messages' | 'tools' | 'mind' | 'inbox' | 'metadata'
+type ContextInspectTab = 'encoding' | 'attribution' | 'messages' | 'tools' | 'mind' | 'inbox' | 'metadata'
+
+interface AppDialogBase {
+  id: number
+  title: string
+  description?: string
+  confirmLabel: string
+  cancelLabel: string
+  tone?: 'default' | 'danger'
+  returnFocus: HTMLElement | null
+}
+
+interface AppConfirmDialog extends AppDialogBase {
+  kind: 'confirm'
+  resolve: (confirmed: boolean) => void
+}
+
+interface AppPromptDialog extends AppDialogBase {
+  kind: 'prompt'
+  defaultValue: string
+  inputLabel: string
+  allowEmpty?: boolean
+  placeholder?: string
+  resolve: (value: string | null) => void
+}
+
+type AppDialogRequest = AppConfirmDialog | AppPromptDialog
+
+interface AttentionAcknowledgement {
+  event_id: string
+  context_id: string
+  key: string
+  source_kind: string
+  source_id: string
+  source_revision: number
+  acknowledged_by: string
+  rationale?: string
+  acknowledged_at: string
+}
 
 const accentThemes: Array<{ id: AccentTheme; labelKey: string; descKey: string }> = [
   { id: 'cyan', labelKey: 'theme.cyan.label', descKey: 'theme.cyan.description' },
@@ -191,6 +242,101 @@ function MarkdownInline({ children }: { children: string }) {
     >
       {children}
     </ReactMarkdown>
+  )
+}
+
+function AppDialog({
+  request,
+  onResolve,
+}: {
+  request: AppDialogRequest
+  onResolve: (value: boolean | string | null) => void
+}) {
+  const [value, setValue] = useState(request.kind === 'prompt' ? request.defaultValue : '')
+  const inputRef = useRef<HTMLInputElement>(null)
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  const confirmRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (request.kind === 'prompt') {
+      inputRef.current?.focus()
+      inputRef.current?.select()
+    } else if (request.tone === 'danger') {
+      cancelRef.current?.focus()
+    } else {
+      confirmRef.current?.focus()
+    }
+  }, [request.kind, request.tone])
+
+  const cancel = () => onResolve(request.kind === 'confirm' ? false : null)
+  const confirm = () => {
+    if (request.kind === 'prompt') {
+      const normalized = value.trim()
+      if (!normalized && !request.allowEmpty) return
+      onResolve(normalized)
+      return
+    }
+    onResolve(true)
+  }
+
+  return (
+    <div
+      className="app-dialog-backdrop"
+      onMouseDown={event => {
+        if (event.target === event.currentTarget) cancel()
+      }}
+      onKeyDown={event => {
+        event.stopPropagation()
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          cancel()
+        } else if (event.key === 'Enter' && !(event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)) {
+          event.preventDefault()
+          confirm()
+        }
+      }}
+    >
+      <section
+        aria-describedby={request.description ? `app-dialog-description-${request.id}` : undefined}
+        aria-labelledby={`app-dialog-title-${request.id}`}
+        aria-modal="true"
+        className={`app-dialog ${request.tone === 'danger' ? 'is-danger' : ''}`}
+        role="dialog"
+      >
+        <header>
+          <div>
+            <small>MORPHZ</small>
+            <h2 id={`app-dialog-title-${request.id}`}>{request.title}</h2>
+          </div>
+          <button type="button" aria-label={request.cancelLabel} onClick={cancel}><X size={16} /></button>
+        </header>
+        {request.description && <p id={`app-dialog-description-${request.id}`}>{request.description}</p>}
+        {request.kind === 'prompt' && (
+          <label>
+            <span>{request.inputLabel}</span>
+            <input
+              ref={inputRef}
+              autoComplete="off"
+              value={value}
+              placeholder={request.placeholder}
+              onChange={event => setValue(event.target.value)}
+            />
+          </label>
+        )}
+        <footer>
+          <button ref={cancelRef} type="button" onClick={cancel}>{request.cancelLabel}</button>
+          <button
+            ref={confirmRef}
+            className={request.tone === 'danger' ? 'danger' : 'primary'}
+            disabled={request.kind === 'prompt' && !request.allowEmpty && !value.trim()}
+            type="button"
+            onClick={confirm}
+          >
+            {request.confirmLabel}
+          </button>
+        </footer>
+      </section>
+    </div>
   )
 }
 
@@ -501,6 +647,22 @@ interface ContextPressure {
   token_source?: string
 }
 
+interface ContextAttributionComponent {
+  kind: string
+  id: string
+  label: string
+  weight_units: number
+  estimated_tokens: number
+  share: number
+}
+
+interface ContextAttribution {
+  estimated_total_tokens: number
+  total_weight_units: number
+  weight_algorithm: string
+  components: ContextAttributionComponent[]
+}
+
 interface SessionWorkingSet {
   active_window_secs: number
   max_sessions: number
@@ -548,6 +710,7 @@ interface ContextOverviewResponse {
   retiring_frames: number
   retired_items: number
   pressure?: ContextPressure
+  attribution?: ContextAttribution
   objectives: ObjectiveRecord[]
   scheduler: SchedulerSnapshot['summary']
 }
@@ -559,6 +722,42 @@ interface LedgerQueryResponse {
   scanned_count: number
   scan_exhaustive: boolean
   next_after_sequence?: number
+  next_before_sequence?: number
+}
+
+interface ModelUsagePage {
+  records: Array<{
+    event_id: string
+    sequence?: number
+    timestamp: string
+    attempt_id: string
+    model?: string
+    usage: {
+      input_tokens?: number
+      uncached_input_tokens?: number
+      cached_input_tokens?: number
+      cache_write_input_tokens?: number
+      output_tokens?: number
+      reasoning_tokens?: number
+      total_tokens?: number
+    }
+  }>
+  totals: {
+    attempts: number
+    input_tokens: number
+    uncached_input_tokens: number
+    cached_input_tokens: number
+    cache_write_input_tokens: number
+    output_tokens: number
+    reasoning_tokens: number
+    total_tokens: number
+  }
+  cost_totals: Array<{
+    amount: number
+    currency: string
+    pricing_version: string
+    priced_attempts: number
+  }>
   next_before_sequence?: number
 }
 
@@ -578,6 +777,7 @@ interface ContextViewResponse {
   state: MindState
   observations: ContextObservation[]
   pressure: ContextPressure
+  attribution?: ContextAttribution
   sexpr?: string
 }
 
@@ -1233,6 +1433,8 @@ export default function App() {
   const [capabilityLeases, setCapabilityLeases] = useState<CapabilityLeaseSummary[]>([])
   const [executionJobs, setExecutionJobs] = useState<ExecutionJobSummary[]>([])
   const [schedulerSnapshot, setSchedulerSnapshot] = useState<SchedulerSnapshot | null>(null)
+  const [attentionAcknowledgements, setAttentionAcknowledgements] = useState<AttentionAcknowledgement[]>([])
+  const [acknowledgingAttentionKey, setAcknowledgingAttentionKey] = useState('')
   const [schedulerHistoryLimit, setSchedulerHistoryLimit] = useState(SCHEDULER_HISTORY_PAGE_SIZE)
   const [threadDetail, setThreadDetail] = useState<ThreadDetailResponse | null>(null)
   const [dialogueActivityOpen, setDialogueActivityOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.open', true)
@@ -1241,6 +1443,7 @@ export default function App() {
   const [projectionAudit, setProjectionAudit] = useState<MindProjectionAudit | null>(null)
   const [auditingProjection, setAuditingProjection] = useState(false)
   const [contextOverview, setContextOverview] = useState<ContextOverviewResponse | null>(null)
+  const [modelUsagePage, setModelUsagePage] = useState<ModelUsagePage | null>(null)
   const [ledgerPage, setLedgerPage] = useState<LedgerQueryResponse | null>(null)
   const [mindTransactionPage, setMindTransactionPage] = useState<LedgerQueryResponse | null>(null)
   const [ledgerFilters, setLedgerFilters] = useState<LedgerFilters>({ sessionId: '', principalId: '', threadId: '', activationId: '', actor: '', topic: '', search: '', afterSequence: '', startTime: '', endTime: '' })
@@ -1268,6 +1471,8 @@ export default function App() {
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
   const [creatingContext, setCreatingContext] = useState(false)
   const [creatingSession, setCreatingSession] = useState(false)
+  const [catalogMutationKey, setCatalogMutationKey] = useState('')
+  const [appDialog, setAppDialog] = useState<AppDialogRequest | null>(null)
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
   const [sending, setSending] = useState(false)
   const [changingReasoning, setChangingReasoning] = useState(false)
@@ -1296,9 +1501,71 @@ export default function App() {
   const contextSelectorRef = useRef<HTMLDivElement>(null)
   const sessionSelectorRef = useRef<HTMLDivElement>(null)
   const themeSelectorRef = useRef<HTMLDivElement>(null)
+  const appDialogRef = useRef<AppDialogRequest | null>(null)
+  const appDialogSequence = useRef(0)
   const selectedScopeRef = useRef({ sessionId: '', contextId: '' })
   const activeViewRef = useRef(view)
   const schedulerHistoryLimitRef = useRef(schedulerHistoryLimit)
+
+  const requestConfirmation = useCallback((options: {
+    title: string
+    description?: string
+    confirmLabel: string
+    cancelLabel: string
+    tone?: 'default' | 'danger'
+  }) => new Promise<boolean>(resolve => {
+    const previous = appDialogRef.current
+    if (previous) {
+      if (previous.kind === 'confirm') previous.resolve(false)
+      else previous.resolve(null)
+    }
+    const request: AppConfirmDialog = {
+      ...options,
+      id: ++appDialogSequence.current,
+      kind: 'confirm',
+      returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+      resolve,
+    }
+    appDialogRef.current = request
+    setAppDialog(request)
+  }), [])
+
+  const requestText = useCallback((options: {
+    title: string
+    description?: string
+    inputLabel: string
+    defaultValue?: string
+    allowEmpty?: boolean
+    placeholder?: string
+    confirmLabel: string
+    cancelLabel: string
+  }) => new Promise<string | null>(resolve => {
+    const previous = appDialogRef.current
+    if (previous) {
+      if (previous.kind === 'confirm') previous.resolve(false)
+      else previous.resolve(null)
+    }
+    const request: AppPromptDialog = {
+      ...options,
+      defaultValue: options.defaultValue ?? '',
+      id: ++appDialogSequence.current,
+      kind: 'prompt',
+      returnFocus: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+      resolve,
+    }
+    appDialogRef.current = request
+    setAppDialog(request)
+  }), [])
+
+  const resolveAppDialog = useCallback((value: boolean | string | null) => {
+    const request = appDialogRef.current
+    if (!request) return
+    appDialogRef.current = null
+    setAppDialog(null)
+    if (request.kind === 'confirm') request.resolve(value === true)
+    else request.resolve(typeof value === 'string' ? value : null)
+    window.setTimeout(() => request.returnFocus?.focus(), 0)
+  }, [])
   const authoritativeRefreshRef = useRef<(topic: string) => void>(() => {})
 
   useEffect(() => {
@@ -1352,9 +1619,13 @@ export default function App() {
       setCapabilityLeases(leasesResult?.leases ?? [])
       setExecutionJobs(jobsResult?.jobs ?? [])
       setSelectedAgentId(current => current || nextStatus.agent_id || nextAgents[0]?.id || '')
-      setSelectedContextId(current => current || nextStatus.context_id || nextContexts[0]?.id || '')
+      setSelectedContextId(current => {
+        if (current && nextContexts.some(item => item.id === current && item.status === 'active')) return current
+        if (nextContexts.some(item => item.id === nextStatus.context_id && item.status === 'active')) return nextStatus.context_id
+        return nextContexts.find(item => item.status === 'active')?.id ?? ''
+      })
       setSelectedSessionId(current => {
-        if (current && nextSessions.some(item => item.id === current)) return current
+        if (current && nextSessions.some(item => item.id === current && item.status === 'active')) return current
         const contextId = nextStatus.context_id || nextContexts[0]?.id
         return nextSessions
           .filter(item => item.context_id === contextId && item.status === 'active')
@@ -1479,6 +1750,13 @@ export default function App() {
         applySchedulerSnapshot(scheduler)
       })
       const requests = [
+        DASHBOARD_API.tryGet<{ acknowledgements?: AttentionAcknowledgement[] }>(
+          `/api/contexts/${encodeURIComponent(contextId)}/attention/acknowledgements`,
+        ).then(result => {
+          if (result && isCurrentScope()) {
+            setAttentionAcknowledgements(result.acknowledgements ?? [])
+          }
+        }),
         DASHBOARD_API.tryGet<{ events?: MorphzEvent[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/events?limit=1000`)
           .then(eventsResult => {
             if (!eventsResult || !isCurrentScope()) return
@@ -1489,6 +1767,11 @@ export default function App() {
               dispatchModelStream({ type: 'persisted', sessionId, causalId: summary.attemptId })
             }
           }),
+        DASHBOARD_API.tryGet<ModelUsagePage>(
+          `/api/contexts/${encodeURIComponent(contextId)}/model-usage?session_id=${encodeURIComponent(sessionId)}&limit=100`,
+        ).then(result => {
+          if (result && isCurrentScope()) setModelUsagePage(result)
+        }),
         overviewRequest,
         ...(includeTerminal
           ? [DASHBOARD_API.get<SchedulerSnapshot>(
@@ -2355,6 +2638,14 @@ export default function App() {
     () => schedulerSnapshot?.threads ?? [],
     [schedulerSnapshot],
   )
+  const acknowledgedAttentionKeys = useMemo(
+    () => new Set(
+      attentionAcknowledgements
+        .filter(item => item.context_id === selectedContextId)
+        .map(item => item.key),
+    ),
+    [attentionAcknowledgements, selectedContextId],
+  )
   const dialogueActivityObjectives = [...activeObjectives].sort((left, right) => {
     const leftCurrent = left.coordinator_session_id === selectedSessionId || left.delivery_session_id === selectedSessionId
     const rightCurrent = right.coordinator_session_id === selectedSessionId || right.delivery_session_id === selectedSessionId
@@ -2364,10 +2655,9 @@ export default function App() {
   const { dialogueActivityThreads, dialogueActivityHistoryThreads } = useMemo(() => {
     const phaseRank: Record<SchedulerThreadSnapshot['phase'], number> = { running: 0, runnable: 1, waiting: 2, idle: 3 }
     const executionBearingThreads = schedulerThreads.filter(threadCarriesExecution)
-    const active = executionBearingThreads.filter(snapshot => (
-        snapshot.phase !== 'idle'
-        || snapshot.thread.lifecycle === 'open'
-    ))
+    // Thread lifecycle and Scheduler phase are deliberately orthogonal. An
+    // open+idle Thread may accept future Signals, but it is not executing now.
+    const active = executionBearingThreads.filter(snapshot => snapshot.phase !== 'idle')
     const activeIds = new Set(active.map(snapshot => snapshot.thread.id))
     const history = executionBearingThreads
       .filter(snapshot => !activeIds.has(snapshot.thread.id))
@@ -2387,9 +2677,7 @@ export default function App() {
   }, [schedulerThreads, selectedSessionId])
   const showDialogueActivity = Boolean(selectedContextId && selectedSessionId)
   const visibleSchedulerThreads = useMemo(() => {
-    const active = schedulerThreads.filter(snapshot => (
-      snapshot.phase !== 'idle' || snapshot.thread.lifecycle === 'open'
-    ))
+    const active = schedulerThreads.filter(snapshot => snapshot.phase !== 'idle')
     const activeIds = new Set(active.map(snapshot => snapshot.thread.id))
     const recentHistory = schedulerThreads
       .filter(snapshot => !activeIds.has(snapshot.thread.id))
@@ -2412,22 +2700,24 @@ export default function App() {
     for (const snapshot of visibleSchedulerThreads) {
       const jobs = snapshot.activations.flatMap(activation => activation.jobs)
       const needsAttention = jobs.some(job => (
-        job.approval?.status === 'pending_human'
-        || job.job.status === 'failed'
-        || job.job.status === 'lost'
+        job.approval?.status === 'pending_human' || (
+          (job.job.status === 'failed' || job.job.status === 'lost')
+          && !acknowledgedAttentionKeys.has(attentionJobKey('execution_job', job))
+        )
       )) || (
         snapshot.thread.lifecycle === 'completed'
         && !['none', 'delivered'].includes(snapshot.thread.delivery_status)
+        && !acknowledgedAttentionKeys.has(attentionDeliveryKey(snapshot))
       )
       if (needsAttention) groups.attention.push(snapshot)
       else if (snapshot.phase === 'running') groups.running.push(snapshot)
       else if (snapshot.phase === 'runnable') groups.runnable.push(snapshot)
-      else if (snapshot.phase === 'waiting' || snapshot.thread.lifecycle === 'open') groups.waiting.push(snapshot)
+      else if (snapshot.phase === 'waiting') groups.waiting.push(snapshot)
       else groups.recent.push(snapshot)
     }
     return (Object.entries(groups) as Array<[keyof typeof groups, SchedulerThreadSnapshot[]]>)
       .filter(([, snapshots]) => snapshots.length > 0)
-  }, [visibleSchedulerThreads])
+  }, [acknowledgedAttentionKeys, visibleSchedulerThreads])
   const derivedThreadsByRootTurn = useMemo(() => {
     const byRootTurn = new Map<string, SchedulerThreadSnapshot[]>()
     for (const snapshot of schedulerThreads) {
@@ -2457,13 +2747,20 @@ export default function App() {
   const actionableJobRows = actionableSchedulerJobs(schedulerSnapshot)
   const pendingApprovals = pendingHumanApprovals(schedulerSnapshot)
   const approvalAnomalies = schedulerApprovalAnomalies(schedulerSnapshot)
-  const attentionCount = schedulerAttentionCount(schedulerSnapshot)
+    .filter(snapshot => !acknowledgedAttentionKeys.has(attentionJobKey('approval_anomaly', snapshot)))
   const failedSchedulerJobs = schedulerAttentionJobs(schedulerSnapshot)
-  const failedDeliveries = schedulerThreads.filter(item => (
-    item.thread.lifecycle === 'completed'
-    && item.thread.delivery_status !== 'none'
-    && item.thread.delivery_status !== 'delivered'
-  ))
+    .filter(snapshot => !acknowledgedAttentionKeys.has(attentionJobKey('execution_job', snapshot)))
+  const failedDeliveries = schedulerThreads.filter(item => {
+    if (item.thread.delivery_status === 'none' || item.thread.delivery_status === 'delivered') return false
+    const failedActivation = item.activations.some(activation => activation.activation.status === 'failed')
+    const unresolved = item.thread.lifecycle === 'completed'
+      || (item.thread.lifecycle === 'open' && item.phase === 'idle' && failedActivation)
+    return unresolved && !acknowledgedAttentionKeys.has(attentionDeliveryKey(item))
+  })
+  const attentionCount = pendingApprovals.length
+    + approvalAnomalies.length
+    + failedSchedulerJobs.length
+    + failedDeliveries.length
   const runningActivations = activations.filter(item => item.status === 'queued' || item.status === 'running')
   const contextDelegations = delegations.filter(item => item.parent_context_id === selectedContextId)
   const liveDelegations = contextDelegations.filter(item => !terminalTaskStatuses.has(item.status))
@@ -2505,6 +2802,8 @@ export default function App() {
           : contextEncoding?.session_id === selectedSessionId
             ? contextEncoding.encoding
             : contextView?.sexpr ?? ''
+      case 'attribution':
+        return JSON.stringify(contextInspectPayload?.attribution ?? contextView?.attribution ?? {}, null, 2)
       case 'messages':
         return contextInspectPayload?.messages === undefined
           ? t('mindView.contextInspect.notRetained')
@@ -2588,7 +2887,7 @@ export default function App() {
     return () => container.removeEventListener('wheel', handleWheel)
   }, [view])
 
-  const activateContext = useCallback((context: ContextRecord) => {
+  const activateContext = useCallback((context: ContextRecord, destination?: DashboardView) => {
     const nextSession = sessions
       .filter(item => item.context_id === context.id && item.status === 'active')
       .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))[0]
@@ -2606,7 +2905,8 @@ export default function App() {
     setSelectedFrameId('')
     setContextMenuOpen(false)
     setSessionMenuOpen(false)
-    navigate(dashboardPath(nextSession ? 'dialogue' : 'overview', context.id, nextSession?.id))
+    const nextView = destination ?? (nextSession ? 'dialogue' : 'overview')
+    navigate(dashboardPath(nextView, context.id, nextSession?.id, nextView === 'cognition' ? 'mind' : undefined))
     window.setTimeout(() => composerInputRef.current?.focus(), 0)
   }, [navigate, sessions])
 
@@ -2695,10 +2995,142 @@ export default function App() {
     navigate(dashboardPath('dialogue', session.context_id, session.id))
   }
 
+  const renameContext = async (context: ContextRecord) => {
+    const requested = await requestText({
+      title: t('header.renameContext'),
+      description: t('dialog.renameContext'),
+      inputLabel: t('dialog.nameLabel'),
+      defaultValue: context.title,
+      confirmLabel: t('dialog.actions.save'),
+      cancelLabel: t('dialog.actions.cancel'),
+    })
+    const title = requested?.trim()
+    if (!title || title === context.title) return
+    const mutationKey = `context:${context.id}:rename`
+    setCatalogMutationKey(mutationKey)
+    try {
+      const updated = await DASHBOARD_API.command<ContextRecord>(
+        `/api/contexts/${encodeURIComponent(context.id)}`,
+        'PATCH',
+        { title },
+      )
+      setContexts(current => current.map(item => item.id === updated.id ? updated : item))
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setCatalogMutationKey('')
+    }
+  }
+
+  const archiveContext = async (context: ContextRecord) => {
+    if (selectedAgent?.root_context_id === context.id) return
+    const confirmed = await requestConfirmation({
+      title: t('header.archiveContext'),
+      description: t('dialog.archiveContext', { title: context.title }),
+      confirmLabel: t('dialog.actions.archive'),
+      cancelLabel: t('dialog.actions.cancel'),
+      tone: 'danger',
+    })
+    if (!confirmed) return
+    const mutationKey = `context:${context.id}:archive`
+    setCatalogMutationKey(mutationKey)
+    try {
+      const archived = await DASHBOARD_API.command<ContextRecord>(
+        `/api/contexts/${encodeURIComponent(context.id)}`,
+        'PATCH',
+        { status: 'archived' },
+      )
+      setContexts(current => current.map(item => item.id === archived.id ? archived : item))
+      setSessions(current => current.map(item => item.context_id === archived.id
+        ? { ...item, status: 'archived' }
+        : item))
+      if (selectedContextId === archived.id) {
+        const fallback = visibleContexts.find(item => item.id !== archived.id)
+        if (fallback) activateContext(fallback)
+        else {
+          setSelectedContextId('')
+          setSelectedSessionId('')
+          setContextMenuOpen(false)
+          setSessionMenuOpen(false)
+          navigate(dashboardPath('overview'))
+        }
+      }
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setCatalogMutationKey('')
+    }
+  }
+
+  const renameSession = async (session: SessionRecord) => {
+    const requested = await requestText({
+      title: t('header.renameSession'),
+      description: t('dialog.renameSession'),
+      inputLabel: t('dialog.nameLabel'),
+      defaultValue: session.title,
+      confirmLabel: t('dialog.actions.save'),
+      cancelLabel: t('dialog.actions.cancel'),
+    })
+    const title = requested?.trim()
+    if (!title || title === session.title) return
+    const mutationKey = `session:${session.id}:rename`
+    setCatalogMutationKey(mutationKey)
+    try {
+      const updated = await DASHBOARD_API.command<SessionRecord>(
+        `/api/sessions/${encodeURIComponent(session.id)}`,
+        'PATCH',
+        { title },
+      )
+      setSessions(current => current.map(item => item.id === updated.id ? updated : item))
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setCatalogMutationKey('')
+    }
+  }
+
+  const archiveSession = async (session: SessionRecord) => {
+    const confirmed = await requestConfirmation({
+      title: t('header.archiveSession'),
+      description: t('dialog.archiveSession', { title: session.title }),
+      confirmLabel: t('dialog.actions.archive'),
+      cancelLabel: t('dialog.actions.cancel'),
+      tone: 'danger',
+    })
+    if (!confirmed) return
+    const mutationKey = `session:${session.id}:archive`
+    setCatalogMutationKey(mutationKey)
+    try {
+      const archived = await DASHBOARD_API.command<SessionRecord>(
+        `/api/sessions/${encodeURIComponent(session.id)}`,
+        'PATCH',
+        { status: 'archived' },
+      )
+      setSessions(current => current.map(item => item.id === archived.id ? archived : item))
+      if (selectedSessionId === archived.id) {
+        const fallback = visibleSessions.find(item => item.id !== archived.id)
+        if (fallback) chooseSession(fallback)
+        else {
+          setSelectedSessionId('')
+          setSessionMenuOpen(false)
+          navigate(dashboardPath('overview', session.context_id))
+        }
+      }
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setCatalogMutationKey('')
+    }
+  }
+
   const copyMessage = async (text: string, messageId: string) => {
     if (!text) return
     try {
-      await navigator.clipboard.writeText(text)
+      await copyTextToClipboard(text)
       setCopiedMessageId(messageId)
       window.setTimeout(() => setCopiedMessageId(''), 1200)
     } catch {
@@ -2858,9 +3290,13 @@ export default function App() {
 
   const deleteObjective = async (objective: ObjectiveRecord) => {
     if (deletingObjectiveId) return
-    const confirmed = window.confirm(
-      t('dialog.deleteObjectiveTitle') + '\n\n' + t('dialog.deleteObjectiveBody', { objective: objective.stated_objective }),
-    )
+    const confirmed = await requestConfirmation({
+      title: t('dialog.deleteObjectiveTitle'),
+      description: t('dialog.deleteObjectiveBody', { objective: objective.stated_objective }),
+      confirmLabel: t('dialog.actions.delete'),
+      cancelLabel: t('dialog.actions.cancel'),
+      tone: 'danger',
+    })
     if (!confirmed) return
     setDeletingObjectiveId(objective.id)
     try {
@@ -2886,7 +3322,16 @@ export default function App() {
   }
 
   const decideApproval = async (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => {
-    if (decision === 'deny' && !window.confirm(t('dialog.denyApproval'))) return
+    if (decision === 'deny') {
+      const confirmed = await requestConfirmation({
+        title: t('dialog.denyApprovalTitle'),
+        description: t('dialog.denyApproval'),
+        confirmLabel: t('dialog.actions.deny'),
+        cancelLabel: t('dialog.actions.cancel'),
+        tone: 'danger',
+      })
+      if (!confirmed) return
+    }
     setDecidingApprovalId(approval.id)
     try {
       const response = await fetch(`${CORE_HTTP_URL}/api/approvals/${encodeURIComponent(approval.id)}`, {
@@ -2908,18 +3353,63 @@ export default function App() {
     }
   }
 
+  const acknowledgeAttention = async (
+    key: string,
+    sourceKind: string,
+    sourceId: string,
+    sourceRevision: number,
+  ) => {
+    if (!selectedContextId || acknowledgingAttentionKey) return
+    setAcknowledgingAttentionKey(key)
+    try {
+      const acknowledgement = await DASHBOARD_API.command<AttentionAcknowledgement>(
+        `/api/contexts/${encodeURIComponent(selectedContextId)}/attention/acknowledgements`,
+        'POST',
+        {
+          key,
+          source_kind: sourceKind,
+          source_id: sourceId,
+          source_revision: sourceRevision,
+          rationale: t('reason.attentionAcknowledged'),
+        },
+      )
+      setAttentionAcknowledgements(current => [
+        acknowledgement,
+        ...current.filter(item => item.key !== acknowledgement.key),
+      ])
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setAcknowledgingAttentionKey('')
+    }
+  }
+
   const mutateSchedule = async (
     schedule: ScheduleRecord,
     action: 'pause' | 'resume' | 'reschedule' | 'cancel',
   ) => {
-    if (action === 'cancel' && !window.confirm(t('dialog.cancelSchedule'))) return
+    if (action === 'cancel') {
+      const confirmed = await requestConfirmation({
+        title: t('dialog.cancelScheduleTitle'),
+        description: t('dialog.cancelSchedule'),
+        confirmLabel: t('dialog.actions.cancelSchedule'),
+        cancelLabel: t('dialog.actions.keep'),
+        tone: 'danger',
+      })
+      if (!confirmed) return
+    }
     let notBefore: string | undefined
     let intervalSeconds: number | undefined
     if (action === 'reschedule') {
-      const requested = window.prompt(
-        t('dialog.rescheduleAt'),
-        schedule.not_before ?? new Date().toISOString(),
-      )
+      const requested = await requestText({
+        title: t('work.schedules.reschedule'),
+        description: t('dialog.rescheduleAt'),
+        inputLabel: t('dialog.rescheduleAt'),
+        defaultValue: schedule.not_before ?? new Date().toISOString(),
+        confirmLabel: t('dialog.actions.continue'),
+        cancelLabel: t('dialog.actions.cancel'),
+      })
       if (requested === null) return
       const parsed = new Date(requested)
       if (Number.isNaN(parsed.getTime())) {
@@ -2927,10 +3417,16 @@ export default function App() {
         return
       }
       notBefore = parsed.toISOString()
-      const interval = window.prompt(
-        t('dialog.rescheduleInterval'),
-        schedule.interval_seconds?.toString() ?? '',
-      )
+      const interval = await requestText({
+        title: t('work.schedules.reschedule'),
+        description: t('dialog.rescheduleInterval'),
+        inputLabel: t('dialog.rescheduleInterval'),
+        defaultValue: schedule.interval_seconds?.toString() ?? '',
+        allowEmpty: true,
+        placeholder: t('dialog.optional'),
+        confirmLabel: t('dialog.actions.save'),
+        cancelLabel: t('dialog.actions.cancel'),
+      })
       if (interval === null) return
       if (interval.trim()) {
         intervalSeconds = Number(interval)
@@ -3083,21 +3579,31 @@ export default function App() {
               </button>
               {contextMenuOpen && (
                 <div className="session-popover context-popover">
-                  <header><span>{t('header.visibleContexts').toUpperCase()}</span><strong>{t('header.contextsForAgent', { count: visibleContexts.length })}</strong></header>
+                  <header>
+                    <strong>{t('header.contextCount', { count: visibleContexts.length })}</strong>
+                    <button type="button" onClick={() => void createContext()} disabled={creatingContext}>
+                      <Plus size={13} />{creatingContext ? t('header.creatingContext') : t('header.createContext')}
+                    </button>
+                  </header>
                   <div className="session-options">
-                    {visibleContexts.map(context => (
-                      <button className={context.id === selectedContextId ? 'is-current' : ''} key={context.id} type="button" onClick={() => activateContext(context)}>
-                        <i className={`presence ${context.status}`} />
-                        <span><strong>{context.title}</strong><small>{shortId(context.id, 25)}</small></span>
-                        <em>{context.id === selectedContextId ? t('header.active').toUpperCase() : ''}</em>
-                      </button>
-                    ))}
+                    {visibleContexts.map(context => {
+                      const isRootContext = selectedAgent?.root_context_id === context.id
+                      const isMutating = catalogMutationKey.startsWith(`context:${context.id}:`)
+                      return <div className={`catalog-option ${context.id === selectedContextId ? 'is-current' : ''}`} key={context.id}>
+                        <button className="catalog-option-main" disabled={isMutating} type="button" onClick={() => activateContext(context)}>
+                          <i className={`presence ${context.status}`} />
+                          <span><strong>{context.title}</strong><small>{shortId(context.id, 25)}</small></span>
+                          <em>{context.id === selectedContextId ? t('header.active').toUpperCase() : ''}</em>
+                        </button>
+                        <div className="catalog-option-actions">
+                          <button type="button" title={t('header.inspectContext')} aria-label={t('header.inspectNamedContext', { title: context.title })} onClick={() => activateContext(context, 'cognition')}><Eye size={13} /></button>
+                          <button disabled={isMutating} type="button" title={t('header.renameContext')} aria-label={t('header.renameNamedContext', { title: context.title })} onClick={() => void renameContext(context)}><Pencil size={13} /></button>
+                          <button disabled={isMutating || isRootContext} type="button" title={isRootContext ? t('header.rootContextCannotArchive') : t('header.archiveContext')} aria-label={t('header.archiveNamedContext', { title: context.title })} onClick={() => void archiveContext(context)}><Archive size={13} /></button>
+                        </div>
+                      </div>
+                    })}
                     {visibleContexts.length === 0 && <div className="catalog-empty">{t('header.noVisibleContexts')}</div>}
                   </div>
-                  <footer className="catalog-popover-footer">
-                    <button type="button" onClick={() => { setContextMenuOpen(false); setView('cognition') }} disabled={!selectedContextId}><Brain size={13} />{t('header.inspectContext')}</button>
-                    <button type="button" onClick={() => void createContext()} disabled={creatingContext}><Plus size={13} />{creatingContext ? t('header.creatingContext') : t('header.createContext')}</button>
-                  </footer>
                 </div>
               )}
             </div>
@@ -3111,21 +3617,29 @@ export default function App() {
               </button>
               {sessionMenuOpen && (
                 <div className="session-popover">
-                  <header><span>{t('header.visibleSessions').toUpperCase()}</span><strong>{t('header.sessionsInContext', { count: visibleSessions.length })}</strong></header>
+                  <header>
+                    <strong>{t('header.sessionCount', { count: visibleSessions.length })}</strong>
+                    <button type="button" onClick={() => void createSession()} disabled={creatingSession || !selectedContextId}>
+                      <Plus size={13} />{creatingSession ? t('header.creatingSession') : t('header.createSession')}
+                    </button>
+                  </header>
                   <div className="session-options">
-                    {visibleSessions.map(session => (
-                      <button className={session.id === selectedSessionId ? 'is-current' : ''} key={session.id} type="button" onClick={() => chooseSession(session)}>
-                        <i className={`presence ${session.attention_state ?? 'active'}`} />
-                        <span><strong>{session.title}</strong><small>{shortId(session.id, 25)} · {formatAgo(session.last_activity_at, t)}</small></span>
-                        <em>{session.id === selectedSessionId ? t('header.active').toUpperCase() : statusLabel(session.attention_state ?? 'resident', t).toUpperCase()}</em>
-                      </button>
-                    ))}
+                    {visibleSessions.map(session => {
+                      const isMutating = catalogMutationKey.startsWith(`session:${session.id}:`)
+                      return <div className={`catalog-option ${session.id === selectedSessionId ? 'is-current' : ''}`} key={session.id}>
+                        <button className="catalog-option-main" disabled={isMutating} type="button" onClick={() => chooseSession(session)}>
+                          <i className={`presence ${session.attention_state ?? 'active'}`} />
+                          <span><strong>{session.title}</strong><small>{shortId(session.id, 25)} · {formatAgo(session.last_activity_at, t)}</small></span>
+                          <em>{session.id === selectedSessionId ? t('header.active').toUpperCase() : statusLabel(session.attention_state ?? 'resident', t).toUpperCase()}</em>
+                        </button>
+                        <div className="catalog-option-actions">
+                          <button disabled={isMutating} type="button" title={t('header.renameSession')} aria-label={t('header.renameNamedSession', { title: session.title })} onClick={() => void renameSession(session)}><Pencil size={13} /></button>
+                          <button disabled={isMutating} type="button" title={t('header.archiveSession')} aria-label={t('header.archiveNamedSession', { title: session.title })} onClick={() => void archiveSession(session)}><Archive size={13} /></button>
+                        </div>
+                      </div>
+                    })}
                     {visibleSessions.length === 0 && <div className="catalog-empty">{t('header.noVisibleSessions')}</div>}
                   </div>
-                  <footer className="catalog-popover-footer">
-                    <button type="button" onClick={() => void createSession()} disabled={creatingSession || !selectedContextId}><Plus size={13} />{creatingSession ? t('header.creatingSession') : t('header.createSession')}</button>
-                    <small>{t('header.dashboardHint')}</small>
-                  </footer>
                 </div>
               )}
             </div>
@@ -3567,8 +4081,9 @@ export default function App() {
                         </div>
                       </article>
                     ))}
-                    {approvalAnomalies.map(snapshot => (
-                      <article className="attention-card failure" key={`approval-anomaly-${snapshot.job.id}`}>
+                    {approvalAnomalies.map(snapshot => {
+                      const attentionKey = attentionJobKey('approval_anomaly', snapshot)
+                      return <article className="attention-card failure" key={`approval-anomaly-${snapshot.job.id}`}>
                         <div><span className="status-pill failed">{t('work.attention.stateMismatch')}</span><time>{formatAgo(snapshot.job.updated_at, t)}</time></div>
                         <h2>{snapshot.job.tool_name}</h2>
                         <p>{snapshot.approval?.status === 'allowed'
@@ -3576,22 +4091,36 @@ export default function App() {
                           : snapshot.approval
                             ? t('work.attention.terminalApprovalMismatch', { status: statusLabel(snapshot.approval.status, t) })
                             : t('work.attention.missingApproval')}</p>
+                        <div className="attention-actions">
+                          <button type="button" onClick={() => navigate(threadPath(selectedContextId, snapshot.job.thread_id))}><GitBranch size={12} /> {t('work.attention.inspect')}</button>
+                          <button disabled={Boolean(acknowledgingAttentionKey)} type="button" onClick={() => void acknowledgeAttention(attentionKey, 'approval_anomaly', snapshot.job.id, snapshot.job.revision)}><Check size={12} /> {acknowledgingAttentionKey === attentionKey ? t('work.attention.acknowledging') : t('work.attention.acknowledge')}</button>
+                        </div>
                       </article>
-                    ))}
-                    {failedSchedulerJobs.map(snapshot => (
-                      <article className="attention-card failure" key={snapshot.job.id}>
+                    })}
+                    {failedSchedulerJobs.map(snapshot => {
+                      const attentionKey = attentionJobKey('execution_job', snapshot)
+                      return <article className="attention-card failure" key={snapshot.job.id}>
                         <div><span className="status-pill failed">{statusLabel(snapshot.job.status, t)}</span><time>{formatAgo(snapshot.job.updated_at, t)}</time></div>
                         <h2>{snapshot.job.tool_name}</h2>
                         <p>{snapshot.job.error ?? t('work.attention.jobFailed')}</p>
+                        <div className="attention-actions">
+                          <button type="button" onClick={() => navigate(threadPath(selectedContextId, snapshot.job.thread_id))}><GitBranch size={12} /> {t('work.attention.inspect')}</button>
+                          <button disabled={Boolean(acknowledgingAttentionKey)} type="button" onClick={() => void acknowledgeAttention(attentionKey, 'execution_job', snapshot.job.id, snapshot.job.revision)}><Check size={12} /> {acknowledgingAttentionKey === attentionKey ? t('work.attention.acknowledging') : t('work.attention.acknowledge')}</button>
+                        </div>
                       </article>
-                    ))}
-                    {failedDeliveries.map(snapshot => (
-                      <article className="attention-card delivery" key={snapshot.thread.id}>
+                    })}
+                    {failedDeliveries.map(snapshot => {
+                      const attentionKey = attentionDeliveryKey(snapshot)
+                      return <article className="attention-card delivery" key={snapshot.thread.id}>
                         <div><span className="status-pill deferred">{statusLabel(snapshot.thread.delivery_status, t)}</span><time>{formatAgo(snapshot.thread.updated_at, t)}</time></div>
                         <h2>{t('work.attention.deliveryFailed')}</h2>
                         <p>{snapshot.thread.result_text ?? shortId(snapshot.thread.id, 30)}</p>
+                        <div className="attention-actions">
+                          <button type="button" onClick={() => navigate(threadPath(selectedContextId, snapshot.thread.id))}><GitBranch size={12} /> {t('work.attention.inspect')}</button>
+                          <button disabled={Boolean(acknowledgingAttentionKey)} type="button" onClick={() => void acknowledgeAttention(attentionKey, 'delivery', snapshot.thread.id, snapshot.thread.revision)}><Check size={12} /> {acknowledgingAttentionKey === attentionKey ? t('work.attention.acknowledging') : t('work.attention.acknowledge')}</button>
+                        </div>
                       </article>
-                    ))}
+                    })}
                   </div>
                 </section>
               )}
@@ -3856,7 +4385,7 @@ export default function App() {
                 <div className="context-inspect-body">
                   <header>
                     <nav aria-label={t('mindView.contextInspect.tabsLabel')}>
-                      {(['encoding', 'messages', 'tools', 'mind', 'inbox', 'metadata'] as ContextInspectTab[]).map(tab => (
+                      {(['encoding', 'attribution', 'messages', 'tools', 'mind', 'inbox', 'metadata'] as ContextInspectTab[]).map(tab => (
                         <button
                           className={contextInspectTab === tab ? 'is-active' : ''}
                           key={tab}
@@ -3871,10 +4400,12 @@ export default function App() {
                       className="context-inspect-copy"
                       type="button"
                       onClick={() => {
-                        void navigator.clipboard.writeText(contextInspectContent).then(() => {
-                          setContextInspectCopied(true)
-                          window.setTimeout(() => setContextInspectCopied(false), 1400)
-                        })
+                        void copyTextToClipboard(contextInspectContent)
+                          .then(() => {
+                            setContextInspectCopied(true)
+                            window.setTimeout(() => setContextInspectCopied(false), 1400)
+                          })
+                          .catch(() => setError(t('errors.copyFailed')))
                       }}
                     >
                       {contextInspectCopied ? <Check size={13} /> : <Copy size={13} />}
@@ -4058,10 +4589,28 @@ export default function App() {
             <div className="composer-runtime-meta">
               <span
                 className={`token-usage pressure-${contextView?.pressure.level ?? contextOverview?.pressure?.level ?? 'normal'}`}
-                title={t('model.tokens', { used: compactTokens(contextView?.pressure.estimated_tokens ?? contextOverview?.pressure?.estimated_tokens), limit: compactTokens(contextView?.pressure.hard_limit ?? contextOverview?.pressure?.hard_limit) })}
+                title={t('model.pressureTokens', { used: compactTokens(contextView?.pressure.estimated_tokens ?? contextOverview?.pressure?.estimated_tokens), limit: compactTokens(contextView?.pressure.hard_limit ?? contextOverview?.pressure?.hard_limit), source: contextView?.pressure.token_source ?? contextOverview?.pressure?.token_source ?? '—' })}
               >
-                {compactTokens(contextView?.pressure.estimated_tokens ?? contextOverview?.pressure?.estimated_tokens)} / {compactTokens(contextView?.pressure.hard_limit ?? contextOverview?.pressure?.hard_limit)}
+                ≈ {compactTokens(contextView?.pressure.estimated_tokens ?? contextOverview?.pressure?.estimated_tokens)} / {compactTokens(contextView?.pressure.hard_limit ?? contextOverview?.pressure?.hard_limit)}
               </span>
+              <span
+                className="token-usage exact-usage"
+                title={[
+                  t('model.actualUsageTitle', {
+                    attempts: modelUsagePage?.totals.attempts ?? 0,
+                    input: compactTokens(modelUsagePage?.totals.input_tokens),
+                    output: compactTokens(modelUsagePage?.totals.output_tokens),
+                    cached: compactTokens(modelUsagePage?.totals.cached_input_tokens),
+                  }),
+                  modelUsagePage?.cost_totals?.[0]
+                    ? t('model.actualCost', {
+                        amount: modelUsagePage.cost_totals[0].amount.toFixed(6),
+                        currency: modelUsagePage.cost_totals[0].currency,
+                        version: modelUsagePage.cost_totals[0].pricing_version,
+                      })
+                    : t('model.costUnavailable'),
+                ].join(' · ')}
+              >Σ {compactTokens(modelUsagePage?.totals.total_tokens)}</span>
               <span className={`model-status ${status?.model ? 'ok' : ''}`}>{status?.model ?? t('model.unavailable')}</span>
               <span className="connection-status" title={t('nav.connection')}><i className={`status-dot ${wsStatus === 'connected' ? '' : wsStatus === 'connecting' ? 'connecting' : 'disconnected'}`} />{t(`connection.${wsStatus}`)}</span>
             </div>
@@ -4090,6 +4639,7 @@ export default function App() {
         </footer>
         <SelectionQuotePopup label={t('conversation.addToChat')} onAdd={addQuote} />
       </section>
+      {appDialog && <AppDialog key={appDialog.id} request={appDialog} onResolve={resolveAppDialog} />}
     </main>
   )
 }

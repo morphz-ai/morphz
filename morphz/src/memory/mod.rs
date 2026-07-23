@@ -227,6 +227,12 @@ pub struct NewCognitiveContext {
     pub title: String,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ContextUpdate {
+    pub title: Option<String>,
+    pub status: Option<SessionStatus>,
+}
+
 /// Rebuildable online materialization of one Cognitive Context's current Mind.
 ///
 /// The persistence layer deliberately treats `state` as opaque canonical JSON:
@@ -2705,6 +2711,14 @@ pub trait SessionDirectoryStore: Send + Sync {
         &self,
         include_archived: bool,
     ) -> Result<Vec<CognitiveContextRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Updates Context metadata. Archiving a Context also archives every
+    /// Session mounted to it in the same database transaction; Ledger and
+    /// projections remain intact and auditable.
+    async fn update_context(
+        &self,
+        id: &str,
+        update: ContextUpdate,
+    ) -> Result<Option<CognitiveContextRecord>, Box<dyn std::error::Error + Send + Sync>>;
     async fn set_context_seed(
         &self,
         context_id: &str,

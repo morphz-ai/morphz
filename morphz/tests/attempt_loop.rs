@@ -19,10 +19,7 @@ use morphz::orchestrator::orchestrator::Orchestrator;
 use morphz::permission::PermissionConfig;
 use morphz::sexpr::{parse, SExpr};
 use morphz::timer::TimerEngine;
-use morphz::tool::{
-    get_tasks_map, BackgroundTask, BackgroundTaskStatus, DelegateTool, EditFileTool, ReadFileTool,
-    Registry, Tool, WriteFileTool,
-};
+use morphz::tool::{DelegateTool, EditFileTool, ReadFileTool, Registry, Tool, WriteFileTool};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{HashSet, VecDeque};
@@ -104,7 +101,19 @@ fn no_reply_response() -> Response {
             id: "no-reply".to_string(),
             r#type: "function".to_string(),
             func_name: "no_reply".to_string(),
-            arguments: json!({}).to_string(),
+            arguments: json!({"mode":"silent"}).to_string(),
+        }],
+    }
+}
+
+fn wait_response() -> Response {
+    Response {
+        content: String::new(),
+        tool_calls: vec![ToolCallRepr {
+            id: "wait".to_string(),
+            r#type: "function".to_string(),
+            func_name: "no_reply".to_string(),
+            arguments: json!({"mode":"wait"}).to_string(),
         }],
     }
 }
@@ -341,9 +350,12 @@ impl Client for ReasoningContinuationClient {
                 text: format!("reasoning segment {}", call + 1),
             });
             let _ = stream.send(ModelStreamEvent::Usage {
-                prompt_tokens: Some(100),
-                completion_tokens: Some(4_096),
-                total_tokens: Some(4_196),
+                usage: morphz::llm::ModelUsage {
+                    input_tokens: Some(100),
+                    output_tokens: Some(4_096),
+                    total_tokens: Some(4_196),
+                    ..Default::default()
+                },
             });
             let message = "OpenAI Chat 流因输出长度限制被截断".to_string();
             let _ = stream.send(ModelStreamEvent::Failed {
@@ -775,7 +787,7 @@ async fn duplicate_routed_event_creates_one_activation_and_one_reply() {
 }
 
 #[tokio::test]
-async fn runtime_start_interrupts_unfinished_dialogue_activations() {
+async fn runtime_start_resumes_unfinished_dialogue_activations() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("activation-recovery.db");
     let bus = Arc::new(InMemoryEventBus::new());
@@ -803,9 +815,11 @@ async fn runtime_start_interrupts_unfinished_dialogue_activations() {
         )
         .await
         .unwrap();
-    let mut recovery_sessions = vec!["recovery-queued", "recovery-expired"];
-    #[cfg(unix)]
-    recovery_sessions.push("recovery-dead-claimant");
+    let recovery_sessions = vec![
+        "recovery-queued",
+        "recovery-expired",
+        "recovery-unexpired-lease",
+    ];
     for session_id in recovery_sessions.iter().skip(1) {
         store
             .create_session(NewSession {
@@ -874,7 +888,6 @@ async fn runtime_start_interrupts_unfinished_dialogue_activations() {
                 ThreadActivationMutation::Updated(_)
             ));
         }
-        #[cfg(unix)]
         if index == 2 {
             assert!(matches!(
                 store
@@ -882,8 +895,8 @@ async fn runtime_start_interrupts_unfinished_dialogue_activations() {
                         &activation.id,
                         activation.revision,
                         ThreadActivationStatus::Running,
-                        Some("runtime:2147483647"),
-                        Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+                        Some("another-runtime"),
+                        Some(chrono::Utc::now() + chrono::Duration::milliseconds(250)),
                         None,
                     )
                     .await
@@ -971,11 +984,16 @@ async fn runtime_start_interrupts_unfinished_dialogue_activations() {
         .await
         .unwrap();
 
-    let client = Arc::new(MockClient::new(Vec::new()));
+    let client = Arc::new(MockClient::new(vec![
+        text_reply_response("recovered"),
+        text_reply_response("recovered"),
+        text_reply_response("recovered"),
+    ]));
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
-            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_worker_coordination_mode(morphz::memory::WorkerCoordinationMode::SharedLeases),
     );
     let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
@@ -989,11 +1007,18 @@ async fn runtime_start_interrupts_unfinished_dialogue_activations() {
 
     for session_id in &recovery_sessions {
         assert_eq!(
-            wait_for_topic(&store, "chat/cancelled", session_id)
-                .await
-                .len(),
+            wait_for_topic(&store, "chat/reply", session_id).await.len(),
             1
         );
+        assert!(store
+            .query(QueryFilter {
+                session_id: Some((*session_id).to_string()),
+                topic: Some("chat/cancelled".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
     }
     let orphan_thread = store
         .get_thread("recovery-orphan-thread")
@@ -1012,7 +1037,7 @@ async fn runtime_start_interrupts_unfinished_dialogue_activations() {
             .len(),
         1
     );
-    assert!(client.messages_seen().is_empty());
+    assert_eq!(client.messages_seen().len(), recovery_sessions.len());
     let activations = store
         .list_context_thread_activations("recovery-context", true)
         .await
@@ -1021,7 +1046,8 @@ async fn runtime_start_interrupts_unfinished_dialogue_activations() {
     assert_eq!(
         activations
             .iter()
-            .filter(|item| item.status == ThreadActivationStatus::Cancelled)
+            .filter(|item| recovery_sessions.contains(&item.session_id.as_str()))
+            .filter(|item| item.status == ThreadActivationStatus::Succeeded)
             .count(),
         recovery_sessions.len()
     );
@@ -1702,37 +1728,8 @@ async fn test_reasoning_continuation_limit_fuses_instead_of_looping_forever() {
 }
 
 #[tokio::test]
-async fn test_no_reply_is_terminal_without_session_delivery() {
+async fn test_no_reply_silent_is_terminal_without_session_delivery() {
     let session_id = "attempt_no_reply";
-    let task_id = "attempt_no_reply_background";
-    let now = chrono::Utc::now();
-    get_tasks_map().insert(
-        task_id.to_string(),
-        BackgroundTask {
-            id: task_id.to_string(),
-            cmd_str: "background-test".to_string(),
-            pgid: i32::MAX,
-            session_id: session_id.to_string(),
-            context_id: session_id.to_string(),
-            initiating_principal_id: None,
-            causal_route: None,
-            started_at: now,
-            last_output_at: now,
-            output_bytes: 0,
-            output_tail: String::new(),
-            wake_generation: 0,
-            next_wakeup_at: None,
-            status: BackgroundTaskStatus::Running,
-            effective_network: false,
-            secret_env: Vec::new(),
-            sandbox_backend: "test".to_string(),
-            sandbox_status: "enforced".to_string(),
-            permission_request_available: false,
-            artifact_path: "test.log".to_string(),
-            ended_at: None,
-            exit_code: None,
-        },
-    );
     let (bus, store, _orc, _client, _tmp) = build_orchestrator_with_config_and_reply_mode(
         vec![no_reply_response()],
         morphz::config::OrchestratorConfig::default(),
@@ -1740,7 +1737,7 @@ async fn test_no_reply_is_terminal_without_session_delivery() {
     )
     .await;
 
-    publish_user(&bus, session_id, "background event").await;
+    publish_user(&bus, session_id, "no session delivery needed").await;
     let suppressed = wait_for_topic(&store, "chat/no_reply", session_id).await;
     let delivered = store
         .query(QueryFilter {
@@ -1757,11 +1754,36 @@ async fn test_no_reply_is_terminal_without_session_delivery() {
         suppressed[0].payload.get("disposition"),
         Some(&json!("no_reply"))
     );
+}
+
+#[tokio::test]
+async fn test_no_reply_wait_without_pending_runtime_fact_is_corrected() {
+    let session_id = "attempt_invalid_wait";
+    let (bus, store, _orc, client, _tmp) = build_orchestrator_with_config_and_reply_mode(
+        vec![
+            wait_response(),
+            text_reply_response("后台结果已经终结，我现在交付结果。"),
+        ],
+        morphz::config::OrchestratorConfig::default(),
+        false,
+    )
+    .await;
+
+    publish_user(&bus, session_id, "report the completed result").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    let errors = wait_for_topic(&store, "runtime/response_protocol_error", session_id).await;
+
+    assert_eq!(client.messages_seen().len(), 2);
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].payload["response_state"], "invalid_wait");
+    assert!(errors[0].payload["reason"]
+        .as_str()
+        .is_some_and(|reason| reason.contains("no_reply(mode=wait) 被拒绝")));
+    assert_eq!(replies.len(), 1);
     assert_eq!(
-        suppressed[0].payload.get("active_background_tasks"),
-        Some(&json!(1))
+        replies[0].payload["text"],
+        "后台结果已经终结，我现在交付结果。"
     );
-    get_tasks_map().remove(task_id);
 }
 
 #[tokio::test]
@@ -3272,6 +3294,20 @@ async fn test_attempt_loop_parallel_tool_barrier_single_reply() {
     assert_eq!(groups[0].status, ActionGroupStatus::Settled);
     assert_eq!(groups[0].member_count, 3);
     assert_eq!(groups[0].terminal_member_count, 3);
+    let activations = store
+        .list_context_thread_activations(session_id, true)
+        .await
+        .unwrap();
+    assert_eq!(activations.len(), 2);
+    assert!(activations.iter().any(|activation| {
+        activation.trigger_kind == "runtime/action_group_settled"
+            && activation.trigger_event_id == format!("action_group_settled_{}", groups[0].id)
+    }));
+    assert!(activations.iter().all(|activation| {
+        !tool_outputs
+            .iter()
+            .any(|output| activation.trigger_event_id == output.id)
+    }), "Action Group member results must remain visible facts without creating successor Activations");
     assert_eq!(
         store
             .query(QueryFilter {

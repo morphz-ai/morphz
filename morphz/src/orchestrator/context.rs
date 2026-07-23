@@ -33,7 +33,7 @@ use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 23;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 25;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 const FRAME_RECALL_PAGE_CHAR_BUDGET: usize = 24_000;
 
@@ -583,6 +583,26 @@ pub struct ContextPressure {
     pub active_observations: usize,
 }
 
+/// 完整 Prompt 的可解释占用归因。`estimated_tokens` 是按本地稳定权重将
+/// 本轮 Prompt 总量分摊到组件后的估算，绝不是 Provider 返回的计费事实。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ContextAttribution {
+    pub estimated_total_tokens: usize,
+    pub total_weight_units: u64,
+    pub weight_algorithm: String,
+    pub components: Vec<ContextAttributionComponent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextAttributionComponent {
+    pub kind: String,
+    pub id: String,
+    pub label: String,
+    pub weight_units: u64,
+    pub estimated_tokens: usize,
+    pub share: f64,
+}
+
 fn default_context_token_source() -> String {
     "context-components-heuristic".to_string()
 }
@@ -748,6 +768,8 @@ pub struct ContextView {
     pub state: MindState,
     pub observations: Vec<ContextObservation>,
     pub pressure: ContextPressure,
+    #[serde(default)]
+    pub attribution: ContextAttribution,
     pub turn_budget: TurnBudget,
     pub wake: WakeSignal,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -2561,6 +2583,7 @@ impl ContextEngine {
             state,
             observations,
             pressure,
+            attribution: ContextAttribution::default(),
             turn_budget,
             wake,
             sexpr,
@@ -2694,6 +2717,104 @@ impl ContextEngine {
             references: &view.references,
         });
         Ok(())
+    }
+
+    /// Replace an over-limit Inbox with a bounded semantic-maintenance slice.
+    ///
+    /// This is a projection only: omitted observations remain active in the
+    /// immutable Ledger and in Session Projection. The current causal root is
+    /// always retained, while the remaining capacity is filled with the
+    /// oldest unprotected observations so the model can summarize/retire them
+    /// in deterministic batches. Runtime never decides their semantic value.
+    pub fn apply_critical_maintenance_projection(
+        &self,
+        view: &mut ContextView,
+        max_observations: usize,
+        max_preview_chars: usize,
+    ) -> (usize, usize) {
+        let total = view.observations.len();
+        let mut required_ids = HashSet::new();
+        if let Some(activation) = &view.activation {
+            required_ids.insert(activation.root_turn_id.as_str());
+            required_ids.insert(activation.trigger_event_id.as_str());
+            required_ids.extend(
+                activation
+                    .signal_batch
+                    .iter()
+                    .map(|signal| signal.event_id.as_str()),
+            );
+        }
+
+        let limit = max_observations.max(required_ids.len()).max(1);
+        let mut selected_ids = view
+            .observations
+            .iter()
+            .filter(|observation| required_ids.contains(observation.id.as_str()))
+            .map(|observation| observation.id.clone())
+            .collect::<HashSet<_>>();
+        let mut candidates = view
+            .observations
+            .iter()
+            .filter(|observation| {
+                !observation.protected && !selected_ids.contains(observation.id.as_str())
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|observation| observation.sequence);
+        for observation in candidates {
+            if selected_ids.len() >= limit {
+                break;
+            }
+            selected_ids.insert(observation.id.clone());
+        }
+
+        let preview_limit = max_preview_chars.max(128);
+        let mut projected = view
+            .observations
+            .iter()
+            .filter(|observation| selected_ids.contains(observation.id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        projected.sort_by_key(|observation| observation.sequence);
+        for observation in &mut projected {
+            let (preview, truncated) =
+                bounded_maintenance_preview(&observation.preview, preview_limit);
+            if truncated {
+                observation.preview = preview;
+                observation.truncated = true;
+                observation.representation = "preview".to_string();
+                observation.visible_chars = observation.preview.chars().count();
+                observation.retrievable = true;
+            }
+        }
+        let visible = projected.len();
+        view.observations = projected;
+        view.sexpr = render_context(ContextRenderInput {
+            context_id: &view.context_id,
+            active_session_id: &view.active_session_id,
+            active_principal_id: view.active_principal_id.as_deref(),
+            parent_session_id: view.parent_session_id.as_deref(),
+            sessions: &view.sessions,
+            session_working_set: &view.session_working_set,
+            active_activations: &view.active_activations,
+            threads: &view.threads,
+            thread_signals: &view.thread_signals,
+            schedules: &view.schedules,
+            activation: view.activation.as_ref(),
+            concurrent_activations: &view.concurrent_activations,
+            background_tasks: &view.background_tasks,
+            objectives: &view.objectives,
+            execution_targets: &view.execution_targets,
+            execution_target_access: &view.execution_target_access,
+            cognitive_clock: &view.cognitive_clock,
+            frame_retirement_cooling_ticks: self.config.frame_retirement.cooling_ticks,
+            state: &view.state,
+            observations: &view.observations,
+            pressure: &view.pressure,
+            turn_budget: &view.turn_budget,
+            wake: &view.wake,
+            references: &view.references,
+        });
+        (total, visible)
     }
 
     pub async fn find_event(
@@ -6203,8 +6324,10 @@ fn render_protocol() -> SExpr {
                         vec![
                             pair("when", atom("确认当前 Activation 无需向 active Session 发送任何消息")),
                             pair("tool", atom("no_reply")),
-                            pair("exclusive", atom("no_reply 必须独占响应，无参数且不携带正文")),
-                            pair("scope", atom("DialogueTurn Thread 中结束本次求值；有活动后台任务的 Execution Thread 中仅 yield 到 waiting；不完成 Objective，不取消后台任务")),
+                            pair("exclusive", atom("no_reply 必须独占响应、携带唯一 mode 参数且不带正文")),
+                            pair("silent", atom("mode=silent 表示有意不向 Session 发送消息并结束当前求值")),
+                            pair("wait", atom("mode=wait 只在 Runtime 可验证仍有后台任务、调度或待处理事件时 yield；终态事件到达后必须处理结果")),
+                            pair("scope", atom("不完成 Objective，不取消后台任务")),
                         ],
                     ),
                     list(
@@ -6311,6 +6434,40 @@ fn render_protocol() -> SExpr {
                     pair(
                         "empty-output",
                         atom("status=success 且 output_state=empty 表示工具已完成但无文本；不得仅因空输出重复调用"),
+                    ),
+                ],
+            ),
+            list(
+                "skill-discovery-contract",
+                vec![
+                    pair(
+                        "scope",
+                        atom("仅当本轮 Function Calling 提供 list_skills 时适用；Skill 是按需读取的能力说明，不是自动执行的工具"),
+                    ),
+                    pair(
+                        "intent",
+                        atom("以 evaluate.root-input 表达的当前意图为检索条件，不绑定平台、领域或具体 Skill 名称"),
+                    ),
+                    list(
+                        "fallback",
+                        vec![
+                            pair(
+                                "primary",
+                                atom("优先使用本轮已有且能直接满足当前意图的 Function Calling 工具"),
+                            ),
+                            pair(
+                                "backup",
+                                atom("primary 没有适用能力或明确失败时，调用 list_skills 取得紧凑目录；只选择最相关的 Skill，用 read 读取其 SKILL.md，再按说明调用真实工具"),
+                            ),
+                        ],
+                    ),
+                    pair(
+                        "failure-boundary",
+                        atom("只有直接能力与按需 Skill 发现都不能满足当前意图后，才能向 Session 声明能力不可用"),
+                    ),
+                    pair(
+                        "token-policy",
+                        atom("不得预读全部 SKILL.md；目录只用于选择，选择后只读取完成当前意图所需的最少 Skill"),
                     ),
                 ],
             ),
@@ -7546,6 +7703,38 @@ fn preview_text(text: &str, max_chars: usize) -> (String, bool) {
     )
 }
 
+/// Unlike the ordinary preview helper, this cap includes the truncation
+/// marker itself. Critical recovery uses it as a physical request bound, so a
+/// collection of previews must not exceed its declared budget by accumulating
+/// one marker overhead per observation.
+fn bounded_maintenance_preview(text: &str, max_chars: usize) -> (String, bool) {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return (text.to_string(), false);
+    }
+    if max_chars == 0 {
+        return (String::new(), true);
+    }
+    let marker = format!("\n...[原文共 {total} 字符，可按 ref 使用 recall]...\n");
+    let marker_chars = marker.chars().count();
+    if marker_chars >= max_chars {
+        return (text.chars().take(max_chars).collect(), true);
+    }
+    let content_budget = max_chars - marker_chars;
+    let head_chars = content_budget / 2;
+    let tail_chars = content_budget - head_chars;
+    let head = text.chars().take(head_chars).collect::<String>();
+    let tail = text
+        .chars()
+        .rev()
+        .take(tail_chars)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    (format!("{head}{marker}{tail}"), true)
+}
+
 fn estimate_text_tokens(text: &str) -> usize {
     let (ascii, non_ascii) = text.chars().fold((0usize, 0usize), |counts, ch| {
         if ch.is_ascii() {
@@ -7557,7 +7746,16 @@ fn estimate_text_tokens(text: &str) -> usize {
     ascii.saturating_add(3) / 4 + non_ascii
 }
 
-fn estimate_active_frame_tokens(frame: &ContextFrame, state: &MindState) -> usize {
+/// Stable fixed-point text weight used only for relative Prompt attribution.
+/// One ASCII character is one unit and one non-ASCII character is four units;
+/// unlike per-component token rounding, the weights remain additive.
+fn text_weight_units(text: &str) -> u64 {
+    text.chars().fold(0u64, |weight, ch| {
+        weight.saturating_add(if ch.is_ascii() { 1 } else { 4 })
+    })
+}
+
+fn active_frame_representation(frame: &ContextFrame, state: &MindState) -> String {
     let sources = frame.sources.join(" ");
     let provenance = format!(
         "{} {} {} {}",
@@ -7579,10 +7777,181 @@ fn estimate_active_frame_tokens(frame: &ContextFrame, state: &MindState) -> usiz
     } else {
         "active"
     };
-    estimate_text_tokens(&format!(
+    format!(
         "(frame (id {}) (revision {}) (lifecycle (state {})) (sources {}) (provenance {}) (body {}))",
         frame.id, frame.revision, lifecycle, sources, provenance, frame.body
-    ))
+    )
+}
+
+/// Attribute a complete candidate request to its visible components. The
+/// Provider-observed or calibrated Prompt total is distributed by local
+/// additive weights; consumers must present these component values as
+/// estimates while keeping `runtime/model_usage` as the exact accounting fact.
+pub fn attribute_prompt_components(
+    view: &ContextView,
+    messages: &[crate::llm::Message],
+    tools: &[crate::llm::ToolDefinition],
+    estimated_total_tokens: usize,
+) -> ContextAttribution {
+    #[derive(Debug)]
+    struct Weighted {
+        kind: String,
+        id: String,
+        label: String,
+        weight: u64,
+    }
+
+    let mut components = Vec::<Weighted>::new();
+    let system_weight = messages
+        .first()
+        .and_then(|message| serde_json::to_string(message).ok())
+        .map(|text| text_weight_units(&text))
+        .unwrap_or(0);
+    components.push(Weighted {
+        kind: "system".to_string(),
+        id: "system-contract".to_string(),
+        label: "System / VM contract".to_string(),
+        weight: system_weight,
+    });
+
+    let mut context_children_weight = 0u64;
+    for frame in view
+        .state
+        .frames
+        .iter()
+        .filter(|frame| !view.state.retired.contains(&frame.id))
+    {
+        let weight = text_weight_units(&active_frame_representation(frame, &view.state));
+        context_children_weight = context_children_weight.saturating_add(weight);
+        components.push(Weighted {
+            kind: "frame".to_string(),
+            id: frame.id.clone(),
+            label: frame.id.clone(),
+            weight,
+        });
+    }
+    for observation in &view.observations {
+        let weight = text_weight_units(&observation.representation);
+        context_children_weight = context_children_weight.saturating_add(weight);
+        components.push(Weighted {
+            kind: "observation".to_string(),
+            id: observation.id.clone(),
+            label: observation.reference.clone(),
+            weight,
+        });
+    }
+    for projected in &view.sessions {
+        // Session 的对话事实通常已作为 observation 单独归因；这里衡量的是
+        // Runtime 投影进 Context Encoding 的 Session 目录、身份、状态与调度
+        // 元数据。使用稳定序列化只作为相对权重，不声称复刻 Provider 模板。
+        let weight = serde_json::to_string(projected)
+            .ok()
+            .map(|text| text_weight_units(&text))
+            .unwrap_or(0);
+        context_children_weight = context_children_weight.saturating_add(weight);
+        components.push(Weighted {
+            kind: "session_projection".to_string(),
+            id: projected.session.id.clone(),
+            label: projected.session.title.clone(),
+            weight,
+        });
+    }
+    let encoded_context_weight = messages
+        .get(1)
+        .map(|message| text_weight_units(&message.content))
+        .unwrap_or(0);
+    let context_partition_weight = encoded_context_weight.max(context_children_weight);
+    components.push(Weighted {
+        kind: "context_structure".to_string(),
+        id: "context-structure".to_string(),
+        label: "Context structure and scheduler state".to_string(),
+        weight: context_partition_weight.saturating_sub(context_children_weight),
+    });
+
+    let history_weight = serde_json::to_string(messages.get(2..).unwrap_or_default())
+        .ok()
+        .map(|text| text_weight_units(&text))
+        .unwrap_or(0);
+    components.push(Weighted {
+        kind: "tool_transcript".to_string(),
+        id: view
+            .activation
+            .as_ref()
+            .map(|activation| activation.root_turn_id.clone())
+            .unwrap_or_else(|| view.active_session_id.clone()),
+        label: "Current turn tool-call transcript".to_string(),
+        weight: history_weight,
+    });
+    let tools_weight = serde_json::to_string(tools)
+        .ok()
+        .map(|text| text_weight_units(&text))
+        .unwrap_or(0);
+    components.push(Weighted {
+        kind: "tool_definitions".to_string(),
+        id: "tool-definitions".to_string(),
+        label: "Tool definitions".to_string(),
+        weight: tools_weight,
+    });
+
+    let known_weight = system_weight
+        .saturating_add(context_partition_weight)
+        .saturating_add(history_weight)
+        .saturating_add(tools_weight);
+    let complete_request_weight = serde_json::to_string(&json!({
+        "messages": messages,
+        "tools": tools,
+    }))
+    .ok()
+    .map(|text| text_weight_units(&text))
+    .unwrap_or(known_weight)
+    .max(known_weight);
+    components.push(Weighted {
+        kind: "request_wrapper".to_string(),
+        id: "request-wrapper".to_string(),
+        label: "Protocol wrapper / unattributed".to_string(),
+        weight: complete_request_weight.saturating_sub(known_weight),
+    });
+
+    let total_weight_units = components
+        .iter()
+        .map(|component| component.weight)
+        .fold(0u64, u64::saturating_add);
+    let denominator = total_weight_units.max(1);
+    let mut attributed = components
+        .into_iter()
+        .map(|component| {
+            let estimated_tokens = ((estimated_total_tokens as u128)
+                .saturating_mul(component.weight as u128)
+                / denominator as u128) as usize;
+            ContextAttributionComponent {
+                kind: component.kind,
+                id: component.id,
+                label: component.label,
+                weight_units: component.weight,
+                estimated_tokens,
+                share: component.weight as f64 / denominator as f64,
+            }
+        })
+        .collect::<Vec<_>>();
+    let allocated = attributed
+        .iter()
+        .map(|component| component.estimated_tokens)
+        .sum::<usize>();
+    if let Some(component) = attributed.last_mut() {
+        component.estimated_tokens = component
+            .estimated_tokens
+            .saturating_add(estimated_total_tokens.saturating_sub(allocated));
+    }
+    ContextAttribution {
+        estimated_total_tokens,
+        total_weight_units,
+        weight_algorithm: "fixed-point-char-weight-v1:ascii=1,non-ascii=4".to_string(),
+        components: attributed,
+    }
+}
+
+fn estimate_active_frame_tokens(frame: &ContextFrame, state: &MindState) -> usize {
+    estimate_text_tokens(&active_frame_representation(frame, state))
 }
 
 fn estimate_active_mind_tokens(state: &MindState) -> usize {
@@ -7852,6 +8221,15 @@ mod tests {
         SessionDirectoryStore as _, SessionMountKind, SessionStore, ThreadKind, ThreadStore as _,
     };
     use tempfile::TempDir;
+
+    #[test]
+    fn attribution_weight_is_additive_across_ascii_and_non_ascii_text() {
+        assert_eq!(text_weight_units("ab中"), 6);
+        assert_eq!(
+            text_weight_units("ascii中文"),
+            text_weight_units("ascii") + text_weight_units("中文")
+        );
+    }
 
     #[tokio::test]
     async fn actual_context_encoding_anchors_active_and_observation_principals() {
@@ -8955,6 +9333,10 @@ mod tests {
         assert!(rendered.contains("(root-input 先回答我)"));
         assert!(rendered.rfind("(evaluate").unwrap() > rendered.rfind("(inbox").unwrap());
         assert!(rendered.contains("(response-contract"));
+        assert!(rendered.contains("(skill-discovery-contract"));
+        assert!(rendered.contains("(fallback"));
+        assert!(rendered.contains("不绑定平台、领域或具体 Skill 名称"));
+        assert!(rendered.contains("只有直接能力与按需 Skill 发现都不能满足当前意图后"));
         assert!(rendered.contains("(reality-contract"));
         assert!(rendered.contains("(name reality-contract-v1)"));
         assert!(rendered.contains("(epistemic-contract"));
@@ -10835,7 +11217,9 @@ mod tests {
         let db = tmp.path().join("context-pressure.db");
         let store = Arc::new(SqliteStore::new(db.to_str().unwrap()).await.unwrap());
         let session_id = "pressure-session";
-        for index in 0..5 {
+        // Mirror the production incident: concurrent work accumulated 542
+        // active observations in one Session before the next evaluation.
+        for index in 0..542 {
             store
                 .append(Event::new(
                     format!("event:{}", index),
@@ -10859,12 +11243,44 @@ mod tests {
             ..OrchestratorConfig::default()
         };
         let engine = ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config);
-        let view = engine
+        let mut view = engine
             .build_context_encoding(session_id, session_id, &HashSet::new())
             .await
             .unwrap();
-        assert_eq!(view.observations.len(), 5);
+        assert_eq!(view.observations.len(), 542);
         assert_eq!(view.pressure.level, "critical");
+
+        let full_pressure = view.pressure.clone();
+        let (total, visible) = engine.apply_critical_maintenance_projection(&mut view, 3, 128);
+        assert_eq!((total, visible), (542, 3));
+        assert_eq!(
+            view.observations
+                .iter()
+                .map(|observation| observation.sequence)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "recovery projection should expose the oldest maintenance candidates first"
+        );
+        assert!(view
+            .observations
+            .iter()
+            .all(|observation| observation.visible_chars <= 128 && observation.retrievable));
+        assert_eq!(
+            view.pressure.estimated_tokens,
+            full_pressure.estimated_tokens
+        );
+        assert_eq!(view.pressure.level, full_pressure.level);
+        assert_eq!(view.pressure.active_observations, 542);
+
+        let rebuilt = engine
+            .build_context_encoding(session_id, session_id, &HashSet::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            rebuilt.observations.len(),
+            542,
+            "bounded recovery is a request projection and must not retire Ledger observations"
+        );
     }
 
     #[test]

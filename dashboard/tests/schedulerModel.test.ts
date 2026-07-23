@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  attentionDeliveryKey,
+  attentionJobKey,
   actionableSchedulerJobs,
   activeSchedulerThreads,
   pendingHumanApprovals,
@@ -168,6 +170,28 @@ test('scheduler model flattens the authoritative causal projection exactly once'
   assert.deepEqual(pendingHumanApprovals(snapshot).map(item => item.id), ['approval-1'])
   assert.deepEqual(schedulerSchedules(snapshot).map(item => item.id), ['schedule-1'])
   assert.deepEqual(activeSchedulerThreads(snapshot).map(item => item.thread.id), ['thread-1'])
+})
+
+test('open lifecycle does not make an idle Thread physically active', () => {
+  const snapshot = fixture()
+  snapshot.threads[0].phase = 'idle'
+  snapshot.threads[0].thread.lifecycle = 'open'
+
+  assert.deepEqual(activeSchedulerThreads(snapshot), [])
+})
+
+test('attention fingerprints reopen when their source revision changes', () => {
+  const snapshot = fixture()
+  const job = snapshot.threads[0].activations[0].jobs[0]
+  const first = attentionJobKey('execution_job', job)
+  job.job.revision += 1
+  assert.notEqual(attentionJobKey('execution_job', job), first)
+
+  const delivery = snapshot.threads[0]
+  delivery.thread.delivery_status = 'deferred'
+  const originalDelivery = attentionDeliveryKey(delivery)
+  delivery.thread.revision += 1
+  assert.notEqual(attentionDeliveryKey(delivery), originalDelivery)
 })
 
 test('attention counts pending approval and durable failures, not ordinary activity', () => {

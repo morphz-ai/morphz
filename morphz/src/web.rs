@@ -4,12 +4,15 @@ use crate::event::Event;
 use crate::identity::PrincipalAssertion;
 use crate::llm::ReasoningEffort;
 use crate::memory::{
-    DelegationStatus, ExecutionTargetRegistration, ExecutionTargetStatus, NewAgent,
+    ContextUpdate, DelegationStatus, ExecutionTargetRegistration, ExecutionTargetStatus, NewAgent,
     NewCognitiveContext, NewSession, ObjectiveMutation, ObjectiveStatus, QueryFilter,
     ScheduleMutation, SessionMountKind, SessionStatus, SessionUpdate,
 };
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
-use crate::runtime::{ContextOverviewQuery, LedgerQuery, MorphzRuntime, SchedulerQuery};
+use crate::runtime::{
+    AcknowledgeAttentionCommand, ContextOverviewQuery, LedgerQuery, ModelUsageQuery, MorphzRuntime,
+    SchedulerQuery,
+};
 use crate::sdk::{
     AppendEdgeOutputCommand, AuthorizeExecutionTargetCommand, ClaimEdgeCommand,
     ConnectExecutionNodeCommand, CreateNodePairingCodeCommand, ExecutionJobQuery,
@@ -25,7 +28,7 @@ use axum::{
     },
     http::{header, HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Json, Router,
 };
 use serde_json::json;
@@ -134,6 +137,12 @@ struct CreateContextRequest {
 }
 
 #[derive(serde::Deserialize)]
+struct UpdateContextRequest {
+    title: Option<String>,
+    status: Option<SessionStatus>,
+}
+
+#[derive(serde::Deserialize)]
 struct UpdateSessionRequest {
     title: Option<String>,
     status: Option<SessionStatus>,
@@ -168,6 +177,15 @@ struct UpdateInferenceRequest {
 struct ResumeObjectiveRequest {
     expected_revision: u64,
     reason: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct AcknowledgeAttentionRequest {
+    key: String,
+    source_kind: String,
+    source_id: String,
+    source_revision: u64,
+    rationale: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -291,6 +309,14 @@ struct SchedulerSnapshotHttpQuery {
 struct ContextOverviewHttpQuery {
     token: Option<String>,
     session_id: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct ModelUsageHttpQuery {
+    token: Option<String>,
+    session_id: Option<String>,
+    before_sequence: Option<u64>,
+    limit: Option<usize>,
 }
 
 #[derive(Default, serde::Deserialize)]
@@ -486,6 +512,7 @@ impl Server {
                 "/api/contexts",
                 get(handle_list_contexts).post(handle_create_context),
             )
+            .route("/api/contexts/:context_id", patch(handle_update_context))
             .route(
                 "/api/execution-targets",
                 get(handle_list_execution_targets).post(handle_register_execution_target),
@@ -572,12 +599,20 @@ impl Server {
                 get(handle_get_context_overview),
             )
             .route(
+                "/api/contexts/:context_id/model-usage",
+                get(handle_get_model_usage),
+            )
+            .route(
                 "/api/contexts/:context_id/activations",
                 get(handle_get_context_activations),
             )
             .route(
                 "/api/contexts/:context_id/scheduler",
                 get(handle_get_scheduler_snapshot),
+            )
+            .route(
+                "/api/contexts/:context_id/attention/acknowledgements",
+                get(handle_list_attention_acknowledgements).post(handle_acknowledge_attention),
             )
             .route(
                 "/api/contexts/:context_id/threads/:thread_id",
@@ -2079,6 +2114,32 @@ async fn handle_get_context_overview(
     }
 }
 
+async fn handle_get_model_usage(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<ModelUsageHttpQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .model_usage(
+            &context_id,
+            ModelUsageQuery {
+                session_id: query.session_id,
+                before_sequence: query.before_sequence,
+                limit: query.limit,
+            },
+        )
+        .await
+    {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
 async fn handle_get_scheduler_snapshot(
     State(state): State<Arc<AppState>>,
     Path(context_id): Path<String>,
@@ -2104,6 +2165,54 @@ async fn handle_get_scheduler_snapshot(
             error_response(StatusCode::NOT_FOUND, error.to_string())
         }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_list_attention_acknowledgements(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.sdk.attention_acknowledgements(&context_id).await {
+        Ok(acknowledgements) => Json(json!({
+            "context_id": context_id,
+            "acknowledgements": acknowledgements,
+        }))
+        .into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_acknowledge_attention(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<AcknowledgeAttentionRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state
+        .sdk
+        .acknowledge_attention(
+            &context_id,
+            AcknowledgeAttentionCommand {
+                key: request.key,
+                source_kind: request.source_kind,
+                source_id: request.source_id,
+                source_revision: request.source_revision,
+                rationale: request.rationale,
+            },
+        )
+        .await
+    {
+        Ok(acknowledgement) => Json(acknowledgement).into_response(),
+        Err(error) => sdk_error_response(error),
     }
 }
 
@@ -2294,6 +2403,38 @@ async fn handle_create_context(
         .await
     {
         Ok(context) => (StatusCode::CREATED, Json(context)).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_update_context(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<UpdateContextRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let title = request
+        .title
+        .map(|title| title.trim().chars().take(200).collect::<String>());
+    if title.as_deref() == Some("") {
+        return error_response(StatusCode::BAD_REQUEST, "title 不能为空");
+    }
+    match state
+        .sdk
+        .update_context(
+            &context_id,
+            ContextUpdate {
+                title,
+                status: request.status,
+            },
+        )
+        .await
+    {
+        Ok(context) => Json(context).into_response(),
         Err(error) => sdk_error_response(error),
     }
 }
@@ -2988,6 +3129,7 @@ fn dashboard_event_requires_session_touch(event: &Event) -> bool {
         event.topic.as_str(),
         "runtime/model_stream"
             | "runtime/model_reasoning_summary"
+            | "runtime/model_usage"
             | "runtime/model_attempt_state"
             | "runtime/model_attempt_snapshot"
             | "chat/context_inspect"
@@ -3414,6 +3556,15 @@ mod tests {
         );
         assert!(!dashboard_event_requires_session_touch(&durable_summary));
 
+        let model_usage = Event::new(
+            "model-usage-test".to_string(),
+            "Model-Provider".to_string(),
+            "runtime_control".to_string(),
+            "runtime/model_usage".to_string(),
+            serde_json::Map::new(),
+        );
+        assert!(!dashboard_event_requires_session_touch(&model_usage));
+
         let context_inspect = Event::new(
             "context-inspect-test".to_string(),
             "System-ContextKernel".to_string(),
@@ -3546,6 +3697,111 @@ mod tests {
             );
         }
         headers
+    }
+
+    #[tokio::test]
+    async fn catalog_mutations_rename_and_archive_without_erasing_context_history() {
+        let (state, runtime) = test_state().await;
+        let create_context = handle_create_context(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(CreateContextRequest {
+                id: Some("context-catalog-test".to_string()),
+                agent_id: Some("agent-test".to_string()),
+                title: Some("Before".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(create_context.status(), StatusCode::CREATED);
+
+        let create_session = handle_create_session(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("session-catalog-test".to_string()),
+                agent_id: Some("agent-test".to_string()),
+                parent_session_id: None,
+                title: Some("Catalog Session".to_string()),
+                mount: Some(ContextMountRequest::ExistingContext {
+                    context_id: "context-catalog-test".to_string(),
+                }),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(create_session.status(), StatusCode::CREATED);
+
+        let rename = handle_update_context(
+            State(Arc::clone(&state)),
+            Path("context-catalog-test".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateContextRequest {
+                title: Some("After".to_string()),
+                status: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(rename.status(), StatusCode::OK);
+        assert_eq!(
+            runtime
+                .get_context("context-catalog-test")
+                .await
+                .unwrap()
+                .unwrap()
+                .title,
+            "After"
+        );
+
+        let archive = handle_update_context(
+            State(Arc::clone(&state)),
+            Path("context-catalog-test".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateContextRequest {
+                title: None,
+                status: Some(SessionStatus::Archived),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(archive.status(), StatusCode::OK);
+        assert_eq!(
+            runtime
+                .get_context("context-catalog-test")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SessionStatus::Archived
+        );
+        assert_eq!(
+            runtime
+                .get_session("session-catalog-test")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            SessionStatus::Archived
+        );
+
+        let archive_root = handle_update_context(
+            State(Arc::clone(&state)),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateContextRequest {
+                title: None,
+                status: Some(SessionStatus::Archived),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(archive_root.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]
@@ -4304,6 +4560,63 @@ mod tests {
             vec!["ledger-page-2", "ledger-page-3"]
         );
         assert!(older.next_before_sequence.is_some());
+    }
+
+    #[tokio::test]
+    async fn model_usage_endpoint_returns_exact_durable_facts_without_pricing() {
+        let (state, runtime) = test_state().await;
+        runtime
+            .publish(Event::new(
+                "model_usage_http_attempt-1".to_string(),
+                "Model-Provider".to_string(),
+                "runtime_control".to_string(),
+                "runtime/model_usage".to_string(),
+                vec![
+                    ("context_id".to_string(), json!("context-test")),
+                    ("session_id".to_string(), json!("session-usage-http")),
+                    ("attempt_id".to_string(), json!("attempt-1")),
+                    ("model".to_string(), json!("fixture-model")),
+                    (
+                        "usage".to_string(),
+                        json!({
+                            "input_tokens": 10,
+                            "cached_input_tokens": 6,
+                            "uncached_input_tokens": 4,
+                            "output_tokens": 4,
+                            "total_tokens": 14,
+                            "raw": [{"prompt_tokens": 10, "completion_tokens": 4}]
+                        }),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await
+            .unwrap();
+
+        let response = handle_get_model_usage(
+            State(state),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(ModelUsageHttpQuery {
+                token: None,
+                session_id: Some("session-usage-http".to_string()),
+                before_sequence: None,
+                limit: Some(20),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["records"][0]["usage"]["total_tokens"], json!(14));
+        assert_eq!(value["totals"]["input_tokens"], json!(10));
+        assert_eq!(value["totals"]["output_tokens"], json!(4));
+        assert_eq!(value["totals"]["total_tokens"], json!(14));
+        assert_eq!(value["cost_totals"], json!([]));
     }
 
     #[tokio::test]

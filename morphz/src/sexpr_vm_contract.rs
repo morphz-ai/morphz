@@ -39,7 +39,8 @@ pub const ANNOTATED_KERNEL: &str = r#"(vm morphz
     (operator fallback
       (form (fallback primary backup))
       (description
-        "先求值 primary；成功时禁止 backup，明确失败时才求值 backup。"))
+        "先求值 primary；存在适用能力且成功时禁止 backup；没有适用能力或明确失败时，
+         才求值 backup。不得把尚未验证的未知状态当作失败。"))
 
     (operator bind
       (form (bind name expression))
@@ -91,7 +92,8 @@ pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
     (operator fallback
       (form (fallback primary backup))
       (description
-        "先求值 primary；成功时禁止 backup，明确失败时才求值 backup。"))
+        "先求值 primary；存在适用能力且成功时禁止 backup；没有适用能力或明确失败时，
+         才求值 backup。不得把尚未验证的未知状态当作失败。"))
 
     (operator bind
       (form (bind name expression))
@@ -113,5 +115,6 @@ pub const ANNOTATED_RESPONSE_KERNEL: &str = r#"(vm morphz
         "(reply content) 是过程定义中的语义记法，不是模型响应的输出格式，也不是工具。
          对它求值时，直接把 content 本身作为无工具调用的普通 assistant 文本返回给当前
          active Session；绝不能把 (reply ...) 的括号、算子名或代码围栏发送给 Session。
-         只在没有待执行工具或维护过程时结束当前 Evaluation。若明确无需发送消息，独占
-         调用 Runtime 提供的 no_reply 工具；空响应不表示完成。"))))"#;
+         只在没有待执行工具或维护过程时结束当前 Evaluation。若明确有意静默，独占调用
+         Runtime 提供的 no_reply(mode=silent)；若仅等待 Runtime 已知的非终态事件，调用
+         no_reply(mode=wait)。完成或失败事件到达后不得继续等待；空响应不表示完成。"))))"#;

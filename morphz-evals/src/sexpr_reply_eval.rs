@@ -11,9 +11,9 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 const MAX_ATTEMPTS: usize = 16;
 const MAX_PROTOCOL_RETRIES: usize = 2;
 const EMPTY_RESPONSE_ERROR: &str = "既没有非空正文，也没有工具调用";
-const RESPONSE_PROTOCOL_ERROR: &str = "Protocol error: this evaluation has not produced a valid terminal response. Continue the remaining S-expression. Return non-empty plain assistant text with no tool calls to reply to the active Session, or call no_reply exactly once with no arguments and no text when no Session message is needed. Empty output is not terminal.";
+const RESPONSE_PROTOCOL_ERROR: &str = "Protocol error: this evaluation has not produced a valid terminal response. Continue the remaining S-expression. Return non-empty plain assistant text with no tool calls to reply to the active Session, or call no_reply exactly once with mode=silent and no text when no Session message is needed. Empty output is not terminal.";
 
-const EXTERNAL_NL_VM: &str = "You are the semantic processor of a Cognitive S-Expression VM. Evaluate the supplied S-expression through real standard Function Calling. Evaluate seq left-to-right; fallback uses its backup only after primary failure; bind stores exact observed results in local scope; if evaluates exactly one branch; named process calls have independent local scope. A reply expression produces non-empty plain assistant text with no tool call. If no Session message is needed, call the no_reply tool exactly once with no arguments and no text. Empty output is not terminal. Tool results are authoritative observations; never explain or simulate the form instead of evaluating it.";
+const EXTERNAL_NL_VM: &str = "You are the semantic processor of a Cognitive S-Expression VM. Evaluate the supplied S-expression through real standard Function Calling. Evaluate seq left-to-right; fallback uses its backup only after primary failure; bind stores exact observed results in local scope; if evaluates exactly one branch; named process calls have independent local scope. A reply expression produces non-empty plain assistant text with no tool call. If no Session message is needed, call the no_reply tool exactly once with mode=silent and no text. Empty output is not terminal. Tool results are authoritative observations; never explain or simulate the form instead of evaluating it.";
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -243,9 +243,10 @@ async fn run_episode(
             let valid = no_reply_calls.len() == 1
                 && response.tool_calls.len() == 1
                 && response.content.trim().is_empty()
-                && arguments
-                    .as_object()
-                    .is_some_and(|object| object.is_empty());
+                && arguments.as_object().is_some_and(|object| {
+                    object.len() == 1
+                        && object.get("mode").and_then(Value::as_str) == Some("silent")
+                });
             if !valid {
                 protocol_errors += 1;
                 if protocol_errors > MAX_PROTOCOL_RETRIES {
@@ -386,7 +387,7 @@ fn tasks() -> Vec<EvalTask> {
         },
         EvalTask {
             id: "explicit-no-reply",
-            sexpr: "(bind event (record (kind background-cache-refresh) (requires-session-reply false)))\n\n(if event.requires-session-reply (reply CACHE-REFRESHED) (call no_reply))",
+            sexpr: "(bind event (record (kind background-cache-refresh) (requires-session-reply false)))\n\n(if event.requires-session-reply (reply CACHE-REFRESHED) (call no_reply (mode silent)))",
             expected_tools: &["response:no_reply"],
             dependencies: &[],
             forbidden_tools: &["skills_list", "skill_view", "skill_run", "evidence_verify"],
@@ -402,7 +403,7 @@ fn tool_definitions() -> Vec<ToolDefinition> {
         tool("skill_view", "Load the operational content of one skill before using it.", json!({"type":"object","properties":{"name":{"type":"string"}},"required":["name"]})),
         tool("skill_run", "Apply a loaded skill to an input. Tool output is authoritative for success or failure.", json!({"type":"object","properties":{"name":{"type":"string"},"input":{"type":"string"}},"required":["name","input"]})),
         tool("evidence_verify", "Verify one evidence ID and return its opaque delivery token.", json!({"type":"object","properties":{"evidence_id":{"type":"string"}},"required":["evidence_id"]})),
-        tool("no_reply", "Finish the current Evaluation without sending a message to the active Session. It must be the only tool call and cannot accompany text.", json!({"type":"object","properties":{},"additionalProperties":false})),
+        tool("no_reply", "Finish the current Evaluation without sending a message to the active Session. Use mode=silent for deliberate silence. It must be the only tool call and cannot accompany text.", json!({"type":"object","properties":{"mode":{"type":"string","enum":["silent"]}},"required":["mode"],"additionalProperties":false})),
     ]
 }
 

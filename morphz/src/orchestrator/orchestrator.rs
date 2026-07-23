@@ -14,7 +14,9 @@ use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_TOOL_OUTPUT, T
 use crate::execution::{
     ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat, JobOutcome, JobReceipt,
 };
-use crate::llm::{Client, Message, PromptTokenAccuracy, PromptTokenCount, ToolDefinition};
+use crate::llm::{
+    Client, Message, ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition,
+};
 use crate::memory::{
     ActionGroupMemberStatus, ActionGroupStore, ActivationOutcomeCommit, ApprovalFilter,
     ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
@@ -30,7 +32,7 @@ use crate::memory::{
     ThreadLifecycle, ThreadMutation, ThreadRecord,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
-use crate::orchestrator::context::{ContextEngine, ContextView};
+use crate::orchestrator::context::{attribute_prompt_components, ContextEngine, ContextView};
 use crate::orchestrator::context_contract::{render_system_contract, render_system_contract_sexpr};
 use crate::permission::{DurableApprovalGrant, PermissionBroker};
 use crate::sexpr::SExpr;
@@ -72,6 +74,14 @@ struct DurableEventWriterMetrics {
 struct PromptPressureMeasurement {
     count: PromptTokenCount,
     context_version: u64,
+}
+
+#[derive(Debug, Clone)]
+struct DurablePromptUsageAnchor {
+    actual_input_tokens: usize,
+    local_base_estimate_tokens: usize,
+    counter_source: String,
+    attempt_id: String,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -241,7 +251,7 @@ Context 的状态分为三个权限域：
 
 每次响应必须明确选择 `protocol.response-contract` 中的一种主模式：
 - reply：当前 Evaluation 已到可交付边界时，返回非空普通 assistant 文本且不调用工具。Runtime 将文本流式路由到 kernel.active-session，并在完整响应成功后持久化为终态回复。存在 active Objective 时，它只结束本次 Evaluation，不能代替 objective_update(completed)。
-- no-reply：确认本次 Evaluation 无需向 active Session 发送任何消息时，独占调用无参数的 no_reply。DialogueTurn Thread 中它结束本次求值；仍有后台任务的 Execution Thread 中它表示 yield/wait，Thread 保持非终态并在物理事件到达后继续。它不代表 Objective 完成，也不取消后台任务。
+- no-reply：独占调用 no_reply，并显式选择 mode。mode=silent 只用于有意不向 active Session 发送消息；mode=wait 只用于 Runtime 仍能验证存在后台任务、排队调度或待处理事件，当前 Execution 将 yield 并在物理事件到达后继续。完成/失败事件到达后不得继续用 wait，必须处理最新事实并回复、继续行动，或确实有意静默时使用 silent。它不代表 Objective 完成，也不取消后台任务。
 - act：确实需要新的外部结果；调用物理工具，可并行附带一个不依赖这些新结果的 context_tx；若有正文则只是可见进度，Runtime 执行工具后必定再次调用你。
 - maintain：需要先修改 Mind 时可单独调用 context_tx，不输出最终正文。事务成功后 Runtime 必定再次调用你，并在非 critical 时暂时隐藏 context_tx；maintain 不是用户回合终点，下一响应必须 reply、no-reply 或 act。
 - schedule：需要决定串行、并行、依赖或定时执行时，独占调用一次 schedule_tx。enqueue 把意图加入既有 Thread，spawn 创建并行 Thread；not_before/delay_seconds 设置定时，after 设置依赖。inspect 读取调度及 revision；pause/resume/reschedule/cancel 是带 expected_revision 的 CAS 控制，冲突时必须重新 inspect 后再决策，不得盲目重试。每次控制只能包含一个 op。schedule_tx 只提交调度，不代替物理工具，也不结束当前 Evaluation；收到回执后再向 active Session 说明安排。
@@ -272,13 +282,15 @@ Context 的状态分为三个权限域：
 11. kernel.turn-control 描述当前用户回合的模型求值进度。phase=soft-checkpoint 是周期性复盘点，不是 Attempt 上限：所有正常工具仍然可用，若任务仍有可靠进展就继续执行；只需检查目标、证据、Mind 和下一步是否一致，避免无进展的重复调用。一次模型响应里并行调用多个工具只计为一次 Attempt。
 12. kernel.wake 说明本次为何被唤醒。独立 context_tx 成功后的 context-transaction-result 会触发一次冷却：除非仍处于 critical，否则本次不再提供 context_tx，必须返回普通文本、调用 no_reply 或执行必要的物理动作。
 13. 代码任务优先使用 list_files/search 发现文件、read 获取内容与 sha256、edit 做带版本前提的局部修改；write 主要用于 mode=create，新文件已存在或 overwrite 缺少 expected_sha256 时不得绕过保护。exec 用于测试/编译/格式化，不要用 Shell 替代受约束的文件工具。file_change 是已提交修改的可审计证据。相互独立的文件读取必须在同一响应中并行调用；已经进入 Inbox 且 sha256 未被 file_change 改变的内容不得重复 read。完成必要定位后立即修改并验证，不要在反复扫描与阅读中消耗无进展的模型求值。
-14. exec 回执中的 execution、process_status、exit_code、task_status 和 effective_boundary 是 Runtime 观测到的物理事实；不得用命令意图或自己的预期取代它们。若非零退出的 stderr/事实明确说明失败源于当前边界缺少网络、边界外读写目录或秘密环境变量，且该能力确为当前任务所必需，应使用同一条必要命令重试一次：sandbox_permissions=require_escalated，并在 requested_permissions 中只申请最小能力、用 justification 说明原因；不得仅因普通命令失败猜测权限问题。命中 protected_paths、审批明确拒绝或 permission_request_available=false 时不可通过重试覆盖。exec 转入后台后，普通等待直接调用 no_reply；任务结束会主动唤醒，不要为了等待而调用工具。只有存在明确截止时间或停滞监督需求时，才用 check_task_after 安排一次检查点；届时可调用 task_status、继续安排检查或 kill_task。不得用 sleep、ps 或重复读取空日志轮询。不得把 token/key 字面量写入命令、进程参数、Mind 或 Ledger；只能由使用者预先配置 Runtime 环境变量，再通过 requested_permissions.secret_env 按变量名申请对单个子进程注入。
+14. exec 回执中的 execution、process_status、exit_code、task_status 和 effective_boundary 是 Runtime 观测到的物理事实；不得用命令意图或自己的预期取代它们。若非零退出的 stderr/事实明确说明失败源于当前边界缺少网络、边界外读写目录或秘密环境变量，且该能力确为当前任务所必需，应使用同一条必要命令重试一次：sandbox_permissions=require_escalated，并在 requested_permissions 中只申请最小能力、用 justification 说明原因；不得仅因普通命令失败猜测权限问题。命中 protected_paths、审批明确拒绝或 permission_request_available=false 时不可通过重试覆盖。exec 转入后台且 Runtime 仍报告任务非终态时，普通等待独占调用 no_reply(mode=wait)；任务结束会主动唤醒。收到终态 success/failed/cancelled/timeout 后必须处理该结果，不得再次用 wait。只有存在明确截止时间或停滞监督需求时，才用 check_task_after 安排一次检查点；届时可调用 task_status、继续安排检查或 kill_task。不得用 sleep、ps 或重复读取空日志轮询。不得把 token/key 字面量写入命令、进程参数、Mind 或 Ledger；只能由使用者预先配置 Runtime 环境变量，再通过 requested_permissions.secret_env 按变量名申请对单个子进程注入。
 15. kernel.objectives 与 evaluate.objective-context 让你看到当前 Session 的 Objective 物理状态，但“可见”不等于“已绑定”。仅当 evaluate.objective-binding 指向某个 Objective 时，本轮才属于它的 Objective Thread 并可推进它；binding=none 时只可用这些状态回答用户的进度问题，不得为其调用工具。绑定的 Objective 仍有工作且不等待时正常交付当前进度，Supervisor 会自动续跑；等待确定事件时先调用 objective_update(status=active, wait_condition=...)；确实无法自动等待或推进时才提交 blocked；只有逐项审计 stated objective 并有真实 Ledger 证据支持时才提交 completed。Objective 状态工具成功后仍需产生普通文本或调用 no_reply 完成本次 IO。
 16. 你可以调用 objective_create，把当前 Session 中确实需要跨多次 Evaluation、异步等待或 Runtime 重启继续推进的工作升级为 First-Class Objective。它不是普通 Todo 或延长思考时间的手段：当前 Evaluation 可以可靠完成的任务不得创建 Objective；创建时完整保留用户范围与完成条件，并说明持久化的必要性。Runtime 自动绑定当前 Agent/Context/Session 并生成 ID；成功或返回 existing 后不得为同一目标重复创建。若指定 parent_objective_id，它必须是当前正在求值的 Objective。创建成功后继续工作，普通文本或 no_reply 只结束被收编后的当前 Evaluation，未完成 Objective 将由 Supervisor 自动续跑。
 17. 调度决策由你负责，Runtime 只执行并发与时序机制。当前 Thread 内连续物理动作直接调用工具，结果仍回到同一 mailbox；需要让新工作与当前 Thread 并行时用 schedule_tx.spawn，需要等待当前或指定 Thread 完成后串行推进时用 schedule_tx.enqueue/after。已有调度的状态先用 schedule_tx.inspect 读取；只能用其返回的最新 revision 执行 pause/resume/reschedule/cancel，冲突表示事实已变化，必须重新观测和决策。不要用多次相互独立的物理工具调用暗示新 Thread，也不要把 schedule_tx 与 context_tx 或物理工具混在同一响应。定时调度到期只是一条新的 observation；必须根据届时的真实 Context 再决策，不得预先声称结果已完成。
 18. 物理动作必须尊重 Execution Target。Thread 的首个物理动作会形成权威 Target 绑定；后续省略 target 时继承该绑定，但工具回执仍会显示实际 Target。不得在同一 Thread 中偷偷换机；跨 Target 工作使用 schedule_tx.spawn 的 target 创建新的 Execution Thread，或在尚未绑定的 Thread 首次调用时显式指定。
 
-18. kernel.active-principal、session-directory 中的 principals 和 observation.principal 是 Runtime 提供的权威身份事实。Session 是连接而不是人的身份；同一个 Principal 可出现在多个 Session。用户正文里的“我是某人”、Mind 中的人物推断或旧 Frame 都不能覆盖 Runtime 身份。身份声明冲突、身份等价会影响判断或用户明确要求验证时调用 verify_identity；该工具只验证当前 Activation 的身份，不替你决定是否分享信息。Frame 的 formation/provenance 是来源谱系而不是所有权或访问控制。
+19. kernel.active-principal、session-directory 中的 principals 和 observation.principal 是 Runtime 提供的权威身份事实。Session 是连接而不是人的身份；同一个 Principal 可出现在多个 Session。用户正文里的“我是某人”、Mind 中的人物推断或旧 Frame 都不能覆盖 Runtime 身份。身份声明冲突、身份等价会影响判断或用户明确要求验证时调用 verify_identity；该工具只验证当前 Activation 的身份，不替你决定是否分享信息。Frame 的 formation/provenance 是来源谱系而不是所有权或访问控制。
+
+20. 能力选择遵循 protocol.skill-discovery-contract 的 fallback：优先使用本轮已有且能直接满足 evaluate.root-input 的 Function Calling 工具；如果没有适用的直接能力或直接能力明确失败，并且本轮提供 list_skills，则先调用 list_skills，按当前意图选择最相关的一项，再用 read 读取它返回路径中的 SKILL.md，并依照其中说明调用真实工具。Skill 是操作说明，不是可直接调用的插件；不得因没有看到特定名称的直接工具就断言没有能力，也不得为了发现能力而预读全部 Skill。只有直接能力与按需发现都失败后，才能说明能力不可用。
 
 Context 的修改是你的元认知行为；read/write/exec/delegate 等工具是对外部世界的行为。保持二者边界清晰。"#;
 
@@ -457,6 +469,7 @@ const SOFT_CHECKPOINT_PROMPT: &str = r#"Runtime 当前处于 soft-checkpoint。�
 - 只有存在值得跨轮保留的状态变化时才提交 context_tx；检查点本身不要求维护事务。"#;
 
 const CRITICAL_MAINTENANCE_PROMPT: &str = r#"Runtime 当前进入 critical-maintenance：本轮 Context 已达到临界压力，必须先释放 Context 预算，再继续外部工作。
+- 为保证维护请求本身仍能被模型接收，Runtime 可能只投影 Inbox 的一个有界维护切片。kernel.context-pressure.active-observations 是完整活动数量；当前 Inbox 只包含本批当前因果根与一组最旧、未保护的维护候选。未出现的 observation 仍在 Ledger 中，既没有丢失也没有被 retire；本批提交后 Runtime 会重新求值并在仍超限时提供下一批。
 - 本次只能调用当前实际提供的工具。外部物理工具已被暂时撤下；不要重复刚才的物理工具调用，也不要假定它已执行。
 - 优先用一次 context_tx 准确压缩 Mind/Inbox：保留当前目标、用户约束、最新可靠事实、未完成工作和继续执行所需证据；摘要或 retire 陈旧、重复、已被新事实取代的内容。
 - recall 仅用于维护前确实缺失的原始证据；不要借此展开新的外部工作。完成维护后 Runtime 会重新计算压力并恢复适用的物理工具。
@@ -466,10 +479,16 @@ const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context �
 
 const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请返回普通文本结束当前 Evaluation、独占调用 no_reply，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
 const NO_REPLY_TOOL_NAME: &str = "no_reply";
+const CRITICAL_MAINTENANCE_MAX_OBSERVATIONS: usize = 48;
+const CRITICAL_MAINTENANCE_PREVIEW_CHARS: usize = 768;
+// Emergency maintenance is intentionally separate from the ordinary per-turn
+// housekeeping budget. A bounded slice may require several transactions to
+// drain a Context that was already allowed to grow beyond the model window.
+const CRITICAL_MAINTENANCE_TRANSACTION_SAFETY_LIMIT: usize = 256;
 const MAX_RESPONSE_PROTOCOL_RETRIES: usize = 2;
 const TOOL_ARGUMENT_PREVIEW_CHARS: usize = 4_096;
 const EMPTY_RESPONSE_ERROR: &str = "既没有非空正文，也没有工具调用";
-const RESPONSE_PROTOCOL_ERROR: &str = "Response protocol error：当前 Evaluation 尚未产生合法终态。需要向当前 active Session 回复时，返回非空普通 assistant 文本且不调用工具；确认本次无需发送消息时，独占调用 no_reply。空响应、no_reply 与其他工具混用、或 no_reply 同时携带正文都是协议错误。";
+const RESPONSE_PROTOCOL_ERROR: &str = "Response protocol error：当前 Evaluation 尚未产生合法终态。需要向当前 active Session 回复时，返回非空普通 assistant 文本且不调用工具；有意静默时独占调用 no_reply(mode=silent)；仅在 Runtime 仍有可验证的非终态事件时调用 no_reply(mode=wait)。空响应、缺少/错误 mode、no_reply 与其他工具混用、或 no_reply 同时携带正文都是协议错误。";
 const REASONING_ONLY_RESPONSE_REASON: &str =
     "模型只返回了推理摘要，未产生普通文本、工具调用或 no_reply";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -595,9 +614,8 @@ struct ModelReasoningSummaryAccumulator {
     text: String,
     complete: bool,
     persist_started: bool,
-    prompt_tokens: Option<u64>,
-    completion_tokens: Option<u64>,
-    total_tokens: Option<u64>,
+    usage: ModelUsage,
+    usage_persist_started: bool,
     failure: Option<String>,
 }
 
@@ -694,14 +712,23 @@ impl DialogueThreadGate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TerminalDecision {
     Deliver(String),
-    NoReply,
+    NoReply(NoReplyMode),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoReplyMode {
+    /// The Agent intentionally chooses not to send a Session message.
+    Silent,
+    /// The current Execution yields until a durable Runtime event wakes it.
+    Wait,
 }
 
 impl TerminalDecision {
     fn disposition(&self) -> &'static str {
         match self {
             Self::Deliver(_) => "deliver",
-            Self::NoReply => "no_reply",
+            Self::NoReply(NoReplyMode::Silent) => "no_reply",
+            Self::NoReply(NoReplyMode::Wait) => "wait",
         }
     }
 }
@@ -709,10 +736,17 @@ impl TerminalDecision {
 fn no_reply_tool_definition() -> crate::llm::ToolDefinition {
     crate::llm::ToolDefinition {
         name: NO_REPLY_TOOL_NAME.to_string(),
-        description: "明确本次不向当前 active Session 发送消息。DialogueTurn Thread 中它结束本次求值；存在仍在运行的后台任务时，它只让当前 Execution Thread yield 并进入 waiting，后续任务事件会再次唤醒同一 Thread。它不代表 Objective 完成，也不取消后台任务。no_reply 必须是响应中唯一的工具调用，且不能同时返回正文。".to_string(),
+        description: "不发送当前 active Session 消息，并明确说明原因模式。mode=silent 表示有意静默结束；mode=wait 表示当前 Execution 仅因仍存在 Runtime 可验证的后台任务、定时调度或待处理事件而暂时 yield。Runtime 会校验 wait；如果相关事件已经完成或失败，必须处理最新结果并回复或继续行动，不能用 wait。它不代表 Objective 完成，也不取消后台任务。no_reply 必须是响应中唯一的工具调用，且不能同时返回正文。".to_string(),
         parameters: json!({
             "type": "object",
-            "properties": {},
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["silent", "wait"],
+                    "description": "silent=有意不发送消息；wait=等待 Runtime 已知的非终态事件"
+                }
+            },
+            "required": ["mode"],
             "additionalProperties": false
         }),
     }
@@ -744,13 +778,18 @@ fn classify_terminal_response(
     }
     let arguments: serde_json::Value = serde_json::from_str(&no_reply_calls[0].arguments)
         .map_err(|error| format!("no_reply 参数 JSON 非法: {error}"))?;
-    if arguments
+    let object = arguments
         .as_object()
-        .is_none_or(|object| !object.is_empty())
-    {
-        return Err("no_reply 不接受参数".to_string());
+        .ok_or_else(|| "no_reply 参数必须是 JSON object".to_string())?;
+    if object.len() != 1 {
+        return Err("no_reply 只接受必填参数 mode=\"silent\" 或 mode=\"wait\"".to_string());
     }
-    Ok(Some(TerminalDecision::NoReply))
+    let mode = match object.get("mode").and_then(|value| value.as_str()) {
+        Some("silent") => NoReplyMode::Silent,
+        Some("wait") => NoReplyMode::Wait,
+        _ => return Err("no_reply.mode 只支持 silent 或 wait".to_string()),
+    };
+    Ok(Some(TerminalDecision::NoReply(mode)))
 }
 
 fn validate_schedule_tx_response(response: &crate::llm::Response) -> Result<(), String> {
@@ -883,6 +922,11 @@ pub struct Orchestrator {
     /// Context Encoding produces a component-only fallback; inspection APIs
     /// must not overwrite the newer full-Prompt measurement with that fallback.
     prompt_pressure_measurements: DashMap<(String, String), PromptPressureMeasurement>,
+    /// Last Provider-observed input usage paired with the exact local estimate
+    /// of that same attempt. Ledger restoration makes calibration survive a
+    /// process restart; the key prevents one Context, Session or model from
+    /// calibrating another.
+    prompt_usage_anchors: DashMap<(String, String, String, String), DurablePromptUsageAnchor>,
     model_provider_metrics: Arc<ModelProviderMetrics>,
     #[doc(hidden)]
     pub model_provider_semaphore: Arc<tokio::sync::Semaphore>,
@@ -970,6 +1014,22 @@ async fn persist_model_attempt_state(
     Ok(())
 }
 
+fn local_counter_source(source: &str) -> String {
+    source.split('+').next().unwrap_or(source).to_string()
+}
+
+fn apply_prompt_estimate_delta(
+    actual_anchor_tokens: usize,
+    current_local_estimate: usize,
+    anchor_local_estimate: usize,
+) -> usize {
+    if current_local_estimate >= anchor_local_estimate {
+        actual_anchor_tokens.saturating_add(current_local_estimate - anchor_local_estimate)
+    } else {
+        actual_anchor_tokens.saturating_sub(anchor_local_estimate - current_local_estimate)
+    }
+}
+
 /// Commit the provider-authored reasoning summary as one independent Ledger
 /// artifact. Deltas remain ephemeral; this helper is also used after timeout
 /// so a partial summary can survive without waiting for a stuck provider.
@@ -982,7 +1042,7 @@ async fn persist_model_reasoning_summary(
     accumulator: &Arc<Mutex<ModelReasoningSummaryAccumulator>>,
     force_incomplete: bool,
 ) -> Result<(), DynError> {
-    let (text, complete, prompt_tokens, completion_tokens, total_tokens, failure) = {
+    let (text, complete, failure) = {
         let mut accumulator = accumulator.lock().await;
         if force_incomplete {
             accumulator.complete = false;
@@ -994,9 +1054,6 @@ async fn persist_model_reasoning_summary(
         (
             accumulator.text.clone(),
             accumulator.complete,
-            accumulator.prompt_tokens,
-            accumulator.completion_tokens,
-            accumulator.total_tokens,
             accumulator.failure.clone(),
         )
     };
@@ -1008,15 +1065,6 @@ async fn persist_model_reasoning_summary(
         ("text".to_string(), json!(text)),
         ("complete".to_string(), json!(complete)),
     ];
-    if let Some(tokens) = prompt_tokens {
-        payload.push(("prompt_tokens".to_string(), json!(tokens)));
-    }
-    if let Some(tokens) = completion_tokens {
-        payload.push(("completion_tokens".to_string(), json!(tokens)));
-    }
-    if let Some(tokens) = total_tokens {
-        payload.push(("total_tokens".to_string(), json!(tokens)));
-    }
     if let Some(failure) = failure {
         payload.push(("failure".to_string(), json!(failure)));
     }
@@ -1030,6 +1078,76 @@ async fn persist_model_reasoning_summary(
     );
     if let Err(error) = bus.publish(event).await {
         accumulator.lock().await.persist_started = false;
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Persist Provider usage independently from reasoning, public text, tool
+/// calls and reply semantics. Every attempt that received usage therefore
+/// leaves one stable, auditable Ledger fact even when its reasoning summary
+/// is empty or the response later fails.
+async fn persist_model_usage(
+    bus: &Arc<InMemoryEventBus>,
+    context_id: &str,
+    session_id: &str,
+    attempt_id: &str,
+    route: &[(String, serde_json::Value)],
+    accumulator: &Arc<Mutex<ModelReasoningSummaryAccumulator>>,
+    measurement: Option<&PromptTokenCount>,
+) -> Result<(), DynError> {
+    let usage = {
+        let mut accumulator = accumulator.lock().await;
+        if accumulator.usage_persist_started || !accumulator.usage.has_usage() {
+            return Ok(());
+        }
+        accumulator.usage_persist_started = true;
+        accumulator.usage.clone()
+    };
+
+    let mut payload = vec![
+        ("context_id".to_string(), json!(context_id)),
+        ("session_id".to_string(), json!(session_id)),
+        ("attempt_id".to_string(), json!(attempt_id)),
+        ("usage".to_string(), serde_json::to_value(&usage)?),
+        ("usage_schema_version".to_string(), json!(1)),
+    ];
+    if let Some(measurement) = measurement {
+        payload.extend([
+            ("model".to_string(), json!(&measurement.model)),
+            (
+                "predicted_input_tokens".to_string(),
+                json!(measurement.tokens),
+            ),
+            (
+                "local_base_estimate_tokens".to_string(),
+                json!(measurement.base_estimate_tokens),
+            ),
+            ("counter_source".to_string(), json!(&measurement.source)),
+            (
+                "counter_accuracy".to_string(),
+                json!(measurement.accuracy.as_str()),
+            ),
+            (
+                "calibration_key".to_string(),
+                json!(measurement.calibration_key),
+            ),
+            (
+                "calibration_shape".to_string(),
+                json!(measurement.calibration_shape),
+            ),
+        ]);
+    }
+    payload.extend_from_slice(route);
+    let event = Event::new(
+        format!("model_usage_{attempt_id}"),
+        "Model-Provider".to_string(),
+        "runtime_control".to_string(),
+        "runtime/model_usage".to_string(),
+        payload.into_iter().collect(),
+    );
+    if let Err(error) = bus.publish(event).await {
+        accumulator.lock().await.usage_persist_started = false;
         return Err(error);
     }
     Ok(())
@@ -1152,6 +1270,7 @@ impl Orchestrator {
             orchestrator_config,
             event_writer_metrics: Arc::new(DurableEventWriterMetrics::default()),
             prompt_pressure_measurements: DashMap::new(),
+            prompt_usage_anchors: DashMap::new(),
             model_provider_metrics: Arc::new(ModelProviderMetrics::default()),
             model_provider_semaphore,
             activation_admission,
@@ -1248,13 +1367,27 @@ impl Orchestrator {
         if activation.status != ThreadActivationStatus::Running {
             return Ok(());
         }
+        let lease_expires_at = activation.lease_expires_at.unwrap_or_else(Utc::now);
+        let due_at = if self.activation_admission.is_in_flight(&activation.id) {
+            let heartbeat_secs = self
+                .orchestrator_config
+                .activation_lease_secs
+                .saturating_div(3)
+                .max(1);
+            lease_expires_at.min(
+                Utc::now()
+                    + chrono::Duration::seconds(i64::try_from(heartbeat_secs).unwrap_or(i64::MAX)),
+            )
+        } else {
+            lease_expires_at
+        };
         self.timer_engine
             .schedule(NewRuntimeTimer {
                 id: activation_lease_timer_id(&activation.id),
                 generation: activation.revision,
                 kind: RuntimeTimerKind::ActivationLease,
                 owner_id: activation.id.clone(),
-                due_at: activation.lease_expires_at.unwrap_or_else(Utc::now),
+                due_at,
                 payload: json!({
                     "activation_id": activation.id,
                     "revision": activation.revision,
@@ -1291,24 +1424,11 @@ impl Orchestrator {
             self.arm_activation_lease(&current).await?;
             return Ok(TimerDisposition::Complete);
         }
-        if let Some(expires_at) = current.lease_expires_at {
-            if expires_at > Utc::now() {
-                return Ok(TimerDisposition::Reschedule {
-                    due_at: expires_at,
-                    reason: Some("Thread Activation lease 尚未到期".to_string()),
-                });
-            }
-        }
         if self.activation_admission.is_in_flight(&current.id) {
-            // The durable lease expired while this exact Activation still has
-            // its process-local execution permit. Re-dispatching the Trigger
-            // would only reach `AlreadyLocal`. Completing this timer after
-            // that no-op used to consume the sole crash-recovery opportunity:
-            // if the original task subsequently aborted, the row remained
-            // `running` forever. Advance the durable generation and arm the
-            // next lease before completing the claimed old generation. Timer
-            // completion is generation-fenced, so it cannot erase this newer
-            // recovery clock.
+            // A live owner renews before expiry. The lease is a failure
+            // detector, not a model/tool wall-clock timeout; keeping those
+            // concepts separate lets another Runtime recover a crashed
+            // request promptly without stealing healthy long-running work.
             let renewed_expires_at = Utc::now() + self.activation_lease_duration();
             match session_store
                 .update_thread_activation(
@@ -1327,22 +1447,27 @@ impl Orchestrator {
                         activation_id = %renewed.id,
                         revision = renewed.revision,
                         lease_expires_at = %renewed_expires_at,
-                        "本地 Activation 仍在执行；续租并保留恢复时钟"
+                        "本地 Activation 仍在执行；心跳续租并保留恢复时钟"
                     );
                     return Ok(TimerDisposition::Complete);
                 }
                 ThreadActivationMutation::Conflict { current }
                     if current.status == ThreadActivationStatus::Running =>
                 {
-                    // A concurrent snapshot/heartbeat already advanced the
-                    // owner revision. Arm that authoritative generation; the
-                    // old claimed generation may now complete harmlessly.
                     self.arm_activation_lease(&current).await?;
                     return Ok(TimerDisposition::Complete);
                 }
                 ThreadActivationMutation::Conflict { .. } | ThreadActivationMutation::NotFound => {
                     return Ok(TimerDisposition::Complete);
                 }
+            }
+        }
+        if let Some(expires_at) = current.lease_expires_at {
+            if expires_at > Utc::now() {
+                return Ok(TimerDisposition::Reschedule {
+                    due_at: expires_at,
+                    reason: Some("Thread Activation lease 尚未到期".to_string()),
+                });
             }
         }
         let Some(trigger) = self
@@ -1369,19 +1494,7 @@ impl Orchestrator {
     }
 
     fn activation_lease_duration(&self) -> chrono::Duration {
-        let lease_seconds = self
-            .orchestrator_config
-            .model_attempt_hard_timeout_secs
-            .unwrap_or(self.orchestrator_config.model_provider_queue_timeout_secs)
-            .max(1)
-            .saturating_mul((MAX_RESPONSE_PROTOCOL_RETRIES + 1) as u64)
-            .saturating_add(30)
-            .max(
-                self.orchestrator_config
-                    .tool_timeout_secs
-                    .max(1)
-                    .saturating_add(30),
-            );
+        let lease_seconds = self.orchestrator_config.activation_lease_secs.max(1);
         chrono::Duration::seconds(i64::try_from(lease_seconds).unwrap_or(i64::MAX))
     }
 
@@ -1675,7 +1788,6 @@ impl Orchestrator {
             return Ok(());
         };
         for context in session_store.list_contexts(false).await? {
-            let mut interrupted_dialogue_roots = HashSet::new();
             let activations = session_store
                 .list_context_thread_activations(&context.id, false)
                 .await?;
@@ -1708,70 +1820,11 @@ impl Orchestrator {
                     &activation,
                     Utc::now(),
                 );
-                if recovery_owns_activation && interrupted_dialogue_on_restart(&activation, &events)
-                {
-                    let announce =
-                        interrupted_dialogue_roots.insert(activation.root_turn_id.clone());
-                    match session_store
-                        .update_thread_activation(
-                            &activation.id,
-                            activation.revision,
-                            ThreadActivationStatus::Cancelled,
-                            None,
-                            None,
-                            None,
-                        )
-                        .await?
-                    {
-                        ThreadActivationMutation::Updated(_) => {
-                            self.activation_admission.forget(&activation.id);
-                            tracing::info!(
-                                activation_id = %activation.id,
-                                root_turn_id = %activation.root_turn_id,
-                                "Runtime 重启后中止未形成持久 Assistant 决策的 Dialogue Turn"
-                            );
-                            if announce {
-                                self.bus
-                                    .publish(Event::new(
-                                        format!(
-                                            "dialogue_interrupted_{}_{}",
-                                            activation.id,
-                                            Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                                        ),
-                                        "Runtime-Recovery".to_string(),
-                                        TYPE_AGENT_CALL.to_string(),
-                                        "chat/cancelled".to_string(),
-                                        vec![
-                                            ("context_id".to_string(), json!(activation.context_id)),
-                                            ("session_id".to_string(), json!(activation.session_id)),
-                                            ("activation_id".to_string(), json!(activation.id)),
-                                            (
-                                                "root_turn_id".to_string(),
-                                                json!(activation.root_turn_id),
-                                            ),
-                                            (
-                                                "trigger_event_id".to_string(),
-                                                json!(activation.trigger_event_id),
-                                            ),
-                                            ("thread_kind".to_string(), json!("dialogue_turn")),
-                                            ("status".to_string(), json!("interrupted")),
-                                            ("reason".to_string(), json!("runtime_restart")),
-                                            (
-                                                "text".to_string(),
-                                                json!("这条消息的处理因 Runtime 重启而中断；如仍需要，请重新发送。"),
-                                            ),
-                                        ]
-                                        .into_iter()
-                                        .collect(),
-                                    ))
-                                    .await?;
-                            }
-                        }
-                        ThreadActivationMutation::Conflict { .. }
-                        | ThreadActivationMutation::NotFound => {}
-                    }
-                    continue;
-                }
+                // A model request has no external side effect before an
+                // Assistant decision is durably recorded. Therefore a queued
+                // or lease-expired DialogueTurn is safe to resume after a
+                // Runtime restart; cancelling it forced users to resend and
+                // could race with delayed lease recovery into duplicate work.
                 // A persisted assistant decision is a durable recovery
                 // boundary. A running Activation may also have compiled its
                 // trigger into Context and entered model streaming without
@@ -2438,6 +2491,22 @@ impl Orchestrator {
                 .get("wake_policy")
                 .and_then(|value| value.as_str())
                 == Some("delegation_result")
+        {
+            return Ok(());
+        }
+
+        // Action Group member results are durable semantic facts and remain
+        // immediately visible to observers, but they are not continuation
+        // boundaries. Routing an individual member here races the group's
+        // deterministic settled barrier and can create a stale successor
+        // Activation before every sibling result is available. Only the
+        // runtime/action_group_settled Event may wake the Thread.
+        if event.event_type == TYPE_TOOL_OUTPUT
+            && event
+                .payload
+                .get("action_group_id")
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| !value.is_empty())
         {
             return Ok(());
         }
@@ -3198,7 +3267,7 @@ impl Orchestrator {
         }
     }
 
-    async fn tool_output_already_covered(
+    async fn routed_input_already_covered(
         &self,
         session_id: &str,
         trigger: &Event,
@@ -3246,6 +3315,18 @@ impl Orchestrator {
             if !same_causal_turn {
                 return false;
             }
+            if let Some(covered_ids) = inspection
+                .payload
+                .get("covered_routed_input_ids")
+                .and_then(|value| value.as_array())
+            {
+                return covered_ids
+                    .iter()
+                    .any(|value| value.as_str() == Some(trigger.id.as_str()));
+            }
+            // Compatibility for diagnostic Events written before exact
+            // coverage IDs were introduced. New requests never rely on this
+            // timestamp approximation.
             match (trigger_sequence, inspection.sequence) {
                 (Some(trigger_sequence), Some(inspection_sequence)) => {
                     inspection_sequence > trigger_sequence
@@ -3253,6 +3334,55 @@ impl Orchestrator {
                 _ => inspection.timestamp > trigger.timestamp,
             }
         }))
+    }
+
+    async fn uncovered_routed_inputs(
+        &self,
+        session_id: &str,
+        activation: &ThreadActivationRecord,
+    ) -> Result<usize, DynError> {
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Thread routed-input fence 需要持久化 SessionStore")?;
+        let covered_through = session_store
+            .list_activation_signals(&activation.id)
+            .await?
+            .into_iter()
+            .map(|signal| signal.sequence)
+            .max()
+            .unwrap_or(activation.trigger_sequence);
+        let candidates = self
+            .store
+            .query(QueryFilter {
+                context_id: Some(activation.context_id.clone()),
+                session_id: Some(session_id.to_string()),
+                after_sequence: Some(covered_through),
+                types: vec![TYPE_TOOL_OUTPUT.to_string()],
+                ..Default::default()
+            })
+            .await?;
+        let mut uncovered = 0usize;
+        for event in candidates {
+            let same_root = event
+                .payload
+                .get("root_turn_id")
+                .and_then(|value| value.as_str())
+                == Some(activation.root_turn_id.as_str());
+            // action_group_settled is only a Runtime barrier. Its member Tool
+            // Outputs carry the semantic facts, so fencing the barrier itself
+            // would cause an already-complete physical batch to evaluate twice.
+            let routed_input = event.event_type == TYPE_TOOL_OUTPUT;
+            if same_root
+                && routed_input
+                && !self
+                    .routed_input_already_covered(session_id, &event)
+                    .await?
+            {
+                uncovered = uncovered.saturating_add(1);
+            }
+        }
+        Ok(uncovered)
     }
 
     async fn activation_signals_already_covered(
@@ -3270,7 +3400,7 @@ impl Orchestrator {
             .await?;
         if signals.is_empty() {
             return self
-                .tool_output_already_covered(session_id, dispatched_event)
+                .routed_input_already_covered(session_id, dispatched_event)
                 .await;
         }
         for signal in signals {
@@ -3288,7 +3418,9 @@ impl Orchestrator {
                     })?
             };
             if event.event_type != TYPE_TOOL_OUTPUT
-                || !self.tool_output_already_covered(session_id, &event).await?
+                || !self
+                    .routed_input_already_covered(session_id, &event)
+                    .await?
             {
                 return Ok(false);
             }
@@ -3547,6 +3679,8 @@ impl Orchestrator {
         let forward_attempt_id = stream_attempt_id.clone();
         let forward_route = stream_route.clone();
         let forward_reasoning_summary = Arc::clone(&reasoning_summary);
+        let forward_prompt_measurement = prompt_measurement.clone();
+        let timeout_prompt_measurement = prompt_measurement.clone();
         let stream_forwarder = tokio::spawn(async move {
             let stream_started_at = tokio::time::Instant::now();
             let mut text_delta_count = 0u64;
@@ -3588,15 +3722,9 @@ impl Orchestrator {
                             tracing::warn!(%error, "持久化 reasoning 完成状态失败");
                         }
                     }
-                    crate::llm::ModelStreamEvent::Usage {
-                        prompt_tokens,
-                        completion_tokens,
-                        total_tokens,
-                    } => {
+                    crate::llm::ModelStreamEvent::Usage { usage } => {
                         let mut summary = forward_reasoning_summary.lock().await;
-                        summary.prompt_tokens = prompt_tokens.or(summary.prompt_tokens);
-                        summary.completion_tokens = completion_tokens.or(summary.completion_tokens);
-                        summary.total_tokens = total_tokens.or(summary.total_tokens);
+                        summary.usage.merge_from(usage);
                     }
                     crate::llm::ModelStreamEvent::Completed => {
                         forward_reasoning_summary.lock().await.complete = true;
@@ -3653,6 +3781,16 @@ impl Orchestrator {
                     tracing::debug!(%error, "发布瞬时模型流事件失败");
                 }
             }
+            persist_model_usage(
+                &forward_bus,
+                &forward_context_id,
+                &forward_session_id,
+                &forward_attempt_id,
+                &forward_route,
+                &forward_reasoning_summary,
+                forward_prompt_measurement.as_ref(),
+            )
+            .await?;
             persist_model_reasoning_summary(
                 &forward_bus,
                 &forward_context_id,
@@ -3684,6 +3822,25 @@ impl Orchestrator {
                         );
                         stream_forwarder.abort();
                         let _ = stream_forwarder.await;
+                        persist_model_usage(
+                            &stream_bus,
+                            &stream_context_id,
+                            &stream_session_id,
+                            &stream_attempt_id,
+                            &stream_route,
+                            &reasoning_summary,
+                            timeout_prompt_measurement.as_ref(),
+                        )
+                        .await
+                        .map_err(ModelCompletionError::without_summary)?;
+                        self.remember_prompt_usage_anchor(
+                            &stream_context_id,
+                            &stream_session_id,
+                            &stream_attempt_id,
+                            timeout_prompt_measurement.as_ref(),
+                            &reasoning_summary,
+                        )
+                        .await;
                         persist_model_reasoning_summary(
                             &stream_bus,
                             &stream_context_id,
@@ -3743,6 +3900,25 @@ impl Orchestrator {
                         );
                         stream_forwarder.abort();
                         let _ = stream_forwarder.await;
+                        persist_model_usage(
+                            &stream_bus,
+                            &stream_context_id,
+                            &stream_session_id,
+                            &stream_attempt_id,
+                            &stream_route,
+                            &reasoning_summary,
+                            timeout_prompt_measurement.as_ref(),
+                        )
+                        .await
+                        .map_err(ModelCompletionError::without_summary)?;
+                        self.remember_prompt_usage_anchor(
+                            &stream_context_id,
+                            &stream_session_id,
+                            &stream_attempt_id,
+                            timeout_prompt_measurement.as_ref(),
+                            &reasoning_summary,
+                        )
+                        .await;
                         persist_model_reasoning_summary(
                             &stream_bus,
                             &stream_context_id,
@@ -3771,6 +3947,14 @@ impl Orchestrator {
             }
         };
         let forward_result = stream_forwarder.await;
+        self.remember_prompt_usage_anchor(
+            &stream_context_id,
+            &stream_session_id,
+            &stream_attempt_id,
+            timeout_prompt_measurement.as_ref(),
+            &reasoning_summary,
+        )
+        .await;
         match (result, forward_result) {
             (Err(error), _) => {
                 Err(ModelCompletionError::with_summary(error, &reasoning_summary).await)
@@ -3785,6 +3969,91 @@ impl Orchestrator {
             }
             (Ok(response), Ok(Ok(()))) => Ok(response),
         }
+    }
+
+    async fn remember_prompt_usage_anchor(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        attempt_id: &str,
+        measurement: Option<&PromptTokenCount>,
+        accumulator: &Arc<Mutex<ModelReasoningSummaryAccumulator>>,
+    ) {
+        let Some(measurement) = measurement else {
+            return;
+        };
+        let input_tokens = accumulator.lock().await.usage.input_tokens;
+        let Some(actual_input_tokens) = input_tokens.and_then(|value| usize::try_from(value).ok())
+        else {
+            return;
+        };
+        let counter_source = local_counter_source(&measurement.source);
+        self.prompt_usage_anchors.insert(
+            (
+                context_id.to_string(),
+                session_id.to_string(),
+                measurement.model.clone(),
+                counter_source.clone(),
+            ),
+            DurablePromptUsageAnchor {
+                actual_input_tokens,
+                local_base_estimate_tokens: measurement.base_estimate_tokens,
+                counter_source,
+                attempt_id: attempt_id.to_string(),
+            },
+        );
+    }
+
+    async fn restore_prompt_usage_anchor(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        model: &str,
+        counter_source: &str,
+    ) -> Result<Option<DurablePromptUsageAnchor>, DynError> {
+        let key = (
+            context_id.to_string(),
+            session_id.to_string(),
+            model.to_string(),
+            counter_source.to_string(),
+        );
+        if let Some(anchor) = self.prompt_usage_anchors.get(&key) {
+            return Ok(Some(anchor.clone()));
+        }
+
+        let events = self
+            .store
+            .query(QueryFilter {
+                context_id: Some(context_id.to_string()),
+                session_id: Some(session_id.to_string()),
+                topic: Some("runtime/model_usage".to_string()),
+                latest_k: Some(64),
+                ..Default::default()
+            })
+            .await?;
+        let anchor = events.into_iter().rev().find_map(|event| {
+            let event_model = event.payload.get("model")?.as_str()?;
+            let event_source = event.payload.get("counter_source")?.as_str()?;
+            if event_model != model || local_counter_source(event_source) != counter_source {
+                return None;
+            }
+            Some(DurablePromptUsageAnchor {
+                actual_input_tokens: usize::try_from(
+                    event.payload.get("usage")?.get("input_tokens")?.as_u64()?,
+                )
+                .ok()?,
+                local_base_estimate_tokens: usize::try_from(
+                    event.payload.get("local_base_estimate_tokens")?.as_u64()?,
+                )
+                .ok()?,
+                counter_source: counter_source.to_string(),
+                attempt_id: event.payload.get("attempt_id")?.as_str()?.to_string(),
+            })
+        });
+        if let Some(anchor) = anchor.as_ref() {
+            self.prompt_usage_anchors.insert(key, anchor.clone());
+        }
+        Ok(anchor)
     }
 
     /// 用当前协议 Client 声明的 TokenCounter 计量完整候选工作请求，
@@ -3811,7 +4080,34 @@ impl Orchestrator {
         .await;
 
         let measurement = match measurement {
-            Ok(Ok(Some(count))) => {
+            Ok(Ok(Some(mut count))) => {
+                let counter_source = local_counter_source(&count.source);
+                if count.accuracy != PromptTokenAccuracy::Exact {
+                    if let Some(anchor) = self
+                        .restore_prompt_usage_anchor(
+                            &context.context_id,
+                            &context.active_session_id,
+                            &count.model,
+                            &counter_source,
+                        )
+                        .await?
+                    {
+                        count.tokens = apply_prompt_estimate_delta(
+                            anchor.actual_input_tokens,
+                            count.base_estimate_tokens,
+                            anchor.local_base_estimate_tokens,
+                        );
+                        count.source = format!("{counter_source}+durable-usage-anchor");
+                        count.accuracy = PromptTokenAccuracy::UsageCalibratedEstimate;
+                        tracing::debug!(
+                            context_id = %context.context_id,
+                            session_id = %context.active_session_id,
+                            anchor_attempt_id = %anchor.attempt_id,
+                            anchor_source = %anchor.counter_source,
+                            "已用持久化 Provider usage 锚点校准 Prompt 压力"
+                        );
+                    }
+                }
                 self.context_engine
                     .apply_prompt_token_count(context, &count)
                     .await?;
@@ -3829,6 +4125,8 @@ impl Orchestrator {
                     context_message.content =
                         format!("{context_message_prefix}\n{}", context.sexpr);
                 }
+                context.attribution =
+                    attribute_prompt_components(context, messages, tools, count.tokens);
                 tracing::info!(
                     context_id = %context.context_id,
                     session_id = %context.active_session_id,
@@ -3866,6 +4164,53 @@ impl Orchestrator {
             }
         };
         Ok(measurement)
+    }
+
+    /// Count the physical request produced by a bounded recovery projection
+    /// without replacing the logical pressure of the full active Context.
+    async fn count_projected_prompt_tokens(
+        &self,
+        context: &ContextView,
+        messages: &[Message],
+        tools: &[crate::llm::ToolDefinition],
+    ) -> Option<PromptTokenCount> {
+        let deadline = std::time::Duration::from_secs(
+            self.orchestrator_config
+                .model_provider_queue_timeout_secs
+                .clamp(1, 15),
+        );
+        let token_scope = format!(
+            "{}:{}:critical-maintenance",
+            context.context_id, context.active_session_id
+        );
+        match tokio::time::timeout(
+            deadline,
+            self.client
+                .count_prompt_tokens(&token_scope, messages, tools),
+        )
+        .await
+        {
+            Ok(Ok(Some(count))) => Some(count),
+            Ok(Ok(None)) => None,
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    context_id = %context.context_id,
+                    session_id = %context.active_session_id,
+                    %error,
+                    "有界维护 Prompt Token 计量失败"
+                );
+                None
+            }
+            Err(_) => {
+                tracing::warn!(
+                    context_id = %context.context_id,
+                    session_id = %context.active_session_id,
+                    timeout_secs = deadline.as_secs(),
+                    "有界维护 Prompt Token 计量超时"
+                );
+                None
+            }
+        }
     }
 
     /// Resume a model decision that crossed the durable assistant-call boundary before the
@@ -3954,7 +4299,7 @@ impl Orchestrator {
                     )
                     .await?;
                 }
-                TerminalDecision::NoReply => {
+                TerminalDecision::NoReply(_) => {
                     self.publish_no_reply(session_id, &activation.id, parent.as_deref())
                         .await?;
                 }
@@ -4228,36 +4573,59 @@ impl Orchestrator {
                 context_message_prefix,
             )
             .await?;
-        if let Some(supervisor) = &self.objective_supervisor {
-            let tokens = prompt_measurement
-                .as_ref()
-                .map(|measurement| measurement.tokens)
-                .unwrap_or(context.pressure.estimated_tokens);
-            if let Err(error) = supervisor
-                .record_prompt_tokens_for_activation(&activation.id, tokens)
-                .await
-            {
-                tracing::warn!(
-                    session_id,
-                    activation_id = %activation.id,
-                    error = %error,
-                    "Objective Prompt Token 记账失败；继续当前 Evaluation"
-                );
-            }
+        let critical_context_tx_available = critical_maintenance_transaction_available(
+            context.turn_budget.context_transactions_used,
+        );
+        if context.pressure.level == "critical" {
+            context.turn_budget.context_transactions_limit =
+                CRITICAL_MAINTENANCE_TRANSACTION_SAFETY_LIMIT;
+            context.turn_budget.context_tx_available = critical_context_tx_available;
         }
-
         let maintenance_budget_exhausted = should_force_final_for_maintenance(
             &context.turn_budget.phase,
             &context.pressure.level,
             context.turn_budget.context_tx_available,
         );
-        let effective_phase = if maintenance_budget_exhausted {
-            "final-reply"
+        let effective_phase_owned = if maintenance_budget_exhausted {
+            "final-reply".to_string()
         } else if context.pressure.level == "critical" {
-            "critical-maintenance"
+            "critical-maintenance".to_string()
         } else {
-            context.turn_budget.phase.as_str()
+            context.turn_budget.phase.clone()
         };
+        let effective_phase = effective_phase_owned.as_str();
+        let bounded_critical_projection = context.pressure.level == "critical";
+        let mut critical_recovery_source = None;
+        if bounded_critical_projection {
+            // Standard Function Calling transcripts deliberately carry full
+            // tool results, while Context Encoding omits those same delivered
+            // outputs. Once the complete request is already over limit, that
+            // representation cannot be used to repair itself. Rebuild the
+            // active projection with all routed results available as ordinary
+            // recallable observations, then expose a deterministic bounded
+            // slice for semantic maintenance. Nothing is retired here.
+            let full_pressure = context.pressure.clone();
+            let mut recovery_context = self
+                .context_engine
+                .build_context_encoding_for_activation(&context_id, activation, &HashSet::new())
+                .await?;
+            recovery_context.pressure = full_pressure;
+            recovery_context.turn_budget = context.turn_budget.clone();
+            critical_recovery_source = Some(recovery_context.clone());
+            let (total, visible) = self.context_engine.apply_critical_maintenance_projection(
+                &mut recovery_context,
+                CRITICAL_MAINTENANCE_MAX_OBSERVATIONS,
+                CRITICAL_MAINTENANCE_PREVIEW_CHARS,
+            );
+            tracing::warn!(
+                context_id = %context_id,
+                session_id,
+                total_active_observations = total,
+                projected_observations = visible,
+                "Context 超出物理请求预算：启用有界 critical-maintenance 投影"
+            );
+            context = recovery_context;
+        }
         let context_tx_cooldown = effective_phase != "final-reply"
             && context.pressure.level != "critical"
             && context_tx_receipt == ContextTxReceipt::Committed;
@@ -4291,7 +4659,9 @@ impl Orchestrator {
                 tool_calls: None,
             },
         ];
-        messages.extend(transcript.messages);
+        if !bounded_critical_projection {
+            messages.extend(transcript.messages);
+        }
 
         let mut tools = self.tool_definitions.clone();
         if thread_kind == "delivery" {
@@ -4355,8 +4725,85 @@ impl Orchestrator {
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<HashSet<_>>();
+        let mut request_prompt_measurement = if bounded_critical_projection {
+            self.count_projected_prompt_tokens(&context, &messages, &tools)
+                .await
+        } else {
+            prompt_measurement.clone()
+        };
+        if bounded_critical_projection {
+            let recovery_prompt_limit = context
+                .pressure
+                .hard_limit
+                .saturating_sub(context.pressure.maintenance_reserve)
+                .max(1);
+            let mut observation_limit = CRITICAL_MAINTENANCE_MAX_OBSERVATIONS;
+            let mut previous_visible = context.observations.len();
+            while request_prompt_measurement
+                .as_ref()
+                .is_some_and(|measurement| measurement.tokens >= recovery_prompt_limit)
+                && observation_limit > 1
+            {
+                observation_limit = (observation_limit / 2).max(1);
+                let mut smaller = critical_recovery_source
+                    .as_ref()
+                    .expect("critical recovery source must exist")
+                    .clone();
+                let (_, visible) = self.context_engine.apply_critical_maintenance_projection(
+                    &mut smaller,
+                    observation_limit,
+                    CRITICAL_MAINTENANCE_PREVIEW_CHARS,
+                );
+                if visible >= previous_visible {
+                    break;
+                }
+                previous_visible = visible;
+                messages[1].content = format!("{context_message_prefix}\n{}", smaller.sexpr);
+                context = smaller;
+                request_prompt_measurement = self
+                    .count_projected_prompt_tokens(&context, &messages, &tools)
+                    .await;
+            }
+            if request_prompt_measurement
+                .as_ref()
+                .is_some_and(|measurement| measurement.tokens >= recovery_prompt_limit)
+            {
+                return Err(format!(
+                    "Context critical-maintenance 最小恢复投影仍占用 {} tokens，超过可用输入预算 {}；请先扩大模型 Context 或减小受保护的 Mind/当前因果根",
+                    request_prompt_measurement
+                        .as_ref()
+                        .map(|measurement| measurement.tokens)
+                        .unwrap_or_default(),
+                    recovery_prompt_limit
+                )
+                .into());
+            }
+        }
         let base_protocol_messages = messages;
         let mut protocol_messages = base_protocol_messages.clone();
+        if let Some(supervisor) = &self.objective_supervisor {
+            let tokens = request_prompt_measurement
+                .as_ref()
+                .map(|measurement| measurement.tokens)
+                .unwrap_or(context.pressure.estimated_tokens);
+            if let Err(error) = supervisor
+                .record_prompt_tokens_for_activation(&activation.id, tokens)
+                .await
+            {
+                tracing::warn!(
+                    session_id,
+                    activation_id = %activation.id,
+                    error = %error,
+                    "Objective Prompt Token 记账失败；继续当前 Evaluation"
+                );
+            }
+        }
+        let no_delivered_output_ids = HashSet::new();
+        let inspect_delivered_output_ids = if bounded_critical_projection {
+            &no_delivered_output_ids
+        } else {
+            &transcript.delivered_output_ids
+        };
         let mut protocol_errors = 0usize;
         let mut model_request_index = 0usize;
         let mut reasoning_continuations = 0usize;
@@ -4377,7 +4824,9 @@ impl Orchestrator {
                 &context,
                 &protocol_messages,
                 &tools,
-            );
+                inspect_delivered_output_ids,
+            )
+            .await?;
             self.record_model_attempt_started(
                 session_id,
                 &model_attempt_id,
@@ -4392,7 +4841,7 @@ impl Orchestrator {
                     protocol_messages.clone(),
                     tools.clone(),
                     (request_index == 0)
-                        .then(|| prompt_measurement.clone())
+                        .then(|| request_prompt_measurement.clone())
                         .flatten(),
                 )
                 .await;
@@ -4557,6 +5006,61 @@ impl Orchestrator {
                     }
                 });
             match classification {
+                Ok(Some(TerminalDecision::NoReply(NoReplyMode::Wait))) => {
+                    let active_root_tasks = active_background_task_count_for_root(
+                        session_id,
+                        &activation.context_id,
+                        &activation.root_turn_id,
+                    );
+                    let pending_schedules = session_store
+                        .list_schedules(Some(&thread.id), Some(ScheduleStatus::Queued))
+                        .await?
+                        .len();
+                    let pending_routed_inputs =
+                        self.uncovered_routed_inputs(session_id, activation).await?;
+                    if thread_kind != "execution"
+                        || (active_root_tasks == 0
+                            && pending_schedules == 0
+                            && pending_routed_inputs == 0)
+                    {
+                        let reason = if thread_kind != "execution" {
+                            "no_reply(mode=wait) 被拒绝：当前不是可挂起等待物理事件的 Execution Thread；请直接回复当前 Session，或仅在确实有意静默时改用 mode=silent"
+                        } else {
+                            "no_reply(mode=wait) 被拒绝：Runtime 当前没有仍在运行的后台任务、排队调度或待处理事件；最新完成/失败结果已经是权威事实，请处理该结果并回复、继续行动，或仅在确实有意静默时改用 mode=silent"
+                        };
+                        protocol_errors += 1;
+                        self.record_response_protocol_error(
+                            session_id,
+                            &model_attempt_id,
+                            protocol_errors,
+                            "invalid_wait",
+                            reason,
+                        )
+                        .await?;
+                        if protocol_errors > MAX_RESPONSE_PROTOCOL_RETRIES {
+                            return self
+                                .publish_response_protocol_failure(
+                                    session_id,
+                                    &model_attempt_id,
+                                    context.parent_session_id.as_deref(),
+                                )
+                                .await;
+                        }
+                        protocol_messages.push(Message {
+                            role: "user".to_string(),
+                            content: format!("{reason}。{RESPONSE_PROTOCOL_ERROR}"),
+                            name: None,
+                            tool_call_id: None,
+                            tool_calls: None,
+                        });
+                        continue;
+                    }
+                    break (
+                        response,
+                        Some(TerminalDecision::NoReply(NoReplyMode::Wait)),
+                        model_attempt_id,
+                    );
+                }
                 Ok(decision) => break (response, decision, model_attempt_id),
                 Err(reason) => {
                     protocol_errors += 1;
@@ -4607,7 +5111,15 @@ impl Orchestrator {
                 .list_schedules(Some(&thread.id), Some(ScheduleStatus::Queued))
                 .await?
                 .len();
-            if thread_kind != "dialogue_turn" && (active_root_tasks > 0 || pending_schedules > 0) {
+            let pending_routed_inputs =
+                self.uncovered_routed_inputs(session_id, activation).await?;
+            let explicit_wait = matches!(&decision, TerminalDecision::NoReply(NoReplyMode::Wait));
+            if explicit_wait
+                || (thread_kind != "dialogue_turn"
+                    && (active_root_tasks > 0
+                        || pending_schedules > 0
+                        || pending_routed_inputs > 0))
+            {
                 if let TerminalDecision::Deliver(content) = &decision {
                     self.publish_progress(session_id, &attempt_id, content.clone())
                         .await?;
@@ -4617,6 +5129,7 @@ impl Orchestrator {
                     &attempt_id,
                     active_root_tasks,
                     pending_schedules,
+                    pending_routed_inputs,
                     decision.disposition(),
                 )
                 .await?;
@@ -4659,7 +5172,7 @@ impl Orchestrator {
                         .await
                     }
                 }
-                TerminalDecision::NoReply => {
+                TerminalDecision::NoReply(_) => {
                     self.publish_no_reply(
                         session_id,
                         &attempt_id,
@@ -5514,6 +6027,7 @@ impl Orchestrator {
         attempt_id: &str,
         active_background_tasks: usize,
         pending_schedules: usize,
+        pending_routed_inputs: usize,
         model_disposition: &str,
     ) -> Result<(), DynError> {
         let route = self
@@ -5539,6 +6053,10 @@ impl Orchestrator {
                 json!(active_background_tasks),
             ),
             ("pending_schedules".to_string(), json!(pending_schedules)),
+            (
+                "pending_routed_inputs".to_string(),
+                json!(pending_routed_inputs),
+            ),
             ("model_disposition".to_string(), json!(model_disposition)),
         ];
         self.append_activation_route(attempt_id, &mut payload);
@@ -7710,15 +8228,21 @@ impl Orchestrator {
             .unwrap_or(ContextTxReceipt::None))
     }
 
-    fn record_context_inspect(
+    async fn record_context_inspect(
         &self,
         session_id: &str,
         attempt_id: &str,
         context: &ContextView,
         messages: &[Message],
         tools: &[ToolDefinition],
-    ) {
-        let bus = Arc::clone(&self.bus);
+        delivered_output_ids: &HashSet<String>,
+    ) -> Result<(), DynError> {
+        let mut covered_routed_input_ids = delivered_output_ids.iter().cloned().collect::<Vec<_>>();
+        if let Some(wake_event_id) = context.wake.event_id.as_deref() {
+            covered_routed_input_ids.push(wake_event_id.to_string());
+        }
+        covered_routed_input_ids.sort();
+        covered_routed_input_ids.dedup();
         let mut payload = vec![
             ("context_id".to_string(), json!(context.context_id)),
             ("session_id".to_string(), json!(session_id)),
@@ -7729,6 +8253,7 @@ impl Orchestrator {
             ("mind".to_string(), json!(context.state)),
             ("inbox".to_string(), json!(context.observations)),
             ("pressure".to_string(), json!(context.pressure)),
+            ("attribution".to_string(), json!(context.attribution)),
             ("turn_budget".to_string(), json!(context.turn_budget)),
             (
                 "model_provider_queue_timeout_secs".to_string(),
@@ -7739,6 +8264,10 @@ impl Orchestrator {
                 json!(self.orchestrator_config.model_attempt_hard_timeout_secs),
             ),
             ("wake".to_string(), json!(context.wake)),
+            (
+                "covered_routed_input_ids".to_string(),
+                json!(covered_routed_input_ids),
+            ),
         ];
         self.append_activation_route(attempt_id, &mut payload);
         let event = Event::new(
@@ -7748,11 +8277,12 @@ impl Orchestrator {
             "chat/context_inspect".to_string(),
             payload.into_iter().collect(),
         );
-        tokio::spawn(async move {
-            if let Err(error) = bus.publish(event).await {
-                tracing::error!(?error, "记录 context_inspect 失败");
-            }
-        });
+        // This is also the durable coverage watermark for causal inputs that
+        // were visible to this model request. Persist it before the request so
+        // a concurrently arriving result can be distinguished from an input
+        // already represented in Context Encoding.
+        self.bus.publish(event).await?;
+        Ok(())
     }
 
     fn activation_route(&self, attempt_id: &str) -> Option<ActivationRoute> {
@@ -8309,51 +8839,6 @@ impl Orchestrator {
         self.session_contexts
             .insert(session_id.to_string(), context_id.to_string());
     }
-}
-
-fn interrupted_dialogue_on_restart(
-    activation: &ThreadActivationRecord,
-    events: &HashMap<String, Event>,
-) -> bool {
-    let Some(root) = events.get(&activation.root_turn_id) else {
-        return false;
-    };
-    if root.topic != "chat/user_message"
-        || root.event_type != TYPE_USER_MESSAGE
-        || root.payload.get("delegation_id").is_some()
-    {
-        return false;
-    }
-
-    !events.values().any(|event| {
-        event
-            .payload
-            .get("root_turn_id")
-            .and_then(|value| value.as_str())
-            == Some(activation.root_turn_id.as_str())
-            && event_contains_recoverable_assistant_decision(event)
-    })
-}
-
-/// Once an assistant decision is durable, startup recovery must finish that
-/// causal turn instead of cancelling it as an untouched model request. This is
-/// deliberately broader than a physical-tool plan: `context_tx` is a durable
-/// cognitive side effect, and a terminal assistant decision may have crossed
-/// the persistence boundary immediately before its `chat/reply` delivery.
-fn event_contains_recoverable_assistant_decision(event: &Event) -> bool {
-    if event.topic != "chat/assistant_call" {
-        return false;
-    }
-    event
-        .payload
-        .get("terminal_outcome")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(false)
-        || event
-            .payload
-            .get("tool_calls")
-            .and_then(|value| value.as_array())
-            .is_some_and(|calls| !calls.is_empty())
 }
 
 fn recovery_owns_activation(
@@ -9299,6 +9784,10 @@ fn should_force_final_for_maintenance(
     matches!(phase, "work" | "soft-checkpoint") && pressure == "critical" && !context_tx_available
 }
 
+fn critical_maintenance_transaction_available(transactions_used: usize) -> bool {
+    transactions_used < CRITICAL_MAINTENANCE_TRANSACTION_SAFETY_LIMIT
+}
+
 fn tool_call_activity_preview(call: &crate::llm::ToolCallRepr) -> serde_json::Value {
     let original_chars = call.arguments.chars().count();
     let mut arguments = serde_json::from_str::<serde_json::Value>(&call.arguments)
@@ -9397,18 +9886,20 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        activation_admission_class, baseline_system_prompt, classify_terminal_response,
-        cognitive_sexpr_vm_system_prompt, compact_context_inspect_for_persistence,
-        compose_system_prompt, event_needs_signal_outbox, extend_exec_output_facts,
-        persist_model_reasoning_summary, recovery_owns_activation, render_system_contract,
-        semantic_sexpr_vm_system_prompt, should_force_final_for_maintenance,
-        tool_call_activity_preview, DurableEventWriter, DurableEventWriterMetrics,
-        ModelReasoningSummaryAccumulator, ReadTurnGuard, SystemPromptMode, TerminalDecision,
-        AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        activation_admission_class, apply_prompt_estimate_delta, baseline_system_prompt,
+        classify_terminal_response, cognitive_sexpr_vm_system_prompt,
+        compact_context_inspect_for_persistence, compose_system_prompt,
+        critical_maintenance_transaction_available, event_needs_signal_outbox,
+        extend_exec_output_facts, persist_model_reasoning_summary, persist_model_usage,
+        recovery_owns_activation, render_system_contract, semantic_sexpr_vm_system_prompt,
+        should_force_final_for_maintenance, tool_call_activity_preview, DurableEventWriter,
+        DurableEventWriterMetrics, ModelReasoningSummaryAccumulator, NoReplyMode, ReadTurnGuard,
+        SystemPromptMode, TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
     use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
+    use crate::llm::{ModelUsage, PromptTokenAccuracy, PromptTokenCount};
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
         EventAppend, EventStore, QueryFilter, ThreadActivationRecord, ThreadActivationStatus,
@@ -9417,6 +9908,13 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::sync::{Barrier, Mutex};
+
+    #[test]
+    fn durable_usage_anchor_applies_signed_local_prompt_delta() {
+        assert_eq!(apply_prompt_estimate_delta(1_000, 1_150, 900), 1_250);
+        assert_eq!(apply_prompt_estimate_delta(1_000, 700, 900), 800);
+        assert_eq!(apply_prompt_estimate_delta(100, 0, 500), 0);
+    }
 
     #[test]
     fn shared_activation_recovery_respects_live_worker_leases() {
@@ -9582,6 +10080,67 @@ mod tests {
         assert_eq!(events[0].payload["thread_kind"], "dialogue_turn");
     }
 
+    #[tokio::test]
+    async fn model_usage_is_persisted_without_reasoning_or_public_reply() {
+        let bus = Arc::new(InMemoryEventBus::new());
+        let captured = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let durable_capture = Arc::clone(&captured);
+        bus.subscribe_durable(
+            "runtime/model_usage".to_string(),
+            Arc::new(move |event| {
+                let capture = Arc::clone(&durable_capture);
+                Box::pin(async move {
+                    capture.lock().unwrap().push(event);
+                    Ok(())
+                })
+            }),
+        );
+        let accumulator = Arc::new(Mutex::new(ModelReasoningSummaryAccumulator {
+            usage: ModelUsage {
+                input_tokens: Some(1_000),
+                cached_input_tokens: Some(800),
+                uncached_input_tokens: Some(200),
+                output_tokens: Some(40),
+                reasoning_tokens: Some(30),
+                total_tokens: Some(1_040),
+                raw: vec![json!({"input_tokens": 1000, "output_tokens": 40})],
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let measurement = PromptTokenCount {
+            tokens: 990,
+            source: "openai-responses-serialized-request-estimate".to_string(),
+            model: "fixture-model".to_string(),
+            accuracy: PromptTokenAccuracy::HeuristicEstimate,
+            base_estimate_tokens: 990,
+            calibration_key: Some(7),
+            calibration_shape: Some(9),
+        };
+
+        for _ in 0..2 {
+            persist_model_usage(
+                &bus,
+                "context-1",
+                "session-1",
+                "attempt-usage-1",
+                &[],
+                &accumulator,
+                Some(&measurement),
+            )
+            .await
+            .unwrap();
+        }
+
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "model_usage_attempt-usage-1");
+        assert_eq!(events[0].payload["usage"]["input_tokens"], 1_000);
+        assert_eq!(events[0].payload["usage"]["cached_input_tokens"], 800);
+        assert_eq!(events[0].payload["model"], "fixture-model");
+        assert_eq!(events[0].payload["local_base_estimate_tokens"], 990);
+    }
+
     #[test]
     fn activation_admission_class_is_runtime_owned_and_deterministic() {
         let event =
@@ -9693,6 +10252,8 @@ mod tests {
         assert!(first.contains("不规定 Mind BODY 的结构"));
         assert!(first.contains("sandbox_permissions=require_escalated"));
         assert!(first.contains("不得仅因普通命令失败猜测权限问题"));
+        assert!(first.contains("protocol.skill-discovery-contract 的 fallback"));
+        assert!(first.contains("不得为了发现能力而预读全部 Skill"));
     }
 
     #[test]
@@ -9737,6 +10298,8 @@ mod tests {
             "reality-contract-v1",
             "claims-no-stronger-than-sources",
             "每次响应必须明确选择",
+            "protocol.skill-discovery-contract 的 fallback",
+            "不得为了发现能力而预读全部 Skill",
         ] {
             assert!(semantic.contains(marker), "missing marker: {marker}");
         }
@@ -9783,12 +10346,12 @@ mod tests {
                 id: "no-reply-1".to_string(),
                 r#type: "function".to_string(),
                 func_name: "no_reply".to_string(),
-                arguments: json!({}).to_string(),
+                arguments: json!({"mode":"silent"}).to_string(),
             }],
         };
         assert_eq!(
             classify_terminal_response(&no_reply),
-            Ok(Some(TerminalDecision::NoReply))
+            Ok(Some(TerminalDecision::NoReply(NoReplyMode::Silent)))
         );
 
         let mixed = crate::llm::Response {
@@ -9814,6 +10377,13 @@ mod tests {
             "critical",
             false
         ));
+    }
+
+    #[test]
+    fn critical_recovery_uses_a_separate_high_safety_budget() {
+        assert!(critical_maintenance_transaction_available(6));
+        assert!(critical_maintenance_transaction_available(255));
+        assert!(!critical_maintenance_transaction_available(256));
     }
 
     #[test]

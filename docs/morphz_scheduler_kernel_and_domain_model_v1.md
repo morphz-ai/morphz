@@ -1197,6 +1197,13 @@ Delivery 是结果路由
 - Dashboard 的 Scheduler Causality 视图按 Thread kind 显示“对话轮次 / 执行线程 / 目标线程 / 交付线程”，不再拼接原始存储值；
 - SQLite 在启动时一次性迁移开发期的 `work_threads`、`work_thread_outcomes`、`scheduled_intents`、`scheduled_intent_dependencies` 与旧 activation 列名；Thread 的持久 discriminator/lifecycle 同时规范为 `dialogue_turn | execution | objective | delivery` 与 `open | completed | failed | cancelled`，保留历史事实但不保留双语存储或旧产品 API。
 
+### 2026-07-22：Thread 活动语义与 Attention 处置闭环
+
+- Thread lifecycle 与 Scheduler phase 正式解耦：`open + idle` 是可在未来恢复的非终态线程，不是当前执行；Dashboard 当前执行、分组和默认展开状态一律服从 `phase`；
+- 失败/异常 Attention 使用源类型、源 ID、源 revision 与状态构造精确 fingerprint；确认只对该版本有效；
+- Rust Runtime/SDK 与 HTTP 共同提供 Context 范围的 Attention acknowledgement 读取/写入接口；写入形成不可变 `runtime/attention_acknowledged` Event，不新增只属于 Dashboard 的旁路状态；
+- Dashboard 对审批保留决策动作，对 Job/Delivery/invariant 异常提供因果链检查和持久“确认已知”；已处理项从当前关注列表自动消解，但继续留在 Ledger 和历史中。
+
 ### 2026-07-16：Phase 1 第一条完整纵切
 
 已经实现：

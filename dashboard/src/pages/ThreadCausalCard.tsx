@@ -200,7 +200,10 @@ export function ThreadCausalCard({
   onInspect?: (threadId: string) => void
 }) {
   const { thread } = snapshot
-  const active = snapshot.phase !== 'idle' || thread.lifecycle === 'open'
+  // `open` is a semantic lifecycle (the Thread may accept a later Signal),
+  // not evidence of physical activity. Only the Scheduler projection decides
+  // whether this aggregate is currently runnable/running/waiting.
+  const active = snapshot.phase !== 'idle'
   const activationIds = new Set(snapshot.activations.map(item => item.activation.id))
   const unattachedModelAttemptEvents = modelAttemptEvents.filter(event => {
     const activationId = modelAttemptActivationId(event)

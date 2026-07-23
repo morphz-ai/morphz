@@ -10,9 +10,9 @@ use crate::execution::JobReceipt;
 use crate::identity::PrincipalAssertion;
 use crate::memory::{
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
-    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
-    EdgeOutputStream, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
+    ContextUpdate, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
+    EdgeCommandStatus, EdgeOutputStream, ExecutionJobFilter, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
     ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
@@ -22,9 +22,9 @@ use crate::memory::{
 };
 use crate::orchestrator::context::MindProjectionAudit;
 use crate::runtime::{
-    ContextOverview, ContextOverviewQuery, LedgerQuery, LedgerQueryPage, MessageReceipt,
-    MorphzRuntime, RuntimeEventStream, RuntimeStatus, SchedulerQuery, SchedulerSnapshot,
-    ThreadDetail,
+    AcknowledgeAttentionCommand, AttentionAcknowledgement, ContextOverview, ContextOverviewQuery,
+    LedgerQuery, LedgerQueryPage, MessageReceipt, ModelUsagePage, ModelUsageQuery, MorphzRuntime,
+    RuntimeEventStream, RuntimeStatus, SchedulerQuery, SchedulerSnapshot, ThreadDetail,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -264,6 +264,38 @@ impl MorphzSdk {
             .map_err(SdkError::internal)
     }
 
+    pub async fn model_usage(
+        &self,
+        context_id: &str,
+        query: ModelUsageQuery,
+    ) -> SdkResult<ModelUsagePage> {
+        self.runtime
+            .model_usage(context_id, query)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn attention_acknowledgements(
+        &self,
+        context_id: &str,
+    ) -> SdkResult<Vec<AttentionAcknowledgement>> {
+        self.runtime
+            .attention_acknowledgements(context_id)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn acknowledge_attention(
+        &self,
+        context_id: &str,
+        command: AcknowledgeAttentionCommand,
+    ) -> SdkResult<AttentionAcknowledgement> {
+        self.runtime
+            .acknowledge_attention(context_id, command)
+            .await
+            .map_err(SdkError::internal)
+    }
+
     pub async fn thread_detail(
         &self,
         context_id: &str,
@@ -309,6 +341,23 @@ impl MorphzSdk {
             .create_context(context)
             .await
             .map_err(|error| SdkError::new(SdkErrorCode::Conflict, error.to_string()))
+    }
+
+    pub async fn update_context(
+        &self,
+        context_id: &str,
+        update: ContextUpdate,
+    ) -> SdkResult<CognitiveContextRecord> {
+        self.runtime
+            .update_context(context_id, update)
+            .await
+            .map_err(|error| SdkError::new(SdkErrorCode::Conflict, error.to_string()))?
+            .ok_or_else(|| {
+                SdkError::new(
+                    SdkErrorCode::NotFound,
+                    format!("Context '{context_id}' 不存在"),
+                )
+            })
     }
 
     pub async fn list_execution_targets(

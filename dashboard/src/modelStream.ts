@@ -6,7 +6,19 @@ export type ModelStreamEvent =
   | { kind: 'tool_call_started'; index: number; id: string; name: string }
   | { kind: 'tool_arguments_delta'; index: number; delta: string }
   | { kind: 'tool_call_completed'; index: number }
-  | { kind: 'usage'; prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }
+  | {
+      kind: 'usage'
+      usage: {
+        input_tokens?: number
+        uncached_input_tokens?: number
+        cached_input_tokens?: number
+        cache_write_input_tokens?: number
+        output_tokens?: number
+        reasoning_tokens?: number
+        total_tokens?: number
+        raw?: unknown[]
+      }
+    }
   | { kind: 'completed' }
   | { kind: 'failed'; message: string }
 

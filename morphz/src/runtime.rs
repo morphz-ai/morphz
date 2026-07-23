@@ -13,17 +13,17 @@ use crate::execution::ExecutionJobManager;
 use crate::identity::{
     IdentityEvidence, IdentityProvider, PrincipalAssertion, StaticIdentityProvider,
 };
-use crate::llm::{Client, ReasoningEffort};
+use crate::llm::{Client, ModelUsage, ReasoningEffort};
 use crate::memory::postgres::PostgresStore;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalRecord,
     ApprovalResolution, ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation,
-    CapabilityLeaseRecord, CognitiveContextRecord, DelegationRecord, DelegationStatus,
-    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
-    EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
-    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    CapabilityLeaseRecord, CognitiveContextRecord, ContextUpdate, DelegationRecord,
+    DelegationStatus, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
+    EdgeCommandStatus, EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter,
+    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, ExecutionNodeMutation,
+    ExecutionNodeRecord, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
     ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
     ExecutionTargetStore, MessageClaim, MindProjectionStore, NewAgent, NewCognitiveContext,
@@ -38,8 +38,8 @@ use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
 };
 use crate::orchestrator::context::{
-    ContextEngine, ContextPressure, ContextRecallService, ContextView, FrameRecallPage,
-    FrameRecallRequest, ProjectedSession, RecallSearchPage, RecallSearchRequest,
+    ContextAttribution, ContextEngine, ContextPressure, ContextRecallService, ContextView,
+    FrameRecallPage, FrameRecallRequest, ProjectedSession, RecallSearchPage, RecallSearchRequest,
     SessionWorkingSetView,
 };
 use crate::orchestrator::orchestrator::{DurableApprovalServices, Orchestrator};
@@ -55,7 +55,7 @@ use crate::tool::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
@@ -153,6 +153,135 @@ pub struct SchedulerSnapshot {
     pub orphan_approvals: Vec<ApprovalRecord>,
 }
 
+/// Durable operator disposition for one exact revision of a derived attention
+/// fact. The underlying scheduler authority remains unchanged: acknowledging a
+/// failure only removes that exact fingerprint from the operator inbox. A new
+/// source revision produces a new fingerprint and therefore reopens attention.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AttentionAcknowledgement {
+    pub event_id: String,
+    pub context_id: String,
+    pub key: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub source_revision: u64,
+    pub acknowledged_by: String,
+    pub rationale: Option<String>,
+    pub acknowledged_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcknowledgeAttentionCommand {
+    pub key: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub source_revision: u64,
+    pub rationale: Option<String>,
+}
+
+fn attention_acknowledgement_from_event(event: Event) -> Option<AttentionAcknowledgement> {
+    if event.topic != "runtime/attention_acknowledged" {
+        return None;
+    }
+    let payload = &event.payload;
+    Some(AttentionAcknowledgement {
+        event_id: event.id,
+        context_id: payload.get("context_id")?.as_str()?.to_string(),
+        key: payload.get("key")?.as_str()?.to_string(),
+        source_kind: payload.get("source_kind")?.as_str()?.to_string(),
+        source_id: payload.get("source_id")?.as_str()?.to_string(),
+        source_revision: payload.get("source_revision")?.as_u64()?,
+        acknowledged_by: payload.get("acknowledged_by")?.as_str()?.to_string(),
+        rationale: payload
+            .get("rationale")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        acknowledged_at: event.timestamp,
+    })
+}
+
+fn model_usage_record_from_event(event: Event) -> Option<ModelUsageRecord> {
+    let payload = &event.payload;
+    Some(ModelUsageRecord {
+        event_id: event.id,
+        sequence: event.sequence,
+        timestamp: event.timestamp,
+        context_id: payload.get("context_id")?.as_str()?.to_string(),
+        session_id: payload.get("session_id")?.as_str()?.to_string(),
+        attempt_id: payload.get("attempt_id")?.as_str()?.to_string(),
+        model: payload
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        usage: serde_json::from_value(payload.get("usage")?.clone()).ok()?,
+        predicted_input_tokens: payload
+            .get("predicted_input_tokens")
+            .and_then(Value::as_u64),
+        local_base_estimate_tokens: payload
+            .get("local_base_estimate_tokens")
+            .and_then(Value::as_u64),
+        counter_source: payload
+            .get("counter_source")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        counter_accuracy: payload
+            .get("counter_accuracy")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        thread_id: payload
+            .get("thread_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        activation_id: payload
+            .get("activation_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        objective_id: payload
+            .get("objective_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        cost: None,
+    })
+}
+
+fn calculate_model_usage_cost(
+    pricing: &crate::config::UsagePricingConfig,
+    model: Option<&str>,
+    usage: &ModelUsage,
+) -> Option<ModelUsageCost> {
+    let price = pricing.models.get(model?)?;
+    if price.version.trim().is_empty() || pricing.currency.trim().is_empty() {
+        return None;
+    }
+    let cached = usage.cached_input_tokens.unwrap_or(0);
+    let cache_write = usage.cache_write_input_tokens.unwrap_or(0);
+    let uncached = usage.uncached_input_tokens.unwrap_or_else(|| {
+        usage
+            .input_tokens
+            .unwrap_or(0)
+            .saturating_sub(cached)
+            .saturating_sub(cache_write)
+    });
+    let output = usage.output_tokens.unwrap_or(0);
+    let priced = |tokens: u64, rate: Option<f64>| -> Option<f64> {
+        if tokens == 0 {
+            Some(0.0)
+        } else {
+            rate.filter(|rate| rate.is_finite() && *rate >= 0.0)
+                .map(|rate| tokens as f64 * rate / 1_000_000.0)
+        }
+    };
+    let amount = priced(uncached, price.input_per_million)?
+        + priced(cached, price.cached_input_per_million)?
+        + priced(cache_write, price.cache_write_input_per_million)?
+        + priced(output, price.output_per_million)?;
+    Some(ModelUsageCost {
+        amount,
+        currency: pricing.currency.clone(),
+        pricing_version: price.version.clone(),
+    })
+}
+
 /// Bounded, authoritative summary used by every Context-level product surface.
 /// The overview deliberately contains projections and aggregate counts rather
 /// than the unbounded Ledger or the full Context Encoding S-expression.
@@ -169,6 +298,9 @@ pub struct ContextOverview {
     pub retiring_frames: usize,
     pub retired_items: usize,
     pub pressure: Option<ContextPressure>,
+    /// Latest full-Prompt component attribution. Values are estimates; exact
+    /// Provider accounting is exposed separately through ModelUsage records.
+    pub attribution: Option<ContextAttribution>,
     pub objectives: Vec<ObjectiveRecord>,
     pub scheduler: SchedulerSummary,
 }
@@ -176,6 +308,68 @@ pub struct ContextOverview {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContextOverviewQuery {
     pub active_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelUsageRecord {
+    pub event_id: String,
+    pub sequence: Option<u64>,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub context_id: String,
+    pub session_id: String,
+    pub attempt_id: String,
+    pub model: Option<String>,
+    pub usage: ModelUsage,
+    pub predicted_input_tokens: Option<u64>,
+    pub local_base_estimate_tokens: Option<u64>,
+    pub counter_source: Option<String>,
+    pub counter_accuracy: Option<String>,
+    pub thread_id: Option<String>,
+    pub activation_id: Option<String>,
+    pub objective_id: Option<String>,
+    pub cost: Option<ModelUsageCost>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelUsageCost {
+    pub amount: f64,
+    pub currency: String,
+    pub pricing_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelUsageCostTotal {
+    pub amount: f64,
+    pub currency: String,
+    pub pricing_version: String,
+    pub priced_attempts: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelUsageTotals {
+    pub attempts: u64,
+    pub input_tokens: u64,
+    pub uncached_input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub cache_write_input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub total_tokens: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelUsageQuery {
+    pub session_id: Option<String>,
+    pub before_sequence: Option<u64>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelUsagePage {
+    pub records: Vec<ModelUsageRecord>,
+    pub totals: ModelUsageTotals,
+    pub cost_totals: Vec<ModelUsageCostTotal>,
+    pub next_before_sequence: Option<u64>,
 }
 
 /// One complete causal Thread aggregate. Scheduler lists and inspectors use
@@ -511,14 +705,17 @@ impl MorphzRuntimeBuilder {
             .max(600);
         let objective_evaluations = Arc::new(ObjectiveEvaluationRegistry::default());
         let timer_engine = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
-        let objective_supervisor = Arc::new(ObjectiveSupervisor::new(
-            Arc::clone(&store) as Arc<dyn ObjectiveStore>,
-            Arc::clone(&store) as Arc<dyn EventStore>,
-            Arc::clone(&bus),
-            Arc::clone(&objective_evaluations),
-            Arc::clone(&timer_engine),
-            std::time::Duration::from_secs(objective_lease_secs),
-        ));
+        let objective_supervisor = Arc::new(
+            ObjectiveSupervisor::new(
+                Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::clone(&bus),
+                Arc::clone(&objective_evaluations),
+                Arc::clone(&timer_engine),
+                std::time::Duration::from_secs(objective_lease_secs),
+            )
+            .with_execution_job_store(Arc::clone(&store) as Arc<dyn ExecutionJobStore>),
+        );
         objective_supervisor.register_timer_handlers()?;
         let registry = Arc::new(Registry::new());
         let thread_scheduler = Arc::new(ThreadScheduler::new(
@@ -1306,6 +1503,30 @@ impl MorphzRuntime {
         archived: bool,
     ) -> Result<Vec<CognitiveContextRecord>, RuntimeError> {
         self.inner.store.list_contexts(archived).await
+    }
+
+    pub async fn update_context(
+        &self,
+        id: &str,
+        update: ContextUpdate,
+    ) -> Result<Option<CognitiveContextRecord>, RuntimeError> {
+        let Some(existing) = self.inner.store.get_context(id).await? else {
+            return Ok(None);
+        };
+        if update.status == Some(crate::memory::SessionStatus::Archived) {
+            let agent = self.inner.store.get_agent(&existing.agent_id).await?;
+            if agent
+                .as_ref()
+                .is_some_and(|agent| agent.root_context_id == id)
+            {
+                return Err(format!(
+                    "Context '{id}' 是 Agent '{}' 的根 Context，不能归档",
+                    existing.agent_id
+                )
+                .into());
+            }
+        }
+        self.inner.store.update_context(id, update).await
     }
 
     pub async fn register_execution_target(
@@ -2678,6 +2899,100 @@ impl MorphzRuntime {
         })
     }
 
+    /// Lists the persisted operator dispositions for a Context. Attention
+    /// cases themselves stay derived from authoritative scheduler state, so a
+    /// repaired source disappears automatically without mutating the Ledger.
+    pub async fn attention_acknowledgements(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<AttentionAcknowledgement>, RuntimeError> {
+        if self.inner.store.get_context(context_id).await?.is_none() {
+            return Err(format!("Context '{context_id}' 不存在").into());
+        }
+        let mut records = self
+            .query_events(QueryFilter {
+                context_id: Some(context_id.to_string()),
+                topic: Some("runtime/attention_acknowledged".to_string()),
+                ..QueryFilter::default()
+            })
+            .await?
+            .into_iter()
+            .filter_map(attention_acknowledgement_from_event)
+            .collect::<Vec<_>>();
+        records.sort_by(|left, right| {
+            right
+                .acknowledged_at
+                .cmp(&left.acknowledged_at)
+                .then_with(|| left.event_id.cmp(&right.event_id))
+        });
+        let mut seen = HashSet::new();
+        records.retain(|record| seen.insert(record.key.clone()));
+        Ok(records)
+    }
+
+    /// Acknowledges one exact attention fingerprint without altering the
+    /// Thread, Job, Approval or Delivery that produced it. This is an audited
+    /// operator decision, not a repair and not deletion of failure evidence.
+    pub async fn acknowledge_attention(
+        &self,
+        context_id: &str,
+        command: AcknowledgeAttentionCommand,
+    ) -> Result<AttentionAcknowledgement, RuntimeError> {
+        if self.inner.store.get_context(context_id).await?.is_none() {
+            return Err(format!("Context '{context_id}' 不存在").into());
+        }
+        let key = command.key.trim();
+        let source_kind = command.source_kind.trim();
+        let source_id = command.source_id.trim();
+        if key.is_empty() || source_kind.is_empty() || source_id.is_empty() {
+            return Err("关注确认需要非空的 key、source_kind 与 source_id".into());
+        }
+        if key.len() > 512 || source_kind.len() > 80 || source_id.len() > 256 {
+            return Err("关注确认标识超过允许长度".into());
+        }
+        let acknowledged_at = chrono::Utc::now();
+        let event_id = format!(
+            "attention_ack_{}_{}",
+            acknowledged_at.timestamp_nanos_opt().unwrap_or(0),
+            RUNTIME_ID_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let rationale = command
+            .rationale
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty());
+        let record = AttentionAcknowledgement {
+            event_id: event_id.clone(),
+            context_id: context_id.to_string(),
+            key: key.to_string(),
+            source_kind: source_kind.to_string(),
+            source_id: source_id.to_string(),
+            source_revision: command.source_revision,
+            acknowledged_by: self.identity().principal_id.clone(),
+            rationale,
+            acknowledged_at,
+        };
+        let mut event = Event::new(
+            event_id,
+            "Runtime-Attention".to_string(),
+            crate::event::TYPE_PROPOSAL.to_string(),
+            "runtime/attention_acknowledged".to_string(),
+            vec![
+                ("context_id".to_string(), json!(record.context_id)),
+                ("key".to_string(), json!(record.key)),
+                ("source_kind".to_string(), json!(record.source_kind)),
+                ("source_id".to_string(), json!(record.source_id)),
+                ("source_revision".to_string(), json!(record.source_revision)),
+                ("acknowledged_by".to_string(), json!(record.acknowledged_by)),
+                ("rationale".to_string(), json!(record.rationale)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        event.timestamp = acknowledged_at;
+        self.publish(event).await?;
+        Ok(record)
+    }
+
     pub async fn context_overview(
         &self,
         context_id: &str,
@@ -2730,7 +3045,23 @@ impl MorphzRuntime {
             retiring_frames,
             retired_items,
             pressure,
+            attribution,
         ) = if let Some(view) = view {
+            let attribution = self
+                .inner
+                .store
+                .query(QueryFilter {
+                    context_id: Some(context_id.to_string()),
+                    session_id: Some(view.active_session_id.clone()),
+                    topic: Some("chat/context_inspect".to_string()),
+                    latest_k: Some(1),
+                    ..Default::default()
+                })
+                .await?
+                .pop()
+                .and_then(|event| event.payload.get("attribution").cloned())
+                .and_then(|value| serde_json::from_value(value).ok())
+                .filter(|value: &ContextAttribution| value.total_weight_units > 0);
             let retired = &view.state.retired;
             (
                 Some(view.active_session_id),
@@ -2745,6 +3076,7 @@ impl MorphzRuntime {
                 view.state.retiring.len(),
                 retired.len(),
                 Some(view.pressure),
+                attribution,
             )
         } else {
             (
@@ -2755,6 +3087,7 @@ impl MorphzRuntime {
                 0,
                 0,
                 0,
+                None,
                 None,
             )
         };
@@ -2771,8 +3104,93 @@ impl MorphzRuntime {
             retiring_frames,
             retired_items,
             pressure,
+            attribution,
             objectives,
             scheduler: scheduler.summary,
+        })
+    }
+
+    /// Query exact Provider-returned usage facts. Component attribution and
+    /// Context pressure are intentionally absent from this accounting API.
+    pub async fn model_usage(
+        &self,
+        context_id: &str,
+        query: ModelUsageQuery,
+    ) -> Result<ModelUsagePage, RuntimeError> {
+        let limit = query.limit.unwrap_or(100).clamp(1, 1_000);
+        let events = self
+            .inner
+            .store
+            .query(QueryFilter {
+                context_id: Some(context_id.to_string()),
+                session_id: query.session_id,
+                before_sequence: query.before_sequence,
+                topic: Some("runtime/model_usage".to_string()),
+                latest_k: Some(limit),
+                ..Default::default()
+            })
+            .await?;
+        let mut records = events
+            .into_iter()
+            .filter_map(model_usage_record_from_event)
+            .collect::<Vec<_>>();
+        records.reverse();
+        let mut totals = ModelUsageTotals::default();
+        let mut cost_totals = BTreeMap::<(String, String), (f64, u64)>::new();
+        for record in &mut records {
+            record.cost = calculate_model_usage_cost(
+                &self.inner.config.usage_pricing,
+                record.model.as_deref(),
+                &record.usage,
+            );
+            totals.attempts = totals.attempts.saturating_add(1);
+            totals.input_tokens = totals
+                .input_tokens
+                .saturating_add(record.usage.input_tokens.unwrap_or(0));
+            totals.uncached_input_tokens = totals
+                .uncached_input_tokens
+                .saturating_add(record.usage.uncached_input_tokens.unwrap_or(0));
+            totals.cached_input_tokens = totals
+                .cached_input_tokens
+                .saturating_add(record.usage.cached_input_tokens.unwrap_or(0));
+            totals.cache_write_input_tokens = totals
+                .cache_write_input_tokens
+                .saturating_add(record.usage.cache_write_input_tokens.unwrap_or(0));
+            totals.output_tokens = totals
+                .output_tokens
+                .saturating_add(record.usage.output_tokens.unwrap_or(0));
+            totals.reasoning_tokens = totals
+                .reasoning_tokens
+                .saturating_add(record.usage.reasoning_tokens.unwrap_or(0));
+            totals.total_tokens = totals
+                .total_tokens
+                .saturating_add(record.usage.total_tokens.unwrap_or(0));
+            if let Some(cost) = record.cost.as_ref() {
+                let total = cost_totals
+                    .entry((cost.currency.clone(), cost.pricing_version.clone()))
+                    .or_insert((0.0, 0));
+                total.0 += cost.amount;
+                total.1 = total.1.saturating_add(1);
+            }
+        }
+        let next_before_sequence = (records.len() == limit)
+            .then(|| records.last().and_then(|record| record.sequence))
+            .flatten();
+        Ok(ModelUsagePage {
+            records,
+            totals,
+            cost_totals: cost_totals
+                .into_iter()
+                .map(|((currency, pricing_version), (amount, priced_attempts))| {
+                    ModelUsageCostTotal {
+                        amount,
+                        currency,
+                        pricing_version,
+                        priced_attempts,
+                    }
+                })
+                .collect(),
+            next_before_sequence,
         })
     }
 
@@ -3509,6 +3927,34 @@ mod tests {
 
     struct ReplyClient;
 
+    #[test]
+    fn model_usage_cost_requires_explicit_versioned_rates() {
+        let usage = ModelUsage {
+            input_tokens: Some(1_000_000),
+            uncached_input_tokens: Some(600_000),
+            cached_input_tokens: Some(300_000),
+            cache_write_input_tokens: Some(100_000),
+            output_tokens: Some(200_000),
+            ..Default::default()
+        };
+        let mut pricing = crate::config::UsagePricingConfig::default();
+        assert!(calculate_model_usage_cost(&pricing, Some("model-a"), &usage).is_none());
+        pricing.models.insert(
+            "model-a".to_string(),
+            crate::config::ModelUsagePrice {
+                version: "2026-07".to_string(),
+                input_per_million: Some(2.0),
+                cached_input_per_million: Some(0.5),
+                cache_write_input_per_million: Some(2.5),
+                output_per_million: Some(8.0),
+            },
+        );
+        let cost = calculate_model_usage_cost(&pricing, Some("model-a"), &usage).unwrap();
+        assert_eq!(cost.currency, "USD");
+        assert_eq!(cost.pricing_version, "2026-07");
+        assert!((cost.amount - 3.2).abs() < f64::EPSILON);
+    }
+
     struct ExternalIdentityProvider;
 
     #[async_trait::async_trait]
@@ -3595,7 +4041,19 @@ mod tests {
                 id: id.into(),
                 r#type: "function".to_string(),
                 func_name: "no_reply".to_string(),
-                arguments: json!({}).to_string(),
+                arguments: json!({"mode":"silent"}).to_string(),
+            }],
+        }
+    }
+
+    fn wait_response(id: impl Into<String>) -> Response {
+        Response {
+            content: String::new(),
+            tool_calls: vec![ToolCallRepr {
+                id: id.into(),
+                r#type: "function".to_string(),
+                func_name: "no_reply".to_string(),
+                arguments: json!({"mode":"wait"}).to_string(),
             }],
         }
     }
@@ -3639,6 +4097,59 @@ mod tests {
             .await
             .unwrap();
         assert!(sqlite.get_agent("injected-agent").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn attention_acknowledgement_is_durable_audit_not_scheduler_work() {
+        let database = NamedTempFile::new().unwrap();
+        let runtime = MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let context_id = runtime.identity().context_id.clone();
+        let before = runtime
+            .scheduler_snapshot(&context_id, SchedulerQuery::default())
+            .await
+            .unwrap();
+
+        let acknowledged = runtime
+            .acknowledge_attention(
+                &context_id,
+                AcknowledgeAttentionCommand {
+                    key: "execution_job:job-1:r4:failed".to_string(),
+                    source_kind: "execution_job".to_string(),
+                    source_id: "job-1".to_string(),
+                    source_revision: 4,
+                    rationale: Some("operator reviewed failure".to_string()),
+                },
+            )
+            .await
+            .unwrap();
+        let records = runtime
+            .attention_acknowledgements(&context_id)
+            .await
+            .unwrap();
+        assert_eq!(records, vec![acknowledged]);
+
+        let after = runtime
+            .scheduler_snapshot(&context_id, SchedulerQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(after.summary.open_threads, before.summary.open_threads);
+        assert_eq!(
+            after.summary.pending_signals,
+            before.summary.pending_signals
+        );
+        assert_eq!(
+            after.summary.queued_activations,
+            before.summary.queued_activations
+        );
+        assert_eq!(
+            after.summary.running_activations,
+            before.summary.running_activations
+        );
     }
 
     #[tokio::test]
@@ -3889,7 +4400,12 @@ mod tests {
                     if !transcript.contains("execution") || !transcript.contains("background") {
                         return Err("exec did not detach before the control yield".into());
                     }
-                    Ok(no_reply_response("detached-yield"))
+                    // Deliberately let the detached process finish while this
+                    // model request is still in flight. The completion Event
+                    // must fence the pending no_reply instead of being lost
+                    // behind a prematurely terminal Execution Thread.
+                    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                    Ok(wait_response("detached-yield"))
                 }
                 2 => {
                     let transcript = serde_json::to_string(&messages)?;
@@ -8006,6 +8522,77 @@ mod tests {
             })
             .await
             .unwrap();
+        let wait_thread = runtime
+            .inner
+            .store
+            .ensure_thread(crate::memory::NewThread {
+                id: "thread-objective-wait-task".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-objective-wait".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-objective-wait-task".to_string(),
+                kind: crate::memory::ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+            })
+            .await
+            .unwrap();
+        let wait_activation = runtime
+            .inner
+            .store
+            .ensure_thread_activation(crate::memory::NewThreadActivation {
+                id: "activation-objective-wait-task".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-objective-wait".to_string(),
+                initiating_principal_id: None,
+                trigger_event_id: "trigger-objective-wait-task".to_string(),
+                trigger_sequence: 1,
+                trigger_kind: "chat/tool_output".to_string(),
+                parent_activation_id: None,
+                root_turn_id: wait_thread.root_turn_id.clone(),
+            })
+            .await
+            .unwrap();
+        let wait_job = runtime
+            .inner
+            .store
+            .create_execution_job(crate::memory::NewExecutionJob {
+                id: "task-wait-42".to_string(),
+                activation_id: wait_activation.id,
+                thread_id: wait_thread.id,
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-objective-wait".to_string(),
+                initiating_principal_id: None,
+                target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+                tool_call_id: "call-objective-wait-task".to_string(),
+                tool_name: "exec/background".to_string(),
+                request: json!({"kind":"background_exec","command":"test fixture"}),
+                retry_safety: crate::memory::ExecutionRetrySafety::ReconcileRequired,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        let wait_job = match runtime
+            .inner
+            .store
+            .claim_execution_job(
+                &wait_job.id,
+                wait_job.revision,
+                "objective-wait-test-worker",
+                "objective-wait-test-claim",
+                chrono::Utc::now() + chrono::Duration::minutes(5),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            crate::memory::ExecutionJobMutation::Updated(job) => job,
+            mutation => panic!("unexpected wait job claim: {mutation:?}"),
+        };
         let mut no_reply = runtime.subscribe("chat/no_reply", 8);
         let mut replies = runtime.subscribe("chat/reply", 8);
         runtime
@@ -8053,9 +8640,31 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert_eq!(client.calls.load(Ordering::SeqCst), 2);
 
+        let terminal_event_id = "task-wait-42-completed";
+        let terminal = runtime
+            .inner
+            .store
+            .finish_execution_job(
+                &wait_job.id,
+                wait_job.revision,
+                Some("objective-wait-test-claim"),
+                crate::memory::ExecutionJobTerminal {
+                    status: ExecutionJobStatus::Succeeded,
+                    result_event_id: Some(terminal_event_id.to_string()),
+                    result_refs: Vec::new(),
+                    error: None,
+                    exit_code: Some(0),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            terminal,
+            crate::memory::ExecutionJobMutation::Updated(_)
+        ));
         runtime
             .publish(Event::new(
-                "task-wait-42-completed".to_string(),
+                terminal_event_id.to_string(),
                 "System-TaskMonitor".to_string(),
                 crate::event::TYPE_TOOL_OUTPUT.to_string(),
                 "chat/tool_output".to_string(),
@@ -8067,7 +8676,7 @@ mod tests {
                     ("session_id".to_string(), json!("session-objective-wait")),
                     ("task_id".to_string(), json!("task-wait-42")),
                     ("task_status".to_string(), json!("succeeded")),
-                    ("tool_name".to_string(), json!("exec")),
+                    ("tool_name".to_string(), json!("exec/background")),
                     ("text".to_string(), json!("background task succeeded")),
                 ]
                 .into_iter()
