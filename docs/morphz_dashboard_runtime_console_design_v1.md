@@ -166,6 +166,7 @@ Agent  /  Context r42  /  Session  /  Principal
 - `Thread.lifecycle = open` 只表示语义线程尚未终结、未来仍可接收 Signal，不表示正在执行；当前活动只由 Scheduler `phase = runnable | running | waiting` 决定；
 - 审批继续提供允许/拒绝；Objective 继续提供恢复/删除；Job、Delivery 和 Runtime invariant 异常至少提供因果检查与“确认已知”；
 - “确认已知”不修改 Thread、Job、Approval 或 Delivery，也不删除失败证据，而是向 Event Ledger 追加 `runtime/attention_acknowledged` 审计事件；
+- Runtime 在同一 Ledger 事务维护 acknowledgement Projection；Dashboard 直接读取该 Projection，不得按刷新周期扫描和排序整个 Event Ledger；
 - 确认键包含源对象 revision。源状态恢复后该项自动从派生列表消失；同一对象产生新 revision 或新失败时使用新键重新进入关注区；
 - 已确认的问题仍可在 Event Ledger 与执行历史中追溯，浏览器本地隐藏状态不得成为权威。
 

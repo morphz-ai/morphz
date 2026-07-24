@@ -3365,15 +3365,23 @@ impl ContextEngine {
             .ok_or("ContextEngine 未配置 RecallProjectionStore")?;
         let state = self.load_current_mind(context_id, None).await?;
         let events = self.context_events(context_id).await?;
-        let mut documents = all_frame_recall_documents(context_id, &state);
-        documents.extend(events.iter().map(|event| {
-            crate::memory::event_recall_document_with_retired(
-                event,
-                context_id,
-                event.sequence.unwrap_or_default(),
-                state.retired.contains(&event.id),
-            )
-        }));
+        let mut documents = all_frame_recall_documents(context_id, &state)
+            .into_iter()
+            .map(crate::memory::bound_recall_document)
+            .collect::<Vec<_>>();
+        documents.extend(
+            events
+                .iter()
+                .filter(|event| crate::memory::event_has_recall_value(event))
+                .map(|event| {
+                    crate::memory::event_recall_document_with_retired(
+                        event,
+                        context_id,
+                        event.sequence.unwrap_or_default(),
+                        state.retired.contains(&event.id),
+                    )
+                }),
+        );
         store.replace_recall_documents(context_id, &documents).await
     }
 

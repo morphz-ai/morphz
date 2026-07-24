@@ -939,7 +939,17 @@ orchestrator.activation_admission.max_queued
 orchestrator.activation_admission.dialogue_delivery_reserved_slots
 orchestrator.activation_admission.dialogue_delivery_reserved_queue_slots
 orchestrator.activation_admission.aging_promotion_interval
+orchestrator.activation_lease_secs
+orchestrator.objective_evaluation_lease_secs
 ```
+
+其中两种 lease 都是**可续租的故障检测窗口**，不是模型、工具或 Objective
+的墙钟执行上限。Thread Activation 默认使用 30 秒窗口；Objective Evaluation
+默认使用 90 秒窗口，并在运行期间持续续租。SQLite 允许同机多 Runtime 进程
+共享：租约未到期但本机 claimant PID 已死亡时可立即回收。PostgreSQL 面向跨节点
+Worker，不能依赖本机 PID，因此以数据库租约和 heartbeat 为权威，节点消失后最多
+等待 Objective Evaluation 故障检测窗口。Runtime claimant 由 PID 与进程实例 nonce
+共同组成，避免 PID 复用把旧 claim 误认成当前进程。
 
 ### 11.4 已实现与尚未实现的边界
 

@@ -8,15 +8,15 @@ use crate::memory::{
     ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationOutcomeCommit,
     ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
     ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
-    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus,
-    CapabilityLeaseStore, CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
-    ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit,
-    DeliveryIngressStore, DeliveryStatus, EdgeCommandMutation, EdgeCommandOutputChunk,
-    EdgeCommandRecord, EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream,
-    EdgeReconciliationReport, EventAppend, EventStore, ExecutionApprovalMutation,
-    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal, ExecutionNodeMutation,
-    ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
+    AttentionAcknowledgementRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
+    CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore, CognitiveClockStore,
+    CognitiveContextRecord, ContextCognitiveClock, ContextUpdate, DelegationRecord,
+    DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
+    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
+    EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore,
+    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation,
+    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
+    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
     ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
@@ -29,14 +29,14 @@ use crate::memory::{
     NewPrincipal, NewRuntimeTimer, NewSchedule, NewSession, NewThread, NewThreadActivation,
     NewThreadSignal, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
     ObjectiveWaitCondition, PairExecutionNode, PrincipalRecord, QueryFilter, RecallDocument,
-    RecallDocumentKind, RecallIndexAudit, RecallIndexCapability, RecallProjectionStore,
-    RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation,
-    ScheduleRecord, ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate,
-    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
-    SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadStore, TimerStore,
+    RecallDocumentKind, RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch,
+    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
+    RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus, ScheduleStore,
+    SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind,
+    SessionPrincipalBinding, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
+    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
 // SQLx supplies the Rust FFI surface; hotbundle supplies a current SQLite
@@ -260,6 +260,25 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic);
         CREATE INDEX IF NOT EXISTS idx_events_session_time ON events(session_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_events_context_time ON events(context_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_events_context_topic_time
+            ON events(context_id, topic, timestamp);
+
+        CREATE TABLE IF NOT EXISTS attention_acknowledgements (
+            context_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            event_id TEXT NOT NULL UNIQUE,
+            event_sequence INTEGER NOT NULL,
+            source_kind TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            source_revision INTEGER NOT NULL CHECK(source_revision >= 0),
+            acknowledged_by TEXT NOT NULL,
+            rationale TEXT,
+            acknowledged_at TEXT NOT NULL,
+            PRIMARY KEY(context_id, key),
+            FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_attention_ack_context_time
+            ON attention_acknowledgements(context_id, acknowledged_at DESC, event_sequence DESC);
 
         CREATE TABLE IF NOT EXISTS session_projections (
             event_id TEXT PRIMARY KEY,
@@ -1077,11 +1096,14 @@ impl SqliteStore {
 
         migrate_session_projections(&pool).await?;
         migrate_recall_projection(&pool).await?;
+        migrate_attention_acknowledgements(&pool).await?;
 
         Ok(Self { pool })
     }
 }
 
+const ATTENTION_PROJECTION_BACKFILL_MIGRATION: &str =
+    "20260723_01_attention_acknowledgement_projection";
 const RECALL_FTS_BACKFILL_MIGRATION: &str = "20260722_01_recall_fts_backfill";
 
 async fn migrate_recall_projection(
@@ -1101,7 +1123,25 @@ async fn migrate_recall_projection(
                PRIMARY KEY(context_id, document_kind, document_id)
            );
            CREATE INDEX IF NOT EXISTS idx_recall_documents_context_updated
-             ON recall_documents(context_id, updated_sequence DESC, document_id);"#,
+             ON recall_documents(context_id, updated_sequence DESC, document_id);
+           CREATE TABLE IF NOT EXISTS recall_projection_outbox (
+               context_id TEXT NOT NULL,
+               document_kind TEXT NOT NULL CHECK(document_kind IN ('event', 'frame')),
+               document_id TEXT NOT NULL,
+               generation INTEGER NOT NULL CHECK(generation > 0),
+               document_json TEXT NOT NULL,
+               status TEXT NOT NULL CHECK(status IN ('pending', 'processing')),
+               attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+               available_at TEXT NOT NULL,
+               claimed_by TEXT,
+               claim_expires_at TEXT,
+               last_error TEXT,
+               created_at TEXT NOT NULL,
+               updated_at TEXT NOT NULL,
+               PRIMARY KEY(context_id, document_kind, document_id)
+           );
+           CREATE INDEX IF NOT EXISTS idx_recall_outbox_ready
+             ON recall_projection_outbox(status, available_at, claim_expires_at, updated_at);"#,
     )
     .execute(pool)
     .await?;
@@ -1122,6 +1162,17 @@ async fn migrate_recall_projection(
         return Ok(());
     }
 
+    // `CREATE TRIGGER IF NOT EXISTS` cannot upgrade an existing trigger.  The
+    // original UPDATE trigger rebuilt the trigram index for every projection
+    // metadata change (revision, retired, updated_sequence, state_hash, ...).
+    // Under concurrent Context maintenance that turned cheap MVCC bookkeeping
+    // into a full FTS delete+insert and held SQLite's single-writer slot for
+    // seconds.  Recreate only this derived trigger on startup; the FTS table is
+    // a rebuildable Projection and no Ledger data is affected.
+    sqlx::query("DROP TRIGGER IF EXISTS recall_documents_au")
+        .execute(pool)
+        .await?;
+
     for statement in [
         r#"CREATE TRIGGER IF NOT EXISTS recall_documents_ai AFTER INSERT ON recall_documents BEGIN
              INSERT INTO recall_documents_fts(context_id, document_kind, document_id, searchable_text)
@@ -1132,7 +1183,14 @@ async fn migrate_recall_projection(
              WHERE context_id = old.context_id AND document_kind = old.document_kind
                AND document_id = old.document_id;
            END"#,
-        r#"CREATE TRIGGER IF NOT EXISTS recall_documents_au AFTER UPDATE ON recall_documents BEGIN
+        r#"CREATE TRIGGER IF NOT EXISTS recall_documents_au
+           AFTER UPDATE OF context_id, document_kind, document_id, searchable_text
+           ON recall_documents
+           WHEN old.context_id IS NOT new.context_id
+             OR old.document_kind IS NOT new.document_kind
+             OR old.document_id IS NOT new.document_id
+             OR old.searchable_text IS NOT new.searchable_text
+           BEGIN
              DELETE FROM recall_documents_fts
              WHERE context_id = old.context_id AND document_kind = old.document_kind
                AND document_id = old.document_id;
@@ -1143,10 +1201,6 @@ async fn migrate_recall_projection(
         sqlx::query(statement).execute(pool).await?;
     }
 
-    // A crash or an older build may have populated the ordinary projection
-    // before FTS became available. This is a schema/data migration, not a
-    // startup integrity audit: triggers keep both projections synchronized in
-    // the same SQLite transaction after the one-time backfill completes.
     let mut tx = pool.begin().await?;
     let claimed =
         sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
@@ -1167,6 +1221,57 @@ async fn migrate_recall_projection(
              WHERE f.context_id = d.context_id AND f.document_kind = d.document_kind
                AND f.document_id = d.document_id
            )"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn migrate_attention_acknowledgements(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let mut tx = pool.begin().await?;
+    let claimed =
+        sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+            .bind(ATTENTION_PROJECTION_BACKFILL_MIGRATION)
+            .bind(&now)
+            .execute(&mut *tx)
+            .await?;
+    if claimed.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(());
+    }
+    sqlx::query(
+        r#"INSERT INTO attention_acknowledgements
+           (context_id, key, event_id, event_sequence, source_kind, source_id,
+            source_revision, acknowledged_by, rationale, acknowledged_at)
+           SELECT context_id,
+                  json_extract(payload, '$.key'),
+                  id,
+                  rowid,
+                  json_extract(payload, '$.source_kind'),
+                  json_extract(payload, '$.source_id'),
+                  CAST(json_extract(payload, '$.source_revision') AS INTEGER),
+                  json_extract(payload, '$.acknowledged_by'),
+                  json_extract(payload, '$.rationale'),
+                  timestamp
+           FROM events
+           WHERE topic = 'runtime/attention_acknowledged'
+             AND context_id IS NOT NULL
+             AND json_extract(payload, '$.key') IS NOT NULL
+           ORDER BY rowid ASC
+           ON CONFLICT(context_id, key) DO UPDATE SET
+             event_id = excluded.event_id,
+             event_sequence = excluded.event_sequence,
+             source_kind = excluded.source_kind,
+             source_id = excluded.source_id,
+             source_revision = excluded.source_revision,
+             acknowledged_by = excluded.acknowledged_by,
+             rationale = excluded.rationale,
+             acknowledged_at = excluded.acknowledged_at
+           WHERE excluded.event_sequence > attention_acknowledgements.event_sequence"#,
     )
     .execute(&mut *tx)
     .await?;
@@ -1361,7 +1466,7 @@ async fn migrate_session_projections(
 
 impl crate::memory::RuntimeStore for SqliteStore {
     fn worker_coordination_mode(&self) -> crate::memory::WorkerCoordinationMode {
-        crate::memory::WorkerCoordinationMode::SharedLeases
+        crate::memory::WorkerCoordinationMode::SharedHostLeases
     }
 }
 
@@ -2506,6 +2611,140 @@ fn runtime_timer_from_row(
     })
 }
 
+async fn project_attention_acknowledgement_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event: &Event,
+    context_id: &str,
+    sequence: u64,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if event.topic != "runtime/attention_acknowledged" {
+        return Ok(());
+    }
+    let key = event
+        .payload
+        .get("key")
+        .and_then(JsonValue::as_str)
+        .ok_or("attention acknowledgement 缺少 key")?;
+    let source_kind = event
+        .payload
+        .get("source_kind")
+        .and_then(JsonValue::as_str)
+        .ok_or("attention acknowledgement 缺少 source_kind")?;
+    let source_id = event
+        .payload
+        .get("source_id")
+        .and_then(JsonValue::as_str)
+        .ok_or("attention acknowledgement 缺少 source_id")?;
+    let source_revision = event
+        .payload
+        .get("source_revision")
+        .and_then(JsonValue::as_u64)
+        .ok_or("attention acknowledgement 缺少 source_revision")?;
+    let acknowledged_by = event
+        .payload
+        .get("acknowledged_by")
+        .and_then(JsonValue::as_str)
+        .ok_or("attention acknowledgement 缺少 acknowledged_by")?;
+    sqlx::query(
+        r#"INSERT INTO attention_acknowledgements
+           (context_id, key, event_id, event_sequence, source_kind, source_id,
+            source_revision, acknowledged_by, rationale, acknowledged_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(context_id, key) DO UPDATE SET
+             event_id = excluded.event_id,
+             event_sequence = excluded.event_sequence,
+             source_kind = excluded.source_kind,
+             source_id = excluded.source_id,
+             source_revision = excluded.source_revision,
+             acknowledged_by = excluded.acknowledged_by,
+             rationale = excluded.rationale,
+             acknowledged_at = excluded.acknowledged_at
+           WHERE excluded.event_sequence > attention_acknowledgements.event_sequence"#,
+    )
+    .bind(context_id)
+    .bind(key)
+    .bind(&event.id)
+    .bind(i64::try_from(sequence)?)
+    .bind(source_kind)
+    .bind(source_id)
+    .bind(i64::try_from(source_revision)?)
+    .bind(acknowledged_by)
+    .bind(event.payload.get("rationale").and_then(JsonValue::as_str))
+    .bind(
+        event
+            .timestamp
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn enqueue_recall_document_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    document: &RecallDocument,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let document = crate::memory::bound_recall_document(document.clone());
+    sqlx::query(
+        r#"INSERT INTO recall_projection_outbox
+           (context_id, document_kind, document_id, generation, document_json,
+            status, attempts, available_at, created_at, updated_at)
+           VALUES (?, ?, ?, 1, ?, 'pending', 0, ?, ?, ?)
+           ON CONFLICT(context_id, document_kind, document_id) DO UPDATE SET
+             generation = recall_projection_outbox.generation + 1,
+             document_json = excluded.document_json,
+             status = 'pending', attempts = 0,
+             available_at = excluded.available_at,
+             claimed_by = NULL, claim_expires_at = NULL, last_error = NULL,
+             updated_at = excluded.updated_at"#,
+    )
+    .bind(&document.context_id)
+    .bind(document.document_kind.as_str())
+    .bind(&document.document_id)
+    .bind(serde_json::to_string(&document)?)
+    .bind(&now)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn enqueue_event_recall_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event: &Event,
+    context_id: &str,
+    retired: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if !crate::memory::event_has_recall_value(event) {
+        return Ok(());
+    }
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    sqlx::query(
+        r#"INSERT INTO recall_projection_outbox
+           (context_id, document_kind, document_id, generation, document_json,
+            status, attempts, available_at, created_at, updated_at)
+           VALUES (?, 'event', ?, 1, ?, 'pending', 0, ?, ?, ?)
+           ON CONFLICT(context_id, document_kind, document_id) DO UPDATE SET
+             generation = recall_projection_outbox.generation + 1,
+             document_json = excluded.document_json,
+             status = 'pending', attempts = 0,
+             available_at = excluded.available_at,
+             claimed_by = NULL, claim_expires_at = NULL, last_error = NULL,
+             updated_at = excluded.updated_at"#,
+    )
+    .bind(context_id)
+    .bind(&event.id)
+    .bind(serde_json::json!({ "retired": retired }).to_string())
+    .bind(&now)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 async fn append_event_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     event: &Event,
@@ -2541,8 +2780,8 @@ async fn append_event_in_transaction(
                 .await?,
         )
         .map_err(|_| "Event sequence 不能为负数")?;
-        let document = crate::memory::event_recall_document(event, context_id, sequence);
-        upsert_recall_document_in_transaction(tx, &document).await?;
+        project_attention_acknowledgement_in_transaction(tx, event, context_id, sequence).await?;
+        enqueue_event_recall_in_transaction(tx, event, context_id, false).await?;
     }
     project_observation_in_transaction(tx, event).await?;
     Ok(())
@@ -2552,6 +2791,7 @@ async fn upsert_recall_document_in_transaction(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     document: &RecallDocument,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let started = std::time::Instant::now();
     sqlx::query(
         r#"INSERT INTO recall_documents
            (context_id, document_kind, document_id, revision, searchable_text, preview,
@@ -2563,7 +2803,8 @@ async fn upsert_recall_document_in_transaction(
              preview = excluded.preview,
              retired = excluded.retired,
              updated_sequence = excluded.updated_sequence,
-             state_hash = excluded.state_hash"#,
+             state_hash = excluded.state_hash
+           WHERE excluded.updated_sequence >= recall_documents.updated_sequence"#,
     )
     .bind(&document.context_id)
     .bind(document.document_kind.as_str())
@@ -2576,6 +2817,26 @@ async fn upsert_recall_document_in_transaction(
     .bind(&document.state_hash)
     .execute(&mut **tx)
     .await?;
+    let elapsed = started.elapsed();
+    if elapsed >= std::time::Duration::from_millis(500) {
+        tracing::warn!(
+            context_id = %document.context_id,
+            document_kind = %document.document_kind.as_str(),
+            document_id = %document.document_id,
+            searchable_chars = document.searchable_text.chars().count(),
+            elapsed_ms = elapsed.as_millis(),
+            "Recall document UPSERT（含同步 FTS trigger）耗时过长"
+        );
+    } else {
+        tracing::debug!(
+            context_id = %document.context_id,
+            document_kind = %document.document_kind.as_str(),
+            document_id = %document.document_id,
+            searchable_chars = document.searchable_text.chars().count(),
+            elapsed_ms = elapsed.as_millis(),
+            "Recall document UPSERT 完成"
+        );
+    }
     Ok(())
 }
 
@@ -2806,8 +3067,9 @@ async fn append_event_idempotent_in_transaction(
                     .await?,
             )
             .map_err(|_| "Event sequence 不能为负数")?;
-            let document = crate::memory::event_recall_document(event, context_id, sequence);
-            upsert_recall_document_in_transaction(tx, &document).await?;
+            project_attention_acknowledgement_in_transaction(tx, event, context_id, sequence)
+                .await?;
+            enqueue_event_recall_in_transaction(tx, event, context_id, false).await?;
         }
         project_observation_in_transaction(tx, event).await?;
         return Ok(true);
@@ -2828,17 +3090,7 @@ async fn append_event_idempotent_in_transaction(
     if !same {
         return Err(format!("Event ID '{}' 已被不同内容占用", event.id).into());
     }
-    if let Some(context_id) = context_id {
-        let sequence = u64::try_from(
-            sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
-                .bind(&event.id)
-                .fetch_one(&mut **tx)
-                .await?,
-        )
-        .map_err(|_| "Event sequence 不能为负数")?;
-        let document = crate::memory::event_recall_document(event, context_id, sequence);
-        upsert_recall_document_in_transaction(tx, &document).await?;
-    }
+    // Idempotent replay must not re-enqueue an already projected Event.
     Ok(false)
 }
 
@@ -2926,25 +3178,13 @@ async fn mutate_session_projection_in_transaction(
             .execute(&mut **tx)
             .await?;
         if let Some(event) = stored_event_in_transaction(tx, event_id, context_id).await? {
-            let sequence = event
-                .sequence
-                .ok_or_else(|| format!("Event '{}' 缺少持久化 sequence", event.id))?;
-            let document = crate::memory::event_recall_document_with_retired(
-                &event, context_id, sequence, true,
-            );
-            upsert_recall_document_in_transaction(tx, &document).await?;
+            enqueue_event_recall_in_transaction(tx, &event, context_id, true).await?;
         }
     }
     for event_id in &mutation.restored_event_ids {
         if let Some(event) = stored_event_in_transaction(tx, event_id, context_id).await? {
             project_observation_in_transaction(tx, &event).await?;
-            let sequence = event
-                .sequence
-                .ok_or_else(|| format!("Event '{}' 缺少持久化 sequence", event.id))?;
-            let document = crate::memory::event_recall_document_with_retired(
-                &event, context_id, sequence, false,
-            );
-            upsert_recall_document_in_transaction(tx, &document).await?;
+            enqueue_event_recall_in_transaction(tx, &event, context_id, false).await?;
         }
     }
     Ok(())
@@ -3078,7 +3318,7 @@ impl MindProjectionStore for SqliteStore {
             .execute(&mut *tx)
             .await?;
             for document in &projection.recall_documents {
-                upsert_recall_document_in_transaction(&mut tx, document).await?;
+                enqueue_recall_document_in_transaction(&mut tx, document).await?;
             }
         }
         let installed = get_mind_projection_from_executor(&mut *tx, &projection.context_id)
@@ -3179,7 +3419,7 @@ impl MindProjectionStore for SqliteStore {
         )
         .await?;
         for document in &next_projection.recall_documents {
-            upsert_recall_document_in_transaction(&mut tx, document).await?;
+            enqueue_recall_document_in_transaction(&mut tx, document).await?;
         }
         if context_transaction_requires_snapshot(event, next_projection.revision) {
             insert_mind_snapshot_in_transaction(
@@ -3293,7 +3533,7 @@ impl MindProjectionStore for SqliteStore {
         }
         append_event_in_transaction(&mut tx, event).await?;
         for document in &next_projection.recall_documents {
-            upsert_recall_document_in_transaction(&mut tx, document).await?;
+            enqueue_recall_document_in_transaction(&mut tx, document).await?;
         }
         insert_mind_snapshot_in_transaction(
             &mut tx,
@@ -9360,6 +9600,179 @@ impl ExecutionJobStore for SqliteStore {
         tx.commit().await?;
         Ok(ExecutionJobMutation::Updated(updated))
     }
+
+    async fn reconcile_execution_job_from_event(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        terminal: ExecutionJobTerminal,
+        event: &Event,
+        signal_outbox: bool,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>> {
+        if !terminal.status.is_terminal() {
+            return Err("Execution Job reconcile 只能提交终态".into());
+        }
+        if terminal.result_event_id.as_deref() != Some(event.id.as_str()) {
+            return Err("Execution Job reconcile result_event_id 必须等于既存 Event ID".into());
+        }
+
+        let mut tx = self.pool.begin().await?;
+        // Serialize the projection repair with every other SQLite writer. The
+        // immutable Event is verified below; this no-op never changes Ledger.
+        sqlx::query("UPDATE execution_jobs SET revision = revision WHERE id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        let Some(row) = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            tx.commit().await?;
+            return Ok(ExecutionJobMutation::NotFound);
+        };
+        let current = execution_job_from_row(&row)?;
+        validate_sqlite_result_event(&current, event)?;
+        verify_existing_sqlite_event(&mut tx, event).await?;
+
+        let error = terminal
+            .error
+            .as_ref()
+            .map(|value| value.chars().take(100_000).collect::<String>());
+        if current.status.is_terminal() {
+            let exact_replay = current.status == terminal.status
+                && current.result_event_id.as_deref() == Some(event.id.as_str())
+                && current.result_refs == terminal.result_refs
+                && current.error == error
+                && current.exit_code == terminal.exit_code;
+            if exact_replay {
+                if signal_outbox {
+                    append_signal_outbox_in_transaction(&mut tx, event).await?;
+                }
+                tx.commit().await?;
+                return Ok(ExecutionJobMutation::Existing(current));
+            }
+            tx.commit().await?;
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "Execution Job 已有不同终态，不能用既存 Event 覆盖".to_string(),
+            });
+        }
+        if current.revision != expected_revision {
+            tx.commit().await?;
+            return Ok(ExecutionJobMutation::Conflict { current });
+        }
+
+        let expected_sql = i64::try_from(expected_revision)
+            .map_err(|_| "Execution Job revision 超出 SQLite INTEGER 范围")?;
+        let result_refs_json = serde_json::to_string(&terminal.result_refs)?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let result = sqlx::query(
+            r#"UPDATE execution_jobs
+               SET revision = revision + 1, status = ?, lease_expires_at = NULL,
+                   result_event_id = ?, result_refs_json = ?, error = ?,
+                   exit_code = ?, updated_at = ?, finished_at = ?
+               WHERE id = ? AND revision = ?
+                 AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')"#,
+        )
+        .bind(terminal.status.as_str())
+        .bind(&terminal.result_event_id)
+        .bind(&result_refs_json)
+        .bind(&error)
+        .bind(terminal.exit_code)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .bind(expected_sql)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            tx.rollback().await?;
+            return execution_job_mutation_failure(
+                self,
+                id,
+                expected_revision,
+                "Execution Job 既存 Event 恢复前置条件不再成立",
+            )
+            .await;
+        }
+        if signal_outbox {
+            append_signal_outbox_in_transaction(&mut tx, event).await?;
+        }
+        let updated = sqlx::query("SELECT * FROM execution_jobs WHERE id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let updated = execution_job_from_row(&updated)?;
+        tx.commit().await?;
+        Ok(ExecutionJobMutation::Updated(updated))
+    }
+}
+
+fn validate_sqlite_result_event(
+    current: &ExecutionJobRecord,
+    event: &Event,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let payload_str = |key: &str| event.payload.get(key).and_then(JsonValue::as_str);
+    if payload_str("context_id") != Some(current.context_id.as_str())
+        || payload_str("session_id") != Some(current.session_id.as_str())
+        || payload_str("tool_call_id") != Some(current.tool_call_id.as_str())
+        || payload_str("tool_name") != Some(current.tool_name.as_str())
+        || payload_str("activation_id") != Some(current.activation_id.as_str())
+        || payload_str("thread_id") != Some(current.thread_id.as_str())
+        || event.topic != "chat/tool_output"
+        || event.event_type != crate::event::TYPE_TOOL_OUTPUT
+    {
+        return Err(format!(
+            "Execution Job '{}' 的结果 Event 路由或工具因果身份不匹配",
+            current.id
+        )
+        .into());
+    }
+    Ok(())
+}
+
+async fn verify_existing_sqlite_event(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    event: &Event,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let Some(existing) = sqlx::query(
+        "SELECT timestamp, actor, type, topic, context_id, session_id, payload FROM events WHERE id = ?",
+    )
+    .bind(&event.id)
+    .fetch_optional(&mut **tx)
+    .await?
+    else {
+        return Err(format!(
+            "Execution Job 恢复只能使用已持久化 Event '{}'",
+            event.id
+        )
+        .into());
+    };
+    let session_id = event.payload.get("session_id").and_then(JsonValue::as_str);
+    let context_id = event
+        .payload
+        .get("context_id")
+        .and_then(JsonValue::as_str)
+        .or(session_id);
+    let stored_timestamp =
+        DateTime::parse_from_rfc3339(&existing.get::<String, _>("timestamp"))?.with_timezone(&Utc);
+    let stored_payload: JsonValue = serde_json::from_str(&existing.get::<String, _>("payload"))?;
+    let same = stored_timestamp == event.timestamp
+        && existing.get::<String, _>("actor") == event.actor
+        && existing.get::<String, _>("type") == event.event_type
+        && existing.get::<String, _>("topic") == event.topic
+        && existing.get::<Option<String>, _>("context_id").as_deref() == context_id
+        && existing.get::<Option<String>, _>("session_id").as_deref() == session_id
+        && stored_payload == JsonValue::Object(event.payload.clone());
+    if !same {
+        return Err(format!(
+            "Execution Job 恢复引用的 Event '{}' 与 Ledger 内容不一致",
+            event.id
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn validate_new_approval_request(
@@ -10532,6 +10945,37 @@ impl EventStore for SqliteStore {
 
         Ok(events)
     }
+
+    async fn list_attention_acknowledgements(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<AttentionAcknowledgementRecord>, Box<dyn std::error::Error + Send + Sync>> {
+        let rows = sqlx::query(
+            r#"SELECT event_id, context_id, key, source_kind, source_id,
+                      source_revision, acknowledged_by, rationale, acknowledged_at
+               FROM attention_acknowledgements
+               WHERE context_id = ?
+               ORDER BY acknowledged_at DESC, event_sequence DESC"#,
+        )
+        .bind(context_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AttentionAcknowledgementRecord {
+                    event_id: row.get("event_id"),
+                    context_id: row.get("context_id"),
+                    key: row.get("key"),
+                    source_kind: row.get("source_kind"),
+                    source_id: row.get("source_id"),
+                    source_revision: u64::try_from(row.get::<i64, _>("source_revision"))?,
+                    acknowledged_by: row.get("acknowledged_by"),
+                    rationale: row.get("rationale"),
+                    acknowledged_at: parse_time(&row.get::<String, _>("acknowledged_at")),
+                })
+            })
+            .collect()
+    }
 }
 
 fn recall_kind_from_str(
@@ -10583,6 +11027,194 @@ fn escape_like_pattern(query: &str) -> String {
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
+}
+
+#[derive(Debug)]
+struct SqliteRecallOutboxClaim {
+    context_id: String,
+    document_kind: RecallDocumentKind,
+    document_id: String,
+    generation: u64,
+    document_json: String,
+    claim_token: String,
+}
+
+async fn claim_sqlite_recall_outbox(
+    pool: &SqlitePool,
+    worker_id: &str,
+    limit: usize,
+) -> Result<Vec<SqliteRecallOutboxClaim>, Box<dyn std::error::Error + Send + Sync>> {
+    let now = Utc::now();
+    let now_text = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let lease_text =
+        (now + chrono::Duration::seconds(30)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let candidates = sqlx::query(
+        r#"SELECT context_id, document_kind, document_id, generation, document_json
+           FROM recall_projection_outbox
+           WHERE (status = 'pending' AND available_at <= ?)
+              OR (status = 'processing' AND claim_expires_at <= ?)
+           ORDER BY updated_at ASC, context_id, document_kind, document_id
+           LIMIT ?"#,
+    )
+    .bind(&now_text)
+    .bind(&now_text)
+    .bind(i64::try_from(limit.clamp(1, 64))?)
+    .fetch_all(pool)
+    .await?;
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut tx = pool.begin().await?;
+    let mut claimed = Vec::new();
+    for (index, row) in candidates.into_iter().enumerate() {
+        let context_id = row.get::<String, _>("context_id");
+        let kind_text = row.get::<String, _>("document_kind");
+        let document_id = row.get::<String, _>("document_id");
+        let generation = u64::try_from(row.get::<i64, _>("generation"))?;
+        let claim_token = format!("{worker_id}:{now_text}:{index}");
+        let updated = sqlx::query(
+            r#"UPDATE recall_projection_outbox
+               SET status = 'processing', claimed_by = ?, claim_expires_at = ?, updated_at = ?
+               WHERE context_id = ? AND document_kind = ? AND document_id = ?
+                 AND generation = ?
+                 AND ((status = 'pending' AND available_at <= ?)
+                   OR (status = 'processing' AND claim_expires_at <= ?))"#,
+        )
+        .bind(&claim_token)
+        .bind(&lease_text)
+        .bind(&now_text)
+        .bind(&context_id)
+        .bind(&kind_text)
+        .bind(&document_id)
+        .bind(i64::try_from(generation)?)
+        .bind(&now_text)
+        .bind(&now_text)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() == 1 {
+            claimed.push(SqliteRecallOutboxClaim {
+                context_id,
+                document_kind: recall_kind_from_str(&kind_text)?,
+                document_id,
+                generation,
+                document_json: row.get("document_json"),
+                claim_token,
+            });
+        }
+    }
+    tx.commit().await?;
+    Ok(claimed)
+}
+
+async fn materialize_sqlite_recall_claim(
+    pool: &SqlitePool,
+    claim: &SqliteRecallOutboxClaim,
+) -> Result<Option<RecallDocument>, Box<dyn std::error::Error + Send + Sync>> {
+    match claim.document_kind {
+        RecallDocumentKind::Frame => Ok(Some(crate::memory::bound_recall_document(
+            serde_json::from_str(&claim.document_json)?,
+        ))),
+        RecallDocumentKind::Event => {
+            let Some(row) = sqlx::query(
+                r#"SELECT rowid AS event_sequence, id, timestamp, actor, type, topic, payload
+                   FROM events WHERE id = ? AND context_id = ?"#,
+            )
+            .bind(&claim.document_id)
+            .bind(&claim.context_id)
+            .fetch_optional(pool)
+            .await?
+            else {
+                return Ok(None);
+            };
+            let event = Event {
+                id: row.get("id"),
+                sequence: u64::try_from(row.get::<i64, _>("event_sequence")).ok(),
+                timestamp: parse_time(&row.get::<String, _>("timestamp")),
+                actor: row.get("actor"),
+                event_type: row.get("type"),
+                topic: row.get("topic"),
+                payload: serde_json::from_str(&row.get::<String, _>("payload"))?,
+            };
+            if !crate::memory::event_has_recall_value(&event) {
+                return Ok(None);
+            }
+            let retired = serde_json::from_str::<JsonValue>(&claim.document_json)?
+                .get("retired")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false);
+            Ok(Some(crate::memory::event_recall_document_with_retired(
+                &event,
+                &claim.context_id,
+                event.sequence.unwrap_or_default(),
+                retired,
+            )))
+        }
+    }
+}
+
+async fn finish_sqlite_recall_claim(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    claim: &SqliteRecallOutboxClaim,
+    document: Option<&RecallDocument>,
+) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    // A deferred SQLite transaction does not acquire the Writer until its
+    // first mutation. Make that boundary explicit so diagnostics can separate
+    // waiting for another Writer from the Recall/FTS work performed after the
+    // lock has been acquired. The no-op assignment preserves the durable claim.
+    let writer_wait_started = std::time::Instant::now();
+    let current = sqlx::query(
+        r#"UPDATE recall_projection_outbox SET updated_at = updated_at
+           WHERE context_id = ? AND document_kind = ? AND document_id = ?
+             AND generation = ? AND status = 'processing' AND claimed_by = ?"#,
+    )
+    .bind(&claim.context_id)
+    .bind(claim.document_kind.as_str())
+    .bind(&claim.document_id)
+    .bind(i64::try_from(claim.generation)?)
+    .bind(&claim.claim_token)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected()
+        == 1;
+    let writer_wait = writer_wait_started.elapsed();
+    if writer_wait >= std::time::Duration::from_millis(500) {
+        tracing::warn!(
+            context_id = %claim.context_id,
+            document_kind = %claim.document_kind.as_str(),
+            document_id = %claim.document_id,
+            generation = claim.generation,
+            writer_wait_ms = writer_wait.as_millis(),
+            "Recall Projection 等待 SQLite Writer 过久"
+        );
+    } else {
+        tracing::debug!(
+            context_id = %claim.context_id,
+            document_kind = %claim.document_kind.as_str(),
+            document_id = %claim.document_id,
+            generation = claim.generation,
+            writer_wait_ms = writer_wait.as_millis(),
+            "Recall Projection 已取得 SQLite Writer"
+        );
+    }
+    if !current {
+        return Ok(false);
+    }
+    if let Some(document) = document {
+        upsert_recall_document_in_transaction(tx, document).await?;
+    }
+    sqlx::query(
+        r#"DELETE FROM recall_projection_outbox
+           WHERE context_id = ? AND document_kind = ? AND document_id = ?
+             AND generation = ? AND claimed_by = ?"#,
+    )
+    .bind(&claim.context_id)
+    .bind(claim.document_kind.as_str())
+    .bind(&claim.document_id)
+    .bind(i64::try_from(claim.generation)?)
+    .bind(&claim.claim_token)
+    .execute(&mut **tx)
+    .await?;
+    Ok(true)
 }
 
 #[async_trait::async_trait]
@@ -10706,6 +11338,10 @@ impl RecallProjectionStore for SqliteStore {
             return Err("Recall rebuild document 属于错误的 Context".into());
         }
         let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM recall_projection_outbox WHERE context_id = ?")
+            .bind(context_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM recall_documents WHERE context_id = ?")
             .bind(context_id)
             .execute(&mut *tx)
@@ -10743,6 +11379,107 @@ impl RecallProjectionStore for SqliteStore {
             event_documents,
             frame_documents,
         })
+    }
+
+    async fn project_recall_outbox_batch(
+        &self,
+        worker_id: &str,
+        limit: usize,
+    ) -> Result<RecallProjectionBatch, Box<dyn std::error::Error + Send + Sync>> {
+        let claims = claim_sqlite_recall_outbox(&self.pool, worker_id, limit).await?;
+        let mut result = RecallProjectionBatch {
+            claimed: claims.len(),
+            ..RecallProjectionBatch::default()
+        };
+        if claims.is_empty() {
+            return Ok(result);
+        }
+        for claim in claims {
+            match materialize_sqlite_recall_claim(&self.pool, &claim).await {
+                Ok(document) => {
+                    let transaction_started = std::time::Instant::now();
+                    let mut tx = self.pool.begin().await?;
+                    let transaction_open_elapsed = transaction_started.elapsed();
+                    let finished =
+                        finish_sqlite_recall_claim(&mut tx, &claim, document.as_ref()).await?;
+                    if finished {
+                        if document.is_some() {
+                            result.projected += 1;
+                        } else {
+                            result.skipped += 1;
+                        }
+                    } else {
+                        result.skipped += 1;
+                    }
+                    let commit_started = std::time::Instant::now();
+                    tx.commit().await?;
+                    let commit_elapsed = commit_started.elapsed();
+                    if transaction_open_elapsed >= std::time::Duration::from_millis(500)
+                        || commit_elapsed >= std::time::Duration::from_millis(500)
+                    {
+                        tracing::warn!(
+                            context_id = %claim.context_id,
+                            document_kind = %claim.document_kind.as_str(),
+                            document_id = %claim.document_id,
+                            generation = claim.generation,
+                            transaction_open_ms = transaction_open_elapsed.as_millis(),
+                            commit_ms = commit_elapsed.as_millis(),
+                            "Recall Projection 事务阶段耗时过长"
+                        );
+                    } else {
+                        tracing::debug!(
+                            context_id = %claim.context_id,
+                            document_kind = %claim.document_kind.as_str(),
+                            document_id = %claim.document_id,
+                            generation = claim.generation,
+                            transaction_open_ms = transaction_open_elapsed.as_millis(),
+                            commit_ms = commit_elapsed.as_millis(),
+                            "Recall Projection 事务提交完成"
+                        );
+                    }
+                }
+                Err(error) => {
+                    let now = Utc::now();
+                    let attempts = sqlx::query_scalar::<_, i64>(
+                        r#"SELECT attempts FROM recall_projection_outbox
+                           WHERE context_id = ? AND document_kind = ? AND document_id = ?
+                             AND generation = ? AND claimed_by = ?"#,
+                    )
+                    .bind(&claim.context_id)
+                    .bind(claim.document_kind.as_str())
+                    .bind(&claim.document_id)
+                    .bind(i64::try_from(claim.generation)?)
+                    .bind(&claim.claim_token)
+                    .fetch_optional(&self.pool)
+                    .await?
+                    .unwrap_or(0);
+                    let backoff_secs = 1_i64 << u32::try_from(attempts.clamp(0, 6))?;
+                    sqlx::query(
+                        r#"UPDATE recall_projection_outbox
+                           SET status = 'pending', attempts = attempts + 1,
+                               available_at = ?, claimed_by = NULL, claim_expires_at = NULL,
+                               last_error = ?, updated_at = ?
+                           WHERE context_id = ? AND document_kind = ? AND document_id = ?
+                             AND generation = ? AND claimed_by = ?"#,
+                    )
+                    .bind(
+                        (now + chrono::Duration::seconds(backoff_secs))
+                            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                    )
+                    .bind(error.to_string())
+                    .bind(now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+                    .bind(&claim.context_id)
+                    .bind(claim.document_kind.as_str())
+                    .bind(&claim.document_id)
+                    .bind(i64::try_from(claim.generation)?)
+                    .bind(&claim.claim_token)
+                    .execute(&self.pool)
+                    .await?;
+                    result.failed += 1;
+                }
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -11119,6 +11856,21 @@ mod tests {
             .clone(),
         );
         store.append(event).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM recall_documents WHERE document_kind = 'event'",
+            )
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            0,
+            "Ledger append must not synchronously maintain the lexical projection"
+        );
+        let batch = store
+            .project_recall_outbox_batch("sqlite-recall-test", 8)
+            .await
+            .unwrap();
+        assert_eq!(batch.projected, 1);
         let frame = RecallDocument {
             context_id: "recall-context".to_string(),
             document_kind: RecallDocumentKind::Frame,
@@ -11183,6 +11935,201 @@ mod tests {
         let audit = store.inspect_recall_index("recall-context").await.unwrap();
         assert_eq!(audit.event_documents, 1);
         assert_eq!(audit.frame_documents, 1);
+    }
+
+    #[tokio::test]
+    async fn recall_fts_reindexes_only_when_search_identity_or_text_changes() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        sqlx::query(
+            r#"INSERT INTO recall_documents
+               (context_id, document_kind, document_id, revision, searchable_text,
+                preview, retired, updated_sequence, state_hash)
+               VALUES ('trigger-context', 'frame', 'trigger-frame', 1,
+                       '原始 可检索 文本', '原始预览', 0, 1, 'hash-1')"#,
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let original_rowid = sqlx::query_scalar::<_, i64>(
+            "SELECT rowid FROM recall_documents_fts WHERE context_id = 'trigger-context' AND document_id = 'trigger-frame'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        // Keep a higher rowid alive so a delete+insert cannot reuse the same
+        // numeric rowid and hide an accidental trigger execution.
+        sqlx::query(
+            r#"INSERT INTO recall_documents
+               (context_id, document_kind, document_id, revision, searchable_text,
+                preview, retired, updated_sequence, state_hash)
+               VALUES ('trigger-context', 'frame', 'trigger-sentinel', 1,
+                       '哨兵 文本', '哨兵', 0, 1, 'sentinel-hash')"#,
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            r#"UPDATE recall_documents
+               SET revision = 2, preview = '更新预览', retired = 1,
+                   updated_sequence = 2, state_hash = 'hash-2'
+               WHERE context_id = 'trigger-context' AND document_id = 'trigger-frame'"#,
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let metadata_rowid = sqlx::query_scalar::<_, i64>(
+            "SELECT rowid FROM recall_documents_fts WHERE context_id = 'trigger-context' AND document_id = 'trigger-frame'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            metadata_rowid, original_rowid,
+            "metadata-only projection updates must not rebuild trigram entries"
+        );
+
+        sqlx::query(
+            r#"UPDATE recall_documents SET searchable_text = '更新后的 可检索 文本'
+               WHERE context_id = 'trigger-context' AND document_id = 'trigger-frame'"#,
+        )
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        let text_rowid = sqlx::query_scalar::<_, i64>(
+            "SELECT rowid FROM recall_documents_fts WHERE context_id = 'trigger-context' AND document_id = 'trigger-frame'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_ne!(
+            text_rowid, original_rowid,
+            "searchable text changes must replace the trigram entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn event_topic_query_uses_context_topic_time_index() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let rows = sqlx::query(
+            r#"EXPLAIN QUERY PLAN
+               SELECT rowid, id, timestamp FROM events
+               WHERE context_id = ? AND topic = ?
+               ORDER BY timestamp DESC, rowid DESC"#,
+        )
+        .bind("index-context")
+        .bind("runtime/attention_acknowledged")
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let plan = rows
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plan.contains("idx_events_context_topic_time"),
+            "unexpected query plan: {plan}"
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_outbox_filters_diagnostics_bounds_text_and_fences_stale_claims() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "recall-outbox-context".to_string(),
+                agent_id: "recall-agent".to_string(),
+                title: "Recall outbox".to_string(),
+            })
+            .await
+            .unwrap();
+        let diagnostic = Event::new(
+            "recall-diagnostic".to_string(),
+            "Runtime".to_string(),
+            "diagnostic".to_string(),
+            "chat/context_inspect".to_string(),
+            serde_json::json!({
+                "context_id": "recall-outbox-context",
+                "payload": "x".repeat(100_000)
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(diagnostic).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM recall_projection_outbox")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap(),
+            0,
+            "diagnostic Events must never enter Recall"
+        );
+
+        let event = Event::new(
+            "recall-large-user-event".to_string(),
+            "User".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "recall-outbox-context",
+                "session_id": "recall-session",
+                "text": "知识".repeat(100_000)
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(event.clone()).await.unwrap();
+        let stale = claim_sqlite_recall_outbox(&store.pool, "stale-worker", 1)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let stale_document = materialize_sqlite_recall_claim(&store.pool, &stale)
+            .await
+            .unwrap();
+        let mut tx = store.pool.begin().await.unwrap();
+        enqueue_event_recall_in_transaction(&mut tx, &event, "recall-outbox-context", true)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let mut tx = store.pool.begin().await.unwrap();
+        assert!(
+            !finish_sqlite_recall_claim(&mut tx, &stale, stale_document.as_ref())
+                .await
+                .unwrap(),
+            "an older claimed generation must not overwrite a newer intent"
+        );
+        tx.commit().await.unwrap();
+
+        let batch = store
+            .project_recall_outbox_batch("current-worker", 4)
+            .await
+            .unwrap();
+        assert_eq!(batch.projected, 1);
+        let row = sqlx::query(
+            "SELECT searchable_text, retired FROM recall_documents WHERE document_id = ?",
+        )
+        .bind(&event.id)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert!(row.get::<i64, _>("retired") != 0);
+        assert!(
+            row.get::<String, _>("searchable_text").chars().count()
+                <= crate::memory::RECALL_SEARCHABLE_TEXT_MAX_CHARS
+        );
     }
 
     #[tokio::test]
@@ -16637,7 +17584,7 @@ mod tests {
         let second = second.unwrap();
         assert_eq!(
             crate::memory::RuntimeStore::worker_coordination_mode(&first),
-            crate::memory::WorkerCoordinationMode::SharedLeases
+            crate::memory::WorkerCoordinationMode::SharedHostLeases
         );
 
         let event = |id: &str| {

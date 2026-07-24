@@ -9,11 +9,12 @@
 
 use crate::event::Event;
 use crate::memory::{
-    CognitiveClockStore, ContextCognitiveClock, EventAppend, EventStore, MindProjectionCommit,
-    MindProjectionRecord, MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective,
-    NewRuntimeTimer, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, RecallDocument, RecallDocumentKind, RecallIndexAudit,
-    RecallIndexCapability, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
+    AttentionAcknowledgementRecord, CognitiveClockStore, ContextCognitiveClock, EventAppend,
+    EventStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
+    MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer, ObjectiveMutation,
+    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
+    RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallIndexCapability,
+    RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
     RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation,
     SessionProjectionStore, TimerStore,
 };
@@ -76,6 +77,12 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20260720_01_recall_projection",
                     store.migrate_recall_projection(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260723_01_recall_outbox_attention_projection",
+                    store.migrate_recall_outbox_attention_projection(),
                 )
                 .await?;
             store
@@ -285,6 +292,8 @@ impl PostgresStore {
                ON events(session_id, sequence)"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_events_topic_sequence
                ON events(topic, sequence)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_events_context_topic_time
+               ON events(context_id, topic, timestamp, sequence)"#,
             r#"CREATE TABLE IF NOT EXISTS session_projections (
                 event_id TEXT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
                 context_id TEXT NOT NULL,
@@ -401,6 +410,69 @@ impl PostgresStore {
         .execute(&self.pool)
         .await?;
 
+        Ok(())
+    }
+
+    async fn migrate_recall_outbox_attention_projection(&self) -> Result<(), StoreError> {
+        for statement in [
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_events_context_topic_time
+               ON events(context_id, topic, timestamp, sequence)"#,
+            r#"CREATE TABLE IF NOT EXISTS recall_projection_outbox (
+                 context_id TEXT NOT NULL,
+                 document_kind TEXT NOT NULL CHECK(document_kind IN ('event', 'frame')),
+                 document_id TEXT NOT NULL,
+                 generation BIGINT NOT NULL CHECK(generation > 0),
+                 document_json JSONB NOT NULL,
+                 status TEXT NOT NULL CHECK(status IN ('pending', 'processing')),
+                 attempts BIGINT NOT NULL DEFAULT 0 CHECK(attempts >= 0),
+                 available_at TEXT NOT NULL,
+                 claimed_by TEXT,
+                 claim_expires_at TEXT,
+                 last_error TEXT,
+                 created_at TEXT NOT NULL,
+                 updated_at TEXT NOT NULL,
+                 PRIMARY KEY(context_id, document_kind, document_id)
+               )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_recall_outbox_ready
+               ON recall_projection_outbox(status, available_at, claim_expires_at, updated_at)"#,
+            r#"CREATE TABLE IF NOT EXISTS attention_acknowledgements (
+                 context_id TEXT NOT NULL,
+                 key TEXT NOT NULL,
+                 event_id TEXT NOT NULL UNIQUE REFERENCES events(id) ON DELETE CASCADE,
+                 event_sequence BIGINT NOT NULL,
+                 source_kind TEXT NOT NULL,
+                 source_id TEXT NOT NULL,
+                 source_revision BIGINT NOT NULL CHECK(source_revision >= 0),
+                 acknowledged_by TEXT NOT NULL,
+                 rationale TEXT,
+                 acknowledged_at TEXT NOT NULL,
+                 PRIMARY KEY(context_id, key)
+               )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_attention_ack_context_time
+               ON attention_acknowledgements(context_id, acknowledged_at DESC, event_sequence DESC)"#,
+            r#"INSERT INTO attention_acknowledgements
+               (context_id, key, event_id, event_sequence, source_kind, source_id,
+                source_revision, acknowledged_by, rationale, acknowledged_at)
+               SELECT context_id, payload->>'key', id, sequence,
+                      payload->>'source_kind', payload->>'source_id',
+                      (payload->>'source_revision')::BIGINT,
+                      payload->>'acknowledged_by', payload->>'rationale', timestamp
+               FROM events
+               WHERE topic = 'runtime/attention_acknowledged'
+                 AND context_id IS NOT NULL AND payload->>'key' IS NOT NULL
+               ON CONFLICT(context_id, key) DO UPDATE SET
+                 event_id = EXCLUDED.event_id,
+                 event_sequence = EXCLUDED.event_sequence,
+                 source_kind = EXCLUDED.source_kind,
+                 source_id = EXCLUDED.source_id,
+                 source_revision = EXCLUDED.source_revision,
+                 acknowledged_by = EXCLUDED.acknowledged_by,
+                 rationale = EXCLUDED.rationale,
+                 acknowledged_at = EXCLUDED.acknowledged_at
+               WHERE EXCLUDED.event_sequence > attention_acknowledgements.event_sequence"#,
+        ] {
+            sqlx::query(statement).execute(&self.pool).await?;
+        }
         Ok(())
     }
 
@@ -742,6 +814,136 @@ async fn get_projection_consistent(
     }
 }
 
+async fn project_attention_acknowledgement_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    event: &Event,
+    context_id: &str,
+    sequence: u64,
+) -> Result<(), StoreError> {
+    if event.topic != "runtime/attention_acknowledged" {
+        return Ok(());
+    }
+    let key = event
+        .payload
+        .get("key")
+        .and_then(JsonValue::as_str)
+        .ok_or("attention acknowledgement 缺少 key")?;
+    let source_kind = event
+        .payload
+        .get("source_kind")
+        .and_then(JsonValue::as_str)
+        .ok_or("attention acknowledgement 缺少 source_kind")?;
+    let source_id = event
+        .payload
+        .get("source_id")
+        .and_then(JsonValue::as_str)
+        .ok_or("attention acknowledgement 缺少 source_id")?;
+    let source_revision = event
+        .payload
+        .get("source_revision")
+        .and_then(JsonValue::as_u64)
+        .ok_or("attention acknowledgement 缺少 source_revision")?;
+    let acknowledged_by = event
+        .payload
+        .get("acknowledged_by")
+        .and_then(JsonValue::as_str)
+        .ok_or("attention acknowledgement 缺少 acknowledged_by")?;
+    sqlx::query(
+        r#"INSERT INTO attention_acknowledgements
+           (context_id, key, event_id, event_sequence, source_kind, source_id,
+            source_revision, acknowledged_by, rationale, acknowledged_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           ON CONFLICT(context_id, key) DO UPDATE SET
+             event_id = EXCLUDED.event_id,
+             event_sequence = EXCLUDED.event_sequence,
+             source_kind = EXCLUDED.source_kind,
+             source_id = EXCLUDED.source_id,
+             source_revision = EXCLUDED.source_revision,
+             acknowledged_by = EXCLUDED.acknowledged_by,
+             rationale = EXCLUDED.rationale,
+             acknowledged_at = EXCLUDED.acknowledged_at
+           WHERE EXCLUDED.event_sequence > attention_acknowledgements.event_sequence"#,
+    )
+    .bind(context_id)
+    .bind(key)
+    .bind(&event.id)
+    .bind(i64::try_from(sequence)?)
+    .bind(source_kind)
+    .bind(source_id)
+    .bind(i64::try_from(source_revision)?)
+    .bind(acknowledged_by)
+    .bind(event.payload.get("rationale").and_then(JsonValue::as_str))
+    .bind(
+        event
+            .timestamp
+            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn enqueue_recall_document_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    document: &RecallDocument,
+) -> Result<(), StoreError> {
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let document = crate::memory::bound_recall_document(document.clone());
+    sqlx::query(
+        r#"INSERT INTO recall_projection_outbox
+           (context_id, document_kind, document_id, generation, document_json,
+            status, attempts, available_at, created_at, updated_at)
+           VALUES ($1, $2, $3, 1, $4, 'pending', 0, $5, $5, $5)
+           ON CONFLICT(context_id, document_kind, document_id) DO UPDATE SET
+             generation = recall_projection_outbox.generation + 1,
+             document_json = EXCLUDED.document_json,
+             status = 'pending', attempts = 0,
+             available_at = EXCLUDED.available_at,
+             claimed_by = NULL, claim_expires_at = NULL, last_error = NULL,
+             updated_at = EXCLUDED.updated_at"#,
+    )
+    .bind(&document.context_id)
+    .bind(document.document_kind.as_str())
+    .bind(&document.document_id)
+    .bind(serde_json::to_value(&document)?)
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+async fn enqueue_event_recall_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    event: &Event,
+    context_id: &str,
+    retired: bool,
+) -> Result<(), StoreError> {
+    if !crate::memory::event_has_recall_value(event) {
+        return Ok(());
+    }
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    sqlx::query(
+        r#"INSERT INTO recall_projection_outbox
+           (context_id, document_kind, document_id, generation, document_json,
+            status, attempts, available_at, created_at, updated_at)
+           VALUES ($1, 'event', $2, 1, $3, 'pending', 0, $4, $4, $4)
+           ON CONFLICT(context_id, document_kind, document_id) DO UPDATE SET
+             generation = recall_projection_outbox.generation + 1,
+             document_json = EXCLUDED.document_json,
+             status = 'pending', attempts = 0,
+             available_at = EXCLUDED.available_at,
+             claimed_by = NULL, claim_expires_at = NULL, last_error = NULL,
+             updated_at = EXCLUDED.updated_at"#,
+    )
+    .bind(context_id)
+    .bind(&event.id)
+    .bind(serde_json::json!({ "retired": retired }))
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 async fn append_event_in_tx(
     tx: &mut sqlx::Transaction<'_, Postgres>,
     event: &Event,
@@ -779,8 +981,8 @@ async fn append_event_in_tx(
                     .fetch_one(&mut **tx)
                     .await?,
             )?;
-            let document = crate::memory::event_recall_document(event, context_id, sequence);
-            upsert_recall_document_in_tx(tx, &document).await?;
+            project_attention_acknowledgement_in_tx(tx, event, context_id, sequence).await?;
+            enqueue_event_recall_in_tx(tx, event, context_id, false).await?;
         }
         project_observation_in_tx(tx, event).await?;
         return Ok(true);
@@ -802,11 +1004,7 @@ async fn append_event_in_tx(
     if !same {
         return Err(format!("Event ID '{}' 已被不同内容占用", event.id).into());
     }
-    if let Some(context_id) = context_id {
-        let sequence = u64::try_from(existing.get::<i64, _>("sequence"))?;
-        let document = crate::memory::event_recall_document(event, context_id, sequence);
-        upsert_recall_document_in_tx(tx, &document).await?;
-    }
+    // Idempotent replay must not re-enqueue an already projected Event.
     Ok(false)
 }
 
@@ -825,7 +1023,8 @@ async fn upsert_recall_document_in_tx(
              preview = EXCLUDED.preview,
              retired = EXCLUDED.retired,
              updated_sequence = EXCLUDED.updated_sequence,
-             state_hash = EXCLUDED.state_hash"#,
+             state_hash = EXCLUDED.state_hash
+           WHERE EXCLUDED.updated_sequence >= recall_documents.updated_sequence"#,
     )
     .bind(&document.context_id)
     .bind(document.document_kind.as_str())
@@ -925,25 +1124,13 @@ async fn mutate_session_projection_in_tx(
             .execute(&mut **tx)
             .await?;
         if let Some(event) = stored_event_in_tx(tx, event_id, context_id).await? {
-            let sequence = event
-                .sequence
-                .ok_or_else(|| format!("Event '{}' 缺少持久化 sequence", event.id))?;
-            let document = crate::memory::event_recall_document_with_retired(
-                &event, context_id, sequence, true,
-            );
-            upsert_recall_document_in_tx(tx, &document).await?;
+            enqueue_event_recall_in_tx(tx, &event, context_id, true).await?;
         }
     }
     for event_id in &mutation.restored_event_ids {
         if let Some(event) = stored_event_in_tx(tx, event_id, context_id).await? {
             project_observation_in_tx(tx, &event).await?;
-            let sequence = event
-                .sequence
-                .ok_or_else(|| format!("Event '{}' 缺少持久化 sequence", event.id))?;
-            let document = crate::memory::event_recall_document_with_retired(
-                &event, context_id, sequence, false,
-            );
-            upsert_recall_document_in_tx(tx, &document).await?;
+            enqueue_event_recall_in_tx(tx, &event, context_id, false).await?;
         }
     }
     Ok(())
@@ -1198,6 +1385,37 @@ impl EventStore for PostgresStore {
         }
         Ok(events)
     }
+
+    async fn list_attention_acknowledgements(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<AttentionAcknowledgementRecord>, StoreError> {
+        let rows = sqlx::query(
+            r#"SELECT event_id, context_id, key, source_kind, source_id,
+                      source_revision, acknowledged_by, rationale, acknowledged_at
+               FROM attention_acknowledgements
+               WHERE context_id = $1
+               ORDER BY acknowledged_at DESC, event_sequence DESC"#,
+        )
+        .bind(context_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AttentionAcknowledgementRecord {
+                    event_id: row.get("event_id"),
+                    context_id: row.get("context_id"),
+                    key: row.get("key"),
+                    source_kind: row.get("source_kind"),
+                    source_id: row.get("source_id"),
+                    source_revision: u64::try_from(row.get::<i64, _>("source_revision"))?,
+                    acknowledged_by: row.get("acknowledged_by"),
+                    rationale: row.get("rationale"),
+                    acknowledged_at: parse_time(&row.get::<String, _>("acknowledged_at"))?,
+                })
+            })
+            .collect()
+    }
 }
 
 fn pg_recall_kind(value: &str) -> Result<RecallDocumentKind, StoreError> {
@@ -1232,6 +1450,165 @@ async fn postgres_recall_capability(pool: &PgPool) -> Result<RecallIndexCapabili
             "PostgreSQL pg_trgm unavailable; bounded ILIKE fallback".to_string()
         },
     })
+}
+
+#[derive(Debug)]
+struct PgRecallOutboxClaim {
+    context_id: String,
+    document_kind: RecallDocumentKind,
+    document_id: String,
+    generation: u64,
+    document_json: JsonValue,
+    claim_token: String,
+}
+
+async fn claim_pg_recall_outbox(
+    pool: &PgPool,
+    worker_id: &str,
+    limit: usize,
+) -> Result<Vec<PgRecallOutboxClaim>, StoreError> {
+    let now = Utc::now();
+    let now_text = now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let lease_text =
+        (now + chrono::Duration::seconds(30)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    let mut tx = pool.begin().await?;
+    let rows = sqlx::query(
+        r#"SELECT context_id, document_kind, document_id, generation, document_json
+           FROM recall_projection_outbox
+           WHERE (status = 'pending' AND available_at <= $1)
+              OR (status = 'processing' AND claim_expires_at <= $1)
+           ORDER BY updated_at ASC, context_id, document_kind, document_id
+           LIMIT $2
+           FOR UPDATE SKIP LOCKED"#,
+    )
+    .bind(&now_text)
+    .bind(i64::try_from(limit.clamp(1, 64))?)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut claims = Vec::with_capacity(rows.len());
+    for (index, row) in rows.into_iter().enumerate() {
+        let context_id = row.get::<String, _>("context_id");
+        let kind_text = row.get::<String, _>("document_kind");
+        let document_id = row.get::<String, _>("document_id");
+        let generation = u64::try_from(row.get::<i64, _>("generation"))?;
+        let claim_token = format!("{worker_id}:{now_text}:{index}");
+        sqlx::query(
+            r#"UPDATE recall_projection_outbox
+               SET status = 'processing', claimed_by = $1, claim_expires_at = $2, updated_at = $3
+               WHERE context_id = $4 AND document_kind = $5 AND document_id = $6
+                 AND generation = $7"#,
+        )
+        .bind(&claim_token)
+        .bind(&lease_text)
+        .bind(&now_text)
+        .bind(&context_id)
+        .bind(&kind_text)
+        .bind(&document_id)
+        .bind(i64::try_from(generation)?)
+        .execute(&mut *tx)
+        .await?;
+        claims.push(PgRecallOutboxClaim {
+            context_id,
+            document_kind: pg_recall_kind(&kind_text)?,
+            document_id,
+            generation,
+            document_json: row.get("document_json"),
+            claim_token,
+        });
+    }
+    tx.commit().await?;
+    Ok(claims)
+}
+
+async fn materialize_pg_recall_claim(
+    pool: &PgPool,
+    claim: &PgRecallOutboxClaim,
+) -> Result<Option<RecallDocument>, StoreError> {
+    match claim.document_kind {
+        RecallDocumentKind::Frame => Ok(Some(crate::memory::bound_recall_document(
+            serde_json::from_value(claim.document_json.clone())?,
+        ))),
+        RecallDocumentKind::Event => {
+            let Some(row) = sqlx::query(
+                r#"SELECT sequence, id, timestamp, actor, type, topic, payload
+                   FROM events WHERE id = $1 AND context_id = $2"#,
+            )
+            .bind(&claim.document_id)
+            .bind(&claim.context_id)
+            .fetch_optional(pool)
+            .await?
+            else {
+                return Ok(None);
+            };
+            let payload = row.get::<JsonValue, _>("payload");
+            let event = Event {
+                id: row.get("id"),
+                sequence: u64::try_from(row.get::<i64, _>("sequence")).ok(),
+                timestamp: parse_time(&row.get::<String, _>("timestamp"))?,
+                actor: row.get("actor"),
+                event_type: row.get("type"),
+                topic: row.get("topic"),
+                payload: payload
+                    .as_object()
+                    .cloned()
+                    .ok_or("PostgreSQL Event payload 必须是 JSON object")?,
+            };
+            if !crate::memory::event_has_recall_value(&event) {
+                return Ok(None);
+            }
+            let retired = claim
+                .document_json
+                .get("retired")
+                .and_then(JsonValue::as_bool)
+                .unwrap_or(false);
+            Ok(Some(crate::memory::event_recall_document_with_retired(
+                &event,
+                &claim.context_id,
+                event.sequence.unwrap_or_default(),
+                retired,
+            )))
+        }
+    }
+}
+
+async fn finish_pg_recall_claim(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    claim: &PgRecallOutboxClaim,
+    document: Option<&RecallDocument>,
+) -> Result<bool, StoreError> {
+    let current = sqlx::query_scalar::<_, bool>(
+        r#"SELECT EXISTS(
+             SELECT 1 FROM recall_projection_outbox
+             WHERE context_id = $1 AND document_kind = $2 AND document_id = $3
+               AND generation = $4 AND status = 'processing' AND claimed_by = $5
+           )"#,
+    )
+    .bind(&claim.context_id)
+    .bind(claim.document_kind.as_str())
+    .bind(&claim.document_id)
+    .bind(i64::try_from(claim.generation)?)
+    .bind(&claim.claim_token)
+    .fetch_one(&mut **tx)
+    .await?;
+    if !current {
+        return Ok(false);
+    }
+    if let Some(document) = document {
+        upsert_recall_document_in_tx(tx, document).await?;
+    }
+    sqlx::query(
+        r#"DELETE FROM recall_projection_outbox
+           WHERE context_id = $1 AND document_kind = $2 AND document_id = $3
+             AND generation = $4 AND claimed_by = $5"#,
+    )
+    .bind(&claim.context_id)
+    .bind(claim.document_kind.as_str())
+    .bind(&claim.document_id)
+    .bind(i64::try_from(claim.generation)?)
+    .bind(&claim.claim_token)
+    .execute(&mut **tx)
+    .await?;
+    Ok(true)
 }
 
 #[async_trait::async_trait]
@@ -1353,6 +1730,10 @@ impl RecallProjectionStore for PostgresStore {
             return Err("Recall rebuild document 属于错误的 Context".into());
         }
         let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM recall_projection_outbox WHERE context_id = $1")
+            .bind(context_id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM recall_documents WHERE context_id = $1")
             .bind(context_id)
             .execute(&mut *tx)
@@ -1387,6 +1768,75 @@ impl RecallProjectionStore for PostgresStore {
             event_documents,
             frame_documents,
         })
+    }
+
+    async fn project_recall_outbox_batch(
+        &self,
+        worker_id: &str,
+        limit: usize,
+    ) -> Result<RecallProjectionBatch, StoreError> {
+        let claims = claim_pg_recall_outbox(&self.pool, worker_id, limit).await?;
+        let mut result = RecallProjectionBatch {
+            claimed: claims.len(),
+            ..RecallProjectionBatch::default()
+        };
+        for claim in claims {
+            match materialize_pg_recall_claim(&self.pool, &claim).await {
+                Ok(document) => {
+                    let mut tx = self.pool.begin().await?;
+                    if finish_pg_recall_claim(&mut tx, &claim, document.as_ref()).await? {
+                        if document.is_some() {
+                            result.projected += 1;
+                        } else {
+                            result.skipped += 1;
+                        }
+                    } else {
+                        result.skipped += 1;
+                    }
+                    tx.commit().await?;
+                }
+                Err(error) => {
+                    let attempts = sqlx::query_scalar::<_, i64>(
+                        r#"SELECT attempts FROM recall_projection_outbox
+                           WHERE context_id = $1 AND document_kind = $2 AND document_id = $3
+                             AND generation = $4 AND claimed_by = $5"#,
+                    )
+                    .bind(&claim.context_id)
+                    .bind(claim.document_kind.as_str())
+                    .bind(&claim.document_id)
+                    .bind(i64::try_from(claim.generation)?)
+                    .bind(&claim.claim_token)
+                    .fetch_optional(&self.pool)
+                    .await?
+                    .unwrap_or(0);
+                    let now = Utc::now();
+                    let backoff_secs = 1_i64 << u32::try_from(attempts.clamp(0, 6))?;
+                    sqlx::query(
+                        r#"UPDATE recall_projection_outbox
+                           SET status = 'pending', attempts = attempts + 1,
+                               available_at = $1, claimed_by = NULL, claim_expires_at = NULL,
+                               last_error = $2, updated_at = $3
+                           WHERE context_id = $4 AND document_kind = $5 AND document_id = $6
+                             AND generation = $7 AND claimed_by = $8"#,
+                    )
+                    .bind(
+                        (now + chrono::Duration::seconds(backoff_secs))
+                            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                    )
+                    .bind(error.to_string())
+                    .bind(now.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+                    .bind(&claim.context_id)
+                    .bind(claim.document_kind.as_str())
+                    .bind(&claim.document_id)
+                    .bind(i64::try_from(claim.generation)?)
+                    .bind(&claim.claim_token)
+                    .execute(&self.pool)
+                    .await?;
+                    result.failed += 1;
+                }
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -2202,7 +2652,7 @@ impl MindProjectionStore for PostgresStore {
             .execute(&mut *tx)
             .await?;
             for document in &projection.recall_documents {
-                upsert_recall_document_in_tx(&mut tx, document).await?;
+                enqueue_recall_document_in_tx(&mut tx, document).await?;
             }
         }
         let installed = get_projection(&mut *tx, &projection.context_id)
@@ -2312,7 +2762,7 @@ impl MindProjectionStore for PostgresStore {
         mutate_session_projection_in_tx(&mut tx, &next_projection.context_id, session_projection)
             .await?;
         for document in &next_projection.recall_documents {
-            upsert_recall_document_in_tx(&mut tx, document).await?;
+            enqueue_recall_document_in_tx(&mut tx, document).await?;
         }
         if requires_snapshot(event, next_projection.revision) {
             insert_snapshot_in_tx(&mut tx, &next_projection, &event.id, &now).await?;
@@ -2402,7 +2852,7 @@ impl MindProjectionStore for PostgresStore {
         }
         append_event_in_tx(&mut tx, event).await?;
         for document in &next_projection.recall_documents {
-            upsert_recall_document_in_tx(&mut tx, document).await?;
+            enqueue_recall_document_in_tx(&mut tx, document).await?;
         }
         insert_snapshot_in_tx(&mut tx, &next_projection, &event.id, &now).await?;
         let committed = get_projection(&mut *tx, &next_projection.context_id)

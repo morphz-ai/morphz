@@ -3431,7 +3431,10 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
         .unwrap();
     let shared_recovery = ExecutionJobManager::new(Arc::clone(&second));
     let live_report = shared_recovery
-        .reconcile_startup(morphz::memory::WorkerCoordinationMode::SharedLeases)
+        .reconcile_startup(
+            morphz::memory::WorkerCoordinationMode::SharedLeases,
+            second.as_ref(),
+        )
         .await
         .unwrap();
     assert!(live_report.preserved_job_ids.contains(&claimed_job.id));
@@ -3482,7 +3485,10 @@ async fn assert_independent_postgres_instances_share_fenced_authority(
     };
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let expired_report = shared_recovery
-        .reconcile_startup(morphz::memory::WorkerCoordinationMode::SharedLeases)
+        .reconcile_startup(
+            morphz::memory::WorkerCoordinationMode::SharedLeases,
+            second.as_ref(),
+        )
         .await
         .unwrap();
     assert!(expired_report.requeue_receipts.iter().any(|receipt| receipt
@@ -3815,6 +3821,7 @@ async fn postgres_supported_capabilities_satisfy_the_same_conformance_suite_when
         "20260719_01_session_projections",
         "20260720_01_recall_projection",
         "20260720_02_cognitive_clock",
+        "20260723_01_recall_outbox_attention_projection",
         "20260719_02_action_groups",
         "20260718_02_execution_jobs",
         "20260721_01_execution_targets",

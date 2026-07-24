@@ -16,17 +16,20 @@ import {
   ChevronRight,
   CircleDot,
   Clock3,
+  Columns2,
   Copy,
   Database,
   Eye,
   GitBranch,
   Globe,
   Layers3,
+  ListTree,
   LoaderCircle,
   MessageSquare,
   Monitor,
   Moon,
   Palette,
+  Pause,
   Pencil,
   Play,
   Plus,
@@ -95,6 +98,7 @@ import { copyTextToClipboard } from './utils/clipboard'
 import {
   compactTokens,
   conversationEventKind,
+  conversationEventLane,
   formatAgo,
   formatTime,
   shortId,
@@ -286,6 +290,19 @@ function initialBooleanPreference(key: string, fallback: boolean): boolean {
     // Storage can be unavailable in privacy-restricted browser contexts.
   }
   return fallback
+}
+
+type ConversationLayout = 'merged' | 'split'
+type ConversationMobileLane = 'dialogue' | 'execution'
+
+function initialConversationLayout(): ConversationLayout {
+  try {
+    const saved = window.localStorage.getItem('morphz.dashboard.conversationLayout')
+    if (saved === 'merged' || saved === 'split') return saved
+  } catch {
+    // Storage can be unavailable in privacy-restricted browser contexts.
+  }
+  return 'merged'
 }
 
 function useStoredDisclosure(key: string, fallback: boolean) {
@@ -767,6 +784,80 @@ interface ObjectiveRecord {
   updated_at: string
 }
 
+type ObjectiveMutationKind = 'pause' | 'resume' | 'delete' | ''
+
+function ObjectiveCardActions({
+  objective,
+  expanded,
+  busy,
+  disabled,
+  t,
+  onPause,
+  onResume,
+  onDelete,
+  onToggle,
+}: {
+  objective: ObjectiveRecord
+  expanded: boolean
+  busy: ObjectiveMutationKind
+  disabled: boolean
+  t: TFunction
+  onPause: () => void
+  onResume: () => void
+  onDelete: () => void
+  onToggle: () => void
+}) {
+  const mutationPending = disabled || Boolean(busy)
+  return (
+    <div className="objective-card-actions">
+      {objective.status === 'active' && (
+        <button
+          className="objective-card-action"
+          type="button"
+          disabled={mutationPending}
+          aria-label={busy === 'pause' ? t('work.objectives.pausing') : t('work.objectives.pause')}
+          title={busy === 'pause' ? t('work.objectives.pausing') : t('work.objectives.pause')}
+          onClick={onPause}
+        >
+          {busy === 'pause' ? <LoaderCircle className="is-spinning" size={13} /> : <Pause size={13} />}
+        </button>
+      )}
+      {(objective.status === 'blocked' || objective.status === 'paused') && (
+        <button
+          className="objective-card-action"
+          type="button"
+          disabled={mutationPending}
+          aria-label={busy === 'resume' ? t('work.objectives.resuming') : t('work.objectives.resume')}
+          title={busy === 'resume' ? t('work.objectives.resuming') : t('work.objectives.resume')}
+          onClick={onResume}
+        >
+          {busy === 'resume' ? <LoaderCircle className="is-spinning" size={13} /> : <Play size={13} />}
+        </button>
+      )}
+      <button
+        className="objective-card-action danger"
+        type="button"
+        disabled={mutationPending}
+        aria-label={busy === 'delete' ? t('work.objectives.deleting') : t('work.objectives.delete')}
+        title={busy === 'delete' ? t('work.objectives.deleting') : t('work.objectives.delete')}
+        onClick={onDelete}
+      >
+        {busy === 'delete' ? <LoaderCircle className="is-spinning" size={13} /> : <Trash2 size={13} />}
+      </button>
+      <button
+        className="objective-card-action disclosure"
+        type="button"
+        aria-expanded={expanded}
+        aria-label={expanded ? t('work.objectives.collapse') : t('work.objectives.expand')}
+        title={expanded ? t('work.objectives.collapse') : t('work.objectives.expand')}
+        onClick={onToggle}
+      >
+        <ChevronDown size={14} />
+      </button>
+    </div>
+  )
+}
+
 interface ProjectedSession {
   session: SessionRecord
   projection: string
@@ -925,11 +1016,19 @@ function DialogueActivityDock({
   threadDetail,
   liveModelAttempts,
   showReasoningSummary,
+  expandedObjectiveIds,
+  pausingObjectiveId,
+  resumingObjectiveId,
+  deletingObjectiveId,
   t,
   onOpenChange,
   onThreadToggle,
   onReasoningOpenChange,
   onInspectThread,
+  onObjectiveToggle,
+  onPauseObjective,
+  onResumeObjective,
+  onDeleteObjective,
 }: {
   open: boolean
   objectives: ObjectiveRecord[]
@@ -941,11 +1040,19 @@ function DialogueActivityDock({
   threadDetail: ThreadDetailResponse | null
   liveModelAttempts: LiveModelAttempt[]
   showReasoningSummary: boolean
+  expandedObjectiveIds: ReadonlySet<string>
+  pausingObjectiveId: string
+  resumingObjectiveId: string
+  deletingObjectiveId: string
   t: TFunction
   onOpenChange: (open: boolean) => void
   onThreadToggle: (threadId: string) => void
   onReasoningOpenChange: (open: boolean) => void
   onInspectThread: (threadId: string) => void
+  onObjectiveToggle: (objectiveId: string) => void
+  onPauseObjective: (objective: ObjectiveRecord) => void
+  onResumeObjective: (objective: ObjectiveRecord) => void
+  onDeleteObjective: (objective: ObjectiveRecord) => void
 }) {
   const [objectivesOpen, setObjectivesOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.objectives', false)
   const [threadsOpen, setThreadsOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.threads', true)
@@ -989,18 +1096,42 @@ function DialogueActivityDock({
               {objectives.map(objective => {
                 const currentSession = objective.coordinator_session_id === currentSessionId
                   || objective.delivery_session_id === currentSessionId
+                const expanded = expandedObjectiveIds.has(objective.id)
+                const busy: ObjectiveMutationKind = pausingObjectiveId === objective.id
+                  ? 'pause'
+                  : resumingObjectiveId === objective.id
+                    ? 'resume'
+                    : deletingObjectiveId === objective.id
+                      ? 'delete'
+                      : ''
                 return (
-                  <article className={`dialogue-objective-card ${objective.status}`} key={objective.id}>
-                    <div>
+                  <article className={`dialogue-objective-card ${objective.status} ${expanded ? 'is-expanded' : ''}`} key={objective.id}>
+                    <header className="objective-card-titlebar">
                       <span className={`activity-status ${objective.status}`}><i />{statusLabel(objective.status, t)}</span>
                       <time>{formatAgo(objective.updated_at, t)}</time>
-                    </div>
+                      <ObjectiveCardActions
+                        objective={objective}
+                        expanded={expanded}
+                        busy={busy}
+                        disabled={Boolean(pausingObjectiveId || resumingObjectiveId || deletingObjectiveId)}
+                        t={t}
+                        onPause={() => onPauseObjective(objective)}
+                        onResume={() => onResumeObjective(objective)}
+                        onDelete={() => onDeleteObjective(objective)}
+                        onToggle={() => onObjectiveToggle(objective.id)}
+                      />
+                    </header>
                     <strong>{objective.stated_objective}</strong>
-                    {objective.status_reason && <p>{objective.status_reason}</p>}
-                    <footer>
-                      <code>r{objective.revision}</code>
-                      <span>{currentSession ? t('conversation.activity.currentSession') : t('conversation.activity.otherSession', { id: shortId(objective.coordinator_session_id, 14) })}</span>
-                    </footer>
+                    {expanded && (
+                      <div className="objective-card-details">
+                        {objective.status_reason && <p>{objective.status_reason}</p>}
+                        {objective.wait_condition && <div className="dialogue-objective-wait">{t('work.objectives.waitCondition', { kind: objective.wait_condition.kind })}</div>}
+                        <footer>
+                          <code>r{objective.revision}</code>
+                          <span>{currentSession ? t('conversation.activity.currentSession') : t('conversation.activity.otherSession', { id: shortId(objective.coordinator_session_id, 14) })}</span>
+                        </footer>
+                      </div>
+                    )}
                   </article>
                 )
               })}
@@ -1498,6 +1629,8 @@ export default function App() {
   const [appearanceMode, setAppearanceMode] = useState<AppearanceMode>(initialAppearanceMode)
   const [systemPrefersDark, setSystemPrefersDark] = useState(initialSystemPrefersDark)
   const [showReasoningSummary, setShowReasoningSummary] = useState(initialShowReasoningSummary)
+  const [conversationLayout, setConversationLayout] = useState<ConversationLayout>(initialConversationLayout)
+  const [conversationMobileLane, setConversationMobileLane] = useState<ConversationMobileLane>('dialogue')
   const [themeMenuOpen, setThemeMenuOpen] = useState(false)
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
   const [catalogReady, setCatalogReady] = useState(false)
@@ -1553,8 +1686,10 @@ export default function App() {
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
   const [sending, setSending] = useState(false)
   const [changingReasoning, setChangingReasoning] = useState(false)
+  const [pausingObjectiveId, setPausingObjectiveId] = useState('')
   const [resumingObjectiveId, setResumingObjectiveId] = useState('')
   const [deletingObjectiveId, setDeletingObjectiveId] = useState('')
+  const [expandedObjectiveIds, setExpandedObjectiveIds] = useState<Set<string>>(() => new Set())
   const [decidingApprovalId, setDecidingApprovalId] = useState('')
   const [mutatingScheduleId, setMutatingScheduleId] = useState('')
   const [copiedMessageId, setCopiedMessageId] = useState('')
@@ -1564,6 +1699,12 @@ export default function App() {
   const [activeQuoteId, setActiveQuoteId] = useState('')
   const [inlineCommentQuoteId, setInlineCommentQuoteId] = useState('')
   const conversationEnd = useRef<HTMLDivElement>(null)
+  const conversationLaneRef = useRef<HTMLDivElement>(null)
+  const conversationMessageListRef = useRef<HTMLDivElement>(null)
+  const executionOutputEnd = useRef<HTMLDivElement>(null)
+  const executionOutputLaneRef = useRef<HTMLDivElement>(null)
+  const executionOutputListRef = useRef<HTMLDivElement>(null)
+  const executionOutputPinnedToEnd = useRef(true)
   const composerInputRef = useRef<HTMLTextAreaElement>(null)
   const [messageWindow, setMessageWindow] = useState({ sessionId: '', count: MESSAGE_PAGE_SIZE })
   const loadingOlder = useRef(false)
@@ -1571,6 +1712,7 @@ export default function App() {
   const wasSending = useRef(false)
   const conversationPinnedToEnd = useRef(true)
   const lastProgrammaticScroll = useRef(0)
+  const lastExecutionProgrammaticScroll = useRef(0)
   const viewFrameRef = useRef<HTMLDivElement>(null)
   const sessionLoadInFlight = useRef(false)
   const sessionLoadQueued = useRef<{ sessionId: string, contextId: string } | null>(null)
@@ -1583,6 +1725,14 @@ export default function App() {
   const selectedScopeRef = useRef({ sessionId: '', contextId: '' })
   const activeViewRef = useRef(view)
   const schedulerHistoryLimitRef = useRef(schedulerHistoryLimit)
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('morphz.dashboard.conversationLayout', conversationLayout)
+    } catch {
+      // The layout preference remains active for the current page lifetime.
+    }
+  }, [conversationLayout])
 
   const requestConfirmation = useCallback((options: {
     title: string
@@ -2633,6 +2783,22 @@ export default function App() {
     () => conversationEvents.slice(-visibleCount),
     [conversationEvents, visibleCount],
   )
+  const visibleDialogueEvents = useMemo(
+    () => conversationLayout === 'split'
+      ? visibleEvents.filter(event => {
+          return conversationEventLane(event.topic, event.payload) === 'dialogue'
+        })
+      : visibleEvents,
+    [conversationLayout, visibleEvents],
+  )
+  const visibleExecutionOutputEvents = useMemo(
+    () => conversationLayout === 'split'
+      ? visibleEvents.filter(event => {
+          return conversationEventLane(event.topic, event.payload) === 'execution_output'
+        })
+      : [],
+    [conversationLayout, visibleEvents],
+  )
   const hiddenEventCount = conversationEvents.length - visibleEvents.length
   const visibleReasoningSummaries = useMemo(() => {
     const byEventId = new Map<string, string>()
@@ -2660,6 +2826,18 @@ export default function App() {
     // intermediate draft as if it were the final answer.
     () => streamingAttempts.filter(attempt => ['dialogue_turn', 'objective', 'delivery'].includes(attempt.threadKind)),
     [streamingAttempts],
+  )
+  const dialogueStreamingAttempts = useMemo(
+    () => conversationLayout === 'split'
+      ? conversationStreamingAttempts.filter(attempt => attempt.threadKind === 'dialogue_turn')
+      : conversationStreamingAttempts,
+    [conversationLayout, conversationStreamingAttempts],
+  )
+  const executionOutputStreamingAttempts = useMemo(
+    () => conversationLayout === 'split'
+      ? streamingAttempts.filter(attempt => attempt.threadKind !== 'dialogue_turn')
+      : [],
+    [conversationLayout, streamingAttempts],
   )
   const turnSettlement = useMemo(
     () => findTurnSettlement(sessionEvents, pendingTurn?.rootTurnId ?? null),
@@ -2857,6 +3035,8 @@ export default function App() {
   const activeWorkCount = schedulerSnapshot
     ? schedulerSnapshot.summary.running_activations + schedulerSnapshot.summary.queued_activations
     : 0
+  const durableEventQueueDepth = Number(schedulerSnapshot?.event_writer?.queue_depth ?? 0)
+  const durableEventContentionRetries = Number(schedulerSnapshot?.event_writer?.contention_retries ?? 0)
   const waitingCount = schedulerSnapshot
     ? actionableJobRows.filter(item => item.job.status === 'waiting_approval').length
       + schedulerSnapshot.summary.active_schedules
@@ -2930,12 +3110,12 @@ export default function App() {
     // Older messages were prepended; keep the viewport anchored to the same
     // message by shifting scrollTop down by the added height.
     if (pendingScrollRestore.current === null) return
-    const container = viewFrameRef.current
+    const container = conversationLayout === 'split' ? conversationLaneRef.current : viewFrameRef.current
     const previousHeight = pendingScrollRestore.current
     pendingScrollRestore.current = null
     if (container) container.scrollTop += container.scrollHeight - previousHeight
     loadingOlder.current = false
-  }, [visibleCount])
+  }, [conversationLayout, visibleCount])
 
   useEffect(() => {
     if (view !== 'dialogue') {
@@ -2944,19 +3124,20 @@ export default function App() {
     }
     if (!conversationPinnedToEnd.current) return
     const timer = window.setTimeout(() => {
-      const container = viewFrameRef.current
+      const container = conversationLayout === 'split' ? conversationLaneRef.current : viewFrameRef.current
       if (container) {
         lastProgrammaticScroll.current = Date.now()
         container.scrollTop = container.scrollHeight
+      } else {
+        conversationEnd.current?.scrollIntoView({ block: 'end' })
       }
-      conversationEnd.current?.scrollIntoView({ block: 'end' })
     }, 0)
     return () => window.clearTimeout(timer)
-  }, [conversationEvents.length, conversationStreamingAttempts, turnPending, view])
+  }, [conversationEvents.length, conversationLayout, conversationStreamingAttempts, turnPending, view])
 
   useEffect(() => {
     if (view !== 'dialogue') return
-    const container = viewFrameRef.current
+    const container = conversationLayout === 'split' ? conversationLaneRef.current : viewFrameRef.current
     if (!container) return
     const handleWheel = (event: WheelEvent) => {
       if (event.deltaY < 0) {
@@ -2968,7 +3149,89 @@ export default function App() {
     }
     container.addEventListener('wheel', handleWheel, { passive: true })
     return () => container.removeEventListener('wheel', handleWheel)
-  }, [view])
+  }, [conversationLayout, view])
+
+  useEffect(() => {
+    if (view !== 'dialogue' || conversationLayout !== 'split' || !executionOutputPinnedToEnd.current) return
+    const timer = window.setTimeout(() => {
+      const container = executionOutputLaneRef.current
+      if (container) {
+        lastExecutionProgrammaticScroll.current = Date.now()
+        container.scrollTop = container.scrollHeight
+      }
+      else executionOutputEnd.current?.scrollIntoView({ block: 'end' })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [conversationLayout, executionOutputStreamingAttempts, visibleExecutionOutputEvents.length, view])
+
+  useEffect(() => {
+    if (view !== 'dialogue') return
+
+    // A newly selected Session or layout is a fresh presentation surface. Start
+    // both tracks at their newest content; subsequent user scrolling can unpin
+    // either lane independently.
+    conversationPinnedToEnd.current = true
+    executionOutputPinnedToEnd.current = true
+    const frame = window.requestAnimationFrame(() => {
+      const conversationContainer = conversationLayout === 'split'
+        ? conversationLaneRef.current
+        : viewFrameRef.current
+      if (conversationContainer) {
+        lastProgrammaticScroll.current = Date.now()
+        conversationContainer.scrollTop = conversationContainer.scrollHeight
+      }
+      if (conversationLayout === 'split' && executionOutputLaneRef.current) {
+        lastExecutionProgrammaticScroll.current = Date.now()
+        executionOutputLaneRef.current.scrollTop = executionOutputLaneRef.current.scrollHeight
+      }
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [conversationLayout, selectedSessionId, view])
+
+  useEffect(() => {
+    if (view !== 'dialogue' || conversationLayout !== 'split' || typeof ResizeObserver === 'undefined') return
+
+    // Streaming Markdown, reasoning blocks, tables, and images can grow without
+    // changing the event count. Observe the actual lane contents so each track
+    // remains pinned while the user is following the newest output.
+    const conversationObserver = new ResizeObserver(() => {
+      const container = conversationLaneRef.current
+      if (!container || !conversationPinnedToEnd.current) return
+      lastProgrammaticScroll.current = Date.now()
+      container.scrollTop = container.scrollHeight
+    })
+    const executionObserver = new ResizeObserver(() => {
+      const container = executionOutputLaneRef.current
+      if (!container || !executionOutputPinnedToEnd.current) return
+      lastExecutionProgrammaticScroll.current = Date.now()
+      container.scrollTop = container.scrollHeight
+    })
+    if (conversationMessageListRef.current) conversationObserver.observe(conversationMessageListRef.current)
+    if (executionOutputListRef.current) executionObserver.observe(executionOutputListRef.current)
+    return () => {
+      conversationObserver.disconnect()
+      executionObserver.disconnect()
+    }
+  }, [conversationLayout, selectedSessionId, view])
+
+  const handleConversationScroll = useCallback((container: HTMLDivElement) => {
+    // Ignore the scroll events fired by our own programmatic scrolling;
+    // content growth between the scroll and the event would otherwise look
+    // like the user scrolled away from the bottom.
+    if (Date.now() - lastProgrammaticScroll.current < 120) return
+    conversationPinnedToEnd.current = container.scrollHeight - container.scrollTop - container.clientHeight < 48
+    if (container.scrollTop < 80 && !loadingOlder.current && hiddenEventCount > 0) {
+      loadingOlder.current = true
+      pendingScrollRestore.current = container.scrollHeight
+      setMessageWindow(current => ({
+        sessionId: selectedSessionId,
+        count: Math.min(
+          (current.sessionId === selectedSessionId ? current.count : MESSAGE_PAGE_SIZE) + MESSAGE_PAGE_SIZE,
+          conversationEvents.length,
+        ),
+      }))
+    }
+  }, [conversationEvents.length, hiddenEventCount, selectedSessionId])
 
   const activateContext = useCallback((context: ContextRecord, destination?: DashboardView) => {
     const nextSession = sessions
@@ -3346,8 +3609,42 @@ export default function App() {
     }
   }
 
+  const toggleObjectiveExpanded = useCallback((objectiveId: string) => {
+    setExpandedObjectiveIds(current => {
+      const next = new Set(current)
+      if (next.has(objectiveId)) next.delete(objectiveId)
+      else next.add(objectiveId)
+      return next
+    })
+  }, [])
+
+  const pauseObjective = async (objective: ObjectiveRecord) => {
+    if (pausingObjectiveId || resumingObjectiveId || deletingObjectiveId) return
+    setPausingObjectiveId(objective.id)
+    try {
+      const response = await fetch(`${CORE_HTTP_URL}/api/objectives/${encodeURIComponent(objective.id)}/pause`, {
+        method: 'POST',
+        headers: apiHeaders(true),
+        body: JSON.stringify({
+          expected_revision: objective.revision,
+          reason: t('reason.pauseByUser'),
+        }),
+      })
+      if (!response.ok) {
+        const detail = await response.json().catch(() => ({})) as { error?: string }
+        throw new Error(detail.error ?? t('errors.pauseObjective', { status: response.status }))
+      }
+      await loadSession(selectedSessionId, selectedContextId)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setPausingObjectiveId('')
+    }
+  }
+
   const resumeObjective = async (objective: ObjectiveRecord) => {
-    if (resumingObjectiveId) return
+    if (pausingObjectiveId || resumingObjectiveId || deletingObjectiveId) return
     setResumingObjectiveId(objective.id)
     try {
       const response = await fetch(`${CORE_HTTP_URL}/api/objectives/${encodeURIComponent(objective.id)}/resume`, {
@@ -3372,7 +3669,7 @@ export default function App() {
   }
 
   const deleteObjective = async (objective: ObjectiveRecord) => {
-    if (deletingObjectiveId) return
+    if (pausingObjectiveId || resumingObjectiveId || deletingObjectiveId) return
     const confirmed = await requestConfirmation({
       title: t('dialog.deleteObjectiveTitle'),
       description: t('dialog.deleteObjectiveBody', { objective: objective.stated_objective }),
@@ -3396,6 +3693,11 @@ export default function App() {
         throw new Error(detail.error ?? t('errors.deleteObjective', { status: response.status }))
       }
       await loadSession(selectedSessionId, selectedContextId)
+      setExpandedObjectiveIds(current => {
+        const next = new Set(current)
+        next.delete(objective.id)
+        return next
+      })
       setError('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
@@ -3581,8 +3883,17 @@ export default function App() {
               : t('composer.status.executing'),
             summary: primaryJobSummary ? `${primaryJobSummary.title} · ${primaryJobSummary.target}` : primaryJob.job.tool_name,
           }
-        : schedulerSnapshot && schedulerSnapshot.admission.context_deferred > 0
-          ? { state: 'waiting', label: t('composer.status.backpressure'), summary: t('composer.status.deferredCount', { count: schedulerSnapshot.admission.context_deferred }) }
+        : durableEventQueueDepth > 0
+            ? {
+                state: 'waiting',
+                label: t('composer.status.persistingEvents'),
+                summary: t('composer.status.eventWriterQueue', {
+                  count: durableEventQueueDepth,
+                  retries: durableEventContentionRetries,
+                }),
+              }
+          : schedulerSnapshot && schedulerSnapshot.admission.context_deferred > 0
+            ? { state: 'waiting', label: t('composer.status.backpressure'), summary: t('composer.status.deferredCount', { count: schedulerSnapshot.admission.context_deferred }) }
           : runningDelegations[0]
         ? { state: 'running', label: t('composer.status.delegating'), summary: runningDelegations[0].task }
         : waitingCount > 0
@@ -3596,7 +3907,9 @@ export default function App() {
                 : leadingActivation
                   ? {
                       state: 'running',
-                      label: leadingActivation.status === 'queued' ? t('composer.status.waitingModel') : t('composer.status.modelResponding'),
+                      label: leadingActivation.status === 'queued'
+                        ? t('composer.status.waitingRuntimeAdmission')
+                        : t('composer.status.modelResponding'),
                       summary: activationSummary,
                     }
                   : { state: 'idle', label: t('composer.status.idle'), summary: t('composer.status.noWork') }
@@ -3642,6 +3955,37 @@ export default function App() {
     setLedgerCursorHistory(current => current.slice(0, -1))
     setLedgerBeforeSequence(previous)
   }
+
+  const renderDialogueActivityDock = () => (
+    <DialogueActivityDock
+      open={dialogueActivityOpen}
+      objectives={dialogueActivityObjectives}
+      threads={dialogueActivityThreads}
+      historyThreads={dialogueActivityHistoryThreads}
+      delegations={dialogueActivityDelegations}
+      currentSessionId={selectedSessionId}
+      expandedThreadId={expandedDialogueThreadId}
+      threadDetail={dialogueThreadDetail}
+      liveModelAttempts={streamingAttempts}
+      showReasoningSummary={showReasoningSummary}
+      expandedObjectiveIds={expandedObjectiveIds}
+      pausingObjectiveId={pausingObjectiveId}
+      resumingObjectiveId={resumingObjectiveId}
+      deletingObjectiveId={deletingObjectiveId}
+      t={t}
+      onOpenChange={setDialogueActivityOpen}
+      onThreadToggle={threadId => {
+        setExpandedDialogueThreadId(current => current === threadId ? '' : threadId)
+        setDialogueThreadDetail(null)
+      }}
+      onReasoningOpenChange={setShowReasoningSummary}
+      onInspectThread={threadId => navigate(threadPath(selectedContextId, threadId))}
+      onObjectiveToggle={toggleObjectiveExpanded}
+      onPauseObjective={objective => void pauseObjective(objective)}
+      onResumeObjective={objective => void resumeObjective(objective)}
+      onDeleteObjective={objective => void deleteObjective(objective)}
+    />
+  )
 
   return (
     <main className="page-shell" data-accent={accentTheme} data-color-mode={resolvedAppearanceMode}>
@@ -3807,48 +4151,62 @@ export default function App() {
           </div>
         </header>
 
-        <nav className="runtime-navigation" aria-label={t('navigation.label')}>
-          <button className={view === 'overview' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('overview')} aria-current={view === 'overview' ? 'page' : undefined}>
-            <CircleDot size={14} /><span>{t('navigation.overview')}</span>
-          </button>
-          <button className={view === 'dialogue' ? 'is-active' : ''} type="button" disabled={!selectedSessionId} onClick={() => setView('dialogue')} aria-current={view === 'dialogue' ? 'page' : undefined}>
-            <MessageSquare size={14} /><span>{t('navigation.dialogue')}</span>
-          </button>
-          <button className={view === 'scheduler' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('scheduler')} aria-current={view === 'scheduler' ? 'page' : undefined}>
-            <GitBranch size={14} /><span>{t('navigation.scheduler')}</span>{attentionCount > 0 && <em>{attentionCount}</em>}
-          </button>
-          <button className={view === 'cognition' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('cognition')} aria-current={view === 'cognition' ? 'page' : undefined}>
-            <Brain size={14} /><span>{t('navigation.cognition')}</span>
-          </button>
-          <button className={view === 'ledger' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('ledger')} aria-current={view === 'ledger' ? 'page' : undefined}>
-            <Database size={14} /><span>{t('navigation.ledger')}</span>
-          </button>
-          <button className={view === 'runtime' ? 'is-active' : ''} type="button" onClick={() => setView('runtime')} aria-current={view === 'runtime' ? 'page' : undefined}>
-            <Radio size={14} /><span>{t('navigation.runtime')}</span>
-          </button>
-        </nav>
+        <div className="runtime-navigation-row">
+          <nav className="runtime-navigation" aria-label={t('navigation.label')}>
+            <button className={view === 'overview' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('overview')} aria-current={view === 'overview' ? 'page' : undefined}>
+              <CircleDot size={14} /><span>{t('navigation.overview')}</span>
+            </button>
+            <button className={view === 'dialogue' ? 'is-active' : ''} type="button" disabled={!selectedSessionId} onClick={() => setView('dialogue')} aria-current={view === 'dialogue' ? 'page' : undefined}>
+              <MessageSquare size={14} /><span>{t('navigation.dialogue')}</span>
+            </button>
+            <button className={view === 'scheduler' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('scheduler')} aria-current={view === 'scheduler' ? 'page' : undefined}>
+              <GitBranch size={14} /><span>{t('navigation.scheduler')}</span>{attentionCount > 0 && <em>{attentionCount}</em>}
+            </button>
+            <button className={view === 'cognition' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('cognition')} aria-current={view === 'cognition' ? 'page' : undefined}>
+              <Brain size={14} /><span>{t('navigation.cognition')}</span>
+            </button>
+            <button className={view === 'ledger' ? 'is-active' : ''} type="button" disabled={!selectedContextId} onClick={() => setView('ledger')} aria-current={view === 'ledger' ? 'page' : undefined}>
+              <Database size={14} /><span>{t('navigation.ledger')}</span>
+            </button>
+            <button className={view === 'runtime' ? 'is-active' : ''} type="button" onClick={() => setView('runtime')} aria-current={view === 'runtime' ? 'page' : undefined}>
+              <Radio size={14} /><span>{t('navigation.runtime')}</span>
+            </button>
+          </nav>
+          {view === 'dialogue' && selectedSessionId && (
+            <div className="conversation-toolbar">
+              <span className="conversation-toolbar-title">
+                {t('conversation.heading', { title: selectedSession?.title ?? shortId(selectedSessionId) })}
+              </span>
+              <div className="conversation-layout-switch" role="group" aria-label={t('conversation.layout.title')}>
+                <button
+                  className={conversationLayout === 'merged' ? 'is-active' : ''}
+                  type="button"
+                  title={t('conversation.layout.mergedHint')}
+                  aria-pressed={conversationLayout === 'merged'}
+                  onClick={() => setConversationLayout('merged')}
+                >
+                  <ListTree size={13} /> <span>{t('conversation.layout.merged')}</span>
+                </button>
+                <button
+                  className={conversationLayout === 'split' ? 'is-active' : ''}
+                  type="button"
+                  title={t('conversation.layout.splitHint')}
+                  aria-pressed={conversationLayout === 'split'}
+                  onClick={() => setConversationLayout('split')}
+                >
+                  <Columns2 size={13} /> <span>{t('conversation.layout.split')}</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
 
         <div
           className="view-frame"
           ref={viewFrameRef}
           onScroll={event => {
-            if (view !== 'dialogue') return
-            // Ignore the scroll events fired by our own programmatic scrolling;
-            // content growth between the scroll and the event would otherwise
-            // look like the user scrolled away from the bottom.
-            if (Date.now() - lastProgrammaticScroll.current < 120) return
-            const container = event.currentTarget
-            conversationPinnedToEnd.current = container.scrollHeight - container.scrollTop - container.clientHeight < 48
-            if (container.scrollTop < 80 && !loadingOlder.current && hiddenEventCount > 0) {
-              loadingOlder.current = true
-              pendingScrollRestore.current = container.scrollHeight
-              setMessageWindow(current => ({
-                sessionId: selectedSessionId,
-                count: Math.min(
-                  (current.sessionId === selectedSessionId ? current.count : MESSAGE_PAGE_SIZE) + MESSAGE_PAGE_SIZE,
-                  conversationEvents.length,
-                ),
-              }))
+            if (view === 'dialogue' && conversationLayout === 'merged') {
+              handleConversationScroll(event.currentTarget)
             }
           }}
         >
@@ -3904,32 +4262,46 @@ export default function App() {
             />
           )}
 
-          <section className={`conversation-view ${showDialogueActivity ? 'has-activity' : ''}`} hidden={view !== 'dialogue'}>
-              <header className="section-heading"><span>{t('conversation.heading', { title: selectedSession?.title ?? shortId(selectedSessionId) })}</span></header>
-              {showDialogueActivity && (
-                <DialogueActivityDock
-                  open={dialogueActivityOpen}
-                  objectives={dialogueActivityObjectives}
-                  threads={dialogueActivityThreads}
-                  historyThreads={dialogueActivityHistoryThreads}
-                  delegations={dialogueActivityDelegations}
-                  currentSessionId={selectedSessionId}
-                  expandedThreadId={expandedDialogueThreadId}
-                  threadDetail={dialogueThreadDetail}
-                  liveModelAttempts={streamingAttempts}
-                  showReasoningSummary={showReasoningSummary}
-                  t={t}
-                  onOpenChange={setDialogueActivityOpen}
-                  onThreadToggle={threadId => {
-                    setExpandedDialogueThreadId(current => current === threadId ? '' : threadId)
-                    setDialogueThreadDetail(null)
-                  }}
-                  onReasoningOpenChange={setShowReasoningSummary}
-                  onInspectThread={threadId => navigate(threadPath(selectedContextId, threadId))}
-                />
+          <section
+            className={`conversation-view ${showDialogueActivity ? 'has-activity' : ''} layout-${conversationLayout} mobile-lane-${conversationMobileLane}`}
+            hidden={view !== 'dialogue'}
+          >
+              {showDialogueActivity && renderDialogueActivityDock()}
+              {conversationLayout === 'split' && (
+                <div className="conversation-mobile-lane-switch" role="tablist" aria-label={t('conversation.layout.mobileTitle')}>
+                  <button
+                    className={conversationMobileLane === 'dialogue' ? 'is-active' : ''}
+                    type="button"
+                    role="tab"
+                    aria-selected={conversationMobileLane === 'dialogue'}
+                    onClick={() => setConversationMobileLane('dialogue')}
+                  >
+                    <MessageSquare size={13} />{t('conversation.layout.dialogueLane')}
+                  </button>
+                  <button
+                    className={conversationMobileLane === 'execution' ? 'is-active' : ''}
+                    type="button"
+                    role="tab"
+                    aria-selected={conversationMobileLane === 'execution'}
+                    onClick={() => setConversationMobileLane('execution')}
+                  >
+                    <GitBranch size={13} />{t('conversation.layout.executionLane')}
+                    {(visibleExecutionOutputEvents.length + executionOutputStreamingAttempts.length) > 0 && (
+                      <em>{visibleExecutionOutputEvents.length + executionOutputStreamingAttempts.length}</em>
+                    )}
+                  </button>
+                </div>
               )}
-              <div className="message-list">
-                {conversationEvents.length === 0 && conversationStreamingAttempts.length === 0 && (
+              <div className="conversation-lanes">
+                <div
+                  className="conversation-dialogue-lane"
+                  ref={conversationLaneRef}
+                  onScroll={event => {
+                    if (conversationLayout === 'split') handleConversationScroll(event.currentTarget)
+                  }}
+                >
+              <div className="message-list" ref={conversationMessageListRef}>
+                {visibleDialogueEvents.length === 0 && dialogueStreamingAttempts.length === 0 && (
                   <div className="empty-state conversation-empty">
                     <div className="empty-icon"><MessageSquare size={28} /></div>
                     <strong>{t('conversation.emptyTitle')}</strong>
@@ -3942,7 +4314,7 @@ export default function App() {
                 {hiddenEventCount > 0 && (
                   <div className="history-hint">{t('conversation.historyHint', { count: hiddenEventCount })}</div>
                 )}
-                {visibleEvents.map(event => {
+                {visibleDialogueEvents.map(event => {
                   const kind = eventKind(event) ?? 'system'
                   if (kind === 'progress') {
                     return <div className="progress-note" key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
@@ -4050,7 +4422,7 @@ export default function App() {
                     </article>
                   )
                 })}
-                {conversationStreamingAttempts.map(attempt => (
+                {dialogueStreamingAttempts.map(attempt => (
                   <article className="message-row agent streaming" key={`stream-${attempt.attemptId}`} aria-live="polite">
                     <ReasoningSummaryBlock
                       summary={liveReasoningSummaryText(reasoningContinuationSummaries, attempt)}
@@ -4080,7 +4452,7 @@ export default function App() {
                     </div>
                   </article>
                 ))}
-                {turnPending && conversationStreamingAttempts.length === 0 && (
+                {turnPending && dialogueStreamingAttempts.length === 0 && (
                   <article className="message-row agent streaming" role="status" aria-live="polite">
                     <div className="stream-status">
                       <span className="stream-typing" aria-hidden="true"><b /><b /><b /></span>
@@ -4089,6 +4461,138 @@ export default function App() {
                   </article>
                 )}
                 <div ref={conversationEnd} />
+              </div>
+                </div>
+                {conversationLayout === 'split' && (
+                  <div
+                    className="conversation-execution-lane"
+                    ref={executionOutputLaneRef}
+                    onWheel={event => {
+                      if (event.deltaY < 0) executionOutputPinnedToEnd.current = false
+                    }}
+                    onScroll={event => {
+                      const container = event.currentTarget
+                      if (Date.now() - lastExecutionProgrammaticScroll.current < 120) return
+                      executionOutputPinnedToEnd.current = container.scrollHeight - container.scrollTop - container.clientHeight < 48
+                    }}
+                  >
+                    <header className="conversation-lane-heading">
+                      <span><GitBranch size={13} /> {t('conversation.layout.executionLane')}</span>
+                      <small>{t('conversation.layout.executionLaneHint')}</small>
+                    </header>
+                    <div className="message-list execution-output-list" ref={executionOutputListRef}>
+                      {visibleExecutionOutputEvents.length === 0 && executionOutputStreamingAttempts.length === 0 && (
+                        <div className="conversation-lane-empty">
+                          <GitBranch size={20} />
+                          <span>{t('conversation.layout.executionEmpty')}</span>
+                        </div>
+                      )}
+                      {visibleExecutionOutputEvents.map(event => {
+                        const kind = eventKind(event) ?? 'background'
+                        const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
+                        if (kind === 'progress') {
+                          return <div className="progress-note" key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
+                        }
+                        if (kind === 'reasoning') {
+                          const summary = persistedReasoningSummary || String(event.payload.text ?? '')
+                          if (!summary) return null
+                          return (
+                            <article className="message-row agent persisted-reasoning execution-output" key={event.id}>
+                              <ReasoningSummaryBlock
+                                summary={summary}
+                                live={false}
+                                open={showReasoningSummary}
+                                onOpenChange={setShowReasoningSummary}
+                                title={t('reasoningSummary.title')}
+                                liveLabel={t('reasoningSummary.live')}
+                                persistedLabel={t('reasoningSummary.persisted')}
+                              />
+                            </article>
+                          )
+                        }
+                        const derivedThreads = derivedThreadsByRootTurn.get(event.id) ?? []
+                        return (
+                          <article className="message-row background execution-output" key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
+                            <div className="message-role">
+                              <strong>{t('conversation.roleDelivery')}</strong>
+                              <time>{formatTime(event.timestamp, i18n.language)}</time>
+                              <small>{shortId(String(event.payload.root_turn_id ?? ''), 18)}</small>
+                            </div>
+                            {persistedReasoningSummary && (
+                              <ReasoningSummaryBlock
+                                summary={persistedReasoningSummary}
+                                live={false}
+                                open={showReasoningSummary}
+                                onOpenChange={setShowReasoningSummary}
+                                title={t('reasoningSummary.title')}
+                                liveLabel={t('reasoningSummary.live')}
+                                persistedLabel={t('reasoningSummary.persisted')}
+                              />
+                            )}
+                            <div className="message-body">
+                              {typeof event.payload.text === 'string' && event.payload.text.trim()
+                                ? <MarkdownBody text={event.payload.text} />
+                                : t('conversation.noText')}
+                            </div>
+                            {derivedThreads.length > 0 && (
+                              <div className="message-thread-capsules" aria-label={t('conversation.derivedThreads')}>
+                                {derivedThreads.map(snapshot => (
+                                  <MessageThreadReference
+                                    key={snapshot.thread.id}
+                                    snapshot={snapshot}
+                                    onOpen={() => navigate(threadPath(selectedContextId, snapshot.thread.id))}
+                                    t={t}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                            <div className="message-meta">
+                              <button
+                                className="message-copy"
+                                type="button"
+                                title={copiedMessageId === event.id ? t('conversation.copied') : t('conversation.copy')}
+                                onClick={() => void copyMessage(event.payload.text ?? '', event.id)}
+                              >
+                                {copiedMessageId === event.id ? <Check size={14} /> : <Copy size={14} />}
+                              </button>
+                            </div>
+                          </article>
+                        )
+                      })}
+                      {executionOutputStreamingAttempts.map(attempt => (
+                        <article className="message-row agent streaming execution-output" key={`execution-stream-${attempt.attemptId}`} aria-live="polite">
+                          <ReasoningSummaryBlock
+                            summary={liveReasoningSummaryText(reasoningContinuationSummaries, attempt)}
+                            live
+                            open={showReasoningSummary}
+                            onOpenChange={setShowReasoningSummary}
+                            title={t('reasoningSummary.title')}
+                            liveLabel={t('reasoningSummary.live')}
+                            persistedLabel={t('reasoningSummary.persisted')}
+                          />
+                          {attempt.text.trim() && (
+                            <div className="message-body">
+                              <MarkdownBody text={attempt.text} />
+                              {attempt.status !== 'failed' && <span className="stream-caret" aria-hidden="true" />}
+                            </div>
+                          )}
+                          {attempt.error && !attempt.text.trim() && <div className="message-body stream-error">{attempt.error}</div>}
+                          <div className={`stream-status ${attempt.status === 'failed' ? 'is-failed' : ''}`}>
+                            {attempt.status !== 'failed' && <span className="stream-typing" aria-hidden="true"><b /><b /><b /></span>}
+                            <span>{attempt.status === 'failed'
+                              ? t('conversation.streamFailed')
+                              : attempt.runtimeState === 'waiting_final_output'
+                                ? t('conversation.reasoningCompleted')
+                                : attempt.runtimeState === 'queued'
+                                  ? t('conversation.waitingForModel')
+                                  : t('conversation.streaming')}</span>
+                          </div>
+                        </article>
+                      ))}
+                      <div ref={executionOutputEnd} />
+                    </div>
+                  </div>
+                )}
               </div>
           </section>
 
@@ -4200,37 +4704,43 @@ export default function App() {
               <section className="objective-board">
                 <header><span>{t('work.objectives.title').toUpperCase()}</span><b>{activeObjectives.length}</b><small>{t('work.objectives.confirm')}</small></header>
                 <div className="objective-grid">
-                  {activeObjectives.map(objective => (
-                    <article className="work-card" key={objective.id}>
-                      <div className="card-line"><span className={`status-pill ${objective.status}`}>{statusLabel(objective.status, t)}</span><time>{formatAgo(objective.updated_at, t)}</time></div>
-                      <h2 title={objective.stated_objective}><MarkdownInline>{objective.stated_objective}</MarkdownInline></h2>
-                      {objective.status_reason && <p title={objective.status_reason}><MarkdownInline>{objective.status_reason}</MarkdownInline></p>}
-                      <footer><span>{t('work.objectives.revision', { revision: objective.revision })}</span><span>{t('work.objectives.tokens', { tokens: compactTokens(objective.tokens_used) })}</span><span>{t('work.objectives.seconds', { seconds: objective.time_used_seconds })}</span><span>{shortId(objective.coordinator_session_id)}</span></footer>
-                      {objective.wait_condition && <div className="wait-condition">{t('work.objectives.waitCondition', { kind: objective.wait_condition.kind })}</div>}
-                      <div className="objective-actions">
-                        {(objective.status === 'blocked' || objective.status === 'paused') && (
-                          <button
-                            className="resume-objective"
-                            disabled={Boolean(resumingObjectiveId || deletingObjectiveId)}
-                            type="button"
-                            onClick={() => void resumeObjective(objective)}
-                          >
-                            {resumingObjectiveId === objective.id ? <LoaderCircle size={13} /> : <Play size={13} />}
-                            {resumingObjectiveId === objective.id ? t('work.objectives.resuming') : t('work.objectives.resume')}
-                          </button>
+                  {activeObjectives.map(objective => {
+                    const expanded = expandedObjectiveIds.has(objective.id)
+                    const busy: ObjectiveMutationKind = pausingObjectiveId === objective.id
+                      ? 'pause'
+                      : resumingObjectiveId === objective.id
+                        ? 'resume'
+                        : deletingObjectiveId === objective.id
+                          ? 'delete'
+                          : ''
+                    return (
+                      <article className={`work-card objective-work-card ${expanded ? 'is-expanded' : ''}`} key={objective.id}>
+                        <header className="objective-card-titlebar">
+                          <span className={`status-pill ${objective.status}`}>{statusLabel(objective.status, t)}</span>
+                          <time>{formatAgo(objective.updated_at, t)}</time>
+                          <ObjectiveCardActions
+                            objective={objective}
+                            expanded={expanded}
+                            busy={busy}
+                            disabled={Boolean(pausingObjectiveId || resumingObjectiveId || deletingObjectiveId)}
+                            t={t}
+                            onPause={() => void pauseObjective(objective)}
+                            onResume={() => void resumeObjective(objective)}
+                            onDelete={() => void deleteObjective(objective)}
+                            onToggle={() => toggleObjectiveExpanded(objective.id)}
+                          />
+                        </header>
+                        <h2 title={objective.stated_objective}><MarkdownInline>{objective.stated_objective}</MarkdownInline></h2>
+                        {expanded && (
+                          <div className="objective-work-details">
+                            {objective.status_reason && <p title={objective.status_reason}><MarkdownInline>{objective.status_reason}</MarkdownInline></p>}
+                            <footer><span>{t('work.objectives.revision', { revision: objective.revision })}</span><span>{t('work.objectives.tokens', { tokens: compactTokens(objective.tokens_used) })}</span><span>{t('work.objectives.seconds', { seconds: objective.time_used_seconds })}</span><span>{shortId(objective.coordinator_session_id)}</span></footer>
+                            {objective.wait_condition && <div className="wait-condition">{t('work.objectives.waitCondition', { kind: objective.wait_condition.kind })}</div>}
+                          </div>
                         )}
-                        <button
-                          className="delete-objective"
-                          disabled={Boolean(resumingObjectiveId || deletingObjectiveId)}
-                          type="button"
-                          onClick={() => void deleteObjective(objective)}
-                        >
-                          {deletingObjectiveId === objective.id ? <LoaderCircle size={13} /> : <Trash2 size={13} />}
-                          {deletingObjectiveId === objective.id ? t('work.objectives.deleting') : t('work.objectives.delete')}
-                        </button>
-                      </div>
-                    </article>
-                  ))}
+                      </article>
+                    )
+                  })}
                   {activeObjectives.length === 0 && <div className="small-empty">{t('work.objectives.empty')}</div>}
                 </div>
               </section>

@@ -9031,7 +9031,10 @@ Body
         assert_eq!(parent_terminal.status, ExecutionJobStatus::Succeeded);
 
         let recovery = manager
-            .reconcile_startup(crate::memory::WorkerCoordinationMode::ExclusiveProcess)
+            .reconcile_startup(
+                crate::memory::WorkerCoordinationMode::ExclusiveProcess,
+                store.as_ref(),
+            )
             .await
             .unwrap();
         assert_eq!(recovery.lost_receipts.len(), 1);
@@ -9148,6 +9151,248 @@ Body
                 .is_err(),
             "lost Job 的陈旧 wait timer 不得伪造仍在运行 observation"
         );
+    }
+
+    #[tokio::test]
+    async fn restart_closes_running_job_from_already_durable_result_event() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(database.path().to_string_lossy().as_ref())
+                .await
+                .unwrap(),
+        );
+        let manager = Arc::new(ExecutionJobManager::new(
+            Arc::clone(&store) as Arc<dyn ExecutionJobStore>
+        ));
+        let route = ToolExecutionJobContext {
+            parent_job_id: deterministic_job_id("activation-result-first", "parent-call").unwrap(),
+            activation_id: "activation-result-first".to_string(),
+            thread_id: "thread-result-first".to_string(),
+            agent_id: "agent-result-first".to_string(),
+            context_id: "context-result-first".to_string(),
+            session_id: "session-result-first".to_string(),
+            initiating_principal_id: None,
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            tool_call_id: "parent-call".to_string(),
+        };
+        seed_test_execution_route(&store, &route, "root-result-first", "trigger-result-first")
+            .await;
+        let parent_job = manager
+            .store()
+            .get_execution_job(&route.parent_job_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let parent_claim_token = format!("test-parent-claim-{}", route.activation_id);
+        applied_background_job(
+            manager
+                .finish(
+                    &parent_job.id,
+                    parent_job.revision,
+                    Some(&parent_claim_token),
+                    JobOutcome::Succeeded {
+                        result_event_id: None,
+                        result_refs: Vec::new(),
+                        exit_code: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "finish parent",
+        )
+        .unwrap();
+
+        let tool_call_id = "call-read-result-first";
+        let mut job = manager
+            .ensure(ExecutionJobSpec {
+                activation_id: route.activation_id.clone(),
+                thread_id: route.thread_id.clone(),
+                agent_id: route.agent_id.clone(),
+                context_id: route.context_id.clone(),
+                session_id: route.session_id.clone(),
+                initiating_principal_id: None,
+                target_id: route.target_id.clone(),
+                tool_call_id: tool_call_id.to_string(),
+                tool_name: "read".to_string(),
+                request: serde_json::json!({"path": "README.md"}),
+                retry_safety: ExecutionRetrySafety::Idempotent,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        let claim_token = "claim-read-result-first";
+        job = applied_background_job(
+            manager
+                .claim(
+                    &job.id,
+                    job.revision,
+                    JobClaim {
+                        worker_id: "dead-runtime",
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        approval_ref: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "claim read",
+        )
+        .unwrap();
+        job = applied_background_job(
+            manager
+                .heartbeat(
+                    &job.id,
+                    job.revision,
+                    JobHeartbeat {
+                        claim_token,
+                        lease_expires_at: chrono::Utc::now() + chrono::Duration::minutes(2),
+                        side_effect_started_at: Some(chrono::Utc::now()),
+                        progress_ref: None,
+                    },
+                )
+                .await
+                .unwrap(),
+            "read side-effect boundary",
+        )
+        .unwrap();
+        assert_eq!(job.status, ExecutionJobStatus::Running);
+
+        let output = Event::new(
+            format!("output_{}_{}", route.activation_id, tool_call_id),
+            "System-ReadGuard".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::from_iter([
+                (
+                    "context_id".to_string(),
+                    serde_json::json!(route.context_id),
+                ),
+                (
+                    "session_id".to_string(),
+                    serde_json::json!(route.session_id),
+                ),
+                (
+                    "activation_id".to_string(),
+                    serde_json::json!(route.activation_id),
+                ),
+                ("thread_id".to_string(), serde_json::json!(route.thread_id)),
+                (
+                    "attempt_id".to_string(),
+                    serde_json::json!(route.activation_id),
+                ),
+                ("tool_call_id".to_string(), serde_json::json!(tool_call_id)),
+                ("caused_by".to_string(), serde_json::json!(tool_call_id)),
+                ("tool_name".to_string(), serde_json::json!("read")),
+                ("tool_status".to_string(), serde_json::json!("guarded")),
+                (
+                    "action_group_id".to_string(),
+                    serde_json::json!("group-result-first"),
+                ),
+                (
+                    "text".to_string(),
+                    serde_json::json!("READ_ALREADY_COVERED"),
+                ),
+            ]),
+        );
+        store.append(output.clone()).await.unwrap();
+
+        // A crash may happen even earlier: the immutable tool result can win
+        // while the Job projection is still queued and has never held a claim.
+        // Startup recovery must adopt that fact without weakening normal
+        // worker-fenced completion.
+        let queued_call_id = "call-read-result-before-claim";
+        let queued_job = manager
+            .ensure(ExecutionJobSpec {
+                activation_id: route.activation_id.clone(),
+                thread_id: route.thread_id.clone(),
+                agent_id: route.agent_id.clone(),
+                context_id: route.context_id.clone(),
+                session_id: route.session_id.clone(),
+                initiating_principal_id: None,
+                target_id: route.target_id.clone(),
+                tool_call_id: queued_call_id.to_string(),
+                tool_name: "read".to_string(),
+                request: serde_json::json!({"path": "Cargo.toml"}),
+                retry_safety: ExecutionRetrySafety::Idempotent,
+                requires_approval: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(queued_job.status, ExecutionJobStatus::Queued);
+        let queued_output = Event::new(
+            format!("output_{}_{}", route.activation_id, queued_call_id),
+            "System-ReadGuard".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::from_iter([
+                (
+                    "context_id".to_string(),
+                    serde_json::json!(route.context_id),
+                ),
+                (
+                    "session_id".to_string(),
+                    serde_json::json!(route.session_id),
+                ),
+                (
+                    "activation_id".to_string(),
+                    serde_json::json!(route.activation_id),
+                ),
+                ("thread_id".to_string(), serde_json::json!(route.thread_id)),
+                (
+                    "attempt_id".to_string(),
+                    serde_json::json!(route.activation_id),
+                ),
+                (
+                    "tool_call_id".to_string(),
+                    serde_json::json!(queued_call_id),
+                ),
+                ("caused_by".to_string(), serde_json::json!(queued_call_id)),
+                ("tool_name".to_string(), serde_json::json!("read")),
+                ("tool_status".to_string(), serde_json::json!("guarded")),
+                (
+                    "action_group_id".to_string(),
+                    serde_json::json!("group-result-first"),
+                ),
+                (
+                    "text".to_string(),
+                    serde_json::json!("READ_ALREADY_COVERED"),
+                ),
+            ]),
+        );
+        store.append(queued_output.clone()).await.unwrap();
+
+        let recovery = manager
+            .reconcile_startup(
+                crate::memory::WorkerCoordinationMode::ExclusiveProcess,
+                store.as_ref(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovery.recovered_receipts.len(), 2);
+        assert!(recovery.lost_receipts.is_empty());
+        assert!(recovery.requeue_receipts.is_empty());
+        let recovered = store.get_execution_job(&job.id).await.unwrap().unwrap();
+        assert_eq!(recovered.status, ExecutionJobStatus::Succeeded);
+        assert_eq!(
+            recovered.result_event_id.as_deref(),
+            Some(output.id.as_str())
+        );
+        let recovered_queued = store
+            .get_execution_job(&queued_job.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered_queued.status, ExecutionJobStatus::Succeeded);
+        assert_eq!(
+            recovered_queued.result_event_id.as_deref(),
+            Some(queued_output.id.as_str())
+        );
+        assert!(store
+            .list_signal_outbox(crate::memory::SignalOutboxStatus::Pending, 16)
+            .await
+            .unwrap()
+            .into_iter()
+            .all(|entry| entry.event_id != output.id));
     }
 
     #[tokio::test]

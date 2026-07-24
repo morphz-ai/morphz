@@ -867,6 +867,104 @@ impl ExecutionJobStore for PostgresStore {
         tx.commit().await?;
         Ok(ExecutionJobMutation::Updated(updated))
     }
+
+    async fn reconcile_execution_job_from_event(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        terminal: ExecutionJobTerminal,
+        event: &Event,
+        signal_outbox: bool,
+    ) -> Result<ExecutionJobMutation, StoreError> {
+        if !terminal.status.is_terminal() {
+            return Err("Execution Job reconcile 只能提交终态".into());
+        }
+        if terminal.result_event_id.as_deref() != Some(event.id.as_str()) {
+            return Err("Execution Job reconcile result_event_id 必须等于既存 Event ID".into());
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let Some(row) = sqlx::query("SELECT * FROM execution_jobs WHERE id = $1 FOR UPDATE")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            tx.commit().await?;
+            return Ok(ExecutionJobMutation::NotFound);
+        };
+        let current = execution_job_from_row(&row)?;
+        validate_result_event(&current, event)?;
+        verify_existing_event_in_tx(&mut tx, event).await?;
+
+        let error = terminal
+            .error
+            .as_ref()
+            .map(|value| value.chars().take(100_000).collect::<String>());
+        if current.status.is_terminal() {
+            let exact_replay = current.status == terminal.status
+                && current.result_event_id.as_deref() == Some(event.id.as_str())
+                && current.result_refs == terminal.result_refs
+                && current.error == error
+                && current.exit_code == terminal.exit_code;
+            if exact_replay {
+                if signal_outbox {
+                    append_signal_outbox_in_tx(&mut tx, event).await?;
+                }
+                tx.commit().await?;
+                return Ok(ExecutionJobMutation::Existing(current));
+            }
+            tx.commit().await?;
+            return Ok(ExecutionJobMutation::Rejected {
+                current,
+                reason: "Execution Job 已有不同终态，不能用既存 Event 覆盖".to_string(),
+            });
+        }
+        if current.revision != expected_revision {
+            tx.commit().await?;
+            return Ok(ExecutionJobMutation::Conflict { current });
+        }
+
+        let now = now_text();
+        let result = sqlx::query(
+            r#"UPDATE execution_jobs
+               SET revision = revision + 1, status = $1, lease_expires_at = NULL,
+                   result_event_id = $2, result_refs_json = $3, error = $4,
+                   exit_code = $5, updated_at = $6, finished_at = $7
+               WHERE id = $8 AND revision = $9
+                 AND status NOT IN ('succeeded', 'failed', 'cancelled', 'lost')"#,
+        )
+        .bind(terminal.status.as_str())
+        .bind(&terminal.result_event_id)
+        .bind(serde_json::to_value(&terminal.result_refs)?)
+        .bind(&error)
+        .bind(terminal.exit_code)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .execute(&mut *tx)
+        .await?;
+        if result.rows_affected() != 1 {
+            tx.rollback().await?;
+            return mutation_failure(
+                self,
+                id,
+                expected_revision,
+                "Execution Job 既存 Event 恢复前置条件不再成立",
+            )
+            .await;
+        }
+        if signal_outbox {
+            append_signal_outbox_in_tx(&mut tx, event).await?;
+        }
+        let updated = sqlx::query("SELECT * FROM execution_jobs WHERE id = $1")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let updated = execution_job_from_row(&updated)?;
+        tx.commit().await?;
+        Ok(ExecutionJobMutation::Updated(updated))
+    }
 }
 
 fn validate_result_event(current: &ExecutionJobRecord, event: &Event) -> Result<(), StoreError> {
@@ -894,6 +992,45 @@ fn validate_result_event(current: &ExecutionJobRecord, event: &Event) -> Result<
         return Err(format!(
             "Execution Job '{}' 的结果 Event 路由或工具因果身份不匹配",
             current.id
+        )
+        .into());
+    }
+    Ok(())
+}
+
+async fn verify_existing_event_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    event: &Event,
+) -> Result<(), StoreError> {
+    let Some(existing) = sqlx::query(
+        r#"SELECT timestamp, actor, type, topic, context_id, session_id, payload
+           FROM events WHERE id = $1"#,
+    )
+    .bind(&event.id)
+    .fetch_optional(&mut **tx)
+    .await?
+    else {
+        return Err(format!("Execution Job 恢复只能使用已持久化 Event '{}'", event.id).into());
+    };
+    let session_id = event.payload.get("session_id").and_then(JsonValue::as_str);
+    let context_id = event
+        .payload
+        .get("context_id")
+        .and_then(JsonValue::as_str)
+        .or(session_id);
+    let stored_timestamp =
+        DateTime::parse_from_rfc3339(&existing.get::<String, _>("timestamp"))?.with_timezone(&Utc);
+    let same = stored_timestamp == event.timestamp
+        && existing.get::<String, _>("actor") == event.actor
+        && existing.get::<String, _>("type") == event.event_type
+        && existing.get::<String, _>("topic") == event.topic
+        && existing.get::<Option<String>, _>("context_id").as_deref() == context_id
+        && existing.get::<Option<String>, _>("session_id").as_deref() == session_id
+        && existing.get::<JsonValue, _>("payload") == JsonValue::Object(event.payload.clone());
+    if !same {
+        return Err(format!(
+            "Execution Job 恢复引用的 Event '{}' 与 Ledger 内容不一致",
+            event.id
         )
         .into());
     }

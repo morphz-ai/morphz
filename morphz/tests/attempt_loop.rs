@@ -3,8 +3,8 @@ use morphz::event::{
     Event, InMemoryEventBus, TYPE_FILE_CHANGE, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
 };
 use morphz::llm::{
-    Client, Message, ModelStreamEvent, ModelStreamSender, PromptTokenAccuracy, PromptTokenCount,
-    Response, ToolCallRepr, ToolDefinition,
+    Client, Message, ModelFailure, ModelFailureKind, ModelStreamEvent, ModelStreamSender,
+    PromptTokenAccuracy, PromptTokenCount, Response, ToolCallRepr, ToolDefinition,
 };
 use morphz::memory::sqlite::SqliteStore;
 use morphz::memory::{
@@ -73,6 +73,22 @@ struct CancellableClient {
 struct ReasoningContinuationClient {
     calls: AtomicUsize,
     messages_seen: Mutex<Vec<Vec<Message>>>,
+}
+
+struct SharedTransientFailureClient {
+    calls: AtomicUsize,
+    initial_barrier: tokio::sync::Barrier,
+}
+
+struct PartialReasoningProviderFailureClient {
+    calls: AtomicUsize,
+}
+
+struct ConcurrentContextLimitClient {
+    calls: AtomicUsize,
+    initial_failures: AtomicUsize,
+    initial_barrier: tokio::sync::Barrier,
+    maintenance_calls: AtomicUsize,
 }
 
 struct EmptyOutputTool;
@@ -262,6 +278,112 @@ impl Client for FailingClient {
 }
 
 #[async_trait::async_trait]
+impl Client for SharedTransientFailureClient {
+    fn provider_resource_key(&self) -> String {
+        "model-provider:test-shared-outage".to_string()
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call < 2 {
+            self.initial_barrier.wait().await;
+        }
+        Err(Box::new(ModelFailure::new(
+            ModelFailureKind::TransientNetwork,
+            "simulated shared provider outage",
+        )))
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for PartialReasoningProviderFailureClient {
+    fn provider_resource_key(&self) -> String {
+        "model-provider:test-partial-reasoning-outage".to_string()
+    }
+
+    fn supports_async_cancellation(&self) -> bool {
+        true
+    }
+
+    async fn create_completion(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        unreachable!("partial reasoning failure probe uses streaming")
+    }
+
+    async fn create_completion_measured_stream(
+        &self,
+        _messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+        _measurement: Option<PromptTokenCount>,
+        stream: ModelStreamSender,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let _ = stream.send(ModelStreamEvent::Started);
+        let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
+            text: "provider emitted useful partial reasoning before disconnect".to_string(),
+        });
+        let failure = ModelFailure::new(
+            ModelFailureKind::TransientNetwork,
+            "simulated disconnect after partial reasoning",
+        );
+        let _ = stream.send(ModelStreamEvent::Failed {
+            message: failure.message.clone(),
+        });
+        Err(Box::new(failure))
+    }
+}
+
+#[async_trait::async_trait]
+impl Client for ConcurrentContextLimitClient {
+    async fn create_completion(
+        &self,
+        messages: Vec<Message>,
+        _tools: Vec<ToolDefinition>,
+    ) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let critical_maintenance = messages.iter().any(|message| {
+            message
+                .content
+                .contains("Runtime 当前进入 critical-maintenance：")
+        });
+        if critical_maintenance {
+            self.maintenance_calls.fetch_add(1, Ordering::SeqCst);
+            return Ok(Response {
+                content: String::new(),
+                tool_calls: vec![ToolCallRepr {
+                    id: "provider-overflow-maintenance".to_string(),
+                    r#type: "function".to_string(),
+                    func_name: "context_tx".to_string(),
+                    arguments: json!({
+                        "transaction": "(context-tx (base-version 0) (reason \"recover provider context overflow\") (create provider-overflow-recovered (status complete)))"
+                    })
+                    .to_string(),
+                }],
+            });
+        }
+
+        let failure = self.initial_failures.fetch_add(1, Ordering::SeqCst);
+        if failure < 2 {
+            self.initial_barrier.wait().await;
+            return Err(Box::new(ModelFailure::new(
+                ModelFailureKind::ContextLimit,
+                "simulated provider context_length_exceeded",
+            )));
+        }
+        Ok(text_reply_response(
+            "continued after shared context maintenance",
+        ))
+    }
+}
+
+#[async_trait::async_trait]
 impl Client for HangingClient {
     async fn create_completion(
         &self,
@@ -357,11 +479,13 @@ impl Client for ReasoningContinuationClient {
                     ..Default::default()
                 },
             });
-            let message = "OpenAI Chat 流因输出长度限制被截断".to_string();
-            let _ = stream.send(ModelStreamEvent::Failed {
-                message: message.clone(),
-            });
-            return Err(message.into());
+            // Model adapters reject an otherwise-completed response with no
+            // final text or tool call.  This is a reasoning-only boundary,
+            // not a broken Provider stream: Runtime must feed this segment
+            // back into the immediately following continuation request.
+            let _ = stream.send(ModelStreamEvent::ReasoningSummaryCompleted);
+            let _ = stream.send(ModelStreamEvent::Completed);
+            return Err("模型响应既没有非空正文，也没有工具调用".into());
         }
         let response = text_reply_response("continued into final text");
         let _ = stream.send(ModelStreamEvent::ReasoningSummaryDelta {
@@ -731,6 +855,30 @@ async fn wait_for_topic_count(
     Vec::new()
 }
 
+async fn wait_for_context_terminal_count(
+    store: &Arc<SqliteStore>,
+    context_id: &str,
+    expected: usize,
+) -> Vec<Event> {
+    for _ in 0..80 {
+        let events = store
+            .query(QueryFilter {
+                context_id: Some(context_id.to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|event| matches!(event.topic.as_str(), "chat/reply" | "chat/no_reply"))
+            .collect::<Vec<_>>();
+        if events.len() >= expected {
+            return events;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+    Vec::new()
+}
+
 #[tokio::test]
 async fn test_attempt_loop_plain_text_reply_delivers() {
     let session_id = "attempt_plain_text_reply";
@@ -1003,7 +1151,7 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
         config,
         engine,
     );
-    orchestrator.start().await.unwrap();
+    Arc::clone(&orchestrator).start().await.unwrap();
 
     for session_id in &recovery_sessions {
         assert_eq!(
@@ -1604,6 +1752,7 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
         wait_for_topic_count(&store, "runtime/reasoning_continuation", session_id, 3).await;
     let summaries =
         wait_for_topic_count(&store, "runtime/model_reasoning_summary", session_id, 3).await;
+    let usages = wait_for_topic_count(&store, "runtime/model_usage", session_id, 3).await;
     let protocol_errors = store
         .query(QueryFilter {
             session_id: Some(session_id.to_string()),
@@ -1672,9 +1821,21 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
         .iter()
         .find(|event| event.payload.get("text") == Some(&json!("reasoning segment 1")))
         .expect("first reasoning segment should be durable");
-    assert_eq!(first_summary.payload.get("complete"), Some(&json!(false)));
     assert_eq!(
-        first_summary.payload.get("completion_tokens"),
+        first_summary.payload.get("complete"),
+        Some(&json!(true)),
+        "a normal reasoning-only response completes its stream even though it needs a continuation"
+    );
+    assert!(
+        first_summary.payload.get("completion_tokens").is_none(),
+        "reasoning artifacts must not duplicate the independently persisted usage fact"
+    );
+    let first_usage = usages
+        .iter()
+        .find(|event| event.payload.get("attempt_id") == first_summary.payload.get("attempt_id"))
+        .expect("first reasoning request usage should be durable");
+    assert_eq!(
+        first_usage.payload["usage"].get("output_tokens"),
         Some(&json!(4_096))
     );
 }
@@ -1853,7 +2014,14 @@ async fn test_llm_failure_is_audited_and_always_replies_to_user() {
         .get("text")
         .and_then(|value| value.as_str())
         .unwrap()
-        .contains("模型请求在重试后仍然失败"));
+        .contains("模型请求失败"));
+    assert_eq!(
+        replies[0]
+            .payload
+            .get("runtime_failure_kind")
+            .and_then(|value| value.as_str()),
+        Some("unknown")
+    );
     assert_eq!(failures.len(), 1);
     assert_eq!(
         failures[0]
@@ -1868,6 +2036,7 @@ async fn test_llm_failure_is_audited_and_always_replies_to_user() {
         .and_then(|value| value.as_str())
         .unwrap()
         .contains("simulated LLM transport timeout"));
+    assert!(failures[0].payload.get("incident_id").is_some());
 }
 
 #[tokio::test]
@@ -2047,12 +2216,13 @@ async fn test_session_cancel_stops_current_attempt_until_new_user_message() {
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
             .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
     );
+    let client = Arc::new(CancellableClient {
+        calls: AtomicUsize::new(0),
+    });
     let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
         Arc::clone(&store),
-        Arc::new(CancellableClient {
-            calls: AtomicUsize::new(0),
-        }),
+        Arc::clone(&client) as Arc<dyn Client>,
         Arc::new(Registry::new()),
         config,
         engine,
@@ -2066,6 +2236,17 @@ async fn test_session_cancel_stops_current_attempt_until_new_user_message() {
         .filter(|event| event.payload.get("state") == Some(&json!("queued")))
         .collect::<Vec<_>>();
     assert_eq!(starts.len(), 1);
+    for _ in 0..80 {
+        if client.calls.load(Ordering::SeqCst) == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        client.calls.load(Ordering::SeqCst),
+        1,
+        "cancel must race an active physical request rather than pre-empt its admission"
+    );
     assert!(orchestrator.cancel_session(session_id));
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert!(store
@@ -2863,16 +3044,13 @@ async fn critical_maintenance_rejects_unoffered_physical_tool_with_same_call_id_
     assert_eq!(messages.len(), 2);
     assert!(messages[0][0].content.contains("critical-maintenance"));
     assert!(messages[0][0].content.contains("外部物理工具已被暂时撤下"));
+    // The next critical-maintenance request deliberately uses a bounded
+    // Context projection instead of replaying an unbounded Function Calling
+    // transcript. The same immutable receipt must still be visible, including
+    // its original call identity and rejection fact.
     assert!(messages[1].iter().any(|message| {
-        message.role == "assistant"
-            && message
-                .tool_calls
-                .as_ref()
-                .is_some_and(|calls| calls.iter().any(|call| call.id == "write-while-critical"))
-    }));
-    assert!(messages[1].iter().any(|message| {
-        message.role == "tool"
-            && message.tool_call_id.as_deref() == Some("write-while-critical")
+        message.role == "user"
+            && message.content.contains("write-while-critical")
             && message
                 .content
                 .contains("TOOL_NOT_AVAILABLE_IN_CURRENT_PHASE")
@@ -4594,6 +4772,235 @@ async fn test_distinct_sessions_evaluate_concurrently_in_shared_context() {
 }
 
 #[tokio::test]
+async fn shared_provider_outage_opens_one_circuit_and_one_user_incident() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("shared-provider-outage.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(SharedTransientFailureClient {
+        calls: AtomicUsize::new(0),
+        initial_barrier: tokio::sync::Barrier::new(2),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    tokio::join!(
+        publish_user_in_context(&bus, "provider-outage-context", "outage-a", "first"),
+        publish_user_in_context(&bus, "provider-outage-context", "outage-b", "second"),
+    );
+    assert_eq!(
+        wait_for_context_terminal_count(&store, "provider-outage-context", 2)
+            .await
+            .len(),
+        2
+    );
+
+    publish_user_in_context(
+        &bus,
+        "provider-outage-context",
+        "outage-c",
+        "third while circuit is open",
+    )
+    .await;
+    assert_eq!(
+        wait_for_topic(&store, "chat/no_reply", "outage-c")
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+
+    let replies = store
+        .query(QueryFilter {
+            context_id: Some("provider-outage-context".to_string()),
+            topic: Some("chat/reply".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let silent = store
+        .query(QueryFilter {
+            context_id: Some("provider-outage-context".to_string()),
+            topic: Some("chat/no_reply".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let incidents = store
+        .query(QueryFilter {
+            context_id: Some("provider-outage-context".to_string()),
+            topic: Some("chat/runtime_error".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        replies.len(),
+        1,
+        "one outage must produce one visible notice"
+    );
+    assert_eq!(silent.len(), 2, "other failed Activations still terminate");
+    assert_eq!(incidents.len(), 1, "one outage must create one incident");
+    assert!(silent.iter().all(
+        |event| event.payload.get("runtime_failure_user_notice_suppressed") == Some(&json!(true))
+    ));
+}
+
+#[tokio::test]
+async fn partial_reasoning_before_provider_failure_still_opens_recovery_circuit() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("partial-reasoning-provider-outage.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(PartialReasoningProviderFailureClient {
+        calls: AtomicUsize::new(0),
+    });
+    let config = morphz::config::OrchestratorConfig::default();
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        Arc::new(Registry::new()),
+        config,
+        engine,
+    );
+    orchestrator.start().await.unwrap();
+
+    publish_user(&bus, "partial-provider-a", "first request").await;
+    assert_eq!(
+        wait_for_topic(&store, "chat/reply", "partial-provider-a")
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+
+    // The partial reasoning must not suppress outage coordination: the
+    // immediate continuation is denied by the recovery circuit and therefore
+    // does not make a second physical Provider call.
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+    assert!(
+        store
+            .query(QueryFilter {
+                session_id: Some("partial-provider-a".to_string()),
+                topic: Some("runtime/model_attempt_state".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event.payload.get("state") == Some(&json!("failed"))
+                    && event
+                        .payload
+                        .get("detail")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|detail| detail.contains("Provider circuit open"))
+            }),
+        "a real disconnect after partial reasoning must still enter provider recovery"
+    );
+    assert_eq!(
+        store
+            .query(QueryFilter {
+                session_id: Some("partial-provider-a".to_string()),
+                topic: Some("runtime/model_reasoning_summary".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn concurrent_context_overflow_has_one_maintenance_owner_and_fresh_retries() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("shared-context-overflow.db");
+    let bus = Arc::new(InMemoryEventBus::new());
+    let store = Arc::new(SqliteStore::new(db_path.to_str().unwrap()).await.unwrap());
+    install_test_session_registry(&bus, &store);
+    let client = Arc::new(ConcurrentContextLimitClient {
+        calls: AtomicUsize::new(0),
+        initial_failures: AtomicUsize::new(0),
+        initial_barrier: tokio::sync::Barrier::new(2),
+        maintenance_calls: AtomicUsize::new(0),
+    });
+    let config = morphz::config::OrchestratorConfig {
+        context_soft_token_limit: 200_000,
+        context_hard_token_limit: 256_000,
+        ..Default::default()
+    };
+    let engine = Arc::new(
+        ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+    );
+    let registry = Arc::new(Registry::new());
+    registry.register(Arc::new(ContextTxTool::new(Arc::clone(&engine))));
+    let orchestrator = new_test_orchestrator(
+        Arc::clone(&bus),
+        Arc::clone(&store),
+        Arc::clone(&client) as Arc<dyn Client>,
+        registry,
+        config,
+        Arc::clone(&engine),
+    );
+    Arc::clone(&orchestrator).start().await.unwrap();
+
+    tokio::join!(
+        publish_user_in_context(&bus, "overflow-context", "overflow-a", "first"),
+        publish_user_in_context(&bus, "overflow-context", "overflow-b", "second"),
+    );
+    let replies_a = wait_for_topic(&store, "chat/reply", "overflow-a").await;
+    let replies_b = wait_for_topic(&store, "chat/reply", "overflow-b").await;
+    assert_eq!(replies_a.len(), 1);
+    assert_eq!(replies_b.len(), 1);
+    assert_eq!(client.maintenance_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(client.calls.load(Ordering::SeqCst), 5);
+    assert!(replies_a
+        .iter()
+        .chain(&replies_b)
+        .all(|event| event.payload.get("text")
+            == Some(&json!("continued after shared context maintenance"))));
+    let encoding = orchestrator
+        .get_context_encoding("overflow-context", "overflow-a")
+        .await
+        .unwrap();
+    assert!(encoding
+        .state
+        .frames
+        .iter()
+        .any(|frame| frame.id == "provider-overflow-recovered"));
+    let failures = store
+        .query(QueryFilter {
+            context_id: Some("overflow-context".to_string()),
+            topic: Some("chat/runtime_error".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(failures.is_empty());
+}
+
+#[tokio::test]
 async fn test_concurrent_tool_wakeups_are_non_blocking_and_may_coalesce() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("coalesced-wakeups.db");
@@ -4826,7 +5233,13 @@ async fn tool_wakeups_for_one_root_are_single_flight_and_commit_one_reply() {
         .await
         .unwrap();
     assert_eq!(replies.len(), 1);
-    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+    // Bare external results do not carry an ActionGroup settlement boundary,
+    // so the first Activation cannot know whether another result will arrive.
+    // Depending on durable-dispatch timing they may be evaluated together or
+    // in two serialized Activations. The correctness contract is single-flight
+    // execution and one visible Delivery; native parallel tool batches use the
+    // explicit ActionGroup barrier when exactly one follow-up evaluation matters.
+    assert!((1..=2).contains(&client.calls.load(Ordering::SeqCst)));
     assert_eq!(client.max_active.load(Ordering::SeqCst), 1);
     assert_eq!(replies[0].payload["thread_kind"], "delivery");
     assert_eq!(

@@ -70,6 +70,52 @@ pub struct RecallIndexAudit {
     pub frame_documents: u64,
 }
 
+/// Result of one bounded, rebuildable Recall Projection outbox pass.
+/// Ledger and Mind commits only enqueue work; this result describes the
+/// independent projection work and is never part of domain correctness.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecallProjectionBatch {
+    pub claimed: usize,
+    pub projected: usize,
+    pub skipped: usize,
+    pub failed: usize,
+}
+
+/// Runtime-owned read model for an operator's acknowledgement of one derived
+/// attention fact. The immutable source Event remains in the Ledger.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AttentionAcknowledgementRecord {
+    pub event_id: String,
+    pub context_id: String,
+    pub key: String,
+    pub source_kind: String,
+    pub source_id: String,
+    pub source_revision: u64,
+    pub acknowledged_by: String,
+    pub rationale: Option<String>,
+    pub acknowledged_at: DateTime<Utc>,
+}
+
+pub const RECALL_SEARCHABLE_TEXT_MAX_CHARS: usize = 16 * 1024;
+pub const RECALL_PREVIEW_MAX_CHARS: usize = 500;
+
+/// Runtime diagnostics and transient scheduler protocol are deliberately not
+/// lexical memory. Keeping this allow-list small prevents internal duplicate
+/// events and large inspection payloads from dominating Recall.
+pub fn event_has_recall_value(event: &crate::event::Event) -> bool {
+    matches!(
+        event.topic.as_str(),
+        "chat/user_message"
+            | "chat/reply"
+            | "chat/tool_output"
+            | "chat/file_change"
+            | "chat/outbound_message"
+            | "chat/context_tx_committed"
+            | "runtime/thread_result"
+            | "runtime/delegation_result"
+    )
+}
+
 /// Deterministic lexical normalization shared by indexing and querying.
 /// NFKC resolves common full-width/half-width variants while lowercase keeps
 /// mixed Latin/Chinese lookup stable without inventing business synonyms.
@@ -77,19 +123,30 @@ pub fn normalize_recall_text(value: &str) -> String {
     value.nfkc().flat_map(char::to_lowercase).collect()
 }
 
+fn push_recall_text(output: &mut String, value: &str) {
+    let remaining = RECALL_SEARCHABLE_TEXT_MAX_CHARS.saturating_sub(output.chars().count());
+    if remaining == 0 {
+        return;
+    }
+    output.extend(value.chars().take(remaining));
+}
+
 fn collect_recall_scalars(value: &serde_json::Value, output: &mut String) {
+    if output.chars().count() >= RECALL_SEARCHABLE_TEXT_MAX_CHARS {
+        return;
+    }
     match value {
         serde_json::Value::String(value) => {
-            output.push(' ');
-            output.push_str(value);
+            push_recall_text(output, " ");
+            push_recall_text(output, value);
         }
         serde_json::Value::Number(value) => {
-            output.push(' ');
-            output.push_str(&value.to_string());
+            push_recall_text(output, " ");
+            push_recall_text(output, &value.to_string());
         }
         serde_json::Value::Bool(value) => {
-            output.push(' ');
-            output.push_str(if *value { "true" } else { "false" });
+            push_recall_text(output, " ");
+            push_recall_text(output, if *value { "true" } else { "false" });
         }
         serde_json::Value::Array(values) => {
             for value in values {
@@ -119,13 +176,20 @@ pub fn event_recall_document_with_retired(
     sequence: u64,
     retired: bool,
 ) -> RecallDocument {
-    let mut readable = format!("{} {} {}", event.id, event.actor, event.topic);
+    let mut readable = String::new();
+    push_recall_text(
+        &mut readable,
+        &format!("{} {} {}", event.id, event.actor, event.topic),
+    );
     collect_recall_scalars(
         &serde_json::Value::Object(event.payload.clone()),
         &mut readable,
     );
     let searchable_text = normalize_recall_text(&readable);
-    let preview = readable.chars().take(500).collect::<String>();
+    let preview = readable
+        .chars()
+        .take(RECALL_PREVIEW_MAX_CHARS)
+        .collect::<String>();
     let state_hash = format!(
         "{:x}",
         sha2::Sha256::digest(format!("{searchable_text}\0{retired}").as_bytes())
@@ -141,6 +205,29 @@ pub fn event_recall_document_with_retired(
         updated_sequence: sequence,
         state_hash,
     }
+}
+
+/// Applies the same hard storage bound to Frame documents prepared by the
+/// Context domain. The hash is recomputed so a bounded Projection remains
+/// deterministic and rebuildable.
+pub fn bound_recall_document(mut document: RecallDocument) -> RecallDocument {
+    document.searchable_text = document
+        .searchable_text
+        .chars()
+        .take(RECALL_SEARCHABLE_TEXT_MAX_CHARS)
+        .collect();
+    document.preview = document
+        .preview
+        .chars()
+        .take(RECALL_PREVIEW_MAX_CHARS)
+        .collect();
+    document.state_hash = format!(
+        "{:x}",
+        sha2::Sha256::digest(
+            format!("{}\0{}", document.searchable_text, document.retired).as_bytes()
+        )
+    );
+    document
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2296,13 +2383,20 @@ pub trait EventStore: Send + Sync {
         &self,
         filter: QueryFilter,
     ) -> Result<Vec<crate::event::Event>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Reads the current operator acknowledgement Projection. Implementations
+    /// must not reconstruct it by scanning the immutable Ledger per request.
+    async fn list_attention_acknowledgements(
+        &self,
+        context_id: &str,
+    ) -> Result<Vec<AttentionAcknowledgementRecord>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Rebuildable lexical projection shared by Tool, CLI, HTTP and Dashboard.
 /// The Event Ledger and Mind Projection remain authoritative; implementations
-/// must keep hot-path upserts in the same database transaction as their source
-/// mutation and expose degraded capability explicitly when an indexed backend
-/// is unavailable.
+/// source mutation only enqueues a lightweight Outbox intent. Expensive text
+/// extraction and lexical index writes run independently and may be rebuilt
+/// from Ledger + Mind after failure.
 #[async_trait::async_trait]
 pub trait RecallProjectionStore: Send + Sync {
     async fn recall_index_capability(
@@ -2328,6 +2422,15 @@ pub trait RecallProjectionStore: Send + Sync {
         &self,
         context_id: &str,
     ) -> Result<RecallIndexAudit, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Claims and projects at most `limit` current Outbox entries. Claims are
+    /// leased and generation-fenced so an older worker cannot overwrite a
+    /// newer retire/restore or Frame revision.
+    async fn project_recall_outbox_batch(
+        &self,
+        worker_id: &str,
+        limit: usize,
+    ) -> Result<RecallProjectionBatch, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 #[async_trait::async_trait]
@@ -2481,6 +2584,20 @@ pub trait ExecutionJobStore: Send + Sync {
         id: &str,
         expected_revision: u64,
         claim_token: Option<&str>,
+        terminal: ExecutionJobTerminal,
+        event: &crate::event::Event,
+        signal_outbox: bool,
+    ) -> Result<ExecutionJobMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Repairs a stale non-terminal Job projection from an immutable result
+    /// Event which is already present in the Ledger. Unlike normal `finish`,
+    /// this recovery boundary does not require a live worker claim; unlike
+    /// `finish_with_event`, it must never create the Event it relies on.
+    /// The Store must verify the complete Event contents and causal route in
+    /// the same transaction before changing the Job.
+    async fn reconcile_execution_job_from_event(
+        &self,
+        id: &str,
+        expected_revision: u64,
         terminal: ExecutionJobTerminal,
         event: &crate::event::Event,
         signal_outbox: bool,
@@ -3197,6 +3314,13 @@ pub trait ObjectiveStore: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerCoordinationMode {
     ExclusiveProcess,
+    /// Multiple Runtime processes coordinate through one Store on the same
+    /// physical host. A live lease is authoritative, but the operating system
+    /// can prove that a local claimant process has exited and allow immediate
+    /// recovery without waiting for the lease deadline.
+    SharedHostLeases,
+    /// Multiple Runtime workers may live on different hosts. The database
+    /// lease/heartbeat is the only portable liveness authority.
     SharedLeases,
 }
 

@@ -670,23 +670,26 @@ SQL 必须在数据库内应用 limit，不得读取全部命中结果后再截�
 
 Ledger 和 Mind Projection 仍然是真值。`recall_documents` 是可重建索引：
 
-- Event append 后更新对应 Event document；
-- create / derive / revise 后 upsert 当前 Frame document；
-- retire 只更新 `retired=true`，不删除索引文档；
-- restore 更新 `retired=false`；
+- Event append 后只在同一事务写入轻量 Recall Outbox 意图；
+- create / derive / revise 后把当前 Frame document 写入 Outbox；
+- retire 写入 `retired=true` 的新一代意图，不删除索引文档；
+- restore 写入 `retired=false` 的新一代意图；
 - relation 变化后刷新受影响 Frame 的关系检索文本。
 
 ### 14.2 原子写入
 
-在同一数据库后端中，Ledger/Mind 事务与 Recall Projection 更新应尽量使用同一数据库事务。若实现阶段必须采用异步投影，则需要：
+Recall 是可重建的检索 Projection，不得延长 Ledger/Mind 的权威写事务。当前实现采用同库 Transactional Outbox：
 
-- `indexed_through_sequence` 游标；
-- 幂等重放；
-- Lag 可观测性；
-- 查询结果标注 index revision；
-- 启动恢复不扫描无界历史，而是从游标继续。
+- Ledger/Mind 事实与对应 Outbox 意图原子提交；
+- 后台 projector 以小批次提取文本、执行 NFKC 规范化并更新 FTS/trigram；
+- 每个文档使用递增 generation 和 claim token fencing，旧 worker 不能覆盖更新的 retire/restore 或 Frame revision；
+- claim 具有租约，进程退出后可自动恢复；失败采用有界指数退避；
+- 同一文档的重复意图合并为最新 generation，而不是积累无界队列；
+- 只索引具有认知价值的 Event topic；诊断、模型流、调度协议等内部 Event 不进入 Recall；
+- 单文档 searchable text 和 preview 均有硬上限，巨大工具 payload 不会生成无界 trigram；
+- 显式 rebuild 仍可从 Ledger + Mind 重建完整索引，不改变任何权威事实。
 
-v1 优先采用同事务更新，避免刚退休的 Frame 暂时无法通过关键词找到。
+因此 Recall 查询允许短暂的 Projection lag，但 Agent 的事实提交不会再被 FTS 单写者阻塞。
 
 ### 14.3 重建命令
 
@@ -974,7 +977,7 @@ D ────────┘
 | Context Token pressure | 按完整 Context Encoding 统一估算总量；不生成维护候选或逐项成本清单；提交后回执报告总体效果 |
 | Recall by Frame ID | 返回 lifecycle、正文、sources 与有向关系边 |
 | Recall depth | 有界 BFS、稳定排序、防环、签名 cursor、节点与字符预算 |
-| Keyword recall | SQLite FTS5 trigram；PostgreSQL `pg_trgm`；能力不可用时显式 degraded 并有界回退 |
+| Keyword recall | SQLite FTS5 trigram；PostgreSQL `pg_trgm`；Transactional Outbox 后台有界投影；能力不可用时显式 degraded 并有界回退 |
 | 中文 | 索引和查询统一 NFKC + lowercase，覆盖中文、混合语言与全角/半角 |
 | Frame 搜索结果 | Event 与 Frame 都是一等 `recall_documents` 文档，retired 文档不删除 |
 | 相关性排序 | exact ID、lexical relevance、updated sequence、stable ID |

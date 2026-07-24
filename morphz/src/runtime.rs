@@ -18,21 +18,22 @@ use crate::memory::postgres::PostgresStore;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalRecord,
-    ApprovalResolution, ApprovalStore, CapabilityLeaseFilter, CapabilityLeaseMutation,
-    CapabilityLeaseRecord, CognitiveContextRecord, ContextUpdate, DelegationRecord,
-    DelegationStatus, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
-    EdgeCommandStatus, EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter,
-    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, ExecutionNodeMutation,
-    ExecutionNodeRecord, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
-    ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
-    ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
-    ExecutionTargetStore, MessageClaim, MindProjectionStore, NewAgent, NewCognitiveContext,
-    NewDelegation, NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode,
-    NewObjective, NewPrincipal, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, QueryFilter, RecallProjectionStore,
-    RuntimeStore, ScheduleMutation, ScheduleRecord, ScheduleStatus, SessionRecord, SessionStore,
-    SessionUpdate, ThreadActivationRecord, ThreadActivationStatus, ThreadPhase, ThreadRecord,
-    ThreadSignalRecord, ThreadSignalStatus, TimerStore,
+    ApprovalResolution, ApprovalStore, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
+    CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord, ContextUpdate,
+    DelegationRecord, DelegationStatus, EdgeCommandMutation, EdgeCommandOutputChunk,
+    EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, EventStore, ExecutionApprovalStore,
+    ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionTargetAuthorizationFilter,
+    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
+    ExecutionTargetFilter, ExecutionTargetMutation, ExecutionTargetRecord,
+    ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore, MessageClaim,
+    MindProjectionStore, NewAgent, NewCognitiveContext, NewDelegation, NewExecutionNodeChallenge,
+    NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewPrincipal, NewSession,
+    ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
+    PairExecutionNode, QueryFilter, RecallProjectionStore, RuntimeStore, ScheduleMutation,
+    ScheduleRecord, ScheduleStatus, SessionRecord, SessionStore, SessionUpdate,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadPhase, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -157,18 +158,7 @@ pub struct SchedulerSnapshot {
 /// fact. The underlying scheduler authority remains unchanged: acknowledging a
 /// failure only removes that exact fingerprint from the operator inbox. A new
 /// source revision produces a new fingerprint and therefore reopens attention.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AttentionAcknowledgement {
-    pub event_id: String,
-    pub context_id: String,
-    pub key: String,
-    pub source_kind: String,
-    pub source_id: String,
-    pub source_revision: u64,
-    pub acknowledged_by: String,
-    pub rationale: Option<String>,
-    pub acknowledged_at: chrono::DateTime<chrono::Utc>,
-}
+pub type AttentionAcknowledgement = AttentionAcknowledgementRecord;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AcknowledgeAttentionCommand {
@@ -177,27 +167,6 @@ pub struct AcknowledgeAttentionCommand {
     pub source_id: String,
     pub source_revision: u64,
     pub rationale: Option<String>,
-}
-
-fn attention_acknowledgement_from_event(event: Event) -> Option<AttentionAcknowledgement> {
-    if event.topic != "runtime/attention_acknowledged" {
-        return None;
-    }
-    let payload = &event.payload;
-    Some(AttentionAcknowledgement {
-        event_id: event.id,
-        context_id: payload.get("context_id")?.as_str()?.to_string(),
-        key: payload.get("key")?.as_str()?.to_string(),
-        source_kind: payload.get("source_kind")?.as_str()?.to_string(),
-        source_id: payload.get("source_id")?.as_str()?.to_string(),
-        source_revision: payload.get("source_revision")?.as_u64()?,
-        acknowledged_by: payload.get("acknowledged_by")?.as_str()?.to_string(),
-        rationale: payload
-            .get("rationale")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        acknowledged_at: event.timestamp,
-    })
 }
 
 fn model_usage_record_from_event(event: Event) -> Option<ModelUsageRecord> {
@@ -442,6 +411,7 @@ pub struct RuntimeStatus {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeRecoveryStatus {
     pub preserved_execution_jobs: usize,
+    pub recovered_execution_jobs: usize,
     pub requeued_execution_jobs: usize,
     pub lost_execution_jobs: usize,
     pub recovered_background_outboxes: usize,
@@ -695,14 +665,14 @@ impl MorphzRuntimeBuilder {
             }
         };
         let permissions = Arc::new(PermissionBroker::new(permission_profile, approval_provider));
+        // Evaluation leases are failure detectors, not model/tool wall-clock
+        // budgets. Healthy long-running work renews this short lease; a dead
+        // worker must not strand an Objective for the model hard timeout.
         let objective_lease_secs = self
             .config
             .orchestrator
-            .model_attempt_hard_timeout_secs
-            .unwrap_or(self.config.orchestrator.model_provider_queue_timeout_secs)
-            .saturating_mul(4)
-            .saturating_add(self.config.orchestrator.tool_timeout_secs.saturating_mul(4))
-            .max(600);
+            .objective_evaluation_lease_secs
+            .max(3);
         let objective_evaluations = Arc::new(ObjectiveEvaluationRegistry::default());
         let timer_engine = Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>));
         let objective_supervisor = Arc::new(
@@ -1018,7 +988,10 @@ impl MorphzRuntime {
         let execution_recovery = self
             .inner
             .execution_jobs
-            .reconcile_startup(self.inner.store.worker_coordination_mode())
+            .reconcile_startup(
+                self.inner.store.worker_coordination_mode(),
+                self.inner.store.as_ref(),
+            )
             .await?;
         let recovered_background_outboxes = self
             .inner
@@ -1028,6 +1001,7 @@ impl MorphzRuntime {
         if let Ok(mut recovery) = self.inner.recovery.write() {
             *recovery = RuntimeRecoveryStatus {
                 preserved_execution_jobs: execution_recovery.preserved_job_ids.len(),
+                recovered_execution_jobs: execution_recovery.recovered_receipts.len(),
                 requeued_execution_jobs: execution_recovery.requeue_receipts.len(),
                 lost_execution_jobs: execution_recovery.lost_receipts.len(),
                 recovered_background_outboxes,
@@ -1036,6 +1010,7 @@ impl MorphzRuntime {
         }
         tracing::info!(
             preserved = execution_recovery.preserved_job_ids.len(),
+            recovered = execution_recovery.recovered_receipts.len(),
             requeued = execution_recovery.requeue_receipts.len(),
             lost = execution_recovery.lost_receipts.len(),
             recovered_background_outboxes,
@@ -1045,6 +1020,37 @@ impl MorphzRuntime {
         Arc::clone(&self.inner.objective_supervisor).start().await?;
         self.inner.thread_scheduler.recover().await?;
         self.inner.timer_engine.start();
+        let recall_store = Arc::clone(&self.inner.store);
+        let recall_worker_id = format!(
+            "recall-projector:{}:{}",
+            std::process::id(),
+            self.inner.process_started_at.timestamp_micros()
+        );
+        tokio::spawn(async move {
+            const BATCH_SIZE: usize = 4;
+            loop {
+                match recall_store
+                    .project_recall_outbox_batch(&recall_worker_id, BATCH_SIZE)
+                    .await
+                {
+                    Ok(batch) if batch.claimed == BATCH_SIZE => {
+                        // A full batch proves that a backlog exists. A mere
+                        // `yield_now` can schedule this worker again
+                        // immediately, allowing a rebuildable Recall
+                        // Projection to repeatedly reclaim SQLite's
+                        // single-writer slot ahead of Ledger/Timer/Execution
+                        // commits. Keep throughput high while giving the
+                        // authoritative control plane a deterministic window.
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
+                    Ok(_) => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
+                    Err(error) => {
+                        tracing::warn!(%error, "Recall Projection background batch failed");
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        });
         let edge_store = Arc::clone(&self.inner.store);
         let reconcile_interval = std::time::Duration::from_secs(
             self.inner
@@ -2925,25 +2931,10 @@ impl MorphzRuntime {
         if self.inner.store.get_context(context_id).await?.is_none() {
             return Err(format!("Context '{context_id}' 不存在").into());
         }
-        let mut records = self
-            .query_events(QueryFilter {
-                context_id: Some(context_id.to_string()),
-                topic: Some("runtime/attention_acknowledged".to_string()),
-                ..QueryFilter::default()
-            })
-            .await?
-            .into_iter()
-            .filter_map(attention_acknowledgement_from_event)
-            .collect::<Vec<_>>();
-        records.sort_by(|left, right| {
-            right
-                .acknowledged_at
-                .cmp(&left.acknowledged_at)
-                .then_with(|| left.event_id.cmp(&right.event_id))
-        });
-        let mut seen = HashSet::new();
-        records.retain(|record| seen.insert(record.key.clone()));
-        Ok(records)
+        self.inner
+            .store
+            .list_attention_acknowledgements(context_id)
+            .await
     }
 
     /// Acknowledges one exact attention fingerprint without altering the
@@ -7369,7 +7360,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn expired_activation_lease_recovers_after_restart_without_process_local_sleep() {
+    async fn stale_same_host_activation_recovers_before_lease_expiry_after_restart() {
         let database = NamedTempFile::new().unwrap();
         let mut config = AppConfig::default();
         config.permissions.mode = PermissionMode::Custom;
@@ -7501,8 +7492,11 @@ mod tests {
                 &activation.id,
                 activation.revision,
                 crate::memory::ThreadActivationStatus::Running,
-                Some(&format!("runtime:{}", std::process::id())),
-                Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
+                Some(&format!(
+                    "runtime:{}:previous-process-instance",
+                    std::process::id()
+                )),
+                Some(chrono::Utc::now() + chrono::Duration::minutes(10)),
                 None,
             )
             .await
@@ -7581,7 +7575,7 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_millis(150), replies.recv())
                 .await
                 .is_err(),
-            "过期 Activation lease 在重启恢复后只能产生一次终态回复"
+            "已死亡 Runtime 的未过期 Activation lease 在重启恢复后只能产生一次终态回复"
         );
     }
 

@@ -8,6 +8,7 @@ export interface ToolCallSummary {
 }
 
 export type ConversationEventKind = 'user' | 'agent' | 'background' | 'progress' | 'reasoning' | 'system'
+export type ConversationLane = 'dialogue' | 'execution_output'
 
 export function conversationEventKind(
   topic: string,
@@ -31,6 +32,17 @@ export function conversationEventKind(
   if (topic === 'chat/assistant_call' && payload.terminal_outcome !== true) return 'reasoning'
   if (topic === 'chat/cancelled') return 'system'
   return null
+}
+
+export function conversationEventLane(
+  topic: string,
+  payload: Record<string, unknown>,
+): ConversationLane | null {
+  const kind = conversationEventKind(topic, payload)
+  if (kind === null) return null
+  return kind === 'background' || kind === 'progress' || kind === 'reasoning'
+    ? 'execution_output'
+    : 'dialogue'
 }
 
 export function formatTime(value: string | undefined, locale: string) {

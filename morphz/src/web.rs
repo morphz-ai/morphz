@@ -689,6 +689,10 @@ impl Server {
                 post(handle_resume_objective),
             )
             .route(
+                "/api/objectives/:objective_id/pause",
+                post(handle_pause_objective),
+            )
+            .route(
                 "/api/objectives/:objective_id",
                 delete(handle_delete_objective),
             )
@@ -2970,6 +2974,61 @@ async fn handle_resume_objective(
     }
 }
 
+async fn handle_pause_objective(
+    State(state): State<Arc<AppState>>,
+    Path(objective_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<ResumeObjectiveRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let objective = match state.runtime.get_objective(&objective_id).await {
+        Ok(Some(objective)) => objective,
+        Ok(None) => return error_response(StatusCode::NOT_FOUND, "Objective 不存在"),
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    if objective.status != ObjectiveStatus::Active {
+        return error_response(
+            StatusCode::CONFLICT,
+            format!(
+                "Objective 当前状态为 '{}'，只有 active 可以显式暂停",
+                objective.status.as_str()
+            ),
+        );
+    }
+    let reason = request
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("用户通过 Dashboard 显式暂停 Objective");
+    match state
+        .runtime
+        .pause_objective(&objective_id, request.expected_revision, reason)
+        .await
+    {
+        Ok(ObjectiveMutation::Updated(updated)) => Json(json!({
+            "paused": true,
+            "objective": updated,
+        }))
+        .into_response(),
+        Ok(ObjectiveMutation::Conflict { current }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Objective revision 冲突，请刷新后重试",
+                "current": current,
+            })),
+        )
+            .into_response(),
+        Ok(ObjectiveMutation::NotFound) => {
+            error_response(StatusCode::NOT_FOUND, "Objective 不存在")
+        }
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
 /// Remove an Objective from the live control plane without erasing its audit
 /// history. Internally this is the `cancelled` terminal transition: it stops
 /// the current evaluation and prevents the Supervisor from continuing it.
@@ -4733,6 +4792,9 @@ mod tests {
             )
             .await
             .unwrap();
+        // Recall is an eventually consistent, rebuildable Projection and is
+        // deliberately outside the Ledger/Mind commit transaction.
+        runtime.rebuild_recall_index("context-test").await.unwrap();
 
         let inspect = handle_inspect_recall_index(
             State(Arc::clone(&state)),

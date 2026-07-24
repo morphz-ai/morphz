@@ -15,7 +15,8 @@ use crate::execution::{
     ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat, JobOutcome, JobReceipt,
 };
 use crate::llm::{
-    Client, Message, ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition,
+    Client, Message, ModelFailure, ModelFailureKind, ModelUsage, PromptTokenAccuracy,
+    PromptTokenCount, ToolDefinition,
 };
 use crate::memory::{
     ActionGroupMemberStatus, ActionGroupStore, ActivationOutcomeCommit, ApprovalFilter,
@@ -49,6 +50,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
@@ -67,6 +69,7 @@ struct DurableEventWriterMetrics {
     committed_events: AtomicU64,
     committed_batches: AtomicU64,
     failed_batches: AtomicU64,
+    contention_retries: AtomicU64,
     largest_batch: AtomicUsize,
 }
 
@@ -84,12 +87,29 @@ struct DurablePromptUsageAnchor {
     attempt_id: String,
 }
 
+#[derive(Debug, Clone)]
+struct RuntimeFailureIncident {
+    id: String,
+    last_seen: Instant,
+    occurrences: u64,
+}
+
+#[derive(Debug, Clone)]
+struct RuntimeFailureObservation {
+    id: String,
+    occurrence: u64,
+    should_notify_user: bool,
+}
+
+const RUNTIME_FAILURE_INCIDENT_WINDOW: Duration = Duration::from_secs(5 * 60);
+
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 pub struct DurableEventWriterMetricsSnapshot {
     pub queue_depth: usize,
     pub committed_events: u64,
     pub committed_batches: u64,
     pub failed_batches: u64,
+    pub contention_retries: u64,
     pub largest_batch: usize,
 }
 
@@ -137,9 +157,33 @@ impl DurableEventWriterMetrics {
             committed_events: self.committed_events.load(Ordering::Relaxed),
             committed_batches: self.committed_batches.load(Ordering::Relaxed),
             failed_batches: self.failed_batches.load(Ordering::Relaxed),
+            contention_retries: self.contention_retries.load(Ordering::Relaxed),
             largest_batch: self.largest_batch.load(Ordering::Relaxed),
         }
     }
+}
+
+fn is_transient_storage_contention(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        let message = error.to_string().to_ascii_lowercase();
+        if message.contains("database is locked")
+            || message.contains("database table is locked")
+            || message.contains("sqlite_busy")
+            || message.contains("sqlite_locked")
+            || message.contains("(code: 5)")
+            || message.contains("(code: 6)")
+            || message.contains("sqlstate 40001")
+            || message.contains("sqlstate 40p01")
+            || message.contains("could not serialize access")
+            || message.contains("serialization failure")
+            || message.contains("deadlock detected")
+        {
+            return true;
+        }
+        current = error.source();
+    }
+    false
 }
 
 #[derive(Clone)]
@@ -176,10 +220,37 @@ impl DurableEventWriter {
                     completions.push(request.committed);
                 }
                 let batch_size = entries.len();
-                let result = store
-                    .append_batch(entries)
-                    .await
-                    .map_err(|error| error.to_string());
+                // Durable Event IDs are immutable and append_batch is
+                // idempotent, therefore retrying a whole batch after a
+                // transient single-writer/serialization conflict is safe.
+                // Never turn ordinary storage contention into an LLM failure:
+                // doing so used to block the Objective even when the Provider
+                // had already returned a valid response.
+                let mut retry = 0u64;
+                let mut retry_delay = std::time::Duration::from_millis(10);
+                let result = loop {
+                    match store.append_batch(entries.clone()).await {
+                        Ok(()) => break Ok(()),
+                        Err(error) if is_transient_storage_contention(error.as_ref()) => {
+                            retry = retry.saturating_add(1);
+                            writer_metrics
+                                .contention_retries
+                                .fetch_add(1, Ordering::Relaxed);
+                            if retry == 1 || retry.is_power_of_two() {
+                                tracing::warn!(
+                                    batch_size,
+                                    retry,
+                                    delay_ms = retry_delay.as_millis(),
+                                    error = %error,
+                                    "Durable Event Writer 等待持久存储写槽；保留批次并退避重试"
+                                );
+                            }
+                            tokio::time::sleep(retry_delay).await;
+                            retry_delay = (retry_delay * 2).min(std::time::Duration::from_secs(1));
+                        }
+                        Err(error) => break Err(error.to_string()),
+                    }
+                };
                 writer_metrics
                     .queue_depth
                     .fetch_sub(batch_size, Ordering::Relaxed);
@@ -194,7 +265,11 @@ impl DurableEventWriter {
                         writer_metrics
                             .largest_batch
                             .fetch_max(batch_size, Ordering::Relaxed);
-                        tracing::debug!(batch_size, "Durable Event group commit 完成");
+                        tracing::debug!(
+                            batch_size,
+                            contention_retries = retry,
+                            "Durable Event group commit 完成"
+                        );
                     }
                     Err(error) => {
                         writer_metrics
@@ -623,24 +698,105 @@ struct ModelReasoningSummaryAccumulator {
 struct ModelCompletionError {
     source: DynError,
     reasoning_summary: String,
+    origin: ModelCompletionErrorOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelCompletionErrorOrigin {
+    Provider,
+    RuntimePersistence,
+    RuntimeInternal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderCircuitPhase {
+    Open,
+    HalfOpen,
+}
+
+#[derive(Debug)]
+struct ProviderCircuitState {
+    phase: ProviderCircuitPhase,
+    consecutive_failures: u32,
+    generation: u64,
+    retry_at: tokio::time::Instant,
+    probe_in_flight: bool,
+    waiting_contexts: HashSet<String>,
+}
+
+#[derive(Debug, Default)]
+struct ContextMaintenanceGate {
+    owner: Arc<Mutex<()>>,
+    completed_epoch: AtomicU64,
 }
 
 impl ModelCompletionError {
-    fn without_summary(source: DynError) -> Self {
+    fn provider(source: DynError) -> Self {
         Self {
             source,
             reasoning_summary: String::new(),
+            origin: ModelCompletionErrorOrigin::Provider,
         }
     }
 
-    async fn with_summary(
+    fn persistence(source: DynError) -> Self {
+        Self {
+            source,
+            reasoning_summary: String::new(),
+            origin: ModelCompletionErrorOrigin::RuntimePersistence,
+        }
+    }
+
+    fn internal(source: DynError) -> Self {
+        Self {
+            source,
+            reasoning_summary: String::new(),
+            origin: ModelCompletionErrorOrigin::RuntimeInternal,
+        }
+    }
+
+    async fn with_summary_from(
         source: DynError,
         accumulator: &Arc<Mutex<ModelReasoningSummaryAccumulator>>,
+        origin: ModelCompletionErrorOrigin,
     ) -> Self {
         Self {
             source,
             reasoning_summary: accumulator.lock().await.text.clone(),
+            origin,
         }
+    }
+
+    fn is_runtime_failure(&self) -> bool {
+        self.origin != ModelCompletionErrorOrigin::Provider
+    }
+
+    fn into_source(self) -> DynError {
+        self.source
+    }
+
+    fn failure(&self) -> ModelFailure {
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(self.source.as_ref());
+        while let Some(error) = current {
+            if let Some(failure) = error.downcast_ref::<ModelFailure>() {
+                return failure.clone();
+            }
+            if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
+                let kind = match io_error.kind() {
+                    std::io::ErrorKind::TimedOut => ModelFailureKind::StreamIdleTimeout,
+                    std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::NotConnected
+                    | std::io::ErrorKind::HostUnreachable
+                    | std::io::ErrorKind::NetworkUnreachable => ModelFailureKind::TransientNetwork,
+                    _ => ModelFailureKind::Unknown,
+                };
+                return ModelFailure::new(kind, self.to_string());
+            }
+            current = error.source();
+        }
+        ModelFailure::classify_message(self.to_string())
     }
 }
 
@@ -928,6 +1084,20 @@ pub struct Orchestrator {
     /// calibrating another.
     prompt_usage_anchors: DashMap<(String, String, String, String), DurablePromptUsageAnchor>,
     model_provider_metrics: Arc<ModelProviderMetrics>,
+    /// Shared outage gate for one physical Provider endpoint/model. Adapter
+    /// retries are request-local; this circuit prevents many independent
+    /// Activations from amplifying the same outage after those retries fail.
+    provider_circuits: DashMap<String, Arc<Mutex<ProviderCircuitState>>>,
+    /// Provider-observed Context overflow may be discovered by many
+    /// Activations at once. Exactly one owner is allowed to run the semantic
+    /// maintenance request; waiters restart from the newer projection after
+    /// the owner commits context_tx.
+    context_maintenance_gates: DashMap<String, Arc<ContextMaintenanceGate>>,
+    /// Concurrent Activations commonly observe the same physical outage. Each
+    /// one still needs a terminal control event for Objective reconciliation,
+    /// but only the first occurrence in a short incident window should become
+    /// a user-visible reply.
+    runtime_failure_incidents: DashMap<String, RuntimeFailureIncident>,
     #[doc(hidden)]
     pub model_provider_semaphore: Arc<tokio::sync::Semaphore>,
     activation_admission: ActivationAdmissionController,
@@ -1193,6 +1363,161 @@ impl Orchestrator {
         self.context_engine.capacity_metrics()
     }
 
+    async fn admit_provider_circuit(&self, context_id: &str) -> Result<(), ModelFailure> {
+        let resource = self.client.provider_resource_key();
+        let Some(circuit) = self
+            .provider_circuits
+            .get(&resource)
+            .map(|entry| Arc::clone(entry.value()))
+        else {
+            return Ok(());
+        };
+        let mut state = circuit.lock().await;
+        state.waiting_contexts.insert(context_id.to_string());
+        let now = tokio::time::Instant::now();
+        if state.phase == ProviderCircuitPhase::Open && now >= state.retry_at {
+            state.phase = ProviderCircuitPhase::HalfOpen;
+            state.probe_in_flight = false;
+        }
+        match state.phase {
+            ProviderCircuitPhase::Open => {
+                let retry_after = state
+                    .retry_at
+                    .saturating_duration_since(now)
+                    .as_secs()
+                    .max(1);
+                Err(ModelFailure::new(
+                    ModelFailureKind::ServerUnavailable,
+                    format!("Provider circuit open; retry in {retry_after}s"),
+                )
+                .with_retry_after(Some(retry_after)))
+            }
+            ProviderCircuitPhase::HalfOpen if state.probe_in_flight => Err(ModelFailure::new(
+                ModelFailureKind::ServerUnavailable,
+                "Provider circuit half-open; another Activation owns the recovery probe",
+            )
+            .with_retry_after(Some(1))),
+            ProviderCircuitPhase::HalfOpen => {
+                state.probe_in_flight = true;
+                Ok(())
+            }
+        }
+    }
+
+    async fn record_provider_failure(&self, context_id: &str, failure: &ModelFailure) {
+        if !failure.kind.uses_provider_recovery() {
+            return;
+        }
+        let resource = self.client.provider_resource_key();
+        let circuit = self
+            .provider_circuits
+            .entry(resource.clone())
+            .or_insert_with(|| {
+                Arc::new(Mutex::new(ProviderCircuitState {
+                    phase: ProviderCircuitPhase::Open,
+                    consecutive_failures: 0,
+                    generation: 0,
+                    retry_at: tokio::time::Instant::now(),
+                    probe_in_flight: false,
+                    waiting_contexts: HashSet::new(),
+                }))
+            })
+            .clone();
+        let (generation, delay) = {
+            let mut state = circuit.lock().await;
+            state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+            state.generation = state.generation.saturating_add(1);
+            state.phase = ProviderCircuitPhase::Open;
+            state.probe_in_flight = false;
+            state.waiting_contexts.insert(context_id.to_string());
+            let exponent = state.consecutive_failures.saturating_sub(1).min(6);
+            let calculated = 5_u64.saturating_mul(1_u64 << exponent).min(300);
+            let delay_secs = calculated.max(failure.retry_after_secs.unwrap_or_default());
+            let delay = std::time::Duration::from_secs(delay_secs.max(1));
+            state.retry_at = tokio::time::Instant::now() + delay;
+            (state.generation, delay)
+        };
+        tracing::warn!(
+            provider_resource = %resource,
+            failure_kind = failure.kind.as_str(),
+            delay_secs = delay.as_secs(),
+            generation,
+            "Provider 共享熔断已打开"
+        );
+        let bus = Arc::clone(&self.bus);
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let contexts = {
+                let mut state = circuit.lock().await;
+                if state.generation != generation || state.phase != ProviderCircuitPhase::Open {
+                    return;
+                }
+                state.phase = ProviderCircuitPhase::HalfOpen;
+                state.probe_in_flight = false;
+                state.waiting_contexts.iter().cloned().collect::<Vec<_>>()
+            };
+            for context_id in contexts {
+                let event = Event::new(
+                    format!(
+                        "provider_recovery_probe_{}_{}",
+                        generation,
+                        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+                    ),
+                    "Runtime-ProviderRecovery".to_string(),
+                    "runtime_control".to_string(),
+                    "runtime/resource_available".to_string(),
+                    [
+                        ("context_id".to_string(), json!(context_id)),
+                        ("resource".to_string(), json!(&resource)),
+                        ("recovery_phase".to_string(), json!("half_open")),
+                        ("generation".to_string(), json!(generation)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                );
+                if let Err(error) = bus.publish(event).await {
+                    tracing::error!(%error, provider_resource = %resource, "发布 Provider 半开恢复事件失败");
+                }
+            }
+        });
+    }
+
+    async fn record_provider_success(&self) {
+        let resource = self.client.provider_resource_key();
+        let Some((_, circuit)) = self.provider_circuits.remove(&resource) else {
+            return;
+        };
+        let contexts = circuit
+            .lock()
+            .await
+            .waiting_contexts
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        tracing::info!(provider_resource = %resource, "Provider 恢复探测成功；共享熔断已关闭");
+        for context_id in contexts {
+            let event = Event::new(
+                format!(
+                    "provider_recovered_{}",
+                    Utc::now().timestamp_nanos_opt().unwrap_or_default()
+                ),
+                "Runtime-ProviderRecovery".to_string(),
+                "runtime_control".to_string(),
+                "runtime/resource_available".to_string(),
+                [
+                    ("context_id".to_string(), json!(context_id)),
+                    ("resource".to_string(), json!(&resource)),
+                    ("recovery_phase".to_string(), json!("closed")),
+                ]
+                .into_iter()
+                .collect(),
+            );
+            if let Err(error) = self.bus.publish(event).await {
+                tracing::error!(%error, provider_resource = %resource, "发布 Provider 恢复事件失败");
+            }
+        }
+    }
+
     async fn acquire_model_provider_slot(
         &self,
         deadline: tokio::time::Instant,
@@ -1272,6 +1597,9 @@ impl Orchestrator {
             prompt_pressure_measurements: DashMap::new(),
             prompt_usage_anchors: DashMap::new(),
             model_provider_metrics: Arc::new(ModelProviderMetrics::default()),
+            provider_circuits: DashMap::new(),
+            context_maintenance_gates: DashMap::new(),
+            runtime_failure_incidents: DashMap::new(),
             model_provider_semaphore,
             activation_admission,
             dialogue_thread_gates: DashMap::new(),
@@ -1853,10 +2181,7 @@ impl Orchestrator {
                         }
                     }
                     ThreadActivationStatus::Running => {
-                        if self.context_engine.worker_coordination_mode()
-                            == crate::memory::WorkerCoordinationMode::ExclusiveProcess
-                            && runtime_claimant_is_definitely_dead(activation.claimed_by.as_deref())
-                        {
+                        if recovery_owns_activation {
                             tracing::warn!(
                                 activation_id = %activation.id,
                                 claimed_by = ?activation.claimed_by,
@@ -3150,7 +3475,7 @@ impl Orchestrator {
                 &activation.id,
                 activation.revision,
                 ThreadActivationStatus::Running,
-                Some(&format!("runtime:{}", std::process::id())),
+                Some(runtime_claimant_id()),
                 Some(lease_expires_at),
                 None,
             )
@@ -3626,6 +3951,12 @@ impl Orchestrator {
         tools: Vec<crate::llm::ToolDefinition>,
         prompt_measurement: Option<PromptTokenCount>,
     ) -> Result<crate::llm::Response, ModelCompletionError> {
+        let stream_context_id = self
+            .context_id_for_session(session_id)
+            .map_err(ModelCompletionError::internal)?;
+        self.admit_provider_circuit(&stream_context_id)
+            .await
+            .map_err(|failure| ModelCompletionError::provider(Box::new(failure) as DynError))?;
         let queue_timeout = std::time::Duration::from_secs(
             self.orchestrator_config
                 .model_provider_queue_timeout_secs
@@ -3638,7 +3969,7 @@ impl Orchestrator {
         let _provider_slot = self
             .acquire_model_provider_slot(queue_deadline)
             .await
-            .map_err(ModelCompletionError::without_summary)?;
+            .map_err(ModelCompletionError::provider)?;
         let model_hard_deadline = self
             .orchestrator_config
             .model_attempt_hard_timeout_secs
@@ -3653,9 +3984,6 @@ impl Orchestrator {
         let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel();
         let stream_bus = Arc::clone(&self.bus);
         let stream_session_id = session_id.to_string();
-        let stream_context_id = self
-            .context_id_for_session(session_id)
-            .map_err(ModelCompletionError::without_summary)?;
         let stream_attempt_id = attempt_id.to_string();
         let mut stream_route = Vec::new();
         self.append_activation_route(attempt_id, &mut stream_route);
@@ -3671,7 +3999,7 @@ impl Orchestrator {
             &[],
         )
         .await
-        .map_err(ModelCompletionError::without_summary)?;
+        .map_err(ModelCompletionError::persistence)?;
         let reasoning_summary = Arc::new(Mutex::new(ModelReasoningSummaryAccumulator::default()));
         let forward_bus = Arc::clone(&stream_bus);
         let forward_session_id = stream_session_id.clone();
@@ -3816,8 +4144,8 @@ impl Orchestrator {
                 match tokio::time::timeout_at(deadline, completion).await {
                     Ok(result) => result,
                     Err(_) => {
-                        let error = std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
+                        let failure = ModelFailure::new(
+                            ModelFailureKind::StreamIdleTimeout,
                             format!("model hard deadline exceeded after {seconds}s"),
                         );
                         stream_forwarder.abort();
@@ -3832,7 +4160,7 @@ impl Orchestrator {
                             timeout_prompt_measurement.as_ref(),
                         )
                         .await
-                        .map_err(ModelCompletionError::without_summary)?;
+                        .map_err(ModelCompletionError::persistence)?;
                         self.remember_prompt_usage_anchor(
                             &stream_context_id,
                             &stream_session_id,
@@ -3852,11 +4180,18 @@ impl Orchestrator {
                         )
                         .await
                         .map_err(|persist_error| {
-                            ModelCompletionError::without_summary(persist_error)
+                            ModelCompletionError::persistence(persist_error)
                         })?;
-                        return Err(ModelCompletionError::with_summary(
-                            Box::new(error) as DynError,
+                        // Partial reasoning is progress evidence, not a
+                        // recovery signal.  The physical request still
+                        // failed, so Objectives waiting on this Provider must
+                        // enter the same durable reconnect loop.
+                        self.record_provider_failure(&stream_context_id, &failure)
+                            .await;
+                        return Err(ModelCompletionError::with_summary_from(
+                            Box::new(failure) as DynError,
                             &reasoning_summary,
+                            ModelCompletionErrorOrigin::Provider,
                         )
                         .await);
                     }
@@ -3886,16 +4221,14 @@ impl Orchestrator {
                         });
                     let _ = model_tx.send(result);
                 })
-                .map_err(|error| {
-                    ModelCompletionError::without_summary(Box::new(error) as DynError)
-                })?;
+                .map_err(|error| ModelCompletionError::internal(Box::new(error) as DynError))?;
             if let Some((deadline, seconds)) = model_hard_deadline {
                 match tokio::time::timeout_at(deadline, model_rx).await {
                     Ok(Ok(result)) => result,
                     Ok(Err(error)) => Err(error.into()),
                     Err(_) => {
-                        let error = std::io::Error::new(
-                            std::io::ErrorKind::TimedOut,
+                        let failure = ModelFailure::new(
+                            ModelFailureKind::StreamIdleTimeout,
                             format!("model hard deadline exceeded after {seconds}s"),
                         );
                         stream_forwarder.abort();
@@ -3910,7 +4243,7 @@ impl Orchestrator {
                             timeout_prompt_measurement.as_ref(),
                         )
                         .await
-                        .map_err(ModelCompletionError::without_summary)?;
+                        .map_err(ModelCompletionError::persistence)?;
                         self.remember_prompt_usage_anchor(
                             &stream_context_id,
                             &stream_session_id,
@@ -3930,11 +4263,14 @@ impl Orchestrator {
                         )
                         .await
                         .map_err(|persist_error| {
-                            ModelCompletionError::without_summary(persist_error)
+                            ModelCompletionError::persistence(persist_error)
                         })?;
-                        return Err(ModelCompletionError::with_summary(
-                            Box::new(error) as DynError,
+                        self.record_provider_failure(&stream_context_id, &failure)
+                            .await;
+                        return Err(ModelCompletionError::with_summary_from(
+                            Box::new(failure) as DynError,
                             &reasoning_summary,
+                            ModelCompletionErrorOrigin::Provider,
                         )
                         .await);
                     }
@@ -3955,20 +4291,59 @@ impl Orchestrator {
             &reasoning_summary,
         )
         .await;
-        match (result, forward_result) {
-            (Err(error), _) => {
-                Err(ModelCompletionError::with_summary(error, &reasoning_summary).await)
-            }
-            (Ok(_), Err(error)) => Err(ModelCompletionError::with_summary(
-                Box::new(error) as DynError,
+        let outcome = match (result, forward_result) {
+            (Err(error), _) => Err(ModelCompletionError::with_summary_from(
+                error,
                 &reasoning_summary,
+                ModelCompletionErrorOrigin::Provider,
             )
             .await),
-            (Ok(_), Ok(Err(error))) => {
-                Err(ModelCompletionError::with_summary(error, &reasoning_summary).await)
-            }
+            (Ok(_), Err(error)) => Err(ModelCompletionError::with_summary_from(
+                Box::new(error) as DynError,
+                &reasoning_summary,
+                ModelCompletionErrorOrigin::RuntimeInternal,
+            )
+            .await),
+            (Ok(_), Ok(Err(error))) => Err(ModelCompletionError::with_summary_from(
+                error,
+                &reasoning_summary,
+                ModelCompletionErrorOrigin::RuntimePersistence,
+            )
+            .await),
             (Ok(response), Ok(Ok(()))) => Ok(response),
+        };
+        match &outcome {
+            Ok(_) => self.record_provider_success().await,
+            // A completed response that contains provider-authored reasoning
+            // but no final text/tool call is not a Provider outage.  It is
+            // the normal "reasoning-only" boundary used by long-thinking
+            // models (notably GLM): the caller will append the durable
+            // summary and immediately issue a continuation request.
+            //
+            // Treating this parser-level empty-response error as a Provider
+            // failure opens the shared circuit *before* that continuation can
+            // be submitted.  The Objective is then woken later from its base
+            // Context, which loses the in-memory continuation history and
+            // causes the model to reason about the same work repeatedly.
+            Err(error)
+                if error.origin == ModelCompletionErrorOrigin::Provider
+                    && !error.reasoning_summary.trim().is_empty()
+                    && error.to_string().contains(EMPTY_RESPONSE_ERROR) =>
+            {
+                self.record_provider_success().await;
+            }
+            Err(error) if error.origin == ModelCompletionErrorOrigin::Provider => {
+                // A real transport/provider failure may also have emitted a
+                // partial reasoning fragment.  Keep the recovery circuit for
+                // that case: the next attempt must wait for a healthy
+                // Provider rather than mistake partial data for completion.
+                let failure = error.failure();
+                self.record_provider_failure(&stream_context_id, &failure)
+                    .await;
+            }
+            Err(_) => {}
         }
+        outcome
     }
 
     async fn remember_prompt_usage_anchor(
@@ -4503,6 +4878,7 @@ impl Orchestrator {
                 Some(&activation.trigger_event_id),
             )
             .await?;
+        let transcript_messages = transcript.messages.clone();
         let context_id = activation.context_id.clone();
         let mut context = self
             .context_engine
@@ -4586,15 +4962,15 @@ impl Orchestrator {
             &context.pressure.level,
             context.turn_budget.context_tx_available,
         );
-        let effective_phase_owned = if maintenance_budget_exhausted {
+        let mut effective_phase = if maintenance_budget_exhausted {
             "final-reply".to_string()
         } else if context.pressure.level == "critical" {
             "critical-maintenance".to_string()
         } else {
             context.turn_budget.phase.clone()
         };
-        let effective_phase = effective_phase_owned.as_str();
-        let bounded_critical_projection = context.pressure.level == "critical";
+        let mut bounded_critical_projection = context.pressure.level == "critical";
+        let mut recovery_observation_limit = CRITICAL_MAINTENANCE_MAX_OBSERVATIONS;
         let mut critical_recovery_source = None;
         if bounded_critical_projection {
             // Standard Function Calling transcripts deliberately carry full
@@ -4614,7 +4990,7 @@ impl Orchestrator {
             critical_recovery_source = Some(recovery_context.clone());
             let (total, visible) = self.context_engine.apply_critical_maintenance_projection(
                 &mut recovery_context,
-                CRITICAL_MAINTENANCE_MAX_OBSERVATIONS,
+                recovery_observation_limit,
                 CRITICAL_MAINTENANCE_PREVIEW_CHARS,
             );
             tracing::warn!(
@@ -4629,7 +5005,7 @@ impl Orchestrator {
         let context_tx_cooldown = effective_phase != "final-reply"
             && context.pressure.level != "critical"
             && context_tx_receipt == ContextTxReceipt::Committed;
-        let phase_prompt = match effective_phase {
+        let phase_prompt = match effective_phase.as_str() {
             "final-reply" if maintenance_budget_exhausted => {
                 Some(MAINTENANCE_BUDGET_EXHAUSTED_PROMPT)
             }
@@ -4641,7 +5017,7 @@ impl Orchestrator {
         let system_prompt = compose_system_prompt(
             prompt_mode,
             stable_system_prompt,
-            phase_prompt.map(|prompt| (effective_phase, prompt)),
+            phase_prompt.map(|prompt| (effective_phase.as_str(), prompt)),
         );
         let mut messages = vec![
             Message {
@@ -4660,7 +5036,7 @@ impl Orchestrator {
             },
         ];
         if !bounded_critical_projection {
-            messages.extend(transcript.messages);
+            messages.extend(transcript_messages.clone());
         }
 
         let mut tools = self.tool_definitions.clone();
@@ -4721,7 +5097,7 @@ impl Orchestrator {
             }
         }
         tools.push(no_reply_tool_definition());
-        let allowed_tool_names = tools
+        let mut allowed_tool_names = tools
             .iter()
             .map(|tool| tool.name.clone())
             .collect::<HashSet<_>>();
@@ -4768,18 +5144,25 @@ impl Orchestrator {
                 .as_ref()
                 .is_some_and(|measurement| measurement.tokens >= recovery_prompt_limit)
             {
-                return Err(format!(
-                    "Context critical-maintenance 最小恢复投影仍占用 {} tokens，超过可用输入预算 {}；请先扩大模型 Context 或减小受保护的 Mind/当前因果根",
-                    request_prompt_measurement
+                // Local counting is deliberately advisory: it can trigger a
+                // bounded maintenance projection, but it must not pretend to
+                // be the Provider's physical context-limit authority. Submit
+                // the smallest useful projection and only enter the durable
+                // ContextLimit recovery path when the Provider confirms that
+                // the request is still too large.
+                tracing::warn!(
+                    context_id = %context_id,
+                    session_id,
+                    estimated_tokens = request_prompt_measurement
                         .as_ref()
                         .map(|measurement| measurement.tokens)
                         .unwrap_or_default(),
-                    recovery_prompt_limit
-                )
-                .into());
+                    advisory_input_budget = recovery_prompt_limit,
+                    "最小 critical-maintenance 投影仍超过本地估算预算；继续提交并由 Provider 作最终裁决"
+                );
             }
         }
-        let base_protocol_messages = messages;
+        let mut base_protocol_messages = messages;
         let mut protocol_messages = base_protocol_messages.clone();
         if let Some(supervisor) = &self.objective_supervisor {
             let tokens = request_prompt_measurement
@@ -4799,11 +5182,13 @@ impl Orchestrator {
             }
         }
         let no_delivered_output_ids = HashSet::new();
-        let inspect_delivered_output_ids = if bounded_critical_projection {
-            &no_delivered_output_ids
+        let mut inspect_delivered_output_ids = if bounded_critical_projection {
+            no_delivered_output_ids.clone()
         } else {
-            &transcript.delivered_output_ids
+            transcript.delivered_output_ids.clone()
         };
+        let mut context_maintenance_owner = None;
+        let mut context_maintenance_gate = None;
         let mut protocol_errors = 0usize;
         let mut model_request_index = 0usize;
         let mut reasoning_continuations = 0usize;
@@ -4824,13 +5209,13 @@ impl Orchestrator {
                 &context,
                 &protocol_messages,
                 &tools,
-                inspect_delivered_output_ids,
+                &inspect_delivered_output_ids,
             )
             .await?;
             self.record_model_attempt_started(
                 session_id,
                 &model_attempt_id,
-                effective_phase,
+                &effective_phase,
                 tools.len(),
             )
             .await?;
@@ -4855,6 +5240,173 @@ impl Orchestrator {
                     )
                     .await?;
                     response
+                }
+                Err(error) if error.is_runtime_failure() => {
+                    let failure_origin = match error.origin {
+                        ModelCompletionErrorOrigin::RuntimePersistence => "runtime_persistence",
+                        ModelCompletionErrorOrigin::RuntimeInternal => "runtime_internal",
+                        ModelCompletionErrorOrigin::Provider => unreachable!(
+                            "Provider failures are handled by the following model branches"
+                        ),
+                    };
+                    let detail = error.to_string();
+                    // This is not a Provider outcome. In particular, a
+                    // successful response followed by a usage/reasoning Event
+                    // persistence error must not poison the Provider circuit,
+                    // enter reasoning continuation, or block the Objective as
+                    // an unknown model failure. Returning an Activation error
+                    // leaves the durable Objective active so its lease/recovery
+                    // path can replay after storage recovers.
+                    if let Err(state_error) = self
+                        .record_model_attempt_terminal_state(
+                            session_id,
+                            &model_attempt_id,
+                            failure_origin,
+                            Some(&detail),
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            session_id,
+                            attempt_id = %model_attempt_id,
+                            error = %state_error,
+                            "Runtime 故障后无法持久化模型 Attempt 终态"
+                        );
+                    }
+                    tracing::error!(
+                        session_id,
+                        attempt_id = %model_attempt_id,
+                        origin = failure_origin,
+                        error = %detail,
+                        "模型求值边界发生 Runtime 故障；不将其归类为 Provider 失败"
+                    );
+                    return Err(error.into_source());
+                }
+                Err(error) if error.failure().kind == ModelFailureKind::ContextLimit => {
+                    let failure = error.failure();
+                    self.record_model_attempt_terminal_state(
+                        session_id,
+                        &model_attempt_id,
+                        "context_limit",
+                        Some(&failure.to_string()),
+                    )
+                    .await?;
+
+                    let gate = self
+                        .context_maintenance_gates
+                        .entry(context_id.clone())
+                        .or_insert_with(|| Arc::new(ContextMaintenanceGate::default()))
+                        .clone();
+                    let observed_epoch = gate.completed_epoch.load(Ordering::Acquire);
+                    if context_maintenance_owner.is_none() {
+                        let owner = Arc::clone(&gate.owner).lock_owned().await;
+                        if gate.completed_epoch.load(Ordering::Acquire) != observed_epoch {
+                            // Another Activation repaired this Context while we
+                            // waited. Re-enter from the durable projection;
+                            // reusing this attempt's pre-error messages would
+                            // immediately submit the stale oversized request.
+                            drop(owner);
+                            return Box::pin(self.run_attempt(session_id, activation)).await;
+                        }
+                        context_maintenance_owner = Some(owner);
+                        context_maintenance_gate = Some(Arc::clone(&gate));
+                    }
+
+                    if bounded_critical_projection {
+                        if recovery_observation_limit <= 1 {
+                            return self
+                                .publish_runtime_failure(
+                                    session_id,
+                                    &model_attempt_id,
+                                    "critical_maintenance_minimum_projection",
+                                    &failure,
+                                    context.parent_session_id.as_deref(),
+                                )
+                                .await;
+                        }
+                        recovery_observation_limit = (recovery_observation_limit / 2).max(1);
+                    } else {
+                        recovery_observation_limit = CRITICAL_MAINTENANCE_MAX_OBSERVATIONS;
+                        let mut recovery_context = self
+                            .context_engine
+                            .build_context_encoding_for_activation(
+                                &context_id,
+                                activation,
+                                &HashSet::new(),
+                            )
+                            .await?;
+                        recovery_context.pressure.level = "critical".to_string();
+                        recovery_context.pressure.estimated_tokens = recovery_context
+                            .pressure
+                            .estimated_tokens
+                            .max(recovery_context.pressure.hard_limit);
+                        recovery_context.turn_budget.context_transactions_limit =
+                            CRITICAL_MAINTENANCE_TRANSACTION_SAFETY_LIMIT;
+                        recovery_context.turn_budget.context_tx_available =
+                            critical_maintenance_transaction_available(
+                                recovery_context.turn_budget.context_transactions_used,
+                            );
+                        critical_recovery_source = Some(recovery_context);
+                        bounded_critical_projection = true;
+                    }
+
+                    let mut recovery_context = critical_recovery_source
+                        .as_ref()
+                        .expect("Provider-triggered maintenance source must exist")
+                        .clone();
+                    let (total, visible) =
+                        self.context_engine.apply_critical_maintenance_projection(
+                            &mut recovery_context,
+                            recovery_observation_limit,
+                            CRITICAL_MAINTENANCE_PREVIEW_CHARS,
+                        );
+                    context = recovery_context;
+                    effective_phase = "critical-maintenance".to_string();
+                    let recovery_system_prompt = compose_system_prompt(
+                        prompt_mode,
+                        stable_system_prompt,
+                        Some((effective_phase.as_str(), CRITICAL_MAINTENANCE_PROMPT)),
+                    );
+                    base_protocol_messages = vec![
+                        Message {
+                            role: "system".to_string(),
+                            content: recovery_system_prompt,
+                            name: None,
+                            tool_call_id: None,
+                            tool_calls: None,
+                        },
+                        Message {
+                            role: "user".to_string(),
+                            content: format!("{context_message_prefix}\n{}", context.sexpr),
+                            name: None,
+                            tool_call_id: None,
+                            tool_calls: None,
+                        },
+                    ];
+                    protocol_messages = base_protocol_messages.clone();
+                    tools = self.tool_definitions.clone();
+                    tools.retain(|tool| tool.name == "context_tx" || tool.name == "recall");
+                    tools.push(no_reply_tool_definition());
+                    allowed_tool_names = tools.iter().map(|tool| tool.name.clone()).collect();
+                    request_prompt_measurement = self
+                        .count_projected_prompt_tokens(&context, &protocol_messages, &tools)
+                        .await;
+                    inspect_delivered_output_ids.clear();
+                    protocol_errors = 0;
+                    reasoning_continuations = 0;
+                    stalled_reasoning_continuations = 0;
+                    previous_reasoning_summary = None;
+                    reasoning_history.clear();
+                    tracing::warn!(
+                        context_id = %context_id,
+                        session_id,
+                        activation_id = %activation.id,
+                        total_active_observations = total,
+                        projected_observations = visible,
+                        projection_limit = recovery_observation_limit,
+                        "Provider 确认 Context 超限：当前 Activation 获得唯一 maintenance owner"
+                    );
+                    continue;
                 }
                 Err(error) if !error.reasoning_summary.trim().is_empty() => {
                     let provider_error = error.to_string();
@@ -4911,7 +5463,8 @@ impl Orchestrator {
                             &reason,
                         )
                         .await?;
-                        let failure = std::io::Error::new(std::io::ErrorKind::TimedOut, reason);
+                        let failure =
+                            ModelFailure::new(ModelFailureKind::StreamIdleTimeout, reason);
                         return self
                             .publish_runtime_failure(
                                 session_id,
@@ -4977,6 +5530,7 @@ impl Orchestrator {
                 }
                 Err(error) => {
                     let provider_error = error.to_string();
+                    let failure = error.failure();
                     self.record_model_attempt_terminal_state(
                         session_id,
                         &model_attempt_id,
@@ -4989,7 +5543,7 @@ impl Orchestrator {
                             session_id,
                             &model_attempt_id,
                             "llm_completion",
-                            &error,
+                            &failure,
                             context.parent_session_id.as_deref(),
                         )
                         .await;
@@ -5142,7 +5696,7 @@ impl Orchestrator {
                 session_id,
                 &attempt_id,
                 &terminal_model_attempt_id,
-                effective_phase,
+                &effective_phase,
                 &response,
                 &decision,
             )
@@ -5206,7 +5760,7 @@ impl Orchestrator {
                     session_id,
                     &attempt_id,
                     response,
-                    effective_phase,
+                    &effective_phase,
                     ToolExecutionOptions {
                         context_tx_allowed: context.turn_budget.context_tx_available
                             && !context_tx_cooldown,
@@ -5221,7 +5775,17 @@ impl Orchestrator {
             if result.is_err() && dialogue_bound && context_maintenance_only {
                 dialogue_gate.release(&activation.root_turn_id).await;
             }
-            result?;
+            let outcome = result?;
+            if outcome.context_tx_succeeded {
+                if let Some(gate) = context_maintenance_gate.as_ref() {
+                    gate.completed_epoch.fetch_add(1, Ordering::AcqRel);
+                    tracing::info!(
+                        context_id = %context_id,
+                        activation_id = %activation.id,
+                        "Context maintenance owner 已提交事务；等待者将从新 Projection 重新求值"
+                    );
+                }
+            }
             return Ok(());
         }
 
@@ -5472,6 +6036,17 @@ impl Orchestrator {
         attempt_id: &str,
         parent_session_id: Option<&str>,
     ) -> Result<(), DynError> {
+        self.publish_no_reply_with_attributes(session_id, attempt_id, parent_session_id, Vec::new())
+            .await
+    }
+
+    async fn publish_no_reply_with_attributes(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        parent_session_id: Option<&str>,
+        extra_payload: Vec<(String, serde_json::Value)>,
+    ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let active_background_tasks = active_background_task_count(session_id, context_id.as_str());
         let mut payload = vec![
@@ -5489,6 +6064,7 @@ impl Orchestrator {
                 json!(active_background_tasks),
             ),
         ];
+        payload.extend(extra_payload);
         if let Some(parent_session_id) = parent_session_id {
             payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
         }
@@ -5517,6 +6093,70 @@ impl Orchestrator {
         Ok(())
     }
 
+    fn register_runtime_failure_incident(
+        &self,
+        context_id: &str,
+        stage: &str,
+        failure: &ModelFailure,
+        wait_resource: &str,
+    ) -> RuntimeFailureObservation {
+        let failure_class = if failure.kind.uses_provider_recovery() {
+            "provider_recoverable"
+        } else {
+            failure.kind.as_str()
+        };
+        let key = format!(
+            "{context_id}\u{0}{}\u{0}{wait_resource}\u{0}{stage}",
+            failure_class
+        );
+        let now = Instant::now();
+        match self.runtime_failure_incidents.entry(key) {
+            dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
+                let incident = occupied.get_mut();
+                if now.duration_since(incident.last_seen) <= RUNTIME_FAILURE_INCIDENT_WINDOW {
+                    incident.last_seen = now;
+                    incident.occurrences = incident.occurrences.saturating_add(1);
+                    RuntimeFailureObservation {
+                        id: incident.id.clone(),
+                        occurrence: incident.occurrences,
+                        should_notify_user: false,
+                    }
+                } else {
+                    let incident_id = format!(
+                        "runtime_failure_incident_{}",
+                        Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                    );
+                    *incident = RuntimeFailureIncident {
+                        id: incident_id.clone(),
+                        last_seen: now,
+                        occurrences: 1,
+                    };
+                    RuntimeFailureObservation {
+                        id: incident_id,
+                        occurrence: 1,
+                        should_notify_user: true,
+                    }
+                }
+            }
+            dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                let incident_id = format!(
+                    "runtime_failure_incident_{}",
+                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                );
+                vacant.insert(RuntimeFailureIncident {
+                    id: incident_id.clone(),
+                    last_seen: now,
+                    occurrences: 1,
+                });
+                RuntimeFailureObservation {
+                    id: incident_id,
+                    occurrence: 1,
+                    should_notify_user: true,
+                }
+            }
+        }
+    }
+
     async fn publish_reply(
         &self,
         session_id: &str,
@@ -5542,6 +6182,27 @@ impl Orchestrator {
         content: String,
         parent_session_id: Option<&str>,
     ) -> Result<(), DynError> {
+        self.publish_reply_with_attributes(
+            session_id,
+            attempt_id,
+            model_attempt_id,
+            content,
+            parent_session_id,
+            Vec::new(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn publish_reply_with_attributes(
+        &self,
+        session_id: &str,
+        attempt_id: &str,
+        model_attempt_id: Option<&str>,
+        content: String,
+        parent_session_id: Option<&str>,
+        extra_payload: Vec<(String, serde_json::Value)>,
+    ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
@@ -5560,6 +6221,7 @@ impl Orchestrator {
         if let Some(parent_session_id) = parent_session_id {
             payload.push(("parent_session_id".to_string(), json!(parent_session_id)));
         }
+        payload.extend(extra_payload);
         if let Some(route) = self
             .activation_route(attempt_id)
             .filter(|route| route.thread_kind == "delivery")
@@ -6154,50 +6816,152 @@ impl Orchestrator {
         session_id: &str,
         attempt_id: &str,
         stage: &str,
-        error: &(dyn std::error::Error + Send + Sync),
+        failure: &ModelFailure,
         parent_session_id: Option<&str>,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
-        let error_text: String = error.to_string().chars().take(2_000).collect();
-        tracing::error!(
-            session_id,
-            attempt_id,
-            error = %error_text,
-            "LLM 请求在重试后失败；终止本回合并向用户返回可见错误"
-        );
+        let error_text: String = failure.to_string().chars().take(2_000).collect();
+        let provider_resource = self.client.provider_resource_key();
+        let wait_resource = match failure.kind {
+            ModelFailureKind::ContextLimit => {
+                format!("context-maintenance:{context_id}")
+            }
+            kind if kind.uses_provider_recovery() => provider_resource.clone(),
+            _ => String::new(),
+        };
+        let incident =
+            self.register_runtime_failure_incident(&context_id, stage, failure, &wait_resource);
+        if incident.should_notify_user {
+            tracing::error!(
+                session_id,
+                attempt_id,
+                incident_id = %incident.id,
+                error = %error_text,
+                failure_kind = failure.kind.as_str(),
+                "LLM 请求在重试后失败；终止本回合并建立可恢复故障事件"
+            );
+        } else {
+            tracing::warn!(
+                session_id,
+                attempt_id,
+                incident_id = %incident.id,
+                occurrence = incident.occurrence,
+                failure_kind = failure.kind.as_str(),
+                "同一 Runtime 故障仍在发生；抑制重复用户提示"
+            );
+        }
         let mut payload = vec![
             ("context_id".to_string(), json!(context_id)),
             ("session_id".to_string(), json!(session_id)),
             ("attempt_id".to_string(), json!(attempt_id)),
             ("stage".to_string(), json!(stage)),
             ("error".to_string(), json!(error_text)),
+            ("failure_kind".to_string(), json!(failure.kind.as_str())),
+            ("provider_resource".to_string(), json!(provider_resource)),
+            ("incident_id".to_string(), json!(&incident.id)),
+            (
+                "incident_occurrence".to_string(),
+                json!(incident.occurrence),
+            ),
         ];
-        self.append_activation_route(attempt_id, &mut payload);
-        self.bus
-            .publish(Event::new(
-                format!(
-                    "runtime_error_{}",
-                    Utc::now().timestamp_nanos_opt().unwrap_or(0)
-                ),
-                "Runtime-Orchestrator".to_string(),
-                "runtime_error".to_string(),
-                "chat/runtime_error".to_string(),
-                payload.into_iter().collect(),
-            ))
-            .await?;
+        if !wait_resource.is_empty() {
+            payload.push(("wait_resource".to_string(), json!(&wait_resource)));
+        }
+        if let Some(status) = failure.http_status {
+            payload.push(("http_status".to_string(), json!(status)));
+        }
+        if let Some(code) = failure.provider_code.as_deref() {
+            payload.push(("provider_code".to_string(), json!(code)));
+        }
+        if let Some(seconds) = failure.retry_after_secs {
+            payload.push(("retry_after_secs".to_string(), json!(seconds)));
+        }
+        if incident.should_notify_user {
+            self.append_activation_route(attempt_id, &mut payload);
+            self.bus
+                .publish(Event::new(
+                    format!(
+                        "runtime_error_{}",
+                        Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                    ),
+                    "Runtime-Orchestrator".to_string(),
+                    "runtime_error".to_string(),
+                    "chat/runtime_error".to_string(),
+                    payload.into_iter().collect(),
+                ))
+                .await?;
+        }
 
-        let user_message = if stage == "llm_completion" {
-            "模型请求在重试后仍然失败，Runtime 已停止本回合，未继续执行任何工具。请稍后重试；当前 Session、Mind 与已提交文件修改均已保留。"
-        } else {
-            "Runtime 的完整 Attempt 超过执行期限，已取消本回合以避免用户一直等待。当前 Session、Mind 与已提交文件修改均已保留；请重试或缩小单次任务。"
+        let user_message = match failure.kind {
+            ModelFailureKind::ContextLimit
+                if stage == "critical_maintenance_minimum_projection" =>
+            {
+                "即使只保留最小维护投影，模型接口仍拒绝当前 Context 大小。Runtime 已停止自动维护循环；请扩大模型 Context，或人工检查不可裁剪的系统契约与受保护 Mind。"
+            }
+            ModelFailureKind::ContextLimit => {
+                "模型接口拒绝了当前 Context 大小。Runtime 已停止本次物理请求并进入 Context 维护协调；任务状态与已提交修改均已保留。"
+            }
+            kind if kind.is_provider_transient() => {
+                "模型服务暂时不可用。Runtime 已保留当前任务并转入 Provider 退避等待；服务恢复后将继续。"
+            }
+            kind if kind.requires_configuration() => {
+                "模型 Provider 配置或认证无效。Runtime 已保留当前任务并进入低频 Provider 重试；修复模型、端点或凭证后将自动继续。"
+            }
+            kind if kind.uses_provider_recovery() => {
+                "模型请求失败。Runtime 已保留当前任务并进入 Provider 退避重试；Provider 可用后将自动继续。"
+            }
+            _ if stage == "llm_completion" => {
+                "模型请求失败，Runtime 已停止本回合，未继续执行任何工具。当前 Session、Mind 与已提交文件修改均已保留。"
+            }
+            _ => {
+                "Runtime 的完整 Attempt 超过执行期限，已取消本回合以避免用户一直等待。当前 Session、Mind 与已提交文件修改均已保留。"
+            }
         };
-        self.publish_reply(
-            session_id,
-            attempt_id,
-            user_message.to_string(),
-            parent_session_id,
-        )
-        .await
+        let mut attributes = vec![
+            (
+                "runtime_failure_kind".to_string(),
+                json!(failure.kind.as_str()),
+            ),
+            ("runtime_failure_stage".to_string(), json!(stage)),
+            ("provider_resource".to_string(), json!(provider_resource)),
+            (
+                "runtime_failure_incident_id".to_string(),
+                json!(&incident.id),
+            ),
+            (
+                "runtime_failure_incident_occurrence".to_string(),
+                json!(incident.occurrence),
+            ),
+        ];
+        if !wait_resource.is_empty() {
+            attributes.push(("wait_resource".to_string(), json!(wait_resource)));
+        }
+        if let Some(seconds) = failure.retry_after_secs {
+            attributes.push(("retry_after_secs".to_string(), json!(seconds)));
+        }
+        if incident.should_notify_user {
+            self.publish_reply_with_attributes(
+                session_id,
+                attempt_id,
+                Some(attempt_id),
+                user_message.to_string(),
+                parent_session_id,
+                attributes,
+            )
+            .await
+        } else {
+            attributes.push((
+                "runtime_failure_user_notice_suppressed".to_string(),
+                json!(true),
+            ));
+            self.publish_no_reply_with_attributes(
+                session_id,
+                attempt_id,
+                parent_session_id,
+                attributes,
+            )
+            .await
+        }
     }
 
     async fn record_model_attempt_started(
@@ -8848,6 +9612,13 @@ fn recovery_owns_activation(
 ) -> bool {
     match mode {
         crate::memory::WorkerCoordinationMode::ExclusiveProcess => true,
+        crate::memory::WorkerCoordinationMode::SharedHostLeases => {
+            activation.status == ThreadActivationStatus::Running
+                && (activation
+                    .lease_expires_at
+                    .is_none_or(|expires_at| expires_at <= now)
+                    || runtime_claimant_is_definitely_dead(activation.claimed_by.as_deref()))
+        }
         crate::memory::WorkerCoordinationMode::SharedLeases => {
             activation.status == ThreadActivationStatus::Running
                 && activation
@@ -8970,14 +9741,20 @@ fn activation_lease_timer_id(activation_id: &str) -> String {
 }
 
 fn runtime_claimant_is_definitely_dead(claimed_by: Option<&str>) -> bool {
-    let Some(raw_pid) = claimed_by.and_then(|value| value.strip_prefix("runtime:")) else {
+    let Some(raw_claimant) = claimed_by.and_then(|value| value.strip_prefix("runtime:")) else {
         return false;
     };
+    let raw_pid = raw_claimant.split(':').next().unwrap_or(raw_claimant);
     let Ok(raw_pid) = raw_pid.parse::<i32>() else {
         return false;
     };
     if raw_pid <= 0 {
         return false;
+    }
+    if raw_pid == i32::try_from(std::process::id()).unwrap_or(-1) {
+        // A matching PID with another process-instance nonce is necessarily a
+        // stale claim left before PID reuse (or before this Runtime instance).
+        return claimed_by != Some(runtime_claimant_id());
     }
     #[cfg(unix)]
     {
@@ -8990,6 +9767,20 @@ fn runtime_claimant_is_definitely_dead(claimed_by: Option<&str>) -> bool {
     {
         false
     }
+}
+
+/// Stable fencing identity for this Runtime process. The nonce distinguishes
+/// a freshly-started process from a stale claim even if the operating system
+/// quickly reuses the same PID. Legacy `runtime:<pid>` claims remain readable.
+fn runtime_claimant_id() -> &'static str {
+    static CLAIMANT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CLAIMANT.get_or_init(|| {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        format!("runtime:{}:{nonce}", std::process::id())
+    })
 }
 
 fn prompt_pressure_measurement_from_event(event: &Event) -> Option<PromptPressureMeasurement> {
@@ -9891,10 +10682,12 @@ mod tests {
         compact_context_inspect_for_persistence, compose_system_prompt,
         critical_maintenance_transaction_available, event_needs_signal_outbox,
         extend_exec_output_facts, persist_model_reasoning_summary, persist_model_usage,
-        recovery_owns_activation, render_system_contract, semantic_sexpr_vm_system_prompt,
-        should_force_final_for_maintenance, tool_call_activity_preview, DurableEventWriter,
-        DurableEventWriterMetrics, ModelReasoningSummaryAccumulator, NoReplyMode, ReadTurnGuard,
-        SystemPromptMode, TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        recovery_owns_activation, render_system_contract, runtime_claimant_id,
+        semantic_sexpr_vm_system_prompt, should_force_final_for_maintenance,
+        tool_call_activity_preview, DurableEventWriter, DurableEventWriterMetrics, DynError,
+        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
+        NoReplyMode, ReadTurnGuard, SystemPromptMode, TerminalDecision,
+        AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
@@ -9902,12 +10695,66 @@ mod tests {
     use crate::llm::{ModelUsage, PromptTokenAccuracy, PromptTokenCount};
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        EventAppend, EventStore, QueryFilter, ThreadActivationRecord, ThreadActivationStatus,
-        WorkerCoordinationMode,
+        AttentionAcknowledgementRecord, EventAppend, EventStore, QueryFilter,
+        ThreadActivationRecord, ThreadActivationStatus, WorkerCoordinationMode,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tempfile::TempDir;
     use tokio::sync::{Barrier, Mutex};
+
+    #[derive(Default)]
+    struct ContendedEventStore {
+        remaining_contention_failures: AtomicUsize,
+        committed: Mutex<Vec<Event>>,
+    }
+
+    #[async_trait::async_trait]
+    impl EventStore for ContendedEventStore {
+        async fn append(&self, event: Event) -> Result<(), DynError> {
+            self.append_batch(vec![EventAppend {
+                event,
+                signal_outbox: false,
+            }])
+            .await
+        }
+
+        async fn append_with_signal_outbox(&self, event: Event) -> Result<(), DynError> {
+            self.append_batch(vec![EventAppend {
+                event,
+                signal_outbox: true,
+            }])
+            .await
+        }
+
+        async fn append_batch(&self, entries: Vec<EventAppend>) -> Result<(), DynError> {
+            let remaining = self.remaining_contention_failures.load(Ordering::Acquire);
+            if remaining > 0 {
+                self.remaining_contention_failures
+                    .fetch_sub(1, Ordering::AcqRel);
+                return Err(std::io::Error::other(
+                    "error returned from database: (code: 5) database is locked",
+                )
+                .into());
+            }
+            self.committed
+                .lock()
+                .await
+                .extend(entries.into_iter().map(|entry| entry.event));
+            Ok(())
+        }
+
+        async fn query(&self, _filter: QueryFilter) -> Result<Vec<Event>, DynError> {
+            Ok(self.committed.lock().await.clone())
+        }
+
+        async fn list_attention_acknowledgements(
+            &self,
+            _context_id: &str,
+        ) -> Result<Vec<AttentionAcknowledgementRecord>, DynError> {
+            Ok(Vec::new())
+        }
+    }
 
     #[test]
     fn durable_usage_anchor_applies_signed_local_prompt_delta() {
@@ -9965,6 +10812,31 @@ mod tests {
         assert!(recovery_owns_activation(
             WorkerCoordinationMode::ExclusiveProcess,
             &queued,
+            now
+        ));
+
+        let stale_same_host = ThreadActivationRecord {
+            claimed_by: Some(format!("runtime:{}:stale-instance", std::process::id())),
+            ..live.clone()
+        };
+        assert!(recovery_owns_activation(
+            WorkerCoordinationMode::SharedHostLeases,
+            &stale_same_host,
+            now
+        ));
+        assert!(!recovery_owns_activation(
+            WorkerCoordinationMode::SharedLeases,
+            &stale_same_host,
+            now
+        ));
+
+        let current_same_host = ThreadActivationRecord {
+            claimed_by: Some(runtime_claimant_id().to_string()),
+            ..live
+        };
+        assert!(!recovery_owns_activation(
+            WorkerCoordinationMode::SharedHostLeases,
+            &current_same_host,
             now
         ));
     }
@@ -10029,6 +10901,54 @@ mod tests {
                 .len(),
             12
         );
+    }
+
+    #[tokio::test]
+    async fn durable_event_writer_retries_storage_contention_without_failing_publishers() {
+        let store = Arc::new(ContendedEventStore {
+            remaining_contention_failures: AtomicUsize::new(3),
+            ..Default::default()
+        });
+        let metrics = Arc::new(DurableEventWriterMetrics::default());
+        let writer = DurableEventWriter::spawn(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            &EventWriterConfig {
+                queue_capacity: 4,
+                max_batch_size: 4,
+                flush_interval_ms: 1,
+            },
+            Arc::clone(&metrics),
+        );
+        writer
+            .append(EventAppend {
+                event: Event::new(
+                    "writer-contention-retry".to_string(),
+                    "fixture".to_string(),
+                    "fixture".to_string(),
+                    "runtime/writer_fixture".to_string(),
+                    serde_json::Map::new(),
+                ),
+                signal_outbox: false,
+            })
+            .await
+            .unwrap();
+
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot.queue_depth, 0);
+        assert_eq!(snapshot.committed_events, 1);
+        assert_eq!(snapshot.failed_batches, 0);
+        assert_eq!(snapshot.contention_retries, 3);
+        assert_eq!(store.committed.lock().await.len(), 1);
+    }
+
+    #[test]
+    fn model_completion_persistence_errors_are_not_provider_failures() {
+        let error = ModelCompletionError::persistence(
+            std::io::Error::other("error returned from database: (code: 5) database is locked")
+                .into(),
+        );
+        assert!(error.is_runtime_failure());
+        assert_eq!(error.origin, ModelCompletionErrorOrigin::RuntimePersistence);
     }
 
     #[tokio::test]

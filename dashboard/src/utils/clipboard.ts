@@ -30,7 +30,7 @@ function legacyBrowserCopy(text: string): boolean {
   textarea.select()
   textarea.setSelectionRange(0, textarea.value.length)
 
-  let copied = false
+  let copied: boolean
   try {
     copied = document.execCommand('copy')
   } finally {

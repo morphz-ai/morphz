@@ -974,6 +974,39 @@ impl ObjectiveSupervisor {
                     }
                 }
             }
+            if objective.status == ObjectiveStatus::Active
+                && objective.wait_condition.as_ref().is_some_and(|wait| {
+                    matches!(
+                        wait,
+                        ObjectiveWaitCondition::ResourceAvailable { resource }
+                            if resource.starts_with("model-provider:")
+                                || resource.starts_with("context-maintenance:")
+                                || resource.starts_with("runtime-recovery:")
+                    )
+                })
+            {
+                // Provider circuits and Context maintenance owners are
+                // process-local execution authority. After a restart no old
+                // owner can still be running, so retaining their durable wait
+                // forever would strand the Objective. Clear only Runtime-owned
+                // resource namespaces; external ResourceAvailable waits still
+                // require their real signal.
+                if let ObjectiveMutation::Updated(recovered) = self
+                    .store
+                    .update_objective_state(
+                        &objective.id,
+                        objective.revision,
+                        ObjectiveStatus::Active,
+                        None,
+                        Some("Runtime 重启后释放失效的内部恢复等待并重新求值"),
+                    )
+                    .await?
+                {
+                    objective = recovered;
+                    self.publish_state_event("runtime_recovery_wait_released", &objective, None)
+                        .await?;
+                }
+            }
             if objective.status == ObjectiveStatus::Active {
                 if let Some(event) = self.find_persisted_wait_event(&objective).await? {
                     tracing::info!(
@@ -1406,6 +1439,7 @@ impl ObjectiveSupervisor {
         let mut context_to_reconcile = None;
         match mutation {
             ObjectiveMutation::Updated(updated) => {
+                let updated = self.apply_runtime_failure_outcome(updated, event).await?;
                 context_to_reconcile = Some(updated.context_id.clone());
                 self.publish_state_event("evaluation_finished", &updated, Some(&event.id))
                     .await?;
@@ -1438,6 +1472,95 @@ impl ObjectiveSupervisor {
             }
         }
         Ok(())
+    }
+
+    /// A Provider failure is a control-plane outcome, not a successful
+    /// Objective step.  Persist the corresponding wait/block before the
+    /// normal reconciliation policy runs; otherwise an active/no-wait
+    /// Objective immediately creates another Evaluation and amplifies an
+    /// outage (or an oversized Context) into an unbounded retry storm.
+    async fn apply_runtime_failure_outcome(
+        &self,
+        objective: ObjectiveRecord,
+        event: &Event,
+    ) -> Result<ObjectiveRecord, DynError> {
+        let Some(failure_kind) = event
+            .payload
+            .get("runtime_failure_kind")
+            .and_then(|value| value.as_str())
+        else {
+            return Ok(objective);
+        };
+
+        let wait_resource = event
+            .payload
+            .get("wait_resource")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty());
+        let maintenance_exhausted = event
+            .payload
+            .get("runtime_failure_stage")
+            .and_then(|value| value.as_str())
+            == Some("critical_maintenance_minimum_projection");
+        let provider_recoverable = matches!(
+            failure_kind,
+            "rate_limited"
+                | "transient_network"
+                | "server_unavailable"
+                | "authentication"
+                | "invalid_model_or_request"
+                | "stream_idle_timeout"
+                | "unknown"
+        );
+        let recoverable = !maintenance_exhausted
+            && (failure_kind == "context_limit" || provider_recoverable);
+        let (status, wait_condition, reason) = if recoverable {
+            let resource = wait_resource
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| format!("runtime-recovery:{failure_kind}"));
+            (
+                ObjectiveStatus::Active,
+                Some(ObjectiveWaitCondition::ResourceAvailable {
+                    resource: resource.clone(),
+                }),
+                format!("本轮因 {failure_kind} 结束；等待 Runtime 恢复资源 {resource} 后继续"),
+            )
+        } else {
+            (
+                ObjectiveStatus::Blocked,
+                None,
+                format!("本轮因不可自动恢复的 Provider 错误 {failure_kind} 受阻"),
+            )
+        };
+
+        match self
+            .store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                status,
+                wait_condition,
+                Some(&reason),
+            )
+            .await?
+        {
+            ObjectiveMutation::Updated(updated) => {
+                self.publish_state_event("runtime_failure", &updated, Some(&event.id))
+                    .await?;
+                Ok(updated)
+            }
+            ObjectiveMutation::Conflict { current } => {
+                tracing::debug!(
+                    objective_id = %objective.id,
+                    expected_revision = objective.revision,
+                    current_revision = current.revision,
+                    failure_kind,
+                    "Provider 失败状态提交遇到并发更新；保留最新 Objective 状态"
+                );
+                Ok(current)
+            }
+            ObjectiveMutation::NotFound => Ok(objective),
+        }
     }
 
     pub async fn record_prompt_tokens_for_activation(
@@ -2261,6 +2384,165 @@ mod tests {
             })
             .await
             .unwrap()
+    }
+
+    #[tokio::test]
+    async fn provider_failure_waits_for_runtime_resource_and_restart_releases_process_gate() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "provider-resource-wait").await;
+        let evaluation_id = "evaluation-provider-resource-wait";
+        let claimed = match store
+            .claim_objective_evaluation(
+                &objective.id,
+                objective.revision,
+                evaluation_id,
+                Utc::now() + Duration::minutes(10),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(objective) => objective,
+            mutation => panic!("unexpected claim: {mutation:?}"),
+        };
+        let supervisor = Arc::new(ObjectiveSupervisor::new(
+            Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            Arc::new(InMemoryEventBus::new()),
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+            Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+            std::time::Duration::from_secs(600),
+        ));
+        let terminal = Event::new(
+            "provider-failure-terminal".to_string(),
+            "Runtime-Orchestrator".to_string(),
+            "agent_call".to_string(),
+            "chat/no_reply".to_string(),
+            [
+                ("context_id".to_string(), json!(&claimed.context_id)),
+                (
+                    "session_id".to_string(),
+                    json!(&claimed.coordinator_session_id),
+                ),
+                ("objective_id".to_string(), json!(&claimed.id)),
+                ("objective_evaluation_id".to_string(), json!(evaluation_id)),
+                ("objective_revision".to_string(), json!(claimed.revision)),
+                (
+                    "runtime_failure_kind".to_string(),
+                    json!("transient_network"),
+                ),
+                ("runtime_failure_stage".to_string(), json!("llm_completion")),
+                ("wait_resource".to_string(), json!("model-provider:test")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        supervisor.terminal_outcome(&terminal).await.unwrap();
+
+        let waiting = store.get_objective(&objective.id).await.unwrap().unwrap();
+        assert_eq!(waiting.status, ObjectiveStatus::Active);
+        assert!(matches!(
+            waiting.wait_condition,
+            Some(ObjectiveWaitCondition::ResourceAvailable { ref resource })
+                if resource == "model-provider:test"
+        ));
+        assert!(waiting.active_evaluation_id.is_none());
+
+        // The Provider circuit/maintenance owner is process-local. After a
+        // restart no old process can publish its recovery signal, so startup
+        // must release only Runtime-owned resources and create a fresh probe.
+        supervisor.start().await.unwrap();
+        let recovered = store.get_objective(&objective.id).await.unwrap().unwrap();
+        assert_eq!(recovered.status, ObjectiveStatus::Active);
+        assert!(recovered.wait_condition.is_none());
+        assert!(recovered.active_evaluation_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn provider_configuration_failure_never_terminally_blocks_objective() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "provider-auth-recovery").await;
+        let evaluation_id = "evaluation-provider-auth-recovery";
+        let claimed = match store
+            .claim_objective_evaluation(
+                &objective.id,
+                objective.revision,
+                evaluation_id,
+                Utc::now() + Duration::minutes(10),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(objective) => objective,
+            mutation => panic!("unexpected claim: {mutation:?}"),
+        };
+        let supervisor = Arc::new(ObjectiveSupervisor::new(
+            Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            Arc::new(InMemoryEventBus::new()),
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+            Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+            std::time::Duration::from_secs(90),
+        ));
+        let terminal = Event::new(
+            "provider-auth-failure-terminal".to_string(),
+            "Runtime-Orchestrator".to_string(),
+            "agent_call".to_string(),
+            "chat/no_reply".to_string(),
+            [
+                ("context_id".to_string(), json!(&claimed.context_id)),
+                (
+                    "session_id".to_string(),
+                    json!(&claimed.coordinator_session_id),
+                ),
+                ("objective_id".to_string(), json!(&claimed.id)),
+                (
+                    "objective_evaluation_id".to_string(),
+                    json!(evaluation_id),
+                ),
+                (
+                    "objective_revision".to_string(),
+                    json!(claimed.revision),
+                ),
+                (
+                    "runtime_failure_kind".to_string(),
+                    json!("authentication"),
+                ),
+                (
+                    "runtime_failure_stage".to_string(),
+                    json!("llm_completion"),
+                ),
+                (
+                    "wait_resource".to_string(),
+                    json!("model-provider:test-auth"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        supervisor.terminal_outcome(&terminal).await.unwrap();
+
+        let waiting = store.get_objective(&objective.id).await.unwrap().unwrap();
+        assert_eq!(waiting.status, ObjectiveStatus::Active);
+        assert!(matches!(
+            waiting.wait_condition,
+            Some(ObjectiveWaitCondition::ResourceAvailable { ref resource })
+                if resource == "model-provider:test-auth"
+        ));
+        assert!(waiting.active_evaluation_id.is_none());
+        assert!(waiting
+            .status_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("等待 Runtime 恢复资源")));
     }
 
     #[tokio::test]

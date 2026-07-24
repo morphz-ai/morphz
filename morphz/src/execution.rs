@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 
 use crate::event::{Event, TYPE_TOOL_OUTPUT};
 use crate::memory::{
-    ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, NewExecutionJob,
+    EventStore, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
+    ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, NewExecutionJob, QueryFilter,
     WorkerCoordinationMode,
 };
 
@@ -114,6 +114,7 @@ pub enum JobOperation {
     Requeue,
     RequestCancel,
     Finish,
+    ReconcileObservedResult,
     ReconcileLost,
 }
 
@@ -323,8 +324,10 @@ pub fn startup_recovery_plan(
     coordination: WorkerCoordinationMode,
     now: chrono::DateTime<chrono::Utc>,
 ) -> RestartPlan {
-    if coordination == WorkerCoordinationMode::SharedLeases
-        && job.status == ExecutionJobStatus::Running
+    if matches!(
+        coordination,
+        WorkerCoordinationMode::SharedHostLeases | WorkerCoordinationMode::SharedLeases
+    ) && job.status == ExecutionJobStatus::Running
         && job
             .lease_expires_at
             .is_some_and(|expires_at| expires_at > now)
@@ -361,6 +364,10 @@ fn restart_lost_reason(job: &ExecutionJobRecord) -> String {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RestartReconcileReport {
     pub preserved_job_ids: Vec<String>,
+    /// Non-terminal Job rows closed from an already durable immutable result
+    /// Event. This repairs the crash window in which the Event commit won but
+    /// the Execution Job terminal projection did not.
+    pub recovered_receipts: Vec<JobReceipt>,
     pub requeue_receipts: Vec<JobReceipt>,
     pub lost_receipts: Vec<JobReceipt>,
 }
@@ -492,15 +499,40 @@ where
         Ok(JobReceipt::from_mutation(JobOperation::Finish, mutation))
     }
 
+    pub async fn reconcile_observed_result(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        outcome: JobOutcome,
+        event: &Event,
+        signal_outbox: bool,
+    ) -> ExecutionResult<JobReceipt> {
+        let mutation = self
+            .store
+            .reconcile_execution_job_from_event(
+                id,
+                expected_revision,
+                outcome.into(),
+                event,
+                signal_outbox,
+            )
+            .await?;
+        Ok(JobReceipt::from_mutation(
+            JobOperation::ReconcileObservedResult,
+            mutation,
+        ))
+    }
+
     /// Reconciles non-terminal Jobs when one Runtime process starts.
     ///
     /// An exclusive Store knows every previously running worker disappeared.
     /// A shared Store may still have healthy peers, so only expired/unleased
     /// running Jobs cross the recovery boundary. Queued and approval-waiting
     /// Jobs remain durable in both modes.
-    pub async fn reconcile_startup(
+    pub async fn reconcile_startup<E: EventStore + ?Sized>(
         &self,
         coordination: WorkerCoordinationMode,
+        events: &E,
     ) -> ExecutionResult<RestartReconcileReport> {
         let jobs = self
             .store
@@ -510,6 +542,57 @@ where
         let now = chrono::Utc::now();
 
         for job in jobs {
+            if let Some(event) = durable_result_event_for_job(events, &job).await? {
+                let outcome = observed_job_outcome(&event);
+                let signal_outbox = event.payload.get("action_group_id").is_none()
+                    && event
+                        .payload
+                        .get("wake_policy")
+                        .and_then(serde_json::Value::as_str)
+                        != Some("delegation_result");
+                let receipt = self
+                    .reconcile_observed_result(
+                        &job.id,
+                        job.revision,
+                        outcome,
+                        &event,
+                        signal_outbox,
+                    )
+                    .await?;
+                match &receipt {
+                    JobReceipt::Applied { .. } | JobReceipt::Existing { .. } => {
+                        report.recovered_receipts.push(receipt);
+                        continue;
+                    }
+                    JobReceipt::Conflict { current, .. } if current.status.is_terminal() => {
+                        report.preserved_job_ids.push(current.id.clone());
+                        continue;
+                    }
+                    JobReceipt::Rejected {
+                        current, reason, ..
+                    } => {
+                        return Err(format!(
+                            "Execution Job '{}' 已有持久化结果 Event '{}'，但启动恢复被拒绝（{}）：{}",
+                            current.id,
+                            event.id,
+                            current.status.as_str(),
+                            reason
+                        )
+                        .into());
+                    }
+                    JobReceipt::Conflict { current, .. } => {
+                        return Err(format!(
+                            "Execution Job '{}' 从持久化结果 Event '{}' 恢复时发生 revision 冲突（当前 r{} / {}）",
+                            current.id,
+                            event.id,
+                            current.revision,
+                            current.status.as_str()
+                        )
+                        .into());
+                    }
+                    JobReceipt::NotFound { .. } => continue,
+                }
+            }
             let plan = startup_recovery_plan(&job, coordination, now);
             match &plan.action {
                 RestartAction::Preserve => report.preserved_job_ids.push(job.id),
@@ -544,6 +627,100 @@ where
         }
 
         Ok(report)
+    }
+}
+
+async fn durable_result_event_for_job<E: EventStore + ?Sized>(
+    events: &E,
+    job: &ExecutionJobRecord,
+) -> ExecutionResult<Option<Event>> {
+    if job.status.is_terminal() {
+        return Ok(None);
+    }
+    let event_id = format!("output_{}_{}", job.activation_id, job.tool_call_id);
+    let mut matches = events
+        .query(QueryFilter {
+            event_id: Some(event_id.clone()),
+            ..Default::default()
+        })
+        .await?;
+    if matches.is_empty() {
+        return Ok(None);
+    }
+    if matches.len() != 1 {
+        return Err(format!(
+            "Execution Job '{}' 的确定性结果 Event '{}' 数量异常：{}",
+            job.id,
+            event_id,
+            matches.len()
+        )
+        .into());
+    }
+    let event = matches.remove(0);
+    let payload_str = |key: &str| event.payload.get(key).and_then(serde_json::Value::as_str);
+    let identity_matches = event.event_type == TYPE_TOOL_OUTPUT
+        && event.topic == "chat/tool_output"
+        && payload_str("context_id") == Some(job.context_id.as_str())
+        && payload_str("session_id") == Some(job.session_id.as_str())
+        && payload_str("activation_id") == Some(job.activation_id.as_str())
+        && payload_str("thread_id") == Some(job.thread_id.as_str())
+        && payload_str("tool_call_id") == Some(job.tool_call_id.as_str())
+        && payload_str("tool_name") == Some(job.tool_name.as_str());
+    if !identity_matches {
+        return Err(format!(
+            "Execution Job '{}' 的确定性结果 Event '{}' 因果身份不匹配；拒绝猜测恢复",
+            job.id, event.id
+        )
+        .into());
+    }
+    Ok(Some(event))
+}
+
+fn observed_job_outcome(event: &Event) -> JobOutcome {
+    let status = event
+        .payload
+        .get("tool_status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("error");
+    let text = event
+        .payload
+        .get("text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("工具结果 Event 没有提供文本")
+        .to_string();
+    let exit_code = event
+        .payload
+        .get("exit_code")
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|value| i32::try_from(value).ok());
+    let result_refs = event
+        .payload
+        .get("artifact_path")
+        .and_then(serde_json::Value::as_str)
+        .map(|value| vec![value.to_string()])
+        .unwrap_or_default();
+    match status {
+        "success" | "succeeded" | "guarded" => JobOutcome::Succeeded {
+            result_event_id: Some(event.id.clone()),
+            result_refs,
+            exit_code,
+        },
+        "cancelled" => JobOutcome::Cancelled {
+            result_event_id: Some(event.id.clone()),
+            result_refs,
+            reason: Some(text),
+            exit_code,
+        },
+        "lost" => JobOutcome::Lost {
+            result_event_id: Some(event.id.clone()),
+            reason: text,
+        },
+        _ => JobOutcome::Failed {
+            result_event_id: Some(event.id.clone()),
+            result_refs,
+            error: text,
+            exit_code,
+        },
     }
 }
 

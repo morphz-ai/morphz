@@ -2,11 +2,12 @@ use crate::config::{
     AppConfig, CredentialConfig, CredentialSource, LlmConfig, ModelProtocol, ProviderConfig,
 };
 use crate::llm::{
-    Client, Message, ModelStreamEvent, ModelStreamSender, ModelUsage, PromptTokenAccuracy,
-    PromptTokenCount, ReasoningEffort, Response, ToolCallRepr, ToolDefinition,
+    Client, Message, ModelFailure, ModelFailureKind, ModelStreamEvent, ModelStreamSender,
+    ModelUsage, PromptTokenAccuracy, PromptTokenCount, ReasoningEffort, Response, ToolCallRepr,
+    ToolDefinition,
 };
 use futures_util::StreamExt;
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
@@ -187,6 +188,93 @@ pub struct ProtocolClient {
     usage_anchors: Mutex<HashMap<u64, PromptUsageAnchor>>,
 }
 
+fn boxed_model_failure(failure: ModelFailure) -> ProviderError {
+    Box::new(failure)
+}
+
+fn retry_after_seconds(headers: &HeaderMap) -> Option<u64> {
+    headers
+        .get(RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+}
+
+fn provider_error_code(body: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    let error = value.get("error").unwrap_or(&value);
+    ["code", "type", "status"]
+        .into_iter()
+        .find_map(|key| match error.get(key) {
+            Some(Value::String(value)) if !value.trim().is_empty() => Some(value.clone()),
+            Some(Value::Number(value)) => Some(value.to_string()),
+            _ => None,
+        })
+}
+
+fn http_model_failure(
+    status: reqwest::StatusCode,
+    body: String,
+    retry_after: Option<u64>,
+) -> ModelFailure {
+    let message = format!("Provider returned HTTP {status}: {body}");
+    let semantic = ModelFailure::classify_message(message.clone());
+    let kind = if semantic.kind == ModelFailureKind::ContextLimit {
+        ModelFailureKind::ContextLimit
+    } else if status.as_u16() == 429 {
+        ModelFailureKind::RateLimited
+    } else if matches!(status.as_u16(), 401 | 403) {
+        ModelFailureKind::Authentication
+    } else if status.is_server_error() {
+        ModelFailureKind::ServerUnavailable
+    } else if status.is_client_error() {
+        ModelFailureKind::InvalidModelOrRequest
+    } else {
+        semantic.kind
+    };
+    ModelFailure::new(kind, message)
+        .with_http_status(status.as_u16())
+        .with_provider_code(provider_error_code(&body))
+        .with_retry_after(retry_after)
+}
+
+fn request_model_failure(error: reqwest::Error) -> ModelFailure {
+    let kind = if error.is_timeout() {
+        ModelFailureKind::StreamIdleTimeout
+    } else if error.is_connect() || error.is_request() || error.is_body() {
+        ModelFailureKind::TransientNetwork
+    } else {
+        ModelFailure::classify_message(error.to_string()).kind
+    };
+    ModelFailure::new(kind, error.to_string())
+}
+
+/// Provider-local retries cover only the short request-establishment window.
+/// Respect an explicit Retry-After as a lower bound and add bounded jitter so
+/// concurrent Activations do not all hit the same endpoint on one clock edge.
+/// Longer outage coordination is owned by the Runtime-wide recovery gate.
+fn provider_retry_delay(
+    exponential: Duration,
+    retry_after_secs: Option<u64>,
+    attempt: u32,
+) -> Duration {
+    const MAX_LOCAL_BACKOFF_SECS: u64 = 300;
+    let base_millis = exponential
+        .min(Duration::from_secs(MAX_LOCAL_BACKOFF_SECS))
+        .as_millis();
+    let entropy = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.subsec_nanos() as u64)
+        .unwrap_or_default()
+        ^ u64::from(attempt).wrapping_mul(0x9e37_79b9);
+    // 80%..120% inclusive. Retry-After remains an exact lower bound.
+    let jitter_percent = 80_u128 + u128::from(entropy % 41);
+    let jittered_millis = base_millis.saturating_mul(jitter_percent) / 100;
+    let retry_after_millis = retry_after_secs.unwrap_or_default().saturating_mul(1_000) as u128;
+    Duration::from_millis(
+        u64::try_from(jittered_millis.max(retry_after_millis)).unwrap_or(u64::MAX),
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PromptUsageAnchor {
     base_estimate_tokens: usize,
@@ -302,63 +390,88 @@ impl ProtocolClient {
         let mut backoff = Duration::from_secs(self.initial_backoff_secs);
         loop {
             attempt += 1;
+            let mut retry_after = None;
             let request = self.authorize(self.http.post(&endpoint));
-            match tokio::time::timeout(self.stream_idle_timeout, request.json(body).send())
-                .await
-                .map_err(|_| {
-                    format!(
-                        "{} Provider 等待响应头超过 {} 秒 idle timeout",
-                        self.protocol.as_str(),
-                        self.stream_idle_timeout.as_secs()
-                    )
-                })? {
+            let send_result =
+                match tokio::time::timeout(self.stream_idle_timeout, request.json(body).send())
+                    .await
+                {
+                    Ok(Ok(response)) => Ok(response),
+                    Ok(Err(error)) => Err(request_model_failure(error)),
+                    Err(_) => Err(ModelFailure::new(
+                        ModelFailureKind::StreamIdleTimeout,
+                        format!(
+                            "{} Provider 等待响应头超过 {} 秒 idle timeout",
+                            self.protocol.as_str(),
+                            self.stream_idle_timeout.as_secs()
+                        ),
+                    )),
+                };
+            match send_result {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
-                        let body = tokio::time::timeout(self.stream_idle_timeout, response.json())
-                            .await
-                            .map_err(|_| -> ProviderError {
-                                format!(
-                                    "{} Provider 响应体超过 {} 秒没有完成",
-                                    self.protocol.as_str(),
-                                    self.stream_idle_timeout.as_secs()
-                                )
-                                .into()
-                            })??;
+                        let body =
+                            match tokio::time::timeout(self.stream_idle_timeout, response.json())
+                                .await
+                            {
+                                Ok(Ok(body)) => body,
+                                Ok(Err(error)) => {
+                                    return Err(boxed_model_failure(request_model_failure(error)));
+                                }
+                                Err(_) => {
+                                    return Err(boxed_model_failure(ModelFailure::new(
+                                        ModelFailureKind::StreamIdleTimeout,
+                                        format!(
+                                            "{} Provider 响应体超过 {} 秒没有完成",
+                                            self.protocol.as_str(),
+                                            self.stream_idle_timeout.as_secs()
+                                        ),
+                                    )));
+                                }
+                            };
                         return Ok(body);
                     }
-                    let retryable = status.as_u16() == 429 || status.is_server_error();
+                    retry_after = retry_after_seconds(response.headers());
                     let text = response.text().await.unwrap_or_default();
+                    let failure = http_model_failure(status, text, retry_after);
+                    let retryable = failure.kind.is_provider_transient();
                     if retryable && attempt < self.max_retries {
                         tracing::warn!(
                             protocol = self.protocol.as_str(),
                             %status,
+                            failure_kind = failure.kind.as_str(),
                             attempt,
                             max = self.max_retries,
                             "Provider 请求失败，准备重试"
                         );
                     } else {
-                        return Err(format!(
-                            "{} Provider 返回 HTTP {}: {}",
-                            self.protocol.as_str(),
-                            status,
-                            text
-                        )
-                        .into());
+                        return Err(boxed_model_failure(failure));
                     }
                 }
-                Err(error) if attempt < self.max_retries => {
+                Err(failure)
+                    if failure.kind.is_provider_transient() && attempt < self.max_retries =>
+                {
                     tracing::warn!(
                         protocol = self.protocol.as_str(),
-                        %error,
+                        error = %failure,
+                        failure_kind = failure.kind.as_str(),
                         attempt,
                         max = self.max_retries,
                         "Provider 网络错误，准备重试"
                     );
                 }
-                Err(error) => return Err(error.into()),
+                Err(failure) => return Err(boxed_model_failure(failure)),
             }
-            tokio::time::sleep(backoff).await;
+            let delay = provider_retry_delay(backoff, retry_after, attempt);
+            tracing::debug!(
+                protocol = self.protocol.as_str(),
+                attempt,
+                delay_ms = delay.as_millis(),
+                retry_after_secs = retry_after,
+                "Provider 本地重试退避"
+            );
+            tokio::time::sleep(delay).await;
             backoff = backoff.saturating_mul(2);
         }
     }
@@ -385,53 +498,68 @@ impl ProtocolClient {
         let mut backoff = Duration::from_secs(self.initial_backoff_secs);
         let response = loop {
             attempt += 1;
+            let mut retry_after = None;
             let request = self.authorize(self.http.post(&endpoint));
-            match tokio::time::timeout(
+            let send_result = match tokio::time::timeout(
                 self.stream_idle_timeout,
                 request.json(&streaming_body).send(),
             )
             .await
-            .map_err(|_| {
-                format!(
-                    "{} Provider 流等待响应头超过 {} 秒 idle timeout",
-                    self.protocol.as_str(),
-                    self.stream_idle_timeout.as_secs()
-                )
-            })? {
+            {
+                Ok(Ok(response)) => Ok(response),
+                Ok(Err(error)) => Err(request_model_failure(error)),
+                Err(_) => Err(ModelFailure::new(
+                    ModelFailureKind::StreamIdleTimeout,
+                    format!(
+                        "{} Provider 流等待响应头超过 {} 秒 idle timeout",
+                        self.protocol.as_str(),
+                        self.stream_idle_timeout.as_secs()
+                    ),
+                )),
+            };
+            match send_result {
                 Ok(response) if response.status().is_success() => break response,
                 Ok(response) => {
                     let status = response.status();
-                    let retryable = status.as_u16() == 429 || status.is_server_error();
+                    retry_after = retry_after_seconds(response.headers());
                     let text = response.text().await.unwrap_or_default();
+                    let failure = http_model_failure(status, text, retry_after);
+                    let retryable = failure.kind.is_provider_transient();
                     if !retryable || attempt >= self.max_retries {
-                        return Err(format!(
-                            "{} 流式请求返回 HTTP {}: {}",
-                            self.protocol.as_str(),
-                            status,
-                            text
-                        )
-                        .into());
+                        return Err(boxed_model_failure(failure));
                     }
                     tracing::warn!(
                         protocol = self.protocol.as_str(),
                         %status,
+                        failure_kind = failure.kind.as_str(),
                         attempt,
                         max = self.max_retries,
                         "Provider 流建立失败，准备重试"
                     );
                 }
-                Err(error) if attempt < self.max_retries => {
+                Err(failure)
+                    if failure.kind.is_provider_transient() && attempt < self.max_retries =>
+                {
                     tracing::warn!(
                         protocol = self.protocol.as_str(),
-                        %error,
+                        error = %failure,
+                        failure_kind = failure.kind.as_str(),
                         attempt,
                         max = self.max_retries,
                         "Provider 流建立发生网络错误，准备重试"
                     );
                 }
-                Err(error) => return Err(error.into()),
+                Err(failure) => return Err(boxed_model_failure(failure)),
             }
-            tokio::time::sleep(backoff).await;
+            let delay = provider_retry_delay(backoff, retry_after, attempt);
+            tracing::debug!(
+                protocol = self.protocol.as_str(),
+                attempt,
+                delay_ms = delay.as_millis(),
+                retry_after_secs = retry_after,
+                "Provider 流建立本地重试退避"
+            );
+            tokio::time::sleep(delay).await;
             backoff = backoff.saturating_mul(2);
         };
 
@@ -441,17 +569,22 @@ impl ProtocolClient {
         loop {
             let chunk = tokio::time::timeout(self.stream_idle_timeout, bytes.next())
                 .await
-                .map_err(|_| {
-                    format!(
-                        "{} Provider 流连续 {} 秒没有收到数据块",
-                        self.protocol.as_str(),
-                        self.stream_idle_timeout.as_secs()
-                    )
+                .map_err(|_| -> ProviderError {
+                    boxed_model_failure(ModelFailure::new(
+                        ModelFailureKind::StreamIdleTimeout,
+                        format!(
+                            "{} Provider 流连续 {} 秒没有收到数据块",
+                            self.protocol.as_str(),
+                            self.stream_idle_timeout.as_secs()
+                        ),
+                    ))
                 })?;
             let Some(chunk) = chunk else {
                 break;
             };
-            pending.extend_from_slice(&chunk?);
+            pending.extend_from_slice(
+                &chunk.map_err(|error| boxed_model_failure(request_model_failure(error)))?,
+            );
             while let Some((frame, consumed)) = take_sse_frame(&pending) {
                 pending.drain(..consumed);
                 if let Some(data) = sse_data(&frame)? {
@@ -679,6 +812,15 @@ pub async fn probe_provider(
 
 #[async_trait::async_trait]
 impl Client for ProtocolClient {
+    fn provider_resource_key(&self) -> String {
+        format!(
+            "model-provider:{}:{}:{}",
+            self.protocol.as_str(),
+            self.base_url,
+            self.model
+        )
+    }
+
     fn supports_async_cancellation(&self) -> bool {
         true
     }
@@ -1934,10 +2076,12 @@ mod tests {
     use crate::llm::{FunctionCall, ToolCall};
     use axum::{
         body::Body,
+        http::StatusCode,
         response::Response as AxumResponse,
         routing::{get, post},
         Json, Router,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn sse(body: &'static str) -> AxumResponse {
         AxumResponse::builder()
@@ -2000,6 +2144,132 @@ mod tests {
                 tool_calls: None,
             },
         ]
+    }
+
+    #[test]
+    fn model_failure_classifies_context_limit_before_generic_bad_request() {
+        let failure = http_model_failure(
+            reqwest::StatusCode::BAD_REQUEST,
+            json!({
+                "error": {
+                    "code": "context_length_exceeded",
+                    "message": "maximum context length is 262144 tokens"
+                }
+            })
+            .to_string(),
+            None,
+        );
+        assert_eq!(failure.kind, ModelFailureKind::ContextLimit);
+        assert_eq!(failure.http_status, Some(400));
+        assert_eq!(
+            failure.provider_code.as_deref(),
+            Some("context_length_exceeded")
+        );
+    }
+
+    #[test]
+    fn provider_retry_after_is_a_lower_bound_even_with_jitter() {
+        let delay = provider_retry_delay(Duration::from_secs(1), Some(17), 3);
+        assert!(delay >= Duration::from_secs(17));
+    }
+
+    #[tokio::test]
+    async fn context_limit_is_not_retried_inside_protocol_adapter() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let app = Router::new().route(
+            "/chat/completions",
+            post(move || {
+                let observed = Arc::clone(&observed);
+                async move {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "error": {
+                                "code": "context_length_exceeded",
+                                "message": "maximum context length exceeded"
+                            }
+                        })),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiChat,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "test-model".to_string(),
+            None,
+            &LlmConfig {
+                max_retries: 5,
+                initial_backoff_secs: 0,
+                ..LlmConfig::default()
+            },
+        )
+        .unwrap();
+
+        let error = client.send(&json!({})).await.unwrap_err();
+        let failure = error.downcast_ref::<ModelFailure>().unwrap();
+        assert_eq!(failure.kind, ModelFailureKind::ContextLimit);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn response_header_idle_timeout_uses_bounded_local_retry() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let app = Router::new().route(
+            "/chat/completions",
+            post(move || {
+                let observed = Arc::clone(&observed);
+                async move {
+                    let call = observed.fetch_add(1, Ordering::SeqCst);
+                    if call == 0 {
+                        tokio::time::sleep(Duration::from_millis(1_100)).await;
+                    }
+                    Json(json!({
+                        "choices": [{"finish_reason":"stop","message":{"content":"recovered"}}]
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiChat,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "test-model".to_string(),
+            None,
+            &LlmConfig {
+                max_retries: 2,
+                initial_backoff_secs: 0,
+                stream_idle_timeout_secs: 1,
+                ..LlmConfig::default()
+            },
+        )
+        .unwrap();
+
+        let body = client.send(&json!({})).await.unwrap();
+        assert_eq!(
+            body.pointer("/choices/0/message/content")
+                .and_then(Value::as_str),
+            Some("recovered")
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
     }
 
     fn tools() -> Vec<ToolDefinition> {

@@ -1,6 +1,200 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
+/// Runtime-facing classification of a failed physical model request.
+///
+/// Protocol adapters must preserve this distinction instead of flattening all
+/// failures into strings.  The scheduler uses it to decide whether an
+/// Objective should enter Context maintenance, wait for a Provider, or stop
+/// for operator configuration.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelFailureKind {
+    ContextLimit,
+    RateLimited,
+    TransientNetwork,
+    ServerUnavailable,
+    Authentication,
+    InvalidModelOrRequest,
+    StreamIdleTimeout,
+    Unknown,
+}
+
+impl ModelFailureKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ContextLimit => "context_limit",
+            Self::RateLimited => "rate_limited",
+            Self::TransientNetwork => "transient_network",
+            Self::ServerUnavailable => "server_unavailable",
+            Self::Authentication => "authentication",
+            Self::InvalidModelOrRequest => "invalid_model_or_request",
+            Self::StreamIdleTimeout => "stream_idle_timeout",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub const fn is_provider_transient(self) -> bool {
+        matches!(
+            self,
+            Self::RateLimited
+                | Self::TransientNetwork
+                | Self::ServerUnavailable
+                | Self::StreamIdleTimeout
+        )
+    }
+
+    /// Whether a failed physical request should enter the durable Provider
+    /// recovery loop for an Objective.
+    ///
+    /// Authentication and request/model configuration failures are not
+    /// transient in the narrow HTTP sense, but they are still recoverable
+    /// Runtime conditions: credentials, routing and the selected model can be
+    /// repaired while the Objective remains valid.  They therefore use a
+    /// slower/capped retry loop instead of turning the Objective into a
+    /// terminal or manually-resumed state.  ContextLimit is deliberately
+    /// excluded because it is handled by Context maintenance rather than by
+    /// reconnecting to the same Provider with the same request.
+    pub const fn uses_provider_recovery(self) -> bool {
+        !matches!(self, Self::ContextLimit)
+    }
+
+    pub const fn requires_configuration(self) -> bool {
+        matches!(self, Self::Authentication | Self::InvalidModelOrRequest)
+    }
+}
+
+/// Structured error emitted by first-class Provider adapters.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelFailure {
+    pub kind: ModelFailureKind,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
+}
+
+impl ModelFailure {
+    pub fn new(kind: ModelFailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            http_status: None,
+            provider_code: None,
+            retry_after_secs: None,
+        }
+    }
+
+    pub fn with_http_status(mut self, status: u16) -> Self {
+        self.http_status = Some(status);
+        self
+    }
+
+    pub fn with_provider_code(mut self, code: Option<String>) -> Self {
+        self.provider_code = code;
+        self
+    }
+
+    pub fn with_retry_after(mut self, seconds: Option<u64>) -> Self {
+        self.retry_after_secs = seconds;
+        self
+    }
+
+    /// Compatibility classifier for custom Client implementations that have
+    /// not yet adopted `ModelFailure`.  First-class adapters should construct
+    /// the structured value directly; this fallback deliberately recognizes
+    /// only stable cross-provider phrases.
+    pub fn classify_message(message: impl Into<String>) -> Self {
+        let message = message.into();
+        let normalized = message.to_ascii_lowercase();
+        let kind = if contains_any(
+            &normalized,
+            &[
+                "context_length_exceeded",
+                "maximum context length",
+                "max context length",
+                "context window",
+                "too many input tokens",
+                "input token limit",
+                "prompt is too long",
+                "request too large",
+                "上下文长度",
+                "上下文上限",
+                "输入 token 超",
+            ],
+        ) {
+            ModelFailureKind::ContextLimit
+        } else if contains_any(&normalized, &["429", "rate limit", "too many requests"]) {
+            ModelFailureKind::RateLimited
+        } else if contains_any(
+            &normalized,
+            &[
+                "401",
+                "403",
+                "unauthorized",
+                "forbidden",
+                "invalid api key",
+                "authentication",
+            ],
+        ) {
+            ModelFailureKind::Authentication
+        } else if contains_any(
+            &normalized,
+            &[
+                "model_not_found",
+                "model not found",
+                "unknown model",
+                "invalid model",
+                "invalid request",
+            ],
+        ) {
+            ModelFailureKind::InvalidModelOrRequest
+        } else if contains_any(
+            &normalized,
+            &[
+                "connection refused",
+                "connection reset",
+                "connection closed",
+                "dns error",
+                "failed to lookup address",
+                "no route to host",
+                "network is unreachable",
+                "tcp connect error",
+            ],
+        ) {
+            ModelFailureKind::TransientNetwork
+        } else if contains_any(
+            &normalized,
+            &["idle timeout", "timed out", "timeout awaiting response"],
+        ) {
+            ModelFailureKind::StreamIdleTimeout
+        } else if contains_any(
+            &normalized,
+            &["http 500", "http 502", "http 503", "http 504"],
+        ) {
+            ModelFailureKind::ServerUnavailable
+        } else {
+            ModelFailureKind::Unknown
+        };
+        Self::new(kind, message)
+    }
+}
+
+impl std::fmt::Display for ModelFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ModelFailure {}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
 /// Normalized reasoning control forwarded by every first-class Morphz
 /// protocol adapter. `None` is intentionally represented by `Option`: when
 /// unset, Morphz omits the native field and preserves the model's own default.
@@ -260,6 +454,13 @@ pub struct ToolCallRepr {
 
 #[async_trait::async_trait]
 pub trait Client: Send + Sync {
+    /// Stable Runtime resource identity used for shared backoff and durable
+    /// Objective waits.  Custom clients may keep the conservative default;
+    /// first-class protocol adapters include endpoint, protocol and model.
+    fn provider_resource_key(&self) -> String {
+        "model-provider:default".to_string()
+    }
+
     /// Whether dropping an in-flight completion future reliably cancels its
     /// underlying I/O.
     ///

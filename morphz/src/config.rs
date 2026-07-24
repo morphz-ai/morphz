@@ -275,6 +275,13 @@ pub struct OrchestratorConfig {
     /// 该窗口即可安全接管，避免把一次模型请求的完整时限误当成故障检测时限。
     #[serde(deserialize_with = "deserialize_positive_u64")]
     pub activation_lease_secs: u64,
+    /// Objective Evaluation 的可续租故障检测窗口（秒）。
+    ///
+    /// 这不是 Objective 或模型请求的最大执行时间。运行中的 Activation
+    /// 会持续续租；Runtime/Worker 消失后，其他节点最多等待该窗口即可用新
+    /// fencing token 接管，不能再由模型 hard deadline 推导成长达数分钟。
+    #[serde(deserialize_with = "deserialize_positive_u64")]
+    pub objective_evaluation_lease_secs: u64,
     /// 单次物理模型请求的可选绝对墙钟上限。None 表示不设置 hard
     /// deadline；流式停滞仍由 Provider 的 idle timeout 检测。
     pub model_attempt_hard_timeout_secs: Option<u64>,
@@ -320,6 +327,7 @@ impl Default for OrchestratorConfig {
             tool_timeout_secs: 30,
             model_provider_queue_timeout_secs: 180,
             activation_lease_secs: 30,
+            objective_evaluation_lease_secs: 90,
             model_attempt_hard_timeout_secs: None,
             reasoning_continuation_safety_limit: Some(64),
             max_stalled_reasoning_continuations: 3,
@@ -1610,6 +1618,10 @@ impl AppConfig {
             "MORPHZ_ACTIVATION_LEASE_SECS",
             &mut self.orchestrator.activation_lease_secs,
         )?;
+        apply_u64_env(
+            "MORPHZ_OBJECTIVE_EVALUATION_LEASE_SECS",
+            &mut self.orchestrator.objective_evaluation_lease_secs,
+        )?;
         apply_usize_env(
             "MORPHZ_ATTEMPT_SOFT_CHECKPOINT_INTERVAL",
             &mut self.orchestrator.attempt_soft_checkpoint_interval,
@@ -2092,6 +2104,7 @@ mod tests {
         assert_eq!(cfg.llm.reasoning_effort, None);
         assert_eq!(cfg.orchestrator.reply_wait_notice_secs, 120);
         assert_eq!(cfg.orchestrator.activation_lease_secs, 30);
+        assert_eq!(cfg.orchestrator.objective_evaluation_lease_secs, 90);
         assert_eq!(cfg.orchestrator.attempt_soft_checkpoint_interval, 90);
         assert_eq!(
             cfg.orchestrator

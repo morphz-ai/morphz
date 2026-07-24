@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { TFunction } from 'i18next'
-import { compactTokens, conversationEventKind, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
+import { compactTokens, conversationEventKind, conversationEventLane, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
 
 const translations: Record<string, string> = {
   'status.running': 'Running',
@@ -69,4 +69,19 @@ test('reply presentation follows delivery semantics rather than causal thread pr
   assert.equal(conversationEventKind('chat/reply', {
     thread_kind: 'delivery',
   }), 'background')
+})
+
+test('dual-track presentation separates execution output without moving Runtime activity', () => {
+  assert.equal(conversationEventLane('chat/user_message', {}), 'dialogue')
+  assert.equal(conversationEventLane('chat/reply', {
+    thread_kind: 'execution',
+    delivery_kind: 'turn_reply',
+  }), 'dialogue')
+  assert.equal(conversationEventLane('chat/reply', {
+    thread_kind: 'delivery',
+    delivery_kind: 'thread_delivery',
+  }), 'execution_output')
+  assert.equal(conversationEventLane('chat/progress', {}), 'execution_output')
+  assert.equal(conversationEventLane('chat/assistant_call', { terminal_outcome: false }), 'execution_output')
+  assert.equal(conversationEventLane('runtime/tool_calls_selected', {}), null)
 })
