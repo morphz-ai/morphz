@@ -15,9 +15,9 @@ use sha2::{Digest, Sha256};
 
 use crate::execution::deterministic_job_id;
 use crate::memory::{
-    ExecutionJobRecord, ExecutionJobStatus, NewExecutionJob, NewPlanExecution,
+    ExecutionJobRecord, ExecutionJobStatus, NewExecutionJob, NewPlanExecution, PlanExecutionFilter,
     PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus, PlanExecutionWaitKind,
-    RuntimeStore,
+    QueryFilter, RuntimeStore,
 };
 use crate::sexpr_eval::{PlanAdvance, PlanEffect, PlanMachine, Program};
 use crate::tool::Registry;
@@ -96,6 +96,13 @@ pub enum PlanResumeReceipt {
         current: Option<PlanExecutionRecord>,
         reason: String,
     },
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlanReconciliationReport {
+    pub resumed: Vec<PlanExecutionRecord>,
+    pub still_waiting: Vec<String>,
+    pub conflicts: Vec<(String, String)>,
 }
 
 pub struct PlanExecutionCoordinator {
@@ -390,6 +397,143 @@ impl PlanExecutionCoordinator {
             }),
         }
     }
+
+    /// Reads a terminal Job and its immutable result Event, then refills the
+    /// exact suspended effect without trusting an in-process caller to carry
+    /// the output across the crash boundary.
+    pub async fn reconcile_execution_job(
+        &self,
+        plan_id: &str,
+        execution_job_id: &str,
+    ) -> PlanExecutionResult<PlanResumeReceipt> {
+        let job = self
+            .store
+            .get_execution_job(execution_job_id)
+            .await?
+            .ok_or_else(|| format!("Execution Job '{execution_job_id}' 不存在"))?;
+        if !job.status.is_terminal() {
+            return Ok(PlanResumeReceipt::Conflict {
+                current: self.store.get_plan_execution(plan_id).await?,
+                reason: format!(
+                    "Execution Job '{}' 当前为 {}，尚不能回填 PlanExecution",
+                    job.id,
+                    job.status.as_str()
+                ),
+            });
+        }
+        let outcome = self.durable_job_outcome(&job).await?;
+        self.resume_execution_job(plan_id, execution_job_id, outcome)
+            .await
+    }
+
+    /// Restart-safe bounded reconciliation. It only consumes authoritative
+    /// terminal child facts; non-terminal children remain waiting and are
+    /// left to the existing Execution Job recovery controller.
+    pub async fn reconcile_waiting_execution_jobs(
+        &self,
+        context_id: Option<&str>,
+        limit: usize,
+    ) -> PlanExecutionResult<PlanReconciliationReport> {
+        let plans = self
+            .store
+            .list_plan_executions(PlanExecutionFilter {
+                context_id: context_id.map(str::to_string),
+                status: Some(PlanExecutionStatus::Waiting),
+                include_terminal: false,
+                limit: Some(limit.max(1)),
+                ..PlanExecutionFilter::default()
+            })
+            .await?;
+        let mut report = PlanReconciliationReport::default();
+        for plan in plans {
+            if plan.pending_kind != Some(PlanExecutionWaitKind::ExecutionJob) {
+                report.still_waiting.push(plan.id);
+                continue;
+            }
+            let Some(job_id) = plan.pending_id.as_deref() else {
+                report.conflicts.push((
+                    plan.id,
+                    "waiting(execution_job) 缺少 pending_id".to_string(),
+                ));
+                continue;
+            };
+            let Some(job) = self.store.get_execution_job(job_id).await? else {
+                report
+                    .conflicts
+                    .push((plan.id, format!("引用的 Execution Job '{job_id}' 不存在")));
+                continue;
+            };
+            if !job.status.is_terminal() {
+                report.still_waiting.push(plan.id);
+                continue;
+            }
+            match self.reconcile_execution_job(&plan.id, &job.id).await? {
+                PlanResumeReceipt::Queued(record) | PlanResumeReceipt::Existing(record) => {
+                    report.resumed.push(record);
+                }
+                PlanResumeReceipt::Conflict { reason, .. } => {
+                    report.conflicts.push((plan.id, reason));
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    async fn durable_job_outcome(
+        &self,
+        job: &ExecutionJobRecord,
+    ) -> PlanExecutionResult<Result<JsonValue, String>> {
+        match job.status {
+            ExecutionJobStatus::Succeeded => {
+                let Some(event_id) = job.result_event_id.as_deref() else {
+                    // Empty physical output is a real successful result, not
+                    // an absent completion signal.
+                    return Ok(Ok(JsonValue::Null));
+                };
+                let mut events = self
+                    .store
+                    .query(QueryFilter {
+                        event_id: Some(event_id.to_string()),
+                        context_id: Some(job.context_id.clone()),
+                        top_k: Some(1),
+                        ..QueryFilter::default()
+                    })
+                    .await?;
+                let event = events.pop().ok_or_else(|| {
+                    format!(
+                        "Execution Job '{}' 引用的结果 Event '{}' 不存在",
+                        job.id, event_id
+                    )
+                })?;
+                let value = match event.payload.get("text") {
+                    Some(JsonValue::String(text)) if text.trim().is_empty() => JsonValue::Null,
+                    Some(JsonValue::String(text)) => serde_json::from_str(text)
+                        .unwrap_or_else(|_| JsonValue::String(text.clone())),
+                    Some(value) => value.clone(),
+                    None => JsonValue::Null,
+                };
+                Ok(Ok(value))
+            }
+            ExecutionJobStatus::Failed => Ok(Err(job
+                .error
+                .clone()
+                .unwrap_or_else(|| "Execution Job 执行失败".to_string()))),
+            ExecutionJobStatus::Cancelled => Ok(Err(job
+                .error
+                .clone()
+                .unwrap_or_else(|| "Execution Job 已取消".to_string()))),
+            ExecutionJobStatus::Lost => Ok(Err(job
+                .error
+                .clone()
+                .unwrap_or_else(|| "Execution Job 执行事实不确定".to_string()))),
+            status => Err(format!(
+                "Execution Job '{}' 当前为 {}，不是可回填终态",
+                job.id,
+                status.as_str()
+            )
+            .into()),
+        }
+    }
 }
 
 pub fn deterministic_plan_execution_id(
@@ -539,6 +683,7 @@ fn updated_or_conflict(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::{Event, TYPE_TOOL_OUTPUT};
     use crate::execution_target::DEFAULT_EXECUTION_TARGET_ID;
     use crate::llm::ToolDefinition;
     use crate::memory::sqlite::SqliteStore;
@@ -758,37 +903,57 @@ mod tests {
                 .await
                 .unwrap(),
         );
+        let result_event = Event::new(
+            "plan-coordinator-result".to_string(),
+            "Test-Executor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), serde_json::json!(job.context_id)),
+                ("session_id".to_string(), serde_json::json!(job.session_id)),
+                (
+                    "activation_id".to_string(),
+                    serde_json::json!(job.activation_id),
+                ),
+                ("thread_id".to_string(), serde_json::json!(job.thread_id)),
+                (
+                    "tool_call_id".to_string(),
+                    serde_json::json!(job.tool_call_id),
+                ),
+                ("tool_name".to_string(), serde_json::json!("read")),
+                ("tool_status".to_string(), serde_json::json!("success")),
+                ("text".to_string(), serde_json::json!("README contents")),
+            ]),
+        );
         let terminal_job = updated_job(
             store
-                .finish_execution_job(
+                .finish_execution_job_with_event(
                     &running_job.id,
                     running_job.revision,
                     Some("job-claim-1"),
                     ExecutionJobTerminal {
                         status: ExecutionJobStatus::Succeeded,
-                        result_event_id: None,
+                        result_event_id: Some(result_event.id.clone()),
                         result_refs: Vec::new(),
                         error: None,
                         exit_code: Some(0),
                     },
+                    &result_event,
+                    false,
                 )
                 .await
                 .unwrap(),
         );
         assert_eq!(terminal_job.status, ExecutionJobStatus::Succeeded);
 
-        let resumed = match coordinator
-            .resume_execution_job(
-                &waiting.id,
-                &terminal_job.id,
-                Ok(serde_json::json!("README contents")),
-            )
+        let mut report = coordinator
+            .reconcile_waiting_execution_jobs(Some(&waiting.context_id), 16)
             .await
-            .unwrap()
-        {
-            PlanResumeReceipt::Queued(plan) => plan,
-            other => panic!("expected queued plan after refill, got {other:?}"),
-        };
+            .unwrap();
+        assert!(report.conflicts.is_empty());
+        assert!(report.still_waiting.is_empty());
+        assert_eq!(report.resumed.len(), 1);
+        let resumed = report.resumed.pop().unwrap();
         assert_eq!(resumed.status, PlanExecutionStatus::Queued);
 
         match coordinator
