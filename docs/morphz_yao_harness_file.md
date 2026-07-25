@@ -1,8 +1,8 @@
 # Yao Harness `.hns` 包、显式双求值与 Typed Plan IR v1
 
 > 状态：显式根、Typed Plan IR、`.hns` v1 Loader、持久 `PlanExecution` 与
-> `call → Execution Job` 原子交接、终态结果回填与重启扫描已实现；
-> 正式 Orchestrator 驱动及 `infer → Evaluation` 交接仍在接入
+> `call → Execution Job`、`infer → child Activation` 原子交接、终态结果
+> 回填与重启扫描已实现；正式 `eval` 入口的 Orchestrator 驱动仍在接入
 > 日期：2026-07-25
 > 前置：[Domain Harness 架构](morphz_domain_harness_architecture_v1.md)、[Yao 表征分层](morphz_yao_representation_layers.md)、[Scheduler Kernel](morphz_scheduler_kernel_and_domain_model_v1.md)
 > 适用范围：Yao 源语言、Harness 包、`eval/infer`、Typed Plan IR、Objective / Evaluation / Execution Job 的映射
@@ -448,6 +448,18 @@ Harness 不拥有第二套调度器。Plan Executor 只把 IR 节点物化到已
 | `(eval ...)` 内部的 `infer` | Runtime Plan | 子 Evaluation；输入由程序显式给出，结果必须作为可绑定值或分类错误返回 |
 
 内部 `infer` 不应只是一次本地 `role=user` completion，也不能复用父 attempt ID。它需要正式的子 Evaluation 身份、因果 route、持久历史、预算和交付事件。
+
+当前实现把这个语义映射为现有 Scheduler Kernel 的
+`infer_request Event → Signal Outbox → Execution Thread → child Activation`：
+
+- infer request Event、Signal Outbox 与父 `PlanExecution` 的
+  `waiting(evaluation, activation_id)` 在同一个数据库事务提交；
+- Thread / Activation 仍由通用 Scheduler 路由器物化，不建立 Harness
+  私有调度队列；
+- 子 Activation 的终态结果写成不可变 `plan/infer_result` Event，不进入
+  用户 Delivery；
+- 父 Plan 根据稳定 Activation ID、Thread executor route 与结果 Event
+  回填确切的 `infer` effect；崩溃后可通过有界扫描继续。
 
 是否限制内部 `infer` 的轮数属于 Profile / Budget 策略，不写死为一个很小的语言常量。正常推理可以持续；Runtime 只保留安全级 hard limit、停滞观测和可人工干预能力。
 

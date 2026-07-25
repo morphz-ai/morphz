@@ -1669,6 +1669,22 @@ pub struct PlanExecutionJobCommit {
     pub existing: bool,
 }
 
+/// Atomic hand-off from deterministic Plan control to one model-owned child
+/// Evaluation.
+///
+/// The immutable request Event and its Signal Outbox entry are committed in
+/// the same transaction that releases the Plan into
+/// `waiting(evaluation, activation_id)`.  Thread/Activation materialization is
+/// deliberately left to the ordinary Scheduler router: the Outbox is the
+/// durable bridge across a crash between this commit and dispatch.
+#[derive(Debug, Clone)]
+pub struct PlanEvaluationCommit {
+    pub plan: PlanExecutionRecord,
+    pub request_event: crate::event::Event,
+    pub activation_id: String,
+    pub existing: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ExecutionJobFilter {
     pub context_id: Option<String>,
@@ -3264,6 +3280,23 @@ pub trait PlanExecutionStore: Send + Sync {
         budget_json: &JsonValue,
         job: NewExecutionJob,
     ) -> Result<PlanExecutionJobCommit, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically appends one internal inference request (including its
+    /// Scheduler Signal Outbox row) and releases the current Plan claim into
+    /// `waiting(evaluation, activation_id)`.
+    ///
+    /// `activation_id` is the deterministic identity the Scheduler will
+    /// derive from `request_event.id`. Exact replay returns `existing`.
+    #[allow(clippy::too_many_arguments)]
+    async fn create_evaluation_and_suspend_plan(
+        &self,
+        plan_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        state_json: &JsonValue,
+        budget_json: &JsonValue,
+        request_event: &crate::event::Event,
+        activation_id: &str,
+    ) -> Result<PlanEvaluationCommit, Box<dyn std::error::Error + Send + Sync>>;
     /// Makes a waiting plan runnable after validating the exact child route.
     async fn resume_plan_execution(
         &self,

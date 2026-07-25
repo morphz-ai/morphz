@@ -10,7 +10,10 @@ use crate::approval::{
 };
 use crate::approval_authority::stable_approval_identity;
 use crate::config::OrchestratorConfig;
-use crate::event::{Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
+use crate::event::{
+    Event, InMemoryEventBus, TYPE_AGENT_CALL, TYPE_INFER_REQUEST, TYPE_TOOL_OUTPUT,
+    TYPE_USER_MESSAGE,
+};
 use crate::execution::{
     ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat, JobOutcome, JobReceipt,
 };
@@ -2820,6 +2823,7 @@ impl Orchestrator {
         }
         if event.event_type != TYPE_USER_MESSAGE
             && event.event_type != TYPE_TOOL_OUTPUT
+            && event.event_type != TYPE_INFER_REQUEST
             && event.topic != "runtime/action_group_settled"
         {
             return Ok(());
@@ -3377,7 +3381,8 @@ impl Orchestrator {
         };
         let parent_activation_id = event
             .payload
-            .get("activation_id")
+            .get("parent_activation_id")
+            .or_else(|| event.payload.get("activation_id"))
             .and_then(|value| value.as_str())
             .map(ToOwned::to_owned);
         let parent = match parent_activation_id.as_deref() {
@@ -3408,6 +3413,11 @@ impl Orchestrator {
         } else {
             ThreadKind::Execution
         };
+        let plan_execution_id = event
+            .payload
+            .get("plan_execution_id")
+            .and_then(|value| value.as_str())
+            .map(ToOwned::to_owned);
         let thread = session_store
             .ensure_thread(NewThread {
                 id: stable_thread_id(&root_turn_id),
@@ -3417,8 +3427,12 @@ impl Orchestrator {
                 initiating_principal_id: initiating_principal_id.clone(),
                 root_turn_id: root_turn_id.clone(),
                 kind: initial_thread_kind,
-                executor_kind: "self".to_string(),
-                executor_id: None,
+                executor_kind: if plan_execution_id.is_some() {
+                    "plan_infer".to_string()
+                } else {
+                    "self".to_string()
+                },
+                executor_id: plan_execution_id,
                 target_id: None,
             })
             .await?;
@@ -5733,6 +5747,7 @@ impl Orchestrator {
                             session_id,
                             &attempt_id,
                             &terminal_model_attempt_id,
+                            &thread,
                             content,
                         )
                         .await
@@ -6273,6 +6288,7 @@ impl Orchestrator {
         session_id: &str,
         attempt_id: &str,
         model_attempt_id: &str,
+        thread: &ThreadRecord,
         content: String,
     ) -> Result<(), DynError> {
         let context_id = self.context_id_for_session(session_id)?;
@@ -6291,17 +6307,28 @@ impl Orchestrator {
             ("model_attempt_id".to_string(), json!(model_attempt_id)),
             (
                 "disposition".to_string(),
-                json!("complete_pending_delivery"),
+                json!(if thread.executor_kind == "plan_infer" {
+                    "complete_internal_evaluation"
+                } else {
+                    "complete_pending_delivery"
+                }),
             ),
             ("text".to_string(), json!(content)),
         ];
+        if thread.executor_kind == "plan_infer" {
+            payload.push(("plan_execution_id".to_string(), json!(thread.executor_id)));
+        }
         self.append_activation_route(attempt_id, &mut payload);
         self.append_objective_activation_route(attempt_id, &mut payload);
         let result_event = Event::new(
             result_event_id.clone(),
             "Agent-Morphz".to_string(),
             TYPE_AGENT_CALL.to_string(),
-            "runtime/thread_result".to_string(),
+            if thread.executor_kind == "plan_infer" {
+                "plan/infer_result".to_string()
+            } else {
+                "runtime/thread_result".to_string()
+            },
             payload.into_iter().collect(),
         );
         if !self
@@ -6311,7 +6338,9 @@ impl Orchestrator {
             return Ok(());
         }
 
-        self.arm_delivery_flush(session_id).await?;
+        if thread.executor_kind != "plan_infer" {
+            self.arm_delivery_flush(session_id).await?;
+        }
         Ok(())
     }
 

@@ -13,11 +13,12 @@ use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 
+use crate::event::{Event, TYPE_INFER_REQUEST};
 use crate::execution::deterministic_job_id;
 use crate::memory::{
-    ExecutionJobRecord, ExecutionJobStatus, NewExecutionJob, NewPlanExecution, PlanExecutionFilter,
-    PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus, PlanExecutionWaitKind,
-    QueryFilter, RuntimeStore,
+    ExecutionJobRecord, ExecutionJobStatus, NewExecutionJob, NewPlanExecution,
+    PlanEvaluationCommit, PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord,
+    PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeStore, ThreadActivationStatus,
 };
 use crate::sexpr_eval::{PlanAdvance, PlanEffect, PlanMachine, Program};
 use crate::tool::Registry;
@@ -70,9 +71,11 @@ pub enum PlanDriveReceipt {
         job: ExecutionJobRecord,
         existing: bool,
     },
-    WaitingForInfer {
+    WaitingForEvaluation {
         plan: PlanExecutionRecord,
-        effect: PlanEffect,
+        request_event: Event,
+        activation_id: String,
+        existing: bool,
     },
     Succeeded {
         plan: PlanExecutionRecord,
@@ -166,10 +169,9 @@ impl PlanExecutionCoordinator {
 
     /// Claims and advances one Plan until the next durable boundary.
     ///
-    /// `call` is handed to the existing Execution Job plane. `infer` is
-    /// intentionally surfaced without executing it: the next integration
-    /// slice must materialize a real child Evaluation before this claim can be
-    /// released.
+    /// `call` is handed to the existing Execution Job plane. `infer` appends a
+    /// routed immutable request and suspends behind the child Activation the
+    /// Scheduler derives from that request.
     pub async fn drive_once(
         &self,
         plan_id: &str,
@@ -238,22 +240,37 @@ impl PlanExecutionCoordinator {
                     existing: committed.existing,
                 })
             }
-            PlanAdvance::Suspended(effect @ PlanEffect::Infer { .. }) => {
+            PlanAdvance::Suspended(effect @ PlanEffect::Infer { sequence, .. }) => {
                 let state_json = serde_json::to_value(&machine)?;
                 let budget_json = machine.budget_json()?;
-                let mutation = self
+                let request_event = infer_request_event(&running, &effect)?;
+                let activation_id = deterministic_infer_activation_id(&request_event.id)?;
+                let committed: PlanEvaluationCommit = self
                     .store
-                    .heartbeat_plan_execution(
+                    .create_evaluation_and_suspend_plan(
                         &running.id,
                         running.revision,
                         claim_token,
-                        lease_expires_at,
                         &state_json,
                         &budget_json,
+                        &request_event,
+                        &activation_id,
                     )
                     .await?;
-                let plan = updated_or_conflict(mutation, "infer effect heartbeat")?;
-                Ok(PlanDriveReceipt::WaitingForInfer { plan, effect })
+                debug_assert_eq!(
+                    deterministic_plan_effect_id(&running.id, sequence)?,
+                    request_event
+                        .payload
+                        .get("plan_effect_id")
+                        .and_then(JsonValue::as_str)
+                        .unwrap_or_default()
+                );
+                Ok(PlanDriveReceipt::WaitingForEvaluation {
+                    plan: committed.plan,
+                    request_event: committed.request_event,
+                    activation_id: committed.activation_id,
+                    existing: committed.existing,
+                })
             }
             PlanAdvance::Complete(value) => {
                 let state_json = serde_json::to_value(&machine)?;
@@ -398,6 +415,128 @@ impl PlanExecutionCoordinator {
         }
     }
 
+    /// Refills the exact suspended `infer` effect from one terminal child
+    /// Activation.
+    pub async fn resume_evaluation(
+        &self,
+        plan_id: &str,
+        activation_id: &str,
+        outcome: Result<JsonValue, String>,
+    ) -> PlanExecutionResult<PlanResumeReceipt> {
+        let Some(plan) = self.store.get_plan_execution(plan_id).await? else {
+            return Ok(PlanResumeReceipt::Conflict {
+                current: None,
+                reason: format!("PlanExecution '{plan_id}' 不存在"),
+            });
+        };
+        if plan.status != PlanExecutionStatus::Waiting
+            || plan.pending_kind != Some(PlanExecutionWaitKind::Evaluation)
+            || plan.pending_id.as_deref() != Some(activation_id)
+        {
+            return if matches!(
+                plan.status,
+                PlanExecutionStatus::Queued
+                    | PlanExecutionStatus::Running
+                    | PlanExecutionStatus::Succeeded
+                    | PlanExecutionStatus::Failed
+                    | PlanExecutionStatus::Cancelled
+            ) {
+                Ok(PlanResumeReceipt::Existing(plan))
+            } else {
+                Ok(PlanResumeReceipt::Conflict {
+                    current: Some(plan),
+                    reason: "PlanExecution 没有等待该 Evaluation".to_string(),
+                })
+            };
+        }
+        let activation = self
+            .store
+            .get_thread_activation(activation_id)
+            .await?
+            .ok_or_else(|| {
+                format!(
+                    "PlanExecution '{}' 引用的 child Activation '{}' 不存在",
+                    plan.id, activation_id
+                )
+            })?;
+        validate_terminal_evaluation_route(&plan, &activation)?;
+
+        let mut machine: PlanMachine = serde_json::from_value(plan.state_json.clone())
+            .map_err(|error| format!("PlanExecution '{}' state 无法恢复: {error}", plan.id))?;
+        let effect = machine.pending_effect().cloned().ok_or_else(|| {
+            format!(
+                "PlanExecution '{}' 等待 Evaluation 但 machine 没有 effect",
+                plan.id
+            )
+        })?;
+        let PlanEffect::Infer { sequence, .. } = effect else {
+            return Err("PlanExecution 等待 Evaluation，但 pending effect 不是 infer".into());
+        };
+        let request_event = infer_request_event(&plan, &effect)?;
+        if deterministic_infer_activation_id(&request_event.id)? != activation.id {
+            return Err("child Activation 与 Plan infer effect 的稳定身份不一致".into());
+        }
+        machine.resume_effect(sequence, outcome)?;
+        let state_json = serde_json::to_value(&machine)?;
+        let budget_json = machine.budget_json()?;
+        match self
+            .store
+            .resume_plan_execution(
+                &plan.id,
+                plan.revision,
+                PlanExecutionWaitKind::Evaluation,
+                activation_id,
+                &state_json,
+                &budget_json,
+            )
+            .await?
+        {
+            PlanExecutionMutation::Updated(record) | PlanExecutionMutation::Existing(record) => {
+                Ok(PlanResumeReceipt::Queued(record))
+            }
+            PlanExecutionMutation::Conflict { current } => Ok(PlanResumeReceipt::Conflict {
+                current: Some(current),
+                reason: "PlanExecution infer result refill revision 冲突".to_string(),
+            }),
+            PlanExecutionMutation::Rejected { current, reason } => {
+                Ok(PlanResumeReceipt::Conflict { current, reason })
+            }
+            PlanExecutionMutation::NotFound => Ok(PlanResumeReceipt::Conflict {
+                current: None,
+                reason: format!("PlanExecution '{}' 在 infer result refill 时消失", plan.id),
+            }),
+        }
+    }
+
+    /// Reads the authoritative child Activation/Thread outcome and refills the
+    /// suspended Plan without relying on an in-process response channel.
+    pub async fn reconcile_evaluation(
+        &self,
+        plan_id: &str,
+        activation_id: &str,
+    ) -> PlanExecutionResult<PlanResumeReceipt> {
+        let activation = self
+            .store
+            .get_thread_activation(activation_id)
+            .await?
+            .ok_or_else(|| format!("child Activation '{activation_id}' 不存在"))?;
+        if !activation.status.is_terminal() {
+            return Ok(PlanResumeReceipt::Conflict {
+                current: self.store.get_plan_execution(plan_id).await?,
+                reason: format!(
+                    "child Activation '{}' 当前为 {}，尚不能回填 PlanExecution",
+                    activation.id,
+                    activation.status.as_str()
+                ),
+            });
+        }
+        let outcome = self
+            .durable_evaluation_outcome(plan_id, &activation)
+            .await?;
+        self.resume_evaluation(plan_id, activation_id, outcome)
+            .await
+    }
+
     /// Reads a terminal Job and its immutable result Event, then refills the
     /// exact suspended effect without trusting an in-process caller to carry
     /// the output across the crash boundary.
@@ -479,6 +618,121 @@ impl PlanExecutionCoordinator {
         Ok(report)
     }
 
+    /// Restart-safe bounded reconciliation for model-owned child Evaluations.
+    pub async fn reconcile_waiting_evaluations(
+        &self,
+        context_id: Option<&str>,
+        limit: usize,
+    ) -> PlanExecutionResult<PlanReconciliationReport> {
+        let plans = self
+            .store
+            .list_plan_executions(PlanExecutionFilter {
+                context_id: context_id.map(str::to_string),
+                status: Some(PlanExecutionStatus::Waiting),
+                include_terminal: false,
+                limit: Some(limit.max(1)),
+                ..PlanExecutionFilter::default()
+            })
+            .await?;
+        let mut report = PlanReconciliationReport::default();
+        for plan in plans {
+            if plan.pending_kind != Some(PlanExecutionWaitKind::Evaluation) {
+                report.still_waiting.push(plan.id);
+                continue;
+            }
+            let Some(activation_id) = plan.pending_id.as_deref() else {
+                report
+                    .conflicts
+                    .push((plan.id, "waiting(evaluation) 缺少 pending_id".to_string()));
+                continue;
+            };
+            let Some(activation) = self.store.get_thread_activation(activation_id).await? else {
+                // The infer request and Outbox are committed atomically with
+                // the Plan. A missing Activation may simply mean the router
+                // has not materialized the durable request yet.
+                report.still_waiting.push(plan.id);
+                continue;
+            };
+            if !activation.status.is_terminal() {
+                report.still_waiting.push(plan.id);
+                continue;
+            }
+            match self.reconcile_evaluation(&plan.id, &activation.id).await? {
+                PlanResumeReceipt::Queued(record) | PlanResumeReceipt::Existing(record) => {
+                    report.resumed.push(record);
+                }
+                PlanResumeReceipt::Conflict { reason, .. } => {
+                    report.conflicts.push((plan.id, reason));
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    async fn durable_evaluation_outcome(
+        &self,
+        plan_id: &str,
+        activation: &crate::memory::ThreadActivationRecord,
+    ) -> PlanExecutionResult<Result<JsonValue, String>> {
+        match activation.status {
+            ThreadActivationStatus::Succeeded => {
+                let thread = self
+                    .store
+                    .get_thread_by_root(&activation.root_turn_id)
+                    .await?
+                    .ok_or_else(|| {
+                        format!(
+                            "child Activation '{}' 的 Thread '{}' 不存在",
+                            activation.id, activation.root_turn_id
+                        )
+                    })?;
+                if thread.executor_kind != "plan_infer"
+                    || thread.executor_id.as_deref() != Some(plan_id)
+                {
+                    return Err(format!(
+                        "child Thread '{}' 不属于 PlanExecution '{}'",
+                        thread.id, plan_id
+                    )
+                    .into());
+                }
+                let event_id = thread.result_event_id.as_deref().ok_or_else(|| {
+                    format!("child Thread '{}' 已完成但没有 result Event", thread.id)
+                })?;
+                let event = self
+                    .store
+                    .query(QueryFilter {
+                        event_id: Some(event_id.to_string()),
+                        context_id: Some(thread.context_id.clone()),
+                        top_k: Some(1),
+                        ..QueryFilter::default()
+                    })
+                    .await?
+                    .into_iter()
+                    .find(|event| event.id == event_id)
+                    .ok_or_else(|| {
+                        format!(
+                            "child Thread '{}' 引用的结果 Event '{}' 不存在",
+                            thread.id, event_id
+                        )
+                    })?;
+                let value = event
+                    .payload
+                    .get("text")
+                    .cloned()
+                    .unwrap_or(JsonValue::Null);
+                Ok(Ok(value))
+            }
+            ThreadActivationStatus::Failed => Ok(Err("child Evaluation 执行失败".to_string())),
+            ThreadActivationStatus::Cancelled => Ok(Err("child Evaluation 已取消".to_string())),
+            status => Err(format!(
+                "child Activation '{}' 当前为 {}，不是可回填终态",
+                activation.id,
+                status.as_str()
+            )
+            .into()),
+        }
+    }
+
     async fn durable_job_outcome(
         &self,
         job: &ExecutionJobRecord,
@@ -553,6 +807,137 @@ pub fn deterministic_plan_effect_id(
         plan_execution_id,
         &sequence.to_string(),
     )
+}
+
+fn infer_request_event(
+    plan: &PlanExecutionRecord,
+    effect: &PlanEffect,
+) -> PlanExecutionResult<Event> {
+    let PlanEffect::Infer {
+        sequence,
+        request,
+        tools,
+    } = effect
+    else {
+        return Err("只有 infer effect 能生成内部求值请求".into());
+    };
+    let effect_id = deterministic_plan_effect_id(&plan.id, *sequence)?;
+    let event_id = stable_id(
+        b"morphz.plan-infer-request.v1\0",
+        "infer_request",
+        &plan.id,
+        &sequence.to_string(),
+    )?;
+    let root_turn_id = event_id.clone();
+    let mut payload = serde_json::Map::from_iter([
+        ("agent_id".to_string(), JsonValue::String(plan.agent_id.clone())),
+        (
+            "context_id".to_string(),
+            JsonValue::String(plan.context_id.clone()),
+        ),
+        (
+            "session_id".to_string(),
+            JsonValue::String(plan.session_id.clone()),
+        ),
+        (
+            "root_turn_id".to_string(),
+            JsonValue::String(root_turn_id),
+        ),
+        (
+            "parent_activation_id".to_string(),
+            JsonValue::String(plan.activation_id.clone()),
+        ),
+        (
+            "parent_thread_id".to_string(),
+            JsonValue::String(plan.thread_id.clone()),
+        ),
+        (
+            "plan_execution_id".to_string(),
+            JsonValue::String(plan.id.clone()),
+        ),
+        (
+            "plan_effect_id".to_string(),
+            JsonValue::String(effect_id),
+        ),
+        (
+            "plan_effect_sequence".to_string(),
+            JsonValue::from(*sequence),
+        ),
+        ("request".to_string(), JsonValue::Object(request.clone())),
+        (
+            "tools".to_string(),
+            tools
+                .as_ref()
+                .map(|items| {
+                    JsonValue::Array(items.iter().cloned().map(JsonValue::String).collect())
+                })
+                .unwrap_or(JsonValue::Null),
+        ),
+        (
+            "text".to_string(),
+            JsonValue::String(format!(
+                "这是 Runtime 正在执行的 Yao 程序提出的内部 infer 请求。请根据 request 中的任务与证据完成判断；可使用 tools 声明允许的工具补充证据。最终正文只返回供父 Plan 继续求值的结果，不要把它当作用户消息。\n\n{}",
+                serde_json::to_string(&JsonValue::Object(request.clone()))?
+            )),
+        ),
+    ]);
+    if let Some(principal_id) = &plan.initiating_principal_id {
+        payload.insert(
+            "principal_id".to_string(),
+            JsonValue::String(principal_id.clone()),
+        );
+    }
+    if let Some(objective_id) = &plan.objective_id {
+        payload.insert(
+            "objective_id".to_string(),
+            JsonValue::String(objective_id.clone()),
+        );
+    }
+    if let Some(evaluation_id) = &plan.objective_evaluation_id {
+        payload.insert(
+            "objective_evaluation_id".to_string(),
+            JsonValue::String(evaluation_id.clone()),
+        );
+    }
+    let mut event = Event::new(
+        event_id,
+        "Runtime-Yao".to_string(),
+        TYPE_INFER_REQUEST.to_string(),
+        "plan/infer_request".to_string(),
+        payload,
+    );
+    // Exact replay must be byte-identical. The claim transition timestamp is
+    // already durable and remains stable if the caller loses the commit
+    // response and retries this hand-off.
+    event.timestamp = plan.updated_at;
+    Ok(event)
+}
+
+pub fn deterministic_infer_activation_id(event_id: &str) -> PlanExecutionResult<String> {
+    if event_id.trim().is_empty() {
+        return Err("infer request Event id 不能为空".into());
+    }
+    let digest = Sha256::digest(event_id.as_bytes());
+    let id = format!("work_{digest:x}");
+    Ok(id[..29].to_string())
+}
+
+fn validate_terminal_evaluation_route(
+    plan: &PlanExecutionRecord,
+    activation: &crate::memory::ThreadActivationRecord,
+) -> PlanExecutionResult<()> {
+    if !activation.status.is_terminal() {
+        return Err(format!("child Activation '{}' 尚未终结", activation.id).into());
+    }
+    if activation.agent_id != plan.agent_id
+        || activation.context_id != plan.context_id
+        || activation.session_id != plan.session_id
+        || activation.initiating_principal_id != plan.initiating_principal_id
+        || activation.parent_activation_id.as_deref() != Some(plan.activation_id.as_str())
+    {
+        return Err("PlanExecution 与 child Evaluation Activation 的因果 route 不一致".into());
+    }
+    Ok(())
 }
 
 fn stable_id(domain: &[u8], prefix: &str, left: &str, right: &str) -> PlanExecutionResult<String> {
@@ -690,7 +1075,7 @@ mod tests {
     use crate::memory::{
         ActivationStore, ExecutionJobMutation, ExecutionJobStore, ExecutionJobTerminal,
         ExecutionRetrySafety, NewCognitiveContext, NewSession, NewThread, NewThreadActivation,
-        SessionDirectoryStore, SessionMountKind, ThreadKind, ThreadStore,
+        SessionDirectoryStore, SessionMountKind, ThreadActivationMutation, ThreadKind, ThreadStore,
     };
     use crate::sexpr_eval::{validate, AllowList};
     use crate::tool::Tool;
@@ -973,6 +1358,168 @@ mod tests {
                 assert_eq!(plan.status, PlanExecutionStatus::Succeeded);
             }
             other => panic!("expected completed plan, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn infer_is_atomically_suspended_and_refilled_through_child_activation() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        let program = validate(
+            r#"(eval
+                 (seq
+                   (bind judgement
+                     (infer (task "判断证据是否充分") (evidence "A")))
+                   $judgement))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let route = seed_route(&store).await;
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, registry);
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+
+        let (waiting, request_event, activation_id) = match coordinator
+            .drive_once(
+                &queued.id,
+                queued.revision,
+                "plan-worker",
+                "plan-infer-claim-1",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::WaitingForEvaluation {
+                plan,
+                request_event,
+                activation_id,
+                existing,
+            } => {
+                assert!(!existing);
+                (plan, request_event, activation_id)
+            }
+            other => panic!("expected evaluation suspension, got {other:?}"),
+        };
+        assert_eq!(waiting.status, PlanExecutionStatus::Waiting);
+        assert_eq!(
+            waiting.pending_kind,
+            Some(PlanExecutionWaitKind::Evaluation)
+        );
+        assert_eq!(waiting.pending_id.as_deref(), Some(activation_id.as_str()));
+
+        let child_thread = store
+            .ensure_thread(NewThread {
+                id: "plan-infer-thread".to_string(),
+                agent_id: waiting.agent_id.clone(),
+                context_id: waiting.context_id.clone(),
+                session_id: waiting.session_id.clone(),
+                initiating_principal_id: waiting.initiating_principal_id.clone(),
+                root_turn_id: request_event.id.clone(),
+                kind: ThreadKind::Execution,
+                executor_kind: "plan_infer".to_string(),
+                executor_id: Some(waiting.id.clone()),
+                target_id: None,
+            })
+            .await
+            .unwrap();
+        let child_activation = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: activation_id.clone(),
+                agent_id: waiting.agent_id.clone(),
+                context_id: waiting.context_id.clone(),
+                session_id: waiting.session_id.clone(),
+                initiating_principal_id: waiting.initiating_principal_id.clone(),
+                trigger_event_id: request_event.id.clone(),
+                trigger_sequence: 2,
+                trigger_kind: TYPE_INFER_REQUEST.to_string(),
+                parent_activation_id: Some(waiting.activation_id.clone()),
+                root_turn_id: request_event.id.clone(),
+            })
+            .await
+            .unwrap();
+        let result_event = Event::new(
+            "plan-infer-result".to_string(),
+            "Test-Evaluator".to_string(),
+            "agent/result".to_string(),
+            "plan/infer_result".to_string(),
+            serde_json::Map::from_iter([
+                (
+                    "context_id".to_string(),
+                    serde_json::json!(waiting.context_id),
+                ),
+                (
+                    "session_id".to_string(),
+                    serde_json::json!(waiting.session_id),
+                ),
+                ("thread_id".to_string(), serde_json::json!(child_thread.id)),
+                (
+                    "root_turn_id".to_string(),
+                    serde_json::json!(request_event.id),
+                ),
+                (
+                    "disposition".to_string(),
+                    serde_json::json!("complete_internal_evaluation"),
+                ),
+                ("text".to_string(), serde_json::json!("证据充分，可以继续")),
+            ]),
+        );
+        store
+            .commit_activation_outcome(&activation_id, &result_event)
+            .await
+            .unwrap();
+        let child_activation = match store
+            .update_thread_activation(
+                &child_activation.id,
+                child_activation.revision,
+                ThreadActivationStatus::Succeeded,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(record) => record,
+            other => panic!("expected terminal child activation, got {other:?}"),
+        };
+        assert_eq!(child_activation.status, ThreadActivationStatus::Succeeded);
+
+        let resumed = match coordinator
+            .reconcile_evaluation(&waiting.id, &activation_id)
+            .await
+            .unwrap()
+        {
+            PlanResumeReceipt::Queued(plan) => plan,
+            other => panic!("expected queued plan after infer refill, got {other:?}"),
+        };
+        match coordinator
+            .drive_once(
+                &resumed.id,
+                resumed.revision,
+                "plan-worker",
+                "plan-infer-claim-2",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::Succeeded { plan, value } => {
+                assert_eq!(value, serde_json::json!("证据充分，可以继续"));
+                assert_eq!(plan.status, PlanExecutionStatus::Succeeded);
+            }
+            other => panic!("expected completed infer plan, got {other:?}"),
         }
     }
 }

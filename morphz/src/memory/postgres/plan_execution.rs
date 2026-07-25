@@ -1,10 +1,12 @@
 //! PostgreSQL authority for durable Runtime-owned Yao plan executions.
 
-use super::{now_text, parse_time, PostgresStore, StoreError};
+use super::{
+    append_event_in_tx, append_signal_outbox_in_tx, now_text, parse_time, PostgresStore, StoreError,
+};
 use crate::memory::{
-    NewExecutionJob, NewPlanExecution, PlanExecutionFilter, PlanExecutionJobCommit,
-    PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus, PlanExecutionStore,
-    PlanExecutionWaitKind,
+    NewExecutionJob, NewPlanExecution, PlanEvaluationCommit, PlanExecutionFilter,
+    PlanExecutionJobCommit, PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus,
+    PlanExecutionStore, PlanExecutionWaitKind,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -104,6 +106,27 @@ fn optional_time(row: &PgRow, column: &str) -> Result<Option<DateTime<Utc>>, Sto
         .as_deref()
         .map(parse_time)
         .transpose()
+}
+
+fn validate_infer_event_route(
+    plan: &PlanExecutionRecord,
+    event: &crate::event::Event,
+) -> Result<(), StoreError> {
+    let string = |key: &str| event.payload.get(key).and_then(JsonValue::as_str);
+    if string("plan_execution_id") != Some(plan.id.as_str())
+        || string("agent_id") != Some(plan.agent_id.as_str())
+        || string("context_id") != Some(plan.context_id.as_str())
+        || string("session_id") != Some(plan.session_id.as_str())
+        || string("parent_activation_id") != Some(plan.activation_id.as_str())
+    {
+        return Err("PlanExecution 与 child Evaluation request 的因果 route 不一致".into());
+    }
+    if plan.initiating_principal_id.as_deref().is_some()
+        && string("principal_id") != plan.initiating_principal_id.as_deref()
+    {
+        return Err("PlanExecution 与 child Evaluation request 的 Principal 不一致".into());
+    }
+    Ok(())
 }
 
 fn record_from_row(row: &PgRow) -> Result<PlanExecutionRecord, StoreError> {
@@ -539,6 +562,120 @@ impl PlanExecutionStore for PostgresStore {
             plan,
             execution_job,
             existing: !child_created,
+        })
+    }
+
+    async fn create_evaluation_and_suspend_plan(
+        &self,
+        plan_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        state_json: &JsonValue,
+        budget_json: &JsonValue,
+        request_event: &crate::event::Event,
+        activation_id: &str,
+    ) -> Result<PlanEvaluationCommit, StoreError> {
+        if activation_id.trim().is_empty() {
+            return Err("PlanExecution child Activation id 不能为空".into());
+        }
+        let mut tx = self.pool.begin().await?;
+        let current_row = sqlx::query("SELECT * FROM plan_executions WHERE id = $1 FOR UPDATE")
+            .bind(plan_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| format!("PlanExecution '{plan_id}' 不存在"))?;
+        let current_plan = record_from_row(&current_row)?;
+
+        if current_plan.status == PlanExecutionStatus::Waiting
+            && current_plan.pending_kind == Some(PlanExecutionWaitKind::Evaluation)
+            && current_plan.pending_id.as_deref() == Some(activation_id)
+        {
+            if current_plan.state_json != *state_json || current_plan.budget_json != *budget_json {
+                return Err(format!(
+                    "PlanExecution '{}' 已等待 Evaluation '{}'，但重放的 machine state 不同",
+                    plan_id, activation_id
+                )
+                .into());
+            }
+            let stored =
+                super::stored_event_in_tx(&mut tx, &request_event.id, &current_plan.context_id)
+                    .await?
+                    .ok_or_else(|| {
+                        format!(
+                    "PlanExecution '{}' 已等待 Evaluation，但 infer request Event '{}' 不存在",
+                    plan_id, request_event.id
+                )
+                    })?;
+            if stored.timestamp != request_event.timestamp
+                || stored.actor != request_event.actor
+                || stored.event_type != request_event.event_type
+                || stored.topic != request_event.topic
+                || stored.payload != request_event.payload
+            {
+                return Err(format!(
+                    "PlanExecution '{}' 的 infer request Event '{}' 被不同内容占用",
+                    plan_id, request_event.id
+                )
+                .into());
+            }
+            tx.commit().await?;
+            return Ok(PlanEvaluationCommit {
+                plan: current_plan,
+                request_event: request_event.clone(),
+                activation_id: activation_id.to_string(),
+                existing: true,
+            });
+        }
+
+        if current_plan.revision != expected_revision
+            || current_plan.status != PlanExecutionStatus::Running
+            || current_plan.claim_token.as_deref() != Some(claim_token)
+        {
+            return Err(format!(
+                "PlanExecution '{}' 不能提交 Evaluation hand-off：期待 running r{} fence，当前为 {} r{}",
+                plan_id,
+                expected_revision,
+                current_plan.status.as_str(),
+                current_plan.revision
+            )
+            .into());
+        }
+        validate_infer_event_route(&current_plan, request_event)?;
+
+        append_event_in_tx(&mut tx, request_event).await?;
+        append_signal_outbox_in_tx(&mut tx, request_event).await?;
+        let updated = sqlx::query(
+            r#"UPDATE plan_executions
+               SET revision = revision + 1, status = 'waiting', state_json = $1,
+                   budget_json = $2, pending_kind = 'evaluation', pending_id = $3,
+                   claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL,
+                   updated_at = $4
+               WHERE id = $5 AND revision = $6 AND status = 'running' AND claim_token = $7
+               RETURNING *"#,
+        )
+        .bind(state_json)
+        .bind(budget_json)
+        .bind(activation_id)
+        .bind(now_text())
+        .bind(plan_id)
+        .bind(i64::try_from(expected_revision)?)
+        .bind(claim_token)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(updated) = updated else {
+            return Err(format!(
+                "PlanExecution '{}' Evaluation hand-off 在同一事务内丢失 fence",
+                plan_id
+            )
+            .into());
+        };
+        let plan = record_from_row(&updated)?;
+        tx.commit().await?;
+        Ok(PlanEvaluationCommit {
+            plan,
+            request_event: request_event.clone(),
+            activation_id: activation_id.to_string(),
+            existing: false,
         })
     }
 

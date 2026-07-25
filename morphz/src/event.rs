@@ -26,7 +26,7 @@ pub const TYPE_INFER_REQUEST: &str = "infer_request";
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 // Event 对应情境记忆中的不可变事件
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Event {
     pub id: String,
     /// Event Store 中稳定、单调递增的物理插入顺序。内存中新建但尚未落盘时为空。
