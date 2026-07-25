@@ -1,10 +1,8 @@
-use crate::coding_frame_eval::{
-    inspect_coding_discipline, CodingDisciplineReport, NEUTRAL_CODING_PROMPT,
-};
+use crate::coding_frame_eval::{inspect_coding_discipline, CodingDisciplineReport};
 use crate::context_metacognition_eval::ModelProfileIdentity;
 use crate::eval_sandbox::{
-    create_coding_eval_v2, score_coding_eval, verify_coding_eval, CodingEvalEnvironment,
-    CodingEvalScore, CodingEvalVerification,
+    create_coding_eval_v2, create_coding_eval_v3, score_coding_eval, verify_coding_eval,
+    CodingEvalEnvironment, CodingEvalScore, CodingEvalVerification,
 };
 use chrono::Utc;
 use morphz::harness_package::{HarnessPackage, HARNESS_BINDING_TOPIC, HARNESS_PACKAGE_TOPIC};
@@ -28,6 +26,8 @@ pub const CODING_HARNESS_SOURCE: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/harnesses/coding.hns"));
 
 const CODING_HARNESS_SCENARIO: &str = "coding_harness_ab_v1";
+const RETRY_STATE_MACHINE_PROMPT: &str = "修复当前 Rust crate 的任务队列重试状态机：临时失败任务的退避时间与最大尝试次数不正确，已经取消的任务还可能被迟到的失败结果重新入队。只允许修改 src/retry.rs、src/store.rs、src/worker.rs；不得修改或删除测试、Cargo.toml、公共 API 或其他文件；不得增加依赖、访问网络或使用 unsafe。完成后简要说明实际修改和验证结果。";
+const CACHE_COHERENCE_PROMPT: &str = "修复当前 Rust crate 的多租户策略缓存一致性缺陷：已接受的更新或删除不能继续返回旧值，同时失败的条件写入不能破坏仍然有效的热缓存。只允许修改 src/cache.rs、src/service.rs、src/store.rs；不得修改或删除测试、Cargo.toml、公共 API 或其他文件；不得增加依赖、访问网络或使用 unsafe。完成后简要说明实际修改和验证结果。";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -45,6 +45,29 @@ impl CodingHarnessArm {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum CodingHarnessScenario {
+    RetryStateMachine,
+    CacheCoherence,
+}
+
+impl CodingHarnessScenario {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RetryStateMachine => "retry-state-machine",
+            Self::CacheCoherence => "cache-coherence",
+        }
+    }
+
+    fn neutral_prompt(self) -> &'static str {
+        match self {
+            Self::RetryStateMachine => RETRY_STATE_MACHINE_PROMPT,
+            Self::CacheCoherence => CACHE_COHERENCE_PROMPT,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CodingHarnessEvidence {
     pub package_registered: bool,
@@ -57,6 +80,7 @@ pub struct CodingHarnessEvidence {
 #[derive(Debug, Clone, Serialize)]
 pub struct CodingHarnessEvalRun {
     pub arm: CodingHarnessArm,
+    pub scenario: CodingHarnessScenario,
     pub run_root: PathBuf,
     pub agent_binary: PathBuf,
     pub duration_seconds: f64,
@@ -84,6 +108,7 @@ pub struct CodingHarnessDelta {
 #[derive(Debug, Clone, Serialize)]
 pub struct CodingHarnessEvalSuite {
     pub id: String,
+    pub scenario: CodingHarnessScenario,
     pub created_at: String,
     pub suite_root: PathBuf,
     pub model_profile: ModelProfileIdentity,
@@ -102,6 +127,7 @@ pub fn coding_harness_path() -> PathBuf {
 pub fn create_coding_harness_eval_environment(
     base_dir: Option<&Path>,
     arm: CodingHarnessArm,
+    scenario: CodingHarnessScenario,
 ) -> Result<CodingEvalEnvironment, DynError> {
     let package = HarnessPackage::from_source("coding.hns", CODING_HARNESS_SOURCE)?;
     if package.manifest.id != CODING_HARNESS_ID
@@ -109,9 +135,16 @@ pub fn create_coding_harness_eval_environment(
     {
         return Err("内置 Coding Harness identity 与评测常量不一致".into());
     }
-    let mut environment = create_coding_eval_v2(base_dir)?;
-    environment.manifest.benchmark = format!("{CODING_HARNESS_SCENARIO}-{}", arm.as_str());
-    environment.manifest.user_prompt = NEUTRAL_CODING_PROMPT.to_string();
+    let mut environment = match scenario {
+        CodingHarnessScenario::RetryStateMachine => create_coding_eval_v2(base_dir)?,
+        CodingHarnessScenario::CacheCoherence => create_coding_eval_v3(base_dir)?,
+    };
+    environment.manifest.benchmark = format!(
+        "{CODING_HARNESS_SCENARIO}-{}-{}",
+        scenario.as_str(),
+        arm.as_str()
+    );
+    environment.manifest.user_prompt = scenario.neutral_prompt().to_string();
     std::fs::write(
         &environment.manifest_path,
         serde_json::to_vec_pretty(&environment.manifest)?,
@@ -122,10 +155,11 @@ pub fn create_coding_harness_eval_environment(
 pub async fn run_coding_harness_eval(
     base_dir: Option<&Path>,
     arm: CodingHarnessArm,
+    scenario: CodingHarnessScenario,
     agent_binary: &Path,
     profile: &ModelProfileIdentity,
 ) -> Result<CodingHarnessEvalRun, DynError> {
-    let mut environment = create_coding_harness_eval_environment(base_dir, arm)?;
+    let mut environment = create_coding_harness_eval_environment(base_dir, arm, scenario)?;
     environment.environment.insert(
         SYSTEM_PROMPT_MODE_ENV.to_string(),
         SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE.to_string(),
@@ -214,6 +248,7 @@ pub async fn run_coding_harness_eval(
     let harness = inspect_harness_evidence(&environment, &objective_id).await?;
     let run = CodingHarnessEvalRun {
         arm,
+        scenario,
         run_root: environment.run_root.clone(),
         agent_binary: std::fs::canonicalize(agent_binary)?,
         duration_seconds: started.elapsed().as_secs_f64(),
@@ -234,6 +269,7 @@ pub async fn run_coding_harness_eval(
 
 pub async fn run_coding_harness_suite(
     base_dir: Option<&Path>,
+    scenario: CodingHarnessScenario,
     agent_binary: &Path,
     profile: &ModelProfileIdentity,
 ) -> Result<CodingHarnessEvalSuite, DynError> {
@@ -243,7 +279,8 @@ pub async fn run_coding_harness_suite(
     std::fs::create_dir_all(&base)?;
     let base = std::fs::canonicalize(base)?;
     let id = format!(
-        "{CODING_HARNESS_SCENARIO}-suite-{}-{}",
+        "{CODING_HARNESS_SCENARIO}-{}-suite-{}-{}",
+        scenario.as_str(),
         Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
         std::process::id()
     );
@@ -253,6 +290,7 @@ pub async fn run_coding_harness_suite(
     let baseline = run_coding_harness_eval(
         Some(&suite_root),
         CodingHarnessArm::Baseline,
+        scenario,
         agent_binary,
         profile,
     )
@@ -260,6 +298,7 @@ pub async fn run_coding_harness_suite(
     let harness = run_coding_harness_eval(
         Some(&suite_root),
         CodingHarnessArm::Harness,
+        scenario,
         agent_binary,
         profile,
     )
@@ -298,6 +337,7 @@ pub async fn run_coding_harness_suite(
     .to_string();
     let suite = CodingHarnessEvalSuite {
         id,
+        scenario,
         created_at: Utc::now().to_rfc3339(),
         suite_root: suite_root.clone(),
         model_profile: profile.clone(),
@@ -435,6 +475,17 @@ pub fn parse_arm(value: &str) -> Result<CodingHarnessArm, DynError> {
     }
 }
 
+pub fn parse_scenario(value: &str) -> Result<CodingHarnessScenario, DynError> {
+    match value {
+        "retry-state-machine" | "retry" => Ok(CodingHarnessScenario::RetryStateMachine),
+        "cache-coherence" | "cache" => Ok(CodingHarnessScenario::CacheCoherence),
+        _ => Err(format!(
+            "未知 Coding Harness scenario '{value}'；支持 retry-state-machine、cache-coherence"
+        )
+        .into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,19 +506,55 @@ mod tests {
 
     #[test]
     fn paired_environments_have_identical_task_and_workspace() {
+        for scenario in [
+            CodingHarnessScenario::RetryStateMachine,
+            CodingHarnessScenario::CacheCoherence,
+        ] {
+            let base = TempDir::new().unwrap();
+            let baseline = create_coding_harness_eval_environment(
+                Some(base.path()),
+                CodingHarnessArm::Baseline,
+                scenario,
+            )
+            .unwrap();
+            let harness = create_coding_harness_eval_environment(
+                Some(base.path()),
+                CodingHarnessArm::Harness,
+                scenario,
+            )
+            .unwrap();
+            assert_eq!(baseline.manifest.user_prompt, harness.manifest.user_prompt);
+            assert_eq!(
+                baseline.manifest.initial_sha256,
+                harness.manifest.initial_sha256
+            );
+            assert!(baseline.manifest.injected_frame_ids.is_empty());
+            assert!(harness.manifest.injected_frame_ids.is_empty());
+        }
+    }
+
+    #[test]
+    fn scenarios_select_distinct_fixtures_and_hidden_suites() {
         let base = TempDir::new().unwrap();
-        let baseline =
-            create_coding_harness_eval_environment(Some(base.path()), CodingHarnessArm::Baseline)
-                .unwrap();
-        let harness =
-            create_coding_harness_eval_environment(Some(base.path()), CodingHarnessArm::Harness)
-                .unwrap();
-        assert_eq!(baseline.manifest.user_prompt, harness.manifest.user_prompt);
-        assert_eq!(
-            baseline.manifest.initial_sha256,
-            harness.manifest.initial_sha256
+        let retry = create_coding_harness_eval_environment(
+            Some(base.path()),
+            CodingHarnessArm::Baseline,
+            CodingHarnessScenario::RetryStateMachine,
+        )
+        .unwrap();
+        let cache = create_coding_harness_eval_environment(
+            Some(base.path()),
+            CodingHarnessArm::Baseline,
+            CodingHarnessScenario::CacheCoherence,
+        )
+        .unwrap();
+
+        assert_ne!(retry.manifest.user_prompt, cache.manifest.user_prompt);
+        assert_ne!(
+            retry.manifest.hidden_test_suite,
+            cache.manifest.hidden_test_suite
         );
-        assert!(baseline.manifest.injected_frame_ids.is_empty());
-        assert!(harness.manifest.injected_frame_ids.is_empty());
+        assert!(retry.manifest.workspace_root.join("src/retry.rs").exists());
+        assert!(cache.manifest.workspace_root.join("src/cache.rs").exists());
     }
 }

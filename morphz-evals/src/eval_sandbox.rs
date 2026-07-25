@@ -13,9 +13,14 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 const FIXTURE_V1: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/coding_eval_v1");
 const FIXTURE_V2: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/coding_eval_v2");
+const FIXTURE_V3: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/coding_eval_v3");
 const V2_HIDDEN_RETRY_TESTS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/coding_eval_v2_hidden/heldout_retry.rs"
+));
+const V3_HIDDEN_CACHE_TESTS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/coding_eval_v3_hidden/heldout_cache.rs"
 ));
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,6 +220,83 @@ pub fn create_coding_eval_v2(base_dir: Option<&Path>) -> Result<CodingEvalEnviro
         hidden_test_suite: Some("coding_eval_v2_retry_state_machine".to_string()),
         injected_frame_ids: Vec::new(),
         user_prompt: "修复当前 Rust crate 中任务队列的重试状态机。临时失败任务的退避时间和最大尝试次数存在错误，已经取消的任务还可能被失败结果重新入队。先运行完整测试复现问题，追踪 claim、执行结果、retry 计算与持久化状态迁移，再完成最小修改并运行完整测试。持续约束：只允许修改 src/retry.rs、src/store.rs、src/worker.rs；不得修改或删除测试、Cargo.toml、公共 API 或其他文件；不得增加依赖、访问网络或使用 unsafe；根据任务需要自主选择工具；最终结论必须引用 file_change 与通过的测试证据，并把目标、已确认的不变量、关键判断和结论维护到 Mind。"
+            .to_string(),
+    };
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
+
+    let environment = BTreeMap::from([
+        ("MORPHZ_CONTEXT_ID".to_string(), context_id),
+        ("MORPHZ_SESSION_ID".to_string(), session_id),
+        (
+            "MORPHZ_WORKSPACE_ROOT".to_string(),
+            workspace_root.to_string_lossy().to_string(),
+        ),
+        (
+            "MORPHZ_STORAGE_SQLITE_PATH".to_string(),
+            database_path.to_string_lossy().to_string(),
+        ),
+        (
+            "MORPHZ_ARTIFACT_DIR".to_string(),
+            artifact_dir.to_string_lossy().to_string(),
+        ),
+        (
+            "MORPHZ_PERMISSION_MODE".to_string(),
+            "auto_review".to_string(),
+        ),
+        ("MORPHZ_EXEC_NETWORK".to_string(), "false".to_string()),
+        ("MORPHZ_CODING_EVAL_MODE".to_string(), "true".to_string()),
+    ]);
+    Ok(CodingEvalEnvironment {
+        run_root,
+        manifest_path,
+        manifest,
+        environment,
+    })
+}
+
+pub fn create_coding_eval_v3(base_dir: Option<&Path>) -> Result<CodingEvalEnvironment, DynError> {
+    let base = base_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| std::env::temp_dir().join("morphz-evals"));
+    std::fs::create_dir_all(&base)?;
+    let base = std::fs::canonicalize(base)?;
+    let id = format!(
+        "coding-v3-{}-{}",
+        Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
+        std::process::id()
+    );
+    let run_root = base.join(&id);
+    let workspace_root = run_root.join("workspace");
+    let artifact_dir = run_root.join("artifacts");
+    std::fs::create_dir_all(&workspace_root)?;
+    std::fs::create_dir_all(&artifact_dir)?;
+    set_private_directory_permissions(&run_root)?;
+    copy_fixture(Path::new(FIXTURE_V3), &workspace_root)?;
+
+    let database_path = run_root.join("morphz.db");
+    let context_id = format!("context-{id}");
+    let session_id = format!("session-{id}");
+    let manifest_path = run_root.join("manifest.json");
+    let manifest = CodingEvalManifest {
+        id,
+        benchmark: "coding_eval_v3".to_string(),
+        created_at: Utc::now().to_rfc3339(),
+        context_id: context_id.clone(),
+        session_id: session_id.clone(),
+        workspace_root: workspace_root.clone(),
+        database_path: database_path.clone(),
+        artifact_dir: artifact_dir.clone(),
+        initial_sha256: snapshot_workspace(&workspace_root)?,
+        allowed_modified_paths: vec![
+            "src/cache.rs".to_string(),
+            "src/service.rs".to_string(),
+            "src/store.rs".to_string(),
+        ],
+        verify_command: "cargo test --all-targets".to_string(),
+        tool_coverage_targets: default_tool_coverage_targets(),
+        hidden_test_suite: Some("coding_eval_v3_cache_coherence".to_string()),
+        injected_frame_ids: Vec::new(),
+        user_prompt: "修复当前 Rust crate 的多租户策略缓存一致性缺陷。已接受的更新或删除不能继续返回旧值，同时失败的条件写入不能破坏仍然有效的热缓存。先运行完整测试复现问题，追踪 Service、Store 与 Cache 之间的状态边界，再完成最小修改并运行完整测试。持续约束：只允许修改 src/cache.rs、src/service.rs、src/store.rs；不得修改或删除测试、Cargo.toml、公共 API 或其他文件；不得增加依赖、访问网络或使用 unsafe；最终结论必须引用实际文件修改与测试证据。"
             .to_string(),
     };
     std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?)?;
@@ -721,6 +803,7 @@ fn inject_hidden_tests(suite: Option<&str>, workspace: &Path) -> Result<(), DynE
     };
     let (relative, contents) = match suite {
         "coding_eval_v2_retry_state_machine" => ("tests/heldout_retry.rs", V2_HIDDEN_RETRY_TESTS),
+        "coding_eval_v3_cache_coherence" => ("tests/heldout_cache.rs", V3_HIDDEN_CACHE_TESTS),
         other => return Err(format!("未知 verifier-only test suite: {other}").into()),
     };
     let destination = workspace.join(relative);
@@ -993,6 +1076,27 @@ mod tests {
         let verifier =
             prepare_verification_workspace(&environment.run_root, &environment.manifest).unwrap();
         assert!(verifier.join("tests/heldout_retry.rs").exists());
+        assert!(!agent_hidden.exists());
+        assert!(
+            audit_coding_eval(&environment.run_root)
+                .unwrap()
+                .clean_scope
+        );
+    }
+
+    #[test]
+    fn v3_hidden_tests_only_exist_in_verifier_copy() {
+        let base = TempDir::new().unwrap();
+        let environment = create_coding_eval_v3(Some(base.path())).unwrap();
+        let agent_hidden = environment
+            .manifest
+            .workspace_root
+            .join("tests/heldout_cache.rs");
+        assert!(!agent_hidden.exists());
+
+        let verifier =
+            prepare_verification_workspace(&environment.run_root, &environment.manifest).unwrap();
+        assert!(verifier.join("tests/heldout_cache.rs").exists());
         assert!(!agent_hidden.exists());
         assert!(
             audit_coding_eval(&environment.run_root)
