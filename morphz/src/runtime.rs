@@ -10,6 +10,11 @@ use crate::context_tools::{ContextTxTool, RecallTool};
 use crate::event::TYPE_TOOL_OUTPUT;
 use crate::event::{Event, InMemoryEventBus, TYPE_USER_MESSAGE};
 use crate::execution::ExecutionJobManager;
+use crate::harness::{HarnessBinding, HarnessDescriptor, HarnessRegistry as DomainHarnessRegistry};
+use crate::harness_package::{
+    load_objective_harness_binding, load_persisted_harness_packages, persist_harness_package,
+    persist_objective_harness_binding, HarnessPackage,
+};
 use crate::identity::{
     IdentityEvidence, IdentityProvider, PrincipalAssertion, StaticIdentityProvider,
 };
@@ -478,6 +483,7 @@ pub struct MorphzRuntimeBuilder {
     approval_provider: Option<Arc<dyn ApprovalProvider>>,
     identity_provider: Option<Arc<dyn IdentityProvider>>,
     execution_target_backends: Vec<Arc<dyn crate::execution_target::ExecutionTargetBackend>>,
+    harness_packages: Vec<HarnessPackage>,
 }
 
 impl MorphzRuntimeBuilder {
@@ -491,6 +497,7 @@ impl MorphzRuntimeBuilder {
             approval_provider: None,
             identity_provider: None,
             execution_target_backends: Vec::new(),
+            harness_packages: Vec::new(),
             config,
             client,
         }
@@ -537,6 +544,14 @@ impl MorphzRuntimeBuilder {
         backend: Arc<dyn crate::execution_target::ExecutionTargetBackend>,
     ) -> Self {
         self.execution_target_backends.push(backend);
+        self
+    }
+
+    /// Installs one normalized `.hns` package into the Runtime catalog during
+    /// build. Registration is exact-version and content-addressed; a different
+    /// artifact may not reuse an existing `(id, version)`.
+    pub fn harness_package(mut self, package: HarnessPackage) -> Self {
+        self.harness_packages.push(package);
         self
     }
 
@@ -611,6 +626,14 @@ impl MorphzRuntimeBuilder {
                 }
             },
         };
+        let harness_registry = Arc::new(DomainHarnessRegistry::default());
+        for package in load_persisted_harness_packages(store.as_ref()).await? {
+            harness_registry.register_package(package)?;
+        }
+        for package in self.harness_packages {
+            persist_harness_package(store.as_ref(), &package).await?;
+            harness_registry.register_package(package)?;
+        }
         let context_engine = Arc::new(
             ContextEngine::new(
                 Arc::clone(&store) as Arc<dyn EventStore>,
@@ -779,6 +802,7 @@ impl MorphzRuntimeBuilder {
                 self.config.edge_execution.capability_leases_enabled,
                 self.config.edge_execution.capability_lease_ttl.as_secs(),
             )),
+            Some(Arc::clone(&harness_registry)),
         )?;
         Ok(MorphzRuntime {
             inner: Arc::new(RuntimeInner {
@@ -792,6 +816,7 @@ impl MorphzRuntimeBuilder {
                 bus,
                 store,
                 registry,
+                harness_registry,
                 context_engine,
                 orchestrator,
                 objective_supervisor,
@@ -928,6 +953,7 @@ struct RuntimeInner {
     bus: Arc<InMemoryEventBus>,
     store: Arc<dyn RuntimeStore>,
     registry: Arc<Registry>,
+    harness_registry: Arc<DomainHarnessRegistry>,
     context_engine: Arc<ContextEngine>,
     orchestrator: Arc<Orchestrator>,
     objective_supervisor: Arc<ObjectiveSupervisor>,
@@ -1989,6 +2015,63 @@ impl MorphzRuntime {
         objective: NewObjective,
     ) -> Result<ObjectiveRecord, RuntimeError> {
         self.inner.objective_supervisor.create(objective).await
+    }
+
+    pub fn harnesses(&self) -> Vec<HarnessDescriptor> {
+        self.inner.harness_registry.descriptors()
+    }
+
+    pub async fn register_harness_package(
+        &self,
+        package: HarnessPackage,
+    ) -> Result<Arc<HarnessPackage>, RuntimeError> {
+        persist_harness_package(self.inner.store.as_ref(), &package).await?;
+        self.inner
+            .harness_registry
+            .register_package(package)
+            .map_err(Into::into)
+    }
+
+    /// Binds one exact installed package to an Objective. The v1 binding is
+    /// immutable and inherited by every Evaluation of that Objective.
+    pub async fn bind_objective_harness(
+        &self,
+        objective_id: &str,
+        harness_id: &str,
+        harness_version: &str,
+    ) -> Result<HarnessBinding, RuntimeError> {
+        let objective = self
+            .get_objective(objective_id)
+            .await?
+            .ok_or_else(|| format!("Objective '{objective_id}' 不存在"))?;
+        let harness = self
+            .inner
+            .harness_registry
+            .get(harness_id, harness_version)
+            .ok_or_else(|| format!("Harness '{harness_id}@{harness_version}' 未注册"))?;
+        persist_objective_harness_binding(
+            self.inner.store.as_ref(),
+            &objective.context_id,
+            objective_id,
+            harness.as_ref(),
+        )
+        .await
+    }
+
+    pub async fn objective_harness_binding(
+        &self,
+        objective_id: &str,
+    ) -> Result<Option<HarnessBinding>, RuntimeError> {
+        let Some(objective) = self.get_objective(objective_id).await? else {
+            return Ok(None);
+        };
+        load_objective_harness_binding(
+            self.inner.store.as_ref(),
+            &objective.context_id,
+            objective_id,
+            objective.active_evaluation_id.as_deref(),
+        )
+        .await
     }
 
     pub async fn get_objective(&self, id: &str) -> Result<Option<ObjectiveRecord>, RuntimeError> {

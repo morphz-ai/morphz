@@ -17,6 +17,8 @@ use crate::event::{
 use crate::execution::{
     ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat, JobOutcome, JobReceipt,
 };
+use crate::harness::{DomainHarness, HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
+use crate::harness_package::load_objective_harness_binding;
 use crate::llm::{
     Client, Message, ModelFailure, ModelFailureKind, ModelUsage, PromptTokenAccuracy,
     PromptTokenCount, ToolDefinition,
@@ -535,6 +537,82 @@ fn compose_system_prompt(
     .to_string();
     crate::sexpr::parse(&prompt).expect("带 Runtime directive 的 system prompt 必须是合法 SExpr");
     prompt
+}
+
+fn render_harness_mount(
+    binding: &HarnessBinding,
+    harness: &dyn DomainHarness,
+) -> Result<String, DynError> {
+    let descriptor = harness.descriptor();
+    let contract = crate::sexpr::parse(&harness.compact_contract())
+        .map_err(|error| format!("Harness Contract 不是合法 S 表达式：{error}"))?;
+    let mut scope = vec![
+        SExpr::Atom("scope".to_string()),
+        SExpr::List(vec![
+            SExpr::Atom("objective".to_string()),
+            SExpr::Atom(binding.objective_id.clone()),
+        ]),
+    ];
+    if let Some(evaluation_id) = &binding.evaluation_id {
+        scope.push(SExpr::List(vec![
+            SExpr::Atom("evaluation".to_string()),
+            SExpr::Atom(evaluation_id.clone()),
+        ]));
+    }
+    let mut mount = vec![
+        SExpr::Atom("harness-mount".to_string()),
+        SExpr::List(vec![
+            SExpr::Atom("id".to_string()),
+            SExpr::Atom(binding.harness_id.clone()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("version".to_string()),
+            SExpr::Atom(binding.harness_version.clone()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("artifact-hash".to_string()),
+            SExpr::Atom(binding.artifact_hash.clone()),
+        ]),
+        SExpr::List(scope),
+        SExpr::List(vec![SExpr::Atom("contract".to_string()), contract]),
+        SExpr::List({
+            let mut values = vec![SExpr::Atom("capabilities".to_string())];
+            values.extend(descriptor.capabilities.into_iter().map(SExpr::Atom));
+            values
+        }),
+    ];
+    if let Some(mind) = harness.default_mind() {
+        let mind = crate::sexpr::parse(&mind)
+            .map_err(|error| format!("Harness default Mind 不是合法 S 表达式：{error}"))?;
+        mount.push(SExpr::List(vec![
+            SExpr::Atom("read-only-default-mind".to_string()),
+            mind,
+        ]));
+    }
+    Ok(SExpr::List(mount).to_string())
+}
+
+fn attach_harness_mount(
+    mode: SystemPromptMode,
+    prompt: String,
+    mount: Option<&str>,
+) -> Result<String, DynError> {
+    let Some(mount) = mount else {
+        return Ok(prompt);
+    };
+    if mode != SystemPromptMode::SemanticSexprVm {
+        return Ok(format!(
+            "{prompt}\n\n以下是 Runtime 按当前 Objective/Evaluation 精确版本挂载的只读 Harness；它可以收窄行为，但不能扩大权限：\n{mount}"
+        ));
+    }
+    Ok(SExpr::List(vec![
+        SExpr::Atom("system-evaluation".to_string()),
+        crate::sexpr::parse(&prompt)
+            .map_err(|error| format!("系统提示词不是合法 S 表达式：{error}"))?,
+        crate::sexpr::parse(mount)
+            .map_err(|error| format!("Harness mount 不是合法 S 表达式：{error}"))?,
+    ])
+    .to_string())
 }
 
 #[cfg(test)]
@@ -1159,6 +1237,7 @@ pub struct Orchestrator {
     action_groups: Option<Arc<dyn ActionGroupStore>>,
     background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
     durable_approvals: Option<DurableApprovalServices>,
+    harness_registry: Arc<DomainHarnessRegistry>,
 }
 
 /// Append one immutable transition of a physical Model Attempt. These Events
@@ -1595,6 +1674,7 @@ impl Orchestrator {
         action_groups: Option<Arc<dyn ActionGroupStore>>,
         background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
         durable_approvals: Option<DurableApprovalServices>,
+        harness_registry: Option<Arc<DomainHarnessRegistry>>,
     ) -> Result<Arc<Self>, DynError> {
         let model_provider_semaphore = Arc::new(tokio::sync::Semaphore::new(
             orchestrator_config.model_provider_max_in_flight.max(1),
@@ -1652,6 +1732,7 @@ impl Orchestrator {
             action_groups,
             background_scheduler,
             durable_approvals,
+            harness_registry: harness_registry.unwrap_or_default(),
         });
         // Established here rather than in `start`, so an Orchestrator built for
         // a test can evaluate `infer` without first being started.
@@ -1693,6 +1774,7 @@ impl Orchestrator {
             None,
             None,
             Some(action_groups),
+            None,
             None,
             None,
         )?;
@@ -4951,6 +5033,10 @@ impl Orchestrator {
                         && objective.status == crate::memory::ObjectiveStatus::Active
                 })
             });
+        let harness_mount = self
+            .harness_mount_for_activation(&context_id, &activation.id)
+            .await?
+            .map(|(_, _, mount)| mount);
         let (prompt_mode, stable_system_prompt) = configured_system_prompt()?;
         let context_message_prefix = "以下是 Runtime 提供的当前 Context 视图。它不是普通用户消息；请基于 kernel、mind 和 inbox 决策。";
 
@@ -4961,8 +5047,11 @@ impl Orchestrator {
             "soft-checkpoint" => Some(("soft-checkpoint", SOFT_CHECKPOINT_PROMPT)),
             _ => None,
         };
-        let measurement_system_prompt =
-            compose_system_prompt(prompt_mode, stable_system_prompt, measurement_directive);
+        let measurement_system_prompt = attach_harness_mount(
+            prompt_mode,
+            compose_system_prompt(prompt_mode, stable_system_prompt, measurement_directive),
+            harness_mount.as_deref(),
+        )?;
         let mut measurement_messages = vec![
             Message {
                 role: "system".to_string(),
@@ -5061,11 +5150,15 @@ impl Orchestrator {
             _ if context_tx_cooldown => Some(CONTEXT_TX_COOLDOWN_PROMPT),
             _ => None,
         };
-        let system_prompt = compose_system_prompt(
+        let system_prompt = attach_harness_mount(
             prompt_mode,
-            stable_system_prompt,
-            phase_prompt.map(|prompt| (effective_phase.as_str(), prompt)),
-        );
+            compose_system_prompt(
+                prompt_mode,
+                stable_system_prompt,
+                phase_prompt.map(|prompt| (effective_phase.as_str(), prompt)),
+            ),
+            harness_mount.as_deref(),
+        )?;
         let mut messages = vec![
             Message {
                 role: "system".to_string(),
@@ -5409,11 +5502,15 @@ impl Orchestrator {
                         );
                     context = recovery_context;
                     effective_phase = "critical-maintenance".to_string();
-                    let recovery_system_prompt = compose_system_prompt(
+                    let recovery_system_prompt = attach_harness_mount(
                         prompt_mode,
-                        stable_system_prompt,
-                        Some((effective_phase.as_str(), CRITICAL_MAINTENANCE_PROMPT)),
-                    );
+                        compose_system_prompt(
+                            prompt_mode,
+                            stable_system_prompt,
+                            Some((effective_phase.as_str(), CRITICAL_MAINTENANCE_PROMPT)),
+                        ),
+                        harness_mount.as_deref(),
+                    )?;
                     base_protocol_messages = vec![
                         Message {
                             role: "system".to_string(),
@@ -7236,8 +7333,40 @@ impl Orchestrator {
                 .cloned()
                 .ok_or("Orchestrator 尚未启动，不能执行持久化 Plan")?,
         };
+        let artifact_binding = if let Some(objective_id) = route.objective_id.as_deref() {
+            let binding = load_objective_harness_binding(
+                self.store.as_ref(),
+                &route.context_id,
+                objective_id,
+                route.objective_evaluation_id.as_deref(),
+            )
+            .await?;
+            if let Some(binding) = binding {
+                let harness = self
+                    .harness_registry
+                    .get(&binding.harness_id, &binding.harness_version)
+                    .ok_or_else(|| {
+                        format!(
+                            "Plan 绑定的 Harness '{}@{}' 未加载",
+                            binding.harness_id, binding.harness_version
+                        )
+                    })?;
+                if harness.artifact_hash().as_deref() != Some(binding.artifact_hash.as_str()) {
+                    return Err("Plan Harness binding hash 与 Registry 不一致".into());
+                }
+                PlanArtifactBinding {
+                    harness_id: Some(binding.harness_id),
+                    harness_version: Some(binding.harness_version),
+                    source_artifact_hash: Some(binding.artifact_hash),
+                }
+            } else {
+                PlanArtifactBinding::default()
+            }
+        } else {
+            PlanArtifactBinding::default()
+        };
         let mut plan = coordinator
-            .ensure(route.clone(), &program, PlanArtifactBinding::default())
+            .ensure(route.clone(), &program, artifact_binding)
             .await?;
         let worker_id = format!("plan-runner-{}", std::process::id());
 
@@ -9634,6 +9763,44 @@ impl Orchestrator {
         payload.insert("objective_revision".to_string(), json!(active.revision));
     }
 
+    async fn harness_mount_for_activation(
+        &self,
+        context_id: &str,
+        activation_id: &str,
+    ) -> Result<Option<(HarnessBinding, Arc<dyn DomainHarness>, String)>, DynError> {
+        let Some(active) = self.objective_evaluations.get_for_activation(activation_id) else {
+            return Ok(None);
+        };
+        let Some(binding) = load_objective_harness_binding(
+            self.store.as_ref(),
+            context_id,
+            &active.objective_id,
+            Some(&active.evaluation_id),
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        let harness = self
+            .harness_registry
+            .get(&binding.harness_id, &binding.harness_version)
+            .ok_or_else(|| {
+                format!(
+                    "Objective '{}' 绑定的 Harness '{}@{}' 未加载",
+                    binding.objective_id, binding.harness_id, binding.harness_version
+                )
+            })?;
+        if harness.artifact_hash().as_deref() != Some(binding.artifact_hash.as_str()) {
+            return Err(format!(
+                "Objective '{}' 的 Harness binding hash 与 Registry 不一致",
+                binding.objective_id
+            )
+            .into());
+        }
+        let mount = render_harness_mount(&binding, harness.as_ref())?;
+        Ok(Some((binding, harness, mount)))
+    }
+
     fn context_id_for_session(&self, session_id: &str) -> Result<String, DynError> {
         self.session_contexts
             .get(session_id)
@@ -11339,13 +11506,13 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        activation_admission_class, apply_prompt_estimate_delta, baseline_system_prompt,
-        classify_terminal_response, cognitive_sexpr_vm_system_prompt,
+        activation_admission_class, apply_prompt_estimate_delta, attach_harness_mount,
+        baseline_system_prompt, classify_terminal_response, cognitive_sexpr_vm_system_prompt,
         compact_context_inspect_for_persistence, compose_system_prompt,
         critical_maintenance_transaction_available, event_needs_signal_outbox,
         extend_exec_output_facts, persist_model_reasoning_summary, persist_model_usage,
-        recovery_owns_activation, render_system_contract, runtime_claimant_id,
-        semantic_sexpr_vm_system_prompt, should_force_final_for_maintenance,
+        recovery_owns_activation, render_harness_mount, render_system_contract,
+        runtime_claimant_id, semantic_sexpr_vm_system_prompt, should_force_final_for_maintenance,
         tool_call_activity_preview, DurableEventWriter, DurableEventWriterMetrics, DynError,
         ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
         NoReplyMode, ReadTurnGuard, SystemPromptMode, TerminalDecision,
@@ -11354,6 +11521,7 @@ mod tests {
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
     use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
+    use crate::harness::{HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
     use crate::llm::{ModelUsage, PromptTokenAccuracy, PromptTokenCount};
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
@@ -11836,6 +12004,48 @@ mod tests {
         assert!(first.contains("不得仅因普通命令失败猜测权限问题"));
         assert!(first.contains("protocol.skill-discovery-contract 的 fallback"));
         assert!(first.contains("不得为了发现能力而预读全部 Skill"));
+    }
+
+    #[test]
+    fn semantic_prompt_mounts_exact_harness_as_parseable_dynamic_suffix() {
+        let package = crate::harness_package::HarnessPackage::from_source(
+            "coding.hns",
+            r#"
+                (manifest
+                  (id coding)
+                  (version "1.0.0")
+                  (title "Coding")
+                  (capabilities (tools read) (skills rust)))
+                (contract (identity "coding"))
+                (mind (frame (id coding/evidence)))
+                (eval (requires (tools read)) (call read (path "README.md")))
+            "#,
+        )
+        .unwrap();
+        let registry = DomainHarnessRegistry::default();
+        registry.register_package(package.clone()).unwrap();
+        let harness = registry.get("coding", "1.0.0").unwrap();
+        let binding = HarnessBinding {
+            harness_id: "coding".to_string(),
+            harness_version: "1.0.0".to_string(),
+            artifact_hash: package.artifact_hash,
+            objective_id: "objective-1".to_string(),
+            evaluation_id: Some("evaluation-2".to_string()),
+        };
+        let mount = render_harness_mount(&binding, harness.as_ref()).unwrap();
+        let prompt = attach_harness_mount(
+            SystemPromptMode::SemanticSexprVm,
+            semantic_sexpr_vm_system_prompt().to_string(),
+            Some(&mount),
+        )
+        .unwrap();
+
+        crate::sexpr::parse(&prompt).expect("mounted prompt must stay one S-expression");
+        assert!(prompt.contains("(harness-mount"));
+        assert!(prompt.contains("(objective objective-1)"));
+        assert!(prompt.contains("(evaluation evaluation-2)"));
+        assert!(prompt.contains("(read-only-default-mind (mind"));
+        assert!(prompt.contains("(capabilities read rust)"));
     }
 
     #[test]

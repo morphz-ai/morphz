@@ -28,8 +28,9 @@ pub struct HarnessDescriptor {
 pub struct HarnessBinding {
     pub harness_id: String,
     pub harness_version: String,
+    pub artifact_hash: String,
     pub objective_id: String,
-    pub evaluation_id: String,
+    pub evaluation_id: Option<String>,
 }
 
 /// Domain semantics may narrow Runtime behavior and propose work, but cannot
@@ -37,9 +38,30 @@ pub struct HarnessBinding {
 pub trait DomainHarness: Send + Sync {
     fn descriptor(&self) -> HarnessDescriptor;
 
+    /// Content-addressed identity of the normalized package. Custom in-process
+    /// Harness implementations may omit it, but installable `.hns` packages
+    /// must provide one so an exact version can never change underneath a
+    /// durable binding.
+    fn artifact_hash(&self) -> Option<String> {
+        None
+    }
+
     /// Stable, compact Context Encoding fragment. Implementations should put
     /// detailed procedures in discoverable Skills instead of this prefix.
     fn compact_contract(&self) -> String;
+
+    /// Read-only default cognitive structure mounted for one bound
+    /// Objective/Evaluation. This is not written into the Agent's persistent
+    /// Mind automatically.
+    fn default_mind(&self) -> Option<String> {
+        None
+    }
+
+    /// Explicit `(eval ...)` or `(infer ...)` entry source, when this Harness
+    /// is backed by an installable package.
+    fn entry_program(&self) -> Option<String> {
+        None
+    }
 
     /// Domain-level validation only. Runtime Target authorization, Capability
     /// Lease and local sandbox checks still run afterwards and cannot be
@@ -54,7 +76,7 @@ pub trait DomainHarness: Send + Sync {
 
 #[derive(Default)]
 pub struct HarnessRegistry {
-    harnesses: RwLock<HashMap<String, Arc<dyn DomainHarness>>>,
+    harnesses: RwLock<HashMap<(String, String), Arc<dyn DomainHarness>>>,
 }
 
 impl HarnessRegistry {
@@ -63,18 +85,32 @@ impl HarnessRegistry {
         if descriptor.id.trim().is_empty() || descriptor.version.trim().is_empty() {
             return Err("Harness id 和 version 不能为空".into());
         }
-        self.harnesses
+        let key = (descriptor.id.clone(), descriptor.version.clone());
+        let mut harnesses = self
+            .harnesses
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(descriptor.id, harness);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = harnesses.get(&key) {
+            let existing_hash = existing.artifact_hash();
+            let incoming_hash = harness.artifact_hash();
+            if existing_hash.is_some() && existing_hash == incoming_hash {
+                return Ok(());
+            }
+            return Err(format!(
+                "Harness '{}@{}' 已注册，不能用不同 artifact 覆盖",
+                descriptor.id, descriptor.version
+            )
+            .into());
+        }
+        harnesses.insert(key, harness);
         Ok(())
     }
 
-    pub fn get(&self, id: &str) -> Option<Arc<dyn DomainHarness>> {
+    pub fn get(&self, id: &str, version: &str) -> Option<Arc<dyn DomainHarness>> {
         self.harnesses
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(id)
+            .get(&(id.to_string(), version.to_string()))
             .cloned()
     }
 
@@ -86,7 +122,11 @@ impl HarnessRegistry {
             .values()
             .map(|harness| harness.descriptor())
             .collect::<Vec<_>>();
-        descriptors.sort_by(|left, right| left.id.cmp(&right.id));
+        descriptors.sort_by(|left, right| {
+            left.id
+                .cmp(&right.id)
+                .then_with(|| left.version.cmp(&right.version))
+        });
         descriptors
     }
 }
@@ -120,8 +160,45 @@ mod tests {
         assert_eq!(descriptors.len(), 1);
         assert_eq!(descriptors[0].id, "coding");
         assert_eq!(
-            registry.get("coding").unwrap().compact_contract(),
+            registry.get("coding", "1").unwrap().compact_contract(),
             "(harness coding (version 1))"
         );
+    }
+
+    #[test]
+    fn registry_keeps_multiple_versions_without_implicit_latest_resolution() {
+        struct VersionedHarness(&'static str);
+
+        impl DomainHarness for VersionedHarness {
+            fn descriptor(&self) -> HarnessDescriptor {
+                HarnessDescriptor {
+                    id: "coding".to_string(),
+                    version: self.0.to_string(),
+                    title: format!("Coding {}", self.0),
+                    capabilities: Vec::new(),
+                }
+            }
+
+            fn compact_contract(&self) -> String {
+                format!("(harness coding (version {}))", self.0)
+            }
+        }
+
+        let registry = HarnessRegistry::default();
+        registry.register(Arc::new(VersionedHarness("1"))).unwrap();
+        registry.register(Arc::new(VersionedHarness("2"))).unwrap();
+
+        assert_eq!(registry.descriptors().len(), 2);
+        assert!(registry.get("coding", "1").is_some());
+        assert!(registry.get("coding", "2").is_some());
+        assert!(registry.get("coding", "latest").is_none());
+    }
+
+    #[test]
+    fn registry_rejects_same_version_with_ambiguous_identity() {
+        let registry = HarnessRegistry::default();
+        registry.register(Arc::new(CodingHarness)).unwrap();
+        let error = registry.register(Arc::new(CodingHarness)).unwrap_err();
+        assert!(error.to_string().contains("不能用不同 artifact 覆盖"));
     }
 }

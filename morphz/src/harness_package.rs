@@ -9,9 +9,18 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
-use crate::harness::{DomainHarness, HarnessDescriptor, HarnessError, HarnessRegistry};
+use crate::event::Event;
+use crate::harness::{
+    DomainHarness, HarnessBinding, HarnessDescriptor, HarnessError, HarnessRegistry,
+};
+use crate::memory::{EventStore, QueryFilter};
 use crate::sexpr::SExpr;
 use crate::sexpr_eval::{inspect_program_source, EvaluationOwner};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+
+pub const HARNESS_PACKAGE_TOPIC: &str = "runtime/harness_package_registered";
+pub const HARNESS_BINDING_TOPIC: &str = "runtime/harness_binding";
 
 #[derive(Debug)]
 pub struct HarnessPackageError {
@@ -73,6 +82,9 @@ pub struct HarnessPackage {
     pub contract: SExpr,
     pub mind: Option<SExpr>,
     pub entry: HarnessProgram,
+    /// Hash of the normalized logical package, independent from whether it was
+    /// loaded from one `.hns` file or a directory.
+    pub artifact_hash: String,
     pub origin: HarnessPackageOrigin,
 }
 
@@ -135,18 +147,18 @@ impl HarnessPackage {
         validate_program_capabilities(&manifest, header.declared_tools.as_deref())?;
         let program_id = manifest.entry.clone().unwrap_or_else(|| "main".to_string());
 
-        Ok(Self {
+        Ok(Self::from_normalized_parts(
             manifest,
             contract,
             mind,
-            entry: HarnessProgram {
+            HarnessProgram {
                 id: program_id,
                 owner: header.owner,
                 declared_tools: header.declared_tools,
                 source: program_source,
             },
-            origin: HarnessPackageOrigin::File(source_name),
-        })
+            HarnessPackageOrigin::File(source_name),
+        ))
     }
 
     fn load_file(path: &Path) -> Result<Self, HarnessPackageError> {
@@ -182,18 +194,73 @@ impl HarnessPackage {
             .unwrap_or("main")
             .to_string();
 
-        Ok(Self {
+        Ok(Self::from_normalized_parts(
             manifest,
             contract,
             mind,
-            entry: HarnessProgram {
+            HarnessProgram {
                 id: program_id,
                 owner: header.owner,
                 declared_tools: header.declared_tools,
                 source: program_source,
             },
-            origin: HarnessPackageOrigin::Directory(path.to_path_buf()),
-        })
+            HarnessPackageOrigin::Directory(path.to_path_buf()),
+        ))
+    }
+
+    fn from_normalized_parts(
+        manifest: HarnessManifest,
+        contract: SExpr,
+        mind: Option<SExpr>,
+        entry: HarnessProgram,
+        origin: HarnessPackageOrigin,
+    ) -> Self {
+        let mut package = Self {
+            manifest,
+            contract,
+            mind,
+            entry,
+            artifact_hash: String::new(),
+            origin,
+        };
+        package.artifact_hash = format!(
+            "sha256:{:x}",
+            Sha256::digest(package.canonical_source().as_bytes())
+        );
+        package
+    }
+
+    /// Canonical single-file representation used by persistence, hashing and
+    /// migration. Filesystem layout and source whitespace deliberately do not
+    /// participate in package identity.
+    pub fn canonical_source(&self) -> String {
+        let mut manifest = vec![
+            SExpr::Atom("manifest".to_string()),
+            scalar_form("id", &self.manifest.id),
+            scalar_form("version", &self.manifest.version),
+            scalar_form("title", &self.manifest.title),
+            scalar_form("entry", &self.entry.id),
+        ];
+        let mut capabilities = vec![SExpr::Atom("capabilities".to_string())];
+        if !self.manifest.tools.is_empty() {
+            let mut tools = vec![SExpr::Atom("tools".to_string())];
+            tools.extend(self.manifest.tools.iter().cloned().map(SExpr::Atom));
+            capabilities.push(SExpr::List(tools));
+        }
+        if !self.manifest.skills.is_empty() {
+            let mut skills = vec![SExpr::Atom("skills".to_string())];
+            skills.extend(self.manifest.skills.iter().cloned().map(SExpr::Atom));
+            capabilities.push(SExpr::List(skills));
+        }
+        if capabilities.len() > 1 {
+            manifest.push(SExpr::List(capabilities));
+        }
+        let mut artifacts = vec![SExpr::List(manifest).to_string(), self.contract.to_string()];
+        if let Some(mind) = &self.mind {
+            artifacts.push(mind.to_string());
+        }
+        artifacts.push(self.entry.source.clone());
+        artifacts.join("\n")
     }
 
     pub fn descriptor(&self) -> HarnessDescriptor {
@@ -222,6 +289,18 @@ impl DomainHarness for LoadedDomainHarness {
     fn compact_contract(&self) -> String {
         self.package.contract.to_string()
     }
+
+    fn artifact_hash(&self) -> Option<String> {
+        Some(self.package.artifact_hash.clone())
+    }
+
+    fn default_mind(&self) -> Option<String> {
+        self.package.mind.as_ref().map(ToString::to_string)
+    }
+
+    fn entry_program(&self) -> Option<String> {
+        Some(self.package.entry.source.clone())
+    }
 }
 
 impl HarnessRegistry {
@@ -240,6 +319,216 @@ impl HarnessRegistry {
     }
 }
 
+/// Persist one normalized installable package in the immutable Runtime
+/// catalog. The Event ID is stable for `(id, version)`, so trying to mutate an
+/// installed version is rejected rather than silently creating split-brain
+/// bindings.
+pub async fn persist_harness_package(
+    store: &dyn EventStore,
+    package: &HarnessPackage,
+) -> Result<bool, HarnessError> {
+    let event_id = stable_catalog_event_id(
+        "harness_package",
+        &format!("{}\0{}", package.manifest.id, package.manifest.version),
+    );
+    let existing = store
+        .query(QueryFilter {
+            event_id: Some(event_id.clone()),
+            ..Default::default()
+        })
+        .await?;
+    if let Some(existing) = existing.first() {
+        let existing_hash = existing
+            .payload
+            .get("artifact_hash")
+            .and_then(|value| value.as_str());
+        if existing_hash == Some(package.artifact_hash.as_str()) {
+            return Ok(false);
+        }
+        return Err(format!(
+            "Harness '{}@{}' 已持久化为不同 artifact",
+            package.manifest.id, package.manifest.version
+        )
+        .into());
+    }
+
+    store
+        .append(Event::new(
+            event_id,
+            "Runtime-HarnessRegistry".to_string(),
+            "harness_package".to_string(),
+            HARNESS_PACKAGE_TOPIC.to_string(),
+            [
+                ("harness_id".to_string(), json!(package.manifest.id)),
+                (
+                    "harness_version".to_string(),
+                    json!(package.manifest.version),
+                ),
+                ("artifact_hash".to_string(), json!(package.artifact_hash)),
+                (
+                    "canonical_source".to_string(),
+                    json!(package.canonical_source()),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        ))
+        .await?;
+    Ok(true)
+}
+
+pub async fn load_persisted_harness_packages(
+    store: &dyn EventStore,
+) -> Result<Vec<HarnessPackage>, HarnessError> {
+    let events = store
+        .query(QueryFilter {
+            topic: Some(HARNESS_PACKAGE_TOPIC.to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let mut packages = Vec::with_capacity(events.len());
+    for event in events {
+        let id = required_event_string(&event, "harness_id")?;
+        let version = required_event_string(&event, "harness_version")?;
+        let expected_hash = required_event_string(&event, "artifact_hash")?;
+        let source = required_event_string(&event, "canonical_source")?;
+        let package = HarnessPackage::from_source(format!("{id}.hns"), source)?;
+        if package.manifest.version != version || package.artifact_hash != expected_hash {
+            return Err(format!(
+                "持久 Harness '{}@{}' 的 canonical source 与 catalog identity 不一致",
+                id, version
+            )
+            .into());
+        }
+        packages.push(package);
+    }
+    packages.sort_by(|left, right| {
+        left.manifest
+            .id
+            .cmp(&right.manifest.id)
+            .then_with(|| left.manifest.version.cmp(&right.manifest.version))
+    });
+    Ok(packages)
+}
+
+/// Establishes the v1 Primary Harness binding. It is immutable for the
+/// Objective lifetime: every later Evaluation inherits the same exact package
+/// identity and hash.
+pub async fn persist_objective_harness_binding(
+    store: &dyn EventStore,
+    context_id: &str,
+    objective_id: &str,
+    harness: &dyn DomainHarness,
+) -> Result<HarnessBinding, HarnessError> {
+    let descriptor = harness.descriptor();
+    let artifact_hash = harness.artifact_hash().ok_or_else(|| {
+        format!(
+            "Harness '{}@{}' 没有 artifact hash，不能建立持久 Objective binding",
+            descriptor.id, descriptor.version
+        )
+    })?;
+    let binding = HarnessBinding {
+        harness_id: descriptor.id,
+        harness_version: descriptor.version,
+        artifact_hash,
+        objective_id: objective_id.to_string(),
+        evaluation_id: None,
+    };
+    let event_id = stable_catalog_event_id("harness_binding", objective_id);
+    let existing = store
+        .query(QueryFilter {
+            event_id: Some(event_id.clone()),
+            ..Default::default()
+        })
+        .await?;
+    if let Some(event) = existing.first() {
+        let current = binding_from_event(event, None)?;
+        if current == binding {
+            return Ok(current);
+        }
+        return Err(format!(
+            "Objective '{}' 已绑定 '{}@{}'，不能改绑为 '{}@{}'",
+            objective_id,
+            current.harness_id,
+            current.harness_version,
+            binding.harness_id,
+            binding.harness_version
+        )
+        .into());
+    }
+    store
+        .append(Event::new(
+            event_id,
+            "Runtime-HarnessRegistry".to_string(),
+            "harness_binding".to_string(),
+            HARNESS_BINDING_TOPIC.to_string(),
+            [
+                ("context_id".to_string(), json!(context_id)),
+                ("objective_id".to_string(), json!(objective_id)),
+                ("harness_id".to_string(), json!(binding.harness_id)),
+                (
+                    "harness_version".to_string(),
+                    json!(binding.harness_version),
+                ),
+                ("artifact_hash".to_string(), json!(binding.artifact_hash)),
+                ("scope".to_string(), json!("objective")),
+            ]
+            .into_iter()
+            .collect(),
+        ))
+        .await?;
+    Ok(binding)
+}
+
+pub async fn load_objective_harness_binding(
+    store: &dyn EventStore,
+    context_id: &str,
+    objective_id: &str,
+    evaluation_id: Option<&str>,
+) -> Result<Option<HarnessBinding>, HarnessError> {
+    let events = store
+        .query(QueryFilter {
+            context_id: Some(context_id.to_string()),
+            topic: Some(HARNESS_BINDING_TOPIC.to_string()),
+            objective_id: Some(objective_id.to_string()),
+            latest_k: Some(1),
+            ..Default::default()
+        })
+        .await?;
+    events
+        .first()
+        .map(|event| binding_from_event(event, evaluation_id))
+        .transpose()
+}
+
+fn binding_from_event(
+    event: &Event,
+    evaluation_id: Option<&str>,
+) -> Result<HarnessBinding, HarnessError> {
+    Ok(HarnessBinding {
+        harness_id: required_event_string(event, "harness_id")?.to_string(),
+        harness_version: required_event_string(event, "harness_version")?.to_string(),
+        artifact_hash: required_event_string(event, "artifact_hash")?.to_string(),
+        objective_id: required_event_string(event, "objective_id")?.to_string(),
+        evaluation_id: evaluation_id.map(str::to_string),
+    })
+}
+
+fn required_event_string<'a>(event: &'a Event, key: &str) -> Result<&'a str, HarnessError> {
+    event
+        .payload
+        .get(key)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| format!("Harness catalog Event '{}' 缺少 '{key}'", event.id).into())
+}
+
+fn stable_catalog_event_id(prefix: &str, key: &str) -> String {
+    format!(
+        "{prefix}_{:x}",
+        Sha256::digest(format!("morphz.{prefix}.v1\0{key}").as_bytes())
+    )
+}
+
 fn require_hns_suffix(path: &Path) -> Result<(), HarnessPackageError> {
     if path.extension().and_then(|extension| extension.to_str()) == Some("hns") {
         Ok(())
@@ -249,6 +538,13 @@ fn require_hns_suffix(path: &Path) -> Result<(), HarnessPackageError> {
             path.display()
         )))
     }
+}
+
+fn scalar_form(name: &str, value: &str) -> SExpr {
+    SExpr::List(vec![
+        SExpr::Atom(name.to_string()),
+        SExpr::Atom(value.to_string()),
+    ])
 }
 
 fn root_name(form: &SExpr) -> Result<&str, HarnessPackageError> {
@@ -467,6 +763,7 @@ fn validate_program_capabilities(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::sqlite::SqliteStore;
 
     const SINGLE: &str = r#"
         (manifest
@@ -580,9 +877,37 @@ mod tests {
         assert_eq!(descriptor.id, "coding");
         assert!(descriptor.capabilities.contains(&"read".to_string()));
         assert_eq!(
-            registry.get("coding").unwrap().compact_contract(),
+            registry.get("coding", "1.0.0").unwrap().compact_contract(),
             "(contract (identity coding))"
         );
+    }
+
+    #[test]
+    fn package_hash_is_independent_from_whitespace_and_origin_path() {
+        let first = HarnessPackage::from_source("first.hns", SINGLE).unwrap();
+        let second = HarnessPackage::from_source(
+            "elsewhere.hns",
+            &first.canonical_source().replace('\n', "\n\n"),
+        )
+        .unwrap();
+        assert_eq!(first.artifact_hash, second.artifact_hash);
+        assert_eq!(first.canonical_source(), second.canonical_source());
+    }
+
+    #[test]
+    fn registry_accepts_idempotent_same_package_and_rejects_version_replacement() {
+        let registry = HarnessRegistry::default();
+        let package = HarnessPackage::from_source("coding.hns", SINGLE).unwrap();
+        registry.register_package(package.clone()).unwrap();
+        registry.register_package(package).unwrap();
+
+        let changed = HarnessPackage::from_source(
+            "coding.hns",
+            &SINGLE.replace("(identity \"coding\")", "(identity \"changed\")"),
+        )
+        .unwrap();
+        let error = registry.register_package(changed).unwrap_err();
+        assert!(error.to_string().contains("不能用不同 artifact 覆盖"));
     }
 
     #[test]
@@ -593,5 +918,48 @@ mod tests {
             .to_string();
         assert!(error.contains("'exec'"), "{error}");
         assert!(error.contains("包级 capabilities"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn package_catalog_and_objective_binding_survive_store_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = directory.path().join("harness-catalog.db");
+        let package = HarnessPackage::from_source("coding.hns", SINGLE).unwrap();
+        let registry = HarnessRegistry::default();
+        let registered = registry.register_package(package.clone()).unwrap();
+
+        {
+            let store = SqliteStore::new(database.to_str().unwrap()).await.unwrap();
+            assert!(persist_harness_package(&store, &package).await.unwrap());
+            assert!(!persist_harness_package(&store, &package).await.unwrap());
+            let binding = persist_objective_harness_binding(
+                &store,
+                "context-1",
+                "objective-1",
+                registry.get("coding", "1.0.0").unwrap().as_ref(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(binding.artifact_hash, registered.artifact_hash);
+        }
+
+        let reopened = SqliteStore::new(database.to_str().unwrap()).await.unwrap();
+        let loaded = load_persisted_harness_packages(&reopened).await.unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].artifact_hash, package.artifact_hash);
+        assert_eq!(loaded[0].canonical_source(), package.canonical_source());
+
+        let binding = load_objective_harness_binding(
+            &reopened,
+            "context-1",
+            "objective-1",
+            Some("evaluation-2"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(binding.harness_id, "coding");
+        assert_eq!(binding.harness_version, "1.0.0");
+        assert_eq!(binding.evaluation_id.as_deref(), Some("evaluation-2"));
     }
 }

@@ -2,7 +2,8 @@
 
 > 状态：显式根、Typed Plan IR、`.hns` v1 Loader、持久 `PlanExecution` 与
 > `call → Execution Job`、`infer → child Activation` 原子交接、终态结果
-> 回填、重启扫描及正式 `eval → Orchestrator → Scheduler Kernel` 驱动已实现
+> 回填、重启扫描、正式 `eval → Orchestrator → Scheduler Kernel` 驱动，
+> 以及版本化 Registry、持久包目录、Objective Binding 和只读认知挂载已实现
 > 日期：2026-07-25
 > 前置：[Domain Harness 架构](morphz_domain_harness_architecture_v1.md)、[Yao 表征分层](morphz_yao_representation_layers.md)、[Scheduler Kernel](morphz_scheduler_kernel_and_domain_model_v1.md)
 > 适用范围：Yao 源语言、Harness 包、`eval/infer`、Typed Plan IR、Objective / Evaluation / Execution Job 的映射
@@ -567,7 +568,16 @@ morphz run --harness coding@1.0.0 "修复当前项目的测试"
 - `call` 复用现有 Execution Job、Target、审批、沙箱与结果事件链；
 - `infer` 建立正式 child Activation，终态结果回填后继续 Plan；
 - Planner 失败会终结 Plan，不再遗留无法恢复的 `running` 状态；
-- Runtime 集成测试已覆盖 `eval → read Execution Job → Plan 成功 → 最终回复`。
+- Runtime 集成测试已覆盖 `eval → read Execution Job → Plan 成功 → 最终回复`；
+- 规范化 package hash 不受单文件/目录形态及无意义空白影响；
+- Registry 以 `(harness_id, version)` 精确寻址，不存在隐式 `latest`，也不允许
+  同版本内容被静默覆盖；
+- `.hns` 规范源码与 Objective 级 `HarnessBinding` 已持久化到 Event Ledger，
+  并能在 SQLite 重启后恢复；
+- 绑定后的 Evaluation 在 Context Encoding 中得到只读 Contract、默认 Mind、
+  capability 与精确 package hash；不会把默认 Mind 隐式写入共享认知；
+- 绑定 Objective 内由 `eval` 创建的 Plan 会携带精确
+  `harness_id/version/artifact_hash` provenance。
 
 历史原型与当前正式路径的对应关系：
 
@@ -582,9 +592,11 @@ morphz run --harness coding@1.0.0 "修复当前项目的测试"
 | 共享算子只检查表面拼写 | 同一 canonical operator schema 生成 parser、validator、Contract 和测试 |
 | `eval` 由普通工具固定墙钟超时控制 | 持久 Plan 独立等待 Job / Evaluation，不被普通工具超时截断 |
 
-当前尚未完成的不是基本调度语义，而是产品化与规模验证：
+当前尚未完成的不是基本调度语义，而是入口接线、产品化与规模验证：
 
-- `.hns` registry、安装、版本 binding 与默认 Frame 挂载；
+- 根据 Objective Binding 自动选择并启动 `.hns` 顶层 `eval/infer` 入口；
+- 面向用户的 install/list/bind/run CLI 与 HTTP/SDK 接口；
+- package 签名、依赖、migration 与可重建的 Registry Projection；
 - Action Group 级并行 Plan 节点；
 - Plan 运行时释放父 Activation admission slot 的完全异步 continuation；
 - Edge Target、人工审批和进程崩溃交错下的系统级故障注入；
@@ -623,9 +635,10 @@ Runtime 进程级 fault injection。
 4. 能力交集、Skill Index 与 validator；
 5. package hash、签名和 migration 预留。
 
-当前状态：单文件/目录 Loader、Manifest/Contract/Mind/Program 归一化、
-package hash 与能力交集已完成；registry、运行时 binding、默认 Frame 挂载、
-签名和 migration 尚待下一阶段。
+当前状态：第 1～4 项的最小闭环已完成；第 5 项已完成规范化 package hash，
+签名和 migration 尚未实现。包目录和 Binding 目前以不可变 Ledger Event
+持久化，后续可增加可重建 Projection，但不改变其身份语义。下一阶段是按
+Binding 正式分派入口 Program，而不是继续扩充包格式。
 
 ### Phase 4：真实对照评测
 

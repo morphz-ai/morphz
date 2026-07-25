@@ -3,7 +3,8 @@
 > 状态：架构边界已稳定；`.hns` v1 Loader、显式双求值、Typed Plan IR、
 > 持久 `PlanExecution`、`call → Execution Job` 原子交接、终态结果回填
 > 与重启扫描、正式 Orchestrator 驱动及 `infer → child Activation`
-> 交接已实现；Harness registry 与运行时挂载进入下一阶段
+> 交接、版本化 Harness Registry、持久包目录、Objective Binding 与只读
+> Contract/Mind 挂载已实现；入口 Program 自动分派进入下一阶段
 > 日期：2026-07-25
 > 适用范围：Runtime、Context Encoding、Objective / Evaluation、Skill、工具、领域认知 Frame 与未来 Harness 包
 > 配套设计：[Yao Harness `.hns` 包、显式双求值与 Typed Plan IR v1](morphz_yao_harness_file.md)
@@ -35,10 +36,11 @@ LLM             依据当前认知和现实证据作出语义决策
 
 Harness 不只是一组 Prompt 或默认 Frame。它还可以提供由 Runtime 确定性推进、在 `infer` 节点交给 LLM 的 Yao 程序。Yao 程序先进入 Typed Plan IR，再复用统一 Scheduler Kernel 执行；Harness 不能借此形成第二套调度器。
 
-当前已经明确并实现最小 `.hns` 包边界、显式 `eval/infer` 求值语义及
-Scheduler Kernel 的持久 Plan 执行链。它已经具备 Execution Job 副作用边界、
-Plan 恢复与 child Activation 回填，但尚不等于具备可安装、可版本绑定和可挂载
-默认认知的完整 Harness 产品层。
+当前已经明确并实现最小 `.hns` 包边界、显式 `eval/infer` 求值语义、
+Scheduler Kernel 的持久 Plan 执行链、精确版本 Registry、不可变包目录和
+Objective 级 Binding。绑定后的求值能看到只读 Contract 与默认 Mind，且 Plan
+携带精确包 provenance；但 Runtime 还不会仅因绑定存在就自动启动入口 Program，
+也尚未形成面向用户的安装与运行产品接口。
 
 ## 2. 为什么需要 Harness 层
 
@@ -359,8 +361,8 @@ Harness 以 `.hns` 单文件或目录包成为可版本化、可分享、可交�
 
 1. 收敛显式 `eval/infer` 与 canonical operator schema，把现有 AST 变成可序列化 Typed Plan IR；
 2. 让 `call/infer` 分别物化为正式 Execution Job / Evaluation，并实现 Plan suspend/resume；
-3. 实现最小 `.hns` loader、Manifest、Contract、默认 Frame 挂载与 HarnessBinding；
-4. 用外部 Coding Harness 对现有编码任务做严格 A/B；
+3. 实现最小 `.hns` loader、Manifest、Contract、默认 Frame 挂载与 HarnessBinding；（已完成）
+4. 按 Binding 分派顶层 `eval/infer` 入口，并用外部 Coding Harness 对现有编码任务做严格 A/B；
 5. 增加崩溃恢复、审批、Edge Target、并发 Objective 和 Context pressure 场景；
 6. 用较弱模型和非 Coding 任务复测，判断增益与领域污染；
 7. 稳定增益出现后，再扩展 migration、签名、组合规则和发布生态。
