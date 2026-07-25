@@ -1,8 +1,9 @@
 # Morphz Domain Harness：Runtime 之上的可加载领域运行层 v1
 
-> 状态：设计共识，暂不进入实现
-> 日期：2026-07-21
+> 状态：架构边界已稳定；`.hns` v1 Loader、显式双求值与最小 Typed Plan IR 已实现，Scheduler 持久执行尚未实现
+> 日期：2026-07-25
 > 适用范围：Runtime、Context Encoding、Objective / Evaluation、Skill、工具、领域认知 Frame 与未来 Harness 包
+> 配套设计：[Yao Harness `.hns` 包、显式双求值与 Typed Plan IR v1](morphz_yao_harness_file.md)
 
 ## 1. 核心结论
 
@@ -29,7 +30,9 @@ LLM             依据当前认知和现实证据作出语义决策
 
 > Runtime 构造可信的现实边界；Harness 提供领域语义和工作方法；模型在两者之上形成判断并行动。
 
-这项设计现在只需要被记录和澄清，不应因为概念成立就立即扩张 Runtime 或冻结一套过早的 Harness DSL。
+Harness 不只是一组 Prompt 或默认 Frame。它还可以提供由 Runtime 确定性推进、在 `infer` 节点交给 LLM 的 Yao 程序。Yao 程序先进入 Typed Plan IR，再复用统一 Scheduler Kernel 执行；Harness 不能借此形成第二套调度器。
+
+当前已经明确最小 `.hns` 包边界和显式 `eval/infer` 求值语义，但这只是目标设计，不代表现有原型已经具备副作用安全、持久恢复和生产可用的包加载器。
 
 ## 2. 为什么需要 Harness 层
 
@@ -127,7 +130,9 @@ Harness 可以给出领域调度建议和默认策略，但 Objective、Evaluati
 
 ## 6. 一个 Harness 的概念组成
 
-以下是能力边界，不是现在就要冻结的文件格式：
+以下能力通过 `.hns` 包组织；`.hns` 可以是包含多个顶层 artifact 的
+单文件，也可以是承载更多资源的目录。v1 的职责已经确定，但各 artifact
+的完整字段仍应随实现和真实评测收敛：
 
 1. **Manifest（清单）**：名称、版本、领域、兼容的 Runtime 契约、依赖和入口。
 2. **Harness Contract（领域契约）**：稳定的对象、算子、能力与现实语义，并用自然语言说明每项含义。
@@ -141,6 +146,34 @@ Harness 可以给出领域调度建议和默认策略，但 Objective、Evaluati
 10. **Migration（迁移规则）**：Harness 契约升级时处理其命名空间内的 Projection 和默认 Frame。
 
 Harness 可以拥有命名空间化的 Projection 和 Event 类型，但不应为了每个领域不断扩大 Kernel 的核心数据库模型。
+
+紧凑或内置 Harness：
+
+```text
+coding.hns
+  (manifest ...)
+  (contract ...)
+  (mind ...)
+  (eval ...)
+```
+
+资源较多时：
+
+```text
+coding.hns/
+├── manifest.yao
+├── contract.yao
+├── mind.yao
+├── programs/
+├── skills/
+├── validators/
+└── migrations/
+```
+
+`.hns` 是 Harness package 后缀；`.yao` 是目录包内结构化源文件后缀。
+两种形态必须由 Loader 归一化成相同的 `HarnessPackage`。Manifest 面向
+Runtime 加载，Contract 面向模型的稳定领域理解，Mind 提供挂载期默认
+认知，Program 提供显式 `eval/infer` 求值结构。
 
 ## 7. 稳定契约与可进化认知必须分开
 
@@ -169,18 +202,20 @@ Harness 内部有两种性质完全不同的内容。
 - 如何协调并发 Objective；
 - 从长期实践中总结出的领域经验。
 
-这些内容可以作为 Frame 被 Agent `derive`、`revise`、`retire`、交换或从外部植入。它们不是物理真理，也不应伪装为 Runtime 契约。
+这些内容可以作为 Frame 被 Agent `derive`、`revise`、`retire`、交换或从外部植入。它们不是物理真理，也不应伪装为 Runtime 契约。Harness 自带的默认 Frame 首先以只读、Objective / Evaluation-scoped 方式挂载；只有 Agent 或用户通过显式 Context 事务/import 选择保留时，才进入共享 Mind。
 
 这一分离避免两个极端：既不把易变经验硬编码进 Runtime，也不允许模型把工具和现实规则重新解释成自己希望的样子。
 
-## 8. 与 SExpr VM 的关系
+## 8. 与 Yao、SExpr VM 和 Runtime 求值的关系
 
 Harness 契约可以使用 SExpr 提供结构，同时在基础算子和领域能力节点内用自然语言准确说明语义。SExpr 表达的是需要模型实际遵循的过程与关系，而不是要求模型模拟传统 CPU 逐字符解释。
 
-下面只是概念草图，不是最终 DSL：
+包内 Contract 可以表达为：
 
 ```lisp
-(harness coding
+(contract
+  (version "1.0.0")
+
   (identity
     "这是面向软件仓库求值的领域运行环境。")
 
@@ -199,6 +234,34 @@ Harness 契约可以使用 SExpr 提供结构，同时在基础算子和领域�
   (skills
     (discover rust postgres github-pr debugging release)))
 ```
+
+可执行程序则显式声明求值权：
+
+```lisp
+(eval
+  (requires
+    (tools read edit exec))
+
+  (seq
+    (bind repository
+      (call inspect-repository))
+
+    (bind plan
+      (infer
+        (task "根据仓库证据制定修改方案")
+        (input repository)))
+
+    (call apply-plan
+      (plan plan))
+
+    (call run-tests)))
+```
+
+最外层 `eval` 表示 Runtime 主导；内层 `infer` 表示在该节点创建子 Evaluation，由 LLM 完成非确定性求值。模型主导型 Harness 使用显式顶层 `(infer ...)`。未知根节点不能默认为某个求值器。
+
+Runtime 不直接解释字符串并调用物理工具。Yao 程序必须先解析、校验并 lowering 为 Typed Plan IR；`call` 物化为 Execution Job / Action Group，`infer` 物化为 Evaluation，等待结果后再从持久化程序位置恢复。
+
+完整边界见 [Yao Harness `.hns` 包、显式双求值与 Typed Plan IR v1](morphz_yao_harness_file.md)。
 
 知识工作 Harness 可以定义人员、组织、日历、消息、审批、委派和截止时间；视频编辑 Harness 可以定义素材、时间线、轨道、时间码、渲染、预览和转码。它们复用同一组 Runtime 事务与调度机制，但不会把不同领域强行压成相同的数据对象。
 
@@ -257,7 +320,10 @@ Harness 不能以牺牲上下文效率为代价。它进入 Context Encoding 时
 
 ## 13. 未来的分发形态
 
-如果后续验证成立，Harness 可以成为可版本化、可分享、可交换的包。一个组织可以发布自己的 Coding Harness，一个创作者可以发布视频生产 Harness，一个 Agent 也可以把长期实践形成的高质量领域 Frame 导出给另一个 Agent。
+Harness 以 `.hns` 单文件或目录包成为可版本化、可分享、可交换的分发
+单元。一个组织可以发布自己的 Coding Harness，一个创作者可以发布视频
+生产 Harness，一个 Agent 也可以把长期实践形成的高质量领域 Frame 导出给
+另一个 Agent。
 
 但需要保持三类资产的边界：
 
@@ -271,7 +337,7 @@ Harness 不能以牺牲上下文效率为代价。它进入 Context Encoding 时
 
 本设计当前不承诺：
 
-- 冻结 Harness 包格式或完整 DSL；
+- 冻结 `.hns` 中所有可选字段或完整 Yao 算子集合；
 - 在 Scheduler Kernel 中加入 Coding 专用字段；
 - 支持任意多个 Harness 组合；
 - 自动相信 Harness 提供的校验结果；
@@ -283,19 +349,20 @@ Harness 不能以牺牲上下文效率为代价。它进入 Context Encoding 时
 
 ## 15. 后续验证路径
 
-等到需要推进时，可以按以下顺序验证，而不是直接建设完整生态：
+实现和验证应按以下顺序推进，而不是直接建设完整生态：
 
-1. 定义最小 Harness Contract，只覆盖挂载、版本、紧凑能力索引和 Context Encoding 边界；
-2. 用外部 Coding Harness 对现有编码任务做严格 A/B，不修改 Runtime 行为；
-3. 增加并发 Objective 场景，测资源冲突、证据复用、重复调用和集成验证；
-4. 用较弱模型复测，判断 Harness 是否真正降低了对模型临时推理能力的要求；
-5. 做非编码负向测试，确认 Coding Harness 不会污染普通聊天和其他领域；
-6. 只有在稳定增益出现后，才固定包格式、迁移协议和组合规则。
+1. 收敛显式 `eval/infer` 与 canonical operator schema，把现有 AST 变成可序列化 Typed Plan IR；
+2. 让 `call/infer` 分别物化为正式 Execution Job / Evaluation，并实现 Plan suspend/resume；
+3. 实现最小 `.hns` loader、Manifest、Contract、默认 Frame 挂载与 HarnessBinding；
+4. 用外部 Coding Harness 对现有编码任务做严格 A/B；
+5. 增加崩溃恢复、审批、Edge Target、并发 Objective 和 Context pressure 场景；
+6. 用较弱模型和非 Coding 任务复测，判断增益与领域污染；
+7. 稳定增益出现后，再扩展 migration、签名、组合规则和发布生态。
 
 ## 16. 仍需回答的问题
 
 - Harness 应由用户显式选择，还是允许 Agent 自动选择并说明理由？
-- 领域 Frame 默认属于 Agent、Context、Harness 实例还是 Objective？
+- Agent 从 Harness 默认 Frame 派生的持久 Frame 默认属于 Agent、Context、Harness 实例还是 Objective？
 - 一个 Frame 从 Coding 迁移到 Research 时，适用范围如何表达？
 - Harness 升级时，旧 Frame 与新契约冲突如何检测？
 - 多 Harness 组合时，工具同名、纪律冲突和 Token 预算如何裁决？

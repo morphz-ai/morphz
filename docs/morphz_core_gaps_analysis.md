@@ -1,5 +1,8 @@
 # Morphz 核心功能缺失分析与重构技术方案 (上下文持久化与 Skill 自演化)
 
+> [!WARNING]
+> 历史审计文档。本文基于早期固定 Context、全量重放与“Yao 编译到 WASM”的设想，其中多项事实和实现建议已经失效。当前 Context 以 [Agent-Owned Context](morphz_agent_owned_context_design.md) 及 Projection 设计为准；当前 Yao 方向是 [`.hns` Harness、显式 `eval/infer` 与 Typed Plan IR](morphz_yao_harness_file.md)，物理调用继续经过 Scheduler、权限和原生沙箱，不以 WASM 作为默认执行路径。
+
 本报告针对智能体（Agent）开发中最核心的两个能力维度——**上下文持久化与缓存守护 (Context & Cache)**、**技能的自主学习与执行 (Skill & Sandbox)**，深度剖析 `Morphz` 相比于 `openclaw` 与 `Hermes` 在源码实现上的本质缺陷与核心功能缺失，并提供针对性的重构落地图。
 
 ---

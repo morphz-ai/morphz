@@ -1,7 +1,7 @@
 # Morphz 最底层核心架构方案 (Context 快照、冷热缓存与三层工具哲学)
 
 > [!WARNING]
-> 本文中的固定 Context Schema、自动 Fold/Compaction 和 `eval set/push/pop` 属于早期方案，已被 [Agent-Owned Context v1](./morphz_agent_owned_context_design.md) 取代。现阶段以稳定 ID Frames、版本化 `context_tx` 与显式 `recall` 为准。
+> 本文中的固定 Context Schema、自动 Fold/Compaction 和 `eval set/push/pop` 属于早期方案，已被 [Agent-Owned Context v1](./morphz_agent_owned_context_design.md) 取代。现阶段以稳定 ID Frames、版本化 `context_tx` 与显式 `recall` 为准；新的 `eval/infer` 指 Yao 求值权边界，见 [Yao Harness v1](morphz_yao_harness_file.md)，与本文旧 Context 修改原语不是同一概念。
 
 本方案对 Morphz 的三个最底层核心技术方向进行深度设计，建立一套自洽、优雅且具备无限扩展潜力的智能体底座。
 

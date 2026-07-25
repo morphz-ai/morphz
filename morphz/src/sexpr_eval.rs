@@ -15,6 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::sexpr::SExpr;
@@ -117,8 +118,8 @@ pub const OPERATORS: [OperatorSpec; 9] = [
     OperatorSpec {
         name: "fallback",
         form: "(fallback primary backup)",
-        description: "主路径失败后的替代路径。只存在于你自己的求值中。",
-        available: Availability::LlmOnly,
+        description: "先求值 primary；只有 primary 返回已分类失败时才求值 backup。primary 成功时 backup 不产生任何调用；任一分支内的绑定不流出该分支。",
+        available: Availability::Both,
     },
     OperatorSpec {
         name: "process",
@@ -189,11 +190,88 @@ fn err<T>(message: impl Into<String>) -> Result<T, EvalError> {
     })
 }
 
+/// Which evaluator owns the outer program loop.
+///
+/// This is part of the source semantics rather than a loader guess.  A
+/// Runtime-owned program lowers to a resumable plan; a model-owned program
+/// enters the ordinary Evaluation/attempt loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvaluationOwner {
+    Runtime,
+    Model,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgramHeader {
+    pub owner: EvaluationOwner,
+    pub declared_tools: Option<Vec<String>>,
+}
+
+/// A value embedded in a plan node.
+///
+/// Separating literals from references during lowering means the executor
+/// never has to reinterpret `$name.field` syntax after a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum PlanValue {
+    Literal(String),
+    Reference(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanArgument {
+    pub name: String,
+    pub values: Vec<PlanValue>,
+}
+
+/// Runtime's typed, serializable representation of one Yao program.
+///
+/// It deliberately contains no tool implementation or Future.  A later
+/// Scheduler integration can persist this tree together with a program
+/// counter, bindings and pending child work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum PlanNode {
+    Value {
+        value: PlanValue,
+    },
+    Seq {
+        steps: Vec<PlanNode>,
+    },
+    Bind {
+        name: String,
+        value: Box<PlanNode>,
+    },
+    If {
+        condition: PlanValue,
+        when_true: Box<PlanNode>,
+        when_false: Box<PlanNode>,
+    },
+    Fallback {
+        primary: Box<PlanNode>,
+        backup: Box<PlanNode>,
+    },
+    Map {
+        collection: PlanValue,
+        element: String,
+        body: Box<PlanNode>,
+    },
+    Infer {
+        arguments: Vec<PlanArgument>,
+    },
+    Call {
+        tool: String,
+        arguments: Vec<PlanArgument>,
+    },
+}
+
 /// A validated program. Holding this type is the evidence that [`validate`]
-/// accepted the tree, so [`evaluate`] cannot be reached with an unchecked one.
-#[derive(Debug, Clone)]
+/// accepted and lowered the source, so execution never sees unchecked syntax.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Program {
-    root: SExpr,
+    owner: EvaluationOwner,
+    root: PlanNode,
     /// Tools the program will reach, in first-appearance order.
     ///
     /// Callers settle capability and approval from this before the Job starts,
@@ -206,7 +284,8 @@ pub struct Program {
     /// the wrong test; the right one is whether a second run can corrupt
     /// anything, and here it cannot.
     tools: Vec<String>,
-    /// Tools the program declared through a leading `(tools NAME...)` form.
+    /// Tools declared by `(requires (tools NAME...))` inside the explicit
+    /// `eval`/`infer` root.
     ///
     /// Declaration exists for the part static analysis cannot see: which
     /// tools an `infer` may gather evidence with is decided at run time, so
@@ -219,6 +298,14 @@ pub struct Program {
 }
 
 impl Program {
+    pub fn owner(&self) -> EvaluationOwner {
+        self.owner
+    }
+
+    pub fn root(&self) -> &PlanNode {
+        &self.root
+    }
+
     pub fn tools(&self) -> &[String] {
         &self.tools
     }
@@ -276,7 +363,7 @@ pub fn validate(
     let forms = crate::sexpr::parse_all(source).map_err(|error| EvalError {
         message: format!("program 不是合法的 S 表达式: {error}"),
     })?;
-    let (declared, root) = split_forms(forms)?;
+    let (owner, declared, root) = split_program(forms)?;
     if let Some(declared) = &declared {
         // The declaration must sit inside the deployment gate: a program
         // cannot widen its own admission by asking.
@@ -299,48 +386,125 @@ pub fn validate(
     let mut scope = Scope::default();
     let mut facts = ProgramFacts::default();
     check(&root, 0, &mut scope, registry, effective_gate, &mut facts)?;
+    let root = lower_expr(&root)?;
     Ok(Program {
+        owner,
         root,
         tools: facts.tools,
         declared,
     })
 }
 
-/// Splits an optional leading `(tools NAME...)` declaration off a program.
+/// Parses only the stable program envelope.
 ///
-/// A program is one or two top-level forms: the optional declaration, then
-/// exactly one body expression. This is the whole file format of a `.yao`
-/// program — the language name lives in the file extension, not in a wrapper
-/// the model would have to write around every submission.
-fn split_forms(mut forms: Vec<SExpr>) -> Result<(Option<Vec<String>>, SExpr), EvalError> {
-    let has_declaration = matches!(
-        forms.first(),
-        Some(SExpr::List(items)) if items.first() == Some(&SExpr::Atom("tools".to_string()))
-    );
-    let declared = if has_declaration {
-        let SExpr::List(items) = forms.remove(0) else {
-            unreachable!("guarded by has_declaration");
-        };
-        let mut declared = Vec::new();
-        for item in &items[1..] {
-            let SExpr::Atom(name) = item else {
-                return err("(tools ...) 里只能是工具名原子".to_string());
+/// Harness loading can use this without a live tool registry. Full operator,
+/// schema and deployment-gate validation still happens before activation.
+pub fn inspect_program_source(source: &str) -> Result<ProgramHeader, EvalError> {
+    let forms = crate::sexpr::parse_all(source).map_err(|error| EvalError {
+        message: format!("program 不是合法的 S 表达式: {error}"),
+    })?;
+    let (owner, declared_tools, _) = split_program(forms)?;
+    Ok(ProgramHeader {
+        owner,
+        declared_tools,
+    })
+}
+
+/// Reads the explicit evaluator root and its optional capability narrowing.
+///
+/// The outer `(eval ...)` / `(infer ...)` is intentionally mandatory.  The
+/// same inner tree can otherwise change owner merely by being wrapped in
+/// `seq`, which makes persistence and failure semantics impossible to inspect.
+fn split_program(
+    forms: Vec<SExpr>,
+) -> Result<(EvaluationOwner, Option<Vec<String>>, SExpr), EvalError> {
+    let [form] = forms.as_slice() else {
+        return err("Yao 程序必须恰好有一个显式根：(eval ...) 或 (infer ...)".to_string());
+    };
+    let SExpr::List(items) = form else {
+        return err("Yao 程序根必须是 (eval ...) 或 (infer ...)".to_string());
+    };
+    let Some(SExpr::Atom(root_name)) = items.first() else {
+        return err("Yao 程序根缺少求值器名称".to_string());
+    };
+    let owner = match root_name.as_str() {
+        "eval" => EvaluationOwner::Runtime,
+        "infer" => EvaluationOwner::Model,
+        other => {
+            return err(format!(
+                "未知的 Yao 程序根 '{other}'；必须显式使用 (eval ...) 或 (infer ...)"
+            ))
+        }
+    };
+
+    let mut body = items[1..].to_vec();
+    let declared = match body.first() {
+        Some(SExpr::List(requires))
+            if requires.first() == Some(&SExpr::Atom("requires".to_string())) =>
+        {
+            let declared = parse_requires(requires)?;
+            body.remove(0);
+            Some(declared)
+        }
+        _ => None,
+    };
+
+    let root = match owner {
+        EvaluationOwner::Runtime => {
+            let [root] = body.as_slice() else {
+                return err(
+                    "(eval ...) 在可选的 (requires ...) 后必须恰好包含一个程序体；多个步骤用 (seq ...) 组合"
+                        .to_string(),
+                );
             };
-            if !declared.contains(name) {
-                declared.push(name.clone());
+            root.clone()
+        }
+        EvaluationOwner::Model => {
+            if body.is_empty() {
+                return err("(infer ...) 至少需要一个 (task ...) 参数".to_string());
+            }
+            let mut infer = Vec::with_capacity(body.len() + 1);
+            infer.push(SExpr::Atom("infer".to_string()));
+            infer.extend(body);
+            SExpr::List(infer)
+        }
+    };
+    Ok((owner, declared, root))
+}
+
+fn parse_requires(items: &[SExpr]) -> Result<Vec<String>, EvalError> {
+    let mut declared = None;
+    for clause in &items[1..] {
+        let SExpr::List(parts) = clause else {
+            return err("(requires ...) 的每一项必须是列表".to_string());
+        };
+        let Some(SExpr::Atom(name)) = parts.first() else {
+            return err("(requires ...) 子项缺少名称".to_string());
+        };
+        match name.as_str() {
+            "tools" => {
+                if declared.is_some() {
+                    return err("(requires ...) 只能声明一次 (tools ...)".to_string());
+                }
+                let mut tools = Vec::new();
+                for item in &parts[1..] {
+                    let SExpr::Atom(tool) = item else {
+                        return err("(requires (tools ...)) 里只能是工具名原子".to_string());
+                    };
+                    if !tools.contains(tool) {
+                        tools.push(tool.clone());
+                    }
+                }
+                declared = Some(tools);
+            }
+            other => {
+                return err(format!(
+                    "当前版本不认识 requires 子项 '({other} ...)'; 可用的是 (tools ...)"
+                ))
             }
         }
-        Some(declared)
-    } else {
-        None
-    };
-    if forms.len() != 1 {
-        return err(
-            "程序体必须恰好是一个表达式；可选的 (tools NAME...) 声明放在最前面，多个步骤用 (seq ...) 组合"
-                .to_string(),
-        );
     }
-    Ok((declared, forms.pop().expect("length checked above")))
+    Ok(declared.unwrap_or_default())
 }
 
 /// What the walk learns about a program, for the caller to settle capability
@@ -437,6 +601,18 @@ fn check(
             // Branches are checked in a copy of the scope: a binding made in a
             // branch that is not taken must not be visible afterwards.
             for branch in [when_true, when_false] {
+                let mut branch_scope = Scope {
+                    bound: scope.bound.clone(),
+                };
+                check(branch, depth + 1, &mut branch_scope, registry, gate, facts)?;
+            }
+            Ok(())
+        }
+        "fallback" => {
+            let [primary, backup] = args else {
+                return err("(fallback PRIMARY BACKUP) 需要两段".to_string());
+            };
+            for branch in [primary, backup] {
                 let mut branch_scope = Scope {
                     bound: scope.bound.clone(),
                 };
@@ -560,6 +736,102 @@ fn check_value(expr: &SExpr, scope: &Scope) -> Result<(), EvalError> {
     }
 }
 
+fn lower_value(expr: &SExpr) -> Result<PlanValue, EvalError> {
+    let SExpr::Atom(atom) = expr else {
+        return err(format!("值的位置不接受子表达式 '{expr}'"));
+    };
+    Ok(match atom.strip_prefix('$') {
+        Some(reference) => PlanValue::Reference(reference.to_string()),
+        None => PlanValue::Literal(atom.clone()),
+    })
+}
+
+fn lower_arguments(args: &[SExpr]) -> Result<Vec<PlanArgument>, EvalError> {
+    args.iter()
+        .map(|argument| {
+            let SExpr::List(items) = argument else {
+                return err(format!("参数必须是 (参数名 值...) 列表，得到 '{argument}'"));
+            };
+            let Some(SExpr::Atom(name)) = items.first() else {
+                return err("参数列表第一项必须是参数名".to_string());
+            };
+            let values = items[1..]
+                .iter()
+                .map(lower_value)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(PlanArgument {
+                name: name.clone(),
+                values,
+            })
+        })
+        .collect()
+}
+
+fn lower_expr(expr: &SExpr) -> Result<PlanNode, EvalError> {
+    if matches!(expr, SExpr::Atom(_)) {
+        return Ok(PlanNode::Value {
+            value: lower_value(expr)?,
+        });
+    }
+    let (operator, args) = operator_of(expr)?;
+    match operator {
+        "seq" => Ok(PlanNode::Seq {
+            steps: args.iter().map(lower_expr).collect::<Result<Vec<_>, _>>()?,
+        }),
+        "bind" => {
+            let [SExpr::Atom(name), value] = args else {
+                return err("(bind NAME EXPR) 形态错误".to_string());
+            };
+            Ok(PlanNode::Bind {
+                name: name.clone(),
+                value: Box::new(lower_expr(value)?),
+            })
+        }
+        "if" => {
+            let [condition, when_true, when_false] = args else {
+                return err("(if COND THEN ELSE) 形态错误".to_string());
+            };
+            Ok(PlanNode::If {
+                condition: lower_value(condition)?,
+                when_true: Box::new(lower_expr(when_true)?),
+                when_false: Box::new(lower_expr(when_false)?),
+            })
+        }
+        "fallback" => {
+            let [primary, backup] = args else {
+                return err("(fallback PRIMARY BACKUP) 形态错误".to_string());
+            };
+            Ok(PlanNode::Fallback {
+                primary: Box::new(lower_expr(primary)?),
+                backup: Box::new(lower_expr(backup)?),
+            })
+        }
+        "map" => {
+            let [collection, SExpr::Atom(element), body] = args else {
+                return err("(map COLLECTION ELEMENT BODY) 形态错误".to_string());
+            };
+            Ok(PlanNode::Map {
+                collection: lower_value(collection)?,
+                element: element.clone(),
+                body: Box::new(lower_expr(body)?),
+            })
+        }
+        "infer" => Ok(PlanNode::Infer {
+            arguments: lower_arguments(args)?,
+        }),
+        "call" => {
+            let Some(SExpr::Atom(tool)) = args.first() else {
+                return err("(call TOOL ...) 形态错误".to_string());
+            };
+            Ok(PlanNode::Call {
+                tool: tool.clone(),
+                arguments: lower_arguments(&args[1..])?,
+            })
+        }
+        other => err(format!("未知算子 '{other}'")),
+    }
+}
+
 /// The boundary back into the non-deterministic evaluator.
 ///
 /// This is a seam, not a second model client: the implementation belongs to the
@@ -599,6 +871,12 @@ pub async fn evaluate(
     registry: Arc<Registry>,
     host: Arc<dyn RuntimeInference>,
 ) -> Result<JsonValue, EvalError> {
+    if program.owner != EvaluationOwner::Runtime {
+        return err(
+            "(infer ...) 是模型持有控制权的程序，必须创建正式 Evaluation，不能交给 Runtime Plan Executor"
+                .to_string(),
+        );
+    }
     let mut env = HashMap::new();
     let mut budget = Budget {
         calls_left: MAX_PROGRAM_CALLS,
@@ -616,7 +894,7 @@ pub async fn evaluate(
 }
 
 fn eval_expr<'a>(
-    expr: &'a SExpr,
+    expr: &'a PlanNode,
     env: &'a mut HashMap<String, JsonValue>,
     registry: &'a Arc<Registry>,
     host: &'a Arc<dyn RuntimeInference>,
@@ -625,30 +903,25 @@ fn eval_expr<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<JsonValue, EvalError>> + Send + 'a>>
 {
     Box::pin(async move {
-        if matches!(expr, SExpr::Atom(_)) {
-            return resolve_value(expr, env);
-        }
-        let (operator, args) = operator_of(expr)?;
-        match operator {
-            "seq" => {
+        match expr {
+            PlanNode::Value { value } => resolve_value(value, env),
+            PlanNode::Seq { steps } => {
                 let mut last = JsonValue::Null;
-                for step in args {
+                for step in steps {
                     last = eval_expr(step, env, registry, host, declared, budget).await?;
                 }
                 Ok(last)
             }
-            "bind" => {
-                let [SExpr::Atom(name), value] = args else {
-                    return err("(bind NAME EXPR) 形态错误".to_string());
-                };
+            PlanNode::Bind { name, value } => {
                 let resolved = eval_expr(value, env, registry, host, declared, budget).await?;
                 env.insert(name.clone(), resolved);
                 Ok(JsonValue::Null)
             }
-            "if" => {
-                let [condition, when_true, when_false] = args else {
-                    return err("(if COND THEN ELSE) 形态错误".to_string());
-                };
+            PlanNode::If {
+                condition,
+                when_true,
+                when_false,
+            } => {
                 let taken = if truthy(&resolve_value(condition, env)?) {
                     when_true
                 } else {
@@ -656,10 +929,21 @@ fn eval_expr<'a>(
                 };
                 eval_expr(taken, env, registry, host, declared, budget).await
             }
-            "map" => {
-                let [collection, SExpr::Atom(element), body] = args else {
-                    return err("(map COLLECTION ELEMENT BODY) 形态错误".to_string());
-                };
+            PlanNode::Fallback { primary, backup } => {
+                let mut primary_env = env.clone();
+                match eval_expr(primary, &mut primary_env, registry, host, declared, budget).await {
+                    Ok(value) => Ok(value),
+                    Err(_) => {
+                        let mut backup_env = env.clone();
+                        eval_expr(backup, &mut backup_env, registry, host, declared, budget).await
+                    }
+                }
+            }
+            PlanNode::Map {
+                collection,
+                element,
+                body,
+            } => {
                 let items = resolve_value(collection, env)?;
                 let JsonValue::Array(items) = items else {
                     return err(format!(
@@ -685,12 +969,12 @@ fn eval_expr<'a>(
                 }
                 Ok(JsonValue::Array(results))
             }
-            "infer" => {
+            PlanNode::Infer { arguments } => {
                 if budget.infers_left == 0 {
                     return err(format!("程序的 infer 次数超过上限 {MAX_PROGRAM_INFERS}"));
                 }
                 budget.infers_left -= 1;
-                let request = build_arguments(args, env, None)?;
+                let request = build_arguments(arguments, env, None)?;
                 let answer = host
                     .infer(&request, declared)
                     .await
@@ -700,10 +984,10 @@ fn eval_expr<'a>(
                 // `infer -> eval` loop and cost the language its totality.
                 Ok(JsonValue::String(answer))
             }
-            "call" => {
-                let Some(SExpr::Atom(tool_name)) = args.first() else {
-                    return err("(call TOOL ...) 形态错误".to_string());
-                };
+            PlanNode::Call {
+                tool: tool_name,
+                arguments,
+            } => {
                 if budget.calls_left == 0 {
                     return err(format!("程序的工具调用次数超过上限 {MAX_PROGRAM_CALLS}"));
                 }
@@ -712,7 +996,7 @@ fn eval_expr<'a>(
                     .get(tool_name)
                     .ok_or_else(|| EvalError::from(format!("工具 '{tool_name}' 不存在")))?;
                 let schema = tool.definition().parameters.clone();
-                let arguments = build_arguments(&args[1..], env, Some(&schema))?;
+                let arguments = build_arguments(arguments, env, Some(&schema))?;
                 let payload = serde_json::to_string(&JsonValue::Object(arguments))
                     .map_err(|error| EvalError::from(format!("参数序列化失败: {error}")))?;
                 let output = tool.execute(&payload).await.map_err(|error| {
@@ -720,7 +1004,6 @@ fn eval_expr<'a>(
                 })?;
                 Ok(as_json(output))
             }
-            other => err(format!("未知算子 '{other}'")),
         }
     })
 }
@@ -731,7 +1014,7 @@ fn eval_expr<'a>(
 /// the tool's schema in hand, a lone value destined for an array parameter is
 /// wrapped, and several values under one name form an array.
 fn build_arguments(
-    args: &[SExpr],
+    args: &[PlanArgument],
     env: &HashMap<String, JsonValue>,
     schema: Option<&JsonValue>,
 ) -> Result<JsonMap<String, JsonValue>, EvalError> {
@@ -740,18 +1023,12 @@ fn build_arguments(
         .and_then(|properties| properties.as_object());
     let mut arguments = JsonMap::new();
     for argument in args {
-        let SExpr::List(items) = argument else {
-            return err(format!("参数必须是 (参数名 值...) 列表，得到 '{argument}'"));
-        };
-        let Some(SExpr::Atom(name)) = items.first() else {
-            return err("参数列表第一项必须是参数名".to_string());
-        };
-        let mut values = Vec::with_capacity(items.len() - 1);
-        for value in &items[1..] {
+        let mut values = Vec::with_capacity(argument.values.len());
+        for value in &argument.values {
             values.push(resolve_value(value, env)?);
         }
         let expects_array = properties
-            .and_then(|properties| properties.get(name.as_str()))
+            .and_then(|properties| properties.get(argument.name.as_str()))
             .and_then(|property| property.get("type"))
             .and_then(|kind| kind.as_str())
             == Some("array");
@@ -766,18 +1043,21 @@ fn build_arguments(
         } else {
             values.pop().expect("length checked above")
         };
-        arguments.insert(name.clone(), value);
+        arguments.insert(argument.name.clone(), value);
     }
     Ok(arguments)
 }
 
 /// Resolves a value position: `$name` and `$name.field` read the environment,
 /// anything else is the literal the model wrote.
-fn resolve_value(expr: &SExpr, env: &HashMap<String, JsonValue>) -> Result<JsonValue, EvalError> {
-    let SExpr::Atom(atom) = expr else {
-        return err(format!("值的位置不接受子表达式 '{expr}'"));
-    };
-    let Some(reference) = atom.strip_prefix('$') else {
+fn resolve_value(
+    value: &PlanValue,
+    env: &HashMap<String, JsonValue>,
+) -> Result<JsonValue, EvalError> {
+    let PlanValue::Reference(reference) = value else {
+        let PlanValue::Literal(atom) = value else {
+            unreachable!()
+        };
         return Ok(literal(atom));
     };
     let mut parts = reference.split('.');
@@ -898,17 +1178,19 @@ impl EvalTool {
             "把一棵可求值的 S 表达式程序交给 Runtime 确定性执行，一次完成多个有数据依赖的步骤。\
              适用于步骤提前已知、且后一步要用到前一步结果的场合；单步或需要看到结果再决定时，\
              继续使用普通 Function Calling 即可，本工具不替代它。\n\
-             程序 = 可选的一行 (tools NAME...) 声明 + 恰好一个程序体表达式；多个步骤用 (seq ...) 组合。\n\
+             本工具只接受显式 (eval ...) 根；模型主导的 (infer ...) 由 Runtime 创建正式 Evaluation，不提交给本工具。\n\
+             (eval ...) 内可先放 (requires (tools NAME...)) 收窄能力，随后必须恰好有一个程序体；多个步骤用 (seq ...) 组合。\n\
              声明不能超出下方工具清单，声明后 call 与 infer 取证都只限声明过的工具。\n\
              可调用工具：{tools}\n\
-             `fallback` 与 `process` 属于你自身的求值，本程序中不可用。\n\
+             `reply` 与 `process` 属于你自身的求值，本程序中不可用。\n\
              算子契约：\n{contract}\n\
              示例：\n\
-             (tools list_files read)\n\
-             (seq\n\
-               (bind files (call list_files (path \"src\")))\n\
-               (bind bodies (map $files f (call read (path $f))))\n\
-               (infer (task \"哪些文件含 TODO\") (evidence $bodies)))",
+             (eval\n\
+               (requires (tools list_files read))\n\
+               (seq\n\
+                 (bind files (call list_files (path \"src\")))\n\
+                 (bind bodies (map $files f (call read (path $f))))\n\
+                 (infer (task \"哪些文件含 TODO\") (evidence $bodies))))",
             contract = operator_contract(),
         )
     }
@@ -942,7 +1224,7 @@ impl crate::tool::Tool for EvalTool {
                 "properties": {
                     "program": {
                         "type": "string",
-                        "description": "canonical S 表达式程序，例如 (seq (bind files (call list_files (path \"src\"))) (map $files f (call read (path $f))))"
+                        "description": "带显式 eval 根的 canonical Yao 程序，例如 (eval (seq (bind files (call list_files (path \"src\"))) (map $files f (call read (path $f)))))"
                     }
                 },
                 "required": ["program"]
@@ -1065,7 +1347,8 @@ mod tests {
     ) -> (Result<JsonValue, EvalError>, Vec<String>) {
         let (registry, seen) = fixture(replies);
         let (inference, _) = host("inferred");
-        let outcome = match validate(source, &registry, &gate()) {
+        let source = format!("(eval {source})");
+        let outcome = match validate(&source, &registry, &gate()) {
             Ok(program) => evaluate(&program, Arc::clone(&registry), inference).await,
             Err(error) => Err(error),
         };
@@ -1114,6 +1397,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fallback_runs_only_after_a_classified_failure() {
+        let (outcome, calls) = run(
+            r#"(seq
+                 (bind scalar (call read (path "shape.txt")))
+                 (fallback
+                   (map $scalar item (call read (path $item)))
+                   (call read (path "backup.txt"))))"#,
+            &[("read", serde_json::json!("not-an-array"))],
+        )
+        .await;
+        assert_eq!(outcome.unwrap(), serde_json::json!("not-an-array"));
+        assert_eq!(calls.len(), 2, "backup should run exactly once: {calls:?}");
+        assert!(calls[1].contains("backup.txt"), "calls: {calls:?}");
+    }
+
+    #[tokio::test]
     async fn field_access_reads_into_a_bound_result() {
         let (outcome, _) = run(
             r#"(seq
@@ -1134,10 +1433,7 @@ mod tests {
         let cases = [
             // An operator the model was told it has, but which belongs to its
             // own evaluation rather than this one.
-            (
-                "(fallback (call read (path \"a\")) (call read (path \"b\")))",
-                "只用于你自身的求值",
-            ),
+            ("(reply \"done\")", "只用于你自身的求值"),
             ("(loop (call read (path \"a\")))", "未知算子"),
             (
                 "(call exec (command \"rm -rf /\"))",
@@ -1154,7 +1450,8 @@ mod tests {
             ("(seq (bind $a (call read (path \"x\"))))", "名字不带 $"),
         ];
         for (source, expected) in cases {
-            let error = validate(source, &registry, &gate())
+            let source = format!("(eval {source})");
+            let error = validate(&source, &registry, &gate())
                 .expect_err(&format!("must reject: {source}"))
                 .message;
             assert!(
@@ -1168,9 +1465,9 @@ mod tests {
     async fn a_branch_binding_does_not_escape_its_branch() {
         let registry = fixture(&[("read", JsonValue::Null)]).0;
         let error = validate(
-            r#"(seq
+            r#"(eval (seq
                  (if true (bind inner (call read (path "a"))) (call read (path "b")))
-                 (call read (path $inner)))"#,
+                 (call read (path $inner))))"#,
             &registry,
             &gate(),
         )
@@ -1209,6 +1506,7 @@ mod tests {
         for _ in 0..MAX_PROGRAM_DEPTH + 1 {
             source = format!("(seq {source})");
         }
+        source = format!("(eval {source})");
         let error = validate(&source, &registry, &gate())
             .expect_err("deep programs are refused")
             .message;
@@ -1219,7 +1517,7 @@ mod tests {
     async fn declared_tools_are_reported_for_capability_settlement() {
         let registry = fixture(&[("list_files", JsonValue::Null), ("read", JsonValue::Null)]).0;
         let program = validate(
-            r#"(seq (bind f (call list_files (path "src"))) (map $f e (call read (path $e))))"#,
+            r#"(eval (seq (bind f (call list_files (path "src"))) (map $f e (call read (path $e)))))"#,
             &registry,
             &gate(),
         )
@@ -1237,10 +1535,10 @@ mod tests {
         ]);
         let (inference, requests) = host("两半");
         let program = validate(
-            r#"(seq
+            r#"(eval (seq
                  (bind body (call read (path "ch041.md")))
                  (bind form (infer (task "铜印现在是什么形态") (evidence $body)))
-                 (call search (query $form)))"#,
+                 (call search (query $form))))"#,
             &registry,
             &gate(),
         )
@@ -1281,7 +1579,7 @@ mod tests {
         let (registry, _) = fixture(&[("list_files", serde_json::json!(items))]);
         let (inference, requests) = host("ok");
         let program = validate(
-            r#"(seq (bind f (call list_files (path "src"))) (map $f e (infer (task "看一下") (item $e))))"#,
+            r#"(eval (seq (bind f (call list_files (path "src"))) (map $f e (infer (task "看一下") (item $e)))))"#,
             &registry,
             &gate(),
         )
@@ -1304,7 +1602,7 @@ mod tests {
         ]);
         let tool = EvalTool::with_default_tools(Arc::clone(&registry));
         let arguments = serde_json::json!({
-            "program": r#"(seq (bind f (call list_files (path "src"))) (map $f e (call read (path $e))))"#
+            "program": r#"(eval (seq (bind f (call list_files (path "src"))) (map $f e (call read (path $e)))))"#
         })
         .to_string();
         let output = CURRENT_INFERENCE
@@ -1324,7 +1622,7 @@ mod tests {
         // `exec` is outside the read-only gate, and it sits after a legitimate
         // read: nothing may run if the tree as a whole is not admissible.
         let arguments = serde_json::json!({
-            "program": r#"(seq (call read (path "a")) (call exec (command "rm -rf /")))"#
+            "program": r#"(eval (seq (call read (path "a")) (call exec (command "rm -rf /"))))"#
         })
         .to_string();
         let error = CURRENT_INFERENCE
@@ -1409,7 +1707,8 @@ mod tests {
         // in the contract may legitimately mention other names.
         assert!(tool.definition().description.contains("可调用工具：search"));
 
-        let arguments = serde_json::json!({"program": r#"(call read (path "a"))"#}).to_string();
+        let arguments =
+            serde_json::json!({"program": r#"(eval (call read (path "a")))"#}).to_string();
         let error = CURRENT_INFERENCE
             .scope(Some(host("unused").0), tool.execute(&arguments))
             .await
@@ -1443,7 +1742,7 @@ mod tests {
         // exactly the declaration — the part static analysis cannot reach.
         let (registry, _) = fixture(&[("search", serde_json::json!([]))]);
         let error = validate(
-            r#"(tools search) (call read (path "a"))"#,
+            r#"(eval (requires (tools search)) (call read (path "a")))"#,
             &registry,
             &gate(),
         )
@@ -1452,7 +1751,7 @@ mod tests {
         assert!(error.contains("只接受 search"), "got: {error}");
 
         let program = validate(
-            r#"(tools search) (seq (bind r (call search (query "x"))) (infer (task "判断") (hits $r)))"#,
+            r#"(eval (requires (tools search)) (seq (bind r (call search (query "x"))) (infer (task "判断") (hits $r))))"#,
             &registry,
             &gate(),
         )
@@ -1480,7 +1779,7 @@ mod tests {
         // a program only ever narrows it.
         let registry = fixture(&[("read", JsonValue::Null)]).0;
         let error = validate(
-            r#"(tools exec) (call exec (command "ls"))"#,
+            r#"(eval (requires (tools exec)) (call exec (command "ls")))"#,
             &registry,
             &gate(),
         )
@@ -1528,5 +1827,37 @@ mod tests {
         assert_eq!(literal("12"), serde_json::json!(12));
         assert_eq!(literal("true"), serde_json::json!(true));
         assert_eq!(literal("src/foo.rs"), serde_json::json!("src/foo.rs"));
+    }
+
+    #[test]
+    fn evaluator_ownership_is_explicit_and_bare_bodies_are_rejected() {
+        let registry = fixture(&[("read", JsonValue::Null)]).0;
+        let error = validate(r#"(call read (path "README.md"))"#, &registry, &gate())
+            .unwrap_err()
+            .message;
+        assert!(error.contains("显式使用"), "{error}");
+
+        let model = validate(r#"(infer (task "判断当前状态"))"#, &registry, &gate()).unwrap();
+        assert_eq!(model.owner(), EvaluationOwner::Model);
+    }
+
+    #[test]
+    fn typed_plan_ir_round_trips_without_reparsing_yao() {
+        let registry = fixture(&[("read", JsonValue::Null)]).0;
+        let program = validate(
+            r#"(eval
+                 (requires (tools read))
+                 (seq
+                   (bind body (call read (path "README.md")))
+                   (infer (task "归纳") (input $body))))"#,
+            &registry,
+            &gate(),
+        )
+        .unwrap();
+        let encoded = serde_json::to_string(&program).unwrap();
+        let restored: Program = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored, program);
+        assert!(encoded.contains("\"op\":\"call\""));
+        assert!(encoded.contains("\"kind\":\"reference\""));
     }
 }

@@ -5273,10 +5273,10 @@ async fn eval_runs_a_submitted_program_and_hands_infer_back_to_the_model() {
     let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
         vec![
             eval_response(
-                r#"(seq
+                r#"(eval (seq
                      (bind body (call read (path "probe.txt")))
                      (bind judgement (infer (task "这个文件说了什么") (evidence $body)))
-                     $judgement)"#,
+                     $judgement))"#,
             ),
             text_reply_response("看起来是一个 Rust 工程"),
             text_reply_response("已完成"),
@@ -5356,7 +5356,7 @@ async fn infer_may_gather_evidence_but_is_never_offered_eval() {
     let probe_path = probe.path().to_string_lossy().into_owned();
     let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
         vec![
-            eval_response(r#"(infer (task "这个仓库是什么语言写的"))"#),
+            eval_response(r#"(eval (infer (task "这个仓库是什么语言写的")))"#),
             // Inside the infer, the model wants evidence before answering.
             read_call_response("infer-read", &probe_path),
             text_reply_response("Rust"),

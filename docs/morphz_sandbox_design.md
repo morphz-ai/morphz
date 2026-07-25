@@ -1,6 +1,6 @@
 # Morphz 混合沙箱运行环境设计方案
 
-> 历史方案：本文保留早期 WASM、容器和远程沙箱构想，不代表当前实现路线。当前基线只采用操作系统原生沙箱和可插拔审批，见 [`morphz_sandbox_execution_and_approval_architecture.md`](morphz_sandbox_execution_and_approval_architecture.md)。
+> 历史方案：本文保留早期“Yao 编译到 WASM”、容器和远程沙箱构想，不代表当前实现路线。当前基线采用操作系统原生沙箱和可插拔审批；Yao 程序先进入 Typed Plan IR，物理调用仍物化为 Scheduler Execution Job。分别见 [`morphz_sandbox_execution_and_approval_architecture.md`](morphz_sandbox_execution_and_approval_architecture.md) 与 [Yao Harness v1](morphz_yao_harness_file.md)。
 
 为保证下一代智能体 `Morphz` 在执行由 AI 自动生成/修改的代码与技能（Skill）时的绝对安全，我们结合 OpenClaw 与 Hermes 的沙箱隔离及增量同步机制，设计了如下的**三层混合沙箱隔离与增量状态持久化架构**。
 
