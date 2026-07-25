@@ -614,36 +614,61 @@ tokio::task_local! {
     pub static CURRENT_INFERENCE: Option<Arc<dyn RuntimeInference>>;
 }
 
-/// Tools an `eval` program may call.
+/// Tools an `eval` program may call when nothing is configured.
 ///
 /// Read-only and in-workspace only, for a reason that outlives v1: the tree is
-/// approved as a whole, before evaluation discovers the paths a `map` will
+/// admitted as a whole, before evaluation discovers the paths a `map` will
 /// reach. A write or an out-of-boundary path found mid-evaluation could not
-/// have been part of what was approved, so the program is refused rather than
+/// have been part of what was admitted, so the program is refused rather than
 /// escalated. Individual tools still run their own jail and path checks.
-pub const EVAL_CALLABLE_TOOLS: [&str; 3] = ["read", "list_files", "search"];
+///
+/// An operator may widen or narrow this through configuration, but both `call`
+/// and `infer` have to read the same list — see `eval_callable_tools`.
+pub const DEFAULT_CALLABLE_TOOLS: [&str; 3] = ["read", "list_files", "search"];
 
 pub struct EvalTool {
     registry: Arc<Registry>,
+    callable: Vec<String>,
 }
 
 impl EvalTool {
-    pub fn new(registry: Arc<Registry>) -> Self {
-        Self { registry }
+    pub fn new(registry: Arc<Registry>, callable: Vec<String>) -> Self {
+        Self { registry, callable }
     }
 
-    pub fn description() -> String {
+    /// Construction for callers with no configuration of their own, such as
+    /// tests, so the default set lives in exactly one place.
+    pub fn with_default_tools(registry: Arc<Registry>) -> Self {
+        Self::new(
+            registry,
+            DEFAULT_CALLABLE_TOOLS
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
+        )
+    }
+
+    /// Built from the tables and the configured list, so what the model is told
+    /// it may write cannot drift from what the validator will accept.
+    pub fn description(callable: &[String]) -> String {
+        let tools = if callable.is_empty() {
+            "（本部署未开放树内工具调用；程序只能使用结构与 infer）".to_string()
+        } else {
+            format!(
+                "{}（其余工具请用普通 Function Calling）",
+                callable.join(" ")
+            )
+        };
         format!(
             "把一棵可求值的 S 表达式程序交给 Runtime 确定性执行，一次完成多个有数据依赖的步骤。\
              适用于步骤提前已知、且后一步要用到前一步结果的场合；单步或需要看到结果再决定时，\
              继续使用普通 Function Calling 即可，本工具不替代它。\n\
              可用算子：{operators}。\n\
-             可调用工具：{tools}（只读且限工作区内；其余工具请用普通 Function Calling）。\n\
+             可调用工具：{tools}\n\
              引用绑定用 $name，取字段用 $name.field；参数写作 :key value。\n\
              `infer` 把判断交回模型：(infer :task \"要判断什么\" :evidence $binding)，返回值是数据。\n\
              `fallback` 与 `process` 属于你自身的求值，本程序中不可用。",
             operators = OPERATORS.join(" "),
-            tools = EVAL_CALLABLE_TOOLS.join(" "),
         )
     }
 }
@@ -670,7 +695,7 @@ impl crate::tool::Tool for EvalTool {
     fn definition(&self) -> crate::llm::ToolDefinition {
         crate::llm::ToolDefinition {
             name: "eval".to_string(),
-            description: Self::description(),
+            description: Self::description(&self.callable),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -689,7 +714,7 @@ impl crate::tool::Tool for EvalTool {
         arguments: &str,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let args: EvalArgs = serde_json::from_str(arguments)?;
-        let gate = AllowList::new(EVAL_CALLABLE_TOOLS);
+        let gate = AllowList::new(self.callable.clone());
         let program = validate(&args.program, &self.registry, &gate)?;
         let inference = CURRENT_INFERENCE
             .try_with(Clone::clone)
@@ -1029,7 +1054,7 @@ mod tests {
             ("list_files", serde_json::json!(["a.rs", "b.rs"])),
             ("read", serde_json::json!("body")),
         ]);
-        let tool = EvalTool::new(Arc::clone(&registry));
+        let tool = EvalTool::with_default_tools(Arc::clone(&registry));
         let arguments = serde_json::json!({
             "program": r#"(seq (bind f (call list_files :path "src")) (map $f e (call read :path $e)))"#
         })
@@ -1047,7 +1072,7 @@ mod tests {
         use crate::tool::Tool;
 
         let (registry, calls) = fixture(&[("read", JsonValue::Null)]);
-        let tool = EvalTool::new(Arc::clone(&registry));
+        let tool = EvalTool::with_default_tools(Arc::clone(&registry));
         // `exec` is outside the read-only gate, and it sits after a legitimate
         // read: nothing may run if the tree as a whole is not admissible.
         let arguments = serde_json::json!({
@@ -1071,7 +1096,7 @@ mod tests {
         use crate::tool::Tool;
 
         let registry = fixture(&[]).0;
-        let tool = EvalTool::new(registry);
+        let tool = EvalTool::with_default_tools(registry);
         let arguments = serde_json::json!({"program": r#"(infer :task "判断")"#}).to_string();
         let error = CURRENT_INFERENCE
             .scope(None, tool.execute(&arguments))
@@ -1085,7 +1110,11 @@ mod tests {
     fn the_advertised_operators_are_the_implemented_ones() {
         // The description is the model's only account of what it may write, so
         // it is generated from the tables rather than restated by hand.
-        let description = EvalTool::description();
+        let callable = DEFAULT_CALLABLE_TOOLS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<Vec<_>>();
+        let description = EvalTool::description(&callable);
         for operator in OPERATORS {
             assert!(description.contains(operator), "missing {operator}");
         }
@@ -1095,6 +1124,44 @@ mod tests {
             }
             assert!(description.contains(refused), "unexplained {refused}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_configured_gate_replaces_the_default_one() {
+        use crate::tool::Tool;
+
+        let (registry, calls) = fixture(&[("read", JsonValue::Null)]);
+        // A deployment that narrows the set must actually narrow it, and the
+        // description has to say so rather than advertise the default.
+        let tool = EvalTool::new(Arc::clone(&registry), vec!["search".to_string()]);
+        assert!(tool.definition().description.contains("search"));
+        assert!(!tool.definition().description.contains("read"));
+
+        let arguments = serde_json::json!({"program": r#"(call read :path "a")"#}).to_string();
+        let error = CURRENT_INFERENCE
+            .scope(Some(host("unused").0), tool.execute(&arguments))
+            .await
+            .expect_err("a tool outside the configured gate is refused")
+            .to_string();
+        assert!(error.contains("只接受 search"), "got: {error}");
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_absent_configuration_keeps_the_default_gate() {
+        // Nothing configured must mean the read-only default, not an empty gate
+        // that would silently disable every `call` in every program.
+        let configured = crate::config::OrchestratorConfig::default().eval_callable_tools;
+        assert_eq!(configured, DEFAULT_CALLABLE_TOOLS);
+    }
+
+    #[test]
+    fn an_empty_configuration_closes_the_gate_and_says_so() {
+        let description = EvalTool::description(&[]);
+        assert!(
+            description.contains("未开放树内工具调用"),
+            "an empty gate must be described, not left looking like the default: {description}"
+        );
     }
 
     #[test]

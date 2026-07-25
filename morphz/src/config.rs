@@ -311,6 +311,16 @@ pub struct OrchestratorConfig {
     /// 是否在 Ledger 中保留完整 Context Encoding 与模型消息。
     /// 默认仅保存内容哈希和尺寸；实时事件订阅仍能看到完整内容。
     pub persist_full_context_inspect: bool,
+    /// `eval` 程序中 `call` 可以调用、以及 `infer` 取证时可以使用的工具。
+    ///
+    /// 两条路径共用这一份名单：程序整体被准入时还看不到 `map` 之后会碰到哪些
+    /// 参数，所以求值中途发现的越界一律拒绝而不升级审批；若两处各有一份名单，
+    /// 这个不变量会随配置漂移而失效。
+    ///
+    /// 未配置时使用默认的只读集合；显式配成空则表示彻底关闭树内工具调用，
+    /// 此时 `eval` 只剩结构与 `infer`。名单之外的工具仍可通过普通 Function
+    /// Calling 使用，各工具自身的 jail 与路径检查也不受此影响。
+    pub eval_callable_tools: Vec<String>,
 }
 
 impl Default for OrchestratorConfig {
@@ -340,6 +350,10 @@ impl Default for OrchestratorConfig {
             session_working_set: SessionWorkingSetConfig::default(),
             frame_retirement: FrameRetirementConfig::default(),
             persist_full_context_inspect: false,
+            eval_callable_tools: crate::sexpr_eval::DEFAULT_CALLABLE_TOOLS
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect(),
         }
     }
 }

@@ -9924,13 +9924,12 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
         // at one level and a submitted program stays statically bounded. What
         // remains is the same read-only gate the evaluator applies to `call`,
         // so one policy governs both rather than two that can drift.
+        let callable = orchestrator.orchestrator_config.eval_callable_tools.clone();
         let tools = orchestrator
             .registry
             .definitions()
             .into_iter()
-            .filter(|definition| {
-                crate::sexpr_eval::EVAL_CALLABLE_TOOLS.contains(&definition.name.as_str())
-            })
+            .filter(|definition| callable.contains(&definition.name))
             .collect::<Vec<_>>();
 
         for round in 0..crate::sexpr_eval::MAX_INFER_ROUNDS {
@@ -9982,14 +9981,10 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
                 // path checks. Anything outside the gate is refused rather than
                 // executed, exactly as a `call` node would be.
                 let outcome = match orchestrator.registry.get(&call.func_name) {
-                    Some(tool)
-                        if crate::sexpr_eval::EVAL_CALLABLE_TOOLS
-                            .contains(&call.func_name.as_str()) =>
-                    {
-                        tool.execute(&call.arguments)
-                            .await
-                            .unwrap_or_else(|error| format!("执行失败: {error}"))
-                    }
+                    Some(tool) if callable.contains(&call.func_name) => tool
+                        .execute(&call.arguments)
+                        .await
+                        .unwrap_or_else(|error| format!("执行失败: {error}")),
                     _ => format!("执行拒绝: 工具 '{}' 不能在 infer 中调用", call.func_name),
                 };
                 messages.push(Message {

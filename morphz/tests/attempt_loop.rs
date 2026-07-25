@@ -713,9 +713,9 @@ async fn build_orchestrator_with_config_and_reply_mode(
     registry.register(Arc::new(ReadFileTool::default()));
     registry.register(Arc::new(WriteFileTool::default()));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&context_engine))));
-    registry.register(Arc::new(morphz::sexpr_eval::EvalTool::new(Arc::clone(
-        &registry,
-    ))));
+    registry.register(Arc::new(morphz::sexpr_eval::EvalTool::with_default_tools(
+        Arc::clone(&registry),
+    )));
 
     let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
