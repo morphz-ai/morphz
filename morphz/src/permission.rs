@@ -326,9 +326,6 @@ impl PermissionProfile {
                 resolved.candidate.display()
             )
         })?;
-        if !canonical.is_dir() {
-            return Err(format!("额外权限路径 '{}' 不是目录", canonical.display()).into());
-        }
         Ok(canonical)
     }
 

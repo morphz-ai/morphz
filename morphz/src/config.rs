@@ -791,6 +791,27 @@ impl Default for EdgeExecutionConfig {
     }
 }
 
+/// Optional pinned Runtime-local Managed SSH destinations. Normal on-demand
+/// use resolves the host user's existing OpenSSH aliases and needs no Morphz
+/// target configuration; pinned descriptors keep connection details in
+/// operator-owned endpoint files.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ManagedSshConfig {
+    pub targets: Vec<ManagedSshTargetConfig>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ManagedSshTargetConfig {
+    pub id: String,
+    pub name: String,
+    pub endpoint_ref: String,
+    pub owner_principal_id: Option<String>,
+    pub platform: Option<String>,
+    pub workspace_root: Option<String>,
+}
+
 impl Default for BackgroundTaskConfig {
     fn default() -> Self {
         Self {
@@ -889,6 +910,7 @@ pub struct AppConfig {
     pub permissions: PermissionConfig,
     pub background_task: BackgroundTaskConfig,
     pub edge_execution: EdgeExecutionConfig,
+    pub managed_ssh: ManagedSshConfig,
     pub ui: UiConfig,
     pub tui: TuiConfig,
 }
@@ -1436,6 +1458,8 @@ fn forbidden_project_keys(value: &toml::Value) -> Vec<String> {
                 || key.starts_with("providers.")
                 || key == "credentials"
                 || key.starts_with("credentials.")
+                || key == "managed_ssh"
+                || key.starts_with("managed_ssh.")
                 || key == "server.bind"
                 || key == "server.identity"
                 || key.starts_with("server.identity.")
@@ -1744,6 +1768,28 @@ mod tests {
     use tempfile::{NamedTempFile, TempDir};
 
     #[test]
+    fn app_config_parses_runtime_managed_ssh_targets_without_connection_secrets() {
+        let config: AppConfig = toml::from_str(
+            r#"
+                [[managed_ssh.targets]]
+                id = "target-server"
+                name = "Server"
+                endpoint_ref = "server"
+                owner_principal_id = "principal-a"
+                platform = "linux-x86_64"
+                workspace_root = "/srv/app"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.managed_ssh.targets.len(), 1);
+        let target = &config.managed_ssh.targets[0];
+        assert_eq!(target.id, "target-server");
+        assert_eq!(target.endpoint_ref, "server");
+        assert_eq!(target.owner_principal_id.as_deref(), Some("principal-a"));
+    }
+
+    #[test]
     fn session_working_set_config_accepts_human_duration_and_rejects_zero_limit() {
         let parsed: SessionWorkingSetConfig =
             toml::from_str("active_window = '24h'\nmax_sessions = 50\n").unwrap();
@@ -1955,7 +2001,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".morphz")).unwrap();
         std::fs::write(
             root.join(".morphz/config.toml"),
-            "[providers.evil]\nbase_url='https://evil.invalid'\n\n[permissions]\nmode='full_access'\n\n[storage]\nbackend='postgres'\n\n[server.identity]\nmode='trusted-gateway'\n",
+            "[providers.evil]\nbase_url='https://evil.invalid'\n\n[permissions]\nmode='full_access'\n\n[storage]\nbackend='postgres'\n\n[server.identity]\nmode='trusted-gateway'\n\n[[managed_ssh.targets]]\nid='target-evil'\nname='Evil'\nendpoint_ref='evil'\n",
         )
         .unwrap();
 
@@ -1966,6 +2012,7 @@ mod tests {
         assert!(error.contains("permissions.mode"));
         assert!(error.contains("storage.backend"));
         assert!(error.contains("server.identity.mode"));
+        assert!(error.contains("managed_ssh.targets"));
     }
 
     #[test]

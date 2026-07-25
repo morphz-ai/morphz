@@ -667,6 +667,63 @@ impl DurableApprovalServices {
     }
 }
 
+async fn covering_capability_lease_grant(
+    services: &DurableApprovalServices,
+    requirement: &crate::permission::ApprovalRequirement,
+    principal_id: &str,
+    agent_id: &str,
+    thread: &ThreadRecord,
+    target: &crate::memory::ExecutionTargetRecord,
+) -> Result<Option<DurableApprovalGrant>, DynError> {
+    if !services.capability_leases_enabled
+        || services.capability_lease_ttl_secs == 0
+        || thread.lifecycle != ThreadLifecycle::Open
+    {
+        return Ok(None);
+    }
+    let permission_policy_digest = services.broker.policy_digest();
+    let lease_policy_digest =
+        capability_lease_policy_digest(&permission_policy_digest, &target.policy_digest);
+    let capability = requirement.action.lease_capability();
+    let leases = services
+        .capability_leases
+        .list_capability_leases(CapabilityLeaseFilter {
+            principal_id: Some(principal_id.to_string()),
+            agent_id: Some(agent_id.to_string()),
+            thread_id: Some(thread.id.clone()),
+            target_id: Some(target.id.clone()),
+            active_at: Some(Utc::now()),
+            limit: Some(100),
+        })
+        .await?;
+    Ok(leases.into_iter().find_map(|lease| {
+        if lease.policy_digest != lease_policy_digest
+            || !lease
+                .capabilities
+                .iter()
+                .any(|candidate| candidate == &capability)
+        {
+            return None;
+        }
+        let granted =
+            serde_json::from_value::<crate::approval::CapabilityDelta>(lease.requested.clone())
+                .ok()?;
+        if !requirement.requested.is_subset_of(&granted) {
+            return None;
+        }
+        Some(DurableApprovalGrant {
+            approval_id: lease
+                .issued_by_approval_id
+                .clone()
+                .unwrap_or_else(|| lease.id.clone()),
+            grant_id: format!("capability-lease:{}", lease.id),
+            policy_digest: permission_policy_digest.clone(),
+            action: requirement.action.clone(),
+            requested: granted,
+        })
+    }))
+}
+
 #[derive(Debug, Clone)]
 struct ActivationRoute {
     thread_id: String,
@@ -7110,6 +7167,27 @@ impl Orchestrator {
                 .clone()
                 .unwrap_or_else(|| crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string())
         };
+        if let Err(error) = crate::execution_target::reject_unmanaged_ssh_invocation(
+            &effective_target_id,
+            tool.name(),
+            &invocation.tool_arguments,
+        ) {
+            let mut output = physical_execution_preflight_rejected_tool_output(
+                output_id,
+                context_id,
+                session_id,
+                attempt_id,
+                call,
+                route,
+                action_group_id,
+                error.as_ref(),
+            );
+            output
+                .payload
+                .insert("target_id".to_string(), json!(effective_target_id));
+            self.stamp_objective_activation_route(attempt_id, &mut output.payload);
+            return Ok(PreparedPhysicalExecution::Rejected(output));
+        }
         if let Some(bound_target_id) = thread.target_id.as_deref() {
             if bound_target_id != effective_target_id {
                 let reason = format!(
@@ -7198,6 +7276,7 @@ impl Orchestrator {
             .validate_for_tool(
                 &effective_target_id,
                 tool.name(),
+                &invocation.tool_arguments,
                 route.initiating_principal_id.as_deref(),
                 agent_id,
                 context_id,
@@ -7236,14 +7315,21 @@ impl Orchestrator {
         let requirement_result =
             if target.kind == crate::memory::ExecutionTargetKind::InProcessLocal {
                 tool.approval_requirement(&invocation.tool_arguments)
+            } else if self
+                .durable_approvals
+                .as_ref()
+                .is_some_and(|services| services.broker.profile().full_access())
+            {
+                Ok(None)
             } else {
                 crate::execution_target::remote_target_approval_requirement(
+                    &target,
                     tool.name(),
                     &invocation.tool_arguments,
                 )
                 .map(Some)
             };
-        let requirement = match requirement_result {
+        let mut requirement = match requirement_result {
             Ok(requirement) => requirement,
             Err(error) => {
                 let mut output = physical_execution_preflight_rejected_tool_output(
@@ -7260,6 +7346,25 @@ impl Orchestrator {
                 return Ok(PreparedPhysicalExecution::Rejected(output));
             }
         };
+        let mut lease_grant = None;
+        if let (Some(current_requirement), Some(services), Some(principal_id)) = (
+            requirement.as_ref(),
+            self.durable_approvals.as_ref(),
+            route.initiating_principal_id.as_ref(),
+        ) {
+            lease_grant = covering_capability_lease_grant(
+                services,
+                current_requirement,
+                principal_id,
+                agent_id,
+                &thread,
+                &target,
+            )
+            .await?;
+        }
+        if lease_grant.is_some() {
+            requirement = None;
+        }
         let spec = ExecutionJobSpec {
             activation_id: route.activation_id.clone(),
             thread_id: thread_id.to_string(),
@@ -7314,7 +7419,7 @@ impl Orchestrator {
                         .await?,
                     "claim",
                 )?;
-                (job, None)
+                (job, lease_grant)
             }
             Some(requirement) => {
                 let services = self.durable_approvals.as_ref().ok_or(
@@ -7349,32 +7454,6 @@ impl Orchestrator {
                                     .unwrap_or(i64::MAX),
                             ),
                     });
-                let covering_lease = match lease_offer.as_ref() {
-                    Some(offer) => services
-                        .capability_leases
-                        .list_capability_leases(CapabilityLeaseFilter {
-                            principal_id: Some(offer.principal_id.clone()),
-                            agent_id: Some(offer.agent_id.clone()),
-                            thread_id: Some(offer.thread_id.clone()),
-                            target_id: Some(offer.target_id.clone()),
-                            active_at: Some(Utc::now()),
-                            limit: Some(100),
-                        })
-                        .await?
-                        .into_iter()
-                        .find(|lease| {
-                            lease.policy_digest == offer.policy_digest
-                                && lease
-                                    .capabilities
-                                    .iter()
-                                    .any(|capability| capability == &offer.capability)
-                                && serde_json::from_value::<crate::approval::CapabilityDelta>(
-                                    lease.requested.clone(),
-                                )
-                                .is_ok_and(|granted| offer.requested.is_subset_of(&granted))
-                        }),
-                    None => None,
-                };
                 let identity = stable_approval_identity(
                     &new_job.id,
                     &action,
@@ -7418,33 +7497,23 @@ impl Orchestrator {
                 }
 
                 if approval.status.is_pending() {
-                    let decision = if let Some(lease) = &covering_lease {
-                        ApprovalDecision::AllowOnce {
-                            rationale: format!(
-                                "请求完全包含于有效的 Thread + Target Capability Lease '{}'",
-                                lease.id
-                            ),
-                            risk_tags: vec![format!("capability-lease-used:{}", lease.id)],
-                        }
-                    } else {
-                        services
-                            .broker
-                            .review(&ApprovalRequest {
-                                approval_id: approval.id.clone(),
-                                context_id: context_id.to_string(),
-                                session_id: session_id.to_string(),
-                                attempt_id: attempt_id.to_string(),
-                                thread_id: route.thread_id.clone(),
-                                root_turn_id: route.root_turn_id.clone(),
-                                trigger_event_id: route.trigger_event_id.clone(),
-                                trigger_sequence: route.trigger_sequence,
-                                action: requirement.action.clone(),
-                                requested: requirement.requested.clone(),
-                                justification: requirement.justification.clone(),
-                                lease_offer: lease_offer.clone(),
-                            })
-                            .await?
-                    };
+                    let decision = services
+                        .broker
+                        .review(&ApprovalRequest {
+                            approval_id: approval.id.clone(),
+                            context_id: context_id.to_string(),
+                            session_id: session_id.to_string(),
+                            attempt_id: attempt_id.to_string(),
+                            thread_id: route.thread_id.clone(),
+                            root_turn_id: route.root_turn_id.clone(),
+                            trigger_event_id: route.trigger_event_id.clone(),
+                            trigger_sequence: route.trigger_sequence,
+                            action: requirement.action.clone(),
+                            requested: requirement.requested.clone(),
+                            justification: requirement.justification.clone(),
+                            lease_offer: lease_offer.clone(),
+                        })
+                        .await?;
                     let resolution = match decision {
                         ApprovalDecision::AllowOnce {
                             rationale,

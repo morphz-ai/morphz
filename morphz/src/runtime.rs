@@ -719,9 +719,20 @@ impl MorphzRuntimeBuilder {
         registry.register(Arc::new(crate::execution_target::InspectTargetTool::new(
             Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
         )));
-        registry.register(Arc::new(crate::execution_target::ResolveTargetTool::new(
-            Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
-        )));
+        let runtime_managed_ssh_endpoints = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        let runtime_managed_ssh_provisioner =
+            crate::execution_target::RuntimeManagedSshProvisioner::new(
+                Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
+                Arc::clone(&runtime_managed_ssh_endpoints),
+                self.identity.principal_id.clone(),
+                permissions.policy_digest(),
+            );
+        registry.register(Arc::new(
+            crate::execution_target::ResolveTargetTool::new(
+                Arc::clone(&store) as Arc<dyn ExecutionTargetStore>
+            )
+            .with_runtime_managed_ssh(runtime_managed_ssh_provisioner),
+        ));
         let workspace_root = permissions
             .profile()
             .workspace_root
@@ -734,6 +745,66 @@ impl MorphzRuntimeBuilder {
                 permissions.policy_digest(),
             ))
             .await?;
+        let mut runtime_managed_ssh_target_ids = HashSet::new();
+        for target_config in &self.config.managed_ssh.targets {
+            if !runtime_managed_ssh_target_ids.insert(target_config.id.trim().to_string()) {
+                return Err(
+                    format!("Runtime Managed SSH Target id '{}' 重复", target_config.id).into(),
+                );
+            }
+            let endpoint =
+                crate::execution_target::ManagedSshEndpoint::load(&target_config.endpoint_ref)?;
+            if endpoint.destination.is_none() {
+                permissions
+                    .profile()
+                    .canonical_permission_root(&endpoint.known_hosts_file.to_string_lossy())
+                    .map_err(|error| {
+                        format!(
+                            "Runtime Managed SSH Target '{}' 的 known_hosts_file 不可授权：{error}",
+                            target_config.id
+                        )
+                    })?;
+            }
+            let registration = crate::execution_target::runtime_managed_ssh_registration(
+                target_config,
+                &endpoint,
+                &self.identity.principal_id,
+                &permissions.policy_digest(),
+            )?;
+            store.register_execution_target(registration).await?;
+            runtime_managed_ssh_endpoints
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(target_config.endpoint_ref.clone())
+                .or_insert(endpoint);
+        }
+        for stale in store
+            .list_execution_targets(ExecutionTargetFilter {
+                limit: Some(10_000),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .filter(|target| {
+                target.kind == crate::memory::ExecutionTargetKind::ManagedSsh
+                    && target.provider_node_id.is_none()
+                    && target
+                        .metadata
+                        .get("execution_location")
+                        .and_then(Value::as_str)
+                        == Some("runtime")
+                    && !runtime_managed_ssh_target_ids.contains(&target.id)
+                    && target.status == ExecutionTargetStatus::Online
+            })
+        {
+            let _ = store
+                .set_execution_target_status(
+                    &stale.id,
+                    stale.revision,
+                    ExecutionTargetStatus::Offline,
+                )
+                .await?;
+        }
         let execution_targets = Arc::new(crate::execution_target::ExecutionTargetDispatcher::new(
             Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
             Arc::clone(&store) as Arc<dyn crate::memory::ExecutionTargetAuthorizationStore>,
@@ -746,8 +817,11 @@ impl MorphzRuntimeBuilder {
             ),
         ));
         execution_targets.register_backend(Arc::new(
-            crate::execution_target::EdgeNodeBackend::managed_ssh(
-                Arc::clone(&store) as Arc<dyn crate::memory::EdgeExecutionStore>
+            crate::execution_target::ManagedSshBackend::new(
+                Arc::clone(&store) as Arc<dyn crate::memory::EdgeExecutionStore>,
+                Arc::clone(&runtime_managed_ssh_endpoints),
+                permissions.policy_digest(),
+                !permissions.profile().full_access(),
             ),
         ));
         for backend in self.execution_target_backends {
@@ -4075,6 +4149,15 @@ mod tests {
         observed_result: Arc<AtomicBool>,
     }
 
+    struct TwoManagedSshExecClient {
+        calls: AtomicU64,
+        target_id: String,
+    }
+
+    struct RecordingManagedSshBackend {
+        calls: AtomicU64,
+    }
+
     struct StaticApprovalProvider {
         decision: ApprovalDecision,
         delay: std::time::Duration,
@@ -4648,6 +4731,79 @@ mod tests {
                 }
                 _ => Err("交互式审批工具产生了冗余 Delivery 模型求值".into()),
             }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for TwoManagedSshExecClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            match call {
+                0 => {
+                    assert!(tools.iter().any(|tool| tool.name == "exec"));
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "managed-ssh-first".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "exec".to_string(),
+                            arguments: json!({
+                                "command": "printf first",
+                                "target": self.target_id,
+                            })
+                            .to_string(),
+                        }],
+                    })
+                }
+                1 => {
+                    let transcript = serde_json::to_string(&messages)?;
+                    if !transcript.contains("managed-ssh-result-1") {
+                        return Err("first Managed SSH result was not observed".into());
+                    }
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "managed-ssh-second".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "exec".to_string(),
+                            arguments: json!({
+                                "command": "printf second",
+                                "target": self.target_id,
+                            })
+                            .to_string(),
+                        }],
+                    })
+                }
+                2 => {
+                    let transcript = serde_json::to_string(&messages)?;
+                    if !transcript.contains("managed-ssh-result-2") {
+                        return Err("second Managed SSH result was not observed".into());
+                    }
+                    Ok(text_response("managed-ssh-complete"))
+                }
+                _ => Err("Managed SSH approval test produced an extra model evaluation".into()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::execution_target::ExecutionTargetBackend for RecordingManagedSshBackend {
+        fn kind(&self) -> crate::memory::ExecutionTargetKind {
+            crate::memory::ExecutionTargetKind::ManagedSsh
+        }
+
+        async fn execute(
+            &self,
+            _context: &crate::execution_target::TargetExecutionContext,
+            _tool: Arc<dyn crate::tool::Tool>,
+            _arguments: &str,
+        ) -> Result<String, crate::execution_target::TargetExecutionError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(format!("managed-ssh-result-{call}"))
         }
     }
 
@@ -6434,6 +6590,146 @@ mod tests {
             assert!(approvals[0].grant_consumed_at.is_some());
             assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
         }
+    }
+
+    async fn run_managed_ssh_target_approval_case(
+        permission_mode: PermissionMode,
+        suffix: &str,
+        expected_approvals: usize,
+        expected_leases: usize,
+        expected_reviews: u64,
+    ) {
+        let database = NamedTempFile::new().unwrap();
+        let target_id = format!("target-managed-ssh-{suffix}");
+        let session_id = format!("session-managed-ssh-{suffix}");
+        let client = Arc::new(TwoManagedSshExecClient {
+            calls: AtomicU64::new(0),
+            target_id: target_id.clone(),
+        });
+        let backend = Arc::new(RecordingManagedSshBackend {
+            calls: AtomicU64::new(0),
+        });
+        let provider = Arc::new(StaticApprovalProvider {
+            decision: ApprovalDecision::AllowLease {
+                rationale: "approve this Thread's Managed SSH target".to_string(),
+                risk_tags: vec!["test-managed-ssh-target".to_string()],
+            },
+            delay: std::time::Duration::ZERO,
+            calls: AtomicU64::new(0),
+        });
+        let mut config = AppConfig::default();
+        config.permissions.mode = permission_mode;
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .approval_provider(provider.clone())
+            .execution_target_backend(backend.clone())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .inner
+            .store
+            .register_execution_target(crate::memory::ExecutionTargetRegistration {
+                id: target_id.clone(),
+                owner_principal_id: Some(runtime.identity().principal_id.clone()),
+                provider_node_id: None,
+                kind: crate::memory::ExecutionTargetKind::ManagedSsh,
+                name: "Managed SSH test target".to_string(),
+                status: crate::memory::ExecutionTargetStatus::Online,
+                platform: Some("linux-x86_64".to_string()),
+                workspace_root: None,
+                capabilities: vec!["exec".to_string()],
+                metadata: json!({
+                    "backend": "managed_ssh",
+                    "execution_location": "runtime",
+                    "endpoint_ref": "test"
+                }),
+                policy_digest: "target-policy-managed-ssh-test".to_string(),
+                last_seen_at: Some(chrono::Utc::now()),
+            })
+            .await
+            .unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: session_id.clone(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Managed SSH target approval".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        session
+            .send(
+                "run two commands on the managed SSH target",
+                "User-Test",
+                Some(format!("client-managed-ssh-{suffix}")),
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(8), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "managed-ssh-complete");
+        assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), expected_reviews);
+
+        let approvals = runtime
+            .inner
+            .store
+            .list_approvals(ApprovalFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(approvals.len(), expected_approvals);
+        let leases = runtime
+            .inner
+            .store
+            .list_capability_leases(CapabilityLeaseFilter {
+                target_id: Some(target_id),
+                ..CapabilityLeaseFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(leases.len(), expected_leases);
+        let jobs = runtime
+            .inner
+            .store
+            .list_execution_jobs(crate::memory::ExecutionJobFilter {
+                session_id: Some(session_id),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs
+            .iter()
+            .all(|job| job.status == crate::memory::ExecutionJobStatus::Succeeded));
+        assert_eq!(
+            jobs.iter().filter(|job| job.approval_ref.is_some()).count(),
+            expected_approvals
+        );
+    }
+
+    #[tokio::test]
+    async fn full_access_managed_ssh_skips_runtime_approval() {
+        run_managed_ssh_target_approval_case(PermissionMode::FullAccess, "full-access", 0, 0, 0)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn managed_ssh_target_lease_avoids_per_command_approval() {
+        run_managed_ssh_target_approval_case(PermissionMode::AutoReview, "target-lease", 1, 1, 1)
+            .await;
     }
 
     #[tokio::test]

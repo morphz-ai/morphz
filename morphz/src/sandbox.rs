@@ -743,6 +743,49 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn macos_backend_can_grant_one_read_only_file_without_its_siblings() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+        let external = temp.path().join("external");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        let allowed_file = external.join("known_hosts");
+        let denied_file = external.join("private-key");
+        std::fs::write(&allowed_file, "known host\n").unwrap();
+        std::fs::write(&denied_file, "private\n").unwrap();
+        let mut policy = SandboxPolicy::workspace(&workspace);
+        policy.add_read_root(&allowed_file);
+        let sandbox = NativeSandbox::for_current_platform();
+
+        let allowed = sandbox
+            .prepare_shell(&ShellRequest {
+                command: format!("cat '{}' >/dev/null", allowed_file.display()),
+                cwd: workspace.clone(),
+                policy: policy.clone(),
+            })
+            .unwrap();
+        assert!(std::process::Command::new(&allowed.program)
+            .args(&allowed.arguments)
+            .status()
+            .unwrap()
+            .success());
+
+        let denied = sandbox
+            .prepare_shell(&ShellRequest {
+                command: format!("cat '{}' >/dev/null", denied_file.display()),
+                cwd: workspace,
+                policy,
+            })
+            .unwrap();
+        assert!(!std::process::Command::new(&denied.program)
+            .args(&denied.arguments)
+            .status()
+            .unwrap()
+            .success());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn macos_profile_compiles_symbolic_protected_globs() {
         let temp = tempfile::TempDir::new().unwrap();
         let workspace = temp.path().join("workspace.with+regex[chars]");
