@@ -1,6 +1,8 @@
 # Yao Harness `.hns` 包、显式双求值与 Typed Plan IR v1
 
-> 状态：显式根、Typed Plan IR 与 `.hns` v1 Loader 已有最小实现；持久化 Plan Executor 尚未实现
+> 状态：显式根、Typed Plan IR、`.hns` v1 Loader、持久 `PlanExecution` 与
+> `call → Execution Job` 原子交接已实现；正式 Orchestrator 驱动及
+> `infer → Evaluation` 交接仍在接入
 > 日期：2026-07-25
 > 前置：[Domain Harness 架构](morphz_domain_harness_architecture_v1.md)、[Yao 表征分层](morphz_yao_representation_layers.md)、[Scheduler Kernel](morphz_scheduler_kernel_and_domain_model_v1.md)
 > 适用范围：Yao 源语言、Harness 包、`eval/infer`、Typed Plan IR、Objective / Evaluation / Execution Job 的映射

@@ -999,6 +999,16 @@ impl PlanMachine {
         self.pending.as_ref()
     }
 
+    /// Durable budget projection stored beside the complete machine state.
+    ///
+    /// `state_json` remains self-contained; this smaller projection exists so
+    /// schedulers and diagnostics can inspect remaining cost without decoding
+    /// the private continuation-frame schema.
+    pub fn budget_json(&self) -> Result<JsonValue, EvalError> {
+        serde_json::to_value(&self.budget)
+            .map_err(|error| EvalError::from(format!("Plan budget 序列化失败: {error}")))
+    }
+
     /// Continues deterministic evaluation until completion, failure or the
     /// next Kernel-owned effect boundary.
     pub fn advance(&mut self, registry: &Registry) -> PlanAdvance {

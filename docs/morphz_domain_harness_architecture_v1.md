@@ -1,6 +1,8 @@
 # Morphz Domain Harness：Runtime 之上的可加载领域运行层 v1
 
-> 状态：架构边界已稳定；`.hns` v1 Loader、显式双求值与最小 Typed Plan IR 已实现，Scheduler 持久执行尚未实现
+> 状态：架构边界已稳定；`.hns` v1 Loader、显式双求值、Typed Plan IR、
+> 持久 `PlanExecution` 与 `call → Execution Job` 原子交接已实现；
+> 正式 Orchestrator 驱动及 `infer → Evaluation` 交接仍在接入
 > 日期：2026-07-25
 > 适用范围：Runtime、Context Encoding、Objective / Evaluation、Skill、工具、领域认知 Frame 与未来 Harness 包
 > 配套设计：[Yao Harness `.hns` 包、显式双求值与 Typed Plan IR v1](morphz_yao_harness_file.md)

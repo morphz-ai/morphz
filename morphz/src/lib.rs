@@ -21,6 +21,7 @@ pub mod memory;
 pub mod objective;
 pub mod orchestrator;
 pub mod permission;
+pub mod plan_execution;
 pub mod provider;
 pub mod runtime;
 pub mod sandbox;
