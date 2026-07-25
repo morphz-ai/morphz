@@ -533,11 +533,15 @@ Agent 根据 Objective 建议或选择 Harness
 当前已经提供最小的原子启动入口：
 
 ```bash
+morphz harness install ./coding.hns
+morphz harness list
+morphz harness show coding@1.0.0
 morphz objective create --harness=coding@1.0.0 "修复当前项目的测试"
 ```
 
-`ID@VERSION` 必须精确指定，不存在隐式 `latest`。Harness 的 install/list
-命令仍未定型；Runtime Builder 目前负责加载 `.hns` 包。
+`ID@VERSION` 必须精确指定，不存在隐式 `latest`。CLI 通过正式 Rust SDK
+安装、列举和精确读取 Harness；`objective create` 再把不可变 package hash
+原子绑定到新 Objective。单文件与目录 `.hns` 使用同一个 Loader 和 Registry。
 
 ## 11. 挂载、卸载和学习
 
@@ -595,6 +599,16 @@ morphz objective create --harness=coding@1.0.0 "修复当前项目的测试"
 - SDK、HTTP `POST /api/objectives` 与 CLI
   `objective create --harness=ID@VERSION` 复用同一个 principal-aware
   创建接口；不会由各入口分别执行“先建目标、后补 Binding”。
+- Rust SDK 已提供 `install_harness_package`、`list_harnesses` 和
+  `get_harness`；CLI `harness install/list/show` 只负责参数与展示，不建立
+  第二套 Registry 路径。
+- model-owned 顶层 `(infer ...)` 的 `requires` 按普通 Function Calling
+  工具面校验；Runtime-owned 顶层 `(eval ...)` 仍按独立
+  `eval_callable_tools` 安全白名单校验。两者都只能收窄能力，不能扩大沙箱、
+  审批、阶段或租约权限。
+- 外部单文件 [`coding.hns`](../morphz-evals/harnesses/coding.hns) 已通过正式
+  CLI 安装、Objective 绑定和真实模型执行；对应严格 A/B 评测入口为
+  `coding_harness_eval`。
 
 历史原型与当前正式路径的对应关系：
 
@@ -611,7 +625,8 @@ morphz objective create --harness=coding@1.0.0 "修复当前项目的测试"
 
 当前尚未完成的不是基本调度或入口语义，而是产品化与规模验证：
 
-- 面向用户的 Harness install/list/catalog 管理接口；
+- 可发现、可签名、可远端分发的 Harness catalog（本地 install/list/show
+  已完成）；
 - Objective 创建以外的显式 bind/run 产品语义，以及已启动 Objective 是否允许
   后绑定（第一版仍禁止）；
 - package 签名、依赖、migration 与可重建的 Registry Projection；
@@ -619,7 +634,8 @@ morphz objective create --harness=coding@1.0.0 "修复当前项目的测试"
 - Plan 运行时释放父 Activation admission slot 的完全异步 continuation；
 - Edge Target、人工审批和进程崩溃交错下的系统级故障注入；
 - 长程序与大型 Observation Reference 的压力测试；
-- Harness 相对自然语言或纯 Agent loop 的真实增益。
+- Harness 相对自然语言或纯 Agent loop 的多任务、多模型统计增益；当前只有
+  一次严格配对，证明链路可用且不退化，不能证明能力提升。
 
 为了保留可独立测试的解释器，`EvalTool` 在没有 Scheduler Kernel 注入时仍有
 legacy in-process fallback；正常产品装配始终注入 durable Plan executor。该
@@ -657,8 +673,9 @@ Runtime 进程级 fault injection。
 签名和 migration 尚未实现。包目录和 Binding 目前以不可变 Ledger Event
 持久化，后续可增加可重建 Projection，但不改变其身份语义。顶层
 `eval/infer` 已按 Binding 正式分派；原子“创建 Objective 并绑定 Harness”的
-SDK/HTTP/CLI 产品接口也已完成。下一阶段是外部 Coding Harness 的真实 A/B，
-而不是继续扩充包格式。
+SDK/HTTP/CLI 产品接口也已完成。本地 package 的 install/list/show 和外部
+Coding Harness 的首个真实 A/B 也已落地；下一阶段是扩大样本与任务族，而
+不是继续扩充包格式。
 
 ### Phase 4：真实对照评测
 
@@ -670,6 +687,11 @@ SDK/HTTP/CLI 产品接口也已完成。下一阶段是外部 Coding Harness 的
 - 重启、审批、并行工具、Edge Target、Context pressure；
 - Coding 与非 Coding 负向场景；
 - 正确率、重复调用、Token、耗时、恢复完整性和最终交付质量。
+
+当前已完成第一项严格配对样本，结果与结论边界见
+[Coding Harness 正式链路 A/B v1](morphz_coding_harness_ab_v1.md)。该样本
+证明单文件包、显式 `infer`、正式工具循环和 Objective Binding 可以协同工作；
+尚未覆盖 Runtime-owned Plan、故障恢复、Edge Target 与负向场景。
 
 ## 14. 本轮明确否决的设计
 

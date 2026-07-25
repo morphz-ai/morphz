@@ -84,6 +84,7 @@ const TOP_LEVEL_COMMANDS: &[&str] = &[
     "scheduler",
     "session",
     "agent",
+    "harness",
     "objective",
     "job",
     "config",
@@ -271,6 +272,7 @@ pub fn morphz_command_for(locale: Locale) -> Command {
             scheduler_command(locale),
             session_command(locale),
             agent_command(locale),
+            harness_command(locale),
             objective_command(locale),
             job_command(locale),
             config_command(locale),
@@ -1660,6 +1662,54 @@ fn objective_command(locale: Locale) -> Command {
         ))
 }
 
+fn harness_command(locale: Locale) -> Command {
+    Command::new("harness")
+        .about(locale.text(
+            "Install and inspect versioned Harness packages",
+            "安装和查看版本化 Harness 包",
+        ))
+        .subcommands([
+            output_examples(
+                locale,
+                Command::new("list").about(locale.text(
+                    "List installed Harness versions",
+                    "列出已安装的 Harness 版本",
+                )),
+                "Example:\n  morphz harness list --format=json",
+            ),
+            output_examples(
+                locale,
+                Command::new("show")
+                    .about(locale.text(
+                        "Show one exact installed Harness version",
+                        "显示一个已安装的精确 Harness 版本",
+                    ))
+                    .arg(
+                        prompt_arg("ID@VERSION", 1, Some(1))
+                            .help(locale.text("Exact Harness identity", "Harness 精确标识")),
+                    ),
+                "Example:\n  morphz harness show coding@1.0.0",
+            ),
+            output_examples(
+                locale,
+                Command::new("install")
+                    .about(locale.text(
+                        "Validate and install a .hns file or directory",
+                        "校验并安装 .hns 文件或目录",
+                    ))
+                    .arg(
+                        prompt_arg("PACKAGE", 1, Some(1))
+                            .help(locale.text("Path to a .hns package", ".hns 包路径")),
+                    ),
+                "Example:\n  morphz harness install ./coding.hns",
+            ),
+        ])
+        .after_help(locale.text(
+            "Run `morphz harness <COMMAND> --help` for command-specific help.",
+            "运行 `morphz harness <COMMAND> --help` 查看具体命令的帮助。",
+        ))
+}
+
 fn objective_lifecycle_command(name: &'static str, about: &'static str, locale: Locale) -> Command {
     let about = if locale.is_chinese() {
         match name {
@@ -2155,6 +2205,21 @@ mod tests {
             pause.option("reason").unwrap().last_value(),
             Some("等待用户确认范围")
         );
+    }
+
+    #[test]
+    fn harness_commands_use_conventional_exact_package_arguments() {
+        let install = parse(&["harness", "install", "./coding.hns"]);
+        assert_eq!(install.command_path(), ["harness", "install"]);
+        assert_eq!(install.prompt_args(), ["./coding.hns"]);
+
+        let show = parse(&["harness", "show", "coding@1.0.0"]);
+        assert_eq!(show.command_path(), ["harness", "show"]);
+        assert_eq!(show.prompt_args(), ["coding@1.0.0"]);
+
+        let list = parse(&["harness", "list", "--format=json"]);
+        assert_eq!(list.command_path(), ["harness", "list"]);
+        assert_eq!(list.option("format").unwrap().last_value(), Some("json"));
     }
 
     #[test]

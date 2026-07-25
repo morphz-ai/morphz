@@ -7,7 +7,8 @@
 
 use crate::event::Event;
 use crate::execution::JobReceipt;
-use crate::harness::HarnessBinding;
+use crate::harness::{HarnessBinding, HarnessDescriptor};
+use crate::harness_package::HarnessPackage;
 use crate::identity::PrincipalAssertion;
 use crate::memory::{
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
@@ -360,6 +361,37 @@ impl MorphzSdk {
             .create_context(context)
             .await
             .map_err(|error| SdkError::new(SdkErrorCode::Conflict, error.to_string()))
+    }
+
+    /// Installs one validated, versioned Harness package through the shared
+    /// application boundary used by CLI and future HTTP/embedded adapters.
+    pub async fn install_harness_package(
+        &self,
+        package: HarnessPackage,
+    ) -> SdkResult<HarnessDescriptor> {
+        let descriptor = package.descriptor();
+        self.runtime
+            .register_harness_package(package)
+            .await
+            .map_err(|error| SdkError::new(SdkErrorCode::Conflict, error.to_string()))?;
+        Ok(descriptor)
+    }
+
+    pub fn list_harnesses(&self) -> Vec<HarnessDescriptor> {
+        self.runtime.harnesses()
+    }
+
+    pub fn get_harness(&self, id: &str, version: &str) -> SdkResult<HarnessDescriptor> {
+        self.runtime
+            .harnesses()
+            .into_iter()
+            .find(|candidate| candidate.id == id && candidate.version == version)
+            .ok_or_else(|| {
+                SdkError::new(
+                    SdkErrorCode::NotFound,
+                    format!("Harness '{id}@{version}' 未安装"),
+                )
+            })
     }
 
     /// Creates one Objective through the same principal-aware application

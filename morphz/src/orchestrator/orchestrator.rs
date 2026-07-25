@@ -539,6 +539,40 @@ fn compose_system_prompt(
     prompt
 }
 
+fn harness_entry_callable_tools(
+    owner: crate::sexpr_eval::EvaluationOwner,
+    runtime_eval_tools: &[String],
+    model_tool_definitions: &[ToolDefinition],
+) -> Vec<String> {
+    match owner {
+        crate::sexpr_eval::EvaluationOwner::Runtime => runtime_eval_tools.to_vec(),
+        crate::sexpr_eval::EvaluationOwner::Model => model_tool_definitions
+            .iter()
+            .map(|tool| tool.name.clone())
+            // A model-owned Harness enters the ordinary attempt loop. It may
+            // narrow that loop's physical and cognitive tools, but it must
+            // not recursively enter the Runtime-owned eval interpreter.
+            .filter(|name| name != "eval" && name != "no_reply")
+            .collect(),
+    }
+}
+
+fn validate_harness_entry_program(
+    source: &str,
+    registry: &Registry,
+    runtime_eval_tools: &[String],
+    model_tool_definitions: &[ToolDefinition],
+) -> Result<crate::sexpr_eval::Program, crate::sexpr_eval::EvalError> {
+    let header = crate::sexpr_eval::inspect_program_source(source)?;
+    let callable =
+        harness_entry_callable_tools(header.owner, runtime_eval_tools, model_tool_definitions);
+    crate::sexpr_eval::validate(
+        source,
+        registry,
+        &crate::sexpr_eval::AllowList::new(callable),
+    )
+}
+
 fn render_harness_mount(
     binding: &HarnessBinding,
     harness: &dyn DomainHarness,
@@ -5088,12 +5122,11 @@ impl Orchestrator {
             .as_ref()
             .and_then(|(_, harness, _)| harness.entry_program())
             .map(|source| {
-                crate::sexpr_eval::validate(
+                validate_harness_entry_program(
                     &source,
                     self.registry.as_ref(),
-                    &crate::sexpr_eval::AllowList::new(
-                        self.orchestrator_config.eval_callable_tools.clone(),
-                    ),
+                    &self.orchestrator_config.eval_callable_tools,
+                    &self.tool_definitions,
                 )
                 .map(|program| (source, program))
                 .map_err(|error| -> DynError {
@@ -11690,19 +11723,19 @@ mod tests {
         baseline_system_prompt, classify_terminal_response, cognitive_sexpr_vm_system_prompt,
         compact_context_inspect_for_persistence, compose_system_prompt,
         critical_maintenance_transaction_available, event_needs_signal_outbox,
-        extend_exec_output_facts, persist_model_reasoning_summary, persist_model_usage,
-        recovery_owns_activation, render_harness_mount, render_system_contract,
-        runtime_claimant_id, semantic_sexpr_vm_system_prompt, should_force_final_for_maintenance,
-        tool_call_activity_preview, DurableEventWriter, DurableEventWriterMetrics, DynError,
-        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
-        NoReplyMode, ReadTurnGuard, SystemPromptMode, TerminalDecision,
-        AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        extend_exec_output_facts, harness_entry_callable_tools, persist_model_reasoning_summary,
+        persist_model_usage, recovery_owns_activation, render_harness_mount,
+        render_system_contract, runtime_claimant_id, semantic_sexpr_vm_system_prompt,
+        should_force_final_for_maintenance, tool_call_activity_preview, DurableEventWriter,
+        DurableEventWriterMetrics, DynError, ModelCompletionError, ModelCompletionErrorOrigin,
+        ModelReasoningSummaryAccumulator, NoReplyMode, ReadTurnGuard, SystemPromptMode,
+        TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
     use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
     use crate::harness::{HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
-    use crate::llm::{ModelUsage, PromptTokenAccuracy, PromptTokenCount};
+    use crate::llm::{ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition};
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
         AttentionAcknowledgementRecord, EventAppend, EventStore, QueryFilter,
@@ -12260,6 +12293,32 @@ mod tests {
         assert!(mount.contains("(entry (owner model)"));
         assert!(mount.contains("(program (infer"));
         assert!(mount.contains("当前 Evaluation 的主动入口程序"));
+    }
+
+    #[test]
+    fn harness_entry_tools_follow_explicit_eval_or_infer_owner() {
+        let runtime = vec!["list_files".to_string(), "read".to_string()];
+        let model = ["read", "write", "exec", "eval", "no_reply"]
+            .into_iter()
+            .map(|name| ToolDefinition {
+                name: name.to_string(),
+                description: String::new(),
+                parameters: json!({"type": "object"}),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            harness_entry_callable_tools(
+                crate::sexpr_eval::EvaluationOwner::Runtime,
+                &runtime,
+                &model,
+            ),
+            runtime
+        );
+        assert_eq!(
+            harness_entry_callable_tools(crate::sexpr_eval::EvaluationOwner::Model, &[], &model,),
+            vec!["read".to_string(), "write".to_string(), "exec".to_string()]
+        );
     }
 
     #[test]

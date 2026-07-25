@@ -174,6 +174,7 @@ pub fn configure_agent_model_profile_with_overrides(
 }
 
 pub mod coding_frame_eval;
+pub mod coding_harness_eval;
 pub mod concurrent_objective_eval;
 pub mod context_long_run_eval;
 pub mod context_metacognition_eval;

@@ -1518,8 +1518,11 @@ tokio::task_local! {
 /// have been part of what was admitted, so the program is refused rather than
 /// escalated. Individual tools still run their own jail and path checks.
 ///
-/// An operator may widen or narrow this through configuration, but both `call`
-/// and `infer` have to read the same list — see `eval_callable_tools`.
+/// An operator may widen or narrow this through configuration. Both `call`
+/// and nested `infer` inside a Runtime-owned `(eval ...)` read this same list
+/// — see `eval_callable_tools`. A model-owned top-level `(infer ...)` Harness
+/// instead declares a narrowing of the ordinary Function Calling surface; it
+/// never executes through `EvalTool`.
 pub const DEFAULT_CALLABLE_TOOLS: [&str; 3] = ["read", "list_files", "search"];
 
 pub struct EvalTool {

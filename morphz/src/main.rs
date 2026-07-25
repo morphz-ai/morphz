@@ -3,6 +3,7 @@ use morphz::approval::ApprovalDecision;
 use morphz::cli::{morphz_command, morphz_command_line_parser_for, Invocation};
 use morphz::config;
 use morphz::event::Event;
+use morphz::harness_package::HarnessPackage;
 use morphz::i18n::{locale_from_cli_args, Locale, UiLanguage};
 use morphz::llm::{Client, Message, ReasoningEffort, Response, ToolDefinition};
 use morphz::memory::{
@@ -867,6 +868,9 @@ async fn dispatch_runtime_command(
         "agent" | "agent list" => list_agents(&runtime, &invocation).await,
         "agent show" => show_agent(&runtime, &invocation, &default_agent_id).await,
         "agent create" => create_agent_command(&runtime, &invocation).await,
+        "harness" | "harness list" => list_harnesses(&runtime, &invocation),
+        "harness show" => show_harness(&runtime, &invocation),
+        "harness install" => install_harness(&runtime, &invocation).await,
         "objective" | "objective list" => {
             list_objectives(&runtime, &invocation, &default_context_id).await
         }
@@ -2424,6 +2428,84 @@ async fn show_objective(runtime: &MorphzRuntime, invocation: &Invocation) -> Res
     Ok(())
 }
 
+fn list_harnesses(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {
+    let sdk = MorphzSdk::new(runtime.clone());
+    let harnesses = sdk.list_harnesses();
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&harnesses)?);
+    } else if harnesses.is_empty() {
+        println!("尚未安装 Harness");
+    } else {
+        for harness in harnesses {
+            let capabilities = if harness.capabilities.is_empty() {
+                "-".to_string()
+            } else {
+                harness.capabilities.join(",")
+            };
+            println!(
+                "{}@{}\t{}\t{}",
+                harness.id, harness.version, harness.title, capabilities
+            );
+        }
+    }
+    Ok(())
+}
+
+fn show_harness(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {
+    let sdk = MorphzSdk::new(runtime.clone());
+    let exact_value = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz harness show <ID@VERSION>")?;
+    let exact = parse_exact_harness_ref(exact_value)?;
+    let harness = sdk.get_harness(&exact.id, &exact.version)?;
+    if json_output(invocation) {
+        println!("{}", serde_json::to_string_pretty(&harness)?);
+    } else {
+        println!(
+            "{}@{}\n{}\ncapabilities={}",
+            harness.id,
+            harness.version,
+            harness.title,
+            if harness.capabilities.is_empty() {
+                "-".to_string()
+            } else {
+                harness.capabilities.join(",")
+            }
+        );
+    }
+    Ok(())
+}
+
+async fn install_harness(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {
+    let sdk = MorphzSdk::new(runtime.clone());
+    let path = invocation
+        .prompt_args()
+        .first()
+        .ok_or("用法: morphz harness install <PACKAGE.hns>")?;
+    let package = HarnessPackage::load(path)?;
+    let artifact_hash = package.artifact_hash.clone();
+    let descriptor = sdk.install_harness_package(package).await?;
+    if json_output(invocation) {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "id": descriptor.id,
+                "version": descriptor.version,
+                "title": descriptor.title,
+                "capabilities": descriptor.capabilities,
+                "artifact_hash": artifact_hash,
+            }))?
+        );
+    } else {
+        println!(
+            "已安装 Harness {}@{}\nartifact={}",
+            descriptor.id, descriptor.version, artifact_hash
+        );
+    }
+    Ok(())
+}
+
 async fn objective_session(
     runtime: &MorphzRuntime,
     invocation: &Invocation,
@@ -2577,7 +2659,16 @@ fn parse_exact_harness_ref(value: &str) -> Result<ExactHarnessRef, AppError> {
         .filter(|(id, version)| !id.trim().is_empty() && !version.trim().is_empty())
         .ok_or("--harness 必须使用精确的 ID@VERSION 格式")?;
     validate_identifier("harness_id", id)?;
-    validate_identifier("harness_version", version)?;
+    if version.len() > 128
+        || !version
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '+'))
+    {
+        return Err(
+            "harness_version 必须为 1..=128 个 ASCII 字母、数字、点、加号、横线、下划线或冒号"
+                .into(),
+        );
+    }
     Ok(ExactHarnessRef {
         id: id.to_string(),
         version: version.to_string(),
