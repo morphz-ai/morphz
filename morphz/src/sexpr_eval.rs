@@ -53,70 +53,116 @@ pub struct OperatorSpec {
     pub name: &'static str,
     pub form: &'static str,
     pub description: &'static str,
+    /// Where this operator can be evaluated. One language, two evaluators:
+    /// an operator missing on one side is annotated, never redefined.
+    pub available: Availability,
 }
 
-/// Operators this evaluator implements. `fallback` and `process` are offered
-/// to the model for its own evaluation but are not accepted here; the rejection
-/// message points at ordinary tool calls instead.
-pub const OPERATORS: [OperatorSpec; 6] = [
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Availability {
+    /// Both the LLM's own evaluation and a submitted program.
+    Both,
+    /// Only inside a program submitted for deterministic evaluation.
+    RuntimeEval,
+    /// Only in the LLM's own evaluation; the deterministic evaluator refuses it.
+    LlmOnly,
+}
+
+/// The single operator table. Shared operators carry exactly the form the
+/// production contract (`sexpr_vm_contract`) teaches; a consistency test locks
+/// the two together so this table cannot drift into a second dialect.
+pub const OPERATORS: [OperatorSpec; 9] = [
     OperatorSpec {
         name: "seq",
-        form: "(seq STEP...)",
-        description: "从左到右求值每个 STEP，返回最后一个 STEP 的值。要让程序产出某个绑定，把 $名字 放在最后一个 STEP。",
+        form: "(seq step...)",
+        description: "从左到右求值每个 step，返回最后一个 step 的值。要让程序产出某个绑定，把 $名字 放在最后一个 step。",
+        available: Availability::Both,
     },
     OperatorSpec {
         name: "bind",
-        form: "(bind NAME EXPR)",
-        description: "先完整求值 EXPR，再绑定到 NAME。NAME 不带 $，引用时才写 $NAME；取字段写 $NAME.field。绑定不可覆盖。",
+        form: "(bind name expression)",
+        description: "先完整求值 expression，再绑定到 name。name 不带 $，引用时才写 $name；取字段写 $name.field。绑定不可覆盖。",
+        available: Availability::Both,
     },
     OperatorSpec {
         name: "call",
-        form: "(call TOOL :key value :key value ...)",
-        description: "调用一个工具。参数必须成对且参数名以 ':' 开头；value 只能是字面量或 $引用，不能是子表达式。工具期望数组的参数要传数组值，例如某个 :paths 参数应传 [\"src\"] 而不是 \"src\"。",
+        form: "(call tool argument...)",
+        description: "调用 tool。argument 是标准 JSON 工具参数；在程序文本中以 (参数名 值...) 列表书写，例如 (call read (path \"src/a.rs\"))。一个参数给多个值即数组；值只能是字面量或 $引用。Runtime 按工具 schema 换算类型。",
+        available: Availability::Both,
     },
     OperatorSpec {
         name: "if",
-        form: "(if COND THEN ELSE)",
-        description: "COND 只能是字面量或 $引用。只求值被选中的一支，未选分支不产生任何工具调用；分支内的绑定不流出该分支。",
+        form: "(if condition when-true when-false)",
+        description: "condition 只能是字面量或 $引用。只求值被选中的一支，未选分支不产生任何工具调用；分支内的绑定不流出该分支。",
+        available: Availability::Both,
     },
     OperatorSpec {
         name: "map",
-        form: "(map $COLLECTION ELEMENT BODY)",
-        description: "对 $COLLECTION 逐个元素求值 BODY，返回结果数组。$COLLECTION 必须已绑定且是数组；ELEMENT 是元素名，不带 $，在 BODY 中用 $ELEMENT 引用。",
+        form: "(map $collection element body)",
+        description: "对 $collection 逐个元素求值 body，返回结果数组。$collection 必须已绑定且是数组；element 是元素名，不带 $，在 body 中用 $element 引用。",
+        available: Availability::RuntimeEval,
     },
     OperatorSpec {
         name: "infer",
-        form: "(infer :task \"要判断什么\" :key value ...)",
-        description: "把判断交回模型：:task 必填，其余参数是给它看的证据。模型可先调用工具取证，其返回值是数据（文本），会被绑定后继续求值。",
+        form: "(infer (task \"要判断什么\") argument...)",
+        description: "把判断交回非确定性求值器（你自己）：(task ...) 必填，其余 (参数名 值) 是给它看的证据。它可先调用工具取证，返回值是数据（文本），绑定后继续求值。",
+        available: Availability::RuntimeEval,
+    },
+    OperatorSpec {
+        name: "reply",
+        form: "(reply content)",
+        description: "交付用户可见回复。只存在于你自己的求值中；提交给 Runtime 的程序产出值，不产出回复。",
+        available: Availability::LlmOnly,
+    },
+    OperatorSpec {
+        name: "fallback",
+        form: "(fallback primary backup)",
+        description: "主路径失败后的替代路径。只存在于你自己的求值中。",
+        available: Availability::LlmOnly,
+    },
+    OperatorSpec {
+        name: "process",
+        form: "(process ...)",
+        description: "定义命名过程。只存在于你自己的求值中。",
+        available: Availability::LlmOnly,
     },
 ];
 
-/// Operator names, for error messages that enumerate what is available.
-pub fn operator_names() -> Vec<&'static str> {
-    OPERATORS.iter().map(|spec| spec.name).collect()
+/// Names by availability, derived from the one table.
+fn names_with(available: Availability) -> Vec<&'static str> {
+    OPERATORS
+        .iter()
+        .filter(|spec| spec.available == available)
+        .map(|spec| spec.name)
+        .collect()
+}
+
+/// Names the deterministic evaluator accepts, for error messages.
+pub fn evaluable_names() -> Vec<&'static str> {
+    OPERATORS
+        .iter()
+        .filter(|spec| spec.available != Availability::LlmOnly)
+        .map(|spec| spec.name)
+        .collect()
 }
 
 /// Renders the operator table as the S-expression the model reads, matching
 /// how `sexpr_vm_contract` presents the operators it already knows.
 pub fn operator_contract() -> String {
-    let body = OPERATORS
-        .iter()
-        .map(|spec| {
-            format!(
-                "    (operator {name}\n      (form {form})\n      (description {description:?}))",
-                name = spec.name,
-                form = spec.form,
-                description = spec.description,
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("  (operators\n{body})")
+    let mut lines = Vec::new();
+    for spec in &OPERATORS {
+        if spec.available == Availability::LlmOnly {
+            continue;
+        }
+        lines.push(format!(
+            "    (operator {name}\n      (form {form})\n      (description {description:?}))",
+            name = spec.name,
+            form = spec.form,
+            description = spec.description,
+        ));
+    }
+    format!("  (operators\n{})", lines.join("\n"))
 }
-
-/// Operators the model is told it has, which this evaluator deliberately does
-/// not implement. Naming them lets the error say why instead of "unknown".
-const MODEL_ONLY_OPERATORS: [&str; 3] = ["fallback", "process", "reply"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvalError {
@@ -348,10 +394,10 @@ fn check(
         return check_value(expr, scope);
     }
     let (operator, args) = operator_of(expr)?;
-    if MODEL_ONLY_OPERATORS.contains(&operator) {
+    if names_with(Availability::LlmOnly).contains(&operator) {
         return err(format!(
-            "算子 '{operator}' 只用于模型自身的求值，eval 程序中不可用；此处可用的算子是 {}。",
-            operator_names().join("、")
+            "算子 '{operator}' 只用于你自身的求值，提交给 Runtime 的程序中不可用；此处可用的算子是 {}。",
+            evaluable_names().join("、")
         ));
     }
     match operator {
@@ -423,22 +469,21 @@ fn check(
             // at which point `validate` can no longer bound a program before
             // running it. That is the property this evaluator is built on.
             if args.is_empty() {
-                return err(
-                    "(infer :task \"...\" :key value ...) 至少需要一个 :task 参数".to_string(),
-                );
+                return err("(infer (task \"...\") ...) 至少需要一个 (task ...) 参数".to_string());
             }
-            check_keyword_arguments("infer", args, scope)?;
-            let has_task = args
-                .chunks(2)
-                .any(|pair| matches!(&pair[0], SExpr::Atom(key) if key == ":task"));
+            check_pair_arguments("infer", args, scope)?;
+            let has_task = args.iter().any(|argument| {
+                matches!(argument, SExpr::List(items)
+                    if items.first() == Some(&SExpr::Atom("task".to_string())))
+            });
             if !has_task {
-                return err("(infer ...) 必须给出 :task 说明要模型判断什么".to_string());
+                return err("(infer ...) 必须给出 (task ...) 说明要判断什么".to_string());
             }
             Ok(())
         }
         "call" => {
             let Some(SExpr::Atom(tool)) = args.first() else {
-                return err("(call TOOL :key value ...) 缺少工具名".to_string());
+                return err("(call tool argument...) 缺少工具名".to_string());
             };
             if !gate.is_callable(tool) {
                 return err(gate.describe_refusal(tool));
@@ -454,31 +499,38 @@ fn check(
         }
         other => err(format!(
             "未知算子 '{other}'；eval 程序中可用的算子是 {}。",
-            operator_names().join("、")
+            evaluable_names().join("、")
         )),
     }
 }
 
 fn check_call_arguments(tool: &str, args: &[SExpr], scope: &Scope) -> Result<(), EvalError> {
-    check_keyword_arguments(&format!("call {tool}"), args, scope)
+    check_pair_arguments(&format!("call {tool}"), args, scope)
 }
 
-fn check_keyword_arguments(form: &str, args: &[SExpr], scope: &Scope) -> Result<(), EvalError> {
-    if !args.len().is_multiple_of(2) {
-        return err(format!("({form} ...) 的参数必须成对出现，形如 :key value"));
-    }
+/// Arguments are the language's own idiom for named data: `(name value...)`
+/// lists, exactly as Kernel, Mind and the protocol render everything else.
+/// Multiple values under one name form an array.
+fn check_pair_arguments(form: &str, args: &[SExpr], scope: &Scope) -> Result<(), EvalError> {
     let mut seen = HashSet::new();
-    for pair in args.chunks(2) {
-        let SExpr::Atom(key) = &pair[0] else {
-            return err(format!("({form} ...) 的参数名必须是 :key 形式的原子"));
+    for argument in args {
+        let SExpr::List(items) = argument else {
+            return err(format!(
+                "({form} ...) 的每个参数必须是 (参数名 值...) 列表，得到 '{argument}'"
+            ));
         };
-        let Some(key) = key.strip_prefix(':') else {
-            return err(format!("({form} ...) 的参数名 '{key}' 必须以 ':' 开头"));
+        let Some(SExpr::Atom(name)) = items.first() else {
+            return err(format!("({form} ...) 的参数列表第一项必须是参数名"));
         };
-        if !seen.insert(key.to_string()) {
-            return err(format!("({form} ...) 重复指定了参数 ':{key}'"));
+        if items.len() < 2 {
+            return err(format!("({form} ... ({name})) 缺少值"));
         }
-        check_value(&pair[1], scope)?;
+        if !seen.insert(name.clone()) {
+            return err(format!("({form} ...) 重复指定了参数 '({name} ...)'"));
+        }
+        for value in &items[1..] {
+            check_value(value, scope)?;
+        }
     }
     Ok(())
 }
@@ -638,7 +690,7 @@ fn eval_expr<'a>(
                     return err(format!("程序的 infer 次数超过上限 {MAX_PROGRAM_INFERS}"));
                 }
                 budget.infers_left -= 1;
-                let request = build_arguments(args, env)?;
+                let request = build_arguments(args, env, None)?;
                 let answer = host
                     .infer(&request, declared)
                     .await
@@ -659,7 +711,8 @@ fn eval_expr<'a>(
                 let tool = registry
                     .get(tool_name)
                     .ok_or_else(|| EvalError::from(format!("工具 '{tool_name}' 不存在")))?;
-                let arguments = build_arguments(&args[1..], env)?;
+                let schema = tool.definition().parameters.clone();
+                let arguments = build_arguments(&args[1..], env, Some(&schema))?;
                 let payload = serde_json::to_string(&JsonValue::Object(arguments))
                     .map_err(|error| EvalError::from(format!("参数序列化失败: {error}")))?;
                 let output = tool.execute(&payload).await.map_err(|error| {
@@ -672,17 +725,48 @@ fn eval_expr<'a>(
     })
 }
 
+/// Turns `(name value...)` pair lists into the standard JSON tool arguments
+/// the production contract speaks of. This is where the deterministic
+/// evaluator does its own job instead of teaching the model notation: with
+/// the tool's schema in hand, a lone value destined for an array parameter is
+/// wrapped, and several values under one name form an array.
 fn build_arguments(
     args: &[SExpr],
     env: &HashMap<String, JsonValue>,
+    schema: Option<&JsonValue>,
 ) -> Result<JsonMap<String, JsonValue>, EvalError> {
+    let properties = schema
+        .and_then(|schema| schema.get("properties"))
+        .and_then(|properties| properties.as_object());
     let mut arguments = JsonMap::new();
-    for pair in args.chunks(2) {
-        let SExpr::Atom(key) = &pair[0] else {
-            return err("参数名必须是原子".to_string());
+    for argument in args {
+        let SExpr::List(items) = argument else {
+            return err(format!("参数必须是 (参数名 值...) 列表，得到 '{argument}'"));
         };
-        let key = key.strip_prefix(':').unwrap_or(key);
-        arguments.insert(key.to_string(), resolve_value(&pair[1], env)?);
+        let Some(SExpr::Atom(name)) = items.first() else {
+            return err("参数列表第一项必须是参数名".to_string());
+        };
+        let mut values = Vec::with_capacity(items.len() - 1);
+        for value in &items[1..] {
+            values.push(resolve_value(value, env)?);
+        }
+        let expects_array = properties
+            .and_then(|properties| properties.get(name.as_str()))
+            .and_then(|property| property.get("type"))
+            .and_then(|kind| kind.as_str())
+            == Some("array");
+        let value = if values.len() > 1 {
+            JsonValue::Array(values)
+        } else if expects_array {
+            let single = values.pop().expect("length checked above");
+            match single {
+                JsonValue::Array(existing) => JsonValue::Array(existing),
+                scalar => JsonValue::Array(vec![scalar]),
+            }
+        } else {
+            values.pop().expect("length checked above")
+        };
+        arguments.insert(name.clone(), value);
     }
     Ok(arguments)
 }
@@ -822,9 +906,9 @@ impl EvalTool {
              示例：\n\
              (tools list_files read)\n\
              (seq\n\
-               (bind files (call list_files :path \"src\"))\n\
-               (bind bodies (map $files f (call read :path $f)))\n\
-               (infer :task \"哪些文件含 TODO\" :evidence $bodies))",
+               (bind files (call list_files (path \"src\")))\n\
+               (bind bodies (map $files f (call read (path $f))))\n\
+               (infer (task \"哪些文件含 TODO\") (evidence $bodies)))",
             contract = operator_contract(),
         )
     }
@@ -858,7 +942,7 @@ impl crate::tool::Tool for EvalTool {
                 "properties": {
                     "program": {
                         "type": "string",
-                        "description": "canonical S 表达式程序，例如 (seq (bind files (call list_files :path \"src\")) (map $files f (call read :path $f)))"
+                        "description": "canonical S 表达式程序，例如 (seq (bind files (call list_files (path \"src\"))) (map $files f (call read (path $f))))"
                     }
                 },
                 "required": ["program"]
@@ -995,8 +1079,8 @@ mod tests {
         // the model writes the program, so it cannot unroll this itself.
         let (outcome, calls) = run(
             r#"(seq
-                 (bind files (call list_files :path "src"))
-                 (map $files entry (call read :path $entry)))"#,
+                 (bind files (call list_files (path "src")))
+                 (map $files entry (call read (path $entry))))"#,
             &[
                 ("list_files", serde_json::json!(["a.rs", "b.rs"])),
                 ("read", serde_json::json!({"text": "ok"})),
@@ -1016,8 +1100,8 @@ mod tests {
     async fn only_the_taken_branch_reaches_a_tool() {
         let (outcome, calls) = run(
             r#"(seq
-                 (bind hits (call search :query "铜印"))
-                 (if $hits (call read :path "found.rs") (call read :path "missing.rs")))"#,
+                 (bind hits (call search (query "铜印")))
+                 (if $hits (call read (path "found.rs")) (call read (path "missing.rs"))))"#,
             &[
                 ("search", serde_json::json!([])),
                 ("read", serde_json::json!("body")),
@@ -1033,8 +1117,8 @@ mod tests {
     async fn field_access_reads_into_a_bound_result() {
         let (outcome, _) = run(
             r#"(seq
-                 (bind found (call search :query "x"))
-                 (call read :path $found.path))"#,
+                 (bind found (call search (query "x")))
+                 (call read (path $found.path)))"#,
             &[
                 ("search", serde_json::json!({"path": "hit.rs"})),
                 ("read", serde_json::json!("body")),
@@ -1051,23 +1135,23 @@ mod tests {
             // An operator the model was told it has, but which belongs to its
             // own evaluation rather than this one.
             (
-                "(fallback (call read :path \"a\") (call read :path \"b\"))",
-                "只用于模型自身的求值",
+                "(fallback (call read (path \"a\")) (call read (path \"b\")))",
+                "只用于你自身的求值",
             ),
-            ("(loop (call read :path \"a\"))", "未知算子"),
+            ("(loop (call read (path \"a\")))", "未知算子"),
             (
-                "(call exec :command \"rm -rf /\")",
+                "(call exec (command \"rm -rf /\"))",
                 "不能在 eval 程序中调用",
             ),
-            ("(call nope :path \"a\")", "不能在 eval 程序中调用"),
-            ("(seq (call read :path $missing))", "未绑定"),
+            ("(call nope (path \"a\"))", "不能在 eval 程序中调用"),
+            ("(seq (call read (path $missing)))", "未绑定"),
             (
-                "(seq (bind a (call read :path \"x\")) (bind a (call read :path \"y\")))",
+                "(seq (bind a (call read (path \"x\"))) (bind a (call read (path \"y\"))))",
                 "不可覆盖",
             ),
-            ("(call read :path)", "必须成对出现"),
-            ("(call read path \"x\")", "必须以 ':' 开头"),
-            ("(seq (bind $a (call read :path \"x\")))", "名字不带 $"),
+            ("(call read (path))", "缺少值"),
+            ("(call read path)", "必须是 (参数名 值...) 列表"),
+            ("(seq (bind $a (call read (path \"x\"))))", "名字不带 $"),
         ];
         for (source, expected) in cases {
             let error = validate(source, &registry, &gate())
@@ -1085,8 +1169,8 @@ mod tests {
         let registry = fixture(&[("read", JsonValue::Null)]).0;
         let error = validate(
             r#"(seq
-                 (if true (bind inner (call read :path "a")) (call read :path "b"))
-                 (call read :path $inner))"#,
+                 (if true (bind inner (call read (path "a"))) (call read (path "b")))
+                 (call read (path $inner)))"#,
             &registry,
             &gate(),
         )
@@ -1101,7 +1185,7 @@ mod tests {
             .map(|index| index.to_string())
             .collect::<Vec<_>>();
         let (outcome, _) = run(
-            r#"(seq (bind files (call list_files :path "src")) (map $files e (call read :path $e)))"#,
+            r#"(seq (bind files (call list_files (path "src"))) (map $files e (call read (path $e))))"#,
             &[
                 ("list_files", serde_json::json!(oversized)),
                 ("read", JsonValue::Null),
@@ -1111,7 +1195,7 @@ mod tests {
         assert!(outcome.unwrap_err().message.contains("超过单次上限"));
 
         let (outcome, _) = run(
-            r#"(seq (bind one (call read :path "a")) (map $one e (call read :path $e)))"#,
+            r#"(seq (bind one (call read (path "a"))) (map $one e (call read (path $e))))"#,
             &[("read", serde_json::json!("not-an-array"))],
         )
         .await;
@@ -1121,7 +1205,7 @@ mod tests {
     #[tokio::test]
     async fn depth_is_rejected_before_anything_runs() {
         let registry = fixture(&[("read", JsonValue::Null)]).0;
-        let mut source = "(call read :path \"a\")".to_string();
+        let mut source = "(call read (path \"a\"))".to_string();
         for _ in 0..MAX_PROGRAM_DEPTH + 1 {
             source = format!("(seq {source})");
         }
@@ -1135,7 +1219,7 @@ mod tests {
     async fn declared_tools_are_reported_for_capability_settlement() {
         let registry = fixture(&[("list_files", JsonValue::Null), ("read", JsonValue::Null)]).0;
         let program = validate(
-            r#"(seq (bind f (call list_files :path "src")) (map $f e (call read :path $e)))"#,
+            r#"(seq (bind f (call list_files (path "src"))) (map $f e (call read (path $e))))"#,
             &registry,
             &gate(),
         )
@@ -1154,9 +1238,9 @@ mod tests {
         let (inference, requests) = host("两半");
         let program = validate(
             r#"(seq
-                 (bind body (call read :path "ch041.md"))
-                 (bind form (infer :task "铜印现在是什么形态" :evidence $body))
-                 (call search :query $form))"#,
+                 (bind body (call read (path "ch041.md")))
+                 (bind form (infer (task "铜印现在是什么形态") (evidence $body)))
+                 (call search (query $form)))"#,
             &registry,
             &gate(),
         )
@@ -1183,10 +1267,10 @@ mod tests {
     #[tokio::test]
     async fn infer_must_say_what_it_is_asking() {
         let registry = fixture(&[]).0;
-        let error = validate(r#"(infer :evidence "x")"#, &registry, &gate())
+        let error = validate(r#"(infer (evidence "x"))"#, &registry, &gate())
             .expect_err("an infer without a task has no question")
             .message;
-        assert!(error.contains(":task"), "got: {error}");
+        assert!(error.contains("(task"), "got: {error}");
     }
 
     #[tokio::test]
@@ -1197,7 +1281,7 @@ mod tests {
         let (registry, _) = fixture(&[("list_files", serde_json::json!(items))]);
         let (inference, requests) = host("ok");
         let program = validate(
-            r#"(seq (bind f (call list_files :path "src")) (map $f e (infer :task "看一下" :item $e)))"#,
+            r#"(seq (bind f (call list_files (path "src"))) (map $f e (infer (task "看一下") (item $e))))"#,
             &registry,
             &gate(),
         )
@@ -1220,7 +1304,7 @@ mod tests {
         ]);
         let tool = EvalTool::with_default_tools(Arc::clone(&registry));
         let arguments = serde_json::json!({
-            "program": r#"(seq (bind f (call list_files :path "src")) (map $f e (call read :path $e)))"#
+            "program": r#"(seq (bind f (call list_files (path "src"))) (map $f e (call read (path $e))))"#
         })
         .to_string();
         let output = CURRENT_INFERENCE
@@ -1240,7 +1324,7 @@ mod tests {
         // `exec` is outside the read-only gate, and it sits after a legitimate
         // read: nothing may run if the tree as a whole is not admissible.
         let arguments = serde_json::json!({
-            "program": r#"(seq (call read :path "a") (call exec :command "rm -rf /"))"#
+            "program": r#"(seq (call read (path "a")) (call exec (command "rm -rf /")))"#
         })
         .to_string();
         let error = CURRENT_INFERENCE
@@ -1261,7 +1345,7 @@ mod tests {
 
         let registry = fixture(&[]).0;
         let tool = EvalTool::with_default_tools(registry);
-        let arguments = serde_json::json!({"program": r#"(infer :task "判断")"#}).to_string();
+        let arguments = serde_json::json!({"program": r#"(infer (task "判断"))"#}).to_string();
         let error = CURRENT_INFERENCE
             .scope(None, tool.execute(&arguments))
             .await
@@ -1283,7 +1367,10 @@ mod tests {
         // Not just the names: the form and the meaning have to reach the model
         // too, or it is left guessing at the surface — which is what the first
         // evaluation showed it doing.
-        for spec in &OPERATORS {
+        for spec in OPERATORS
+            .iter()
+            .filter(|spec| spec.available != Availability::LlmOnly)
+        {
             assert!(description.contains(spec.name), "missing {}", spec.name);
             assert!(
                 description.contains(spec.form),
@@ -1299,11 +1386,14 @@ mod tests {
                 spec.name
             );
         }
-        for refused in MODEL_ONLY_OPERATORS {
-            if refused == "reply" {
+        for spec in OPERATORS
+            .iter()
+            .filter(|spec| spec.available == Availability::LlmOnly)
+        {
+            if spec.name == "reply" {
                 continue;
             }
-            assert!(description.contains(refused), "unexplained {refused}");
+            assert!(description.contains(spec.name), "unexplained {}", spec.name);
         }
     }
 
@@ -1319,7 +1409,7 @@ mod tests {
         // in the contract may legitimately mention other names.
         assert!(tool.definition().description.contains("可调用工具：search"));
 
-        let arguments = serde_json::json!({"program": r#"(call read :path "a")"#}).to_string();
+        let arguments = serde_json::json!({"program": r#"(call read (path "a"))"#}).to_string();
         let error = CURRENT_INFERENCE
             .scope(Some(host("unused").0), tool.execute(&arguments))
             .await
@@ -1353,7 +1443,7 @@ mod tests {
         // exactly the declaration — the part static analysis cannot reach.
         let (registry, _) = fixture(&[("search", serde_json::json!([]))]);
         let error = validate(
-            r#"(tools search) (call read :path "a")"#,
+            r#"(tools search) (call read (path "a"))"#,
             &registry,
             &gate(),
         )
@@ -1362,7 +1452,7 @@ mod tests {
         assert!(error.contains("只接受 search"), "got: {error}");
 
         let program = validate(
-            r#"(tools search) (seq (bind r (call search :query "x")) (infer :task "判断" :hits $r))"#,
+            r#"(tools search) (seq (bind r (call search (query "x"))) (infer (task "判断") (hits $r)))"#,
             &registry,
             &gate(),
         )
@@ -1390,7 +1480,7 @@ mod tests {
         // a program only ever narrows it.
         let registry = fixture(&[("read", JsonValue::Null)]).0;
         let error = validate(
-            r#"(tools exec) (call exec :command "ls")"#,
+            r#"(tools exec) (call exec (command "ls"))"#,
             &registry,
             &gate(),
         )
@@ -1402,7 +1492,7 @@ mod tests {
     #[tokio::test]
     async fn an_undeclared_program_keeps_the_old_meaning() {
         let (outcome, calls) = run(
-            r#"(seq (bind f (call list_files :path "src")) (map $f e (call read :path $e)))"#,
+            r#"(seq (bind f (call list_files (path "src"))) (map $f e (call read (path $e))))"#,
             &[
                 ("list_files", serde_json::json!(["a.rs"])),
                 ("read", serde_json::json!("body")),
@@ -1411,6 +1501,26 @@ mod tests {
         .await;
         assert_eq!(outcome.unwrap(), serde_json::json!(["body"]));
         assert_eq!(calls.len(), 2);
+    }
+
+    #[test]
+    fn shared_operators_match_the_production_contract_verbatim() {
+        // One language, two evaluators: an operator available on both sides
+        // has exactly one form. If this fails, someone grew a second dialect.
+        let kernel = crate::sexpr_vm_contract::ANNOTATED_RESPONSE_KERNEL;
+        for spec in OPERATORS
+            .iter()
+            .filter(|spec| spec.available == Availability::Both)
+        {
+            assert!(
+                kernel.contains(&format!("(form {}", spec.form.trim_end_matches("...)")))
+                    || kernel.contains(&format!("(form {})", spec.form))
+                    || kernel.contains(spec.form),
+                "operator '{}' 的 form '{}' 与生产契约不一致",
+                spec.name,
+                spec.form
+            );
+        }
     }
 
     #[test]
