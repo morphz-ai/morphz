@@ -1110,7 +1110,7 @@ async fn rotate_edge_node_key(
         .await
     {
         let _ = std::fs::remove_file(&pending_path);
-        return Err(error.into());
+        return Err(error);
     }
     std::fs::rename(&pending_path, &path).map_err(|error| {
         format!(

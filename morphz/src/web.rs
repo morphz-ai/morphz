@@ -1990,6 +1990,10 @@ async fn handle_cancel_execution_job(
     }
 }
 
+// The error is an axum `Response` because this short-circuits a handler with a
+// ready-to-send reply. Boxing it would add an allocation on the rejection path
+// without changing anything a caller does with it.
+#[allow(clippy::result_large_err)]
 fn node_device_token(headers: &HeaderMap) -> Result<&str, Response> {
     let token = headers
         .get(header::AUTHORIZATION)

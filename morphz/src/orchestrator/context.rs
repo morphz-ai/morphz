@@ -2593,8 +2593,8 @@ impl ContextEngine {
             execution_targets.retain(|target| allowed.contains(target.id.as_str()));
             execution_target_access.retain(|access| access.authorization_mode != "scoped_denied");
         }
-        let sexpr = include_encoding
-            .then(|| {
+        let sexpr = if include_encoding {
+            {
                 render_context(ContextRenderInput {
                     context_id,
                     active_session_id,
@@ -2621,8 +2621,10 @@ impl ContextEngine {
                     wake: &wake,
                     references: &references,
                 })
-            })
-            .unwrap_or_default();
+            }
+        } else {
+            Default::default()
+        };
 
         Ok(ContextView {
             context_id: context_id.to_string(),

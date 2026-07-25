@@ -1512,8 +1512,8 @@ impl ObjectiveSupervisor {
                 | "stream_idle_timeout"
                 | "unknown"
         );
-        let recoverable = !maintenance_exhausted
-            && (failure_kind == "context_limit" || provider_recoverable);
+        let recoverable =
+            !maintenance_exhausted && (failure_kind == "context_limit" || provider_recoverable);
         let (status, wait_condition, reason) = if recoverable {
             let resource = wait_resource
                 .map(ToOwned::to_owned)
@@ -2505,22 +2505,10 @@ mod tests {
                     json!(&claimed.coordinator_session_id),
                 ),
                 ("objective_id".to_string(), json!(&claimed.id)),
-                (
-                    "objective_evaluation_id".to_string(),
-                    json!(evaluation_id),
-                ),
-                (
-                    "objective_revision".to_string(),
-                    json!(claimed.revision),
-                ),
-                (
-                    "runtime_failure_kind".to_string(),
-                    json!("authentication"),
-                ),
-                (
-                    "runtime_failure_stage".to_string(),
-                    json!("llm_completion"),
-                ),
+                ("objective_evaluation_id".to_string(), json!(evaluation_id)),
+                ("objective_revision".to_string(), json!(claimed.revision)),
+                ("runtime_failure_kind".to_string(), json!("authentication")),
+                ("runtime_failure_stage".to_string(), json!("llm_completion")),
                 (
                     "wait_resource".to_string(),
                     json!("model-provider:test-auth"),

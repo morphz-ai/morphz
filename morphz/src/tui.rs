@@ -877,11 +877,9 @@ impl UiState {
                     }
                 }
             }
-            "chat/tool_output" => {
-                if event_thread_kind(&event.payload) != "execution" {
-                    if let Some(activity) = format_tool_result(&event.payload, self.locale) {
-                        self.push_tool(activity.compact, activity.detail);
-                    }
+            "chat/tool_output" if event_thread_kind(&event.payload) != "execution" => {
+                if let Some(activity) = format_tool_result(&event.payload, self.locale) {
+                    self.push_tool(activity.compact, activity.detail);
                 }
             }
             _ => {}

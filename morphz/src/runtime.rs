@@ -1314,11 +1314,7 @@ impl MorphzRuntime {
         &self,
         request: &ApprovalRequest,
     ) -> Result<ApprovalDecision, RuntimeError> {
-        self.inner
-            .permissions
-            .review(request)
-            .await
-            .map_err(Into::into)
+        self.inner.permissions.review(request).await
     }
 
     /// Executes one cloud-issued Edge command inside this Runtime's local
@@ -1403,7 +1399,6 @@ impl MorphzRuntime {
                                                             async move {
                                                                 tool.execute(&command.arguments)
                                                                     .await
-                                                                    .map_err(Into::into)
                                                             },
                                                         )
                                                         .await

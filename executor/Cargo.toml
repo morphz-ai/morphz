@@ -24,3 +24,6 @@ tokenizers = { version = "0.15", default-features = false, features = ["onig"] }
 half = { version = ">=2.4.1", default-features = false }
 
 
+
+[lints]
+workspace = true

@@ -1774,19 +1774,21 @@ async fn test_reasoning_only_is_carried_forward_until_final_text() {
         .all(|event| event.payload.get("response_state") == Some(&json!("reasoning_only"))));
     assert!(protocol_errors.is_empty());
 
-    let requests = client.messages_seen.lock().unwrap();
-    assert_eq!(requests.len(), 4);
-    assert!(requests[1].iter().any(|message| {
-        message.role == "user"
-            && message.content.contains("<previous_reasoning>")
-            && message.content.contains("reasoning segment 1")
-    }));
-    assert!(requests[3].iter().any(|message| {
-        message.role == "user"
-            && message.content.contains("reasoning segment 1")
-            && message.content.contains("reasoning segment 2")
-            && message.content.contains("reasoning segment 3")
-    }));
+    {
+        let requests = client.messages_seen.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        assert!(requests[1].iter().any(|message| {
+            message.role == "user"
+                && message.content.contains("<previous_reasoning>")
+                && message.content.contains("reasoning segment 1")
+        }));
+        assert!(requests[3].iter().any(|message| {
+            message.role == "user"
+                && message.content.contains("reasoning segment 1")
+                && message.content.contains("reasoning segment 2")
+                && message.content.contains("reasoning segment 3")
+        }));
+    }
     let inspections = store
         .query(QueryFilter {
             session_id: Some(session_id.to_string()),

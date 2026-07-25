@@ -621,7 +621,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, EdgeNodeError> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err("Edge 密钥 hex 长度必须为偶数".into());
     }
     value

@@ -1,0 +1,7 @@
+# Pin the development toolchain so a local `cargo fmt` or `cargo clippy`
+# produces exactly what CI checks. Without this, a newer locally installed
+# rustfmt reformats files nobody touched and reports differences CI never
+# sees. Keep the version in sync with `.github/workflows/ci.yml`.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

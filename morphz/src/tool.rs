@@ -2768,7 +2768,7 @@ impl ExecutionBuffer {
         if self.truncated.load(Ordering::Relaxed) {
             format!(
                 "[Context preview 已按缓冲上限截断；完整原始输出: {}]\n{}",
-                self.archive_path, &*guard
+                self.archive_path, *guard
             )
         } else {
             guard.clone()

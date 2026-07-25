@@ -1497,7 +1497,7 @@ pub fn execution_node_connection_proof_message(
 }
 
 fn decode_hex(value: &str) -> Result<Vec<u8>, &'static str> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err("hex 长度必须为偶数");
     }
     value
