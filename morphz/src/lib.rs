@@ -26,6 +26,7 @@ pub mod sandbox;
 pub mod sdk;
 pub mod setup;
 pub mod sexpr;
+pub mod sexpr_eval;
 pub mod sexpr_vm_contract;
 pub mod timer;
 pub mod tool;
