@@ -184,3 +184,4 @@ pub mod principal_identity_eval;
 pub mod sexpr_bind_if_eval;
 pub mod sexpr_process_eval;
 pub mod sexpr_reply_eval;
+pub mod yao_program_eval;
