@@ -9904,11 +9904,13 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
                 evidence.insert(key.clone(), value.clone());
             }
         }
-        let messages = vec![Message {
+        let mut messages = vec![Message {
             role: "user".to_string(),
             content: format!(
                 "以下不是用户消息，而是你自己提交的程序求值到 (infer ...) 时停下来等待的判断。\
-                 给出这一步需要的值即可，不要当作对话回复。\n\
+                 需要更多证据时可以先调用工具；一旦直接给出正文而不调用任何工具，\
+                 那段正文就是这一步的值，会被绑定后交回程序继续求值，\
+                 因此不要把它写成对用户说的话。\n\
                  (infer-request\n  (task {task:?})\n  (evidence {}))",
                 serde_json::to_string(&serde_json::Value::Object(evidence))
                     .unwrap_or_else(|_| "{}".to_string())
@@ -9917,21 +9919,89 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
             tool_call_id: None,
             tool_calls: None,
         }];
-        // No tool definitions are offered here. A tool-bearing `infer` is the
-        // right long-term shape, but it turns this into a nested attempt loop
-        // that needs its own termination rule and budget; until those exist,
-        // asking for a value keeps the step bounded.
-        let response = orchestrator
-            .request_model_completion(
-                &self.session_id,
-                &self.attempt_id,
-                messages,
-                Vec::new(),
-                None,
-            )
-            .await
-            .map_err(|error| -> DynError { Box::new(error) })?;
-        Ok(response.content)
+        // `eval` is absent from this set, and that omission is what keeps the
+        // language total: it severs `eval -> infer -> eval`, so nesting stops
+        // at one level and a submitted program stays statically bounded. What
+        // remains is the same read-only gate the evaluator applies to `call`,
+        // so one policy governs both rather than two that can drift.
+        let tools = orchestrator
+            .registry
+            .definitions()
+            .into_iter()
+            .filter(|definition| {
+                crate::sexpr_eval::EVAL_CALLABLE_TOOLS.contains(&definition.name.as_str())
+            })
+            .collect::<Vec<_>>();
+
+        for round in 0..crate::sexpr_eval::MAX_INFER_ROUNDS {
+            let response = orchestrator
+                .request_model_completion(
+                    &self.session_id,
+                    &self.attempt_id,
+                    messages.clone(),
+                    tools.clone(),
+                    None,
+                )
+                .await
+                .map_err(|error| -> DynError { Box::new(error) })?;
+            // Answering without calling a tool is what yields the value. The
+            // `reply` contract is deliberately not reused: it means "send this
+            // to the user", and what is waiting here is a program.
+            if response.tool_calls.is_empty() {
+                return Ok(response.content);
+            }
+            if round + 1 == crate::sexpr_eval::MAX_INFER_ROUNDS {
+                return Err(format!(
+                    "infer 连续 {} 轮只调用工具而没有给出值；请缩小 :task，或先用 call 取好证据再 infer",
+                    crate::sexpr_eval::MAX_INFER_ROUNDS
+                )
+                .into());
+            }
+            messages.push(Message {
+                role: "assistant".to_string(),
+                content: response.content.clone(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: Some(
+                    response
+                        .tool_calls
+                        .iter()
+                        .map(|call| crate::llm::ToolCall {
+                            id: call.id.clone(),
+                            r#type: call.r#type.clone(),
+                            function: crate::llm::FunctionCall {
+                                name: call.func_name.clone(),
+                                arguments: call.arguments.clone(),
+                            },
+                        })
+                        .collect(),
+                ),
+            });
+            for call in &response.tool_calls {
+                // Run through the Registry so each tool keeps its own jail and
+                // path checks. Anything outside the gate is refused rather than
+                // executed, exactly as a `call` node would be.
+                let outcome = match orchestrator.registry.get(&call.func_name) {
+                    Some(tool)
+                        if crate::sexpr_eval::EVAL_CALLABLE_TOOLS
+                            .contains(&call.func_name.as_str()) =>
+                    {
+                        tool.execute(&call.arguments)
+                            .await
+                            .unwrap_or_else(|error| format!("执行失败: {error}"))
+                    }
+                    _ => format!("执行拒绝: 工具 '{}' 不能在 infer 中调用", call.func_name),
+                };
+                messages.push(Message {
+                    role: "tool".to_string(),
+                    content: outcome,
+                    name: Some(call.func_name.clone()),
+                    tool_call_id: Some(call.id.clone()),
+                    tool_calls: None,
+                });
+            }
+        }
+        Err("infer 未能在预算内产出值".into())
     }
 }
 

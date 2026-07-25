@@ -37,6 +37,12 @@ pub const MAX_PROGRAM_CALLS: usize = 128;
 /// this bounds cost and latency rather than termination.
 pub const MAX_PROGRAM_INFERS: usize = 8;
 
+/// Model requests within a single `infer` while it gathers evidence.
+///
+/// An `infer` is a nested loop, so the real ceiling on a program is this times
+/// [`MAX_PROGRAM_INFERS`]. Without it one question could spend a whole turn.
+pub const MAX_INFER_ROUNDS: usize = 4;
+
 /// Operators this evaluator implements. `fallback` and `process` are offered
 /// to the model for its own evaluation but are not accepted here; the rejection
 /// message points at ordinary tool calls instead.

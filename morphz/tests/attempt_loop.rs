@@ -5335,3 +5335,86 @@ async fn eval_runs_a_submitted_program_and_hands_infer_back_to_the_model() {
         eval_output.payload.get("text")
     );
 }
+
+fn read_call_response(id: &str, path: &str) -> Response {
+    Response {
+        content: String::new(),
+        tool_calls: vec![ToolCallRepr {
+            id: id.to_string(),
+            r#type: "function".to_string(),
+            func_name: "read".to_string(),
+            arguments: json!({ "path": path }).to_string(),
+        }],
+    }
+}
+
+#[tokio::test]
+async fn infer_may_gather_evidence_but_is_never_offered_eval() {
+    let session_id = "attempt_infer_tools";
+    let probe = NamedTempFile::new().unwrap();
+    std::fs::write(probe.path(), "fn main() {}").unwrap();
+    let probe_path = probe.path().to_string_lossy().into_owned();
+    let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            eval_response(r#"(infer :task "这个仓库是什么语言写的")"#),
+            // Inside the infer, the model wants evidence before answering.
+            read_call_response("infer-read", &probe_path),
+            text_reply_response("Rust"),
+            text_reply_response("已确认"),
+        ],
+        morphz::config::OrchestratorConfig::default(),
+    )
+    .await;
+
+    publish_user(&bus, session_id, "看看这是什么项目").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+
+    let turns = client.messages_seen();
+    let tool_sets = client.tools_seen();
+    assert_eq!(
+        turns.len(),
+        4,
+        "submit, gather evidence, answer, then reply"
+    );
+
+    // The two middle turns are inside the infer. `eval` must not be on offer
+    // there: the omission is what stops `eval -> infer -> eval` from nesting
+    // and is why a submitted program stays statically bounded.
+    for (index, offered) in tool_sets.iter().enumerate().skip(1).take(2) {
+        assert!(
+            !offered.iter().any(|name| name == "eval"),
+            "turn {index} offered eval inside an infer: {offered:?}"
+        );
+        assert!(
+            offered.iter().any(|name| name == "read"),
+            "turn {index} should still allow evidence gathering: {offered:?}"
+        );
+    }
+
+    // The tool ran and its outcome came back to the model that asked for it.
+    // The outcome is a refusal, and that is the point: the probe sits outside
+    // the workspace, and a boundary crossing discovered inside an `infer`
+    // could not have been part of what the submitted program was admitted
+    // for, so it fails closed instead of escalating for approval.
+    let tool_result = turns[2]
+        .iter()
+        .find(|message| message.role == "tool")
+        .expect("the read outcome must reach the model that asked for it");
+    assert!(
+        tool_result.content.contains("拒绝"),
+        "an out-of-workspace read must be refused inside infer too: {}",
+        tool_result.content
+    );
+
+    let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
+    let eval_output = outputs
+        .iter()
+        .find(|event| event.payload.get("tool_name").and_then(|v| v.as_str()) == Some("eval"))
+        .expect("the eval call produced an observation");
+    assert_eq!(
+        eval_output.payload.get("text").and_then(|v| v.as_str()),
+        Some("\"Rust\""),
+        "the answer given without tool calls is the value of the step"
+    );
+}
