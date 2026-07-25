@@ -414,12 +414,11 @@ pub async fn load_persisted_harness_packages(
 /// Establishes the v1 Primary Harness binding. It is immutable for the
 /// Objective lifetime: every later Evaluation inherits the same exact package
 /// identity and hash.
-pub async fn persist_objective_harness_binding(
-    store: &dyn EventStore,
+pub fn objective_harness_binding_event(
     context_id: &str,
     objective_id: &str,
     harness: &dyn DomainHarness,
-) -> Result<HarnessBinding, HarnessError> {
+) -> Result<(HarnessBinding, Event), HarnessError> {
     let descriptor = harness.descriptor();
     let artifact_hash = harness.artifact_hash().ok_or_else(|| {
         format!(
@@ -434,10 +433,38 @@ pub async fn persist_objective_harness_binding(
         objective_id: objective_id.to_string(),
         evaluation_id: None,
     };
-    let event_id = stable_catalog_event_id("harness_binding", objective_id);
+    let event = Event::new(
+        stable_catalog_event_id("harness_binding", objective_id),
+        "Runtime-HarnessRegistry".to_string(),
+        "harness_binding".to_string(),
+        HARNESS_BINDING_TOPIC.to_string(),
+        [
+            ("context_id".to_string(), json!(context_id)),
+            ("objective_id".to_string(), json!(objective_id)),
+            ("harness_id".to_string(), json!(binding.harness_id)),
+            (
+                "harness_version".to_string(),
+                json!(binding.harness_version),
+            ),
+            ("artifact_hash".to_string(), json!(binding.artifact_hash)),
+            ("scope".to_string(), json!("objective")),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    Ok((binding, event))
+}
+
+pub async fn persist_objective_harness_binding(
+    store: &dyn EventStore,
+    context_id: &str,
+    objective_id: &str,
+    harness: &dyn DomainHarness,
+) -> Result<HarnessBinding, HarnessError> {
+    let (binding, event) = objective_harness_binding_event(context_id, objective_id, harness)?;
     let existing = store
         .query(QueryFilter {
-            event_id: Some(event_id.clone()),
+            event_id: Some(event.id.clone()),
             ..Default::default()
         })
         .await?;
@@ -456,27 +483,7 @@ pub async fn persist_objective_harness_binding(
         )
         .into());
     }
-    store
-        .append(Event::new(
-            event_id,
-            "Runtime-HarnessRegistry".to_string(),
-            "harness_binding".to_string(),
-            HARNESS_BINDING_TOPIC.to_string(),
-            [
-                ("context_id".to_string(), json!(context_id)),
-                ("objective_id".to_string(), json!(objective_id)),
-                ("harness_id".to_string(), json!(binding.harness_id)),
-                (
-                    "harness_version".to_string(),
-                    json!(binding.harness_version),
-                ),
-                ("artifact_hash".to_string(), json!(binding.artifact_hash)),
-                ("scope".to_string(), json!("objective")),
-            ]
-            .into_iter()
-            .collect(),
-        ))
-        .await?;
+    store.append(event).await?;
     Ok(binding)
 }
 

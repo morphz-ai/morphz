@@ -7,6 +7,7 @@
 
 use crate::event::Event;
 use crate::execution::JobReceipt;
+use crate::harness::HarnessBinding;
 use crate::identity::PrincipalAssertion;
 use crate::memory::{
     CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
@@ -17,8 +18,8 @@ use crate::memory::{
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
     ExecutionTargetRegistration, ExecutionTargetStatus, NewCognitiveContext,
-    NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode, NewSession,
-    PairExecutionNode, QueryFilter, SessionRecord, SessionUpdate,
+    NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective,
+    NewSession, ObjectiveRecord, PairExecutionNode, QueryFilter, SessionRecord, SessionUpdate,
 };
 use crate::orchestrator::context::MindProjectionAudit;
 use crate::runtime::{
@@ -219,6 +220,24 @@ pub struct AuthorizeExecutionTargetCommand {
     pub scope_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExactHarnessRef {
+    pub id: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateObjectiveCommand {
+    pub objective: NewObjective,
+    pub harness: Option<ExactHarnessRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CreateObjectiveResult {
+    pub objective: ObjectiveRecord,
+    pub harness_binding: Option<HarnessBinding>,
+}
+
 /// A cloneable, transport-neutral application facade.
 #[derive(Clone)]
 pub struct MorphzSdk {
@@ -341,6 +360,69 @@ impl MorphzSdk {
             .create_context(context)
             .await
             .map_err(|error| SdkError::new(SdkErrorCode::Conflict, error.to_string()))
+    }
+
+    /// Creates one Objective through the same principal-aware application
+    /// boundary used by CLI and HTTP. When a Harness is requested, the
+    /// Objective row and immutable exact-version binding commit atomically.
+    pub async fn create_objective(
+        &self,
+        principal: &PrincipalAssertion,
+        mut command: CreateObjectiveCommand,
+    ) -> SdkResult<CreateObjectiveResult> {
+        let coordinator = self
+            .authorize_session(
+                &principal.principal_id,
+                &command.objective.coordinator_session_id,
+            )
+            .await?;
+        let delivery = self
+            .authorize_session(
+                &principal.principal_id,
+                &command.objective.delivery_session_id,
+            )
+            .await?;
+        if coordinator.context_id != command.objective.context_id
+            || delivery.context_id != command.objective.context_id
+        {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Objective 的 coordinator/delivery Session 必须属于目标 Context",
+            ));
+        }
+        if coordinator.agent_id != command.objective.agent_id
+            || delivery.agent_id != command.objective.agent_id
+        {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Objective 的 coordinator/delivery Session 必须属于目标 Agent",
+            ));
+        }
+        command.objective.initiating_principal_id = Some(principal.principal_id.clone());
+        match command.harness {
+            Some(harness) => {
+                let (objective, harness_binding) = self
+                    .runtime
+                    .create_objective_with_harness(command.objective, &harness.id, &harness.version)
+                    .await
+                    .map_err(|error| {
+                        SdkError::new(SdkErrorCode::InvalidArgument, error.to_string())
+                    })?;
+                Ok(CreateObjectiveResult {
+                    objective,
+                    harness_binding: Some(harness_binding),
+                })
+            }
+            None => self
+                .runtime
+                .create_objective(command.objective)
+                .await
+                .map(|objective| CreateObjectiveResult {
+                    objective,
+                    harness_binding: None,
+                })
+                .map_err(|error| SdkError::new(SdkErrorCode::Conflict, error.to_string())),
+        }
     }
 
     pub async fn update_context(

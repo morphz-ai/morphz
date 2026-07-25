@@ -38,6 +38,7 @@ const VALUE_OPTIONS: &[&str] = &[
     "limit",
     "reason",
     "token-budget",
+    "harness",
     "network",
     "server-url",
     "pairing-code",
@@ -1622,10 +1623,19 @@ fn objective_command(locale: Locale) -> Command {
                             },
                         )),
                     )
+                    .arg(local_value_arg(
+                        "harness",
+                        "harness",
+                        "ID@VERSION",
+                        locale.text(
+                            "Bind an exact installed Harness version",
+                            "绑定已安装 Harness 的精确版本",
+                        ),
+                    ))
                     .arg(
                         prompt_arg("GOAL", 1, None).help(locale.text("Objective goal", "目标内容")),
                     ),
-                "Example:\n  morphz objective create --token-budget=256000 build a news system",
+                "Examples:\n  morphz objective create --token-budget=256000 build a news system\n  morphz objective create --harness=coding@1.0.0 repair the workspace",
             ),
             output_examples(
                 locale,
@@ -2119,6 +2129,19 @@ mod tests {
         ]);
         assert_eq!(create.command_path(), ["objective", "create"]);
         assert_eq!(create.prompt(), "实现 一个 新闻系统");
+
+        let harness = parse(&[
+            "objective",
+            "create",
+            "--harness=coding@1.0.0",
+            "修复",
+            "工作区",
+        ]);
+        assert_eq!(
+            harness.option("harness").unwrap().last_value(),
+            Some("coding@1.0.0")
+        );
+        assert_eq!(harness.prompt(), "修复 工作区");
 
         let pause = parse(&[
             "objective",

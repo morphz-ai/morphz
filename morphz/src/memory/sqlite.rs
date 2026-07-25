@@ -6815,88 +6815,127 @@ fn validate_stated_objective(
     Ok(stated_objective)
 }
 
+async fn validate_new_objective(
+    store: &SqliteStore,
+    objective: &NewObjective,
+) -> Result<(String, Option<i64>), Box<dyn std::error::Error + Send + Sync>> {
+    let stated_objective = validate_stated_objective(&objective.stated_objective)?.to_string();
+    let context = store
+        .get_context(&objective.context_id)
+        .await?
+        .ok_or_else(|| format!("Objective Context '{}' 不存在", objective.context_id))?;
+    let coordinator = store
+        .get_session(&objective.coordinator_session_id)
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "Objective 协调 Session '{}' 不存在",
+                objective.coordinator_session_id
+            )
+        })?;
+    let delivery = store
+        .get_session(&objective.delivery_session_id)
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "Objective 交付 Session '{}' 不存在",
+                objective.delivery_session_id
+            )
+        })?;
+    if context.agent_id != objective.agent_id
+        || coordinator.agent_id != objective.agent_id
+        || delivery.agent_id != objective.agent_id
+        || coordinator.context_id != objective.context_id
+        || delivery.context_id != objective.context_id
+    {
+        return Err("Objective 的 Agent/Context/Session 路由不一致".into());
+    }
+    if let Some(parent_id) = objective.parent_objective_id.as_deref() {
+        let parent = store
+            .get_objective(parent_id)
+            .await?
+            .ok_or_else(|| format!("父 Objective '{parent_id}' 不存在"))?;
+        if parent.agent_id != objective.agent_id {
+            return Err(format!(
+                "父 Objective '{parent_id}' 属于 Agent '{}'，不能挂到 Agent '{}'",
+                parent.agent_id, objective.agent_id
+            )
+            .into());
+        }
+    }
+    let token_budget = objective
+        .token_budget
+        .map(i64::try_from)
+        .transpose()
+        .map_err(|_| "Objective token budget 超出 SQLite INTEGER 范围")?;
+    Ok((stated_objective, token_budget))
+}
+
+async fn insert_new_objective_in_transaction(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    objective: &NewObjective,
+    stated_objective: &str,
+    token_budget: Option<i64>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    sqlx::query(
+        r#"INSERT INTO objectives
+           (id, agent_id, context_id, coordinator_session_id, delivery_session_id,
+            parent_objective_id, source_event_id, initiating_principal_id, stated_objective, revision, status,
+            wait_condition_json, active_evaluation_id, evaluation_lease_expires_at,
+            continuation_sequence, token_budget, tokens_used, time_used_seconds,
+            created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', NULL, NULL, NULL, 0, ?, 0, 0, ?, ?)"#,
+    )
+    .bind(&objective.id)
+    .bind(&objective.agent_id)
+    .bind(&objective.context_id)
+    .bind(&objective.coordinator_session_id)
+    .bind(&objective.delivery_session_id)
+    .bind(&objective.parent_objective_id)
+    .bind(&objective.source_event_id)
+    .bind(&objective.initiating_principal_id)
+    .bind(stated_objective)
+    .bind(token_budget)
+    .bind(&now)
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl ObjectiveStore for SqliteStore {
     async fn create_objective(
         &self,
         objective: NewObjective,
     ) -> Result<ObjectiveRecord, Box<dyn std::error::Error + Send + Sync>> {
-        let stated_objective = validate_stated_objective(&objective.stated_objective)?;
-        let context = self
-            .get_context(&objective.context_id)
-            .await?
-            .ok_or_else(|| format!("Objective Context '{}' 不存在", objective.context_id))?;
-        let coordinator = self
-            .get_session(&objective.coordinator_session_id)
-            .await?
-            .ok_or_else(|| {
-                format!(
-                    "Objective 协调 Session '{}' 不存在",
-                    objective.coordinator_session_id
-                )
-            })?;
-        let delivery = self
-            .get_session(&objective.delivery_session_id)
-            .await?
-            .ok_or_else(|| {
-                format!(
-                    "Objective 交付 Session '{}' 不存在",
-                    objective.delivery_session_id
-                )
-            })?;
-        if context.agent_id != objective.agent_id
-            || coordinator.agent_id != objective.agent_id
-            || delivery.agent_id != objective.agent_id
-            || coordinator.context_id != objective.context_id
-            || delivery.context_id != objective.context_id
-        {
-            return Err("Objective 的 Agent/Context/Session 路由不一致".into());
-        }
-        if let Some(parent_id) = objective.parent_objective_id.as_deref() {
-            let parent = self
-                .get_objective(parent_id)
-                .await?
-                .ok_or_else(|| format!("父 Objective '{parent_id}' 不存在"))?;
-            if parent.agent_id != objective.agent_id {
-                return Err(format!(
-                    "父 Objective '{parent_id}' 属于 Agent '{}'，不能挂到 Agent '{}'",
-                    parent.agent_id, objective.agent_id
-                )
-                .into());
-            }
-        }
-        let token_budget = objective
-            .token_budget
-            .map(i64::try_from)
-            .transpose()
-            .map_err(|_| "Objective token budget 超出 SQLite INTEGER 范围")?;
-        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-        sqlx::query(
-            r#"INSERT INTO objectives
-               (id, agent_id, context_id, coordinator_session_id, delivery_session_id,
-                parent_objective_id, source_event_id, initiating_principal_id, stated_objective, revision, status,
-                wait_condition_json, active_evaluation_id, evaluation_lease_expires_at,
-                continuation_sequence, token_budget, tokens_used, time_used_seconds,
-                created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', NULL, NULL, NULL, 0, ?, 0, 0, ?, ?)"#,
-        )
-        .bind(&objective.id)
-        .bind(&objective.agent_id)
-        .bind(&objective.context_id)
-        .bind(&objective.coordinator_session_id)
-        .bind(&objective.delivery_session_id)
-        .bind(&objective.parent_objective_id)
-        .bind(&objective.source_event_id)
-        .bind(&objective.initiating_principal_id)
-        .bind(stated_objective)
-        .bind(token_budget)
-        .bind(&now)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
+        let (stated_objective, token_budget) = validate_new_objective(self, &objective).await?;
+        let mut tx = self.pool.begin().await?;
+        insert_new_objective_in_transaction(&mut tx, &objective, &stated_objective, token_budget)
+            .await?;
+        tx.commit().await?;
         self.get_objective(&objective.id)
             .await?
             .ok_or_else(|| "Objective 创建后无法读取".into())
+    }
+
+    async fn create_objective_with_events(
+        &self,
+        objective: NewObjective,
+        events: Vec<Event>,
+    ) -> Result<ObjectiveRecord, Box<dyn std::error::Error + Send + Sync>> {
+        let (stated_objective, token_budget) = validate_new_objective(self, &objective).await?;
+        let mut tx = self.pool.begin().await?;
+        insert_new_objective_in_transaction(&mut tx, &objective, &stated_objective, token_budget)
+            .await?;
+        for event in &events {
+            append_event_in_transaction(&mut tx, event).await?;
+        }
+        tx.commit().await?;
+        self.get_objective(&objective.id)
+            .await?
+            .ok_or_else(|| "Objective 与初始化事件提交后无法读取".into())
     }
 
     async fn get_objective(
@@ -17461,6 +17500,111 @@ mod tests {
                 .unwrap()
                 .status,
             DelegationStatus::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn objective_and_initialization_events_commit_or_rollback_together() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "objective-init-agent".to_string(),
+                    title: "Objective Init Agent".to_string(),
+                    root_context_id: "objective-init-context".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "objective-init-context".to_string(),
+                    agent_id: "objective-init-agent".to_string(),
+                    title: "Objective Init Context".to_string(),
+                },
+                NewSession {
+                    id: "objective-init-session".to_string(),
+                    agent_id: "objective-init-agent".to_string(),
+                    context_id: "objective-init-context".to_string(),
+                    parent_session_id: None,
+                    title: "Objective Init Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+        let objective = |id: &str| NewObjective {
+            id: id.to_string(),
+            agent_id: "objective-init-agent".to_string(),
+            context_id: "objective-init-context".to_string(),
+            coordinator_session_id: "objective-init-session".to_string(),
+            delivery_session_id: "objective-init-session".to_string(),
+            parent_objective_id: None,
+            source_event_id: format!("{id}-source"),
+            initiating_principal_id: None,
+            stated_objective: "prove atomic initialization".to_string(),
+            token_budget: None,
+        };
+        let initialization_event = |id: &str, objective_id: &str| {
+            Event::new(
+                id.to_string(),
+                "runtime".to_string(),
+                "harness_binding".to_string(),
+                "runtime/harness_binding".to_string(),
+                [
+                    (
+                        "context_id".to_string(),
+                        serde_json::json!("objective-init-context"),
+                    ),
+                    ("objective_id".to_string(), serde_json::json!(objective_id)),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        };
+
+        store
+            .append(initialization_event(
+                "conflicting-initialization",
+                "other-objective",
+            ))
+            .await
+            .unwrap();
+        assert!(store
+            .create_objective_with_events(
+                objective("objective-init-rollback"),
+                vec![initialization_event(
+                    "conflicting-initialization",
+                    "objective-init-rollback",
+                )],
+            )
+            .await
+            .is_err());
+        assert!(store
+            .get_objective("objective-init-rollback")
+            .await
+            .unwrap()
+            .is_none());
+
+        let event = initialization_event("objective-init-event", "objective-init-success");
+        store
+            .create_objective_with_events(objective("objective-init-success"), vec![event.clone()])
+            .await
+            .unwrap();
+        assert!(store
+            .get_objective("objective-init-success")
+            .await
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            store
+                .query(QueryFilter {
+                    event_id: Some(event.id),
+                    ..Default::default()
+                })
+                .await
+                .unwrap()
+                .len(),
+            1
         );
     }
 

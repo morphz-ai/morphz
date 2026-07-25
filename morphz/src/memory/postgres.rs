@@ -2095,90 +2095,129 @@ const OBJECTIVE_SELECT: &str = r#"SELECT id, agent_id, context_id,
     time_used_seconds, created_at, updated_at
     FROM objectives"#;
 
+async fn validate_new_objective(
+    store: &PostgresStore,
+    objective: &NewObjective,
+) -> Result<(String, Option<i64>), StoreError> {
+    let stated_objective = validate_stated_objective(&objective.stated_objective)?.to_string();
+    let context_agent =
+        sqlx::query_scalar::<_, String>("SELECT agent_id FROM cognitive_contexts WHERE id = $1")
+            .bind(&objective.context_id)
+            .fetch_optional(&store.pool)
+            .await?
+            .ok_or_else(|| format!("Objective Context '{}' 不存在", objective.context_id))?;
+    let coordinator = sqlx::query("SELECT agent_id, context_id FROM sessions WHERE id = $1")
+        .bind(&objective.coordinator_session_id)
+        .fetch_optional(&store.pool)
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "Objective 协调 Session '{}' 不存在",
+                objective.coordinator_session_id
+            )
+        })?;
+    let delivery = sqlx::query("SELECT agent_id, context_id FROM sessions WHERE id = $1")
+        .bind(&objective.delivery_session_id)
+        .fetch_optional(&store.pool)
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "Objective 交付 Session '{}' 不存在",
+                objective.delivery_session_id
+            )
+        })?;
+    if context_agent != objective.agent_id
+        || coordinator.get::<String, _>("agent_id") != objective.agent_id
+        || delivery.get::<String, _>("agent_id") != objective.agent_id
+        || coordinator.get::<String, _>("context_id") != objective.context_id
+        || delivery.get::<String, _>("context_id") != objective.context_id
+    {
+        return Err("Objective 的 Agent/Context/Session 路由不一致".into());
+    }
+    if let Some(parent_id) = objective.parent_objective_id.as_deref() {
+        let parent_agent =
+            sqlx::query_scalar::<_, String>("SELECT agent_id FROM objectives WHERE id = $1")
+                .bind(parent_id)
+                .fetch_optional(&store.pool)
+                .await?
+                .ok_or_else(|| format!("父 Objective '{parent_id}' 不存在"))?;
+        if parent_agent != objective.agent_id {
+            return Err(format!(
+                "父 Objective '{parent_id}' 属于 Agent '{parent_agent}'，不能挂到 Agent '{}'",
+                objective.agent_id
+            )
+            .into());
+        }
+    }
+    Ok((
+        stated_objective,
+        objective.token_budget.map(i64::try_from).transpose()?,
+    ))
+}
+
+async fn insert_new_objective_in_tx(
+    tx: &mut sqlx::Transaction<'_, Postgres>,
+    objective: &NewObjective,
+    stated_objective: &str,
+    token_budget: Option<i64>,
+) -> Result<(), StoreError> {
+    let now = now_text();
+    sqlx::query(
+        r#"INSERT INTO objectives
+           (id, agent_id, context_id, coordinator_session_id, delivery_session_id,
+            parent_objective_id, source_event_id, initiating_principal_id, stated_objective, revision, status,
+            wait_condition_json, active_evaluation_id, evaluation_lease_expires_at,
+            continuation_sequence, token_budget, tokens_used, time_used_seconds,
+            created_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, 'active',
+                   NULL, NULL, NULL, 0, $10, 0, 0, $11, $11)"#,
+    )
+    .bind(&objective.id)
+    .bind(&objective.agent_id)
+    .bind(&objective.context_id)
+    .bind(&objective.coordinator_session_id)
+    .bind(&objective.delivery_session_id)
+    .bind(&objective.parent_objective_id)
+    .bind(&objective.source_event_id)
+    .bind(&objective.initiating_principal_id)
+    .bind(stated_objective)
+    .bind(token_budget)
+    .bind(&now)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 #[async_trait::async_trait]
 impl ObjectiveStore for PostgresStore {
     async fn create_objective(
         &self,
         objective: NewObjective,
     ) -> Result<ObjectiveRecord, StoreError> {
-        let stated_objective = validate_stated_objective(&objective.stated_objective)?;
-        let context_agent = sqlx::query_scalar::<_, String>(
-            "SELECT agent_id FROM cognitive_contexts WHERE id = $1",
-        )
-        .bind(&objective.context_id)
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| format!("Objective Context '{}' 不存在", objective.context_id))?;
-        let coordinator = sqlx::query("SELECT agent_id, context_id FROM sessions WHERE id = $1")
-            .bind(&objective.coordinator_session_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| {
-                format!(
-                    "Objective 协调 Session '{}' 不存在",
-                    objective.coordinator_session_id
-                )
-            })?;
-        let delivery = sqlx::query("SELECT agent_id, context_id FROM sessions WHERE id = $1")
-            .bind(&objective.delivery_session_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| {
-                format!(
-                    "Objective 交付 Session '{}' 不存在",
-                    objective.delivery_session_id
-                )
-            })?;
-        if context_agent != objective.agent_id
-            || coordinator.get::<String, _>("agent_id") != objective.agent_id
-            || delivery.get::<String, _>("agent_id") != objective.agent_id
-            || coordinator.get::<String, _>("context_id") != objective.context_id
-            || delivery.get::<String, _>("context_id") != objective.context_id
-        {
-            return Err("Objective 的 Agent/Context/Session 路由不一致".into());
-        }
-        if let Some(parent_id) = objective.parent_objective_id.as_deref() {
-            let parent_agent =
-                sqlx::query_scalar::<_, String>("SELECT agent_id FROM objectives WHERE id = $1")
-                    .bind(parent_id)
-                    .fetch_optional(&self.pool)
-                    .await?
-                    .ok_or_else(|| format!("父 Objective '{parent_id}' 不存在"))?;
-            if parent_agent != objective.agent_id {
-                return Err(format!(
-                    "父 Objective '{parent_id}' 属于 Agent '{parent_agent}'，不能挂到 Agent '{}'",
-                    objective.agent_id
-                )
-                .into());
-            }
-        }
-        let now = now_text();
-        sqlx::query(
-            r#"INSERT INTO objectives
-               (id, agent_id, context_id, coordinator_session_id, delivery_session_id,
-                parent_objective_id, source_event_id, initiating_principal_id, stated_objective, revision, status,
-                wait_condition_json, active_evaluation_id, evaluation_lease_expires_at,
-                continuation_sequence, token_budget, tokens_used, time_used_seconds,
-                created_at, updated_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, 'active',
-                       NULL, NULL, NULL, 0, $10, 0, 0, $11, $11)"#,
-        )
-        .bind(&objective.id)
-        .bind(&objective.agent_id)
-        .bind(&objective.context_id)
-        .bind(&objective.coordinator_session_id)
-        .bind(&objective.delivery_session_id)
-        .bind(&objective.parent_objective_id)
-        .bind(&objective.source_event_id)
-        .bind(&objective.initiating_principal_id)
-        .bind(stated_objective)
-        .bind(objective.token_budget.map(i64::try_from).transpose()?)
-        .bind(&now)
-        .execute(&self.pool)
-        .await?;
+        let (stated_objective, token_budget) = validate_new_objective(self, &objective).await?;
+        let mut tx = self.pool.begin().await?;
+        insert_new_objective_in_tx(&mut tx, &objective, &stated_objective, token_budget).await?;
+        tx.commit().await?;
         self.get_objective(&objective.id)
             .await?
             .ok_or_else(|| "Objective 创建后无法读取".into())
+    }
+
+    async fn create_objective_with_events(
+        &self,
+        objective: NewObjective,
+        events: Vec<Event>,
+    ) -> Result<ObjectiveRecord, StoreError> {
+        let (stated_objective, token_budget) = validate_new_objective(self, &objective).await?;
+        let mut tx = self.pool.begin().await?;
+        insert_new_objective_in_tx(&mut tx, &objective, &stated_objective, token_budget).await?;
+        for event in &events {
+            append_event_in_tx(&mut tx, event).await?;
+        }
+        tx.commit().await?;
+        self.get_objective(&objective.id)
+            .await?
+            .ok_or_else(|| "Objective 与初始化事件提交后无法读取".into())
     }
 
     async fn get_objective(&self, id: &str) -> Result<Option<ObjectiveRecord>, StoreError> {

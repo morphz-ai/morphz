@@ -20,8 +20,8 @@ use morphz::runtime::{
     MorphzRuntime, RuntimeEventStream, RuntimeIdentity, SchedulerQuery, SessionHandle,
 };
 use morphz::sdk::{
-    AuthorizeExecutionTargetCommand, CreateNodePairingCodeCommand, ExecutionJobQuery, MorphzSdk,
-    SdkErrorCode, SendMessageCommand,
+    AuthorizeExecutionTargetCommand, CreateNodePairingCodeCommand, CreateObjectiveCommand,
+    ExactHarnessRef, ExecutionJobQuery, MorphzSdk, SdkErrorCode, SendMessageCommand,
 };
 use morphz::web::{Server, ServerDefaults};
 use std::io::IsTerminal;
@@ -2475,7 +2475,9 @@ async fn create_objective_command(
 ) -> Result<(), AppError> {
     let stated_objective = invocation.prompt();
     if stated_objective.trim().is_empty() {
-        return Err("用法: morphz objective create [--session=ID] GOAL...".into());
+        return Err(
+            "用法: morphz objective create [--session=ID] [--harness=ID@VERSION] GOAL...".into(),
+        );
     }
     let context_id = option_value(invocation, "context").unwrap_or(default_context_id);
     let context = runtime
@@ -2502,6 +2504,9 @@ async fn create_objective_command(
                 })
         })
         .transpose()?;
+    let harness = option_value(invocation, "harness")
+        .map(parse_exact_harness_ref)
+        .transpose()?;
     let mut events = runtime.subscribe("*", 256);
     let source_event_id = generated_id("objective_request");
     runtime
@@ -2527,25 +2532,56 @@ async fn create_objective_command(
             .collect(),
         ))
         .await?;
-    let objective = runtime
-        .create_objective(NewObjective {
-            id: objective_id,
-            agent_id: context.agent_id,
-            context_id: context.id,
-            coordinator_session_id: session.id.clone(),
-            delivery_session_id: session.id.clone(),
-            parent_objective_id: None,
-            source_event_id,
-            initiating_principal_id: Some(runtime.identity().principal_id.clone()),
-            stated_objective,
-            token_budget,
-        })
+    let sdk = MorphzSdk::new(runtime.clone());
+    let result = sdk
+        .create_objective(
+            &sdk.default_principal(),
+            CreateObjectiveCommand {
+                objective: NewObjective {
+                    id: objective_id,
+                    agent_id: context.agent_id,
+                    context_id: context.id,
+                    coordinator_session_id: session.id.clone(),
+                    delivery_session_id: session.id.clone(),
+                    parent_objective_id: None,
+                    source_event_id,
+                    initiating_principal_id: Some(runtime.identity().principal_id.clone()),
+                    stated_objective,
+                    token_budget,
+                },
+                harness,
+            },
+        )
         .await?;
+    let objective = result.objective;
     eprintln!(
-        "[Objective 已启动] {}  session={}  revision={}",
-        objective.id, objective.coordinator_session_id, objective.revision
+        "[Objective 已启动] {}  session={}  revision={}{}",
+        objective.id,
+        objective.coordinator_session_id,
+        objective.revision,
+        result
+            .harness_binding
+            .as_ref()
+            .map(|binding| format!(
+                "  harness={}@{}",
+                binding.harness_id, binding.harness_version
+            ))
+            .unwrap_or_default()
     );
     monitor_objective(runtime, &objective.id, &session.id, &mut events).await
+}
+
+fn parse_exact_harness_ref(value: &str) -> Result<ExactHarnessRef, AppError> {
+    let (id, version) = value
+        .rsplit_once('@')
+        .filter(|(id, version)| !id.trim().is_empty() && !version.trim().is_empty())
+        .ok_or("--harness 必须使用精确的 ID@VERSION 格式")?;
+    validate_identifier("harness_id", id)?;
+    validate_identifier("harness_version", version)?;
+    Ok(ExactHarnessRef {
+        id: id.to_string(),
+        version: version.to_string(),
+    })
 }
 
 async fn edit_objective_command(

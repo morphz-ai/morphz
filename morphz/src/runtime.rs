@@ -12,8 +12,9 @@ use crate::event::{Event, InMemoryEventBus, TYPE_USER_MESSAGE};
 use crate::execution::ExecutionJobManager;
 use crate::harness::{HarnessBinding, HarnessDescriptor, HarnessRegistry as DomainHarnessRegistry};
 use crate::harness_package::{
-    load_objective_harness_binding, load_persisted_harness_packages, persist_harness_package,
-    persist_objective_harness_binding, HarnessPackage,
+    load_objective_harness_binding, load_persisted_harness_packages,
+    objective_harness_binding_event, persist_harness_package, persist_objective_harness_binding,
+    HarnessPackage,
 };
 use crate::identity::{
     IdentityEvidence, IdentityProvider, PrincipalAssertion, StaticIdentityProvider,
@@ -2015,6 +2016,32 @@ impl MorphzRuntime {
         objective: NewObjective,
     ) -> Result<ObjectiveRecord, RuntimeError> {
         self.inner.objective_supervisor.create(objective).await
+    }
+
+    /// Atomically creates a schedulable Objective and binds one exact Harness
+    /// package before its first Evaluation can be claimed.
+    pub async fn create_objective_with_harness(
+        &self,
+        objective: NewObjective,
+        harness_id: &str,
+        harness_version: &str,
+    ) -> Result<(ObjectiveRecord, HarnessBinding), RuntimeError> {
+        let harness = self
+            .inner
+            .harness_registry
+            .get(harness_id, harness_version)
+            .ok_or_else(|| format!("Harness '{harness_id}@{harness_version}' 未注册"))?;
+        let (binding, event) = objective_harness_binding_event(
+            &objective.context_id,
+            &objective.id,
+            harness.as_ref(),
+        )?;
+        let created = self
+            .inner
+            .objective_supervisor
+            .create_with_initial_events(objective, vec![event])
+            .await?;
+        Ok((created, binding))
     }
 
     pub fn harnesses(&self) -> Vec<HarnessDescriptor> {
@@ -6334,24 +6361,22 @@ mod tests {
             .await
             .unwrap();
         runtime
-            .inner
-            .store
-            .create_objective(NewObjective {
-                id: "objective-harness-entry".to_string(),
-                agent_id: runtime.identity().agent_id.clone(),
-                context_id: runtime.identity().context_id.clone(),
-                coordinator_session_id: "session-harness-entry".to_string(),
-                delivery_session_id: "session-harness-entry".to_string(),
-                parent_objective_id: None,
-                source_event_id: "source-harness-entry".to_string(),
-                initiating_principal_id: None,
-                stated_objective: "执行绑定 Harness 的顶层入口".to_string(),
-                token_budget: None,
-            })
-            .await
-            .unwrap();
-        runtime
-            .bind_objective_harness("objective-harness-entry", "automatic", "1.0.0")
+            .create_objective_with_harness(
+                NewObjective {
+                    id: "objective-harness-entry".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    coordinator_session_id: "session-harness-entry".to_string(),
+                    delivery_session_id: "session-harness-entry".to_string(),
+                    parent_objective_id: None,
+                    source_event_id: "source-harness-entry".to_string(),
+                    initiating_principal_id: None,
+                    stated_objective: "执行绑定 Harness 的顶层入口".to_string(),
+                    token_budget: None,
+                },
+                "automatic",
+                "1.0.0",
+            )
             .await
             .unwrap();
 

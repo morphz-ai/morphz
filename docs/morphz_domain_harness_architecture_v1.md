@@ -41,7 +41,9 @@ Scheduler Kernel 的持久 Plan 执行链、精确版本 Registry、不可变包
 Objective 级 Binding。绑定后的求值能看到只读 Contract 与默认 Mind，且 Plan
 携带精确包 provenance。Runtime 会按精确 Objective Evaluation 自动分派入口：
 顶层 `eval` 复用持久 Plan 与 Scheduler Kernel，顶层 `infer` 由当前模型
-Evaluation 主动解释；但尚未形成面向用户的安装与运行产品接口。
+Evaluation 主动解释。Objective 与精确 Harness Binding 已能通过同一个
+SQLite/PostgreSQL 事务创建，并由 SDK、HTTP 与 CLI 共享这一产品接口；包安装、
+目录管理与发布接口仍待实现。
 
 ## 2. 为什么需要 Harness 层
 
@@ -364,10 +366,11 @@ Harness 以 `.hns` 单文件或目录包成为可版本化、可分享、可交�
 2. 让 `call/infer` 分别物化为正式 Execution Job / Evaluation，并实现 Plan suspend/resume；
 3. 实现最小 `.hns` loader、Manifest、Contract、默认 Frame 挂载与 HarnessBinding；（已完成）
 4. 按 Binding 分派顶层 `eval/infer` 入口；（已完成）
-5. 提供原子创建 Objective + Binding 的 SDK/HTTP/CLI 接口，并用外部 Coding Harness 对现有编码任务做严格 A/B；
-6. 增加崩溃恢复、审批、Edge Target、并发 Objective 和 Context pressure 场景；
-7. 用较弱模型和非 Coding 任务复测，判断增益与领域污染；
-8. 稳定增益出现后，再扩展 migration、签名、组合规则和发布生态。
+5. 提供原子创建 Objective + Binding 的 SDK/HTTP/CLI 接口；（已完成）
+6. 用外部 Coding Harness 对现有编码任务做严格 A/B；
+7. 增加崩溃恢复、审批、Edge Target、并发 Objective 和 Context pressure 场景；
+8. 用较弱模型和非 Coding 任务复测，判断增益与领域污染；
+9. 稳定增益出现后，再扩展 migration、签名、组合规则和发布生态。
 
 ## 16. 仍需回答的问题
 

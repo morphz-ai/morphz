@@ -3590,6 +3590,14 @@ pub trait ObjectiveStore: Send + Sync {
         &self,
         objective: NewObjective,
     ) -> Result<ObjectiveRecord, Box<dyn std::error::Error + Send + Sync>>;
+    /// Creates an Objective and its immutable initialization Events in one
+    /// database transaction. The Objective cannot become schedulable before
+    /// bindings or other initialization facts are visible.
+    async fn create_objective_with_events(
+        &self,
+        objective: NewObjective,
+        events: Vec<crate::event::Event>,
+    ) -> Result<ObjectiveRecord, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_objective(
         &self,
         id: &str,

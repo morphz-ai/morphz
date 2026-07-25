@@ -5,7 +5,7 @@ use crate::identity::PrincipalAssertion;
 use crate::llm::ReasoningEffort;
 use crate::memory::{
     ContextUpdate, DelegationStatus, ExecutionTargetRegistration, ExecutionTargetStatus, NewAgent,
-    NewCognitiveContext, NewSession, ObjectiveMutation, ObjectiveStatus, QueryFilter,
+    NewCognitiveContext, NewObjective, NewSession, ObjectiveMutation, ObjectiveStatus, QueryFilter,
     ScheduleMutation, SessionMountKind, SessionStatus, SessionUpdate,
 };
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
@@ -15,10 +15,10 @@ use crate::runtime::{
 };
 use crate::sdk::{
     AppendEdgeOutputCommand, AuthorizeExecutionTargetCommand, ClaimEdgeCommand,
-    ConnectExecutionNodeCommand, CreateNodePairingCodeCommand, ExecutionJobQuery,
-    ExecutionNodeHeartbeatCommand, FinishEdgeCommand, HeartbeatEdgeCommand, MorphzSdk,
-    PairExecutionNodeCommand, RotateExecutionNodeKeyCommand, SdkError, SdkErrorCode,
-    SendMessageCommand, SessionEventsQuery,
+    ConnectExecutionNodeCommand, CreateNodePairingCodeCommand, CreateObjectiveCommand,
+    ExactHarnessRef, ExecutionJobQuery, ExecutionNodeHeartbeatCommand, FinishEdgeCommand,
+    HeartbeatEdgeCommand, MorphzSdk, PairExecutionNodeCommand, RotateExecutionNodeKeyCommand,
+    SdkError, SdkErrorCode, SendMessageCommand, SessionEventsQuery,
 };
 use axum::{
     body::Body,
@@ -177,6 +177,17 @@ struct UpdateInferenceRequest {
 struct ResumeObjectiveRequest {
     expected_revision: u64,
     reason: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct CreateObjectiveRequest {
+    id: Option<String>,
+    coordinator_session_id: String,
+    delivery_session_id: Option<String>,
+    parent_objective_id: Option<String>,
+    stated_objective: String,
+    token_budget: Option<u64>,
+    harness: Option<ExactHarnessRef>,
 }
 
 #[derive(serde::Deserialize)]
@@ -684,6 +695,7 @@ impl Server {
                 post(handle_cancel_session),
             )
             .route("/api/delegations", get(handle_list_delegations))
+            .route("/api/objectives", post(handle_create_objective))
             .route(
                 "/api/objectives/:objective_id/resume",
                 post(handle_resume_objective),
@@ -2920,6 +2932,101 @@ async fn handle_list_delegations(
     }
 }
 
+async fn handle_create_objective(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<CreateObjectiveRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let stated_objective = request.stated_objective.trim().to_string();
+    if stated_objective.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "stated_objective 不能为空");
+    }
+    if request.token_budget == Some(0) {
+        return error_response(StatusCode::BAD_REQUEST, "token_budget 必须大于 0");
+    }
+    let coordinator = match state
+        .sdk
+        .get_session(&principal.principal_id, &request.coordinator_session_id)
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => return sdk_error_response(error),
+    };
+    let delivery_session_id = request
+        .delivery_session_id
+        .unwrap_or_else(|| coordinator.id.clone());
+    let delivery = match state
+        .sdk
+        .get_session(&principal.principal_id, &delivery_session_id)
+        .await
+    {
+        Ok(session) => session,
+        Err(error) => return sdk_error_response(error),
+    };
+    if delivery.context_id != coordinator.context_id || delivery.agent_id != coordinator.agent_id {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "coordinator 与 delivery Session 必须属于同一 Agent/Context",
+        );
+    }
+    let objective_id = request.id.unwrap_or_else(|| api_id("objective"));
+    if let Err(error) = validate_identifier("objective_id", &objective_id) {
+        return error_response(StatusCode::BAD_REQUEST, error);
+    }
+    let source_event_id = api_id("objective_request");
+    let source_event = Event::new(
+        source_event_id.clone(),
+        "User-API".to_string(),
+        "objective_request".to_string(),
+        "objective/requested".to_string(),
+        [
+            ("context_id".to_string(), json!(coordinator.context_id)),
+            ("session_id".to_string(), json!(coordinator.id)),
+            ("principal_id".to_string(), json!(principal.principal_id)),
+            ("requested_objective_id".to_string(), json!(objective_id)),
+            ("text".to_string(), json!(stated_objective)),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    if let Err(error) = state.runtime.publish(source_event).await {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string());
+    }
+    match state
+        .sdk
+        .create_objective(
+            &principal,
+            CreateObjectiveCommand {
+                objective: NewObjective {
+                    id: objective_id,
+                    agent_id: coordinator.agent_id,
+                    context_id: coordinator.context_id,
+                    coordinator_session_id: coordinator.id,
+                    delivery_session_id: delivery.id,
+                    parent_objective_id: request.parent_objective_id,
+                    source_event_id,
+                    initiating_principal_id: None,
+                    stated_objective,
+                    token_budget: request.token_budget,
+                },
+                harness: request.harness,
+            },
+        )
+        .await
+    {
+        Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
 async fn handle_resume_objective(
     State(state): State<Arc<AppState>>,
     Path(objective_id): Path<String>,
@@ -3529,6 +3636,79 @@ mod tests {
     #[test]
     fn dashboard_auth_accepts_local_no_token_mode() {
         assert!(token_is_authorized(None, &HeaderMap::new(), None));
+    }
+
+    #[tokio::test]
+    async fn objective_http_creation_atomically_binds_exact_harness() {
+        let (state, runtime) = test_state().await;
+        let session_response = handle_create_session(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("harness-http-session".to_string()),
+                agent_id: None,
+                parent_session_id: None,
+                title: Some("Harness HTTP".to_string()),
+                mount: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(session_response.status(), StatusCode::CREATED);
+        let package = crate::harness_package::HarnessPackage::from_source(
+            "http-test.hns",
+            r#"
+                (manifest
+                  (id http-test)
+                  (version "1.2.3")
+                  (title "HTTP Test")
+                  (capabilities (tools read)))
+                (contract (identity "http-test"))
+                (eval
+                  (requires (tools read))
+                  (call read (path "README.md")))
+            "#,
+        )
+        .unwrap();
+        runtime.register_harness_package(package).await.unwrap();
+
+        let response = handle_create_objective(
+            State(state),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(CreateObjectiveRequest {
+                id: Some("objective-http-harness".to_string()),
+                coordinator_session_id: "harness-http-session".to_string(),
+                delivery_session_id: None,
+                parent_objective_id: None,
+                stated_objective: "通过 HTTP 运行精确 Harness".to_string(),
+                token_budget: Some(4_096),
+                harness: Some(ExactHarnessRef {
+                    id: "http-test".to_string(),
+                    version: "1.2.3".to_string(),
+                }),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            value["objective"]["id"],
+            serde_json::json!("objective-http-harness")
+        );
+        assert_eq!(
+            value["harness_binding"]["harness_id"],
+            serde_json::json!("http-test")
+        );
+        assert_eq!(
+            value["harness_binding"]["harness_version"],
+            serde_json::json!("1.2.3")
+        );
     }
 
     #[tokio::test]

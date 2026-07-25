@@ -1033,6 +1033,27 @@ impl ObjectiveSupervisor {
         objective: NewObjective,
     ) -> Result<ObjectiveRecord, DynError> {
         let created = self.store.create_objective(objective).await?;
+        self.activate_created_objective(created).await
+    }
+
+    /// Creates one Objective together with immutable initialization facts
+    /// before the Supervisor is allowed to schedule its first Evaluation.
+    pub async fn create_with_initial_events(
+        self: &Arc<Self>,
+        objective: NewObjective,
+        events: Vec<Event>,
+    ) -> Result<ObjectiveRecord, DynError> {
+        let created = self
+            .store
+            .create_objective_with_events(objective, events)
+            .await?;
+        self.activate_created_objective(created).await
+    }
+
+    async fn activate_created_objective(
+        self: &Arc<Self>,
+        created: ObjectiveRecord,
+    ) -> Result<ObjectiveRecord, DynError> {
         self.publish_state_event("created", &created, None).await?;
         self.reconcile(created.clone()).await?;
         Ok(created)

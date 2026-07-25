@@ -530,14 +530,14 @@ Agent 根据 Objective 建议或选择 Harness
 服务端按产品策略固定 Harness
 ```
 
-具体 CLI 尚未定型，未来可能类似：
+当前已经提供最小的原子启动入口：
 
 ```bash
-morphz harness install ./coding.hns
-morphz run --harness coding@1.0.0 "修复当前项目的测试"
+morphz objective create --harness=coding@1.0.0 "修复当前项目的测试"
 ```
 
-这些命令是建议接口，不代表当前已实现。
+`ID@VERSION` 必须精确指定，不存在隐式 `latest`。Harness 的 install/list
+命令仍未定型；Runtime Builder 目前负责加载 `.hns` 包。
 
 ## 11. 挂载、卸载和学习
 
@@ -589,6 +589,12 @@ morphz run --harness coding@1.0.0 "修复当前项目的测试"
 - Runtime 集成测试覆盖
   `Objective Binding → 自动 eval → read Execution Job → Plan 结果回填
   → objective_update → 最终交付`。
+- `ObjectiveStore::create_objective_with_events` 在 SQLite 与 PostgreSQL 中把
+  Objective 行和不可变初始化事件放进同一个数据库事务；Harness Binding
+  因而先于任何可领取 Evaluation 成为可见事实；
+- SDK、HTTP `POST /api/objectives` 与 CLI
+  `objective create --harness=ID@VERSION` 复用同一个 principal-aware
+  创建接口；不会由各入口分别执行“先建目标、后补 Binding”。
 
 历史原型与当前正式路径的对应关系：
 
@@ -605,9 +611,9 @@ morphz run --harness coding@1.0.0 "修复当前项目的测试"
 
 当前尚未完成的不是基本调度或入口语义，而是产品化与规模验证：
 
-- 将 Objective 创建与 Harness Binding 收敛为一个原子产品接口，避免“目标先启动、
-  Binding 后到达”的竞态；
-- 面向用户的 install/list/bind/run CLI 与 HTTP/SDK 接口；
+- 面向用户的 Harness install/list/catalog 管理接口；
+- Objective 创建以外的显式 bind/run 产品语义，以及已启动 Objective 是否允许
+  后绑定（第一版仍禁止）；
 - package 签名、依赖、migration 与可重建的 Registry Projection；
 - Action Group 级并行 Plan 节点；
 - Plan 运行时释放父 Activation admission slot 的完全异步 continuation；
@@ -650,9 +656,9 @@ Runtime 进程级 fault injection。
 当前状态：第 1～4 项的最小闭环已完成；第 5 项已完成规范化 package hash，
 签名和 migration 尚未实现。包目录和 Binding 目前以不可变 Ledger Event
 持久化，后续可增加可重建 Projection，但不改变其身份语义。顶层
-`eval/infer` 已按 Binding 正式分派；下一阶段是提供原子
-“创建 Objective 并绑定 Harness”的 SDK/HTTP/CLI 产品接口，而不是继续扩充
-包格式。
+`eval/infer` 已按 Binding 正式分派；原子“创建 Objective 并绑定 Harness”的
+SDK/HTTP/CLI 产品接口也已完成。下一阶段是外部 Coding Harness 的真实 A/B，
+而不是继续扩充包格式。
 
 ### Phase 4：真实对照评测
 
