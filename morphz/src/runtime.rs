@@ -833,6 +833,12 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         policy,
     } = dependencies;
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(context_engine))));
+    // The evaluator reaches other tools through the same Registry it is
+    // registered in, so it is constructed with a handle to it rather than with
+    // a private tool table that could drift.
+    registry.register(Arc::new(crate::sexpr_eval::EvalTool::new(Arc::clone(
+        registry,
+    ))));
     registry.register(Arc::new(ObjectiveCreateTool::new(
         Arc::clone(objective_supervisor),
         Arc::clone(context_engine),

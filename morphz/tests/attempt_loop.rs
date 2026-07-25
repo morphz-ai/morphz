@@ -713,6 +713,9 @@ async fn build_orchestrator_with_config_and_reply_mode(
     registry.register(Arc::new(ReadFileTool::default()));
     registry.register(Arc::new(WriteFileTool::default()));
     registry.register(Arc::new(ContextTxTool::new(Arc::clone(&context_engine))));
+    registry.register(Arc::new(morphz::sexpr_eval::EvalTool::new(Arc::clone(
+        &registry,
+    ))));
 
     let orchestrator = new_test_orchestrator(
         Arc::clone(&bus),
@@ -5247,5 +5250,88 @@ async fn tool_wakeups_for_one_root_are_single_flight_and_commit_one_reply() {
     assert_eq!(
         replies[0].payload["covers"].as_array().map(Vec::len),
         Some(1)
+    );
+}
+
+fn eval_response(program: &str) -> Response {
+    Response {
+        content: String::new(),
+        tool_calls: vec![ToolCallRepr {
+            id: "eval-1".to_string(),
+            r#type: "function".to_string(),
+            func_name: "eval".to_string(),
+            arguments: json!({ "program": program }).to_string(),
+        }],
+    }
+}
+
+#[tokio::test]
+async fn eval_runs_a_submitted_program_and_hands_infer_back_to_the_model() {
+    let session_id = "attempt_eval_program";
+    // Three model turns: submit the program, answer the `infer` the Runtime
+    // stopped at, then reply once the value has been folded back in.
+    let (bus, store, _orchestrator, client, _tmp) = build_orchestrator_with_config(
+        vec![
+            eval_response(
+                r#"(seq
+                     (bind body (call read :path "probe.txt"))
+                     (bind judgement (infer :task "这个文件说了什么" :evidence $body))
+                     $judgement)"#,
+            ),
+            text_reply_response("看起来是一个 Rust 工程"),
+            text_reply_response("已完成"),
+        ],
+        morphz::config::OrchestratorConfig::default(),
+    )
+    .await;
+
+    publish_user(&bus, session_id, "看一下当前目录").await;
+    let replies = wait_for_topic(&store, "chat/reply", session_id).await;
+    assert_eq!(replies.len(), 1);
+    assert_eq!(
+        replies[0].payload.get("text").and_then(|v| v.as_str()),
+        Some("已完成")
+    );
+
+    let turns = client.messages_seen();
+    assert_eq!(
+        turns.len(),
+        3,
+        "one turn submits the program, one answers the infer, one replies"
+    );
+
+    // The middle turn is the trampoline: control came back to the model with
+    // the question, and it must not have been dressed as someone speaking.
+    let inference_turn = turns[1]
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .expect("the infer request reaches the model");
+    assert!(
+        inference_turn.content.contains("(infer-request"),
+        "unexpected infer prompt: {}",
+        inference_turn.content
+    );
+    assert!(
+        inference_turn.content.contains("不是用户消息"),
+        "the model must be able to tell nobody asked: {}",
+        inference_turn.content
+    );
+
+    // The value the model produced is what the program bound and returned, so
+    // the tool output carries it rather than the raw listing.
+    let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
+    let eval_output = outputs
+        .iter()
+        .find(|event| event.payload.get("tool_name").and_then(|v| v.as_str()) == Some("eval"))
+        .expect("the eval call produced an observation");
+    assert!(
+        eval_output
+            .payload
+            .get("text")
+            .and_then(|v| v.as_str())
+            .is_some_and(|text| text.contains("Rust 工程")),
+        "eval output should carry the inferred value: {:?}",
+        eval_output.payload.get("text")
     );
 }

@@ -196,6 +196,13 @@ fn check(
             "程序嵌套超过 {MAX_PROGRAM_DEPTH} 层；请拆成多次 eval"
         ));
     }
+    // An atom in expression position is self-evaluating. Without this a
+    // program could bind a value but never yield one: `seq` returns its last
+    // step, and every operator that can end a program returns something other
+    // than the binding the program was written to produce.
+    if matches!(expr, SExpr::Atom(_)) {
+        return check_value(expr, scope);
+    }
     let (operator, args) = operator_of(expr)?;
     if MODEL_ONLY_OPERATORS.contains(&operator) {
         return err(format!(
@@ -409,6 +416,9 @@ fn eval_expr<'a>(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<JsonValue, EvalError>> + Send + 'a>>
 {
     Box::pin(async move {
+        if matches!(expr, SExpr::Atom(_)) {
+            return resolve_value(expr, env);
+        }
         let (operator, args) = operator_of(expr)?;
         match operator {
             "seq" => {
@@ -759,12 +769,9 @@ mod tests {
         }
     }
 
-    fn host(
-        answer: &str,
-    ) -> (
-        Arc<dyn RuntimeInference>,
-        Arc<Mutex<Vec<JsonMap<String, JsonValue>>>>,
-    ) {
+    type SeenRequests = Arc<Mutex<Vec<JsonMap<String, JsonValue>>>>;
+
+    fn host(answer: &str) -> (Arc<dyn RuntimeInference>, SeenRequests) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let host = ScriptedHost {
             answer: answer.to_string(),

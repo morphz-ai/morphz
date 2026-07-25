@@ -1066,6 +1066,16 @@ impl ReadTurnGuard {
 }
 
 pub struct Orchestrator {
+    /// Set once `start` hands over an `Arc<Self>`.
+    ///
+    /// An `infer` inside a submitted program has to reach the model the way an
+    /// ordinary turn does — through `request_model_completion`, with its
+    /// provider admission, queueing and deadlines — but it is evaluated inside
+    /// a spawned tool task that owns nothing. Threading an `Arc<Self>` down to
+    /// it would have meant changing the receiver of the whole attempt path for
+    /// a purely mechanical reason; a weak self-reference keeps that surface
+    /// untouched and cannot keep the Runtime alive on its own.
+    self_ref: std::sync::OnceLock<std::sync::Weak<Orchestrator>>,
     bus: Arc<InMemoryEventBus>,
     store: Arc<dyn EventStore>,
     client: Arc<dyn Client>,
@@ -1586,6 +1596,7 @@ impl Orchestrator {
         });
         let tool_definitions = registry.definitions();
         let orchestrator = Arc::new(Self {
+            self_ref: std::sync::OnceLock::new(),
             bus,
             store,
             client,
@@ -1621,6 +1632,9 @@ impl Orchestrator {
             background_scheduler,
             durable_approvals,
         });
+        // Established here rather than in `start`, so an Orchestrator built for
+        // a test can evaluate `infer` without first being started.
+        let _ = orchestrator.self_ref.set(Arc::downgrade(&orchestrator));
         orchestrator.register_timer_handlers()?;
         Ok(orchestrator)
     }
@@ -8479,7 +8493,19 @@ impl Orchestrator {
             let event_bus = Arc::clone(&self.bus);
             let objective_supervisor = self.objective_supervisor.clone();
             let objective_evaluation = self.objective_evaluations.get_for_activation(&attempt_id);
+            // Established before the spawn, because task-locals do not cross
+            // into a new task: the chain below rebuilds every one of them.
+            let inference_channel: Option<Arc<dyn crate::sexpr_eval::RuntimeInference>> =
+                self.self_ref.get().cloned().map(|orchestrator| {
+                    Arc::new(OrchestratorInference {
+                        orchestrator,
+                        session_id: session_id.clone(),
+                        attempt_id: attempt_id.clone(),
+                    }) as Arc<dyn crate::sexpr_eval::RuntimeInference>
+                });
             let handle = tokio::spawn(async move {
+                crate::sexpr_eval::CURRENT_INFERENCE
+                    .scope(inference_channel, async move {
                 crate::tool::CURRENT_PRINCIPAL_ID
                     .scope(task_principal_id, async move {
                 crate::permission::CURRENT_DURABLE_APPROVAL
@@ -8803,6 +8829,8 @@ impl Orchestrator {
                                 .await
                         })
                         .await
+                    })
+                    .await
                     })
                     .await
             });
@@ -9843,6 +9871,68 @@ fn compact_context_inspect_for_persistence(event: &mut Event) {
         "components".to_string(),
         serde_json::Value::Object(components),
     );
+}
+
+/// Carries an `infer` back to the model the way an ordinary turn goes.
+///
+/// It deliberately holds no model client of its own: routing through the
+/// Orchestrator is what makes `infer` inherit provider admission, queueing and
+/// the attempt deadline instead of quietly opening a second, ungoverned channel.
+struct OrchestratorInference {
+    orchestrator: std::sync::Weak<Orchestrator>,
+    session_id: String,
+    attempt_id: String,
+}
+
+#[async_trait::async_trait]
+impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
+    async fn infer(
+        &self,
+        request: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<String, DynError> {
+        let orchestrator = self
+            .orchestrator
+            .upgrade()
+            .ok_or("Runtime 已关闭，无法完成 infer")?;
+        let task = request
+            .get("task")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let mut evidence = serde_json::Map::new();
+        for (key, value) in request {
+            if key != "task" {
+                evidence.insert(key.clone(), value.clone());
+            }
+        }
+        let messages = vec![Message {
+            role: "user".to_string(),
+            content: format!(
+                "以下不是用户消息，而是你自己提交的程序求值到 (infer ...) 时停下来等待的判断。\
+                 给出这一步需要的值即可，不要当作对话回复。\n\
+                 (infer-request\n  (task {task:?})\n  (evidence {}))",
+                serde_json::to_string(&serde_json::Value::Object(evidence))
+                    .unwrap_or_else(|_| "{}".to_string())
+            ),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        }];
+        // No tool definitions are offered here. A tool-bearing `infer` is the
+        // right long-term shape, but it turns this into a nested attempt loop
+        // that needs its own termination rule and budget; until those exist,
+        // asking for a value keeps the step bounded.
+        let response = orchestrator
+            .request_model_completion(
+                &self.session_id,
+                &self.attempt_id,
+                messages,
+                Vec::new(),
+                None,
+            )
+            .await
+            .map_err(|error| -> DynError { Box::new(error) })?;
+        Ok(response.content)
+    }
 }
 
 fn context_tx_output_succeeded(event: &Event) -> bool {
