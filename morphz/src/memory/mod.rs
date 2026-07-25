@@ -1656,6 +1656,19 @@ pub enum PlanExecutionMutation {
     NotFound,
 }
 
+/// Atomic hand-off from deterministic Plan control to one physical Kernel Job.
+///
+/// Both rows become visible in the same database transaction. `existing`
+/// means the exact causal hand-off had already committed before the caller
+/// lost its response; callers may reconnect to `execution_job` instead of
+/// materializing another physical action.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlanExecutionJobCommit {
+    pub plan: PlanExecutionRecord,
+    pub execution_job: ExecutionJobRecord,
+    pub existing: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ExecutionJobFilter {
     pub context_id: Option<String>,
@@ -3219,9 +3232,12 @@ pub trait PlanExecutionStore: Send + Sync {
         state_json: &JsonValue,
         budget_json: &JsonValue,
     ) -> Result<PlanExecutionMutation, Box<dyn std::error::Error + Send + Sync>>;
-    /// Releases the claim after the corresponding child primitive has been
-    /// durably created. The next phase will add store-specific atomic helpers
-    /// that create that child and perform this transition in one transaction.
+    /// Releases the claim while waiting on a child primitive that does not
+    /// require an additional durable row.
+    ///
+    /// Physical `call` effects must use
+    /// `create_execution_job_and_suspend_plan`; creating the child and
+    /// suspending the Plan separately leaves a crash gap.
     #[allow(clippy::too_many_arguments)]
     async fn suspend_plan_execution(
         &self,
@@ -3233,6 +3249,21 @@ pub trait PlanExecutionStore: Send + Sync {
         pending_kind: PlanExecutionWaitKind,
         pending_id: &str,
     ) -> Result<PlanExecutionMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically materializes one physical child and releases the current
+    /// Plan claim into `waiting(execution_job, child.id)`.
+    ///
+    /// Replaying the exact already-committed hand-off returns `existing`.
+    /// A different child, machine state, route or causal identity is rejected.
+    #[allow(clippy::too_many_arguments)]
+    async fn create_execution_job_and_suspend_plan(
+        &self,
+        plan_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        state_json: &JsonValue,
+        budget_json: &JsonValue,
+        job: NewExecutionJob,
+    ) -> Result<PlanExecutionJobCommit, Box<dyn std::error::Error + Send + Sync>>;
     /// Makes a waiting plan runnable after validating the exact child route.
     async fn resume_plan_execution(
         &self,

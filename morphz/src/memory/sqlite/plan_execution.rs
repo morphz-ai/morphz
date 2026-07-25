@@ -1,9 +1,10 @@
 //! SQLite authority for durable Runtime-owned Yao plan executions.
 
-use super::{parse_time, SqliteStore};
+use super::{ensure_execution_job_in_transaction, parse_time, SqliteStore};
 use crate::memory::{
-    NewPlanExecution, PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord,
-    PlanExecutionStatus, PlanExecutionStore, PlanExecutionWaitKind,
+    NewExecutionJob, NewPlanExecution, PlanExecutionFilter, PlanExecutionJobCommit,
+    PlanExecutionMutation, PlanExecutionRecord, PlanExecutionStatus, PlanExecutionStore,
+    PlanExecutionWaitKind,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -386,6 +387,105 @@ impl PlanExecutionStore for SqliteStore {
         }
     }
 
+    async fn create_execution_job_and_suspend_plan(
+        &self,
+        plan_id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        state_json: &JsonValue,
+        budget_json: &JsonValue,
+        job: NewExecutionJob,
+    ) -> Result<PlanExecutionJobCommit, StoreError> {
+        if job.id.trim().is_empty() {
+            return Err("PlanExecution child Execution Job id 不能为空".into());
+        }
+        let mut tx = self.pool.begin().await?;
+        let current_row = sqlx::query("SELECT * FROM plan_executions WHERE id = ?")
+            .bind(plan_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| format!("PlanExecution '{plan_id}' 不存在"))?;
+        let current_plan = record_from_row(&current_row)?;
+
+        if current_plan.status == PlanExecutionStatus::Waiting
+            && current_plan.pending_kind == Some(PlanExecutionWaitKind::ExecutionJob)
+            && current_plan.pending_id.as_deref() == Some(job.id.as_str())
+        {
+            if current_plan.state_json != *state_json || current_plan.budget_json != *budget_json {
+                return Err(format!(
+                    "PlanExecution '{}' 已等待 Execution Job '{}'，但重放的 machine state 不同",
+                    plan_id, job.id
+                )
+                .into());
+            }
+            let (execution_job, _) = ensure_execution_job_in_transaction(&mut tx, &job).await?;
+            tx.commit().await?;
+            return Ok(PlanExecutionJobCommit {
+                plan: current_plan,
+                execution_job,
+                existing: true,
+            });
+        }
+
+        if current_plan.revision != expected_revision
+            || current_plan.status != PlanExecutionStatus::Running
+            || current_plan.claim_token.as_deref() != Some(claim_token)
+        {
+            return Err(format!(
+                "PlanExecution '{}' 不能提交 child hand-off：期待 running r{} fence，当前为 {} r{}",
+                plan_id,
+                expected_revision,
+                current_plan.status.as_str(),
+                current_plan.revision
+            )
+            .into());
+        }
+        if job.activation_id != current_plan.activation_id
+            || job.thread_id != current_plan.thread_id
+            || job.agent_id != current_plan.agent_id
+            || job.context_id != current_plan.context_id
+            || job.session_id != current_plan.session_id
+            || job.initiating_principal_id != current_plan.initiating_principal_id
+        {
+            return Err("PlanExecution 与 child Execution Job 的因果 route 不一致".into());
+        }
+
+        let (execution_job, child_created) =
+            ensure_execution_job_in_transaction(&mut tx, &job).await?;
+        let updated = sqlx::query(
+            r#"UPDATE plan_executions
+               SET revision = revision + 1, status = 'waiting', state_json = ?,
+                   budget_json = ?, pending_kind = 'execution_job', pending_id = ?,
+                   claimed_by = NULL, claim_token = NULL, lease_expires_at = NULL,
+                   updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'running' AND claim_token = ?
+               RETURNING *"#,
+        )
+        .bind(serde_json::to_string(state_json)?)
+        .bind(serde_json::to_string(budget_json)?)
+        .bind(&execution_job.id)
+        .bind(now_text())
+        .bind(plan_id)
+        .bind(i64::try_from(expected_revision)?)
+        .bind(claim_token)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(updated) = updated else {
+            return Err(format!(
+                "PlanExecution '{}' child hand-off 在同一事务内丢失 fence",
+                plan_id
+            )
+            .into());
+        };
+        let plan = record_from_row(&updated)?;
+        tx.commit().await?;
+        Ok(PlanExecutionJobCommit {
+            plan,
+            execution_job,
+            existing: !child_created,
+        })
+    }
+
     async fn resume_plan_execution(
         &self,
         id: &str,
@@ -524,8 +624,9 @@ impl PlanExecutionStore for SqliteStore {
 mod tests {
     use super::*;
     use crate::memory::{
-        ActivationStore, NewCognitiveContext, NewSession, NewThread, NewThreadActivation,
-        SessionDirectoryStore, SessionMountKind, ThreadKind, ThreadStore,
+        ActivationStore, ExecutionJobStore, ExecutionRetrySafety, NewCognitiveContext, NewSession,
+        NewThread, NewThreadActivation, SessionDirectoryStore, SessionMountKind, ThreadKind,
+        ThreadStore,
     };
     use chrono::Duration;
     use tempfile::NamedTempFile;
@@ -610,6 +711,24 @@ mod tests {
         match mutation {
             PlanExecutionMutation::Updated(record) => record,
             other => panic!("expected updated PlanExecution, got {other:?}"),
+        }
+    }
+
+    fn child_job(plan: &NewPlanExecution, suffix: &str) -> NewExecutionJob {
+        NewExecutionJob {
+            id: format!("plan-child-job-{suffix}"),
+            activation_id: plan.activation_id.clone(),
+            thread_id: plan.thread_id.clone(),
+            agent_id: plan.agent_id.clone(),
+            context_id: plan.context_id.clone(),
+            session_id: plan.session_id.clone(),
+            initiating_principal_id: plan.initiating_principal_id.clone(),
+            target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            tool_call_id: format!("plan-effect-{suffix}"),
+            tool_name: "read".to_string(),
+            request: serde_json::json!({"path": "README.md"}),
+            retry_safety: ExecutionRetrySafety::Idempotent,
+            requires_approval: false,
         }
     }
 
@@ -816,5 +935,89 @@ mod tests {
                 .unwrap(),
             PlanExecutionMutation::Rejected { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn child_job_and_plan_wait_are_atomic_idempotent_and_route_fenced() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let new = seed_plan_route(&store, "child-handoff").await;
+        let queued = store.create_plan_execution(new.clone()).await.unwrap();
+        let running = updated(
+            store
+                .claim_plan_execution(
+                    &queued.id,
+                    queued.revision,
+                    "plan-worker",
+                    "plan-fence",
+                    Utc::now() + Duration::minutes(1),
+                )
+                .await
+                .unwrap(),
+        );
+        let state = serde_json::json!({"pending": {"kind": "call", "sequence": 1}});
+        let budget = serde_json::json!({"calls_left": 63});
+        let job = child_job(&new, "child-handoff");
+
+        let committed = store
+            .create_execution_job_and_suspend_plan(
+                &running.id,
+                running.revision,
+                "plan-fence",
+                &state,
+                &budget,
+                job.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(!committed.existing);
+        assert_eq!(committed.plan.status, PlanExecutionStatus::Waiting);
+        assert_eq!(
+            committed.plan.pending_kind,
+            Some(PlanExecutionWaitKind::ExecutionJob)
+        );
+        assert_eq!(
+            committed.plan.pending_id.as_deref(),
+            Some(committed.execution_job.id.as_str())
+        );
+
+        let replay = store
+            .create_execution_job_and_suspend_plan(
+                &running.id,
+                running.revision,
+                "plan-fence",
+                &state,
+                &budget,
+                job.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(replay.existing);
+        assert_eq!(replay.plan, committed.plan);
+        assert_eq!(replay.execution_job, committed.execution_job);
+
+        let mut wrong_route = job;
+        wrong_route.session_id = "foreign-session".to_string();
+        assert!(store
+            .create_execution_job_and_suspend_plan(
+                &running.id,
+                running.revision,
+                "plan-fence",
+                &state,
+                &budget,
+                wrong_route,
+            )
+            .await
+            .is_err());
+        assert_eq!(
+            store
+                .get_execution_job(&committed.execution_job.id)
+                .await
+                .unwrap()
+                .unwrap(),
+            committed.execution_job
+        );
     }
 }
