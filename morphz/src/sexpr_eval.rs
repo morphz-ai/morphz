@@ -94,12 +94,15 @@ pub struct Program {
     /// the wrong test; the right one is whether a second run can corrupt
     /// anything, and here it cannot.
     tools: Vec<String>,
-    /// Tools the program declared through a `(yao (tools ...) BODY)` wrapper.
+    /// Tools the program declared through a leading `(tools NAME...)` form.
     ///
     /// Declaration exists for the part static analysis cannot see: which
     /// tools an `infer` may gather evidence with is decided at run time, so
-    /// only the program itself can bound it. `None` means the wrapper was
-    /// absent and the deployment gate applies unchanged.
+    /// only the program itself can bound it. It lives in the program text —
+    /// not in a side channel — because a `.yao` file loaded by the Runtime
+    /// has no other way to state its needs; the model's `program` argument
+    /// and a `.yao` file are the same artifact. `None` means no declaration
+    /// and the deployment gate applies unchanged.
     declared: Option<Vec<String>>,
 }
 
@@ -158,13 +161,13 @@ pub fn validate(
     registry: &Registry,
     gate: &dyn ToolGate,
 ) -> Result<Program, EvalError> {
-    let parsed = crate::sexpr::parse(source).map_err(|error| EvalError {
+    let forms = crate::sexpr::parse_all(source).map_err(|error| EvalError {
         message: format!("program 不是合法的 S 表达式: {error}"),
     })?;
-    let (declared, root) = split_declaration(parsed)?;
+    let (declared, root) = split_forms(forms)?;
     if let Some(declared) = &declared {
-        // Declared set must sit inside the deployment gate: a program cannot
-        // widen its own admission by asking nicely.
+        // The declaration must sit inside the deployment gate: a program
+        // cannot widen its own admission by asking.
         for tool in declared {
             if !gate.is_callable(tool) {
                 return Err(EvalError::from(gate.describe_refusal(tool)));
@@ -174,8 +177,8 @@ pub fn validate(
             }
         }
     }
-    // Inside the body the declaration *is* the gate, so an undeclared call is
-    // refused even when the deployment would have allowed it.
+    // Inside the body the declaration *becomes* the gate, so an undeclared
+    // call is refused even where the deployment would have allowed it.
     let narrowed = declared.as_ref().map(|tools| AllowList::new(tools.clone()));
     let effective_gate: &dyn ToolGate = match &narrowed {
         Some(list) => list,
@@ -191,36 +194,41 @@ pub fn validate(
     })
 }
 
-/// Splits an optional `(yao (tools NAME...) BODY)` wrapper off a program.
+/// Splits an optional leading `(tools NAME...)` declaration off a program.
 ///
-/// The wrapper carries the language's own name: a program states that it is a
-/// Yao program and what it needs, and the Runtime provisions exactly that.
-fn split_declaration(parsed: SExpr) -> Result<(Option<Vec<String>>, SExpr), EvalError> {
-    let SExpr::List(items) = &parsed else {
-        return Ok((None, parsed));
-    };
-    if items.first() != Some(&SExpr::Atom("yao".to_string())) {
-        return Ok((None, parsed));
-    }
-    let [_, declaration, body] = items.as_slice() else {
-        return err("(yao (tools NAME...) BODY) 需要一个 tools 声明和一个程序体".to_string());
-    };
-    let SExpr::List(tool_items) = declaration else {
-        return err("(yao ...) 的第一段必须是 (tools NAME...)".to_string());
-    };
-    if tool_items.first() != Some(&SExpr::Atom("tools".to_string())) {
-        return err("(yao ...) 的第一段必须是 (tools NAME...)".to_string());
-    }
-    let mut declared = Vec::new();
-    for item in &tool_items[1..] {
-        let SExpr::Atom(name) = item else {
-            return err("(tools ...) 里只能是工具名原子".to_string());
+/// A program is one or two top-level forms: the optional declaration, then
+/// exactly one body expression. This is the whole file format of a `.yao`
+/// program — the language name lives in the file extension, not in a wrapper
+/// the model would have to write around every submission.
+fn split_forms(mut forms: Vec<SExpr>) -> Result<(Option<Vec<String>>, SExpr), EvalError> {
+    let has_declaration = matches!(
+        forms.first(),
+        Some(SExpr::List(items)) if items.first() == Some(&SExpr::Atom("tools".to_string()))
+    );
+    let declared = if has_declaration {
+        let SExpr::List(items) = forms.remove(0) else {
+            unreachable!("guarded by has_declaration");
         };
-        if !declared.contains(name) {
-            declared.push(name.clone());
+        let mut declared = Vec::new();
+        for item in &items[1..] {
+            let SExpr::Atom(name) = item else {
+                return err("(tools ...) 里只能是工具名原子".to_string());
+            };
+            if !declared.contains(name) {
+                declared.push(name.clone());
+            }
         }
+        Some(declared)
+    } else {
+        None
+    };
+    if forms.len() != 1 {
+        return err(
+            "程序体必须恰好是一个表达式；可选的 (tools NAME...) 声明放在最前面，多个步骤用 (seq ...) 组合"
+                .to_string(),
+        );
     }
-    Ok((Some(declared), body.clone()))
+    Ok((declared, forms.pop().expect("length checked above")))
 }
 
 /// What the walk learns about a program, for the caller to settle capability
@@ -742,8 +750,8 @@ impl EvalTool {
              继续使用普通 Function Calling 即可，本工具不替代它。\n\
              可用算子：{operators}。\n\
              可调用工具：{tools}\n\
-             程序可用 (yao (tools NAME...) BODY) 声明所需工具：声明不能超出部署闸门，\
-             BODY 中的 call 与 infer 取证都只限声明过的工具；不声明则整个闸门可用。\n\
+             程序开头可放一行 (tools NAME...) 声明所需工具：声明不能超出部署闸门，\
+             其后的 call 与 infer 取证都只限声明过的工具；不声明则整个闸门可用。\n\
              引用绑定用 $name，取字段用 $name.field；参数写作 :key value。\n\
              `infer` 把判断交回模型：(infer :task \"要判断什么\" :evidence $binding)，返回值是数据。\n\
              `fallback` 与 `process` 属于你自身的求值，本程序中不可用。",
@@ -1257,7 +1265,7 @@ mod tests {
         // exactly the declaration — the part static analysis cannot reach.
         let (registry, _) = fixture(&[("search", serde_json::json!([]))]);
         let error = validate(
-            r#"(yao (tools search) (call read :path "a"))"#,
+            r#"(tools search) (call read :path "a")"#,
             &registry,
             &gate(),
         )
@@ -1266,7 +1274,7 @@ mod tests {
         assert!(error.contains("只接受 search"), "got: {error}");
 
         let program = validate(
-            r#"(yao (tools search) (seq (bind r (call search :query "x")) (infer :task "判断" :hits $r)))"#,
+            r#"(tools search) (seq (bind r (call search :query "x")) (infer :task "判断" :hits $r))"#,
             &registry,
             &gate(),
         )
@@ -1294,7 +1302,7 @@ mod tests {
         // a program only ever narrows it.
         let registry = fixture(&[("read", JsonValue::Null)]).0;
         let error = validate(
-            r#"(yao (tools exec) (call exec :command "ls"))"#,
+            r#"(tools exec) (call exec :command "ls")"#,
             &registry,
             &gate(),
         )

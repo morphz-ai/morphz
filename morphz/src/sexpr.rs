@@ -322,6 +322,24 @@ impl<'a> Parser<'a> {
     }
 }
 
+// 解析输入中的全部顶层表达式。爻程序（无论来自 eval 工具参数还是 .yao 文件）
+// 允许在程序体之前放置声明形式，因此顶层不止一个表达式。
+pub fn parse_all(input: &str) -> Result<Vec<SExpr>, ParserError> {
+    let mut parser = Parser::new(input);
+    let mut forms = Vec::new();
+    loop {
+        parser.skip_whitespace();
+        if parser.peek_char().is_none() {
+            break;
+        }
+        forms.push(parser.parse_value()?);
+    }
+    if forms.is_empty() {
+        return Err(parser.make_error("输入为空或只包含空白字符".to_string()));
+    }
+    Ok(forms)
+}
+
 // 自动括号配平的 S-Expression 解析器入口
 pub fn parse(input: &str) -> Result<SExpr, ParserError> {
     let mut parser = Parser::new(input);
