@@ -486,6 +486,13 @@ fn render_semantic_sections(name: &str, text: &str) -> String {
     SExpr::List(values).to_string()
 }
 
+/// The production stable system prompt for the configured mode. Public so an
+/// evaluation measures the model against the prompt production actually uses,
+/// never against one a harness invents.
+pub fn production_system_prompt() -> Result<&'static str, String> {
+    configured_system_prompt().map(|(_, prompt)| prompt)
+}
+
 fn configured_system_prompt() -> Result<(SystemPromptMode, &'static str), String> {
     let mode = SystemPromptMode::from_environment()?;
     Ok((mode, render_stable_system_prompt(mode)))

@@ -26,10 +26,6 @@ type DynError = Box<dyn std::error::Error + Send + Sync>;
 
 const MAX_TURNS: usize = 8;
 
-const SYSTEM_PROMPT: &str = "你是 Morphz Agent。完成用户的任务并在最后用纯文本报告结果。\
-工具通过标准 Function Calling 提供。其中 eval 工具可以把一棵有数据依赖的步骤树交给 Runtime \
-一次执行完；它的用法完整写在它的工具描述里。任务适合时优先用一个 eval 程序完成，而不是逐个调用工具。";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProgramAttempt {
     pub turn: usize,
@@ -95,24 +91,24 @@ fn tasks() -> Vec<EvalTask> {
     vec![
         EvalTask {
             id: "todo-fanout",
-            prompt: "找出 src 目录下所有包含 TODO 的 .rs 文件，报告这些文件名。\
-                     文件集合事先未知，请用一个 eval 程序一次完成（列目录、逐个检查、汇总）。",
+            prompt: "找出 src 目录下所有包含 TODO 的 .rs 文件，报告这些文件名。",
         },
         EvalTask {
             id: "pointer-chase",
             prompt: "工作区里有一个 pointer.txt，内容是另一个文件的文件名。\
-                     请读出它指向的那个文件里的口令并报告。请用一个 eval 程序完成，\
-                     后一步的文件名来自前一步的结果。",
+                     请读出它指向的那个文件里的口令并报告。",
         },
         EvalTask {
             id: "infer-classify",
-            prompt: "读取 notes.txt，用 infer 判断其中记录的问题属于哪一类（性能/安全/正确性），\
-                     再用该类别在 docs 目录下 search，报告类别和命中的文件。请用一个 eval 程序完成。",
+            prompt: "读取 notes.txt，判断其中记录的问题属于哪一类（性能/安全/正确性），\
+                     并提取一个最能代表该问题的检索关键词；用这个关键词在 docs 目录下检索，\
+                     报告类别和命中的文件。",
         },
         EvalTask {
             id: "declared-tools",
-            prompt: "只使用 read 和 list_files 两个工具：列出 src 目录内容并读取其中的 alpha.rs，\
-                     报告它包含的 TODO 注释内容。请在 eval 程序开头用 (tools ...) 声明你要用的工具。",
+            prompt:
+                "只使用 read 和 list_files 两个工具，完成：列出 src 目录内容并读取其中的 alpha.rs，\
+                     报告它包含的 TODO 注释内容。",
         },
     ]
 }
@@ -308,10 +304,17 @@ async fn run_episode(
     });
 
     let offered = registry.definitions();
+    let system_prompt = match morphz::orchestrator::orchestrator::production_system_prompt() {
+        Ok(prompt) => prompt.to_string(),
+        Err(error) => {
+            report.error = Some(format!("无法取得生产系统提示词: {error}"));
+            return report;
+        }
+    };
     let mut messages = vec![
         Message {
             role: "system".to_string(),
-            content: SYSTEM_PROMPT.to_string(),
+            content: system_prompt,
             name: None,
             tool_call_id: None,
             tool_calls: None,
