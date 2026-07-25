@@ -4039,6 +4039,14 @@ mod tests {
         calls: AtomicU64,
     }
 
+    struct LongLivedProcessReplyClient {
+        calls: AtomicU64,
+    }
+
+    struct DeclaredServiceClient {
+        calls: AtomicU64,
+    }
+
     struct RecoveryMergeDeliveryClient {
         calls: AtomicU64,
         observed_both_results: Arc<AtomicBool>,
@@ -4071,6 +4079,27 @@ mod tests {
         decision: ApprovalDecision,
         delay: std::time::Duration,
         calls: AtomicU64,
+    }
+
+    /// Stops the processes a test deliberately left running. The registry is
+    /// process-wide and the suite runs in parallel, so a test that walks away
+    /// from a live process taxes every test scheduled after it.
+    fn kill_tasks_for_context(context_id: &str) {
+        let tasks = crate::tool::get_tasks_map();
+        let ids = tasks
+            .iter()
+            .filter(|task| task.context_id == context_id)
+            .map(|task| (task.id.clone(), task.pgid))
+            .collect::<Vec<_>>();
+        for (id, pgid) in ids {
+            if pgid > 0 {
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pgid),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
+            tasks.remove(&id);
+        }
     }
 
     fn text_response(content: impl Into<String>) -> Response {
@@ -4463,6 +4492,60 @@ mod tests {
                     Ok(text_response("detached execution complete"))
                 }
                 _ => Err("detached execution caused a redundant Delivery model call".into()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for LongLivedProcessReplyClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                // A server the user asked to keep running. It outlives the
+                // turn on purpose, so the Thread still owes background work
+                // when the answer is ready.
+                0 => Ok(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallRepr {
+                        id: "long-lived-exec".to_string(),
+                        r#type: "function".to_string(),
+                        func_name: "exec".to_string(),
+                        arguments: json!({ "command": "sleep 3", "wait_ms": 1 }).to_string(),
+                    }],
+                }),
+                _ => Ok(text_response("dev server is listening on 3001")),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for DeclaredServiceClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                // Declared as a service the Agent means to leave up, so the
+                // turn is not waiting on it.
+                0 => Ok(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallRepr {
+                        id: "declared-service".to_string(),
+                        r#type: "function".to_string(),
+                        func_name: "exec".to_string(),
+                        arguments: json!({
+                            "command": "sleep 3",
+                            "wait_ms": 1,
+                            "keep_running": true
+                        })
+                        .to_string(),
+                    }],
+                }),
+                _ => Ok(text_response("dev server is listening on 3002")),
             }
         }
     }
@@ -6063,6 +6146,191 @@ mod tests {
             .await
             .unwrap();
         assert!(jobs.iter().any(|job| job.tool_name == "exec/background"));
+    }
+
+    #[tokio::test]
+    async fn a_finished_answer_is_a_reply_even_while_a_server_keeps_running() {
+        // The model called reply(deliver), so the turn is answered. Reporting
+        // that as progress because the Thread still owed background work made
+        // a finished answer look interim for good: a server the user asked to
+        // keep running never exits, so the follow-up reply implied by the
+        // downgrade could never arrive.
+        let database = NamedTempFile::new().unwrap();
+        let artifacts = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
+        let client = Arc::new(LongLivedProcessReplyClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            // The background task registry is process-wide, so this test needs
+            // its own Context: the server it deliberately leaves running would
+            // otherwise be counted against every other test that takes the
+            // default identity.
+            .identity(RuntimeIdentity {
+                agent_id: "agent-long-lived-reply".to_string(),
+                context_id: "context-long-lived-reply".to_string(),
+                ..Default::default()
+            })
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-long-lived-reply".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Long lived reply".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        session
+            .send(
+                "restart the dev server",
+                "User-Test",
+                Some("client-long-lived-reply".to_string()),
+            )
+            .await
+            .unwrap();
+        let reply = match tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+            .await
+        {
+            Ok(Some(reply)) => reply,
+            outcome => {
+                let events = runtime
+                    .inner
+                    .store
+                    .query(QueryFilter {
+                        session_id: Some(session.id().to_string()),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                panic!(
+                        "a finished answer never reached the user as a reply: outcome={outcome:?}, events={:?}",
+                        events
+                            .iter()
+                            .map(|event| (event.topic.as_str(), event.payload.get("text")))
+                            .collect::<Vec<_>>()
+                    );
+            }
+        };
+        assert_eq!(
+            reply.payload.get("text").and_then(Value::as_str),
+            Some("dev server is listening on 3001")
+        );
+        let events = runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                session_id: Some(session.id().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        // The answer reaches the user as an answer, and is not also filed as
+        // interim progress.
+        assert!(
+            !events.iter().any(|event| event.topic == "chat/progress"
+                && event.payload.get("text").and_then(Value::as_str)
+                    == Some("dev server is listening on 3001")),
+            "the answer must not also be published as progress"
+        );
+        kill_tasks_for_context("context-long-lived-reply");
+    }
+
+    #[tokio::test]
+    async fn a_declared_service_does_not_hold_its_turn_open() {
+        // A process the Agent declares it means to leave running is not work
+        // the turn is waiting on. Counting it kept the Thread from ever
+        // closing, because such a process never exits and the condition could
+        // never clear.
+        let database = NamedTempFile::new().unwrap();
+        let artifacts = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
+        let client = Arc::new(DeclaredServiceClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .identity(RuntimeIdentity {
+                agent_id: "agent-declared-service".to_string(),
+                context_id: "context-declared-service".to_string(),
+                ..Default::default()
+            })
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-declared-service".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Declared service".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        session
+            .send(
+                "start the dev server and leave it running",
+                "User-Test",
+                Some("client-declared-service".to_string()),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+            .await
+            .expect("declared service turn never produced a reply")
+            .expect("reply stream closed");
+        let events = runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                session_id: Some(session.id().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let root_turn_id = events
+            .iter()
+            .find(|event| event.topic == "chat/user_message")
+            .map(|event| event.id.clone())
+            .expect("the turn has a root user message");
+        // This count is what gates closing the turn, and the service is still
+        // running as it is taken: it must not be owed work.
+        assert_eq!(
+            crate::tool::active_background_task_count_for_root(
+                session.id(),
+                runtime.identity().context_id.as_str(),
+                &root_turn_id,
+            ),
+            0,
+            "a service the Agent declared it would leave running was counted \
+             as work the turn is waiting on"
+        );
+        kill_tasks_for_context("context-declared-service");
     }
 
     async fn run_static_approval_case(

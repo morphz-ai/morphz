@@ -5675,8 +5675,38 @@ impl Orchestrator {
                         || pending_routed_inputs > 0))
             {
                 if let TerminalDecision::Deliver(content) = &decision {
-                    self.publish_progress(session_id, &attempt_id, content.clone())
+                    // `reply(deliver)` is the model's own judgement that the
+                    // turn is answered, and yielding does not overrule it.
+                    // Reporting it as progress instead left a finished answer
+                    // looking interim for good whenever the Agent had started a
+                    // long-lived process: a dev server never exits, so the
+                    // follow-up that the downgrade implied could never arrive.
+                    //
+                    // The question here is whether a person is waiting on this
+                    // turn, not how a finished Execution result would be
+                    // routed: `execution_result_is_interactive` answers the
+                    // latter and reports false as soon as the Thread holds a
+                    // detached job, which is exactly the case this fixes.
+                    // Work rooted in anything but a user message has no one
+                    // waiting, so it keeps reporting progress.
+                    let answers_a_waiting_user = self
+                        .context_engine
+                        .find_event(&activation.context_id, &activation.root_turn_id)
+                        .await?
+                        .is_some_and(|root| root.event_type == TYPE_USER_MESSAGE);
+                    if answers_a_waiting_user {
+                        self.publish_reply_for_model_attempt(
+                            session_id,
+                            &attempt_id,
+                            Some(&terminal_model_attempt_id),
+                            content.clone(),
+                            context.parent_session_id.as_deref(),
+                        )
                         .await?;
+                    } else {
+                        self.publish_progress(session_id, &attempt_id, content.clone())
+                            .await?;
+                    }
                 }
                 self.yield_thread(
                     session_id,

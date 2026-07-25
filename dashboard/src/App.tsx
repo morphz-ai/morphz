@@ -4633,7 +4633,7 @@ export default function App() {
                   const lineage = objectiveLineage.forEvent(event)
                   const tintStyle = tintStyleForLineage(lineage)
                   if (kind === 'progress') {
-                    return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
+                    return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <div className="progress-note-body"><MarkdownBody text={typeof event.payload.text === 'string' ? event.payload.text : ''} /></div><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                   }
                   const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
                   if (kind === 'reasoning') {
@@ -4827,7 +4827,7 @@ export default function App() {
                         const tintStyle = tintStyleForLineage(lineage)
                         const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
                         if (kind === 'progress') {
-                          return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
+                          return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <div className="progress-note-body"><MarkdownBody text={typeof event.payload.text === 'string' ? event.payload.text : ''} /></div><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                         }
                         if (kind === 'reasoning') {
                           const summary = persistedReasoningSummary || String(event.payload.text ?? '')

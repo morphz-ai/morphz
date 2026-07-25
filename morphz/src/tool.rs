@@ -2351,6 +2351,10 @@ pub struct BackgroundTask {
     pub context_id: String,
     pub initiating_principal_id: Option<String>,
     pub causal_route: Option<ToolCausalRoute>,
+    /// Declared by the Agent that started the process: a service it means to
+    /// leave running rather than work this turn is waiting on. The distinction
+    /// belongs to whoever launched it, so the Runtime does not guess it.
+    pub keep_running: bool,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub last_output_at: chrono::DateTime<chrono::Utc>,
     pub output_bytes: usize,
@@ -2478,10 +2482,18 @@ pub(crate) fn active_background_task_count(session_id: &str, context_id: &str) -
     get_tasks_map()
         .iter()
         .filter(|task| task.session_id == session_id && task.context_id == context_id)
+        .filter(|task| !task.keep_running)
         .filter(|task| !task.status.is_terminal())
         .count()
 }
 
+/// Counts the work a turn is still waiting on.
+///
+/// A process the Agent declared with `keep_running` is deliberately outliving
+/// the turn, so it is not owed work: counting it kept a Thread from ever
+/// closing, because a dev server never exits and the condition could never
+/// clear. Anything that will finish and whose result the turn needs — a build,
+/// a test run — still counts.
 pub(crate) fn active_background_task_count_for_root(
     session_id: &str,
     context_id: &str,
@@ -2495,6 +2507,7 @@ pub(crate) fn active_background_task_count_for_root(
                 .as_ref()
                 .is_some_and(|route| route.root_turn_id == root_turn_id)
         })
+        .filter(|task| !task.keep_running)
         .filter(|task| !task.status.is_terminal())
         .count()
 }
@@ -4517,6 +4530,8 @@ struct ExecuteCommandArgs {
     cwd: Option<String>,
     wait_ms: Option<u64>,
     #[serde(default)]
+    keep_running: bool,
+    #[serde(default)]
     sandbox_permissions: SandboxPermissionMode,
     #[serde(default)]
     requested_permissions: RequestedExecPermissions,
@@ -4558,6 +4573,10 @@ impl Tool for ExecuteCommandTool {
                 "wait_ms": {
                     "type": "integer",
                     "description": "同步等待输出的最长超时毫秒数。默认 10000 毫秒；测试/编译超过该时长后自动转入后台异步运行。"
+                },
+                "keep_running": {
+                    "type": "boolean",
+                    "description": "默认 false。设为 true 表示这个进程是要一直留着的常驻服务（dev server、watcher、后端进程），本回合不等它结束；Runtime 因此不会把它当作未完成的工作而阻止回合收口。编译、测试、脚本这类最终会退出、且结果本回合需要的命令必须保持 false。"
                 },
                 "sandbox_permissions": {
                     "type": "string",
@@ -4913,6 +4932,7 @@ impl Tool for ExecuteCommandTool {
                 context_id: context_id.clone(),
                 initiating_principal_id: initiating_principal_id.clone(),
                 causal_route: causal_route.clone(),
+                keep_running: args.keep_running,
                 started_at: now,
                 last_output_at: now,
                 output_bytes: 0,
@@ -9460,6 +9480,7 @@ Body
                 context_id: "wait-rearm-context".to_string(),
                 initiating_principal_id: None,
                 causal_route: None,
+                keep_running: false,
                 started_at: now,
                 last_output_at: now,
                 output_bytes: 8,
