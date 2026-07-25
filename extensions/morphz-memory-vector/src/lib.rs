@@ -369,24 +369,36 @@ impl SqliteVectorMemory {
         limit: usize,
     ) -> Result<Vec<GraphNode>, ExtensionError> {
         let limit = limit.max(1);
-        let fts_rows = sqlx::query(
-            "SELECT n.id, n.label, n.properties, n.embedding, n.is_permanent, n.last_accessed \
-             FROM graph_nodes_fts f JOIN graph_nodes n ON f.rowid = n.rowid \
-             WHERE graph_nodes_fts MATCH ? ORDER BY bm25(graph_nodes_fts) LIMIT ?",
-        )
-        .bind(query)
-        .bind(limit as i64)
-        .fetch_all(&self.pool)
-        .await;
+        // FTS5 query syntax is a language, not a text field. Quote every
+        // term so punctuation in a user query cannot turn into an invalid or
+        // unexpectedly broad expression and trigger a slow fallback.
+        let fts_query = fts_literal_query(query);
+        let fts_rows = if let Some(fts_query) = fts_query {
+            sqlx::query(
+                "SELECT n.id, n.label, n.properties, n.embedding, n.is_permanent, n.last_accessed \
+                 FROM graph_nodes_fts f JOIN graph_nodes n ON f.rowid = n.rowid \
+                 WHERE graph_nodes_fts MATCH ? ORDER BY bm25(graph_nodes_fts) LIMIT ?",
+            )
+            .bind(fts_query)
+            .bind(limit as i64)
+            .fetch_all(&self.pool)
+            .await
+        } else {
+            Ok(Vec::new())
+        };
         let rows = match fts_rows {
             Ok(rows) => rows,
             Err(_) => {
+                // This is deliberately an exact, indexed escape hatch for a
+                // missing/corrupt legacy FTS projection. Do not use `%LIKE%`
+                // here: this optional extension must never turn a lookup
+                // failure into a graph-wide scan.
                 sqlx::query(
                     "SELECT id, label, properties, embedding, is_permanent, last_accessed \
-                 FROM graph_nodes WHERE label LIKE ? OR properties LIKE ? LIMIT ?",
+                     FROM graph_nodes WHERE id = ? OR label = ? LIMIT ?",
                 )
-                .bind(format!("%{query}%"))
-                .bind(format!("%{query}%"))
+                .bind(query)
+                .bind(query)
                 .bind(limit as i64)
                 .fetch_all(&self.pool)
                 .await?
@@ -514,6 +526,7 @@ async fn initialize_schema(pool: &SqlitePool) -> Result<(), ExtensionError> {
         );
         CREATE INDEX IF NOT EXISTS idx_edges_from ON graph_edges(from_node);
         CREATE INDEX IF NOT EXISTS idx_edges_to ON graph_edges(to_node);
+        CREATE INDEX IF NOT EXISTS idx_graph_nodes_label ON graph_nodes(label);
         CREATE TABLE IF NOT EXISTS model_metadata (
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL,
@@ -545,6 +558,20 @@ async fn initialize_schema(pool: &SqlitePool) -> Result<(), ExtensionError> {
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Encode untrusted words as a deterministic, literal FTS5 conjunction.
+///
+/// A raw `MATCH` input can include FTS operators and malformed quoting. This
+/// keeps ordinary text searches in the FTS index instead of routing failures
+/// to an unindexed substring fallback.
+fn fts_literal_query(query: &str) -> Option<String> {
+    let terms = query
+        .split_whitespace()
+        .filter(|term| !term.is_empty())
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>();
+    (!terms.is_empty()).then(|| terms.join(" AND "))
 }
 
 fn node_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<GraphNode, ExtensionError> {

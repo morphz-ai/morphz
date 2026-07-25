@@ -1,5 +1,10 @@
+pub mod lexical;
 pub mod postgres;
 pub mod sqlite;
+
+pub use lexical::{
+    recall_phrase_request, segment_recall_terms, segment_recall_text, RECALL_SEGMENTER,
+};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -49,9 +54,17 @@ pub struct RecallSearchHit {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LexicalSearchMode {
-    SqliteFts5Trigram,
-    PostgresPgTrgm,
-    DegradedSubstring,
+    /// Terms are segmented by the Runtime and indexed whole, so a query only
+    /// matches on the same word boundaries the Projection was written with.
+    SqliteFts5Segmented,
+    /// PostgreSQL full-text search over the same Runtime-segmented terms.
+    /// `tsvector` is core PostgreSQL, so this needs no `CREATE EXTENSION`
+    /// privilege a managed deployment may not grant.
+    PostgresTsvectorSegmented,
+    /// Full-text acceleration is unavailable. The Runtime may still resolve an
+    /// exact Recall document id, but must not silently scan every document
+    /// with a substring `LIKE` query.
+    ExactDocumentOnly,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +72,10 @@ pub struct RecallIndexCapability {
     pub mode: LexicalSearchMode,
     pub indexed: bool,
     pub unicode_normalization: String,
+    /// Identifies the word segmenter that produced the stored terms. Changing
+    /// it changes tokenization, so a Projection is only comparable against a
+    /// query segmented by the same value and must otherwise be rebuilt.
+    pub segmenter: String,
     pub detail: String,
 }
 
@@ -123,6 +140,17 @@ pub fn normalize_recall_text(value: &str) -> String {
     value.nfkc().flat_map(char::to_lowercase).collect()
 }
 
+/// Content hash of a document's indexed form.
+///
+/// The Projection rebuild migration re-derives stored text under the current
+/// segmenter, so it must produce the hash exactly the way the write path does.
+pub fn recall_state_hash(searchable_text: &str, retired: bool) -> String {
+    format!(
+        "{:x}",
+        sha2::Sha256::digest(format!("{searchable_text}\0{retired}").as_bytes())
+    )
+}
+
 fn push_recall_text(output: &mut String, value: &str) {
     let remaining = RECALL_SEARCHABLE_TEXT_MAX_CHARS.saturating_sub(output.chars().count());
     if remaining == 0 {
@@ -185,15 +213,12 @@ pub fn event_recall_document_with_retired(
         &serde_json::Value::Object(event.payload.clone()),
         &mut readable,
     );
-    let searchable_text = normalize_recall_text(&readable);
+    let searchable_text = segment_recall_text(&readable);
     let preview = readable
         .chars()
         .take(RECALL_PREVIEW_MAX_CHARS)
         .collect::<String>();
-    let state_hash = format!(
-        "{:x}",
-        sha2::Sha256::digest(format!("{searchable_text}\0{retired}").as_bytes())
-    );
+    let state_hash = recall_state_hash(&searchable_text, retired);
     RecallDocument {
         context_id: context_id.to_string(),
         document_kind: RecallDocumentKind::Event,
@@ -221,12 +246,7 @@ pub fn bound_recall_document(mut document: RecallDocument) -> RecallDocument {
         .chars()
         .take(RECALL_PREVIEW_MAX_CHARS)
         .collect();
-    document.state_hash = format!(
-        "{:x}",
-        sha2::Sha256::digest(
-            format!("{}\0{}", document.searchable_text, document.retired).as_bytes()
-        )
-    );
+    document.state_hash = recall_state_hash(&document.searchable_text, document.retired);
     document
 }
 
@@ -2323,6 +2343,9 @@ pub enum MessageClaim {
 #[derive(Default, Debug, Clone)]
 pub struct QueryFilter {
     pub event_id: Option<String>,
+    /// Exact Event IDs, usually returned by the asynchronous Recall lexical
+    /// projection. Empty means no ID constraint.
+    pub event_ids: Vec<String>,
     pub sequence: Option<u64>,
     pub context_id: Option<String>,
     pub session_id: Option<String>,
@@ -2346,11 +2369,38 @@ pub struct QueryFilter {
     /// Topics which must never be materialized by this query. Exact topics and
     /// `prefix/*` patterns are supported, matching `topic` semantics.
     pub excluded_topics: Vec<String>,
-    pub search_query: Option<String>, // 全文检索关键词
-    pub top_k: Option<usize>,         // 返回的最相关事件数量限制
+    /// Exact causal route filters. These values are projected out of the
+    /// immutable JSON payload into indexed Event columns on write. They must
+    /// be used for scheduler and Dashboard queries instead of payload scans.
+    pub thread_id: Option<String>,
+    pub activation_id: Option<String>,
+    pub root_turn_id: Option<String>,
+    pub objective_id: Option<String>,
+    pub top_k: Option<usize>, // 返回的最相关事件数量限制
     /// Return the newest N events, while preserving chronological order in the
     /// returned vector. This keeps tail reads bounded inside SQLite.
     pub latest_k: Option<usize>,
+}
+
+/// Read a causal identifier from the canonical top-level Event route. A small
+/// number of older Events stored the route under `payload.route`; accepting
+/// that legacy shape here keeps the write projection lossless during upgrade.
+pub(crate) fn causal_payload_string<'a>(
+    event: &'a crate::event::Event,
+    key: &str,
+) -> Option<&'a str> {
+    event
+        .payload
+        .get(key)
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            event
+                .payload
+                .get("route")
+                .and_then(|value| value.as_object())
+                .and_then(|route| route.get(key))
+                .and_then(|value| value.as_str())
+        })
 }
 
 // EventStore 定义事件历史物理存储的接口
@@ -2383,6 +2433,20 @@ pub trait EventStore: Send + Sync {
         &self,
         filter: QueryFilter,
     ) -> Result<Vec<crate::event::Event>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Lazily materialize causal route columns for legacy Events of one
+    /// Dashboard Thread. This mutates only a rebuildable query projection,
+    /// never the immutable Event payload. The default keeps lightweight test
+    /// stores compatible; durable stores override it.
+    async fn backfill_causal_projection_for_thread(
+        &self,
+        _context_id: &str,
+        _session_id: &str,
+        _thread_id: &str,
+        _topic: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
 
     /// Reads the current operator acknowledgement Projection. Implementations
     /// must not reconstruct it by scanning the immutable Ledger per request.

@@ -1644,7 +1644,7 @@ where
             document_kind: RecallDocumentKind::Frame,
             document_id: "memory/sandbox-permission".to_string(),
             revision: 3,
-            searchable_text: morphz::memory::normalize_recall_text(
+            searchable_text: morphz::memory::segment_recall_text(
                 "memory/sandbox-permission 沙箱权限审批 Rust 沙箱",
             ),
             preview: "沙箱权限审批应区分拒绝与可申请的能力扩张".to_string(),
@@ -1657,7 +1657,7 @@ where
             document_kind: RecallDocumentKind::Frame,
             document_id: "memory/related-case".to_string(),
             revision: 1,
-            searchable_text: morphz::memory::normalize_recall_text(
+            searchable_text: morphz::memory::segment_recall_text(
                 "related case memory/sandbox-permission 后续案例",
             ),
             preview: "后续案例".to_string(),
@@ -1670,7 +1670,7 @@ where
             document_kind: RecallDocumentKind::Event,
             document_id: "recall-event".to_string(),
             revision: 0,
-            searchable_text: morphz::memory::normalize_recall_text("全角ＡＢＣ 与中文阳光电源"),
+            searchable_text: morphz::memory::segment_recall_text("全角ＡＢＣ 与中文阳光电源"),
             preview: "全角ＡＢＣ 与中文阳光电源".to_string(),
             retired: false,
             updated_sequence: 10,
@@ -1719,6 +1719,42 @@ where
         "the database must apply the requested limit"
     );
     assert_eq!(exact[0].document_id, "memory/sandbox-permission");
+
+    // Both backends segment before indexing, so a two-character Chinese word —
+    // the most common word form in the language — is an ordinary indexed term
+    // on either store rather than a query that silently returns nothing.
+    let short = store
+        .search_recall_documents(
+            context_id,
+            &morphz::memory::normalize_recall_text("权限"),
+            8,
+        )
+        .await
+        .unwrap();
+    assert!(
+        short
+            .iter()
+            .any(|hit| hit.document_id == "memory/sandbox-permission"),
+        "two-character Chinese query must stay searchable: {short:?}"
+    );
+
+    // A quoted query is the Agent's opt-in narrowing: it requires adjacency,
+    // so terms that never neighbour each other stop matching.
+    let phrase_miss = store
+        .search_recall_documents(context_id, "\"权限 全角\"", 8)
+        .await
+        .unwrap();
+    assert!(
+        phrase_miss.is_empty(),
+        "phrase query must require adjacency: {phrase_miss:?}"
+    );
+
+    let capability = store.recall_index_capability().await.unwrap();
+    assert_eq!(
+        capability.segmenter,
+        morphz::memory::RECALL_SEGMENTER,
+        "stored terms are only comparable against queries from the same segmenter"
+    );
 }
 
 async fn assert_timer_lease_conformance<S>(store: Arc<S>)

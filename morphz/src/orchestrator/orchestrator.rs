@@ -3621,7 +3621,7 @@ impl Orchestrator {
                 session_id: Some(session_id.to_string()),
                 after_sequence: trigger_sequence,
                 topic: Some("chat/context_inspect".to_string()),
-                search_query: trigger_root_turn_id.map(ToOwned::to_owned),
+                root_turn_id: trigger_root_turn_id.map(ToOwned::to_owned),
                 top_k: Some(1),
                 ..Default::default()
             })

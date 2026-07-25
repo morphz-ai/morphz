@@ -37,6 +37,10 @@ ratatui = { version = "0.30.2", default-features = false, features = ["crossterm
 crossterm = { version = "0.29.0", features = ["event-stream"] }
 unicode-width = "0.2"
 unicode-normalization = "0.1"
+# Word segmentation for Recall. SQLite FTS5 has no CJK-aware tokenizer, so the
+# Runtime segments text itself and the physical index only splits on
+# whitespace. `compiled_data` keeps the dictionaries in the binary.
+icu_segmenter = "2.2"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 portable-pty = "0.9.0"
 vt100 = "0.16.2"

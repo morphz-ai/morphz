@@ -313,6 +313,11 @@
     "threadToolChain": "Tool call chain",
     "threadToolChainEmpty": "The Thread exists but has not produced a tool call yet.",
     "threadToolChainHint": "Open the complete causal chain",
+    "lineage": {
+      "title": "Causal ownership",
+      "thread": "Thread",
+      "objective": "Objective"
+    },
     "layout": {
       "title": "Conversation presentation",
       "merged": "Merged",
@@ -345,7 +350,14 @@
       "approval": "Approval: {{status}}",
       "waitingForExecution": "The Thread exists and is waiting for an executable signal.",
       "delivery": "Delivery",
-      "openFullThread": "Open complete causal chain"
+      "openFullThread": "Open complete causal chain",
+      "allObjectives": "All objectives",
+      "filterByObjective": "Filter by Objective",
+      "filterObjective": "Filter this Objective",
+      "clearObjectiveFilter": "Clear Objective filter",
+      "objectiveTint": "Objective tint",
+      "enableObjectiveTint": "Enable Objective tint",
+      "disableObjectiveTint": "Disable Objective tint"
     }
   },
   "work": {

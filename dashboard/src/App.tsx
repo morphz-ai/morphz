@@ -1,5 +1,5 @@
 import { memo, startTransition, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
-import type { RefObject } from 'react'
+import type { CSSProperties, RefObject } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { TFunction } from 'i18next'
 import ReactMarkdown from 'react-markdown'
@@ -20,6 +20,7 @@ import {
   Copy,
   Database,
   Eye,
+  Filter,
   GitBranch,
   Globe,
   Layers3,
@@ -96,6 +97,12 @@ import { resolveDashboardToken } from './api/auth'
 import { invalidatedQueriesForTopic } from './app/invalidation'
 import { copyTextToClipboard } from './utils/clipboard'
 import {
+  buildObjectiveLineageIndex,
+  objectiveToneForId,
+  type CausalLineage,
+  type ObjectiveLineageIndex,
+} from './app/objectiveLineage'
+import {
   compactTokens,
   conversationEventKind,
   conversationEventLane,
@@ -107,12 +114,58 @@ import {
   threadKindLabel,
 } from './app/presentation'
 
+function objectiveTintStyle(objectiveId: string | undefined, enabled: boolean): CSSProperties | undefined {
+  if (!enabled || !objectiveId) return undefined
+  const tone = objectiveToneForId(objectiveId)
+  if (!tone) return undefined
+  return { '--objective-color': tone.color } as CSSProperties
+}
+
+function CausalIdentifierBadges({
+  lineage,
+  t,
+  tintEnabled,
+}: {
+  lineage: CausalLineage
+  t: TFunction
+  tintEnabled: boolean
+}) {
+  if (lineage.threadIds.length === 0 && lineage.objectiveIds.length === 0) return null
+  return (
+    <div className="message-causal-identifiers" aria-label={t('conversation.lineage.title')}>
+      {lineage.threadIds.map(threadId => (
+        <span className="causal-identifier thread" key={`thread-${threadId}`} title={threadId}>
+          <GitBranch size={10} />
+          <b>{t('conversation.lineage.thread')}</b>
+          <code>{shortId(threadId, 18)}</code>
+        </span>
+      ))}
+      {lineage.objectiveIds.map(objectiveId => (
+        <span
+          className="causal-identifier objective"
+          key={`objective-${objectiveId}`}
+          style={objectiveTintStyle(objectiveId, tintEnabled)}
+          title={objectiveId}
+        >
+          <i aria-hidden="true" />
+          <b>{t('conversation.lineage.objective')}</b>
+          <code>{shortId(objectiveId, 18)}</code>
+        </span>
+      ))}
+    </div>
+  )
+}
+
 function MessageThreadReference({
   snapshot,
+  objectiveIds,
+  tintEnabled,
   onOpen,
   t,
 }: {
   snapshot: SchedulerThreadSnapshot
+  objectiveIds: string[]
+  tintEnabled: boolean
   onOpen: () => void
   t: TFunction
 }) {
@@ -126,7 +179,10 @@ function MessageThreadReference({
   const previewId = `thread-tool-chain-${snapshot.thread.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
 
   return (
-    <div className={`message-thread-reference phase-${snapshot.phase}`}>
+    <div
+      className={`message-thread-reference phase-${snapshot.phase} ${objectiveIds.length > 0 && tintEnabled ? 'objective-tinted' : ''}`}
+      style={objectiveTintStyle(objectiveIds[0], tintEnabled)}
+    >
       <button
         className="message-thread-capsule"
         type="button"
@@ -138,6 +194,11 @@ function MessageThreadReference({
         <span className="message-thread-copy">
           <strong>{threadKindLabel(snapshot.thread.kind, t)}</strong>
           <small><i className={`thread-state-dot ${displayState}`} />{statusLabel(displayState, t)} · {t('conversation.threadJobs', { count: jobs.length })}</small>
+          {objectiveIds.length > 0 && (
+            <em className="message-thread-objective" title={objectiveIds.join(', ')}>
+              {t('conversation.lineage.objective')} · {shortId(objectiveIds[0], 18)}{objectiveIds.length > 1 ? ` +${objectiveIds.length - 1}` : ''}
+            </em>
+          )}
         </span>
         <code>{shortId(snapshot.thread.id, 18)}</code>
         <ChevronRight className="message-thread-open" size={13} aria-hidden="true" />
@@ -279,6 +340,10 @@ function initialShowReasoningSummary(): boolean {
   } catch {
     return false
   }
+}
+
+function initialObjectiveTintEnabled(): boolean {
+  return initialBooleanPreference('morphz.dashboard.objectiveTint', false)
 }
 
 function initialBooleanPreference(key: string, fallback: boolean): boolean {
@@ -789,9 +854,11 @@ type ObjectiveMutationKind = 'pause' | 'resume' | 'delete' | ''
 function ObjectiveCardActions({
   objective,
   expanded,
+  selected,
   busy,
   disabled,
   t,
+  onFilter,
   onPause,
   onResume,
   onDelete,
@@ -799,9 +866,11 @@ function ObjectiveCardActions({
 }: {
   objective: ObjectiveRecord
   expanded: boolean
+  selected: boolean
   busy: ObjectiveMutationKind
   disabled: boolean
   t: TFunction
+  onFilter: () => void
   onPause: () => void
   onResume: () => void
   onDelete: () => void
@@ -810,6 +879,16 @@ function ObjectiveCardActions({
   const mutationPending = disabled || Boolean(busy)
   return (
     <div className="objective-card-actions">
+      <button
+        className={`objective-card-action filter ${selected ? 'is-active' : ''}`}
+        type="button"
+        aria-pressed={selected}
+        aria-label={selected ? t('conversation.activity.clearObjectiveFilter') : t('conversation.activity.filterObjective')}
+        title={selected ? t('conversation.activity.clearObjectiveFilter') : t('conversation.activity.filterObjective')}
+        onClick={onFilter}
+      >
+        <Filter size={13} />
+      </button>
       {objective.status === 'active' && (
         <button
           className="objective-card-action"
@@ -1017,6 +1096,9 @@ function DialogueActivityDock({
   liveModelAttempts,
   showReasoningSummary,
   expandedObjectiveIds,
+  selectedObjectiveId,
+  objectiveTintEnabled,
+  objectiveIdsByThread,
   pausingObjectiveId,
   resumingObjectiveId,
   deletingObjectiveId,
@@ -1026,6 +1108,8 @@ function DialogueActivityDock({
   onReasoningOpenChange,
   onInspectThread,
   onObjectiveToggle,
+  onObjectiveFilterChange,
+  onObjectiveTintChange,
   onPauseObjective,
   onResumeObjective,
   onDeleteObjective,
@@ -1041,6 +1125,9 @@ function DialogueActivityDock({
   liveModelAttempts: LiveModelAttempt[]
   showReasoningSummary: boolean
   expandedObjectiveIds: ReadonlySet<string>
+  selectedObjectiveId: string
+  objectiveTintEnabled: boolean
+  objectiveIdsByThread: ReadonlyMap<string, string[]>
   pausingObjectiveId: string
   resumingObjectiveId: string
   deletingObjectiveId: string
@@ -1050,6 +1137,8 @@ function DialogueActivityDock({
   onReasoningOpenChange: (open: boolean) => void
   onInspectThread: (threadId: string) => void
   onObjectiveToggle: (objectiveId: string) => void
+  onObjectiveFilterChange: (objectiveId: string) => void
+  onObjectiveTintChange: (enabled: boolean) => void
   onPauseObjective: (objective: ObjectiveRecord) => void
   onResumeObjective: (objective: ObjectiveRecord) => void
   onDeleteObjective: (objective: ObjectiveRecord) => void
@@ -1081,7 +1170,35 @@ function DialogueActivityDock({
       </button>
 
       {open && (
-        <div className="dialogue-activity-content">
+        <>
+          <div className="dialogue-activity-controls">
+            <label className="dialogue-activity-filter">
+              <Filter size={12} aria-hidden="true" />
+              <select
+                aria-label={t('conversation.activity.filterByObjective')}
+                value={selectedObjectiveId}
+                onChange={event => onObjectiveFilterChange(event.target.value)}
+              >
+                <option value="">{t('conversation.activity.allObjectives')}</option>
+                {objectives.map(objective => (
+                  <option key={objective.id} value={objective.id}>
+                    {shortId(objective.id, 14)} · {objective.stated_objective}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              className={`objective-tint-toggle ${objectiveTintEnabled ? 'is-active' : ''}`}
+              type="button"
+              aria-pressed={objectiveTintEnabled}
+              title={objectiveTintEnabled ? t('conversation.activity.disableObjectiveTint') : t('conversation.activity.enableObjectiveTint')}
+              onClick={() => onObjectiveTintChange(!objectiveTintEnabled)}
+            >
+              <Palette size={12} />
+              <span>{t('conversation.activity.objectiveTint')}</span>
+            </button>
+          </div>
+          <div className="dialogue-activity-content">
           <details
             className="dialogue-activity-section"
             open={objectivesOpen}
@@ -1104,17 +1221,24 @@ function DialogueActivityDock({
                     : deletingObjectiveId === objective.id
                       ? 'delete'
                       : ''
+                const selected = selectedObjectiveId === objective.id
                 return (
-                  <article className={`dialogue-objective-card ${objective.status} ${expanded ? 'is-expanded' : ''}`} key={objective.id}>
+                  <article
+                    className={`dialogue-objective-card ${objective.status} ${expanded ? 'is-expanded' : ''} ${selected ? 'is-selected' : ''} ${objectiveTintEnabled ? 'objective-tinted' : ''}`}
+                    key={objective.id}
+                    style={objectiveTintStyle(objective.id, objectiveTintEnabled)}
+                  >
                     <header className="objective-card-titlebar">
                       <span className={`activity-status ${objective.status}`}><i />{statusLabel(objective.status, t)}</span>
                       <time>{formatAgo(objective.updated_at, t)}</time>
                       <ObjectiveCardActions
                         objective={objective}
                         expanded={expanded}
+                        selected={selected}
                         busy={busy}
                         disabled={Boolean(pausingObjectiveId || resumingObjectiveId || deletingObjectiveId)}
                         t={t}
+                        onFilter={() => onObjectiveFilterChange(selected ? '' : objective.id)}
                         onPause={() => onPauseObjective(objective)}
                         onResume={() => onResumeObjective(objective)}
                         onDelete={() => onDeleteObjective(objective)}
@@ -1122,6 +1246,7 @@ function DialogueActivityDock({
                       />
                     </header>
                     <strong>{objective.stated_objective}</strong>
+                    <code className="dialogue-objective-id" title={objective.id}>{shortId(objective.id, 22)}</code>
                     {expanded && (
                       <div className="objective-card-details">
                         {objective.status_reason && <p>{objective.status_reason}</p>}
@@ -1165,8 +1290,13 @@ function DialogueActivityDock({
                   : null
                 const currentSession = effective.thread.session_id === currentSessionId
                 const displayState = effective.phase === 'idle' ? effective.thread.lifecycle : effective.phase
+                const objectiveIds = objectiveIdsByThread.get(effective.thread.id) ?? []
                 return (
-                  <article className={`dialogue-thread-card phase-${effective.phase} ${expanded ? 'is-expanded' : ''}`} key={effective.thread.id}>
+                  <article
+                    className={`dialogue-thread-card phase-${effective.phase} ${expanded ? 'is-expanded' : ''} ${objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`}
+                    key={effective.thread.id}
+                    style={objectiveTintStyle(objectiveIds[0], objectiveTintEnabled)}
+                  >
                     <button
                       className="dialogue-thread-summary"
                       type="button"
@@ -1183,6 +1313,9 @@ function DialogueActivityDock({
                     </button>
                     <div className="dialogue-thread-origin">
                       <span>{currentSession ? t('conversation.activity.currentSession') : t('conversation.activity.otherSession', { id: shortId(effective.thread.session_id, 14) })}</span>
+                      {objectiveIds.length > 0 && (
+                        <code title={objectiveIds.join(', ')}>{t('conversation.lineage.objective')} · {shortId(objectiveIds[0], 14)}{objectiveIds.length > 1 ? ` +${objectiveIds.length - 1}` : ''}</code>
+                      )}
                       <time>{formatAgo(effective.thread.updated_at, t)}</time>
                     </div>
 
@@ -1338,8 +1471,15 @@ function DialogueActivityDock({
                 const summary = latestJob
                   ? summarizeToolCall(latestJob.job.tool_name, JSON.stringify(latestJob.job.request), t)
                   : null
+                const objectiveIds = objectiveIdsByThread.get(snapshot.thread.id) ?? []
                 return (
-                  <button className="dialogue-history-card" type="button" key={snapshot.thread.id} onClick={() => onInspectThread(snapshot.thread.id)}>
+                  <button
+                    className={`dialogue-history-card ${objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`}
+                    style={objectiveTintStyle(objectiveIds[0], objectiveTintEnabled)}
+                    type="button"
+                    key={snapshot.thread.id}
+                    onClick={() => onInspectThread(snapshot.thread.id)}
+                  >
                     <span className={`activity-status ${snapshot.thread.lifecycle}`}><i />{statusLabel(snapshot.thread.lifecycle, t)}</span>
                     <span>
                       <strong>{threadKindLabel(snapshot.thread.kind, t)}</strong>
@@ -1352,7 +1492,8 @@ function DialogueActivityDock({
               {historyThreads.length === 0 && <div className="dialogue-activity-empty">{t('conversation.activity.noHistory')}</div>}
             </div>
           </details>
-        </div>
+          </div>
+        </>
       )}
     </aside>
   )
@@ -1631,6 +1772,8 @@ export default function App() {
   const [showReasoningSummary, setShowReasoningSummary] = useState(initialShowReasoningSummary)
   const [conversationLayout, setConversationLayout] = useState<ConversationLayout>(initialConversationLayout)
   const [conversationMobileLane, setConversationMobileLane] = useState<ConversationMobileLane>('dialogue')
+  const [objectiveTintEnabled, setObjectiveTintEnabled] = useState(initialObjectiveTintEnabled)
+  const [selectedObjectiveFilterId, setSelectedObjectiveFilterId] = useState('')
   const [themeMenuOpen, setThemeMenuOpen] = useState(false)
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
   const [catalogReady, setCatalogReady] = useState(false)
@@ -1733,6 +1876,14 @@ export default function App() {
       // The layout preference remains active for the current page lifetime.
     }
   }, [conversationLayout])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('morphz.dashboard.objectiveTint', String(objectiveTintEnabled))
+    } catch {
+      // The visual preference remains active for the current page lifetime.
+    }
+  }, [objectiveTintEnabled])
 
   const requestConfirmation = useCallback((options: {
     title: string
@@ -2758,6 +2909,21 @@ export default function App() {
     [events, eventsSessionId, selectedSessionId],
   )
   const liveModelAttempts = visibleLiveModelAttempts(liveModelState, selectedSessionId)
+  const schedulerThreads = useMemo(
+    () => schedulerSnapshot?.threads ?? [],
+    [schedulerSnapshot],
+  )
+  const objectiveLineage = useMemo<ObjectiveLineageIndex>(
+    () => buildObjectiveLineageIndex(
+      schedulerThreads.map(snapshot => ({
+        id: snapshot.thread.id,
+        root_turn_id: snapshot.thread.root_turn_id,
+        activations: snapshot.activations.map(item => item.activation),
+      })),
+      sessionEvents,
+    ),
+    [schedulerThreads, sessionEvents],
+  )
   const durableReasoningSummaries = useMemo(
     () => selectDurableReasoningSummaries(sessionEvents),
     [sessionEvents],
@@ -2783,26 +2949,34 @@ export default function App() {
     () => conversationEvents.slice(-visibleCount),
     [conversationEvents, visibleCount],
   )
+  const visibleEventsForObjective = useMemo(
+    () => selectedObjectiveFilterId
+      ? visibleEvents.filter(event => objectiveLineage.forEvent(event).objectiveIds.includes(selectedObjectiveFilterId))
+      : visibleEvents,
+    [objectiveLineage, selectedObjectiveFilterId, visibleEvents],
+  )
   const visibleDialogueEvents = useMemo(
     () => conversationLayout === 'split'
-      ? visibleEvents.filter(event => {
+      ? visibleEventsForObjective.filter(event => {
           return conversationEventLane(event.topic, event.payload) === 'dialogue'
         })
-      : visibleEvents,
-    [conversationLayout, visibleEvents],
+      : visibleEventsForObjective,
+    [conversationLayout, visibleEventsForObjective],
   )
   const visibleExecutionOutputEvents = useMemo(
     () => conversationLayout === 'split'
-      ? visibleEvents.filter(event => {
+      ? visibleEventsForObjective.filter(event => {
           return conversationEventLane(event.topic, event.payload) === 'execution_output'
         })
       : [],
-    [conversationLayout, visibleEvents],
+    [conversationLayout, visibleEventsForObjective],
   )
-  const hiddenEventCount = conversationEvents.length - visibleEvents.length
+  const hiddenEventCount = selectedObjectiveFilterId
+    ? conversationEvents.filter(event => objectiveLineage.forEvent(event).objectiveIds.includes(selectedObjectiveFilterId)).length - visibleEventsForObjective.length
+    : conversationEvents.length - visibleEvents.length
   const visibleReasoningSummaries = useMemo(() => {
     const byEventId = new Map<string, string>()
-    for (const event of visibleEvents) {
+    for (const event of visibleEventsForObjective) {
       const kind = eventKind(event)
       if (kind !== 'agent' && kind !== 'background' && kind !== 'reasoning') continue
       const summary = findReasoningSummaryChainForPayload(
@@ -2813,19 +2987,25 @@ export default function App() {
       if (summary) byEventId.set(event.id, summary)
     }
     return byEventId
-  }, [durableReasoningSummaries, reasoningContinuationSummaries, visibleEvents])
+  }, [durableReasoningSummaries, reasoningContinuationSummaries, visibleEventsForObjective])
   const streamingAttempts = useMemo(
     () => Object.values(liveModelAttempts)
       .sort((left, right) => left.startedAt.localeCompare(right.startedAt)),
     [liveModelAttempts],
+  )
+  const visibleStreamingAttempts = useMemo(
+    () => selectedObjectiveFilterId
+      ? streamingAttempts.filter(attempt => objectiveLineage.forActivation(attempt.activationId).objectiveIds.includes(selectedObjectiveFilterId))
+      : streamingAttempts,
+    [objectiveLineage, selectedObjectiveFilterId, streamingAttempts],
   )
   const conversationStreamingAttempts = useMemo(
     // Dialogue, Objective and Delivery evaluations can all terminate in a
     // user-visible reply for the active Session. Work evaluations only
     // produce internal Thread results; rendering those here would expose an
     // intermediate draft as if it were the final answer.
-    () => streamingAttempts.filter(attempt => ['dialogue_turn', 'objective', 'delivery'].includes(attempt.threadKind)),
-    [streamingAttempts],
+    () => visibleStreamingAttempts.filter(attempt => ['dialogue_turn', 'objective', 'delivery'].includes(attempt.threadKind)),
+    [visibleStreamingAttempts],
   )
   const dialogueStreamingAttempts = useMemo(
     () => conversationLayout === 'split'
@@ -2835,9 +3015,9 @@ export default function App() {
   )
   const executionOutputStreamingAttempts = useMemo(
     () => conversationLayout === 'split'
-      ? streamingAttempts.filter(attempt => attempt.threadKind !== 'dialogue_turn')
+      ? visibleStreamingAttempts.filter(attempt => attempt.threadKind !== 'dialogue_turn')
       : [],
-    [conversationLayout, streamingAttempts],
+    [conversationLayout, visibleStreamingAttempts],
   )
   const turnSettlement = useMemo(
     () => findTurnSettlement(sessionEvents, pendingTurn?.rootTurnId ?? null),
@@ -2895,10 +3075,11 @@ export default function App() {
   const runningObjectives = activeObjectives.filter(item => item.status === 'active')
   const blockedObjectives = activeObjectives.filter(item => item.status === 'blocked')
   const pausedObjectives = activeObjectives.filter(item => item.status === 'paused')
-  const schedulerThreads = useMemo(
-    () => schedulerSnapshot?.threads ?? [],
-    [schedulerSnapshot],
-  )
+  useEffect(() => {
+    if (selectedObjectiveFilterId && !objectives.some(objective => objective.id === selectedObjectiveFilterId)) {
+      setSelectedObjectiveFilterId('')
+    }
+  }, [objectives, selectedObjectiveFilterId])
   const acknowledgedAttentionKeys = useMemo(
     () => new Set(
       attentionAcknowledgements
@@ -2915,7 +3096,11 @@ export default function App() {
   })
   const { dialogueActivityThreads, dialogueActivityHistoryThreads } = useMemo(() => {
     const phaseRank: Record<SchedulerThreadSnapshot['phase'], number> = { running: 0, runnable: 1, waiting: 2, idle: 3 }
-    const executionBearingThreads = schedulerThreads.filter(threadCarriesExecution)
+    const executionBearingThreads = schedulerThreads.filter(snapshot => {
+      if (!threadCarriesExecution(snapshot)) return false
+      return !selectedObjectiveFilterId
+        || (objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []).includes(selectedObjectiveFilterId)
+    })
     // Thread lifecycle and Scheduler phase are deliberately orthogonal. An
     // open+idle Thread may accept future Signals, but it is not executing now.
     const active = executionBearingThreads.filter(snapshot => snapshot.phase !== 'idle')
@@ -2935,18 +3120,24 @@ export default function App() {
       dialogueActivityThreads: sortThreads(active),
       dialogueActivityHistoryThreads: sortThreads(history),
     }
-  }, [schedulerThreads, selectedSessionId])
+  }, [objectiveLineage, schedulerThreads, selectedObjectiveFilterId, selectedSessionId])
   const showDialogueActivity = Boolean(selectedContextId && selectedSessionId)
   const visibleSchedulerThreads = useMemo(() => {
-    const active = schedulerThreads.filter(snapshot => snapshot.phase !== 'idle')
+    const filtered = schedulerThreads.filter(snapshot => (
+      !selectedObjectiveFilterId
+      || (objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []).includes(selectedObjectiveFilterId)
+    ))
+    const active = filtered.filter(snapshot => snapshot.phase !== 'idle')
     const activeIds = new Set(active.map(snapshot => snapshot.thread.id))
-    const recentHistory = schedulerThreads
+    const recentHistory = filtered
       .filter(snapshot => !activeIds.has(snapshot.thread.id))
       .sort((left, right) => right.thread.updated_at.localeCompare(left.thread.updated_at))
       .slice(0, WORK_HISTORY_THREAD_LIMIT)
     return [...active, ...recentHistory]
-  }, [schedulerThreads])
-  const hiddenSchedulerThreadCount = schedulerThreads.length - visibleSchedulerThreads.length
+  }, [objectiveLineage, schedulerThreads, selectedObjectiveFilterId])
+  const hiddenSchedulerThreadCount = (selectedObjectiveFilterId
+    ? schedulerThreads.filter(snapshot => (objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []).includes(selectedObjectiveFilterId))
+    : schedulerThreads).length - visibleSchedulerThreads.length
   const schedulerHistoryPageFull = view === 'scheduler'
     && schedulerThreads.length >= schedulerHistoryLimit
     && schedulerThreads.some(snapshot => snapshot.thread.lifecycle !== 'open')
@@ -3969,6 +4160,9 @@ export default function App() {
       liveModelAttempts={streamingAttempts}
       showReasoningSummary={showReasoningSummary}
       expandedObjectiveIds={expandedObjectiveIds}
+      selectedObjectiveId={selectedObjectiveFilterId}
+      objectiveTintEnabled={objectiveTintEnabled}
+      objectiveIdsByThread={objectiveLineage.objectiveIdsByThread}
       pausingObjectiveId={pausingObjectiveId}
       resumingObjectiveId={resumingObjectiveId}
       deletingObjectiveId={deletingObjectiveId}
@@ -3981,6 +4175,8 @@ export default function App() {
       onReasoningOpenChange={setShowReasoningSummary}
       onInspectThread={threadId => navigate(threadPath(selectedContextId, threadId))}
       onObjectiveToggle={toggleObjectiveExpanded}
+      onObjectiveFilterChange={setSelectedObjectiveFilterId}
+      onObjectiveTintChange={setObjectiveTintEnabled}
       onPauseObjective={objective => void pauseObjective(objective)}
       onResumeObjective={objective => void resumeObjective(objective)}
       onDeleteObjective={objective => void deleteObjective(objective)}
@@ -4316,14 +4512,17 @@ export default function App() {
                 )}
                 {visibleDialogueEvents.map(event => {
                   const kind = eventKind(event) ?? 'system'
+                  const lineage = objectiveLineage.forEvent(event)
+                  const tintStyle = objectiveTintStyle(lineage.objectiveIds[0], objectiveTintEnabled)
                   if (kind === 'progress') {
-                    return <div className="progress-note" key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
+                    return <div className={`progress-note ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                   }
                   const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
                   if (kind === 'reasoning') {
                     if (!persistedReasoningSummary) return null
                     return (
-                      <article className="message-row agent persisted-reasoning" key={event.id}>
+                      <article className={`message-row agent persisted-reasoning ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}>
+                        <CausalIdentifierBadges lineage={lineage} t={t} tintEnabled={objectiveTintEnabled} />
                         <ReasoningSummaryBlock
                           summary={persistedReasoningSummary}
                           live={false}
@@ -4346,7 +4545,7 @@ export default function App() {
                   const showRole = kind === 'background' || kind === 'system'
                   const derivedThreads = derivedThreadsByRootTurn.get(event.id) ?? []
                   return (
-                    <article className={`message-row ${kind}`} key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
+                    <article className={`message-row ${kind} ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
                       {showRole && (
                         <div className="message-role">
                           <strong>{role}</strong>
@@ -4354,6 +4553,7 @@ export default function App() {
                           {kind === 'background' && <small>{shortId(String(event.payload.root_turn_id ?? ''), 18)}</small>}
                         </div>
                       )}
+                      <CausalIdentifierBadges lineage={lineage} t={t} tintEnabled={objectiveTintEnabled} />
                       {persistedReasoningSummary && (
                         <ReasoningSummaryBlock
                           summary={persistedReasoningSummary}
@@ -4376,6 +4576,8 @@ export default function App() {
                             <MessageThreadReference
                               key={snapshot.thread.id}
                               snapshot={snapshot}
+                              objectiveIds={objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []}
+                              tintEnabled={objectiveTintEnabled}
                               onOpen={() => navigate(threadPath(selectedContextId, snapshot.thread.id))}
                               t={t}
                             />
@@ -4422,8 +4624,11 @@ export default function App() {
                     </article>
                   )
                 })}
-                {dialogueStreamingAttempts.map(attempt => (
-                  <article className="message-row agent streaming" key={`stream-${attempt.attemptId}`} aria-live="polite">
+                {dialogueStreamingAttempts.map(attempt => {
+                  const lineage = objectiveLineage.forActivation(attempt.activationId)
+                  return (
+                  <article className={`message-row agent streaming ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={objectiveTintStyle(lineage.objectiveIds[0], objectiveTintEnabled)} key={`stream-${attempt.attemptId}`} aria-live="polite">
+                    <CausalIdentifierBadges lineage={lineage} t={t} tintEnabled={objectiveTintEnabled} />
                     <ReasoningSummaryBlock
                       summary={liveReasoningSummaryText(reasoningContinuationSummaries, attempt)}
                       live
@@ -4451,7 +4656,8 @@ export default function App() {
                             : t('conversation.streaming')}</span>
                     </div>
                   </article>
-                ))}
+                  )
+                })}
                 {turnPending && dialogueStreamingAttempts.length === 0 && (
                   <article className="message-row agent streaming" role="status" aria-live="polite">
                     <div className="stream-status">
@@ -4489,15 +4695,18 @@ export default function App() {
                       )}
                       {visibleExecutionOutputEvents.map(event => {
                         const kind = eventKind(event) ?? 'background'
+                        const lineage = objectiveLineage.forEvent(event)
+                        const tintStyle = objectiveTintStyle(lineage.objectiveIds[0], objectiveTintEnabled)
                         const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
                         if (kind === 'progress') {
-                          return <div className="progress-note" key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
+                          return <div className={`progress-note ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                         }
                         if (kind === 'reasoning') {
                           const summary = persistedReasoningSummary || String(event.payload.text ?? '')
                           if (!summary) return null
                           return (
-                            <article className="message-row agent persisted-reasoning execution-output" key={event.id}>
+                            <article className={`message-row agent persisted-reasoning execution-output ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}>
+                              <CausalIdentifierBadges lineage={lineage} t={t} tintEnabled={objectiveTintEnabled} />
                               <ReasoningSummaryBlock
                                 summary={summary}
                                 live={false}
@@ -4512,12 +4721,13 @@ export default function App() {
                         }
                         const derivedThreads = derivedThreadsByRootTurn.get(event.id) ?? []
                         return (
-                          <article className="message-row background execution-output" key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
+                          <article className={`message-row background execution-output ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
                             <div className="message-role">
                               <strong>{t('conversation.roleDelivery')}</strong>
                               <time>{formatTime(event.timestamp, i18n.language)}</time>
                               <small>{shortId(String(event.payload.root_turn_id ?? ''), 18)}</small>
                             </div>
+                            <CausalIdentifierBadges lineage={lineage} t={t} tintEnabled={objectiveTintEnabled} />
                             {persistedReasoningSummary && (
                               <ReasoningSummaryBlock
                                 summary={persistedReasoningSummary}
@@ -4540,6 +4750,8 @@ export default function App() {
                                   <MessageThreadReference
                                     key={snapshot.thread.id}
                                     snapshot={snapshot}
+                                    objectiveIds={objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []}
+                                    tintEnabled={objectiveTintEnabled}
                                     onOpen={() => navigate(threadPath(selectedContextId, snapshot.thread.id))}
                                     t={t}
                                   />
@@ -4559,8 +4771,11 @@ export default function App() {
                           </article>
                         )
                       })}
-                      {executionOutputStreamingAttempts.map(attempt => (
-                        <article className="message-row agent streaming execution-output" key={`execution-stream-${attempt.attemptId}`} aria-live="polite">
+                      {executionOutputStreamingAttempts.map(attempt => {
+                        const lineage = objectiveLineage.forActivation(attempt.activationId)
+                        return (
+                        <article className={`message-row agent streaming execution-output ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={objectiveTintStyle(lineage.objectiveIds[0], objectiveTintEnabled)} key={`execution-stream-${attempt.attemptId}`} aria-live="polite">
+                          <CausalIdentifierBadges lineage={lineage} t={t} tintEnabled={objectiveTintEnabled} />
                           <ReasoningSummaryBlock
                             summary={liveReasoningSummaryText(reasoningContinuationSummaries, attempt)}
                             live
@@ -4588,7 +4803,8 @@ export default function App() {
                                   : t('conversation.streaming')}</span>
                           </div>
                         </article>
-                      ))}
+                        )
+                      })}
                       <div ref={executionOutputEnd} />
                     </div>
                   </div>
@@ -4721,9 +4937,11 @@ export default function App() {
                           <ObjectiveCardActions
                             objective={objective}
                             expanded={expanded}
+                            selected={selectedObjectiveFilterId === objective.id}
                             busy={busy}
                             disabled={Boolean(pausingObjectiveId || resumingObjectiveId || deletingObjectiveId)}
                             t={t}
+                            onFilter={() => setSelectedObjectiveFilterId(current => current === objective.id ? '' : objective.id)}
                             onPause={() => void pauseObjective(objective)}
                             onResume={() => void resumeObjective(objective)}
                             onDelete={() => void deleteObjective(objective)}

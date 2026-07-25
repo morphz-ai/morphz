@@ -30,8 +30,8 @@ use crate::memory::{
     MindProjectionStore, NewAgent, NewCognitiveContext, NewDelegation, NewExecutionNodeChallenge,
     NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewPrincipal, NewSession,
     ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
-    PairExecutionNode, QueryFilter, RecallProjectionStore, RuntimeStore, ScheduleMutation,
-    ScheduleRecord, ScheduleStatus, SessionRecord, SessionStore, SessionUpdate,
+    PairExecutionNode, QueryFilter, RecallDocumentKind, RecallProjectionStore, RuntimeStore,
+    ScheduleMutation, ScheduleRecord, ScheduleStatus, SessionRecord, SessionStore, SessionUpdate,
     ThreadActivationRecord, ThreadActivationStatus, ThreadPhase, ThreadRecord, ThreadSignalRecord,
     ThreadSignalStatus, TimerStore,
 };
@@ -3320,20 +3320,32 @@ impl MorphzRuntime {
             "runtime/model_attempt_state",
             "runtime/model_reasoning_summary",
         ] {
+            // Rows written before the causal Event columns carry their route
+            // only in the payload. A Thread that spans that upgrade holds both
+            // projected and legacy rows, so a non-empty result is no evidence
+            // that the fill already ran — asking only when the query came back
+            // empty would hide the legacy half of such a Thread permanently.
+            // The store keeps a marker and settles the filled case with a
+            // keyed read, so this stays cheap in the polling path.
+            self.inner
+                .store
+                .backfill_causal_projection_for_thread(
+                    context_id,
+                    &thread.session_id,
+                    thread_id,
+                    topic,
+                )
+                .await?;
             model_attempt_events.extend(
                 self.query_events(QueryFilter {
                     context_id: Some(context_id.to_string()),
                     session_id: Some(thread.session_id.clone()),
                     topic: Some(topic.to_string()),
-                    search_query: Some(thread_id.to_string()),
+                    thread_id: Some(thread_id.to_string()),
                     latest_k: Some(2_048),
                     ..QueryFilter::default()
                 })
-                .await?
-                .into_iter()
-                .filter(|event| {
-                    event.payload.get("thread_id").and_then(Value::as_str) == Some(thread_id)
-                }),
+                .await?,
             );
         }
         model_attempt_events.sort_by(|left, right| {
@@ -3368,9 +3380,39 @@ impl MorphzRuntime {
             return Err(format!("Context '{}' 不存在", query.context_id).into());
         }
         let limit = if query.limit == 0 { 100 } else { query.limit }.clamp(1, 500);
-        let requires_payload_scope_scan = query.principal_id.is_some()
-            || query.thread_id.is_some()
-            || query.activation_id.is_some();
+        let (event_ids, has_search_term) = match query.search_query.as_deref() {
+            None => (Vec::new(), false),
+            Some(search) => {
+                let normalized = crate::memory::normalize_recall_text(search.trim());
+                if normalized.is_empty() {
+                    (Vec::new(), false)
+                } else {
+                    (
+                        self.inner
+                            .store
+                            .search_recall_documents(&query.context_id, &normalized, limit.min(100))
+                            .await?
+                            .into_iter()
+                            .filter(|hit| hit.document_kind == RecallDocumentKind::Event)
+                            .map(|hit| hit.document_id)
+                            .collect::<Vec<_>>(),
+                        true,
+                    )
+                }
+            }
+        };
+        if has_search_term && event_ids.is_empty() {
+            return Ok(LedgerQueryPage {
+                context_id: query.context_id,
+                generated_at: chrono::Utc::now(),
+                events: Vec::new(),
+                scanned_count: 0,
+                scan_exhaustive: true,
+                next_after_sequence: None,
+                next_before_sequence: None,
+            });
+        }
+        let requires_payload_scope_scan = query.principal_id.is_some();
         let scan_limit = if requires_payload_scope_scan {
             limit.saturating_mul(20).clamp(limit, 20_000)
         } else {
@@ -3388,7 +3430,9 @@ impl MorphzRuntime {
             actors: query.actor.clone().into_iter().collect(),
             types: query.event_type.clone().into_iter().collect(),
             topic: query.topic.clone(),
-            search_query: query.search_query.clone(),
+            event_ids,
+            thread_id: query.thread_id.clone(),
+            activation_id: query.activation_id.clone(),
             ..QueryFilter::default()
         };
         if forward_scan {

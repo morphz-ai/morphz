@@ -9,11 +9,11 @@
 
 use crate::event::Event;
 use crate::memory::{
-    AttentionAcknowledgementRecord, CognitiveClockStore, ContextCognitiveClock, EventAppend,
-    EventStore, MindProjectionCommit, MindProjectionRecord, MindProjectionStore,
-    MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer, ObjectiveMutation,
-    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter,
-    RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallIndexCapability,
+    causal_payload_string, AttentionAcknowledgementRecord, CognitiveClockStore,
+    ContextCognitiveClock, EventAppend, EventStore, MindProjectionCommit, MindProjectionRecord,
+    MindProjectionStore, MindSnapshotRecord, NewMindProjection, NewObjective, NewRuntimeTimer,
+    ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
+    QueryFilter, RecallDocument, RecallDocumentKind, RecallIndexAudit, RecallIndexCapability,
     RecallProjectionBatch, RecallProjectionStore, RecallSearchHit, RuntimeTimerKind,
     RuntimeTimerRecord, RuntimeTimerStatus, SessionAttentionUpdate, SessionProjectionMutation,
     SessionProjectionStore, TimerStore,
@@ -154,10 +154,21 @@ impl PostgresStore {
                     store.migrate_principal_identity(),
                 )
                 .await?;
-            // Optional search acceleration is deliberately retried outside
-            // the versioned schema migration. A deployment that initially
-            // lacked CREATE EXTENSION may later gain it and should then leave
-            // degraded mode without editing migration history.
+            store
+                .run_versioned_migration(
+                    "20260724_01_event_causal_projection",
+                    store.migrate_event_causal_projection(),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260725_01_recall_segmented_index",
+                    store.resegment_recall_documents(),
+                )
+                .await?;
+            // Index creation is retried outside the versioned migration so a
+            // deployment that failed to build it once recovers on a later
+            // start without editing migration history.
             store.ensure_recall_search_acceleration().await?;
             Ok::<(), StoreError>(())
         }
@@ -284,6 +295,10 @@ impl PostgresStore {
                 topic TEXT NOT NULL,
                 context_id TEXT,
                 session_id TEXT,
+                thread_id TEXT,
+                activation_id TEXT,
+                root_turn_id TEXT,
+                objective_id TEXT,
                 payload JSONB NOT NULL
             )"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_events_context_sequence
@@ -294,6 +309,16 @@ impl PostgresStore {
                ON events(topic, sequence)"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_events_context_topic_time
                ON events(context_id, topic, timestamp, sequence)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_events_context_session_topic_thread_time
+               ON events(context_id, session_id, topic, thread_id, timestamp, sequence)"#,
+            r#"CREATE TABLE IF NOT EXISTS event_causal_projection_backfills (
+                context_id TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                topic TEXT NOT NULL,
+                completed_at TEXT NOT NULL,
+                PRIMARY KEY(context_id, session_id, thread_id, topic)
+            )"#,
             r#"CREATE TABLE IF NOT EXISTS session_projections (
                 event_id TEXT PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
                 context_id TEXT NOT NULL,
@@ -531,28 +556,130 @@ impl PostgresStore {
         Ok(())
     }
 
+    /// Project stable causal route identifiers into indexed Event columns.
+    /// Payload is still the immutable source of truth; this projection avoids
+    /// JSON substring scans when a caller already knows a Thread or
+    /// Activation identifier.
+    async fn migrate_event_causal_projection(&self) -> Result<(), StoreError> {
+        for statement in [
+            "ALTER TABLE events ADD COLUMN IF NOT EXISTS thread_id TEXT",
+            "ALTER TABLE events ADD COLUMN IF NOT EXISTS activation_id TEXT",
+            "ALTER TABLE events ADD COLUMN IF NOT EXISTS root_turn_id TEXT",
+            "ALTER TABLE events ADD COLUMN IF NOT EXISTS objective_id TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_pg_events_context_session_topic_thread_time \
+             ON events(context_id, session_id, topic, thread_id, timestamp, sequence)",
+            "CREATE INDEX IF NOT EXISTS idx_pg_events_context_thread_time \
+             ON events(context_id, thread_id, timestamp, sequence)",
+            "CREATE TABLE IF NOT EXISTS event_causal_projection_backfills (\
+             context_id TEXT NOT NULL, session_id TEXT NOT NULL, thread_id TEXT NOT NULL, \
+             topic TEXT NOT NULL, completed_at TEXT NOT NULL, \
+             PRIMARY KEY(context_id, session_id, thread_id, topic))",
+            // QueryFilter's `topic/*` syntax is a deterministic prefix, not
+            // a substring search. `text_pattern_ops` keeps that narrow
+            // `LIKE 'prefix/%'` predicate indexable under every PostgreSQL
+            // locale instead of depending on the database default collation.
+            "CREATE INDEX IF NOT EXISTS idx_pg_events_context_topic_prefix_time \
+             ON events(context_id, topic text_pattern_ops, timestamp, sequence)",
+            "CREATE INDEX IF NOT EXISTS idx_pg_events_context_session_topic_prefix_time \
+             ON events(context_id, session_id, topic text_pattern_ops, timestamp, sequence)",
+        ] {
+            sqlx::query(statement).execute(&self.pool).await?;
+        }
+        Ok(())
+    }
+
+    /// Builds the lexical Recall index.
+    ///
+    /// The Runtime segments text before it is stored, so PostgreSQL's own
+    /// full-text search over the `simple` configuration is exact here: it only
+    /// has to split the stored terms on whitespace. That removes both the
+    /// `pg_trgm` three-character floor, which silently dropped short CJK
+    /// words, and the `CREATE EXTENSION` privilege a managed deployment often
+    /// cannot grant — `tsvector` is core PostgreSQL.
     async fn ensure_recall_search_acceleration(&self) -> Result<(), StoreError> {
-        match sqlx::query("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+        if let Err(error) = sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_recall_documents_tsv
+               ON recall_documents USING GIN (to_tsvector('simple', searchable_text))"#,
+        )
+        .execute(&self.pool)
+        .await
+        {
+            tracing::warn!(
+                error = %error,
+                "PostgreSQL 无法创建 Recall 全文索引，Recall 仅允许精确文档 ID 查询"
+            );
+            return Ok(());
+        }
+        // The substring index this replaces is dead weight once queries match
+        // whole segmented terms.
+        if let Err(error) = sqlx::query("DROP INDEX IF EXISTS idx_pg_recall_documents_trgm")
             .execute(&self.pool)
             .await
         {
-            Ok(_) => {
-                if let Err(error) = sqlx::query(
-                    r#"CREATE INDEX IF NOT EXISTS idx_pg_recall_documents_trgm
-                       ON recall_documents USING GIN (searchable_text gin_trgm_ops)"#,
+            tracing::warn!(error = %error, "PostgreSQL 无法回收旧的 pg_trgm Recall 索引");
+        }
+        Ok(())
+    }
+
+    /// Rewrites stored Recall documents under the current Runtime segmenter.
+    ///
+    /// Documents are read in bounded pages. Stored text is already NFKC-folded
+    /// and lowercased, and both operations are idempotent, so re-deriving from
+    /// it yields exactly what the write path would produce.
+    async fn resegment_recall_documents(&self) -> Result<(), StoreError> {
+        const PAGE: i64 = 500;
+        let mut cursor: Option<(String, String, String)> = None;
+        loop {
+            let page = match &cursor {
+                Some((context_id, document_kind, document_id)) => sqlx::query(
+                    r#"SELECT context_id, document_kind, document_id, searchable_text, retired
+                       FROM recall_documents
+                       WHERE (context_id, document_kind, document_id) > ($1, $2, $3)
+                       ORDER BY context_id, document_kind, document_id
+                       LIMIT $4"#,
                 )
-                .execute(&self.pool)
-                .await
-                {
-                    tracing::warn!(
-                        error = %error,
-                        "PostgreSQL 无法创建 pg_trgm Recall 索引，Recall 降级为受限 ILIKE 查询"
-                    );
+                .bind(context_id)
+                .bind(document_kind)
+                .bind(document_id)
+                .bind(PAGE),
+                None => sqlx::query(
+                    r#"SELECT context_id, document_kind, document_id, searchable_text, retired
+                       FROM recall_documents
+                       ORDER BY context_id, document_kind, document_id
+                       LIMIT $1"#,
+                )
+                .bind(PAGE),
+            }
+            .fetch_all(&self.pool)
+            .await?;
+            if page.is_empty() {
+                break;
+            }
+            for row in &page {
+                let stored = row.get::<String, _>("searchable_text");
+                let segmented = crate::memory::segment_recall_text(&stored);
+                if segmented == stored {
+                    continue;
                 }
+                let retired = row.get::<bool, _>("retired");
+                sqlx::query(
+                    r#"UPDATE recall_documents SET searchable_text = $1, state_hash = $2
+                       WHERE context_id = $3 AND document_kind = $4 AND document_id = $5"#,
+                )
+                .bind(&segmented)
+                .bind(crate::memory::recall_state_hash(&segmented, retired))
+                .bind(row.get::<String, _>("context_id"))
+                .bind(row.get::<String, _>("document_kind"))
+                .bind(row.get::<String, _>("document_id"))
+                .execute(&self.pool)
+                .await?;
             }
-            Err(error) => {
-                tracing::warn!(error = %error, "PostgreSQL 无权启用 pg_trgm，Recall 降级为受限 ILIKE 查询");
-            }
+            let last = &page[page.len() - 1];
+            cursor = Some((
+                last.get::<String, _>("context_id"),
+                last.get::<String, _>("document_kind"),
+                last.get::<String, _>("document_id"),
+            ));
         }
         Ok(())
     }
@@ -571,12 +698,12 @@ impl PostgresStore {
                  AND topic NOT IN ('chat/assistant_call', 'chat/progress', 'chat/no_reply',
                                    'chat/context_inspect', 'chat/context_tx_committed',
                                    'chat/runtime_error')
-                 AND topic NOT LIKE 'runtime/%'
+                 AND left(topic, 8) <> 'runtime/'
                  AND NOT (
                      type = 'tool_output'
                      AND payload->>'tool_name' = 'context_tx'
-                     AND COALESCE(payload->>'text', '') NOT LIKE '执行失败:%'
-                     AND COALESCE(payload->>'text', '') NOT LIKE '执行拒绝:%'
+                     AND left(COALESCE(payload->>'text', ''), 5) <> '执行失败:'
+                     AND left(COALESCE(payload->>'text', ''), 5) <> '执行拒绝:'
                  )
                ON CONFLICT(event_id) DO NOTHING"#,
         )
@@ -957,10 +1084,15 @@ async fn append_event_in_tx(
         .get("context_id")
         .and_then(JsonValue::as_str)
         .or(session_id);
+    let thread_id = causal_payload_string(event, "thread_id");
+    let activation_id = causal_payload_string(event, "activation_id");
+    let root_turn_id = causal_payload_string(event, "root_turn_id");
+    let objective_id = causal_payload_string(event, "objective_id");
     let inserted = sqlx::query(
         r#"INSERT INTO events
-           (id, timestamp, actor, type, topic, context_id, session_id, payload)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           (id, timestamp, actor, type, topic, context_id, session_id,
+            thread_id, activation_id, root_turn_id, objective_id, payload)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
            ON CONFLICT(id) DO NOTHING"#,
     )
     .bind(&event.id)
@@ -970,6 +1102,10 @@ async fn append_event_in_tx(
     .bind(&event.topic)
     .bind(context_id)
     .bind(session_id)
+    .bind(thread_id)
+    .bind(activation_id)
+    .bind(root_turn_id)
+    .bind(objective_id)
     .bind(JsonValue::Object(event.payload.clone()))
     .execute(&mut **tx)
     .await?;
@@ -1260,6 +1396,14 @@ impl EventStore for PostgresStore {
         if let Some(event_id) = filter.event_id {
             builder.push(" AND id = ").push_bind(event_id);
         }
+        if !filter.event_ids.is_empty() {
+            builder.push(" AND id IN (");
+            let mut separated = builder.separated(", ");
+            for event_id in &filter.event_ids {
+                separated.push_bind(event_id);
+            }
+            builder.push(")");
+        }
         if let Some(sequence) = filter.sequence {
             builder
                 .push(" AND sequence = ")
@@ -1342,13 +1486,19 @@ impl EventStore for PostgresStore {
                 builder.push(" AND topic != ").push_bind(topic);
             }
         }
-        if let Some(search) = filter.search_query {
+        if let Some(thread_id) = filter.thread_id {
+            builder.push(" AND thread_id = ").push_bind(thread_id);
+        }
+        if let Some(activation_id) = filter.activation_id {
             builder
-                .push(" AND (payload::text ILIKE ")
-                .push_bind(format!("%{search}%"))
-                .push(" OR topic ILIKE ")
-                .push_bind(format!("%{search}%"))
-                .push(")");
+                .push(" AND activation_id = ")
+                .push_bind(activation_id);
+        }
+        if let Some(root_turn_id) = filter.root_turn_id {
+            builder.push(" AND root_turn_id = ").push_bind(root_turn_id);
+        }
+        if let Some(objective_id) = filter.objective_id {
+            builder.push(" AND objective_id = ").push_bind(objective_id);
         }
         let latest_k = filter.latest_k;
         if latest_k.is_some() {
@@ -1384,6 +1534,94 @@ impl EventStore for PostgresStore {
             events.reverse();
         }
         Ok(events)
+    }
+
+    async fn backfill_causal_projection_for_thread(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        thread_id: &str,
+        topic: &str,
+    ) -> Result<(), StoreError> {
+        // Legacy payloads are source records. The mutable Event columns are a
+        // query projection and are filled lazily once per inspected Thread so
+        // a Dashboard poll never falls back to JSON/substring scans.
+        //
+        // Callers invoke this before every read, because a Thread that spans
+        // the projection upgrade has both projected and legacy rows and a
+        // non-empty query is therefore no evidence that the fill already ran.
+        // Settle that common case with a keyed read so a poll never opens a
+        // write transaction once the Thread has been filled.
+        let filled = sqlx::query_scalar::<_, bool>(
+            r#"SELECT EXISTS(
+                 SELECT 1 FROM event_causal_projection_backfills
+                 WHERE context_id = $1 AND session_id = $2 AND thread_id = $3 AND topic = $4
+               )"#,
+        )
+        .bind(context_id)
+        .bind(session_id)
+        .bind(thread_id)
+        .bind(topic)
+        .fetch_one(&self.pool)
+        .await?;
+        if filled {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        let claimed = sqlx::query(
+            r#"INSERT INTO event_causal_projection_backfills
+               (context_id, session_id, thread_id, topic, completed_at)
+               VALUES ($1, $2, $3, $4, $5)
+               ON CONFLICT DO NOTHING"#,
+        )
+        .bind(context_id)
+        .bind(session_id)
+        .bind(thread_id)
+        .bind(topic)
+        .bind(now_text())
+        .execute(&mut *tx)
+        .await?;
+        if claimed.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(());
+        }
+        sqlx::query(
+            r#"UPDATE events
+               SET thread_id = COALESCE(
+                       thread_id,
+                       payload->>'thread_id',
+                       payload #>> '{route,thread_id}'
+                   ),
+                   activation_id = COALESCE(
+                       activation_id,
+                       payload->>'activation_id',
+                       payload #>> '{route,activation_id}'
+                   ),
+                   root_turn_id = COALESCE(
+                       root_turn_id,
+                       payload->>'root_turn_id',
+                       payload #>> '{route,root_turn_id}'
+                   ),
+                   objective_id = COALESCE(
+                       objective_id,
+                       payload->>'objective_id',
+                       payload #>> '{route,objective_id}'
+                   )
+               WHERE context_id = $1 AND session_id = $2 AND topic = $3
+                 AND thread_id IS NULL
+                 AND COALESCE(
+                       payload->>'thread_id',
+                       payload #>> '{route,thread_id}'
+                   ) = $4"#,
+        )
+        .bind(context_id)
+        .bind(session_id)
+        .bind(topic)
+        .bind(thread_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn list_attention_acknowledgements(
@@ -1428,26 +1666,26 @@ fn pg_recall_kind(value: &str) -> Result<RecallDocumentKind, StoreError> {
 
 async fn postgres_recall_capability(pool: &PgPool) -> Result<RecallIndexCapability, StoreError> {
     let indexed = sqlx::query_scalar::<_, bool>(
-        r#"SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm')
-                  AND EXISTS(
+        r#"SELECT EXISTS(
                     SELECT 1 FROM pg_indexes
-                    WHERE indexname = 'idx_pg_recall_documents_trgm'
+                    WHERE indexname = 'idx_pg_recall_documents_tsv'
                   )"#,
     )
     .fetch_one(pool)
     .await?;
     Ok(RecallIndexCapability {
         mode: if indexed {
-            crate::memory::LexicalSearchMode::PostgresPgTrgm
+            crate::memory::LexicalSearchMode::PostgresTsvectorSegmented
         } else {
-            crate::memory::LexicalSearchMode::DegradedSubstring
+            crate::memory::LexicalSearchMode::ExactDocumentOnly
         },
         indexed,
         unicode_normalization: "nfkc+lowercase".to_string(),
+        segmenter: crate::memory::RECALL_SEGMENTER.to_string(),
         detail: if indexed {
-            "PostgreSQL pg_trgm GIN index".to_string()
+            "PostgreSQL pg_trgm GIN index over Runtime-segmented terms".to_string()
         } else {
-            "PostgreSQL pg_trgm unavailable; bounded ILIKE fallback".to_string()
+            "PostgreSQL pg_trgm unavailable; exact Recall document id only".to_string()
         },
     })
 }
@@ -1654,35 +1892,39 @@ impl RecallProjectionStore for PostgresStore {
     ) -> Result<Vec<RecallSearchHit>, StoreError> {
         let limit = i64::try_from(limit.clamp(1, 100))?;
         let capability = postgres_recall_capability(&self.pool).await?;
-        let escaped_query = normalized_query
-            .split_whitespace()
-            .map(|term| {
-                term.replace('\\', "\\\\")
-                    .replace('%', "\\%")
-                    .replace('_', "\\_")
-            })
-            .collect::<Vec<_>>()
-            .join("%");
-        let rows = if capability.indexed
-            && normalized_query
-                .split_whitespace()
-                .all(|term| term.chars().count() >= 3)
-        {
-            sqlx::query(
+        // The index stores Runtime-segmented terms, so the query is segmented
+        // the same way and matched whole. `plainto_tsquery` and
+        // `phraseto_tsquery` treat their argument as literal text rather than
+        // tsquery syntax, so an Agent query can never become an operator
+        // expression. A quoted query asks for adjacency instead of `AND`.
+        let (requested, phrase) = crate::memory::recall_phrase_request(normalized_query);
+        let terms = crate::memory::segment_recall_terms(requested);
+        let segmented_query = terms.join(" ");
+        let tsquery = if phrase {
+            "phraseto_tsquery"
+        } else {
+            "plainto_tsquery"
+        };
+        let rows = if capability.indexed && !terms.is_empty() {
+            sqlx::query(&format!(
                 r#"SELECT document_kind, document_id, revision, retired, preview,
                           updated_sequence,
                           CASE WHEN document_id = $2 THEN 1000000.0
-                               ELSE similarity(searchable_text, $2)::double precision END AS score
+                               ELSE ts_rank(to_tsvector('simple', searchable_text),
+                                            {tsquery}('simple', $3))::double precision
+                          END AS score
                    FROM recall_documents
-                   WHERE context_id = $1 AND searchable_text ILIKE ('%' || $3 || '%') ESCAPE '\'
+                   WHERE context_id = $1
+                     AND to_tsvector('simple', searchable_text) @@ {tsquery}('simple', $3)
                    ORDER BY (document_id = $2) DESC,
-                            similarity(searchable_text, $2) DESC,
+                            ts_rank(to_tsvector('simple', searchable_text),
+                                    {tsquery}('simple', $3)) DESC,
                             updated_sequence DESC, document_id ASC
-                   LIMIT $4"#,
-            )
+                   LIMIT $4"#
+            ))
             .bind(context_id)
             .bind(normalized_query)
-            .bind(&escaped_query)
+            .bind(&segmented_query)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?
@@ -1692,13 +1934,12 @@ impl RecallProjectionStore for PostgresStore {
                           updated_sequence,
                           CASE WHEN document_id = $2 THEN 1000000.0 ELSE 1.0 END AS score
                    FROM recall_documents
-                   WHERE context_id = $1 AND searchable_text ILIKE ('%' || $3 || '%') ESCAPE '\'
+                   WHERE context_id = $1 AND document_id = $2
                    ORDER BY (document_id = $2) DESC, updated_sequence DESC, document_id ASC
-                   LIMIT $4"#,
+                   LIMIT $3"#,
             )
             .bind(context_id)
             .bind(normalized_query)
-            .bind(&escaped_query)
             .bind(limit)
             .fetch_all(&self.pool)
             .await?

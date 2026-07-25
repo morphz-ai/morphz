@@ -3271,16 +3271,53 @@ impl ContextEngine {
         query: &str,
         limit: usize,
     ) -> Result<Vec<Event>, DynError> {
-        let events = self
+        let normalized = crate::memory::normalize_recall_text(query.trim());
+        if normalized.is_empty() {
+            return Ok(Vec::new());
+        }
+        if let Some(recall_store) = &self.recall_projection_store {
+            let event_ids = recall_store
+                .search_recall_documents(context_id, &normalized, limit.clamp(1, 100))
+                .await?
+                .into_iter()
+                .filter(|hit| hit.document_kind == RecallDocumentKind::Event)
+                .map(|hit| hit.document_id)
+                .collect::<Vec<_>>();
+            if event_ids.is_empty() {
+                return Ok(Vec::new());
+            }
+            return self
+                .store
+                .query(QueryFilter {
+                    context_id: Some(context_id.to_string()),
+                    event_ids,
+                    excluded_topics: vec!["chat/context_inspect".to_string()],
+                    latest_k: Some(limit.clamp(1, 100)),
+                    ..Default::default()
+                })
+                .await;
+        }
+
+        // In-memory test stores do not always install the rebuildable Recall
+        // projection. Keep their compatibility behavior bounded and in Rust;
+        // production storage must never run a payload LIKE scan on the Event
+        // Ledger.
+        let candidates = self
             .store
             .query(QueryFilter {
                 context_id: Some(context_id.to_string()),
-                search_query: Some(query.to_string()),
                 excluded_topics: vec!["chat/context_inspect".to_string()],
+                latest_k: Some(2_048),
                 ..Default::default()
             })
             .await?;
-        Ok(events.into_iter().take(limit).collect())
+        Ok(candidates
+            .into_iter()
+            .filter(|event| {
+                crate::memory::normalize_recall_text(&event_text(event)).contains(&normalized)
+            })
+            .take(limit)
+            .collect())
     }
 
     pub async fn search_recall_documents(
@@ -7223,7 +7260,7 @@ fn frame_recall_document(
         text.push(' ');
         text.push_str(&relation.object);
     }
-    let searchable_text = crate::memory::normalize_recall_text(&text);
+    let searchable_text = crate::memory::segment_recall_text(&text);
     let retired = retired_override.unwrap_or_else(|| state.retired.contains(&frame.id));
     let state_hash = format!(
         "{:x}",

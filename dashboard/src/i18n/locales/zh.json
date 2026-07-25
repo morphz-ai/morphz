@@ -312,6 +312,11 @@
     "threadToolChain": "工具调用链",
     "threadToolChainEmpty": "线程已经建立，尚未产生工具调用。",
     "threadToolChainHint": "点击打开完整因果链",
+    "lineage": {
+      "title": "因果归属",
+      "thread": "线程",
+      "objective": "目标"
+    },
     "layout": {
       "title": "对话呈现方式",
       "merged": "合流",
@@ -344,7 +349,14 @@
       "approval": "审批：{{status}}",
       "waitingForExecution": "线程已经建立，正在等待可执行信号。",
       "delivery": "交付",
-      "openFullThread": "查看完整因果链"
+      "openFullThread": "查看完整因果链",
+      "allObjectives": "全部目标",
+      "filterByObjective": "按目标筛选",
+      "filterObjective": "筛选此目标",
+      "clearObjectiveFilter": "取消目标筛选",
+      "objectiveTint": "目标染色",
+      "enableObjectiveTint": "开启目标染色",
+      "disableObjectiveTint": "关闭目标染色"
     }
   },
   "work": {

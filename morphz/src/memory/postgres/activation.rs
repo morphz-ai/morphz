@@ -727,9 +727,13 @@ impl ActivationStore for PostgresStore {
                    CASE
                      WHEN events.type = 'user_message' THEN 0
                      WHEN activations.trigger_kind = 'chat/thread_completion_ready' THEN 1
-                     WHEN events.payload ? 'objective_id'
+                     -- objective_id is projected on append, but Objective
+                     -- entry Events such as `objective/requested` carry only
+                     -- `requested_objective_id`. Keep the topic prefix so they
+                     -- are not admitted as background work.
+                     WHEN events.objective_id IS NOT NULL
                        OR events.payload ? 'objective_evaluation_id'
-                       OR events.topic LIKE 'objective/%' THEN 2
+                       OR left(events.topic, 10) = 'objective/' THEN 2
                      WHEN events.payload @> '{"runtime_maintenance": true}'::jsonb
                        OR events.topic IN ('runtime/context_maintenance', 'chat/context_maintenance')
                        THEN 4

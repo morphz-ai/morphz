@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { TFunction } from 'i18next'
+import { buildObjectiveLineageIndex, objectiveToneForId } from '../src/app/objectiveLineage.ts'
 import { compactTokens, conversationEventKind, conversationEventLane, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
 
 const translations: Record<string, string> = {
@@ -84,4 +85,53 @@ test('dual-track presentation separates execution output without moving Runtime 
   assert.equal(conversationEventLane('chat/progress', {}), 'execution_output')
   assert.equal(conversationEventLane('chat/assistant_call', { terminal_outcome: false }), 'execution_output')
   assert.equal(conversationEventLane('runtime/tool_calls_selected', {}), null)
+})
+
+test('objective lineage links durable outputs back to their Thread and Objective', () => {
+  const index = buildObjectiveLineageIndex(
+    [{
+      id: 'thread-alpha',
+      root_turn_id: 'objective-wake-alpha',
+      activations: [{
+        id: 'activation-alpha',
+        root_turn_id: 'objective-wake-alpha',
+        trigger_event_id: 'objective-wake-alpha',
+      }],
+    }],
+    [{
+      id: 'objective-wake-alpha',
+      payload: {
+        objective_id: 'objective-alpha',
+        root_turn_id: 'objective-wake-alpha',
+      },
+    }, {
+      id: 'tool-output-alpha',
+      payload: {
+        activation_id: 'activation-alpha',
+        thread_id: 'thread-alpha',
+        root_turn_id: 'objective-wake-alpha',
+      },
+    }],
+  )
+
+  assert.deepEqual(index.forActivation('activation-alpha'), {
+    threadIds: ['thread-alpha'],
+    objectiveIds: ['objective-alpha'],
+  })
+  assert.deepEqual(index.forEvent({
+    id: 'tool-output-alpha',
+    payload: {
+      activation_id: 'activation-alpha',
+      thread_id: 'thread-alpha',
+      root_turn_id: 'objective-wake-alpha',
+    },
+  }), {
+    threadIds: ['thread-alpha'],
+    objectiveIds: ['objective-alpha'],
+  })
+})
+
+test('objective colors are stable for a persisted Objective id', () => {
+  assert.deepEqual(objectiveToneForId('objective-alpha'), objectiveToneForId('objective-alpha'))
+  assert.notEqual(objectiveToneForId('objective-alpha'), undefined)
 })

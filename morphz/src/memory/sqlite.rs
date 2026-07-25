@@ -4,20 +4,20 @@ use crate::approval_authority::{
 use crate::config::SqliteStorageConfig;
 use crate::event::Event;
 use crate::memory::{
-    ActionGroupFilter, ActionGroupMemberCommit, ActionGroupMemberRecord, ActionGroupMemberStatus,
-    ActionGroupRecord, ActionGroupStatus, ActionGroupStore, ActivationOutcomeCommit,
-    ActivationStore, AgentBootstrapRecord, AgentRecord, ApprovalAuditCommit, ApprovalFilter,
-    ApprovalMutation, ApprovalRecord, ApprovalResolution, ApprovalStatus, ApprovalStore,
-    AttentionAcknowledgementRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
-    CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore, CognitiveClockStore,
-    CognitiveContextRecord, ContextCognitiveClock, ContextUpdate, DelegationRecord,
-    DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore, DeliveryStatus,
-    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
-    EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore,
-    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation,
-    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
-    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
-    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    causal_payload_string, ActionGroupFilter, ActionGroupMemberCommit, ActionGroupMemberRecord,
+    ActionGroupMemberStatus, ActionGroupRecord, ActionGroupStatus, ActionGroupStore,
+    ActivationOutcomeCommit, ActivationStore, AgentBootstrapRecord, AgentRecord,
+    ApprovalAuditCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
+    ApprovalStatus, ApprovalStore, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
+    CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
+    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock, ContextUpdate,
+    DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore,
+    DeliveryStatus, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
+    EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
+    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
+    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
+    ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
+    ExecutionRetrySafety, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
@@ -254,6 +254,10 @@ impl SqliteStore {
             topic TEXT NOT NULL,
             context_id TEXT,
             session_id TEXT,
+            thread_id TEXT,
+            activation_id TEXT,
+            root_turn_id TEXT,
+            objective_id TEXT,
             payload TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
@@ -262,6 +266,14 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_events_context_time ON events(context_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_events_context_topic_time
             ON events(context_id, topic, timestamp);
+        CREATE TABLE IF NOT EXISTS event_causal_projection_backfills (
+            context_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            topic TEXT NOT NULL,
+            completed_at TEXT NOT NULL,
+            PRIMARY KEY(context_id, session_id, thread_id, topic)
+        );
 
         CREATE TABLE IF NOT EXISTS attention_acknowledgements (
             context_id TEXT NOT NULL,
@@ -1095,6 +1107,7 @@ impl SqliteStore {
         }
 
         migrate_session_projections(&pool).await?;
+        migrate_event_causal_columns(&pool).await?;
         migrate_recall_projection(&pool).await?;
         migrate_attention_acknowledgements(&pool).await?;
 
@@ -1105,6 +1118,133 @@ impl SqliteStore {
 const ATTENTION_PROJECTION_BACKFILL_MIGRATION: &str =
     "20260723_01_attention_acknowledgement_projection";
 const RECALL_FTS_BACKFILL_MIGRATION: &str = "20260722_01_recall_fts_backfill";
+const RECALL_SEGMENTED_INDEX_MIGRATION: &str = "20260725_01_recall_segmented_index";
+
+/// Rewrites every stored Recall document under the current Runtime segmenter
+/// and refills the freshly created FTS index.
+///
+/// Documents are read in bounded pages so a large Context does not have to be
+/// held in memory at once. Stored text is already NFKC-folded and lowercased,
+/// and both operations are idempotent, so re-deriving from it yields exactly
+/// what the write path would produce for the original input.
+async fn resegment_recall_documents(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    const PAGE: i64 = 500;
+    let mut cursor: Option<(String, String, String)> = None;
+    loop {
+        let page = match &cursor {
+            Some((context_id, document_kind, document_id)) => sqlx::query(
+                r#"SELECT context_id, document_kind, document_id, searchable_text, retired
+                   FROM recall_documents
+                   WHERE (context_id, document_kind, document_id) > (?, ?, ?)
+                   ORDER BY context_id, document_kind, document_id
+                   LIMIT ?"#,
+            )
+            .bind(context_id)
+            .bind(document_kind)
+            .bind(document_id)
+            .bind(PAGE),
+            None => sqlx::query(
+                r#"SELECT context_id, document_kind, document_id, searchable_text, retired
+                   FROM recall_documents
+                   ORDER BY context_id, document_kind, document_id
+                   LIMIT ?"#,
+            )
+            .bind(PAGE),
+        }
+        .fetch_all(&mut **tx)
+        .await?;
+        if page.is_empty() {
+            break;
+        }
+        for row in &page {
+            let context_id = row.get::<String, _>("context_id");
+            let document_kind = row.get::<String, _>("document_kind");
+            let document_id = row.get::<String, _>("document_id");
+            let stored = row.get::<String, _>("searchable_text");
+            let retired = row.get::<i64, _>("retired") != 0;
+            let segmented = crate::memory::segment_recall_text(&stored);
+            if segmented == stored {
+                continue;
+            }
+            sqlx::query(
+                r#"UPDATE recall_documents SET searchable_text = ?, state_hash = ?
+                   WHERE context_id = ? AND document_kind = ? AND document_id = ?"#,
+            )
+            .bind(&segmented)
+            .bind(crate::memory::recall_state_hash(&segmented, retired))
+            .bind(&context_id)
+            .bind(&document_kind)
+            .bind(&document_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        let last = &page[page.len() - 1];
+        cursor = Some((
+            last.get::<String, _>("context_id"),
+            last.get::<String, _>("document_kind"),
+            last.get::<String, _>("document_id"),
+        ));
+    }
+
+    // The index was dropped and recreated in this same transaction, and the
+    // maintenance triggers are recreated only after it commits, so fill it
+    // directly rather than relying on the UPDATE statements above.
+    sqlx::query(
+        r#"INSERT INTO recall_documents_fts(context_id, document_kind, document_id, searchable_text)
+           SELECT context_id, document_kind, document_id, searchable_text FROM recall_documents"#,
+    )
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// Event payload remains the immutable source of record, while these columns
+/// are its query projection for causal routing.  In particular, the
+/// Dashboard's Thread inspector must never search an unindexed JSON blob just
+/// to discover events already routed to a known Thread.
+async fn migrate_event_causal_columns(
+    pool: &SqlitePool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let columns = sqlx::query("PRAGMA table_info(events)")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| row.get::<String, _>("name"))
+        .collect::<std::collections::HashSet<_>>();
+    for column in ["thread_id", "activation_id", "root_turn_id", "objective_id"] {
+        if !columns.contains(column) {
+            sqlx::query(&format!("ALTER TABLE events ADD COLUMN {column} TEXT"))
+                .execute(pool)
+                .await?;
+        }
+    }
+    // This order matches the exact lookup used by `Runtime::thread_detail`.
+    // It keeps a three-second Dashboard refresh bounded even when a Context
+    // has accumulated a large Event Ledger.
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_events_context_session_topic_thread_time \
+         ON events(context_id, session_id, topic, thread_id, timestamp)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_events_context_thread_time \
+         ON events(context_id, thread_id, timestamp)",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS event_causal_projection_backfills (\
+         context_id TEXT NOT NULL, session_id TEXT NOT NULL, thread_id TEXT NOT NULL, \
+         topic TEXT NOT NULL, completed_at TEXT NOT NULL, \
+         PRIMARY KEY(context_id, session_id, thread_id, topic))",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
 
 async fn migrate_recall_projection(
     pool: &SqlitePool,
@@ -1146,21 +1286,52 @@ async fn migrate_recall_projection(
     .execute(pool)
     .await?;
 
+    // The Runtime segments text before it reaches storage, so the physical
+    // index only has to split on whitespace. `trigram` held no entry for any
+    // term shorter than three characters, which silently dropped the most
+    // common Chinese word form out of Recall entirely.
+    //
+    // Claim, retire and rebuild inside one transaction: an interrupted rebuild
+    // rolls back and is retried on the next start, instead of leaving Recall
+    // with an index that is present but half populated.
+    let mut tx = pool.begin().await?;
+    let claimed =
+        sqlx::query("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+            .bind(RECALL_SEGMENTED_INDEX_MIGRATION)
+            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .execute(&mut *tx)
+            .await?;
+    let rebuilding = claimed.rows_affected() > 0;
+    if rebuilding {
+        for statement in [
+            "DROP TRIGGER IF EXISTS recall_documents_ai",
+            "DROP TRIGGER IF EXISTS recall_documents_ad",
+            "DROP TRIGGER IF EXISTS recall_documents_au",
+            "DROP TABLE IF EXISTS recall_documents_fts",
+        ] {
+            sqlx::query(statement).execute(&mut *tx).await?;
+        }
+    }
     let fts = sqlx::query(
         r#"CREATE VIRTUAL TABLE IF NOT EXISTS recall_documents_fts USING fts5(
                context_id UNINDEXED,
                document_kind UNINDEXED,
                document_id UNINDEXED,
                searchable_text,
-               tokenize='trigram'
+               tokenize='unicode61'
            )"#,
     )
-    .execute(pool)
+    .execute(&mut *tx)
     .await;
     if let Err(error) = fts {
-        tracing::warn!(error = %error, "SQLite 不支持 FTS5 trigram，Recall 降级为受限子串索引查询");
+        tracing::warn!(error = %error, "SQLite 不支持 FTS5，Recall 仅允许精确文档 ID 查询");
+        tx.rollback().await?;
         return Ok(());
     }
+    if rebuilding {
+        resegment_recall_documents(&mut tx).await?;
+    }
+    tx.commit().await?;
 
     // `CREATE TRIGGER IF NOT EXISTS` cannot upgrade an existing trigger.  The
     // original UPDATE trigger rebuilt the trigram index for every projection
@@ -1435,12 +1606,12 @@ async fn migrate_session_projections(
              AND topic NOT IN ('chat/assistant_call', 'chat/progress', 'chat/no_reply',
                                'chat/context_inspect', 'chat/context_tx_committed',
                                'chat/runtime_error')
-             AND topic NOT LIKE 'runtime/%'
+                 AND substr(topic, 1, 8) != 'runtime/'
              AND NOT (
                  type = 'tool_output'
                  AND json_extract(payload, '$.tool_name') = 'context_tx'
-                 AND COALESCE(json_extract(payload, '$.text'), '') NOT LIKE '执行失败:%'
-                 AND COALESCE(json_extract(payload, '$.text'), '') NOT LIKE '执行拒绝:%'
+                     AND substr(COALESCE(json_extract(payload, '$.text'), ''), 1, 5) != '执行失败:'
+                     AND substr(COALESCE(json_extract(payload, '$.text'), ''), 1, 5) != '执行拒绝:'
              )"#,
     )
     .execute(&mut *tx)
@@ -2759,8 +2930,14 @@ async fn append_event_in_transaction(
         .get("context_id")
         .and_then(JsonValue::as_str)
         .or(session_id);
+    let thread_id = causal_payload_string(event, "thread_id");
+    let activation_id = causal_payload_string(event, "activation_id");
+    let root_turn_id = causal_payload_string(event, "root_turn_id");
+    let objective_id = causal_payload_string(event, "objective_id");
     sqlx::query(
-        "INSERT INTO events (id, timestamp, actor, type, topic, context_id, session_id, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO events \
+         (id, timestamp, actor, type, topic, context_id, session_id, thread_id, activation_id, root_turn_id, objective_id, payload) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&event.id)
     .bind(timestamp)
@@ -2769,6 +2946,10 @@ async fn append_event_in_transaction(
     .bind(&event.topic)
     .bind(context_id)
     .bind(session_id)
+    .bind(thread_id)
+    .bind(activation_id)
+    .bind(root_turn_id)
+    .bind(objective_id)
     .bind(payload)
     .execute(&mut **tx)
     .await?;
@@ -3045,8 +3226,14 @@ async fn append_event_idempotent_in_transaction(
         .get("context_id")
         .and_then(JsonValue::as_str)
         .or(session_id);
+    let thread_id = causal_payload_string(event, "thread_id");
+    let activation_id = causal_payload_string(event, "activation_id");
+    let root_turn_id = causal_payload_string(event, "root_turn_id");
+    let objective_id = causal_payload_string(event, "objective_id");
     let inserted = sqlx::query(
-        "INSERT OR IGNORE INTO events (id, timestamp, actor, type, topic, context_id, session_id, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO events \
+         (id, timestamp, actor, type, topic, context_id, session_id, thread_id, activation_id, root_turn_id, objective_id, payload) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&event.id)
     .bind(&timestamp)
@@ -3055,6 +3242,10 @@ async fn append_event_idempotent_in_transaction(
     .bind(&event.topic)
     .bind(context_id)
     .bind(session_id)
+    .bind(thread_id)
+    .bind(activation_id)
+    .bind(root_turn_id)
+    .bind(objective_id)
     .bind(&payload)
     .execute(&mut **tx)
     .await?;
@@ -4939,9 +5130,13 @@ impl ActivationStore for SqliteStore {
                       CASE
                         WHEN events.type = 'user_message' THEN 0
                         WHEN activations.trigger_kind = 'chat/thread_completion_ready' THEN 1
-                        WHEN json_type(events.payload, '$.objective_id') IS NOT NULL
+                        -- objective_id is projected on append, but Objective
+                        -- entry Events such as `objective/requested` carry
+                        -- only `requested_objective_id`. Keep the topic prefix
+                        -- so they are not admitted as background work.
+                        WHEN events.objective_id IS NOT NULL
                           OR json_type(events.payload, '$.objective_evaluation_id') IS NOT NULL
-                          OR events.topic LIKE 'objective/%' THEN 2
+                          OR substr(events.topic, 1, 10) = 'objective/' THEN 2
                         WHEN json_extract(events.payload, '$.runtime_maintenance') = 1
                           OR events.topic IN ('runtime/context_maintenance', 'chat/context_maintenance')
                           THEN 4
@@ -10798,6 +10993,14 @@ impl EventStore for SqliteStore {
             builder.push(" AND id = ");
             builder.push_bind(event_id);
         }
+        if !filter.event_ids.is_empty() {
+            builder.push(" AND id IN (");
+            let mut separated = builder.separated(", ");
+            for event_id in &filter.event_ids {
+                separated.push_bind(event_id);
+            }
+            builder.push(")");
+        }
 
         if let Some(sequence) = filter.sequence {
             builder.push(" AND rowid = ");
@@ -10868,8 +11071,12 @@ impl EventStore for SqliteStore {
             if topic != "*" {
                 if topic.ends_with("/*") {
                     let prefix = &topic[..topic.len() - 2];
-                    builder.push(" AND topic LIKE ");
-                    builder.push_bind(format!("{}/%", prefix));
+                    let (lower, upper) = sqlite_topic_prefix_bounds(prefix);
+                    builder
+                        .push(" AND topic >= ")
+                        .push_bind(lower)
+                        .push(" AND topic < ")
+                        .push_bind(upper);
                 } else {
                     builder.push(" AND topic = ");
                     builder.push_bind(topic);
@@ -10882,20 +11089,34 @@ impl EventStore for SqliteStore {
                 builder.push(" AND 0=1");
             } else if topic.ends_with("/*") {
                 let prefix = &topic[..topic.len() - 2];
-                builder.push(" AND topic NOT LIKE ");
-                builder.push_bind(format!("{}/%", prefix));
+                let (lower, upper) = sqlite_topic_prefix_bounds(prefix);
+                builder
+                    .push(" AND NOT (topic >= ")
+                    .push_bind(lower)
+                    .push(" AND topic < ")
+                    .push_bind(upper)
+                    .push(")");
             } else {
                 builder.push(" AND topic != ");
                 builder.push_bind(topic);
             }
         }
 
-        if let Some(search_query) = filter.search_query {
-            builder.push(" AND (payload LIKE ");
-            builder.push_bind(format!("%{}%", search_query));
-            builder.push(" OR topic LIKE ");
-            builder.push_bind(format!("%{}%", search_query));
-            builder.push(")");
+        if let Some(thread_id) = filter.thread_id {
+            builder.push(" AND thread_id = ");
+            builder.push_bind(thread_id);
+        }
+        if let Some(activation_id) = filter.activation_id {
+            builder.push(" AND activation_id = ");
+            builder.push_bind(activation_id);
+        }
+        if let Some(root_turn_id) = filter.root_turn_id {
+            builder.push(" AND root_turn_id = ");
+            builder.push_bind(root_turn_id);
+        }
+        if let Some(objective_id) = filter.objective_id {
+            builder.push(" AND objective_id = ");
+            builder.push_bind(objective_id);
         }
 
         let latest_k = filter.latest_k;
@@ -10944,6 +11165,92 @@ impl EventStore for SqliteStore {
         }
 
         Ok(events)
+    }
+
+    async fn backfill_causal_projection_for_thread(
+        &self,
+        context_id: &str,
+        session_id: &str,
+        thread_id: &str,
+        topic: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Existing Event payloads remain immutable. This marker makes the
+        // legacy compatibility projection one bounded write per
+        // (Context, Session, Thread, topic), rather than repeating JSON work
+        // on every three-second Dashboard refresh.
+        //
+        // Callers invoke this before every read, because a Thread that spans
+        // the projection upgrade has both projected and legacy rows and a
+        // non-empty query is therefore no evidence that the fill already ran.
+        // Settle that common case with a keyed read so a poll never opens a
+        // write transaction once the Thread has been filled.
+        let filled = sqlx::query_scalar::<_, i64>(
+            r#"SELECT COUNT(*) FROM event_causal_projection_backfills
+               WHERE context_id = ? AND session_id = ? AND thread_id = ? AND topic = ?"#,
+        )
+        .bind(context_id)
+        .bind(session_id)
+        .bind(thread_id)
+        .bind(topic)
+        .fetch_one(&self.pool)
+        .await?;
+        if filled > 0 {
+            return Ok(());
+        }
+        let mut tx = self.pool.begin().await?;
+        let claimed = sqlx::query(
+            r#"INSERT OR IGNORE INTO event_causal_projection_backfills
+               (context_id, session_id, thread_id, topic, completed_at)
+               VALUES (?, ?, ?, ?, ?)"#,
+        )
+        .bind(context_id)
+        .bind(session_id)
+        .bind(thread_id)
+        .bind(topic)
+        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+        .execute(&mut *tx)
+        .await?;
+        if claimed.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(());
+        }
+        sqlx::query(
+            r#"UPDATE events
+               SET thread_id = COALESCE(
+                       thread_id,
+                       json_extract(payload, '$.thread_id'),
+                       json_extract(payload, '$.route.thread_id')
+                   ),
+                   activation_id = COALESCE(
+                       activation_id,
+                       json_extract(payload, '$.activation_id'),
+                       json_extract(payload, '$.route.activation_id')
+                   ),
+                   root_turn_id = COALESCE(
+                       root_turn_id,
+                       json_extract(payload, '$.root_turn_id'),
+                       json_extract(payload, '$.route.root_turn_id')
+                   ),
+                   objective_id = COALESCE(
+                       objective_id,
+                       json_extract(payload, '$.objective_id'),
+                       json_extract(payload, '$.route.objective_id')
+                   )
+               WHERE context_id = ? AND session_id = ? AND topic = ?
+                 AND thread_id IS NULL
+                 AND COALESCE(
+                       json_extract(payload, '$.thread_id'),
+                       json_extract(payload, '$.route.thread_id')
+                   ) = ?"#,
+        )
+        .bind(context_id)
+        .bind(session_id)
+        .bind(topic)
+        .bind(thread_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     async fn list_attention_acknowledgements(
@@ -10999,34 +11306,51 @@ async fn sqlite_recall_capability(
         > 0;
     Ok(RecallIndexCapability {
         mode: if indexed {
-            crate::memory::LexicalSearchMode::SqliteFts5Trigram
+            crate::memory::LexicalSearchMode::SqliteFts5Segmented
         } else {
-            crate::memory::LexicalSearchMode::DegradedSubstring
+            crate::memory::LexicalSearchMode::ExactDocumentOnly
         },
         indexed,
         unicode_normalization: "nfkc+lowercase".to_string(),
+        segmenter: crate::memory::RECALL_SEGMENTER.to_string(),
         detail: if indexed {
-            "SQLite FTS5 trigram index".to_string()
+            "SQLite FTS5 unicode61 index over Runtime-segmented terms".to_string()
         } else {
-            "SQLite FTS5 trigram unavailable; bounded LIKE fallback".to_string()
+            "SQLite FTS5 unavailable; exact Recall document id only".to_string()
         },
     })
 }
 
-fn sqlite_fts_query(query: &str) -> String {
-    query
-        .split_whitespace()
-        .filter(|part| !part.is_empty())
-        .map(|part| format!("\"{}\"", part.replace('"', "\"\"")))
+/// Builds an FTS5 expression from already-segmented terms.
+///
+/// Every term is quoted, so FTS5 operators inside user text stay literal. A
+/// phrase groups the terms into one quoted sequence and therefore requires
+/// them to be adjacent; otherwise they are combined with `AND`.
+fn sqlite_fts_query(terms: &[String], phrase: bool) -> String {
+    let quoted = |term: &String| term.replace('"', "\"\"");
+    if phrase {
+        return format!(
+            "\"{}\"",
+            terms.iter().map(quoted).collect::<Vec<_>>().join(" ")
+        );
+    }
+    terms
+        .iter()
+        .map(|term| format!("\"{}\"", quoted(term)))
         .collect::<Vec<_>>()
         .join(" AND ")
 }
 
-fn escape_like_pattern(query: &str) -> String {
-    query
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_")
+/// Topics are Runtime-owned slash-separated identifiers.  SQLite's default
+/// case-insensitive `LIKE` does not reliably use the B-tree topic index, even
+/// for a deterministic `prefix/*` query.  Encode the prefix as a binary range
+/// instead: `["prefix/", "prefix/\\u{10ffff}")` is exact for a slash
+/// segment and is indexable by `idx_events_topic` and the Context/topic
+/// composite index.
+fn sqlite_topic_prefix_bounds(prefix: &str) -> (String, String) {
+    let lower = format!("{prefix}/");
+    let upper = format!("{lower}\u{10ffff}");
+    (lower, upper)
 }
 
 #[derive(Debug)]
@@ -11262,12 +11586,16 @@ impl RecallProjectionStore for SqliteStore {
     ) -> Result<Vec<RecallSearchHit>, Box<dyn std::error::Error + Send + Sync>> {
         let limit = limit.clamp(1, 100);
         let capability = sqlite_recall_capability(&self.pool).await?;
-        let use_fts = capability.indexed
-            && normalized_query
-                .split_whitespace()
-                .all(|term| term.chars().count() >= 3);
+        // The index stores Runtime-segmented terms, so the query has to be
+        // segmented the same way or it cannot match the Projection. Every
+        // term is indexable now: the previous three-character floor came from
+        // the trigram tokenizer and silently dropped the most common Chinese
+        // word form out of Recall.
+        let (requested, phrase) = crate::memory::recall_phrase_request(normalized_query);
+        let terms = crate::memory::segment_recall_terms(requested);
+        let use_fts = capability.indexed && !terms.is_empty();
         let rows = if use_fts {
-            let expression = sqlite_fts_query(normalized_query);
+            let expression = sqlite_fts_query(&terms, phrase);
             sqlx::query(
                 r#"SELECT d.document_kind, d.document_id, d.revision, d.retired,
                           d.preview, d.updated_sequence,
@@ -11293,19 +11621,18 @@ impl RecallProjectionStore for SqliteStore {
             .fetch_all(&self.pool)
             .await?
         } else {
-            let pattern = format!("%{}%", escape_like_pattern(normalized_query));
             sqlx::query(
                 r#"SELECT document_kind, document_id, revision, retired, preview,
                           updated_sequence,
                           CASE WHEN document_id = ? THEN 1000000.0 ELSE 1.0 END AS score
                    FROM recall_documents
-                   WHERE context_id = ? AND searchable_text LIKE ? ESCAPE '\'
+                   WHERE context_id = ? AND document_id = ?
                    ORDER BY (document_id = ?) DESC, updated_sequence DESC, document_id ASC
                    LIMIT ?"#,
             )
             .bind(normalized_query)
             .bind(context_id)
-            .bind(pattern)
+            .bind(normalized_query)
             .bind(normalized_query)
             .bind(i64::try_from(limit)?)
             .fetch_all(&self.pool)
@@ -11876,7 +12203,9 @@ mod tests {
             document_kind: RecallDocumentKind::Frame,
             document_id: "memory/rust-sandbox".to_string(),
             revision: 3,
-            searchable_text: crate::memory::normalize_recall_text(
+            // Must go through the same segmenter as the write path; a document
+            // tokenized any other way silently stops matching queries.
+            searchable_text: crate::memory::segment_recall_text(
                 "memory/rust-sandbox Rust 沙箱 权限申请",
             ),
             preview: "Rust 沙箱权限经验".to_string(),
@@ -11927,11 +12256,40 @@ mod tests {
             .unwrap();
         assert_eq!(mixed[0].document_id, "memory/rust-sandbox");
         assert!(mixed[0].retired);
+        // A two-character Chinese word is the most common word form in the
+        // language and must be an ordinary indexed term, not a lookup that
+        // silently returns nothing.
         let short = store
-            .search_recall_documents("recall-context", "权限", 1)
+            .search_recall_documents("recall-context", "权限", 10)
             .await
             .unwrap();
-        assert_eq!(short.len(), 1, "short query must use bounded fallback");
+        assert!(
+            short.iter().any(|hit| hit.document_id == "recall-event"),
+            "two-character Chinese query must stay searchable: {short:?}"
+        );
+        let exact_id = store
+            .search_recall_documents("recall-context", "memory/rust-sandbox", 1)
+            .await
+            .unwrap();
+        assert_eq!(exact_id[0].document_id, "memory/rust-sandbox");
+
+        // A quoted query narrows to an adjacent phrase. `沙箱` is adjacent in
+        // the Frame, while these two terms never neighbour each other.
+        let phrase_hit = store
+            .search_recall_documents("recall-context", "\"沙箱\"", 10)
+            .await
+            .unwrap();
+        assert!(phrase_hit
+            .iter()
+            .any(|hit| hit.document_id == "memory/rust-sandbox"));
+        let phrase_miss = store
+            .search_recall_documents("recall-context", "\"权限 沙箱\"", 10)
+            .await
+            .unwrap();
+        assert!(
+            phrase_miss.is_empty(),
+            "phrase query must require adjacency: {phrase_miss:?}"
+        );
         let audit = store.inspect_recall_index("recall-context").await.unwrap();
         assert_eq!(audit.event_documents, 1);
         assert_eq!(audit.frame_documents, 1);
@@ -12037,6 +12395,65 @@ mod tests {
             plan.contains("idx_events_context_topic_time"),
             "unexpected query plan: {plan}"
         );
+    }
+
+    #[tokio::test]
+    async fn event_topic_prefix_query_uses_indexed_binary_bounds() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let (lower, upper) = sqlite_topic_prefix_bounds("runtime");
+        let rows = sqlx::query(
+            r#"EXPLAIN QUERY PLAN
+               SELECT rowid, id, timestamp FROM events
+               WHERE context_id = ? AND topic >= ? AND topic < ?
+               ORDER BY timestamp DESC, rowid DESC"#,
+        )
+        .bind("index-context")
+        .bind(lower)
+        .bind(upper)
+        .fetch_all(&store.pool)
+        .await
+        .unwrap();
+        let plan = rows
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            plan.contains("idx_events_context_topic_time"),
+            "unexpected query plan: {plan}"
+        );
+
+        for (id, topic) in [
+            ("prefix-match", "runtime/timer"),
+            ("prefix-sibling", "runtimex/timer"),
+        ] {
+            store
+                .append(Event::new(
+                    id.to_string(),
+                    "Runtime".to_string(),
+                    "diagnostic".to_string(),
+                    topic.to_string(),
+                    serde_json::json!({ "context_id": "index-context" })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ))
+                .await
+                .unwrap();
+        }
+        let result = store
+            .query(QueryFilter {
+                context_id: Some("index-context".to_string()),
+                topic: Some("runtime/*".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "prefix-match");
     }
 
     #[tokio::test]
@@ -15236,6 +15653,223 @@ mod tests {
             .await
             .unwrap();
         assert!(other_session.is_empty());
+    }
+
+    #[tokio::test]
+    async fn event_causal_route_is_projected_and_exactly_queryable() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let event = |id: &str, thread_id: &str| {
+            Event::new(
+                id.to_string(),
+                "Runtime-Orchestrator".to_string(),
+                "runtime_control".to_string(),
+                "runtime/model_attempt_state".to_string(),
+                [
+                    ("context_id".to_string(), serde_json::json!("context-a")),
+                    ("session_id".to_string(), serde_json::json!("session-a")),
+                    ("thread_id".to_string(), serde_json::json!(thread_id)),
+                    (
+                        "activation_id".to_string(),
+                        serde_json::json!("activation-a"),
+                    ),
+                    ("root_turn_id".to_string(), serde_json::json!("turn-root-a")),
+                    ("objective_id".to_string(), serde_json::json!("objective-a")),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        };
+        store.append(event("causal-a", "thread-a")).await.unwrap();
+        store.append(event("causal-b", "thread-b")).await.unwrap();
+
+        let events = store
+            .query(QueryFilter {
+                context_id: Some("context-a".to_string()),
+                session_id: Some("session-a".to_string()),
+                topic: Some("runtime/model_attempt_state".to_string()),
+                thread_id: Some("thread-a".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].id, "causal-a");
+
+        let projected = sqlx::query(
+            "SELECT thread_id, activation_id, root_turn_id, objective_id FROM events WHERE id = ?",
+        )
+        .bind("causal-a")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            projected.get::<Option<String>, _>("thread_id").as_deref(),
+            Some("thread-a")
+        );
+        assert_eq!(
+            projected
+                .get::<Option<String>, _>("activation_id")
+                .as_deref(),
+            Some("activation-a")
+        );
+        assert_eq!(
+            projected
+                .get::<Option<String>, _>("root_turn_id")
+                .as_deref(),
+            Some("turn-root-a")
+        );
+        assert_eq!(
+            projected
+                .get::<Option<String>, _>("objective_id")
+                .as_deref(),
+            Some("objective-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_thread_events_are_lazily_projected_once_without_payload_search() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .append(Event::new(
+                "legacy-thread-event".to_string(),
+                "Runtime-Orchestrator".to_string(),
+                "runtime_control".to_string(),
+                "runtime/model_attempt_state".to_string(),
+                serde_json::json!({
+                    "context_id": "legacy-context",
+                    "session_id": "legacy-session",
+                    "route": {
+                        "thread_id": "legacy-thread",
+                        "activation_id": "legacy-activation",
+                        "root_turn_id": "legacy-root"
+                    }
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ))
+            .await
+            .unwrap();
+        // Simulate an Event written before the causal projection migration.
+        sqlx::query(
+            "UPDATE events SET thread_id = NULL, activation_id = NULL, root_turn_id = NULL, objective_id = NULL WHERE id = ?",
+        )
+        .bind("legacy-thread-event")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        store
+            .backfill_causal_projection_for_thread(
+                "legacy-context",
+                "legacy-session",
+                "legacy-thread",
+                "runtime/model_attempt_state",
+            )
+            .await
+            .unwrap();
+        let projected = store
+            .query(QueryFilter {
+                context_id: Some("legacy-context".to_string()),
+                session_id: Some("legacy-session".to_string()),
+                topic: Some("runtime/model_attempt_state".to_string()),
+                thread_id: Some("legacy-thread".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(projected.len(), 1);
+        let markers = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM event_causal_projection_backfills WHERE context_id = ? AND session_id = ? AND thread_id = ?",
+        )
+        .bind("legacy-context")
+        .bind("legacy-session")
+        .bind("legacy-thread")
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(markers, 1);
+    }
+
+    #[tokio::test]
+    async fn a_thread_spanning_the_projection_upgrade_is_filled_completely() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        let event = |id: &str| {
+            Event::new(
+                id.to_string(),
+                "Runtime-Orchestrator".to_string(),
+                "runtime_control".to_string(),
+                "runtime/model_attempt_state".to_string(),
+                serde_json::json!({
+                    "context_id": "mixed-context",
+                    "session_id": "mixed-session",
+                    "thread_id": "mixed-thread"
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            )
+        };
+        store.append(event("legacy-row")).await.unwrap();
+        store.append(event("projected-row")).await.unwrap();
+        // Only one row predates the causal columns, so the indexed query still
+        // returns the other one. A caller that asks for the fill only when the
+        // query came back empty would never repair this Thread.
+        sqlx::query("UPDATE events SET thread_id = NULL WHERE id = ?")
+            .bind("legacy-row")
+            .execute(&store.pool)
+            .await
+            .unwrap();
+        let filter = || QueryFilter {
+            context_id: Some("mixed-context".to_string()),
+            session_id: Some("mixed-session".to_string()),
+            topic: Some("runtime/model_attempt_state".to_string()),
+            thread_id: Some("mixed-thread".to_string()),
+            ..QueryFilter::default()
+        };
+        assert_eq!(store.query(filter()).await.unwrap().len(), 1);
+
+        store
+            .backfill_causal_projection_for_thread(
+                "mixed-context",
+                "mixed-session",
+                "mixed-thread",
+                "runtime/model_attempt_state",
+            )
+            .await
+            .unwrap();
+        let repaired = store.query(filter()).await.unwrap();
+        assert_eq!(repaired.len(), 2, "legacy half of the Thread stayed hidden");
+
+        // The marker settles later polls without opening a write transaction.
+        store
+            .backfill_causal_projection_for_thread(
+                "mixed-context",
+                "mixed-session",
+                "mixed-thread",
+                "runtime/model_attempt_state",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM event_causal_projection_backfills WHERE thread_id = ?",
+            )
+            .bind("mixed-thread")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            1
+        );
     }
 
     #[tokio::test]
