@@ -4059,14 +4059,32 @@ mod tests {
             assert_eq!(response.status(), expected_status);
         }
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let events = runtime
-            .query_events(QueryFilter {
-                session_id: Some("api-session".to_string()),
-                ..QueryFilter::default()
-            })
-            .await
-            .unwrap();
+        // Wait for the reply itself rather than for a fixed span. The suite
+        // runs in parallel, and under CPU contention the orchestrator needs
+        // longer than any constant short enough to keep the suite quick, which
+        // turned load into spurious failures.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let events = loop {
+            let events = runtime
+                .query_events(QueryFilter {
+                    session_id: Some("api-session".to_string()),
+                    ..QueryFilter::default()
+                })
+                .await
+                .unwrap();
+            if events.iter().any(|event| event.topic == "chat/reply") {
+                break events;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the session endpoint never produced a reply: {:?}",
+                events
+                    .iter()
+                    .map(|event| event.topic.as_str())
+                    .collect::<Vec<_>>()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
         assert_eq!(
             events
                 .iter()

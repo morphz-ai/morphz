@@ -6036,7 +6036,10 @@ mod tests {
             )
             .await
             .unwrap();
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+        // Event-driven, so the bound only decides how fast a hang is reported:
+        // enough headroom to survive a loaded parallel run, short enough that a
+        // real hang does not stall the suite for a minute.
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(15), replies.recv())
             .await
             .unwrap()
             .unwrap();
@@ -8721,7 +8724,9 @@ mod tests {
             })
             .await
             .unwrap();
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+        // Over a hundred model evaluations, so this needs more headroom than a
+        // wait for a single reply.
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(60), replies.recv())
             .await
             .unwrap()
             .unwrap();
