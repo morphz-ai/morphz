@@ -9889,6 +9889,7 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
     async fn infer(
         &self,
         request: &serde_json::Map<String, serde_json::Value>,
+        declared: Option<&[String]>,
     ) -> Result<String, DynError> {
         let orchestrator = self
             .orchestrator
@@ -9924,7 +9925,16 @@ impl crate::sexpr_eval::RuntimeInference for OrchestratorInference {
         // at one level and a submitted program stays statically bounded. What
         // remains is the same read-only gate the evaluator applies to `call`,
         // so one policy governs both rather than two that can drift.
-        let callable = orchestrator.orchestrator_config.eval_callable_tools.clone();
+        // The deployment gate is the outer bound; a program's declaration can
+        // only narrow it further. Both cuts are applied here so the model is
+        // never shown a tool that execution below would refuse.
+        let callable = orchestrator
+            .orchestrator_config
+            .eval_callable_tools
+            .iter()
+            .filter(|name| declared.is_none_or(|list| list.iter().any(|tool| tool == *name)))
+            .cloned()
+            .collect::<Vec<_>>();
         let tools = orchestrator
             .registry
             .definitions()

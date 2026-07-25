@@ -94,11 +94,22 @@ pub struct Program {
     /// the wrong test; the right one is whether a second run can corrupt
     /// anything, and here it cannot.
     tools: Vec<String>,
+    /// Tools the program declared through a `(yao (tools ...) BODY)` wrapper.
+    ///
+    /// Declaration exists for the part static analysis cannot see: which
+    /// tools an `infer` may gather evidence with is decided at run time, so
+    /// only the program itself can bound it. `None` means the wrapper was
+    /// absent and the deployment gate applies unchanged.
+    declared: Option<Vec<String>>,
 }
 
 impl Program {
     pub fn tools(&self) -> &[String] {
         &self.tools
+    }
+
+    pub fn declared_tools(&self) -> Option<&[String]> {
+        self.declared.as_deref()
     }
 }
 
@@ -147,16 +158,69 @@ pub fn validate(
     registry: &Registry,
     gate: &dyn ToolGate,
 ) -> Result<Program, EvalError> {
-    let root = crate::sexpr::parse(source).map_err(|error| EvalError {
+    let parsed = crate::sexpr::parse(source).map_err(|error| EvalError {
         message: format!("program 不是合法的 S 表达式: {error}"),
     })?;
+    let (declared, root) = split_declaration(parsed)?;
+    if let Some(declared) = &declared {
+        // Declared set must sit inside the deployment gate: a program cannot
+        // widen its own admission by asking nicely.
+        for tool in declared {
+            if !gate.is_callable(tool) {
+                return Err(EvalError::from(gate.describe_refusal(tool)));
+            }
+            if registry.get(tool).is_none() {
+                return err(format!("声明的工具 '{tool}' 不存在"));
+            }
+        }
+    }
+    // Inside the body the declaration *is* the gate, so an undeclared call is
+    // refused even when the deployment would have allowed it.
+    let narrowed = declared.as_ref().map(|tools| AllowList::new(tools.clone()));
+    let effective_gate: &dyn ToolGate = match &narrowed {
+        Some(list) => list,
+        None => gate,
+    };
     let mut scope = Scope::default();
     let mut facts = ProgramFacts::default();
-    check(&root, 0, &mut scope, registry, gate, &mut facts)?;
+    check(&root, 0, &mut scope, registry, effective_gate, &mut facts)?;
     Ok(Program {
         root,
         tools: facts.tools,
+        declared,
     })
+}
+
+/// Splits an optional `(yao (tools NAME...) BODY)` wrapper off a program.
+///
+/// The wrapper carries the language's own name: a program states that it is a
+/// Yao program and what it needs, and the Runtime provisions exactly that.
+fn split_declaration(parsed: SExpr) -> Result<(Option<Vec<String>>, SExpr), EvalError> {
+    let SExpr::List(items) = &parsed else {
+        return Ok((None, parsed));
+    };
+    if items.first() != Some(&SExpr::Atom("yao".to_string())) {
+        return Ok((None, parsed));
+    }
+    let [_, declaration, body] = items.as_slice() else {
+        return err("(yao (tools NAME...) BODY) 需要一个 tools 声明和一个程序体".to_string());
+    };
+    let SExpr::List(tool_items) = declaration else {
+        return err("(yao ...) 的第一段必须是 (tools NAME...)".to_string());
+    };
+    if tool_items.first() != Some(&SExpr::Atom("tools".to_string())) {
+        return err("(yao ...) 的第一段必须是 (tools NAME...)".to_string());
+    }
+    let mut declared = Vec::new();
+    for item in &tool_items[1..] {
+        let SExpr::Atom(name) = item else {
+            return err("(tools ...) 里只能是工具名原子".to_string());
+        };
+        if !declared.contains(name) {
+            declared.push(name.clone());
+        }
+    }
+    Ok((Some(declared), body.clone()))
 }
 
 /// What the walk learns about a program, for the caller to settle capability
@@ -383,9 +447,13 @@ fn check_value(expr: &SExpr, scope: &Scope) -> Result<(), EvalError> {
 /// prompts.
 #[async_trait::async_trait]
 pub trait RuntimeInference: Send + Sync {
+    /// `tools` is the program's declaration, when it made one: the host must
+    /// offer no more than this while the model gathers evidence. `None` means
+    /// the deployment default applies.
     async fn infer(
         &self,
         request: &JsonMap<String, JsonValue>,
+        tools: Option<&[String]>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
 }
 
@@ -410,7 +478,15 @@ pub async fn evaluate(
         calls_left: MAX_PROGRAM_CALLS,
         infers_left: MAX_PROGRAM_INFERS,
     };
-    eval_expr(&program.root, &mut env, &registry, &host, &mut budget).await
+    eval_expr(
+        &program.root,
+        &mut env,
+        &registry,
+        &host,
+        program.declared_tools(),
+        &mut budget,
+    )
+    .await
 }
 
 fn eval_expr<'a>(
@@ -418,6 +494,7 @@ fn eval_expr<'a>(
     env: &'a mut HashMap<String, JsonValue>,
     registry: &'a Arc<Registry>,
     host: &'a Arc<dyn RuntimeInference>,
+    declared: Option<&'a [String]>,
     budget: &'a mut Budget,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<JsonValue, EvalError>> + Send + 'a>>
 {
@@ -430,7 +507,7 @@ fn eval_expr<'a>(
             "seq" => {
                 let mut last = JsonValue::Null;
                 for step in args {
-                    last = eval_expr(step, env, registry, host, budget).await?;
+                    last = eval_expr(step, env, registry, host, declared, budget).await?;
                 }
                 Ok(last)
             }
@@ -438,7 +515,7 @@ fn eval_expr<'a>(
                 let [SExpr::Atom(name), value] = args else {
                     return err("(bind NAME EXPR) 形态错误".to_string());
                 };
-                let resolved = eval_expr(value, env, registry, host, budget).await?;
+                let resolved = eval_expr(value, env, registry, host, declared, budget).await?;
                 env.insert(name.clone(), resolved);
                 Ok(JsonValue::Null)
             }
@@ -451,7 +528,7 @@ fn eval_expr<'a>(
                 } else {
                     when_false
                 };
-                eval_expr(taken, env, registry, host, budget).await
+                eval_expr(taken, env, registry, host, declared, budget).await
             }
             "map" => {
                 let [collection, SExpr::Atom(element), body] = args else {
@@ -473,7 +550,7 @@ fn eval_expr<'a>(
                 let mut results = Vec::with_capacity(items.len());
                 for item in items {
                     let shadowed = env.insert(element.clone(), item);
-                    let outcome = eval_expr(body, env, registry, host, budget).await;
+                    let outcome = eval_expr(body, env, registry, host, declared, budget).await;
                     match shadowed {
                         Some(previous) => env.insert(element.clone(), previous),
                         None => env.remove(element),
@@ -489,7 +566,7 @@ fn eval_expr<'a>(
                 budget.infers_left -= 1;
                 let request = build_arguments(args, env)?;
                 let answer = host
-                    .infer(&request)
+                    .infer(&request, declared)
                     .await
                     .map_err(|error| EvalError::from(format!("(infer ...) 失败: {error}")))?;
                 // The answer is bound as data. It is deliberately not parsed
@@ -665,6 +742,8 @@ impl EvalTool {
              继续使用普通 Function Calling 即可，本工具不替代它。\n\
              可用算子：{operators}。\n\
              可调用工具：{tools}\n\
+             程序可用 (yao (tools NAME...) BODY) 声明所需工具：声明不能超出部署闸门，\
+             BODY 中的 call 与 infer 取证都只限声明过的工具；不声明则整个闸门可用。\n\
              引用绑定用 $name，取字段用 $name.field；参数写作 :key value。\n\
              `infer` 把判断交回模型：(infer :task \"要判断什么\" :evidence $binding)，返回值是数据。\n\
              `fallback` 与 `process` 属于你自身的求值，本程序中不可用。",
@@ -787,6 +866,7 @@ mod tests {
     struct ScriptedHost {
         answer: String,
         seen: Arc<Mutex<Vec<JsonMap<String, JsonValue>>>>,
+        tools_offered: Arc<Mutex<Vec<Option<Vec<String>>>>>,
     }
 
     #[async_trait::async_trait]
@@ -794,8 +874,13 @@ mod tests {
         async fn infer(
             &self,
             request: &JsonMap<String, JsonValue>,
+            tools: Option<&[String]>,
         ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
             self.seen.lock().unwrap().push(request.clone());
+            self.tools_offered
+                .lock()
+                .unwrap()
+                .push(tools.map(<[String]>::to_vec));
             Ok(self.answer.clone())
         }
     }
@@ -807,6 +892,7 @@ mod tests {
         let host = ScriptedHost {
             answer: answer.to_string(),
             seen: Arc::clone(&seen),
+            tools_offered: Arc::new(Mutex::new(Vec::new())),
         };
         (Arc::new(host), seen)
     }
@@ -1162,6 +1248,73 @@ mod tests {
             description.contains("未开放树内工具调用"),
             "an empty gate must be described, not left looking like the default: {description}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_declaration_narrows_calls_and_bounds_infer() {
+        // Declared: search only. A call to read is refused even though the
+        // deployment gate would allow it, and the infer host is offered
+        // exactly the declaration — the part static analysis cannot reach.
+        let (registry, _) = fixture(&[("search", serde_json::json!([]))]);
+        let error = validate(
+            r#"(yao (tools search) (call read :path "a"))"#,
+            &registry,
+            &gate(),
+        )
+        .expect_err("an undeclared call must be refused")
+        .message;
+        assert!(error.contains("只接受 search"), "got: {error}");
+
+        let program = validate(
+            r#"(yao (tools search) (seq (bind r (call search :query "x")) (infer :task "判断" :hits $r)))"#,
+            &registry,
+            &gate(),
+        )
+        .unwrap();
+        assert_eq!(program.declared_tools(), Some(&["search".to_string()][..]));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let offered = Arc::new(Mutex::new(Vec::new()));
+        let host: Arc<dyn RuntimeInference> = Arc::new(ScriptedHost {
+            answer: "ok".to_string(),
+            seen,
+            tools_offered: Arc::clone(&offered),
+        });
+        evaluate(&program, Arc::clone(&registry), host)
+            .await
+            .unwrap();
+        assert_eq!(
+            offered.lock().unwrap().as_slice(),
+            &[Some(vec!["search".to_string()])]
+        );
+    }
+
+    #[test]
+    fn a_declaration_cannot_widen_the_deployment_gate() {
+        // Asking for exec does not grant exec: the gate is the outer bound and
+        // a program only ever narrows it.
+        let registry = fixture(&[("read", JsonValue::Null)]).0;
+        let error = validate(
+            r#"(yao (tools exec) (call exec :command "ls"))"#,
+            &registry,
+            &gate(),
+        )
+        .expect_err("a declaration outside the gate is refused")
+        .message;
+        assert!(error.contains("不能在 eval 程序中调用"), "got: {error}");
+    }
+
+    #[tokio::test]
+    async fn an_undeclared_program_keeps_the_old_meaning() {
+        let (outcome, calls) = run(
+            r#"(seq (bind f (call list_files :path "src")) (map $f e (call read :path $e)))"#,
+            &[
+                ("list_files", serde_json::json!(["a.rs"])),
+                ("read", serde_json::json!("body")),
+            ],
+        )
+        .await;
+        assert_eq!(outcome.unwrap(), serde_json::json!(["body"]));
+        assert_eq!(calls.len(), 2);
     }
 
     #[test]
