@@ -592,6 +592,99 @@ fn type_name(value: &JsonValue) -> &'static str {
     }
 }
 
+tokio::task_local! {
+    /// Set by the Orchestrator around an `eval`, this is how a program reaches
+    /// the model without the evaluator holding the Orchestrator that holds it.
+    pub static CURRENT_INFERENCE: Option<Arc<dyn RuntimeInference>>;
+}
+
+/// Tools an `eval` program may call.
+///
+/// Read-only and in-workspace only, for a reason that outlives v1: the tree is
+/// approved as a whole, before evaluation discovers the paths a `map` will
+/// reach. A write or an out-of-boundary path found mid-evaluation could not
+/// have been part of what was approved, so the program is refused rather than
+/// escalated. Individual tools still run their own jail and path checks.
+pub const EVAL_CALLABLE_TOOLS: [&str; 3] = ["read", "list_files", "search"];
+
+pub struct EvalTool {
+    registry: Arc<Registry>,
+}
+
+impl EvalTool {
+    pub fn new(registry: Arc<Registry>) -> Self {
+        Self { registry }
+    }
+
+    pub fn description() -> String {
+        format!(
+            "把一棵可求值的 S 表达式程序交给 Runtime 确定性执行，一次完成多个有数据依赖的步骤。\
+             适用于步骤提前已知、且后一步要用到前一步结果的场合；单步或需要看到结果再决定时，\
+             继续使用普通 Function Calling 即可，本工具不替代它。\n\
+             可用算子：{operators}。\n\
+             可调用工具：{tools}（只读且限工作区内；其余工具请用普通 Function Calling）。\n\
+             引用绑定用 $name，取字段用 $name.field；参数写作 :key value。\n\
+             `infer` 把判断交回模型：(infer :task \"要判断什么\" :evidence $binding)，返回值是数据。\n\
+             `fallback` 与 `process` 属于你自身的求值，本程序中不可用。",
+            operators = OPERATORS.join(" "),
+            tools = EVAL_CALLABLE_TOOLS.join(" "),
+        )
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EvalArgs {
+    program: String,
+}
+
+#[async_trait::async_trait]
+impl crate::tool::Tool for EvalTool {
+    fn name(&self) -> &str {
+        "eval"
+    }
+
+    /// The tree is a Runtime control construct, not a reality-facing action of
+    /// its own: a physical Job could be dispatched to an edge worker, and
+    /// `infer` has to reach the Orchestrator's model path from wherever it runs.
+    fn execution_class(&self) -> crate::tool::ToolExecutionClass {
+        crate::tool::ToolExecutionClass::LogicalInline
+    }
+
+    fn definition(&self) -> crate::llm::ToolDefinition {
+        crate::llm::ToolDefinition {
+            name: "eval".to_string(),
+            description: Self::description(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "program": {
+                        "type": "string",
+                        "description": "canonical S 表达式程序，例如 (seq (bind files (call list_files :path \"src\")) (map $files f (call read :path $f)))"
+                    }
+                },
+                "required": ["program"]
+            }),
+        }
+    }
+
+    async fn execute(
+        &self,
+        arguments: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let args: EvalArgs = serde_json::from_str(arguments)?;
+        let gate = AllowList::new(EVAL_CALLABLE_TOOLS);
+        let program = validate(&args.program, &self.registry, &gate)?;
+        let inference = CURRENT_INFERENCE
+            .try_with(Clone::clone)
+            .ok()
+            .flatten()
+            .ok_or("eval 缺少 Runtime 注入的模型调用通道")?;
+        let value = evaluate(&program, Arc::clone(&self.registry), inference).await?;
+        Ok(serde_json::to_string(&value)?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -913,6 +1006,82 @@ mod tests {
             .message;
         assert!(error.contains("infer 次数超过上限"), "got: {error}");
         assert_eq!(requests.lock().unwrap().len(), MAX_PROGRAM_INFERS);
+    }
+
+    #[tokio::test]
+    async fn the_tool_validates_then_evaluates_behind_one_call() {
+        use crate::tool::Tool;
+
+        let (registry, calls) = fixture(&[
+            ("list_files", serde_json::json!(["a.rs", "b.rs"])),
+            ("read", serde_json::json!("body")),
+        ]);
+        let tool = EvalTool::new(Arc::clone(&registry));
+        let arguments = serde_json::json!({
+            "program": r#"(seq (bind f (call list_files :path "src")) (map $f e (call read :path $e)))"#
+        })
+        .to_string();
+        let output = CURRENT_INFERENCE
+            .scope(Some(host("unused").0), tool.execute(&arguments))
+            .await
+            .unwrap();
+        assert_eq!(output, r#"["body","body"]"#);
+        assert_eq!(calls.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn the_tool_refuses_a_program_before_running_any_of_it() {
+        use crate::tool::Tool;
+
+        let (registry, calls) = fixture(&[("read", JsonValue::Null)]);
+        let tool = EvalTool::new(Arc::clone(&registry));
+        // `exec` is outside the read-only gate, and it sits after a legitimate
+        // read: nothing may run if the tree as a whole is not admissible.
+        let arguments = serde_json::json!({
+            "program": r#"(seq (call read :path "a") (call exec :command "rm -rf /"))"#
+        })
+        .to_string();
+        let error = CURRENT_INFERENCE
+            .scope(Some(host("unused").0), tool.execute(&arguments))
+            .await
+            .expect_err("an inadmissible tree is refused whole")
+            .to_string();
+        assert!(error.contains("不能在 eval 程序中调用"), "got: {error}");
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "validation must precede every side effect"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_tool_says_so_when_the_model_channel_is_missing() {
+        use crate::tool::Tool;
+
+        let registry = fixture(&[]).0;
+        let tool = EvalTool::new(registry);
+        let arguments = serde_json::json!({"program": r#"(infer :task "判断")"#}).to_string();
+        let error = CURRENT_INFERENCE
+            .scope(None, tool.execute(&arguments))
+            .await
+            .expect_err("without the channel the program cannot be evaluated")
+            .to_string();
+        assert!(error.contains("模型调用通道"), "got: {error}");
+    }
+
+    #[test]
+    fn the_advertised_operators_are_the_implemented_ones() {
+        // The description is the model's only account of what it may write, so
+        // it is generated from the tables rather than restated by hand.
+        let description = EvalTool::description();
+        for operator in OPERATORS {
+            assert!(description.contains(operator), "missing {operator}");
+        }
+        for refused in MODEL_ONLY_OPERATORS {
+            if refused == "reply" {
+                continue;
+            }
+            assert!(description.contains(refused), "unexplained {refused}");
+        }
     }
 
     #[test]
