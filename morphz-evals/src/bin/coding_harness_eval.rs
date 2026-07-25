@@ -58,7 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
         _ => {
             eprintln!(
-                "usage:\n  cargo run -p morphz-evals --bin coding_harness_eval -- create ARM SCENARIO [BASE_DIR]\n  cargo run -p morphz-evals --bin coding_harness_eval -- run-arm ARM SCENARIO PROFILES.toml BASE_DIR\n  cargo run -p morphz-evals --bin coding_harness_eval -- run SCENARIO PROFILES.toml BASE_DIR\n\nARM: baseline | harness\nSCENARIO: retry-state-machine | cache-coherence"
+                "usage:\n  cargo run -p morphz-evals --bin coding_harness_eval -- create ARM SCENARIO [BASE_DIR]\n  cargo run -p morphz-evals --bin coding_harness_eval -- run-arm ARM SCENARIO PROFILES.toml BASE_DIR\n  cargo run -p morphz-evals --bin coding_harness_eval -- run SCENARIO PROFILES.toml BASE_DIR\n\nARM: baseline | harness\nSCENARIO: retry-state-machine | cache-coherence | procedure-adherence"
             );
             std::process::exit(64);
         }
