@@ -1446,7 +1446,10 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .message-quote-badge:hover { transform: scale(1.15); box-shadow: 0 0 0 3px var(--accent-soft); }
 .message-quote-badge.active { box-shadow: 0 0 0 3px var(--accent-soft); }
 
-.inline-comment-box { display: block; margin-top: 4px; width: 260px; }
+/* Anchored to the message row's right edge, not to the badge: a box that grew
+   outwards from a badge sitting at the end of the selected run ran past the
+   conversation column and was clipped by it. */
+.inline-comment-box { position: absolute; right: 0; z-index: 11; display: block; width: 260px; max-width: 100%; }
 .inline-comment-input { width: 100%; padding: 6px 8px; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--surface-elevated); color: var(--text); font-size: 12px; line-height: 1.5; resize: none; outline: 0; box-shadow: var(--shadow-sm); }
 .inline-comment-input::placeholder { color: var(--faint); }
 
