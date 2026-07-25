@@ -8,6 +8,12 @@ members = [
 ]
 default-members = ["morphz"]
 
+[workspace.package]
+# The verified floor, not an aspiration: this is the version the toolchain
+# file pins and the only one the suite is actually run against. Keep it in
+# step with `rust-toolchain.toml`.
+rust-version = "1.97.1"
+
 [workspace.lints.rust]
 # `libsqlite3-hotbundle` deliberately links a current SQLite amalgamation
 # alongside the older one SQLx bundles, so duplicate symbols are the mechanism
