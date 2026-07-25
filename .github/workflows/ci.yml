@@ -117,4 +117,18 @@ jobs:
           cache-dependency-path: dashboard/package-lock.json
       - run: npm ci
       - run: npm run lint
+      - run: npm test
       - run: npm run build
+      # `morphz/src/web.rs` embeds these files with `include_bytes!` at Rust
+      # compile time, so they are committed and the Rust jobs need no Node
+      # toolchain. The cost of that is a build which can silently fall behind
+      # its source: the binary would then serve a UI nobody can find in the
+      # tree. Nothing else checks this.
+      - name: Verify the embedded dashboard build is current
+        run: |
+          if [ -n "$(git status --porcelain -- dist)" ]; then
+            git diff -- dist
+            git status --porcelain -- dist
+            echo "::error::dashboard/dist is stale. Run 'npm run build' in dashboard/ and commit the result."
+            exit 1
+          fi
