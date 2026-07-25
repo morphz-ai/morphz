@@ -219,10 +219,56 @@ impl PlanExecutionCoordinator {
                 let state_json = serde_json::to_value(&machine)?;
                 let budget_json = machine.budget_json()?;
                 let effect_tool_call_id = deterministic_plan_effect_id(&running.id, sequence)?;
-                let job = planner
+                let job = match planner
                     .plan_call(&running, &effect, &effect_tool_call_id)
-                    .await?;
-                validate_planned_job(&running, &effect, &effect_tool_call_id, &job)?;
+                    .await
+                {
+                    Ok(job) => job,
+                    Err(error) => {
+                        let message = format!("Yao call 规划失败: {error}");
+                        let mutation = self
+                            .store
+                            .finish_plan_execution(
+                                &running.id,
+                                running.revision,
+                                claim_token,
+                                PlanExecutionStatus::Failed,
+                                &state_json,
+                                &budget_json,
+                                None,
+                                Some(&message),
+                            )
+                            .await?;
+                        let plan = updated_or_conflict(mutation, "fail call planning")?;
+                        return Ok(PlanDriveReceipt::Failed {
+                            plan,
+                            error: message,
+                        });
+                    }
+                };
+                if let Err(error) =
+                    validate_planned_job(&running, &effect, &effect_tool_call_id, &job)
+                {
+                    let message = format!("Yao call 规划结果非法: {error}");
+                    let mutation = self
+                        .store
+                        .finish_plan_execution(
+                            &running.id,
+                            running.revision,
+                            claim_token,
+                            PlanExecutionStatus::Failed,
+                            &state_json,
+                            &budget_json,
+                            None,
+                            Some(&message),
+                        )
+                        .await?;
+                    let plan = updated_or_conflict(mutation, "fail invalid call planning")?;
+                    return Ok(PlanDriveReceipt::Failed {
+                        plan,
+                        error: message,
+                    });
+                }
                 let committed = self
                     .store
                     .create_execution_job_and_suspend_plan(
@@ -1148,6 +1194,20 @@ mod tests {
         }
     }
 
+    struct RejectingPlanner;
+
+    #[async_trait::async_trait]
+    impl PlanCallPlanner for RejectingPlanner {
+        async fn plan_call(
+            &self,
+            _plan: &PlanExecutionRecord,
+            _effect: &PlanEffect,
+            _effect_tool_call_id: &str,
+        ) -> PlanExecutionResult<NewExecutionJob> {
+            Err("target is unavailable".into())
+        }
+    }
+
     async fn seed_route(store: &SqliteStore) -> PlanExecutionRoute {
         let context_id = "plan-coordinator-context".to_string();
         let session_id = "plan-coordinator-session".to_string();
@@ -1358,6 +1418,51 @@ mod tests {
                 assert_eq!(plan.status, PlanExecutionStatus::Succeeded);
             }
             other => panic!("expected completed plan, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_call_planning_error_terminates_the_claimed_plan_instead_of_stranding_it() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        registry.register(Arc::new(DefinitionOnlyTool));
+        let program = validate(
+            r#"(eval (requires (tools read)) (call read (path "README.md")))"#,
+            &registry,
+            &AllowList::new(["read"]),
+        )
+        .unwrap();
+        let route = seed_route(&store).await;
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, registry);
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+
+        let failed = coordinator
+            .drive_once(
+                &queued.id,
+                queued.revision,
+                "plan-worker",
+                "plan-rejected-claim",
+                Utc::now() + Duration::minutes(1),
+                &RejectingPlanner,
+            )
+            .await
+            .unwrap();
+
+        match failed {
+            PlanDriveReceipt::Failed { plan, error } => {
+                assert_eq!(plan.status, PlanExecutionStatus::Failed);
+                assert!(error.contains("target is unavailable"), "got: {error}");
+            }
+            other => panic!("expected failed PlanExecution, got {other:?}"),
         }
     }
 

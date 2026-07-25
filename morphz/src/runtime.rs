@@ -757,6 +757,7 @@ impl MorphzRuntimeBuilder {
         let orchestrator = Orchestrator::assemble_with_scheduler_kernel(
             Arc::clone(&bus),
             Arc::clone(&store) as Arc<dyn EventStore>,
+            Some(Arc::clone(&store) as Arc<dyn RuntimeStore>),
             self.client,
             Arc::clone(&registry),
             self.config.orchestrator.clone(),
@@ -4042,6 +4043,12 @@ mod tests {
         observed_complete_batch: Arc<AtomicBool>,
     }
 
+    struct DurableEvalClient {
+        calls: AtomicU64,
+        path: String,
+        observed_plan_result: Arc<AtomicBool>,
+    }
+
     struct DetachedExecClient {
         calls: AtomicU64,
     }
@@ -4419,6 +4426,48 @@ mod tests {
                 return Ok(text_response("physical-batch-complete"));
             }
             Err("interactive physical tool batch caused a redundant Delivery evaluation".into())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for DurableEvalClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(tools.iter().any(|tool| tool.name == "eval"));
+                    assert!(tools.iter().any(|tool| tool.name == "read"));
+                    let quoted_path = serde_json::to_string(&self.path)?;
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "durable-eval".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "eval".to_string(),
+                            arguments: json!({
+                                "program": format!(
+                                    "(eval (requires (tools read)) (seq (bind body (call read (path {quoted_path}))) $body))"
+                                )
+                            })
+                            .to_string(),
+                        }],
+                    })
+                }
+                1 => {
+                    let observed = messages.iter().any(|message| {
+                        message.role == "tool" && message.content.contains("durable-plan-fixture")
+                    });
+                    self.observed_plan_result.store(observed, Ordering::SeqCst);
+                    if !observed {
+                        return Err("后续模型求值未观测到 durable eval 的真实工具结果".into());
+                    }
+                    Ok(text_response("durable-eval-complete"))
+                }
+                _ => Err("durable eval 产生了冗余模型求值".into()),
+            }
         }
     }
 
@@ -5985,6 +6034,91 @@ mod tests {
             .iter()
             .all(|job| job.status == crate::memory::ExecutionJobStatus::Succeeded));
         assert!(jobs.iter().all(|job| job.result_event_id.is_some()));
+    }
+
+    #[tokio::test]
+    async fn eval_runs_through_durable_plan_and_physical_execution_job_before_replying() {
+        let database = NamedTempFile::new().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let fixture_path = workspace.path().join("durable-plan.txt");
+        std::fs::write(&fixture_path, "durable-plan-fixture").unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.workspace_root = workspace.path().to_string_lossy().into_owned();
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let observed_plan_result = Arc::new(AtomicBool::new(false));
+        let client = Arc::new(DurableEvalClient {
+            calls: AtomicU64::new(0),
+            path: fixture_path.to_string_lossy().into_owned(),
+            observed_plan_result: Arc::clone(&observed_plan_result),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-durable-eval".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Durable eval".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+
+        session
+            .send(
+                "read the fixture through eval",
+                "User-Test",
+                Some("client-durable-eval".to_string()),
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(reply.payload["text"], "durable-eval-complete");
+        assert!(observed_plan_result.load(Ordering::SeqCst));
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+        let plans = runtime
+            .inner
+            .store
+            .list_plan_executions(crate::memory::PlanExecutionFilter {
+                context_id: Some(runtime.identity().context_id.clone()),
+                session_id: Some(session.id().to_string()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].status,
+            crate::memory::PlanExecutionStatus::Succeeded
+        );
+        let jobs = runtime
+            .inner
+            .store
+            .list_execution_jobs(crate::memory::ExecutionJobFilter {
+                session_id: Some(session.id().to_string()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
     }
 
     #[tokio::test]

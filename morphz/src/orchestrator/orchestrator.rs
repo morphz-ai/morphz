@@ -29,16 +29,21 @@ use crate::memory::{
     ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
     ExecutionJobStore, NewActionGroup, NewActionGroupMember, NewApprovalRequest,
     NewCapabilityLease, NewCognitiveContext, NewDelegation, NewExecutionJob, NewRuntimeTimer,
-    NewSession, NewThread, NewThreadActivation, NewThreadSignal, QueryFilter, RuntimeTimerKind,
-    RuntimeTimerRecord, ScheduleStatus, SessionAttentionState, SessionAttentionUpdate,
-    SessionMountKind, SessionStatus, SessionStore, SessionUpdate, SignalOutboxStatus,
-    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadKind,
-    ThreadLifecycle, ThreadMutation, ThreadRecord,
+    NewSession, NewThread, NewThreadActivation, NewThreadSignal, PlanExecutionRecord,
+    PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
+    ScheduleStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus,
+    SessionStore, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadRecord,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{attribute_prompt_components, ContextEngine, ContextView};
 use crate::orchestrator::context_contract::{render_system_contract, render_system_contract_sexpr};
 use crate::permission::{DurableApprovalGrant, PermissionBroker};
+use crate::plan_execution::{
+    PlanArtifactBinding, PlanCallPlanner, PlanDriveReceipt, PlanExecutionCoordinator,
+    PlanExecutionResult, PlanExecutionRoute, PlanResumeReceipt,
+};
 use crate::sexpr::SExpr;
 use crate::sexpr_vm_contract::ANNOTATED_RESPONSE_KERNEL;
 use crate::timer::{TimerDisposition, TimerEngine};
@@ -1088,6 +1093,10 @@ pub struct Orchestrator {
     self_ref: std::sync::OnceLock<std::sync::Weak<Orchestrator>>,
     bus: Arc<InMemoryEventBus>,
     store: Arc<dyn EventStore>,
+    /// Complete Store authority used by durable Yao PlanExecution. Kept
+    /// separate from the read/write EventStore surface so tests may assemble a
+    /// deliberately smaller Orchestrator without silently weakening eval.
+    plan_store: Option<Arc<dyn crate::memory::RuntimeStore>>,
     client: Arc<dyn Client>,
     registry: Arc<Registry>,
     tool_definitions: Vec<crate::llm::ToolDefinition>,
@@ -1572,6 +1581,7 @@ impl Orchestrator {
     pub(crate) fn assemble_with_scheduler_kernel(
         bus: Arc<InMemoryEventBus>,
         store: Arc<dyn EventStore>,
+        plan_store: Option<Arc<dyn crate::memory::RuntimeStore>>,
         client: Arc<dyn Client>,
         registry: Arc<Registry>,
         orchestrator_config: OrchestratorConfig,
@@ -1609,6 +1619,7 @@ impl Orchestrator {
             self_ref: std::sync::OnceLock::new(),
             bus,
             store,
+            plan_store,
             client,
             registry,
             tool_definitions,
@@ -1670,6 +1681,7 @@ impl Orchestrator {
         let orchestrator = Self::assemble_with_scheduler_kernel(
             bus,
             store,
+            None,
             client,
             registry,
             orchestrator_config,
@@ -7077,6 +7089,361 @@ impl Orchestrator {
         .await
     }
 
+    async fn plan_execution_job(
+        &self,
+        plan: &PlanExecutionRecord,
+        effect: &crate::sexpr_eval::PlanEffect,
+        effect_tool_call_id: &str,
+    ) -> PlanExecutionResult<NewExecutionJob> {
+        let crate::sexpr_eval::PlanEffect::Call {
+            tool: tool_name,
+            arguments,
+            ..
+        } = effect
+        else {
+            return Err("只有 call effect 可以规划 Execution Job".into());
+        };
+        let tool = self
+            .registry
+            .get(tool_name)
+            .ok_or_else(|| format!("Yao Plan 调用了未注册工具 '{tool_name}'"))?;
+        if tool.execution_class() != crate::tool::ToolExecutionClass::PhysicalJob {
+            return Err(format!(
+                "Yao Plan 的 (call {tool_name} ...) 必须进入 Physical Execution Job；LogicalInline 工具不能绕过其控制平面"
+            )
+            .into());
+        }
+
+        let raw_arguments = serde_json::to_string(arguments)?;
+        let invocation = crate::execution_target::split_target_argument(&raw_arguments)?;
+        let session_store = self
+            .context_engine
+            .session_store()
+            .ok_or("Yao Plan 物理调用需要持久化 ThreadStore")?;
+        let thread = session_store
+            .get_thread(&plan.thread_id)
+            .await?
+            .ok_or_else(|| format!("Yao Plan Thread '{}' 不存在", plan.thread_id))?;
+        if thread.context_id != plan.context_id
+            || thread.session_id != plan.session_id
+            || thread.agent_id != plan.agent_id
+            || thread.initiating_principal_id != plan.initiating_principal_id
+        {
+            return Err("Yao Plan 与执行 Thread 的权威 route 不一致".into());
+        }
+        let effective_target_id = if invocation.explicit_target {
+            invocation.target_id.clone()
+        } else {
+            thread
+                .target_id
+                .clone()
+                .unwrap_or_else(|| crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string())
+        };
+        if let Some(bound_target_id) = thread.target_id.as_deref() {
+            if bound_target_id != effective_target_id {
+                return Err(format!(
+                    "Thread '{}' 已绑定 Execution Target '{}'，Yao Plan 不能切换为 '{}'",
+                    thread.id, bound_target_id, effective_target_id
+                )
+                .into());
+            }
+        } else {
+            match session_store
+                .bind_thread_target(&thread.id, thread.revision, &effective_target_id)
+                .await?
+            {
+                ThreadMutation::Updated(_) => {}
+                ThreadMutation::Conflict { current }
+                    if current.target_id.as_deref() == Some(effective_target_id.as_str()) => {}
+                ThreadMutation::Conflict { current } => {
+                    return Err(format!(
+                        "Thread '{}' 的 Execution Target 并发绑定冲突：当前为 '{}'，请求为 '{}'",
+                        current.id,
+                        current.target_id.as_deref().unwrap_or("unbound"),
+                        effective_target_id
+                    )
+                    .into())
+                }
+                ThreadMutation::NotFound => {
+                    return Err(
+                        format!("Yao Plan Thread '{}' 在绑定 Target 时消失", thread.id).into(),
+                    )
+                }
+            }
+        }
+        let target = self
+            .execution_targets
+            .as_ref()
+            .ok_or("Yao Plan Physical Execution 缺少 ExecutionTargetDispatcher")?
+            .validate_for_tool(
+                &effective_target_id,
+                tool.name(),
+                plan.initiating_principal_id.as_deref(),
+                &plan.agent_id,
+                &plan.context_id,
+                &plan.thread_id,
+            )
+            .await?;
+        let mut request = serde_json::from_str(&invocation.tool_arguments).unwrap_or_else(|_| {
+            json!({
+                "raw_arguments": invocation.tool_arguments,
+            })
+        });
+        crate::execution_target::attach_route_snapshot(
+            &mut request,
+            &crate::execution_target::ExecutionRouteSnapshot::freeze(&target),
+        )?;
+        let requirement = if target.kind == crate::memory::ExecutionTargetKind::InProcessLocal {
+            tool.approval_requirement(&invocation.tool_arguments)?
+        } else {
+            Some(crate::execution_target::remote_target_approval_requirement(
+                tool.name(),
+                &invocation.tool_arguments,
+            )?)
+        };
+        ExecutionJobSpec {
+            activation_id: plan.activation_id.clone(),
+            thread_id: plan.thread_id.clone(),
+            agent_id: plan.agent_id.clone(),
+            context_id: plan.context_id.clone(),
+            session_id: plan.session_id.clone(),
+            initiating_principal_id: plan.initiating_principal_id.clone(),
+            target_id: effective_target_id,
+            tool_call_id: effect_tool_call_id.to_string(),
+            tool_name: tool_name.clone(),
+            request,
+            retry_safety: tool.retry_safety(),
+            requires_approval: requirement.is_some(),
+        }
+        .into_new_job()
+    }
+
+    async fn execute_durable_plan(
+        &self,
+        route: PlanExecutionRoute,
+        program: crate::sexpr_eval::Program,
+    ) -> PlanExecutionResult<serde_json::Value> {
+        let store = self
+            .plan_store
+            .as_ref()
+            .ok_or("Runtime 没有配置 PlanExecution Store")?;
+        let coordinator =
+            PlanExecutionCoordinator::new(Arc::clone(store), Arc::clone(&self.registry));
+        let planner = OrchestratorPlanCallPlanner {
+            orchestrator: self
+                .self_ref
+                .get()
+                .cloned()
+                .ok_or("Orchestrator 尚未启动，不能执行持久化 Plan")?,
+        };
+        let mut plan = coordinator
+            .ensure(route.clone(), &program, PlanArtifactBinding::default())
+            .await?;
+        let worker_id = format!("plan-runner-{}", std::process::id());
+
+        loop {
+            match plan.status {
+                PlanExecutionStatus::Succeeded => {
+                    return Ok(plan.result_json.unwrap_or(serde_json::Value::Null));
+                }
+                PlanExecutionStatus::Failed | PlanExecutionStatus::Cancelled => {
+                    return Err(plan
+                        .error
+                        .unwrap_or_else(|| {
+                            format!("PlanExecution '{}' 已 {}", plan.id, plan.status.as_str())
+                        })
+                        .into());
+                }
+                PlanExecutionStatus::Queued => {
+                    let claim_token = format!(
+                        "plan_claim_{}_{}_{}",
+                        plan.id,
+                        std::process::id(),
+                        Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                    );
+                    let receipt = coordinator
+                        .drive_once(
+                            &plan.id,
+                            plan.revision,
+                            &worker_id,
+                            &claim_token,
+                            Utc::now() + chrono::Duration::seconds(60),
+                            &planner,
+                        )
+                        .await?;
+                    plan = match receipt {
+                        PlanDriveReceipt::WaitingForExecutionJob { plan, .. }
+                        | PlanDriveReceipt::WaitingForEvaluation { plan, .. }
+                        | PlanDriveReceipt::Succeeded { plan, .. }
+                        | PlanDriveReceipt::Failed { plan, .. } => plan,
+                        PlanDriveReceipt::Conflict {
+                            current: Some(current),
+                            ..
+                        } => current,
+                        PlanDriveReceipt::Conflict {
+                            current: None,
+                            reason,
+                        } => return Err(reason.into()),
+                    };
+                }
+                PlanExecutionStatus::Running => {
+                    if plan
+                        .lease_expires_at
+                        .is_some_and(|expires_at| expires_at <= Utc::now())
+                    {
+                        // An expired deterministic step is safe to reclaim:
+                        // no physical or model side effect happens before the
+                        // atomic suspension boundary.
+                        let claim_token = format!(
+                            "plan_reclaim_{}_{}_{}",
+                            plan.id,
+                            std::process::id(),
+                            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+                        );
+                        let receipt = coordinator
+                            .drive_once(
+                                &plan.id,
+                                plan.revision,
+                                &worker_id,
+                                &claim_token,
+                                Utc::now() + chrono::Duration::seconds(60),
+                                &planner,
+                            )
+                            .await?;
+                        plan = match receipt {
+                            PlanDriveReceipt::WaitingForExecutionJob { plan, .. }
+                            | PlanDriveReceipt::WaitingForEvaluation { plan, .. }
+                            | PlanDriveReceipt::Succeeded { plan, .. }
+                            | PlanDriveReceipt::Failed { plan, .. } => plan,
+                            PlanDriveReceipt::Conflict {
+                                current: Some(current),
+                                ..
+                            } => current,
+                            PlanDriveReceipt::Conflict {
+                                current: None,
+                                reason,
+                            } => return Err(reason.into()),
+                        };
+                    } else {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                        plan = store
+                            .get_plan_execution(&plan.id)
+                            .await?
+                            .ok_or("PlanExecution 在运行中消失")?;
+                    }
+                }
+                PlanExecutionStatus::Waiting => match plan.pending_kind {
+                    Some(PlanExecutionWaitKind::ExecutionJob) => {
+                        let job_id = plan
+                            .pending_id
+                            .clone()
+                            .ok_or("waiting(execution_job) 缺少 pending_id")?;
+                        let job = store
+                            .get_execution_job(&job_id)
+                            .await?
+                            .ok_or_else(|| format!("Execution Job '{job_id}' 不存在"))?;
+                        if job.status.is_terminal() {
+                            plan = plan_from_resume(
+                                coordinator
+                                    .reconcile_execution_job(&plan.id, &job.id)
+                                    .await?,
+                            )?;
+                            continue;
+                        }
+                        if matches!(
+                            job.status,
+                            ExecutionJobStatus::Queued | ExecutionJobStatus::WaitingApproval
+                        ) {
+                            self.execute_plan_call(&route, &plan).await?;
+                        } else {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        plan = store
+                            .get_plan_execution(&plan.id)
+                            .await?
+                            .ok_or("PlanExecution 在等待 Job 时消失")?;
+                    }
+                    Some(PlanExecutionWaitKind::Evaluation) => {
+                        let activation_id = plan
+                            .pending_id
+                            .clone()
+                            .ok_or("waiting(evaluation) 缺少 pending_id")?;
+                        let activation = store
+                            .get_thread_activation(&activation_id)
+                            .await?
+                            .ok_or_else(|| {
+                                format!("Plan child Activation '{activation_id}' 不存在")
+                            })?;
+                        if activation.status.is_terminal() {
+                            plan = plan_from_resume(
+                                coordinator
+                                    .reconcile_evaluation(&plan.id, &activation.id)
+                                    .await?,
+                            )?;
+                        } else {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            plan = store
+                                .get_plan_execution(&plan.id)
+                                .await?
+                                .ok_or("PlanExecution 在等待 Evaluation 时消失")?;
+                        }
+                    }
+                    Some(PlanExecutionWaitKind::ActionGroup) => {
+                        return Err("Yao Plan v1 尚未产生 Action Group wait".into());
+                    }
+                    None => return Err("PlanExecution waiting 状态缺少 pending_kind".into()),
+                },
+            }
+        }
+    }
+
+    async fn execute_plan_call(
+        &self,
+        route: &PlanExecutionRoute,
+        plan: &PlanExecutionRecord,
+    ) -> PlanExecutionResult<()> {
+        let machine: crate::sexpr_eval::PlanMachine =
+            serde_json::from_value(plan.state_json.clone())?;
+        let effect = machine
+            .pending_effect()
+            .cloned()
+            .ok_or("PlanExecution 等待 Job 但 machine 没有 pending effect")?;
+        let crate::sexpr_eval::PlanEffect::Call {
+            sequence,
+            tool,
+            arguments,
+        } = effect
+        else {
+            return Err("PlanExecution 等待 Job，但 pending effect 不是 call".into());
+        };
+        let call_id = crate::plan_execution::deterministic_plan_effect_id(&plan.id, sequence)?;
+        let response = crate::llm::Response {
+            content: String::new(),
+            tool_calls: vec![crate::llm::ToolCallRepr {
+                id: call_id,
+                r#type: "function".to_string(),
+                func_name: tool.clone(),
+                arguments: serde_json::to_string(&arguments)?,
+            }],
+        };
+        self.execute_tool_calls(
+            &route.session_id,
+            &route.activation_id,
+            response,
+            "plan-execution",
+            ToolExecutionOptions {
+                context_tx_allowed: false,
+                wake_on_output: false,
+                transcript_tool_calls: None,
+                allowed_tool_names: HashSet::from([tool]),
+                record_assistant_call: false,
+                model_attempt_id: None,
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn prepare_physical_execution(
         &self,
@@ -8539,7 +8906,44 @@ impl Orchestrator {
                         attempt_id: attempt_id.clone(),
                     }) as Arc<dyn crate::sexpr_eval::RuntimeInference>
                 });
+            let plan_executor: Option<Arc<dyn crate::sexpr_eval::RuntimePlanExecutor>> =
+                if call.func_name == "eval" && self.plan_store.is_some() {
+                    match (
+                        self.self_ref.get().cloned(),
+                        activation_route.as_ref(),
+                        durable_execution_identity.as_ref(),
+                    ) {
+                        (Some(orchestrator), Some(activation), Some((agent_id, thread_id))) => {
+                            Some(Arc::new(OrchestratorPlanExecutor {
+                                orchestrator,
+                                route: PlanExecutionRoute {
+                                    activation_id: activation.activation_id.clone(),
+                                    thread_id: thread_id.clone(),
+                                    agent_id: agent_id.clone(),
+                                    context_id: context_id.clone(),
+                                    session_id: session_id.clone(),
+                                    initiating_principal_id: activation
+                                        .initiating_principal_id
+                                        .clone(),
+                                    tool_call_id: call.id.clone(),
+                                    objective_id: objective_evaluation
+                                        .as_ref()
+                                        .map(|value| value.objective_id.clone()),
+                                    objective_evaluation_id: objective_evaluation
+                                        .as_ref()
+                                        .map(|value| value.evaluation_id.clone()),
+                                },
+                            })
+                                as Arc<dyn crate::sexpr_eval::RuntimePlanExecutor>)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
             let handle = tokio::spawn(async move {
+                crate::sexpr_eval::CURRENT_PLAN_EXECUTOR
+                    .scope(plan_executor, async move {
                 crate::sexpr_eval::CURRENT_INFERENCE
                     .scope(inference_channel, async move {
                 crate::tool::CURRENT_PRINCIPAL_ID
@@ -8597,7 +9001,9 @@ impl Orchestrator {
                                                             // In particular, an offline Edge Target is a durable wait,
                                                             // not a local wall-clock timeout. Logical inline tools keep
                                                             // the Runtime safety timeout.
-                                                            let result = if claimed_execution_job.is_some() {
+                                                            let result = if claimed_execution_job.is_some()
+                                                                || call.func_name == "eval"
+                                                            {
                                                                 Ok(execution.await)
                                                             } else {
                                                                 tokio::time::timeout(
@@ -8865,6 +9271,8 @@ impl Orchestrator {
                                 .await
                         })
                         .await
+                    })
+                    .await
                     })
                     .await
                     })
@@ -9918,6 +10326,59 @@ struct OrchestratorInference {
     orchestrator: std::sync::Weak<Orchestrator>,
     session_id: String,
     attempt_id: String,
+}
+
+struct OrchestratorPlanExecutor {
+    orchestrator: std::sync::Weak<Orchestrator>,
+    route: PlanExecutionRoute,
+}
+
+#[async_trait::async_trait]
+impl crate::sexpr_eval::RuntimePlanExecutor for OrchestratorPlanExecutor {
+    async fn execute_plan(
+        &self,
+        program: crate::sexpr_eval::Program,
+    ) -> PlanExecutionResult<serde_json::Value> {
+        self.orchestrator
+            .upgrade()
+            .ok_or("Runtime 已关闭，无法继续 PlanExecution")?
+            .execute_durable_plan(self.route.clone(), program)
+            .await
+    }
+}
+
+struct OrchestratorPlanCallPlanner {
+    orchestrator: std::sync::Weak<Orchestrator>,
+}
+
+#[async_trait::async_trait]
+impl PlanCallPlanner for OrchestratorPlanCallPlanner {
+    async fn plan_call(
+        &self,
+        plan: &PlanExecutionRecord,
+        effect: &crate::sexpr_eval::PlanEffect,
+        effect_tool_call_id: &str,
+    ) -> PlanExecutionResult<NewExecutionJob> {
+        self.orchestrator
+            .upgrade()
+            .ok_or("Runtime 已关闭，无法规划 Yao call")?
+            .plan_execution_job(plan, effect, effect_tool_call_id)
+            .await
+    }
+}
+
+fn plan_from_resume(receipt: PlanResumeReceipt) -> PlanExecutionResult<PlanExecutionRecord> {
+    match receipt {
+        PlanResumeReceipt::Queued(plan) | PlanResumeReceipt::Existing(plan) => Ok(plan),
+        PlanResumeReceipt::Conflict {
+            current: Some(current),
+            ..
+        } => Ok(current),
+        PlanResumeReceipt::Conflict {
+            current: None,
+            reason,
+        } => Err(reason.into()),
+    }
 }
 
 #[async_trait::async_trait]

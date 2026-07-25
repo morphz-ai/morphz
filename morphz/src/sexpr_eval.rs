@@ -1486,6 +1486,30 @@ tokio::task_local! {
     pub static CURRENT_INFERENCE: Option<Arc<dyn RuntimeInference>>;
 }
 
+/// Production execution boundary for a validated Runtime-owned Plan.
+///
+/// `EvalTool` owns only the Yao surface and static validation. The injected
+/// implementation owns durable Plan identity, Scheduler hand-off, approval,
+/// physical execution and recovery. Keeping this seam separate from
+/// [`RuntimeInference`] prevents the legacy in-process interpreter from
+/// accidentally becoming a second scheduler.
+#[async_trait::async_trait]
+pub trait RuntimePlanExecutor: Send + Sync {
+    async fn execute_plan(
+        &self,
+        program: Program,
+    ) -> Result<JsonValue, Box<dyn std::error::Error + Send + Sync>>;
+}
+
+tokio::task_local! {
+    /// Set by the Orchestrator for one outer `eval` Function Call.
+    ///
+    /// Tests and embedders which have not assembled the Scheduler Kernel may
+    /// omit it and exercise the legacy pure interpreter through
+    /// [`CURRENT_INFERENCE`]. Product assembly always injects this channel.
+    pub static CURRENT_PLAN_EXECUTOR: Option<Arc<dyn RuntimePlanExecutor>>;
+}
+
 /// Tools an `eval` program may call when nothing is configured.
 ///
 /// Read-only and in-workspace only, for a reason that outlives v1: the tree is
@@ -1596,6 +1620,10 @@ impl crate::tool::Tool for EvalTool {
         let args: EvalArgs = serde_json::from_str(arguments)?;
         let gate = AllowList::new(self.callable.clone());
         let program = validate(&args.program, &self.registry, &gate)?;
+        if let Some(executor) = CURRENT_PLAN_EXECUTOR.try_with(Clone::clone).ok().flatten() {
+            let value = executor.execute_plan(program).await?;
+            return Ok(serde_json::to_string(&value)?);
+        }
         let inference = CURRENT_INFERENCE
             .try_with(Clone::clone)
             .ok()
@@ -1609,7 +1637,10 @@ impl crate::tool::Tool for EvalTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    };
 
     /// Records every invocation so a test can assert on what physically ran,
     /// not merely on the value that came back.
@@ -1668,6 +1699,22 @@ mod tests {
         answer: String,
         seen: Arc<Mutex<Vec<JsonMap<String, JsonValue>>>>,
         tools_offered: Arc<Mutex<Vec<Option<Vec<String>>>>>,
+    }
+
+    struct ScriptedPlanExecutor {
+        called: Arc<AtomicBool>,
+        result: JsonValue,
+    }
+
+    #[async_trait::async_trait]
+    impl RuntimePlanExecutor for ScriptedPlanExecutor {
+        async fn execute_plan(
+            &self,
+            _program: Program,
+        ) -> Result<JsonValue, Box<dyn std::error::Error + Send + Sync>> {
+            self.called.store(true, Ordering::SeqCst);
+            Ok(self.result.clone())
+        }
     }
 
     #[async_trait::async_trait]
@@ -1968,6 +2015,32 @@ mod tests {
             .unwrap();
         assert_eq!(output, r#"["body","body"]"#);
         assert_eq!(calls.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn the_tool_hands_a_validated_program_to_the_runtime_plan_executor() {
+        use crate::tool::Tool;
+
+        let registry = fixture(&[("read", JsonValue::Null)]).0;
+        let tool = EvalTool::with_default_tools(registry);
+        let called = Arc::new(AtomicBool::new(false));
+        let executor: Arc<dyn RuntimePlanExecutor> = Arc::new(ScriptedPlanExecutor {
+            called: Arc::clone(&called),
+            result: serde_json::json!({"source": "durable-plan"}),
+        });
+        let arguments =
+            serde_json::json!({"program": r#"(eval (call read (path "a.rs")))"#}).to_string();
+
+        let output = CURRENT_PLAN_EXECUTOR
+            .scope(
+                Some(executor),
+                CURRENT_INFERENCE.scope(None, tool.execute(&arguments)),
+            )
+            .await
+            .unwrap();
+
+        assert!(called.load(Ordering::SeqCst));
+        assert_eq!(output, r#"{"source":"durable-plan"}"#);
     }
 
     #[tokio::test]

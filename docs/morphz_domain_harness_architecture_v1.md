@@ -2,8 +2,8 @@
 
 > 状态：架构边界已稳定；`.hns` v1 Loader、显式双求值、Typed Plan IR、
 > 持久 `PlanExecution`、`call → Execution Job` 原子交接、终态结果回填
-> 与重启扫描已实现；正式 Orchestrator 驱动及 `infer → Evaluation`
-> 交接仍在接入
+> 与重启扫描、正式 Orchestrator 驱动及 `infer → child Activation`
+> 交接已实现；Harness registry 与运行时挂载进入下一阶段
 > 日期：2026-07-25
 > 适用范围：Runtime、Context Encoding、Objective / Evaluation、Skill、工具、领域认知 Frame 与未来 Harness 包
 > 配套设计：[Yao Harness `.hns` 包、显式双求值与 Typed Plan IR v1](morphz_yao_harness_file.md)
@@ -35,7 +35,10 @@ LLM             依据当前认知和现实证据作出语义决策
 
 Harness 不只是一组 Prompt 或默认 Frame。它还可以提供由 Runtime 确定性推进、在 `infer` 节点交给 LLM 的 Yao 程序。Yao 程序先进入 Typed Plan IR，再复用统一 Scheduler Kernel 执行；Harness 不能借此形成第二套调度器。
 
-当前已经明确最小 `.hns` 包边界和显式 `eval/infer` 求值语义，但这只是目标设计，不代表现有原型已经具备副作用安全、持久恢复和生产可用的包加载器。
+当前已经明确并实现最小 `.hns` 包边界、显式 `eval/infer` 求值语义及
+Scheduler Kernel 的持久 Plan 执行链。它已经具备 Execution Job 副作用边界、
+Plan 恢复与 child Activation 回填，但尚不等于具备可安装、可版本绑定和可挂载
+默认认知的完整 Harness 产品层。
 
 ## 2. 为什么需要 Harness 层
 

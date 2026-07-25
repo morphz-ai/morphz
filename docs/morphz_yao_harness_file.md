@@ -2,7 +2,7 @@
 
 > 状态：显式根、Typed Plan IR、`.hns` v1 Loader、持久 `PlanExecution` 与
 > `call → Execution Job`、`infer → child Activation` 原子交接、终态结果
-> 回填与重启扫描已实现；正式 `eval` 入口的 Orchestrator 驱动仍在接入
+> 回填、重启扫描及正式 `eval → Orchestrator → Scheduler Kernel` 驱动已实现
 > 日期：2026-07-25
 > 前置：[Domain Harness 架构](morphz_domain_harness_architecture_v1.md)、[Yao 表征分层](morphz_yao_representation_layers.md)、[Scheduler Kernel](morphz_scheduler_kernel_and_domain_model_v1.md)
 > 适用范围：Yao 源语言、Harness 包、`eval/infer`、Typed Plan IR、Objective / Evaluation / Execution Job 的映射
@@ -549,7 +549,7 @@ morphz run --harness coding@1.0.0 "修复当前项目的测试"
 
 未来的 Auxiliary Harness 组合必须先解决契约冲突、工具同名、Frame 优先级、Projection 归属和 Token 预算，第一版不开放任意组合。
 
-## 12. 当前原型与目标设计的差距
+## 12. 当前实现与目标设计的边界
 
 `sexpr-eval-tree` 当前实现已经收敛的资产：
 
@@ -562,29 +562,38 @@ morphz run --harness coding@1.0.0 "修复当前项目的测试"
 - 引用作用域、单次绑定和部分静态验证；
 - SExpr 到 JSON 的值转换；
 - 基础算子的自描述元数据；
-- 真实模型 Yao 表面评测脚手架。
+- 真实模型 Yao 表面评测脚手架；
+- 正式 `eval` 工具在静态校验后建立稳定 `PlanExecution`；
+- `call` 复用现有 Execution Job、Target、审批、沙箱与结果事件链；
+- `infer` 建立正式 child Activation，终态结果回填后继续 Plan；
+- Planner 失败会终结 Plan，不再遗留无法恢复的 `running` 状态；
+- Runtime 集成测试已覆盖 `eval → read Execution Job → Plan 成功 → 最终回复`。
 
-不能作为生产实现合入的部分：
+历史原型与当前正式路径的对应关系：
 
-| 当前原型 | 目标设计 |
+| 历史原型 | 当前正式路径 |
 | --- | --- |
-| `eval` 是 `LogicalInline`，内部直接 `tool.execute()` | `call` 必须创建 Execution Job / Action Group |
-| 内部 `infer` 直接发本地 completion | 创建正式、可持久化的子 Evaluation |
+| `eval` 是 `LogicalInline`，内部直接 `tool.execute()` | `EvalTool` 只负责校验和进入 Plan；`call` 创建 Execution Job |
+| 内部 `infer` 直接发本地 completion | 创建正式、可持久化的 child Activation |
 | 根是 `infer`，其余默认 Runtime | 已改为只接受显式 `(eval ...)` 或 `(infer ...)` |
 | 依靠物理文件位置猜测 artifact 职责 | 已实现单文件/目录 `.hns` 归一化为同一 HarnessPackage |
 | Harness Mind 安装时 seed 共享 Mind | 默认 Frame 按 Objective / Evaluation 挂载 |
 | 崩溃后整轮重跑 | 持久化 PlanExecution，从效应边界恢复 |
 | 共享算子只检查表面拼写 | 同一 canonical operator schema 生成 parser、validator、Contract 和测试 |
-| `eval` 默认向所有 Agent 暴露 | 在 scheduler 语义完成前保持实验开关或 Harness-scoped |
+| `eval` 由普通工具固定墙钟超时控制 | 持久 Plan 独立等待 Job / Evaluation，不被普通工具超时截断 |
 
-当前测试证明“模型能生成和理解这类表面结构”，尚未证明：
+当前尚未完成的不是基本调度语义，而是产品化与规模验证：
 
-- 副作用安全；
-- 重启恢复；
-- 并发 fencing；
-- 审批与 Edge Target；
-- 长程序 continuation；
+- `.hns` registry、安装、版本 binding 与默认 Frame 挂载；
+- Action Group 级并行 Plan 节点；
+- Plan 运行时释放父 Activation admission slot 的完全异步 continuation；
+- Edge Target、人工审批和进程崩溃交错下的系统级故障注入；
+- 长程序与大型 Observation Reference 的压力测试；
 - Harness 相对自然语言或纯 Agent loop 的真实增益。
+
+为了保留可独立测试的解释器，`EvalTool` 在没有 Scheduler Kernel 注入时仍有
+legacy in-process fallback；正常产品装配始终注入 durable Plan executor。该
+fallback 不是第二套生产调度器。
 
 ## 13. 实现顺序
 
@@ -603,6 +612,9 @@ morphz run --harness coding@1.0.0 "修复当前项目的测试"
 4. 实现 suspend/resume、fencing、取消和结果 route；
 5. 覆盖崩溃发生在效应前、效应提交后、结果交付后的三种恢复边界。
 
+当前状态：1～4 已完成；第 5 项已有 store/coordinator 恢复测试，仍需补真实
+Runtime 进程级 fault injection。
+
 ### Phase 3：实现 `.hns` 包
 
 1. 单文件 / 目录 Manifest、Contract、Mind、Program loader；
@@ -610,6 +622,10 @@ morphz run --harness coding@1.0.0 "修复当前项目的测试"
 3. 默认 Frame 的只读挂载；
 4. 能力交集、Skill Index 与 validator；
 5. package hash、签名和 migration 预留。
+
+当前状态：单文件/目录 Loader、Manifest/Contract/Mind/Program 归一化、
+package hash 与能力交集已完成；registry、运行时 binding、默认 Frame 挂载、
+签名和 migration 尚待下一阶段。
 
 ### Phase 4：真实对照评测
 
