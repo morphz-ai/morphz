@@ -261,6 +261,30 @@ impl PlanExecutionStore for SqliteStore {
         if let Some(activation_id) = filter.activation_id {
             query.push(" AND activation_id = ").push_bind(activation_id);
         }
+        if let Some(tool_call_id) = filter.tool_call_id {
+            query.push(" AND tool_call_id = ").push_bind(tool_call_id);
+        }
+        if let Some(objective_id) = filter.objective_id {
+            query.push(" AND objective_id = ").push_bind(objective_id);
+        }
+        if let Some(objective_evaluation_id) = filter.objective_evaluation_id {
+            query
+                .push(" AND objective_evaluation_id = ")
+                .push_bind(objective_evaluation_id);
+        }
+        if let Some(harness_id) = filter.harness_id {
+            query.push(" AND harness_id = ").push_bind(harness_id);
+        }
+        if let Some(harness_version) = filter.harness_version {
+            query
+                .push(" AND harness_version = ")
+                .push_bind(harness_version);
+        }
+        if let Some(source_artifact_hash) = filter.source_artifact_hash {
+            query
+                .push(" AND source_artifact_hash = ")
+                .push_bind(source_artifact_hash);
+        }
         if let Some(status) = filter.status {
             query
                 .push(" AND status = ")

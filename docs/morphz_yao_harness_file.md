@@ -3,8 +3,9 @@
 > 状态：显式根、Typed Plan IR、`.hns` v1 Loader、持久 `PlanExecution` 与
 > `call → Execution Job`、`infer → child Activation` 原子交接、终态结果
 > 回填、重启扫描、正式 `eval → Orchestrator → Scheduler Kernel` 驱动，
-> 以及版本化 Registry、持久包目录、Objective Binding 和只读认知挂载已实现
-> 日期：2026-07-25
+> 版本化 Registry、持久包目录、Objective Binding、只读认知挂载及绑定入口
+> 自动分派已实现
+> 日期：2026-07-26
 > 前置：[Domain Harness 架构](morphz_domain_harness_architecture_v1.md)、[Yao 表征分层](morphz_yao_representation_layers.md)、[Scheduler Kernel](morphz_scheduler_kernel_and_domain_model_v1.md)
 > 适用范围：Yao 源语言、Harness 包、`eval/infer`、Typed Plan IR、Objective / Evaluation / Execution Job 的映射
 
@@ -577,7 +578,17 @@ morphz run --harness coding@1.0.0 "修复当前项目的测试"
 - 绑定后的 Evaluation 在 Context Encoding 中得到只读 Contract、默认 Mind、
   capability 与精确 package hash；不会把默认 Mind 隐式写入共享认知；
 - 绑定 Objective 内由 `eval` 创建的 Plan 会携带精确
-  `harness_id/version/artifact_hash` provenance。
+  `harness_id/version/artifact_hash` provenance；
+- Binding 中的顶层 `(eval ...)` 会由 Runtime 自动、且每个精确 Objective
+  Evaluation 只分派一次；它复用正式 `EvalTool → PlanExecution → Scheduler
+  Kernel` 路径，不存在第二套入口执行器；
+- Binding 中的顶层 `(infer ...)` 会作为明确的 model-owned 主动入口挂载进当前
+  Evaluation；Context Encoding 同时给出精确源码和自然语言求值责任；
+- 自动入口使用由 Objective、Evaluation 和 package hash 派生的稳定调用身份，
+  终态 Plan 不会在 continuation 或恢复后重复执行；
+- Runtime 集成测试覆盖
+  `Objective Binding → 自动 eval → read Execution Job → Plan 结果回填
+  → objective_update → 最终交付`。
 
 历史原型与当前正式路径的对应关系：
 
@@ -592,9 +603,10 @@ morphz run --harness coding@1.0.0 "修复当前项目的测试"
 | 共享算子只检查表面拼写 | 同一 canonical operator schema 生成 parser、validator、Contract 和测试 |
 | `eval` 由普通工具固定墙钟超时控制 | 持久 Plan 独立等待 Job / Evaluation，不被普通工具超时截断 |
 
-当前尚未完成的不是基本调度语义，而是入口接线、产品化与规模验证：
+当前尚未完成的不是基本调度或入口语义，而是产品化与规模验证：
 
-- 根据 Objective Binding 自动选择并启动 `.hns` 顶层 `eval/infer` 入口；
+- 将 Objective 创建与 Harness Binding 收敛为一个原子产品接口，避免“目标先启动、
+  Binding 后到达”的竞态；
 - 面向用户的 install/list/bind/run CLI 与 HTTP/SDK 接口；
 - package 签名、依赖、migration 与可重建的 Registry Projection；
 - Action Group 级并行 Plan 节点；
@@ -637,8 +649,10 @@ Runtime 进程级 fault injection。
 
 当前状态：第 1～4 项的最小闭环已完成；第 5 项已完成规范化 package hash，
 签名和 migration 尚未实现。包目录和 Binding 目前以不可变 Ledger Event
-持久化，后续可增加可重建 Projection，但不改变其身份语义。下一阶段是按
-Binding 正式分派入口 Program，而不是继续扩充包格式。
+持久化，后续可增加可重建 Projection，但不改变其身份语义。顶层
+`eval/infer` 已按 Binding 正式分派；下一阶段是提供原子
+“创建 Objective 并绑定 Harness”的 SDK/HTTP/CLI 产品接口，而不是继续扩充
+包格式。
 
 ### Phase 4：真实对照评测
 

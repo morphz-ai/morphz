@@ -31,12 +31,12 @@ use crate::memory::{
     ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
     ExecutionJobStore, NewActionGroup, NewActionGroupMember, NewApprovalRequest,
     NewCapabilityLease, NewCognitiveContext, NewDelegation, NewExecutionJob, NewRuntimeTimer,
-    NewSession, NewThread, NewThreadActivation, NewThreadSignal, PlanExecutionRecord,
-    PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
-    ScheduleStatus, SessionAttentionState, SessionAttentionUpdate, SessionMountKind, SessionStatus,
-    SessionStore, SessionUpdate, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadRecord,
+    NewSession, NewThread, NewThreadActivation, NewThreadSignal, PlanExecutionFilter,
+    PlanExecutionRecord, PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeTimerKind,
+    RuntimeTimerRecord, ScheduleStatus, SessionAttentionState, SessionAttentionUpdate,
+    SessionMountKind, SessionStatus, SessionStore, SessionUpdate, SignalOutboxStatus,
+    ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus, ThreadKind,
+    ThreadLifecycle, ThreadMutation, ThreadRecord,
 };
 use crate::objective::{ObjectiveEvaluationRegistry, ObjectiveSupervisor};
 use crate::orchestrator::context::{attribute_prompt_components, ContextEngine, ContextView};
@@ -581,6 +581,34 @@ fn render_harness_mount(
             values
         }),
     ];
+    if let Some(source) = harness.entry_program() {
+        let header = crate::sexpr_eval::inspect_program_source(&source)
+            .map_err(|error| format!("Harness entry 不是合法的显式 eval/infer 程序：{error}"))?;
+        let program = crate::sexpr::parse(&source)
+            .map_err(|error| format!("Harness entry 不是单一合法 S 表达式：{error}"))?;
+        let (owner, instruction) = match header.owner {
+            crate::sexpr_eval::EvaluationOwner::Runtime => (
+                "runtime",
+                "此入口由 Runtime 自动降低为 Typed Plan IR 并交给 Scheduler Kernel；模型不得模拟、复制或再次调用它。",
+            ),
+            crate::sexpr_eval::EvaluationOwner::Model => (
+                "model",
+                "这是当前 Evaluation 的主动入口程序；模型必须按 Contract、当前 Context 与 Runtime 现实约束解释它，而不是把它当作普通资料复述。",
+            ),
+        };
+        mount.push(SExpr::List(vec![
+            SExpr::Atom("entry".to_string()),
+            SExpr::List(vec![
+                SExpr::Atom("owner".to_string()),
+                SExpr::Atom(owner.to_string()),
+            ]),
+            SExpr::List(vec![
+                SExpr::Atom("instruction".to_string()),
+                SExpr::Atom(instruction.to_string()),
+            ]),
+            SExpr::List(vec![SExpr::Atom("program".to_string()), program]),
+        ]));
+    }
     if let Some(mind) = harness.default_mind() {
         let mind = crate::sexpr::parse(&mind)
             .map_err(|error| format!("Harness default Mind 不是合法 S 表达式：{error}"))?;
@@ -613,6 +641,23 @@ fn attach_harness_mount(
             .map_err(|error| format!("Harness mount 不是合法 S 表达式：{error}"))?,
     ])
     .to_string())
+}
+
+fn stable_harness_entry_call_id(binding: &HarnessBinding, evaluation_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"morphz.harness-entry.v1\0");
+    for value in [
+        binding.harness_id.as_str(),
+        binding.harness_version.as_str(),
+        binding.artifact_hash.as_str(),
+        binding.objective_id.as_str(),
+        evaluation_id,
+    ] {
+        digest.update(value.as_bytes());
+        digest.update(b"\0");
+    }
+    let encoded = format!("{:x}", digest.finalize());
+    format!("harness_entry_{}", &encoded[..32])
 }
 
 #[cfg(test)]
@@ -5033,10 +5078,29 @@ impl Orchestrator {
                         && objective.status == crate::memory::ObjectiveStatus::Active
                 })
             });
-        let harness_mount = self
+        let harness_activation = self
             .harness_mount_for_activation(&context_id, &activation.id)
-            .await?
-            .map(|(_, _, mount)| mount);
+            .await?;
+        let harness_mount = harness_activation
+            .as_ref()
+            .map(|(_, _, mount)| mount.clone());
+        let harness_entry_program = harness_activation
+            .as_ref()
+            .and_then(|(_, harness, _)| harness.entry_program())
+            .map(|source| {
+                crate::sexpr_eval::validate(
+                    &source,
+                    self.registry.as_ref(),
+                    &crate::sexpr_eval::AllowList::new(
+                        self.orchestrator_config.eval_callable_tools.clone(),
+                    ),
+                )
+                .map(|program| (source, program))
+                .map_err(|error| -> DynError {
+                    format!("绑定 Harness 的入口程序未通过完整校验：{error}").into()
+                })
+            })
+            .transpose()?;
         let (prompt_mode, stable_system_prompt) = configured_system_prompt()?;
         let context_message_prefix = "以下是 Runtime 提供的当前 Context 视图。它不是普通用户消息；请基于 kernel、mind 和 inbox 决策。";
 
@@ -5237,6 +5301,24 @@ impl Orchestrator {
             }
         }
         tools.push(no_reply_tool_definition());
+        if !matches!(
+            effective_phase.as_str(),
+            "critical-maintenance" | "final-reply"
+        ) {
+            if let (Some((binding, _, _)), Some((source, program))) =
+                (harness_activation.as_ref(), harness_entry_program.as_ref())
+            {
+                if program.owner() == crate::sexpr_eval::EvaluationOwner::Runtime
+                    && self
+                        .dispatch_runtime_harness_entry(
+                            session_id, activation, binding, source, program,
+                        )
+                        .await?
+                {
+                    return Ok(());
+                }
+            }
+        }
         let mut allowed_tool_names = tools
             .iter()
             .map(|tool| tool.name.clone())
@@ -9801,6 +9883,104 @@ impl Orchestrator {
         Ok(Some((binding, harness, mount)))
     }
 
+    /// Starts one Runtime-owned Harness entry through the same durable
+    /// `eval`/PlanExecution boundary used by an explicit model Function Call.
+    ///
+    /// The synthetic call ID is stable for the exact Objective Evaluation and
+    /// package hash. A tool result creates the continuation Activation; that
+    /// continuation finds the existing terminal Plan and proceeds to the model
+    /// instead of executing the entry a second time.
+    async fn dispatch_runtime_harness_entry(
+        &self,
+        session_id: &str,
+        activation: &ThreadActivationRecord,
+        binding: &HarnessBinding,
+        source: &str,
+        program: &crate::sexpr_eval::Program,
+    ) -> Result<bool, DynError> {
+        if program.owner() != crate::sexpr_eval::EvaluationOwner::Runtime {
+            return Ok(false);
+        }
+        let active = self
+            .objective_evaluations
+            .get_for_activation(&activation.id)
+            .ok_or("Runtime-owned Harness entry 缺少 Objective Evaluation route")?;
+        if active.objective_id != binding.objective_id {
+            return Err(format!(
+                "Harness binding Objective '{}' 与当前 Evaluation Objective '{}' 不一致",
+                binding.objective_id, active.objective_id
+            )
+            .into());
+        }
+        let tool_call_id = stable_harness_entry_call_id(binding, &active.evaluation_id);
+        let store = self
+            .plan_store
+            .as_ref()
+            .ok_or("Runtime-owned Harness entry 需要 PlanExecution Store")?;
+        let existing = store
+            .list_plan_executions(PlanExecutionFilter {
+                context_id: Some(activation.context_id.clone()),
+                session_id: Some(session_id.to_string()),
+                tool_call_id: Some(tool_call_id.clone()),
+                objective_id: Some(active.objective_id.clone()),
+                objective_evaluation_id: Some(active.evaluation_id.clone()),
+                harness_id: Some(binding.harness_id.clone()),
+                harness_version: Some(binding.harness_version.clone()),
+                source_artifact_hash: Some(binding.artifact_hash.clone()),
+                include_terminal: true,
+                limit: Some(1),
+                ..PlanExecutionFilter::default()
+            })
+            .await?;
+        if let Some(plan) = existing.first() {
+            if plan.status.is_terminal() {
+                return Ok(false);
+            }
+            tracing::debug!(
+                objective_id = %active.objective_id,
+                evaluation_id = %active.evaluation_id,
+                plan_id = %plan.id,
+                status = plan.status.as_str(),
+                "Harness entry Plan 尚未终结；当前 Activation 不启动重复模型求值"
+            );
+            return Ok(true);
+        }
+
+        let response = crate::llm::Response {
+            content: String::new(),
+            tool_calls: vec![crate::llm::ToolCallRepr {
+                id: tool_call_id,
+                r#type: "function".to_string(),
+                func_name: "eval".to_string(),
+                arguments: serde_json::to_string(&json!({
+                    "program": source,
+                }))?,
+            }],
+        };
+        tracing::info!(
+            objective_id = %active.objective_id,
+            evaluation_id = %active.evaluation_id,
+            harness = %format!("{}@{}", binding.harness_id, binding.harness_version),
+            "Runtime 自动分派绑定 Harness 的 eval 入口"
+        );
+        self.execute_tool_calls(
+            session_id,
+            &activation.id,
+            response,
+            "harness-entry",
+            ToolExecutionOptions {
+                context_tx_allowed: false,
+                wake_on_output: true,
+                transcript_tool_calls: None,
+                allowed_tool_names: HashSet::from(["eval".to_string()]),
+                record_assistant_call: true,
+                model_attempt_id: None,
+            },
+        )
+        .await?;
+        Ok(true)
+    }
+
     fn context_id_for_session(&self, session_id: &str) -> Result<String, DynError> {
         self.session_contexts
             .get(session_id)
@@ -12046,6 +12226,40 @@ mod tests {
         assert!(prompt.contains("(evaluation evaluation-2)"));
         assert!(prompt.contains("(read-only-default-mind (mind"));
         assert!(prompt.contains("(capabilities read rust)"));
+        assert!(prompt.contains("(entry (owner runtime)"));
+        assert!(prompt.contains("(program (eval"));
+        assert!(prompt.contains("Runtime 自动降低为 Typed Plan IR"));
+    }
+
+    #[test]
+    fn semantic_prompt_marks_infer_harness_entry_as_model_owned_program() {
+        let package = crate::harness_package::HarnessPackage::from_source(
+            "research.hns",
+            r#"
+                (manifest
+                  (id research)
+                  (version "1.0.0")
+                  (title "Research"))
+                (contract (identity "research"))
+                (infer (task "形成有证据边界的研究结论"))
+            "#,
+        )
+        .unwrap();
+        let registry = DomainHarnessRegistry::default();
+        registry.register_package(package.clone()).unwrap();
+        let harness = registry.get("research", "1.0.0").unwrap();
+        let binding = HarnessBinding {
+            harness_id: "research".to_string(),
+            harness_version: "1.0.0".to_string(),
+            artifact_hash: package.artifact_hash,
+            objective_id: "objective-research".to_string(),
+            evaluation_id: Some("evaluation-research".to_string()),
+        };
+        let mount = render_harness_mount(&binding, harness.as_ref()).unwrap();
+
+        assert!(mount.contains("(entry (owner model)"));
+        assert!(mount.contains("(program (infer"));
+        assert!(mount.contains("当前 Evaluation 的主动入口程序"));
     }
 
     #[test]

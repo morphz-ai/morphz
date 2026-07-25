@@ -4132,6 +4132,12 @@ mod tests {
         observed_plan_result: Arc<AtomicBool>,
     }
 
+    struct HarnessEntryClient {
+        calls: AtomicU64,
+        objective_id: String,
+        observed_entry_result: Arc<AtomicBool>,
+    }
+
     struct DetachedExecClient {
         calls: AtomicU64,
     }
@@ -4550,6 +4556,55 @@ mod tests {
                     Ok(text_response("durable-eval-complete"))
                 }
                 _ => Err("durable eval 产生了冗余模型求值".into()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for HarnessEntryClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(tools.iter().any(|tool| tool.name == "objective_update"));
+                    assert!(messages
+                        .iter()
+                        .any(|message| message.content.contains("(entry (owner runtime)")));
+                    let observed = messages.iter().any(|message| {
+                        message.role == "tool"
+                            && message.content.contains("automatic-harness-entry-fixture")
+                    });
+                    self.observed_entry_result.store(observed, Ordering::SeqCst);
+                    if !observed {
+                        return Err(
+                            "Harness entry 的 Plan 结果没有回到 Objective Evaluation".into()
+                        );
+                    }
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "complete-harness-objective".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "objective_update".to_string(),
+                            arguments: json!({
+                                "objective_id": self.objective_id,
+                                "base_revision": objective_revision_from_messages(
+                                    &messages,
+                                    &self.objective_id
+                                ),
+                                "status": "completed",
+                                "reason": "Runtime 已自动执行 Harness entry",
+                                "evidence_refs": []
+                            })
+                            .to_string(),
+                        }],
+                    })
+                }
+                1 => Ok(text_response("automatic-harness-entry-complete")),
+                _ => Err("Harness entry 被重复求值".into()),
             }
         }
     }
@@ -6201,6 +6256,150 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn bound_runtime_harness_entry_runs_once_before_objective_model_evaluation() {
+        let database = NamedTempFile::new().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let fixture_path = workspace.path().join("automatic-harness-entry.txt");
+        std::fs::write(&fixture_path, "automatic-harness-entry-fixture").unwrap();
+        let quoted_path =
+            serde_json::to_string(&fixture_path.to_string_lossy().into_owned()).unwrap();
+        let package = HarnessPackage::from_source(
+            "automatic.hns",
+            &format!(
+                r#"
+                    (manifest
+                      (id automatic)
+                      (version "1.0.0")
+                      (title "Automatic Harness")
+                      (capabilities (tools read)))
+                    (contract (identity "automatic"))
+                    (mind (frame (id automatic/evidence)))
+                    (eval
+                      (requires (tools read))
+                      (call read (path {quoted_path})))
+                "#
+            ),
+        )
+        .unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.workspace_root = workspace.path().to_string_lossy().into_owned();
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let observed_entry_result = Arc::new(AtomicBool::new(false));
+        let client = Arc::new(HarnessEntryClient {
+            calls: AtomicU64::new(0),
+            objective_id: "objective-harness-entry".to_string(),
+            observed_entry_result: Arc::clone(&observed_entry_result),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .harness_package(package)
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+
+        runtime
+            .ensure_agent(NewAgent {
+                id: runtime.identity().agent_id.clone(),
+                title: "Harness entry agent".to_string(),
+                root_context_id: runtime.identity().context_id.clone(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_context(NewCognitiveContext {
+                id: runtime.identity().context_id.clone(),
+                agent_id: runtime.identity().agent_id.clone(),
+                title: "Harness entry context".to_string(),
+            })
+            .await
+            .unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-harness-entry".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Harness entry".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .create_objective(NewObjective {
+                id: "objective-harness-entry".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                coordinator_session_id: "session-harness-entry".to_string(),
+                delivery_session_id: "session-harness-entry".to_string(),
+                parent_objective_id: None,
+                source_event_id: "source-harness-entry".to_string(),
+                initiating_principal_id: None,
+                stated_objective: "执行绑定 Harness 的顶层入口".to_string(),
+                token_budget: None,
+            })
+            .await
+            .unwrap();
+        runtime
+            .bind_objective_harness("objective-harness-entry", "automatic", "1.0.0")
+            .await
+            .unwrap();
+
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        runtime.start().await.unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            reply.payload.get("text").and_then(Value::as_str),
+            Some("automatic-harness-entry-complete")
+        );
+        assert!(observed_entry_result.load(Ordering::SeqCst));
+        assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+        let plans = runtime
+            .inner
+            .store
+            .list_plan_executions(crate::memory::PlanExecutionFilter {
+                context_id: Some(runtime.identity().context_id.clone()),
+                session_id: Some("session-harness-entry".to_string()),
+                objective_id: Some("objective-harness-entry".to_string()),
+                harness_id: Some("automatic".to_string()),
+                harness_version: Some("1.0.0".to_string()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].status,
+            crate::memory::PlanExecutionStatus::Succeeded
+        );
+        assert!(plans[0].tool_call_id.starts_with("harness_entry_"));
+        let jobs = runtime
+            .inner
+            .store
+            .list_execution_jobs(crate::memory::ExecutionJobFilter {
+                session_id: Some("session-harness-entry".to_string()),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].tool_name, "read");
         assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
     }
 
