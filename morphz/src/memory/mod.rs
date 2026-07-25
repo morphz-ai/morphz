@@ -8,6 +8,7 @@ pub use lexical::{
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use sha2::Digest;
 use unicode_normalization::UnicodeNormalization;
 
@@ -1516,6 +1517,143 @@ pub struct NewExecutionJob {
     pub request: serde_json::Value,
     pub retry_safety: ExecutionRetrySafety,
     pub requires_approval: bool,
+}
+
+/// Durable lifecycle of one Runtime-owned Yao plan.
+///
+/// A Plan Execution owns only deterministic control state. Reality-facing
+/// work remains an [`ExecutionJobRecord`], and model-owned work remains a
+/// Thread Activation. `Waiting` therefore always carries a typed child
+/// reference rather than hiding an in-process Future.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanExecutionStatus {
+    Queued,
+    Running,
+    Waiting,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+impl PlanExecutionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Waiting => "waiting",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+    }
+}
+
+/// Kernel primitive which must settle before a suspended plan can continue.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanExecutionWaitKind {
+    ExecutionJob,
+    ActionGroup,
+    Evaluation,
+}
+
+impl PlanExecutionWaitKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ExecutionJob => "execution_job",
+            Self::ActionGroup => "action_group",
+            Self::Evaluation => "evaluation",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PlanExecutionRecord {
+    pub id: String,
+    pub revision: u64,
+    pub activation_id: String,
+    pub thread_id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub initiating_principal_id: Option<String>,
+    /// Stable causal identity of the outer `eval` Function Call.
+    pub tool_call_id: String,
+    pub objective_id: Option<String>,
+    pub objective_evaluation_id: Option<String>,
+    pub harness_id: Option<String>,
+    pub harness_version: Option<String>,
+    pub source_artifact_hash: String,
+    pub ir_schema_version: u32,
+    /// Validated [`crate::sexpr_eval::Program`] encoded as JSON.
+    pub program_json: JsonValue,
+    /// Serializable VM stack, bindings and current result.
+    pub state_json: JsonValue,
+    /// Language/profile budgets as they stood at the latest durable boundary.
+    pub budget_json: JsonValue,
+    pub status: PlanExecutionStatus,
+    pub pending_kind: Option<PlanExecutionWaitKind>,
+    pub pending_id: Option<String>,
+    pub claimed_by: Option<String>,
+    /// Opaque per-claim fence. Revision alone is not sufficient when a stale
+    /// worker retained the same in-memory record across a recovery race.
+    pub claim_token: Option<String>,
+    pub lease_expires_at: Option<DateTime<Utc>>,
+    pub result_json: Option<JsonValue>,
+    pub error: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewPlanExecution {
+    pub id: String,
+    pub activation_id: String,
+    pub thread_id: String,
+    pub agent_id: String,
+    pub context_id: String,
+    pub session_id: String,
+    pub initiating_principal_id: Option<String>,
+    pub tool_call_id: String,
+    pub objective_id: Option<String>,
+    pub objective_evaluation_id: Option<String>,
+    pub harness_id: Option<String>,
+    pub harness_version: Option<String>,
+    pub source_artifact_hash: String,
+    pub ir_schema_version: u32,
+    pub program_json: JsonValue,
+    pub state_json: JsonValue,
+    pub budget_json: JsonValue,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PlanExecutionFilter {
+    pub context_id: Option<String>,
+    pub session_id: Option<String>,
+    pub activation_id: Option<String>,
+    pub status: Option<PlanExecutionStatus>,
+    pub include_terminal: bool,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PlanExecutionMutation {
+    Updated(PlanExecutionRecord),
+    Existing(PlanExecutionRecord),
+    Conflict {
+        current: PlanExecutionRecord,
+    },
+    Rejected {
+        current: Option<PlanExecutionRecord>,
+        reason: String,
+    },
+    NotFound,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3042,6 +3180,89 @@ pub trait ActivationStore: Send + Sync {
     ) -> Result<ActivationOutcomeCommit, Box<dyn std::error::Error + Send + Sync>>;
 }
 
+/// Durable deterministic control plane for Runtime-owned Yao programs.
+///
+/// Claim/heartbeat/terminal transitions are fenced exactly like physical
+/// Execution Jobs. Suspending a plan does not execute a child itself: it
+/// records the Kernel primitive it is waiting for and releases ownership.
+#[async_trait::async_trait]
+pub trait PlanExecutionStore: Send + Sync {
+    /// Idempotent on `(activation_id, tool_call_id)`. Reusing that causal key
+    /// with a different program or route is rejected.
+    async fn create_plan_execution(
+        &self,
+        execution: NewPlanExecution,
+    ) -> Result<PlanExecutionRecord, Box<dyn std::error::Error + Send + Sync>>;
+    async fn get_plan_execution(
+        &self,
+        id: &str,
+    ) -> Result<Option<PlanExecutionRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_plan_executions(
+        &self,
+        filter: PlanExecutionFilter,
+    ) -> Result<Vec<PlanExecutionRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    /// Claims queued work or safely takes over an expired pure-control claim.
+    async fn claim_plan_execution(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        worker_id: &str,
+        claim_token: &str,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<PlanExecutionMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn heartbeat_plan_execution(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        lease_expires_at: DateTime<Utc>,
+        state_json: &JsonValue,
+        budget_json: &JsonValue,
+    ) -> Result<PlanExecutionMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Releases the claim after the corresponding child primitive has been
+    /// durably created. The next phase will add store-specific atomic helpers
+    /// that create that child and perform this transition in one transaction.
+    #[allow(clippy::too_many_arguments)]
+    async fn suspend_plan_execution(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        state_json: &JsonValue,
+        budget_json: &JsonValue,
+        pending_kind: PlanExecutionWaitKind,
+        pending_id: &str,
+    ) -> Result<PlanExecutionMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Makes a waiting plan runnable after validating the exact child route.
+    async fn resume_plan_execution(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        pending_kind: PlanExecutionWaitKind,
+        pending_id: &str,
+        state_json: &JsonValue,
+        budget_json: &JsonValue,
+    ) -> Result<PlanExecutionMutation, Box<dyn std::error::Error + Send + Sync>>;
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_plan_execution(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+        status: PlanExecutionStatus,
+        state_json: &JsonValue,
+        budget_json: &JsonValue,
+        result_json: Option<&JsonValue>,
+        error: Option<&str>,
+    ) -> Result<PlanExecutionMutation, Box<dyn std::error::Error + Send + Sync>>;
+    async fn cancel_plan_execution(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        reason: Option<&str>,
+    ) -> Result<PlanExecutionMutation, Box<dyn std::error::Error + Send + Sync>>;
+}
+
 /// Stable Thread lifecycle and completion-delivery projection.
 #[async_trait::async_trait]
 pub trait ThreadStore: Send + Sync {
@@ -3400,6 +3621,7 @@ pub trait RuntimeStore:
     + ExecutionTargetAuthorizationStore
     + EdgeExecutionStore
     + ExecutionJobStore
+    + PlanExecutionStore
     + ActionGroupStore
     + ApprovalStore
     + CapabilityLeaseStore

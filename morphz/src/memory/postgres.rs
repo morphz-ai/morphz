@@ -38,6 +38,7 @@ mod delegation;
 mod delivery;
 mod edge;
 mod execution;
+mod plan_execution;
 mod schedule;
 mod session;
 mod target;
@@ -134,6 +135,12 @@ impl PostgresStore {
                 .run_versioned_migration(
                     "20260718_05_activations",
                     activation::migrate(&store.pool),
+                )
+                .await?;
+            store
+                .run_versioned_migration(
+                    "20260726_01_plan_executions",
+                    plan_execution::migrate(&store.pool),
                 )
                 .await?;
             store

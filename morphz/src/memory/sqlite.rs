@@ -46,6 +46,8 @@ use serde_json::Value as JsonValue;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteRow};
 use sqlx::{Acquire, QueryBuilder, Row, SqlitePool};
 
+mod plan_execution;
+
 pub struct SqliteStore {
     pool: SqlitePool,
 }
@@ -730,6 +732,62 @@ impl SqliteStore {
              AND NEW.status <> OLD.status
         BEGIN
             SELECT RAISE(ABORT, 'execution job terminal status is irreversible');
+        END;
+
+        CREATE TABLE IF NOT EXISTS plan_executions (
+            id TEXT PRIMARY KEY,
+            revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            activation_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            agent_id TEXT NOT NULL,
+            context_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            initiating_principal_id TEXT,
+            tool_call_id TEXT NOT NULL,
+            objective_id TEXT,
+            objective_evaluation_id TEXT,
+            harness_id TEXT,
+            harness_version TEXT,
+            source_artifact_hash TEXT NOT NULL,
+            ir_schema_version INTEGER NOT NULL CHECK(ir_schema_version >= 1),
+            program_json TEXT NOT NULL,
+            state_json TEXT NOT NULL,
+            budget_json TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN (
+                'queued', 'running', 'waiting', 'succeeded', 'failed', 'cancelled'
+            )),
+            pending_kind TEXT CHECK(pending_kind IN (
+                'execution_job', 'action_group', 'evaluation'
+            )),
+            pending_id TEXT,
+            claimed_by TEXT,
+            claim_token TEXT,
+            lease_expires_at TEXT,
+            result_json TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            finished_at TEXT,
+            UNIQUE(activation_id, tool_call_id),
+            FOREIGN KEY(activation_id) REFERENCES thread_activations(id) ON DELETE CASCADE,
+            FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE,
+            FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+            CHECK((status = 'waiting' AND pending_kind IS NOT NULL AND pending_id IS NOT NULL)
+               OR (status <> 'waiting' AND pending_kind IS NULL AND pending_id IS NULL))
+        );
+        CREATE INDEX IF NOT EXISTS idx_plan_executions_queue
+            ON plan_executions(status, lease_expires_at, created_at, id);
+        CREATE INDEX IF NOT EXISTS idx_plan_executions_context_status
+            ON plan_executions(context_id, status, updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_plan_executions_pending
+            ON plan_executions(pending_kind, pending_id)
+            WHERE status = 'waiting';
+        CREATE TRIGGER IF NOT EXISTS plan_executions_terminal_status_is_irreversible
+        BEFORE UPDATE OF status ON plan_executions
+        WHEN OLD.status IN ('succeeded', 'failed', 'cancelled')
+             AND NEW.status <> OLD.status
+        BEGIN
+            SELECT RAISE(ABORT, 'plan execution terminal status is irreversible');
         END;
 
         CREATE TABLE IF NOT EXISTS edge_execution_commands (

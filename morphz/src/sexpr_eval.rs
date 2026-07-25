@@ -855,10 +855,460 @@ pub trait RuntimeInference: Send + Sync {
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
 }
 
-/// Runtime budget shared by one program evaluation.
-struct Budget {
+/// Runtime-owned effect emitted by the deterministic plan machine.
+///
+/// The machine never performs this work itself.  The Scheduler derives the
+/// durable child identity from `(plan_execution_id, sequence)`, materializes
+/// an Execution Job / Action Group / Evaluation, and only then records the
+/// plan as waiting.  Replaying a suspended machine therefore yields the same
+/// effect rather than executing it twice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PlanEffect {
+    Call {
+        sequence: u64,
+        tool: String,
+        arguments: JsonMap<String, JsonValue>,
+    },
+    Infer {
+        sequence: u64,
+        request: JsonMap<String, JsonValue>,
+        tools: Option<Vec<String>>,
+    },
+}
+
+impl PlanEffect {
+    pub fn sequence(&self) -> u64 {
+        match self {
+            Self::Call { sequence, .. } | Self::Infer { sequence, .. } => *sequence,
+        }
+    }
+
+    fn failure(&self, message: impl std::fmt::Display) -> String {
+        match self {
+            Self::Call { tool, .. } => format!("(call {tool} ...) 失败: {message}"),
+            Self::Infer { .. } => format!("(infer ...) 失败: {message}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlanAdvance {
+    Suspended(PlanEffect),
+    Complete(JsonValue),
+    Failed(EvalError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PlanBudget {
     calls_left: usize,
     infers_left: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum MachineSignal {
+    Value { value: JsonValue },
+    Failure { message: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum MachineTerminal {
+    Complete { value: JsonValue },
+    Failed { message: String },
+}
+
+/// Serializable continuation frames.  No frame contains a Future, tool
+/// implementation, model client or database connection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum MachineFrame {
+    Eval {
+        node: PlanNode,
+    },
+    Seq {
+        steps: Vec<PlanNode>,
+        next: usize,
+    },
+    Bind {
+        name: String,
+    },
+    RestoreScope {
+        saved_env: HashMap<String, JsonValue>,
+    },
+    FallbackPrimary {
+        backup: PlanNode,
+        saved_env: HashMap<String, JsonValue>,
+    },
+    MapItem {
+        items: Vec<JsonValue>,
+        next: usize,
+        element: String,
+        body: PlanNode,
+        results: Vec<JsonValue>,
+        saved_env: HashMap<String, JsonValue>,
+    },
+}
+
+/// Durable deterministic state of one Runtime-owned Yao program.
+///
+/// `PlanMachine` is the `state_json` stored by `PlanExecution`.  Calling
+/// [`PlanMachine::advance`] is pure control work until it returns
+/// [`PlanAdvance::Suspended`].  The pending effect remains embedded in the
+/// state until a causally matching result is supplied, which is what makes
+/// process restart and lease takeover safe.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanMachine {
+    frames: Vec<MachineFrame>,
+    env: HashMap<String, JsonValue>,
+    signal: Option<MachineSignal>,
+    pending: Option<PlanEffect>,
+    terminal: Option<MachineTerminal>,
+    declared_tools: Option<Vec<String>>,
+    budget: PlanBudget,
+    next_effect_sequence: u64,
+}
+
+impl PlanMachine {
+    pub fn new(program: &Program) -> Result<Self, EvalError> {
+        if program.owner != EvaluationOwner::Runtime {
+            return err(
+                "(infer ...) 是模型持有控制权的程序，必须创建正式 Evaluation，不能交给 Runtime Plan Executor"
+                    .to_string(),
+            );
+        }
+        Ok(Self {
+            frames: vec![MachineFrame::Eval {
+                node: program.root.clone(),
+            }],
+            env: HashMap::new(),
+            signal: None,
+            pending: None,
+            terminal: None,
+            declared_tools: program.declared.clone(),
+            budget: PlanBudget {
+                calls_left: MAX_PROGRAM_CALLS,
+                infers_left: MAX_PROGRAM_INFERS,
+            },
+            next_effect_sequence: 1,
+        })
+    }
+
+    pub fn pending_effect(&self) -> Option<&PlanEffect> {
+        self.pending.as_ref()
+    }
+
+    /// Continues deterministic evaluation until completion, failure or the
+    /// next Kernel-owned effect boundary.
+    pub fn advance(&mut self, registry: &Registry) -> PlanAdvance {
+        if let Some(terminal) = &self.terminal {
+            return terminal.clone().into();
+        }
+        if let Some(effect) = &self.pending {
+            return PlanAdvance::Suspended(effect.clone());
+        }
+
+        loop {
+            if self.frames.is_empty() {
+                let terminal = match self.signal.take() {
+                    Some(MachineSignal::Value { value }) => MachineTerminal::Complete { value },
+                    Some(MachineSignal::Failure { message }) => MachineTerminal::Failed { message },
+                    None => MachineTerminal::Failed {
+                        message: "Plan Machine 没有待执行 frame，也没有结果".to_string(),
+                    },
+                };
+                self.terminal = Some(terminal.clone());
+                return terminal.into();
+            }
+
+            let frame = self.frames.pop().expect("checked above");
+            match frame {
+                MachineFrame::Eval { node } => {
+                    if self.signal.is_some() {
+                        return self.fail_internal("Plan Machine 在已有结果时仍尝试求值新节点");
+                    }
+                    match node {
+                        PlanNode::Value { value } => match resolve_value(&value, &self.env) {
+                            Ok(value) => self.signal = Some(MachineSignal::Value { value }),
+                            Err(error) => self.raise(error),
+                        },
+                        PlanNode::Seq { steps } => {
+                            let Some(first) = steps.first().cloned() else {
+                                self.raise(EvalError::from(
+                                    "Plan IR 中的 seq 不应为空；validator 未守住边界".to_string(),
+                                ));
+                                continue;
+                            };
+                            self.frames.push(MachineFrame::Seq {
+                                steps,
+                                next: 1,
+                            });
+                            self.frames.push(MachineFrame::Eval { node: first });
+                        }
+                        PlanNode::Bind { name, value } => {
+                            self.frames.push(MachineFrame::Bind { name });
+                            self.frames.push(MachineFrame::Eval { node: *value });
+                        }
+                        PlanNode::If {
+                            condition,
+                            when_true,
+                            when_false,
+                        } => match resolve_value(&condition, &self.env) {
+                            Ok(condition) => {
+                                let selected = if truthy(&condition) {
+                                    *when_true
+                                } else {
+                                    *when_false
+                                };
+                                self.frames.push(MachineFrame::RestoreScope {
+                                    saved_env: self.env.clone(),
+                                });
+                                self.frames.push(MachineFrame::Eval { node: selected });
+                            }
+                            Err(error) => self.raise(error),
+                        },
+                        PlanNode::Fallback { primary, backup } => {
+                            self.frames.push(MachineFrame::FallbackPrimary {
+                                backup: *backup,
+                                saved_env: self.env.clone(),
+                            });
+                            self.frames.push(MachineFrame::Eval { node: *primary });
+                        }
+                        PlanNode::Map {
+                            collection,
+                            element,
+                            body,
+                        } => match resolve_value(&collection, &self.env) {
+                            Ok(JsonValue::Array(items)) if items.len() <= MAX_MAP_ELEMENTS => {
+                                if items.is_empty() {
+                                    self.signal = Some(MachineSignal::Value {
+                                        value: JsonValue::Array(Vec::new()),
+                                    });
+                                    continue;
+                                }
+                                let saved_env = self.env.clone();
+                                self.env.insert(element.clone(), items[0].clone());
+                                self.frames.push(MachineFrame::MapItem {
+                                    items,
+                                    next: 1,
+                                    element,
+                                    body: *body.clone(),
+                                    results: Vec::new(),
+                                    saved_env,
+                                });
+                                self.frames.push(MachineFrame::Eval { node: *body });
+                            }
+                            Ok(JsonValue::Array(items)) => self.raise(EvalError::from(format!(
+                                "(map ...) 的集合有 {} 个元素，超过单次上限 {MAX_MAP_ELEMENTS}；请先收窄它",
+                                items.len()
+                            ))),
+                            Ok(other) => self.raise(EvalError::from(format!(
+                                "(map ...) 只能迭代数组，得到 {}",
+                                type_name(&other)
+                            ))),
+                            Err(error) => self.raise(error),
+                        },
+                        PlanNode::Infer { arguments } => {
+                            if self.budget.infers_left == 0 {
+                                self.raise(EvalError::from(format!(
+                                    "程序的 infer 次数超过上限 {MAX_PROGRAM_INFERS}"
+                                )));
+                                continue;
+                            }
+                            match build_arguments(&arguments, &self.env, None) {
+                                Ok(request) => {
+                                    self.budget.infers_left -= 1;
+                                    let effect = PlanEffect::Infer {
+                                        sequence: self.take_effect_sequence(),
+                                        request,
+                                        tools: self.declared_tools.clone(),
+                                    };
+                                    self.pending = Some(effect.clone());
+                                    return PlanAdvance::Suspended(effect);
+                                }
+                                Err(error) => self.raise(error),
+                            }
+                        }
+                        PlanNode::Call { tool, arguments } => {
+                            if self.budget.calls_left == 0 {
+                                self.raise(EvalError::from(format!(
+                                    "程序的工具调用次数超过上限 {MAX_PROGRAM_CALLS}"
+                                )));
+                                continue;
+                            }
+                            let Some(runtime_tool) = registry.get(&tool) else {
+                                self.raise(EvalError::from(format!("工具 '{tool}' 不存在")));
+                                continue;
+                            };
+                            let schema = runtime_tool.definition().parameters.clone();
+                            match build_arguments(&arguments, &self.env, Some(&schema)) {
+                                Ok(arguments) => {
+                                    self.budget.calls_left -= 1;
+                                    let effect = PlanEffect::Call {
+                                        sequence: self.take_effect_sequence(),
+                                        tool,
+                                        arguments,
+                                    };
+                                    self.pending = Some(effect.clone());
+                                    return PlanAdvance::Suspended(effect);
+                                }
+                                Err(error) => self.raise(error),
+                            }
+                        }
+                    }
+                }
+                MachineFrame::Seq { steps, next } => {
+                    let Some(signal) = self.signal.take() else {
+                        return self.fail_internal("seq continuation 缺少前一步结果");
+                    };
+                    match signal {
+                        failure @ MachineSignal::Failure { .. } => {
+                            self.signal = Some(failure);
+                        }
+                        value @ MachineSignal::Value { .. } if next >= steps.len() => {
+                            self.signal = Some(value);
+                        }
+                        MachineSignal::Value { .. } => {
+                            let node = steps[next].clone();
+                            self.frames.push(MachineFrame::Seq {
+                                steps,
+                                next: next + 1,
+                            });
+                            self.frames.push(MachineFrame::Eval { node });
+                        }
+                    }
+                }
+                MachineFrame::Bind { name } => {
+                    let Some(signal) = self.signal.take() else {
+                        return self.fail_internal("bind continuation 缺少被绑定值");
+                    };
+                    match signal {
+                        MachineSignal::Value { value } => {
+                            self.env.insert(name, value);
+                            self.signal = Some(MachineSignal::Value {
+                                value: JsonValue::Null,
+                            });
+                        }
+                        failure @ MachineSignal::Failure { .. } => {
+                            self.signal = Some(failure);
+                        }
+                    }
+                }
+                MachineFrame::RestoreScope { saved_env } => {
+                    if self.signal.is_none() {
+                        return self.fail_internal("局部作用域结束时缺少结果");
+                    }
+                    self.env = saved_env;
+                }
+                MachineFrame::FallbackPrimary { backup, saved_env } => {
+                    let Some(signal) = self.signal.take() else {
+                        return self.fail_internal("fallback primary 缺少结果");
+                    };
+                    self.env = saved_env.clone();
+                    match signal {
+                        value @ MachineSignal::Value { .. } => self.signal = Some(value),
+                        MachineSignal::Failure { .. } => {
+                            self.frames.push(MachineFrame::RestoreScope { saved_env });
+                            self.frames.push(MachineFrame::Eval { node: backup });
+                        }
+                    }
+                }
+                MachineFrame::MapItem {
+                    items,
+                    next,
+                    element,
+                    body,
+                    mut results,
+                    saved_env,
+                } => {
+                    let Some(signal) = self.signal.take() else {
+                        return self.fail_internal("map body 缺少结果");
+                    };
+                    self.env = saved_env.clone();
+                    match signal {
+                        MachineSignal::Failure { message } => {
+                            self.signal = Some(MachineSignal::Failure { message });
+                        }
+                        MachineSignal::Value { value } => {
+                            results.push(value);
+                            if next >= items.len() {
+                                self.signal = Some(MachineSignal::Value {
+                                    value: JsonValue::Array(results),
+                                });
+                            } else {
+                                self.env.insert(element.clone(), items[next].clone());
+                                self.frames.push(MachineFrame::MapItem {
+                                    items,
+                                    next: next + 1,
+                                    element,
+                                    body: body.clone(),
+                                    results,
+                                    saved_env,
+                                });
+                                self.frames.push(MachineFrame::Eval { node: body });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Supplies the result of the exact pending effect.  The sequence is a
+    /// causal fence: an old child completion cannot resume a newer suspension.
+    pub fn resume_effect(
+        &mut self,
+        sequence: u64,
+        outcome: Result<JsonValue, String>,
+    ) -> Result<(), EvalError> {
+        let Some(effect) = self.pending.as_ref() else {
+            return err("Plan Machine 当前没有等待任何 effect".to_string());
+        };
+        if effect.sequence() != sequence {
+            return err(format!(
+                "Plan effect sequence 不匹配：等待 {}，收到 {sequence}",
+                effect.sequence()
+            ));
+        }
+        let effect = self.pending.take().expect("checked above");
+        self.signal = Some(match outcome {
+            Ok(value) => MachineSignal::Value { value },
+            Err(message) => MachineSignal::Failure {
+                message: effect.failure(message),
+            },
+        });
+        Ok(())
+    }
+
+    fn take_effect_sequence(&mut self) -> u64 {
+        let sequence = self.next_effect_sequence;
+        self.next_effect_sequence = self.next_effect_sequence.saturating_add(1);
+        sequence
+    }
+
+    fn raise(&mut self, error: EvalError) {
+        self.signal = Some(MachineSignal::Failure {
+            message: error.message,
+        });
+    }
+
+    fn fail_internal(&mut self, message: impl Into<String>) -> PlanAdvance {
+        let terminal = MachineTerminal::Failed {
+            message: message.into(),
+        };
+        self.terminal = Some(terminal.clone());
+        terminal.into()
+    }
+}
+
+impl From<MachineTerminal> for PlanAdvance {
+    fn from(value: MachineTerminal) -> Self {
+        match value {
+            MachineTerminal::Complete { value } => Self::Complete(value),
+            MachineTerminal::Failed { message } => Self::Failed(EvalError::from(message)),
+        }
+    }
 }
 
 /// Evaluates a validated program.
@@ -871,141 +1321,38 @@ pub async fn evaluate(
     registry: Arc<Registry>,
     host: Arc<dyn RuntimeInference>,
 ) -> Result<JsonValue, EvalError> {
-    if program.owner != EvaluationOwner::Runtime {
-        return err(
-            "(infer ...) 是模型持有控制权的程序，必须创建正式 Evaluation，不能交给 Runtime Plan Executor"
-                .to_string(),
-        );
-    }
-    let mut env = HashMap::new();
-    let mut budget = Budget {
-        calls_left: MAX_PROGRAM_CALLS,
-        infers_left: MAX_PROGRAM_INFERS,
-    };
-    eval_expr(
-        &program.root,
-        &mut env,
-        &registry,
-        &host,
-        program.declared_tools(),
-        &mut budget,
-    )
-    .await
-}
-
-fn eval_expr<'a>(
-    expr: &'a PlanNode,
-    env: &'a mut HashMap<String, JsonValue>,
-    registry: &'a Arc<Registry>,
-    host: &'a Arc<dyn RuntimeInference>,
-    declared: Option<&'a [String]>,
-    budget: &'a mut Budget,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<JsonValue, EvalError>> + Send + 'a>>
-{
-    Box::pin(async move {
-        match expr {
-            PlanNode::Value { value } => resolve_value(value, env),
-            PlanNode::Seq { steps } => {
-                let mut last = JsonValue::Null;
-                for step in steps {
-                    last = eval_expr(step, env, registry, host, declared, budget).await?;
-                }
-                Ok(last)
-            }
-            PlanNode::Bind { name, value } => {
-                let resolved = eval_expr(value, env, registry, host, declared, budget).await?;
-                env.insert(name.clone(), resolved);
-                Ok(JsonValue::Null)
-            }
-            PlanNode::If {
-                condition,
-                when_true,
-                when_false,
-            } => {
-                let taken = if truthy(&resolve_value(condition, env)?) {
-                    when_true
-                } else {
-                    when_false
-                };
-                eval_expr(taken, env, registry, host, declared, budget).await
-            }
-            PlanNode::Fallback { primary, backup } => {
-                let mut primary_env = env.clone();
-                match eval_expr(primary, &mut primary_env, registry, host, declared, budget).await {
-                    Ok(value) => Ok(value),
-                    Err(_) => {
-                        let mut backup_env = env.clone();
-                        eval_expr(backup, &mut backup_env, registry, host, declared, budget).await
+    let mut machine = PlanMachine::new(program)?;
+    loop {
+        match machine.advance(&registry) {
+            PlanAdvance::Complete(value) => return Ok(value),
+            PlanAdvance::Failed(error) => return Err(error),
+            PlanAdvance::Suspended(effect) => {
+                let sequence = effect.sequence();
+                let outcome = match effect {
+                    PlanEffect::Call {
+                        tool, arguments, ..
+                    } => {
+                        let runtime_tool = registry.get(&tool).ok_or_else(|| {
+                            EvalError::from(format!("工具 '{tool}' 在 effect 交付前消失"))
+                        })?;
+                        let payload = serde_json::to_string(&JsonValue::Object(arguments))
+                            .map_err(|error| EvalError::from(format!("参数序列化失败: {error}")))?;
+                        runtime_tool
+                            .execute(&payload)
+                            .await
+                            .map(as_json)
+                            .map_err(|error| error.to_string())
                     }
-                }
-            }
-            PlanNode::Map {
-                collection,
-                element,
-                body,
-            } => {
-                let items = resolve_value(collection, env)?;
-                let JsonValue::Array(items) = items else {
-                    return err(format!(
-                        "(map ...) 只能迭代数组，得到 {}",
-                        type_name(&items)
-                    ));
+                    PlanEffect::Infer { request, tools, .. } => host
+                        .infer(&request, tools.as_deref())
+                        .await
+                        .map(JsonValue::String)
+                        .map_err(|error| error.to_string()),
                 };
-                if items.len() > MAX_MAP_ELEMENTS {
-                    return err(format!(
-                        "(map ...) 的集合有 {} 个元素，超过单次上限 {MAX_MAP_ELEMENTS}；请先收窄它",
-                        items.len()
-                    ));
-                }
-                let mut results = Vec::with_capacity(items.len());
-                for item in items {
-                    let shadowed = env.insert(element.clone(), item);
-                    let outcome = eval_expr(body, env, registry, host, declared, budget).await;
-                    match shadowed {
-                        Some(previous) => env.insert(element.clone(), previous),
-                        None => env.remove(element),
-                    };
-                    results.push(outcome?);
-                }
-                Ok(JsonValue::Array(results))
-            }
-            PlanNode::Infer { arguments } => {
-                if budget.infers_left == 0 {
-                    return err(format!("程序的 infer 次数超过上限 {MAX_PROGRAM_INFERS}"));
-                }
-                budget.infers_left -= 1;
-                let request = build_arguments(arguments, env, None)?;
-                let answer = host
-                    .infer(&request, declared)
-                    .await
-                    .map_err(|error| EvalError::from(format!("(infer ...) 失败: {error}")))?;
-                // The answer is bound as data. It is deliberately not parsed
-                // back into a program: a returned tree would close the
-                // `infer -> eval` loop and cost the language its totality.
-                Ok(JsonValue::String(answer))
-            }
-            PlanNode::Call {
-                tool: tool_name,
-                arguments,
-            } => {
-                if budget.calls_left == 0 {
-                    return err(format!("程序的工具调用次数超过上限 {MAX_PROGRAM_CALLS}"));
-                }
-                budget.calls_left -= 1;
-                let tool = registry
-                    .get(tool_name)
-                    .ok_or_else(|| EvalError::from(format!("工具 '{tool_name}' 不存在")))?;
-                let schema = tool.definition().parameters.clone();
-                let arguments = build_arguments(arguments, env, Some(&schema))?;
-                let payload = serde_json::to_string(&JsonValue::Object(arguments))
-                    .map_err(|error| EvalError::from(format!("参数序列化失败: {error}")))?;
-                let output = tool.execute(&payload).await.map_err(|error| {
-                    EvalError::from(format!("(call {tool_name} ...) 失败: {error}"))
-                })?;
-                Ok(as_json(output))
+                machine.resume_effect(sequence, outcome)?;
             }
         }
-    })
+    }
 }
 
 /// Turns `(name value...)` pair lists into the standard JSON tool arguments
@@ -1859,5 +2206,126 @@ mod tests {
         assert_eq!(restored, program);
         assert!(encoded.contains("\"op\":\"call\""));
         assert!(encoded.contains("\"kind\":\"reference\""));
+    }
+
+    #[test]
+    fn plan_machine_replays_the_same_pending_effect_after_serialization() {
+        let registry = fixture(&[
+            ("list_files", serde_json::json!(["a.rs", "b.rs"])),
+            ("read", serde_json::json!("unused")),
+        ])
+        .0;
+        let program = validate(
+            r#"(eval
+                 (seq
+                   (bind files (call list_files (path "src")))
+                   (map $files file (call read (path $file)))))"#,
+            &registry,
+            &gate(),
+        )
+        .unwrap();
+        let mut machine = PlanMachine::new(&program).unwrap();
+        let first = match machine.advance(&registry) {
+            PlanAdvance::Suspended(effect) => effect,
+            other => panic!("expected first effect, got {other:?}"),
+        };
+        assert!(matches!(
+            &first,
+            PlanEffect::Call {
+                sequence: 1,
+                tool,
+                arguments,
+            } if tool == "list_files" && arguments["path"] == "src"
+        ));
+
+        let encoded = serde_json::to_string(&machine).unwrap();
+        let mut restored: PlanMachine = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(
+            restored.advance(&registry),
+            PlanAdvance::Suspended(first.clone())
+        );
+        assert!(restored
+            .resume_effect(99, Ok(serde_json::json!(["wrong"])))
+            .is_err());
+        assert_eq!(restored.pending_effect(), Some(&first));
+
+        restored
+            .resume_effect(first.sequence(), Ok(serde_json::json!(["a.rs", "b.rs"])))
+            .unwrap();
+        let second = match restored.advance(&registry) {
+            PlanAdvance::Suspended(effect) => effect,
+            other => panic!("expected second effect, got {other:?}"),
+        };
+        assert!(matches!(
+            &second,
+            PlanEffect::Call {
+                sequence: 2,
+                tool,
+                arguments,
+            } if tool == "read" && arguments["path"] == "a.rs"
+        ));
+        restored
+            .resume_effect(second.sequence(), Ok(serde_json::json!("A")))
+            .unwrap();
+        let third = match restored.advance(&registry) {
+            PlanAdvance::Suspended(effect) => effect,
+            other => panic!("expected third effect, got {other:?}"),
+        };
+        assert!(matches!(
+            &third,
+            PlanEffect::Call {
+                sequence: 3,
+                tool,
+                arguments,
+            } if tool == "read" && arguments["path"] == "b.rs"
+        ));
+        restored
+            .resume_effect(third.sequence(), Ok(serde_json::json!("B")))
+            .unwrap();
+        assert_eq!(
+            restored.advance(&registry),
+            PlanAdvance::Complete(serde_json::json!(["A", "B"]))
+        );
+    }
+
+    #[test]
+    fn plan_machine_routes_a_failed_effect_through_fallback() {
+        let registry = fixture(&[("read", JsonValue::Null)]).0;
+        let program = validate(
+            r#"(eval
+                 (fallback
+                   (call read (path "primary"))
+                   (call read (path "backup"))))"#,
+            &registry,
+            &gate(),
+        )
+        .unwrap();
+        let mut machine = PlanMachine::new(&program).unwrap();
+        let primary = match machine.advance(&registry) {
+            PlanAdvance::Suspended(effect) => effect,
+            other => panic!("expected primary effect, got {other:?}"),
+        };
+        machine
+            .resume_effect(primary.sequence(), Err("not found".to_string()))
+            .unwrap();
+        let backup = match machine.advance(&registry) {
+            PlanAdvance::Suspended(effect) => effect,
+            other => panic!("expected backup effect, got {other:?}"),
+        };
+        assert!(matches!(
+            &backup,
+            PlanEffect::Call {
+                tool,
+                arguments,
+                ..
+            } if tool == "read" && arguments["path"] == "backup"
+        ));
+        machine
+            .resume_effect(backup.sequence(), Ok(serde_json::json!("recovered")))
+            .unwrap();
+        assert_eq!(
+            machine.advance(&registry),
+            PlanAdvance::Complete(serde_json::json!("recovered"))
+        );
     }
 }
