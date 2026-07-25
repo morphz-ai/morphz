@@ -15,6 +15,13 @@ pub const TYPE_EXCEPTION: &str = "exception";
 pub const TYPE_PROPOSAL: &str = "proposal";
 pub const TYPE_CONTEXT_TRANSACTION: &str = "context_transaction";
 pub const TYPE_CONTEXT_SEED: &str = "context_seed";
+/// A question raised by an `infer` node while the Runtime was evaluating a
+/// program the Agent submitted.
+///
+/// It is deliberately not a `user_message`: nobody asked. Rendering it as one
+/// would invite the Agent to answer the user, when what is waiting on the value
+/// is its own half-evaluated program.
+pub const TYPE_INFER_REQUEST: &str = "infer_request";
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -79,7 +86,12 @@ pub fn is_context_observation(event: &Event) -> bool {
     }
     matches!(
         event.event_type.as_str(),
-        TYPE_USER_MESSAGE | TYPE_TOOL_OUTPUT | TYPE_AGENT_CALL | TYPE_EXCEPTION | TYPE_FILE_CHANGE
+        TYPE_USER_MESSAGE
+            | TYPE_TOOL_OUTPUT
+            | TYPE_AGENT_CALL
+            | TYPE_EXCEPTION
+            | TYPE_FILE_CHANGE
+            | TYPE_INFER_REQUEST
     )
 }
 

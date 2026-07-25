@@ -1,6 +1,7 @@
 use crate::config::OrchestratorConfig;
 use crate::event::{
-    Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
+    Event, TYPE_CONTEXT_SEED, TYPE_CONTEXT_TRANSACTION, TYPE_INFER_REQUEST, TYPE_TOOL_OUTPUT,
+    TYPE_USER_MESSAGE,
 };
 use crate::memory::{
     CognitiveClockStore, ContextCognitiveClock, DeliveryStatus, EventStore,
@@ -6933,7 +6934,9 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
 
 fn wake_for(events: &[Event]) -> WakeSignal {
     let latest = events.iter().rev().find(|event| {
-        event.event_type == TYPE_USER_MESSAGE || event.event_type == TYPE_TOOL_OUTPUT
+        event.event_type == TYPE_USER_MESSAGE
+            || event.event_type == TYPE_TOOL_OUTPUT
+            || event.event_type == TYPE_INFER_REQUEST
     });
     let Some(event) = latest else {
         return WakeSignal {
@@ -6954,6 +6957,10 @@ fn wake_for_event(event: &Event) -> WakeSignal {
         .map(ToOwned::to_owned);
     let cause = if event.event_type == TYPE_USER_MESSAGE {
         "user-message"
+    } else if event.event_type == TYPE_INFER_REQUEST {
+        // The Agent has to be able to tell that its own half-evaluated program
+        // is what is waiting, not a person.
+        "infer-request"
     } else if tool_name.as_deref() == Some("context_tx") {
         "context-transaction-result"
     } else if tool_name.as_deref() == Some("objective_supervisor") {
@@ -10056,6 +10063,22 @@ mod tests {
         let failure_wake = wake_for(&[user.clone(), failure]);
         assert_eq!(failure_wake.cause, "context-transaction-result");
         assert!(failure_wake.visible_in_inbox);
+
+        // A question raised by the Agent's own half-evaluated program must not
+        // look like someone speaking: mistaking it for a user message would
+        // send the answer to the user instead of to the waiting `infer`.
+        let infer_request = Event::new(
+            "infer:1".to_string(),
+            "Runtime-Evaluator".to_string(),
+            crate::event::TYPE_INFER_REQUEST.to_string(),
+            "chat/infer_request".to_string(),
+            vec![("task".to_string(), json!("铜印现在是什么形态"))]
+                .into_iter()
+                .collect(),
+        );
+        let inference = wake_for(&[user.clone(), infer_request]);
+        assert_eq!(inference.cause, "infer-request");
+        assert!(inference.visible_in_inbox);
 
         let policy = Event::new(
             "output:context-policy".to_string(),
