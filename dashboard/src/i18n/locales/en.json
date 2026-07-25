@@ -355,9 +355,12 @@
       "filterByObjective": "Filter by Objective",
       "filterObjective": "Filter this Objective",
       "clearObjectiveFilter": "Clear Objective filter",
-      "objectiveTint": "Objective tint",
-      "enableObjectiveTint": "Enable Objective tint",
-      "disableObjectiveTint": "Disable Objective tint"
+      "enableObjectiveTint": "Enable tint",
+      "disableObjectiveTint": "Disable tint",
+      "tintDimension": "Tint dimension",
+      "tintByObjective": "Objective",
+      "tintByThread": "Thread",
+      "tintNoObjective": "No Objective right now"
     }
   },
   "work": {

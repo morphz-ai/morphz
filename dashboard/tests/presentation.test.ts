@@ -2,7 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import type { TFunction } from 'i18next'
-import { buildObjectiveLineageIndex, objectiveToneForId } from '../src/app/objectiveLineage.ts'
+import {
+  assignTintSlots,
+  autoTintDimension,
+  buildObjectiveLineageIndex,
+  TINT_PALETTE_SIZE,
+  tintIdForLineage,
+  toneForSlot,
+} from '../src/app/objectiveLineage.ts'
 import { compactTokens, conversationEventKind, conversationEventLane, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
 
 const translations: Record<string, string> = {
@@ -131,7 +138,49 @@ test('objective lineage links durable outputs back to their Thread and Objective
   })
 })
 
-test('objective colors are stable for a persisted Objective id', () => {
-  assert.deepEqual(objectiveToneForId('objective-alpha'), objectiveToneForId('objective-alpha'))
-  assert.notEqual(objectiveToneForId('objective-alpha'), undefined)
+test('concurrently live entities never share a tint slot', () => {
+  const slots = assignTintSlots(['alpha', 'beta', 'gamma'], new Map())
+  assert.equal(new Set(slots.values()).size, 3)
+  assert.equal(slots.size, 3)
+})
+
+test('a live entity keeps its slot while its neighbours come and go', () => {
+  const first = assignTintSlots(['alpha', 'beta'], new Map())
+  const alphaSlot = first.get('alpha')
+  // beta ends, gamma and delta start: alpha must not be recoloured underneath
+  // an operator who is mid-read.
+  const second = assignTintSlots(['alpha', 'gamma', 'delta'], first)
+  assert.equal(second.get('alpha'), alphaSlot)
+  assert.equal(new Set(second.values()).size, 3)
+  // beta's slot is free again rather than being held forever.
+  assert.equal(second.has('beta'), false)
+  assert.ok([...second.values()].includes(first.get('beta') as number))
+})
+
+test('entities beyond the palette stay neutral instead of repeating a colour', () => {
+  const ids = Array.from({ length: TINT_PALETTE_SIZE + 3 }, (_, index) => `entity-${index}`)
+  const slots = assignTintSlots(ids, new Map())
+  assert.equal(slots.size, TINT_PALETTE_SIZE)
+  assert.equal(new Set(slots.values()).size, TINT_PALETTE_SIZE)
+  for (const id of ids.slice(TINT_PALETTE_SIZE)) {
+    assert.equal(toneForSlot(slots.get(id)), undefined)
+  }
+})
+
+test('tint dimension follows the level being attended to', () => {
+  // Several Objectives in view: telling those apart is the question, and the
+  // threads inside one of them are detail.
+  assert.equal(autoTintDimension(3, 5), 'objective')
+  // Narrowed to one Objective, so the useful distinction moves to its threads.
+  assert.equal(autoTintDimension(1, 4), 'thread')
+  assert.equal(autoTintDimension(1, 1), 'objective')
+  // No Objective exists at all, which is the ordinary background-work case.
+  assert.equal(autoTintDimension(0, 3), 'thread')
+})
+
+test('the coloured id follows the dimension in effect', () => {
+  const lineage = { threadIds: ['thread-alpha'], objectiveIds: ['objective-alpha'] }
+  assert.equal(tintIdForLineage(lineage, 'objective'), 'objective-alpha')
+  assert.equal(tintIdForLineage(lineage, 'thread'), 'thread-alpha')
+  assert.equal(tintIdForLineage({ threadIds: [], objectiveIds: [] }, 'thread'), undefined)
 })

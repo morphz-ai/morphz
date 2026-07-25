@@ -182,6 +182,9 @@ export function buildObjectiveLineageIndex(
   return { objectiveIdsByThread, forEvent, forActivation }
 }
 
+/** Which causal dimension the stream is currently coloured by. */
+export type TintDimension = 'objective' | 'thread'
+
 export interface ObjectiveTone {
   color: string
 }
@@ -195,12 +198,77 @@ const objectiveTones: readonly ObjectiveTone[] = [
   { color: '#6e93f7' },
 ]
 
-/** A deterministic palette means an Objective keeps its color after reload. */
-export function objectiveToneForId(objectiveId: string): ObjectiveTone | undefined {
-  if (!objectiveId) return undefined
-  let hash = 0
-  for (let index = 0; index < objectiveId.length; index += 1) {
-    hash = ((hash << 5) - hash + objectiveId.charCodeAt(index)) | 0
+export const TINT_PALETTE_SIZE = objectiveTones.length
+
+/**
+ * Allocates a palette slot per live entity.
+ *
+ * Hashing an id into the palette is what this replaces: with six tones any two
+ * concurrent entities could land on the same colour, and for a feature whose
+ * only job is telling them apart, a collision does not merely fail to help —
+ * it argues that two streams are one. Slots are therefore handed out by
+ * occupancy, so entities that are alive at the same time never share a colour.
+ *
+ * A slot is held for as long as its entity stays in `activeIds`, which keeps a
+ * colour stable while the user is reading, and is released for reuse once the
+ * entity is gone. Callers pass the previous assignment back in; ordering of
+ * `activeIds` decides who claims a freed slot first.
+ *
+ * Beyond `TINT_PALETTE_SIZE` live entities the extra ones are deliberately left
+ * unassigned. Saying "these six are distinct and the rest are neutral" is
+ * honest; recycling colours would fabricate distinctions that do not hold.
+ */
+export function assignTintSlots(
+  activeIds: readonly string[],
+  previous: ReadonlyMap<string, number>,
+): Map<string, number> {
+  const next = new Map<string, number>()
+  const taken = new Set<number>()
+  const wanted = activeIds.filter(Boolean)
+  for (const id of wanted) {
+    const slot = previous.get(id)
+    if (slot === undefined || next.has(id) || taken.has(slot)) continue
+    next.set(id, slot)
+    taken.add(slot)
   }
-  return objectiveTones[Math.abs(hash) % objectiveTones.length]
+  for (const id of wanted) {
+    if (next.has(id)) continue
+    let slot = 0
+    while (slot < objectiveTones.length && taken.has(slot)) slot += 1
+    if (slot >= objectiveTones.length) continue
+    next.set(id, slot)
+    taken.add(slot)
+  }
+  return next
+}
+
+export function toneForSlot(slot: number | undefined): ObjectiveTone | undefined {
+  return slot === undefined ? undefined : objectiveTones[slot]
+}
+
+/** The id a message is coloured by, given the dimension in effect. */
+export function tintIdForLineage(
+  lineage: CausalLineage,
+  dimension: TintDimension,
+): string | undefined {
+  const ids = dimension === 'thread' ? lineage.threadIds : lineage.objectiveIds
+  return ids[0]
+}
+
+/**
+ * Picks the dimension to colour by when tinting is switched on.
+ *
+ * The rule follows the level the operator is attending to rather than the
+ * finest one that varies: while several Objectives are in view, telling those
+ * apart is the question, and threads inside one of them are detail. Counts come
+ * from what is currently visible, so narrowing to a single Objective moves the
+ * useful distinction down to its threads on its own.
+ */
+export function autoTintDimension(
+  visibleObjectiveCount: number,
+  visibleThreadCount: number,
+): TintDimension {
+  if (visibleObjectiveCount >= 2) return 'objective'
+  if (visibleObjectiveCount === 1 && visibleThreadCount >= 2) return 'thread'
+  return visibleObjectiveCount === 1 ? 'objective' : 'thread'
 }

@@ -97,10 +97,14 @@ import { resolveDashboardToken } from './api/auth'
 import { invalidatedQueriesForTopic } from './app/invalidation'
 import { copyTextToClipboard } from './utils/clipboard'
 import {
+  assignTintSlots,
+  autoTintDimension,
   buildObjectiveLineageIndex,
-  objectiveToneForId,
+  tintIdForLineage,
+  toneForSlot,
   type CausalLineage,
   type ObjectiveLineageIndex,
+  type TintDimension,
 } from './app/objectiveLineage'
 import {
   compactTokens,
@@ -114,27 +118,32 @@ import {
   threadKindLabel,
 } from './app/presentation'
 
-function objectiveTintStyle(objectiveId: string | undefined, enabled: boolean): CSSProperties | undefined {
-  if (!enabled || !objectiveId) return undefined
-  const tone = objectiveToneForId(objectiveId)
-  if (!tone) return undefined
-  return { '--objective-color': tone.color } as CSSProperties
-}
+/**
+ * Resolves the colour for one causal id. Slots are allocated per live entity
+ * rather than hashed, so this is handed down instead of recomputed per call
+ * site: every surface has to agree on what a colour means.
+ */
+type TintStyleResolver = (id: string | undefined) => CSSProperties | undefined
 
 function CausalIdentifierBadges({
   lineage,
   t,
-  tintEnabled,
+  tintStyleFor,
 }: {
   lineage: CausalLineage
   t: TFunction
-  tintEnabled: boolean
+  tintStyleFor: TintStyleResolver
 }) {
   if (lineage.threadIds.length === 0 && lineage.objectiveIds.length === 0) return null
   return (
     <div className="message-causal-identifiers" aria-label={t('conversation.lineage.title')}>
       {lineage.threadIds.map(threadId => (
-        <span className="causal-identifier thread" key={`thread-${threadId}`} title={threadId}>
+        <span
+          className="causal-identifier thread"
+          key={`thread-${threadId}`}
+          style={tintStyleFor(threadId)}
+          title={threadId}
+        >
           <GitBranch size={10} />
           <b>{t('conversation.lineage.thread')}</b>
           <code>{shortId(threadId, 18)}</code>
@@ -144,7 +153,7 @@ function CausalIdentifierBadges({
         <span
           className="causal-identifier objective"
           key={`objective-${objectiveId}`}
-          style={objectiveTintStyle(objectiveId, tintEnabled)}
+          style={tintStyleFor(objectiveId)}
           title={objectiveId}
         >
           <i aria-hidden="true" />
@@ -159,13 +168,13 @@ function CausalIdentifierBadges({
 function MessageThreadReference({
   snapshot,
   objectiveIds,
-  tintEnabled,
+  tintStyleFor,
   onOpen,
   t,
 }: {
   snapshot: SchedulerThreadSnapshot
   objectiveIds: string[]
-  tintEnabled: boolean
+  tintStyleFor: TintStyleResolver
   onOpen: () => void
   t: TFunction
 }) {
@@ -177,11 +186,14 @@ function MessageThreadReference({
     .sort((left, right) => left.snapshot.job.created_at.localeCompare(right.snapshot.job.created_at) || left.order - right.order)
   const displayState = snapshot.phase === 'idle' ? snapshot.thread.lifecycle : snapshot.phase
   const previewId = `thread-tool-chain-${snapshot.thread.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`
+  // Only ids of the dimension in effect hold a slot, so at most one of these
+  // resolves and the card needs no knowledge of which dimension that is.
+  const threadTint = tintStyleFor(snapshot.thread.id) ?? tintStyleFor(objectiveIds[0])
 
   return (
     <div
-      className={`message-thread-reference phase-${snapshot.phase} ${objectiveIds.length > 0 && tintEnabled ? 'objective-tinted' : ''}`}
-      style={objectiveTintStyle(objectiveIds[0], tintEnabled)}
+      className={`message-thread-reference phase-${snapshot.phase} ${threadTint ? 'objective-tinted' : ''}`}
+      style={threadTint}
     >
       <button
         className="message-thread-capsule"
@@ -344,6 +356,20 @@ function initialShowReasoningSummary(): boolean {
 
 function initialObjectiveTintEnabled(): boolean {
   return initialBooleanPreference('morphz.dashboard.objectiveTint', false)
+}
+
+function initialTintDimension(): TintDimension {
+  try {
+    return window.localStorage.getItem('morphz.dashboard.tintDimension') === 'thread'
+      ? 'thread'
+      : 'objective'
+  } catch {
+    return 'objective'
+  }
+}
+
+function initialTintDimensionChosen(): boolean {
+  return initialBooleanPreference('morphz.dashboard.tintDimensionChosen', false)
 }
 
 function initialBooleanPreference(key: string, fallback: boolean): boolean {
@@ -1098,6 +1124,8 @@ function DialogueActivityDock({
   expandedObjectiveIds,
   selectedObjectiveId,
   objectiveTintEnabled,
+  tintDimension,
+  tintStyleFor,
   objectiveIdsByThread,
   pausingObjectiveId,
   resumingObjectiveId,
@@ -1110,6 +1138,7 @@ function DialogueActivityDock({
   onObjectiveToggle,
   onObjectiveFilterChange,
   onObjectiveTintChange,
+  onTintDimensionChange,
   onPauseObjective,
   onResumeObjective,
   onDeleteObjective,
@@ -1127,6 +1156,8 @@ function DialogueActivityDock({
   expandedObjectiveIds: ReadonlySet<string>
   selectedObjectiveId: string
   objectiveTintEnabled: boolean
+  tintDimension: TintDimension
+  tintStyleFor: TintStyleResolver
   objectiveIdsByThread: ReadonlyMap<string, string[]>
   pausingObjectiveId: string
   resumingObjectiveId: string
@@ -1139,6 +1170,7 @@ function DialogueActivityDock({
   onObjectiveToggle: (objectiveId: string) => void
   onObjectiveFilterChange: (objectiveId: string) => void
   onObjectiveTintChange: (enabled: boolean) => void
+  onTintDimensionChange: (dimension: TintDimension) => void
   onPauseObjective: (objective: ObjectiveRecord) => void
   onResumeObjective: (objective: ObjectiveRecord) => void
   onDeleteObjective: (objective: ObjectiveRecord) => void
@@ -1192,11 +1224,35 @@ function DialogueActivityDock({
               type="button"
               aria-pressed={objectiveTintEnabled}
               title={objectiveTintEnabled ? t('conversation.activity.disableObjectiveTint') : t('conversation.activity.enableObjectiveTint')}
+              aria-label={objectiveTintEnabled ? t('conversation.activity.disableObjectiveTint') : t('conversation.activity.enableObjectiveTint')}
               onClick={() => onObjectiveTintChange(!objectiveTintEnabled)}
             >
               <Palette size={12} />
-              <span>{t('conversation.activity.objectiveTint')}</span>
             </button>
+            {objectiveTintEnabled && (
+              <div className="tint-dimension-tabs" role="group" aria-label={t('conversation.activity.tintDimension')}>
+                {(['objective', 'thread'] as const).map(dimension => {
+                  // Objectives come and go, so the tab stays put and greys out
+                  // instead of appearing under the pointer.
+                  const unavailable = dimension === 'objective' && objectives.length === 0
+                  return (
+                    <button
+                      key={dimension}
+                      className={tintDimension === dimension ? 'is-active' : ''}
+                      type="button"
+                      disabled={unavailable}
+                      aria-pressed={tintDimension === dimension}
+                      title={unavailable ? t('conversation.activity.tintNoObjective') : undefined}
+                      onClick={() => onTintDimensionChange(dimension)}
+                    >
+                      {dimension === 'objective'
+                        ? t('conversation.activity.tintByObjective')
+                        : t('conversation.activity.tintByThread')}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
           </div>
           <div className="dialogue-activity-content">
           <details
@@ -1224,9 +1280,9 @@ function DialogueActivityDock({
                 const selected = selectedObjectiveId === objective.id
                 return (
                   <article
-                    className={`dialogue-objective-card ${objective.status} ${expanded ? 'is-expanded' : ''} ${selected ? 'is-selected' : ''} ${objectiveTintEnabled ? 'objective-tinted' : ''}`}
+                    className={`dialogue-objective-card ${objective.status} ${expanded ? 'is-expanded' : ''} ${selected ? 'is-selected' : ''} ${tintStyleFor(objective.id) ? 'objective-tinted' : ''}`}
                     key={objective.id}
-                    style={objectiveTintStyle(objective.id, objectiveTintEnabled)}
+                    style={tintStyleFor(objective.id)}
                   >
                     <header className="objective-card-titlebar">
                       <span className={`activity-status ${objective.status}`}><i />{statusLabel(objective.status, t)}</span>
@@ -1293,9 +1349,9 @@ function DialogueActivityDock({
                 const objectiveIds = objectiveIdsByThread.get(effective.thread.id) ?? []
                 return (
                   <article
-                    className={`dialogue-thread-card phase-${effective.phase} ${expanded ? 'is-expanded' : ''} ${objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`}
+                    className={`dialogue-thread-card phase-${effective.phase} ${expanded ? 'is-expanded' : ''} ${(tintStyleFor(snapshot.thread.id) ?? tintStyleFor(objectiveIds[0])) ? 'objective-tinted' : ''}`}
                     key={effective.thread.id}
-                    style={objectiveTintStyle(objectiveIds[0], objectiveTintEnabled)}
+                    style={tintStyleFor(snapshot.thread.id) ?? tintStyleFor(objectiveIds[0])}
                   >
                     <button
                       className="dialogue-thread-summary"
@@ -1474,8 +1530,8 @@ function DialogueActivityDock({
                 const objectiveIds = objectiveIdsByThread.get(snapshot.thread.id) ?? []
                 return (
                   <button
-                    className={`dialogue-history-card ${objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`}
-                    style={objectiveTintStyle(objectiveIds[0], objectiveTintEnabled)}
+                    className={`dialogue-history-card ${(tintStyleFor(snapshot.thread.id) ?? tintStyleFor(objectiveIds[0])) ? 'objective-tinted' : ''}`}
+                    style={tintStyleFor(snapshot.thread.id) ?? tintStyleFor(objectiveIds[0])}
                     type="button"
                     key={snapshot.thread.id}
                     onClick={() => onInspectThread(snapshot.thread.id)}
@@ -1773,6 +1829,11 @@ export default function App() {
   const [conversationLayout, setConversationLayout] = useState<ConversationLayout>(initialConversationLayout)
   const [conversationMobileLane, setConversationMobileLane] = useState<ConversationMobileLane>('dialogue')
   const [objectiveTintEnabled, setObjectiveTintEnabled] = useState(initialObjectiveTintEnabled)
+  const [tintDimension, setTintDimension] = useState<TintDimension>(initialTintDimension)
+  // Once the operator has picked a dimension, the automatic default steps
+  // aside for good: it exists to open on a sensible view, not to keep
+  // overriding a deliberate choice.
+  const [tintDimensionChosen, setTintDimensionChosen] = useState(initialTintDimensionChosen)
   const [selectedObjectiveFilterId, setSelectedObjectiveFilterId] = useState('')
   const [themeMenuOpen, setThemeMenuOpen] = useState(false)
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
@@ -1884,6 +1945,15 @@ export default function App() {
       // The visual preference remains active for the current page lifetime.
     }
   }, [objectiveTintEnabled])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('morphz.dashboard.tintDimension', tintDimension)
+      window.localStorage.setItem('morphz.dashboard.tintDimensionChosen', String(tintDimensionChosen))
+    } catch {
+      // The visual preference remains active for the current page lifetime.
+    }
+  }, [tintDimension, tintDimensionChosen])
 
   const requestConfirmation = useCallback((options: {
     title: string
@@ -3122,6 +3192,47 @@ export default function App() {
     }
   }, [objectiveLineage, schedulerThreads, selectedObjectiveFilterId, selectedSessionId])
   const showDialogueActivity = Boolean(selectedContextId && selectedSessionId)
+  // Colours are allocated over what is currently on screen, in a stable order,
+  // so a slot belongs to one live entity at a time.
+  const tintCandidateIds = tintDimension === 'thread'
+    ? dialogueActivityThreads.map(snapshot => snapshot.thread.id)
+    : dialogueActivityObjectives.map(objective => objective.id)
+  // Slot history has to survive re-renders for a colour to stay put, and the
+  // key makes that history explicit rather than hiding it in a ref that is
+  // read while rendering.
+  const tintCandidateKey = tintCandidateIds.join(' ')
+  const [tintSlotState, setTintSlotState] = useState<{
+    key: string
+    slots: ReadonlyMap<string, number>
+  }>(() => ({ key: '', slots: new Map() }))
+  const tintSlots = tintSlotState.key === tintCandidateKey
+    ? tintSlotState.slots
+    : assignTintSlots(tintCandidateIds, tintSlotState.slots)
+  if (tintSlotState.key !== tintCandidateKey) {
+    setTintSlotState({ key: tintCandidateKey, slots: tintSlots })
+  }
+  const tintStyleFor: TintStyleResolver = id => {
+    if (!objectiveTintEnabled || !id) return undefined
+    const tone = toneForSlot(tintSlots.get(id))
+    return tone ? ({ '--objective-color': tone.color } as CSSProperties) : undefined
+  }
+  const tintStyleForLineage = (lineage: CausalLineage) =>
+    tintStyleFor(tintIdForLineage(lineage, tintDimension))
+  const handleObjectiveTintChange = (enabled: boolean) => {
+    // The automatic pick runs only as tinting is switched on. Re-deciding
+    // while the operator reads would remap every colour underneath them.
+    if (enabled && !tintDimensionChosen) {
+      setTintDimension(autoTintDimension(
+        dialogueActivityObjectives.length,
+        dialogueActivityThreads.length,
+      ))
+    }
+    setObjectiveTintEnabled(enabled)
+  }
+  const handleTintDimensionChange = (dimension: TintDimension) => {
+    setTintDimension(dimension)
+    setTintDimensionChosen(true)
+  }
   const visibleSchedulerThreads = useMemo(() => {
     const filtered = schedulerThreads.filter(snapshot => (
       !selectedObjectiveFilterId
@@ -4162,6 +4273,8 @@ export default function App() {
       expandedObjectiveIds={expandedObjectiveIds}
       selectedObjectiveId={selectedObjectiveFilterId}
       objectiveTintEnabled={objectiveTintEnabled}
+      tintDimension={tintDimension}
+      tintStyleFor={tintStyleFor}
       objectiveIdsByThread={objectiveLineage.objectiveIdsByThread}
       pausingObjectiveId={pausingObjectiveId}
       resumingObjectiveId={resumingObjectiveId}
@@ -4176,7 +4289,8 @@ export default function App() {
       onInspectThread={threadId => navigate(threadPath(selectedContextId, threadId))}
       onObjectiveToggle={toggleObjectiveExpanded}
       onObjectiveFilterChange={setSelectedObjectiveFilterId}
-      onObjectiveTintChange={setObjectiveTintEnabled}
+      onObjectiveTintChange={handleObjectiveTintChange}
+      onTintDimensionChange={handleTintDimensionChange}
       onPauseObjective={objective => void pauseObjective(objective)}
       onResumeObjective={objective => void resumeObjective(objective)}
       onDeleteObjective={objective => void deleteObjective(objective)}
@@ -4513,16 +4627,16 @@ export default function App() {
                 {visibleDialogueEvents.map(event => {
                   const kind = eventKind(event) ?? 'system'
                   const lineage = objectiveLineage.forEvent(event)
-                  const tintStyle = objectiveTintStyle(lineage.objectiveIds[0], objectiveTintEnabled)
+                  const tintStyle = tintStyleForLineage(lineage)
                   if (kind === 'progress') {
-                    return <div className={`progress-note ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
+                    return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                   }
                   const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
                   if (kind === 'reasoning') {
                     if (!persistedReasoningSummary) return null
                     return (
-                      <article className={`message-row agent persisted-reasoning ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}>
-                        <CausalIdentifierBadges lineage={lineage} t={t} tintEnabled={objectiveTintEnabled} />
+                      <article className={`message-row agent persisted-reasoning ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}>
+                        <CausalIdentifierBadges lineage={lineage} t={t} tintStyleFor={tintStyleFor} />
                         <ReasoningSummaryBlock
                           summary={persistedReasoningSummary}
                           live={false}
@@ -4545,7 +4659,7 @@ export default function App() {
                   const showRole = kind === 'background' || kind === 'system'
                   const derivedThreads = derivedThreadsByRootTurn.get(event.id) ?? []
                   return (
-                    <article className={`message-row ${kind} ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
+                    <article className={`message-row ${kind} ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
                       {showRole && (
                         <div className="message-role">
                           <strong>{role}</strong>
@@ -4553,7 +4667,7 @@ export default function App() {
                           {kind === 'background' && <small>{shortId(String(event.payload.root_turn_id ?? ''), 18)}</small>}
                         </div>
                       )}
-                      <CausalIdentifierBadges lineage={lineage} t={t} tintEnabled={objectiveTintEnabled} />
+                      <CausalIdentifierBadges lineage={lineage} t={t} tintStyleFor={tintStyleFor} />
                       {persistedReasoningSummary && (
                         <ReasoningSummaryBlock
                           summary={persistedReasoningSummary}
@@ -4577,7 +4691,7 @@ export default function App() {
                               key={snapshot.thread.id}
                               snapshot={snapshot}
                               objectiveIds={objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []}
-                              tintEnabled={objectiveTintEnabled}
+                              tintStyleFor={tintStyleFor}
                               onOpen={() => navigate(threadPath(selectedContextId, snapshot.thread.id))}
                               t={t}
                             />
@@ -4627,8 +4741,8 @@ export default function App() {
                 {dialogueStreamingAttempts.map(attempt => {
                   const lineage = objectiveLineage.forActivation(attempt.activationId)
                   return (
-                  <article className={`message-row agent streaming ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={objectiveTintStyle(lineage.objectiveIds[0], objectiveTintEnabled)} key={`stream-${attempt.attemptId}`} aria-live="polite">
-                    <CausalIdentifierBadges lineage={lineage} t={t} tintEnabled={objectiveTintEnabled} />
+                  <article className={`message-row agent streaming ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyleForLineage(lineage)} key={`stream-${attempt.attemptId}`} aria-live="polite">
+                    <CausalIdentifierBadges lineage={lineage} t={t} tintStyleFor={tintStyleFor} />
                     <ReasoningSummaryBlock
                       summary={liveReasoningSummaryText(reasoningContinuationSummaries, attempt)}
                       live
@@ -4696,17 +4810,17 @@ export default function App() {
                       {visibleExecutionOutputEvents.map(event => {
                         const kind = eventKind(event) ?? 'background'
                         const lineage = objectiveLineage.forEvent(event)
-                        const tintStyle = objectiveTintStyle(lineage.objectiveIds[0], objectiveTintEnabled)
+                        const tintStyle = tintStyleForLineage(lineage)
                         const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
                         if (kind === 'progress') {
-                          return <div className={`progress-note ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
+                          return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                         }
                         if (kind === 'reasoning') {
                           const summary = persistedReasoningSummary || String(event.payload.text ?? '')
                           if (!summary) return null
                           return (
-                            <article className={`message-row agent persisted-reasoning execution-output ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}>
-                              <CausalIdentifierBadges lineage={lineage} t={t} tintEnabled={objectiveTintEnabled} />
+                            <article className={`message-row agent persisted-reasoning execution-output ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}>
+                              <CausalIdentifierBadges lineage={lineage} t={t} tintStyleFor={tintStyleFor} />
                               <ReasoningSummaryBlock
                                 summary={summary}
                                 live={false}
@@ -4721,13 +4835,13 @@ export default function App() {
                         }
                         const derivedThreads = derivedThreadsByRootTurn.get(event.id) ?? []
                         return (
-                          <article className={`message-row background execution-output ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
+                          <article className={`message-row background execution-output ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
                             <div className="message-role">
                               <strong>{t('conversation.roleDelivery')}</strong>
                               <time>{formatTime(event.timestamp, i18n.language)}</time>
                               <small>{shortId(String(event.payload.root_turn_id ?? ''), 18)}</small>
                             </div>
-                            <CausalIdentifierBadges lineage={lineage} t={t} tintEnabled={objectiveTintEnabled} />
+                            <CausalIdentifierBadges lineage={lineage} t={t} tintStyleFor={tintStyleFor} />
                             {persistedReasoningSummary && (
                               <ReasoningSummaryBlock
                                 summary={persistedReasoningSummary}
@@ -4751,7 +4865,7 @@ export default function App() {
                                     key={snapshot.thread.id}
                                     snapshot={snapshot}
                                     objectiveIds={objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []}
-                                    tintEnabled={objectiveTintEnabled}
+                                    tintStyleFor={tintStyleFor}
                                     onOpen={() => navigate(threadPath(selectedContextId, snapshot.thread.id))}
                                     t={t}
                                   />
@@ -4774,8 +4888,8 @@ export default function App() {
                       {executionOutputStreamingAttempts.map(attempt => {
                         const lineage = objectiveLineage.forActivation(attempt.activationId)
                         return (
-                        <article className={`message-row agent streaming execution-output ${lineage.objectiveIds.length > 0 && objectiveTintEnabled ? 'objective-tinted' : ''}`} style={objectiveTintStyle(lineage.objectiveIds[0], objectiveTintEnabled)} key={`execution-stream-${attempt.attemptId}`} aria-live="polite">
-                          <CausalIdentifierBadges lineage={lineage} t={t} tintEnabled={objectiveTintEnabled} />
+                        <article className={`message-row agent streaming execution-output ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyleForLineage(lineage)} key={`execution-stream-${attempt.attemptId}`} aria-live="polite">
+                          <CausalIdentifierBadges lineage={lineage} t={t} tintStyleFor={tintStyleFor} />
                           <ReasoningSummaryBlock
                             summary={liveReasoningSummaryText(reasoningContinuationSummaries, attempt)}
                             live

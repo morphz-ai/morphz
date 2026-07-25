@@ -354,9 +354,12 @@
       "filterByObjective": "按目标筛选",
       "filterObjective": "筛选此目标",
       "clearObjectiveFilter": "取消目标筛选",
-      "objectiveTint": "目标染色",
-      "enableObjectiveTint": "开启目标染色",
-      "disableObjectiveTint": "关闭目标染色"
+      "enableObjectiveTint": "开启染色",
+      "disableObjectiveTint": "关闭染色",
+      "tintDimension": "染色维度",
+      "tintByObjective": "目标",
+      "tintByThread": "线程",
+      "tintNoObjective": "当前没有目标"
     }
   },
   "work": {

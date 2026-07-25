@@ -557,7 +557,17 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .dialogue-activity-filter:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); color: var(--accent); }
 .dialogue-activity-filter select { width: 100%; min-width: 0; height: 28px; border: 0; outline: 0; background: transparent; color: var(--text-soft); font: 600 8px/1 var(--mono); text-overflow: ellipsis; }
 .dialogue-activity-filter option { background: var(--surface); color: var(--text); }
-.objective-tint-toggle { display: inline-flex; height: 30px; flex: 0 0 auto; align-items: center; gap: 5px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--radius-xs); background: var(--surface); color: var(--muted); font: 650 8px/1 var(--mono); white-space: nowrap; }
+/* The filter yields width to the tint controls so all three share one row: a
+   wrapped row would change the dock height every time tinting is toggled. */
+.dialogue-activity-controls { flex-wrap: nowrap; }
+.dialogue-activity-filter { flex: 1 1 84px; }
+.objective-tint-toggle { display: inline-flex; height: 30px; width: 30px; flex: 0 0 auto; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--line); border-radius: var(--radius-xs); background: var(--surface); color: var(--muted); }
+.tint-dimension-tabs { display: inline-flex; height: 30px; flex: 0 0 auto; align-items: stretch; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-xs); background: var(--surface); }
+.tint-dimension-tabs button { padding: 0 7px; border: 0; background: transparent; color: var(--muted); font: 650 8px/1 var(--mono); white-space: nowrap; }
+.tint-dimension-tabs button + button { border-left: 1px solid var(--line); }
+.tint-dimension-tabs button:hover:not(:disabled) { color: var(--text-soft); }
+.tint-dimension-tabs button.is-active { background: var(--accent-soft); color: var(--accent-strong); }
+.tint-dimension-tabs button:disabled { opacity: 0.45; cursor: not-allowed; }
 .objective-tint-toggle:hover { border-color: var(--line-strong); color: var(--text-soft); }
 .objective-tint-toggle.is-active { border-color: color-mix(in srgb, var(--accent) 44%, var(--line)); background: var(--accent-soft); color: var(--accent-strong); }
 .dialogue-activity-content { max-height: calc(100dvh - 316px); overflow-x: hidden; overflow-y: auto; border-top: 1px solid var(--line); scrollbar-color: var(--line-strong) transparent; scrollbar-width: thin; }
