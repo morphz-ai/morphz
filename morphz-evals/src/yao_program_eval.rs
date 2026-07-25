@@ -13,14 +13,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
-use morphz::llm::{Client, FunctionCall, Message, ToolCall, ToolDefinition};
+use morphz::llm::{Client, FunctionCall, Message, ToolCall};
 use morphz::permission::PermissionConfig;
 use morphz::sexpr_eval::{
     EvalTool, RuntimeInference, CURRENT_INFERENCE, DEFAULT_CALLABLE_TOOLS, MAX_INFER_ROUNDS,
 };
 use morphz::tool::{ListFilesTool, ReadFileTool, Registry, SearchTool};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 

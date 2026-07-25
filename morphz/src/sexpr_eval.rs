@@ -43,10 +43,76 @@ pub const MAX_PROGRAM_INFERS: usize = 8;
 /// [`MAX_PROGRAM_INFERS`]. Without it one question could spend a whole turn.
 pub const MAX_INFER_ROUNDS: usize = 4;
 
+/// One operator's self-description: name, surface form, and meaning.
+///
+/// Every surface that tells the model what it may write is generated from this
+/// table, so the account it reads cannot drift from what the validator accepts.
+/// A name alone leaves the model guessing at the form, which is exactly the
+/// class of mistake the first evaluation produced.
+pub struct OperatorSpec {
+    pub name: &'static str,
+    pub form: &'static str,
+    pub description: &'static str,
+}
+
 /// Operators this evaluator implements. `fallback` and `process` are offered
 /// to the model for its own evaluation but are not accepted here; the rejection
 /// message points at ordinary tool calls instead.
-pub const OPERATORS: [&str; 6] = ["seq", "call", "bind", "if", "map", "infer"];
+pub const OPERATORS: [OperatorSpec; 6] = [
+    OperatorSpec {
+        name: "seq",
+        form: "(seq STEP...)",
+        description: "从左到右求值每个 STEP，返回最后一个 STEP 的值。要让程序产出某个绑定，把 $名字 放在最后一个 STEP。",
+    },
+    OperatorSpec {
+        name: "bind",
+        form: "(bind NAME EXPR)",
+        description: "先完整求值 EXPR，再绑定到 NAME。NAME 不带 $，引用时才写 $NAME；取字段写 $NAME.field。绑定不可覆盖。",
+    },
+    OperatorSpec {
+        name: "call",
+        form: "(call TOOL :key value :key value ...)",
+        description: "调用一个工具。参数必须成对且参数名以 ':' 开头；value 只能是字面量或 $引用，不能是子表达式。工具期望数组的参数要传数组值，例如某个 :paths 参数应传 [\"src\"] 而不是 \"src\"。",
+    },
+    OperatorSpec {
+        name: "if",
+        form: "(if COND THEN ELSE)",
+        description: "COND 只能是字面量或 $引用。只求值被选中的一支，未选分支不产生任何工具调用；分支内的绑定不流出该分支。",
+    },
+    OperatorSpec {
+        name: "map",
+        form: "(map $COLLECTION ELEMENT BODY)",
+        description: "对 $COLLECTION 逐个元素求值 BODY，返回结果数组。$COLLECTION 必须已绑定且是数组；ELEMENT 是元素名，不带 $，在 BODY 中用 $ELEMENT 引用。",
+    },
+    OperatorSpec {
+        name: "infer",
+        form: "(infer :task \"要判断什么\" :key value ...)",
+        description: "把判断交回模型：:task 必填，其余参数是给它看的证据。模型可先调用工具取证，其返回值是数据（文本），会被绑定后继续求值。",
+    },
+];
+
+/// Operator names, for error messages that enumerate what is available.
+pub fn operator_names() -> Vec<&'static str> {
+    OPERATORS.iter().map(|spec| spec.name).collect()
+}
+
+/// Renders the operator table as the S-expression the model reads, matching
+/// how `sexpr_vm_contract` presents the operators it already knows.
+pub fn operator_contract() -> String {
+    let body = OPERATORS
+        .iter()
+        .map(|spec| {
+            format!(
+                "    (operator {name}\n      (form {form})\n      (description {description:?}))",
+                name = spec.name,
+                form = spec.form,
+                description = spec.description,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("  (operators\n{body})")
+}
 
 /// Operators the model is told it has, which this evaluator deliberately does
 /// not implement. Naming them lets the error say why instead of "unknown".
@@ -285,7 +351,7 @@ fn check(
     if MODEL_ONLY_OPERATORS.contains(&operator) {
         return err(format!(
             "算子 '{operator}' 只用于模型自身的求值，eval 程序中不可用；此处可用的算子是 {}。",
-            OPERATORS.join("、")
+            operator_names().join("、")
         ));
     }
     match operator {
@@ -388,7 +454,7 @@ fn check(
         }
         other => err(format!(
             "未知算子 '{other}'；eval 程序中可用的算子是 {}。",
-            OPERATORS.join("、")
+            operator_names().join("、")
         )),
     }
 }
@@ -748,14 +814,18 @@ impl EvalTool {
             "把一棵可求值的 S 表达式程序交给 Runtime 确定性执行，一次完成多个有数据依赖的步骤。\
              适用于步骤提前已知、且后一步要用到前一步结果的场合；单步或需要看到结果再决定时，\
              继续使用普通 Function Calling 即可，本工具不替代它。\n\
-             可用算子：{operators}。\n\
+             程序 = 可选的一行 (tools NAME...) 声明 + 恰好一个程序体表达式；多个步骤用 (seq ...) 组合。\n\
+             声明不能超出下方工具清单，声明后 call 与 infer 取证都只限声明过的工具。\n\
              可调用工具：{tools}\n\
-             程序开头可放一行 (tools NAME...) 声明所需工具：声明不能超出部署闸门，\
-             其后的 call 与 infer 取证都只限声明过的工具；不声明则整个闸门可用。\n\
-             引用绑定用 $name，取字段用 $name.field；参数写作 :key value。\n\
-             `infer` 把判断交回模型：(infer :task \"要判断什么\" :evidence $binding)，返回值是数据。\n\
-             `fallback` 与 `process` 属于你自身的求值，本程序中不可用。",
-            operators = OPERATORS.join(" "),
+             `fallback` 与 `process` 属于你自身的求值，本程序中不可用。\n\
+             算子契约：\n{contract}\n\
+             示例：\n\
+             (tools list_files read)\n\
+             (seq\n\
+               (bind files (call list_files :path \"src\"))\n\
+               (bind bodies (map $files f (call read :path $f)))\n\
+               (infer :task \"哪些文件含 TODO\" :evidence $bodies))",
+            contract = operator_contract(),
         )
     }
 }
@@ -1209,8 +1279,25 @@ mod tests {
             .map(|name| (*name).to_string())
             .collect::<Vec<_>>();
         let description = EvalTool::description(&callable);
-        for operator in OPERATORS {
-            assert!(description.contains(operator), "missing {operator}");
+        let contract = operator_contract();
+        // Not just the names: the form and the meaning have to reach the model
+        // too, or it is left guessing at the surface — which is what the first
+        // evaluation showed it doing.
+        for spec in &OPERATORS {
+            assert!(description.contains(spec.name), "missing {}", spec.name);
+            assert!(
+                description.contains(spec.form),
+                "missing form for {}",
+                spec.name
+            );
+            // Compared against the rendered contract rather than the raw
+            // literal: quoting escapes embedded quotes on the way out.
+            assert!(
+                contract.contains(spec.description)
+                    || contract.contains(&format!("{:?}", spec.description)),
+                "missing description for {}",
+                spec.name
+            );
         }
         for refused in MODEL_ONLY_OPERATORS {
             if refused == "reply" {
@@ -1228,8 +1315,9 @@ mod tests {
         // A deployment that narrows the set must actually narrow it, and the
         // description has to say so rather than advertise the default.
         let tool = EvalTool::new(Arc::clone(&registry), vec!["search".to_string()]);
-        assert!(tool.definition().description.contains("search"));
-        assert!(!tool.definition().description.contains("read"));
+        // The gate line lists only what is callable; operator forms elsewhere
+        // in the contract may legitimately mention other names.
+        assert!(tool.definition().description.contains("可调用工具：search"));
 
         let arguments = serde_json::json!({"program": r#"(call read :path "a")"#}).to_string();
         let error = CURRENT_INFERENCE
