@@ -1228,16 +1228,6 @@ function DialogueActivityDock({
                 ))}
               </select>
             </label>
-            <button
-              className={`objective-tint-toggle ${objectiveTintEnabled ? 'is-active' : ''}`}
-              type="button"
-              aria-pressed={objectiveTintEnabled}
-              title={objectiveTintEnabled ? t('conversation.activity.disableObjectiveTint') : t('conversation.activity.enableObjectiveTint')}
-              aria-label={objectiveTintEnabled ? t('conversation.activity.disableObjectiveTint') : t('conversation.activity.enableObjectiveTint')}
-              onClick={() => onObjectiveTintChange(!objectiveTintEnabled)}
-            >
-              <Palette size={12} />
-            </button>
             {objectiveTintEnabled && (
               <div className="tint-dimension-tabs" role="group" aria-label={t('conversation.activity.tintDimension')}>
                 {(['objective', 'thread'] as const).map(dimension => {
@@ -1262,6 +1252,16 @@ function DialogueActivityDock({
                 })}
               </div>
             )}
+            <button
+              className={`objective-tint-toggle ${objectiveTintEnabled ? 'is-active' : ''}`}
+              type="button"
+              aria-pressed={objectiveTintEnabled}
+              title={objectiveTintEnabled ? t('conversation.activity.disableObjectiveTint') : t('conversation.activity.enableObjectiveTint')}
+              aria-label={objectiveTintEnabled ? t('conversation.activity.disableObjectiveTint') : t('conversation.activity.enableObjectiveTint')}
+              onClick={() => onObjectiveTintChange(!objectiveTintEnabled)}
+            >
+              <Palette size={12} />
+            </button>
           </div>
           <div className="dialogue-activity-content">
           <details

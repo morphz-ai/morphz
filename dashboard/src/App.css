@@ -557,8 +557,8 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .dialogue-activity-filter:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); color: var(--accent); }
 .dialogue-activity-filter select { width: 100%; min-width: 0; height: 28px; border: 0; outline: 0; background: transparent; color: var(--text-soft); font: 600 8px/1 var(--mono); text-overflow: ellipsis; }
 .dialogue-activity-filter option { background: var(--surface); color: var(--text); }
-/* The filter yields width to the tint controls so all three share one row: a
-   wrapped row would change the dock height every time tinting is toggled. */
+/* The filter yields width to the tint controls so all three share one row. The
+   toggle remains the right-edge anchor while the dimension tabs expand left. */
 .dialogue-activity-controls { flex-wrap: nowrap; }
 .dialogue-activity-filter { flex: 1 1 84px; }
 .objective-tint-toggle { display: inline-flex; height: 30px; width: 30px; flex: 0 0 auto; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--line); border-radius: var(--radius-xs); background: var(--surface); color: var(--muted); }
