@@ -3120,7 +3120,7 @@ async fn test_critical_transaction_that_relieves_pressure_cools_down_next_attemp
 }
 
 #[tokio::test]
-async fn test_critical_pressure_stops_after_committed_transaction_with_no_relief() {
+async fn test_critical_pressure_keeps_context_tool_available_for_semantic_correction() {
     let session_id = "attempt_context_critical_no_cooldown";
     let config = morphz::config::OrchestratorConfig {
         context_soft_token_limit: 100,
@@ -3143,7 +3143,7 @@ async fn test_critical_pressure_stops_after_committed_transaction_with_no_relief
                 }],
             },
             Response {
-                content: "维护事务没有释放容量，停止继续维护".to_string(),
+                content: "仍处于 critical，可以继续修正维护事务".to_string(),
                 tool_calls: Vec::new(),
             },
         ],
@@ -3159,7 +3159,7 @@ async fn test_critical_pressure_stops_after_committed_transaction_with_no_relief
     let tools_seen = client.tools_seen();
     assert_eq!(tools_seen.len(), 2);
     assert_eq!(tools_seen[0], vec!["context_tx", "no_reply"]);
-    assert_eq!(tools_seen[1], vec!["no_reply"]);
+    assert_eq!(tools_seen[1], vec!["context_tx", "no_reply"]);
 }
 
 #[tokio::test]

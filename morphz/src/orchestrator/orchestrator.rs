@@ -809,12 +809,10 @@ const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context �
 const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请返回普通文本结束当前 Evaluation、独占调用 no_reply，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
 const NO_REPLY_TOOL_NAME: &str = "no_reply";
 const CRITICAL_MAINTENANCE_PREVIEW_CHARS: usize = 768;
-// Emergency maintenance is intentionally separate from the ordinary per-turn
-// housekeeping budget. A bounded slice may require several transactions, but
-// this is an incident fuse, not an autonomous work allowance: it must remain
-// small enough that ineffective maintenance cannot consume an Objective's
-// entire token budget before producing a visible terminal result.
-const CRITICAL_MAINTENANCE_TRANSACTION_SAFETY_LIMIT: usize = 8;
+// Emergency maintenance is separate from the ordinary per-turn housekeeping
+// budget. Syntax and transaction semantics must decide whether maintenance is
+// valid; this high ceiling remains only a last-resort incident fuse.
+const CRITICAL_MAINTENANCE_TRANSACTION_SAFETY_LIMIT: usize = 256;
 const MAX_RESPONSE_PROTOCOL_RETRIES: usize = 2;
 const TOOL_ARGUMENT_PREVIEW_CHARS: usize = 4_096;
 const EMPTY_RESPONSE_ERROR: &str = "既没有非空正文，也没有工具调用";
@@ -5399,27 +5397,11 @@ impl Orchestrator {
                 CRITICAL_MAINTENANCE_TRANSACTION_SAFETY_LIMIT;
             context.turn_budget.context_tx_available = critical_context_tx_available;
         }
-        let committed_context_tx_relief = if context_tx_receipt == ContextTxReceipt::Committed {
-            match context.wake.event_id.as_deref() {
-                Some(event_id) => self
-                    .context_engine
-                    .find_event(&context_id, event_id)
-                    .await?
-                    .as_ref()
-                    .map(context_tx_immediate_relief),
-                None => None,
-            }
-        } else {
-            None
-        };
-        let ineffective_critical_maintenance = context.pressure.level == "critical"
-            && committed_context_tx_relief.is_some_and(|relief| relief == 0);
-        let maintenance_budget_exhausted = ineffective_critical_maintenance
-            || should_force_final_for_maintenance(
-                &context.turn_budget.phase,
-                &context.pressure.level,
-                context.turn_budget.context_tx_available,
-            );
+        let maintenance_budget_exhausted = should_force_final_for_maintenance(
+            &context.turn_budget.phase,
+            &context.pressure.level,
+            context.turn_budget.context_tx_available,
+        );
         let mut effective_phase = if maintenance_budget_exhausted {
             "final-reply".to_string()
         } else if context.pressure.level == "critical" {
@@ -11366,34 +11348,6 @@ fn context_tx_output_succeeded(event: &Event) -> bool {
         })
 }
 
-fn context_tx_immediate_relief(event: &Event) -> usize {
-    event
-        .payload
-        .get("text")
-        .and_then(|value| value.as_str())
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-        .and_then(|value| {
-            value
-                .get("changes")
-                .and_then(|changes| changes.as_array())
-                .cloned()
-        })
-        .map(|changes| {
-            changes
-                .iter()
-                .filter_map(|change| {
-                    change
-                        .get("token_effect")
-                        .and_then(|effect| effect.get("estimated_immediate_relief"))
-                        .and_then(|relief| relief.as_u64())
-                })
-                .fold(0usize, |total, relief| {
-                    total.saturating_add(usize::try_from(relief).unwrap_or(usize::MAX))
-                })
-        })
-        .unwrap_or(0)
-}
-
 fn infer_tool_status(text: &str) -> &'static str {
     if text.starts_with("执行失败:")
         || text.starts_with("系统报错:")
@@ -13101,8 +13055,8 @@ mod tests {
     #[test]
     fn critical_recovery_uses_a_separate_high_safety_budget() {
         assert!(critical_maintenance_transaction_available(6));
-        assert!(critical_maintenance_transaction_available(7));
-        assert!(!critical_maintenance_transaction_available(8));
+        assert!(critical_maintenance_transaction_available(255));
+        assert!(!critical_maintenance_transaction_available(256));
     }
 
     #[test]

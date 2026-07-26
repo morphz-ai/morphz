@@ -3943,6 +3943,7 @@ fn normalize_transaction_bodies(transaction: &mut ParsedTransaction) -> Result<(
                             .to_string(),
                     );
                 }
+                reject_nested_context_operations(&items[2..])?;
                 normalize_body_tail(items, 2);
             }
             "derive" => {
@@ -3952,6 +3953,7 @@ fn normalize_transaction_bodies(transaction: &mut ParsedTransaction) -> Result<(
                             .to_string(),
                     );
                 }
+                reject_nested_context_operations(&items[3..])?;
                 normalize_body_tail(items, 3);
             }
             "revise" => {
@@ -3969,10 +3971,34 @@ fn normalize_transaction_bodies(transaction: &mut ParsedTransaction) -> Result<(
                 } else {
                     2
                 };
+                reject_nested_context_operations(&items[body_start..])?;
                 normalize_body_tail(items, body_start);
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn reject_nested_context_operations(bodies: &[SExpr]) -> Result<(), String> {
+    fn nested_operation(expression: &SExpr) -> Option<&str> {
+        let SExpr::List(items) = expression else {
+            return None;
+        };
+        if let Some(SExpr::Atom(head)) = items.first() {
+            if CONTEXT_OPERATIONS.iter().any(|spec| spec.name == head)
+                || head == "finalize-retirement"
+            {
+                return Some(head.as_str());
+            }
+        }
+        items.iter().find_map(nested_operation)
+    }
+
+    if let Some(operation) = bodies.iter().find_map(nested_operation) {
+        return Err(format!(
+            "Context operation '({operation} ...)' 被嵌套进 create/derive/revise BODY，因此不会执行；请关闭 BODY 括号，并把该 operation 放到 context-tx 顶层"
+        ));
     }
     Ok(())
 }
@@ -6923,7 +6949,11 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
         .filter(|event| {
             event
                 .payload
-                .get("tool_calls")
+                .get("continuation_tool_calls")
+                // Backward compatibility for calls persisted before the
+                // one-shot continuation envelope rename.
+                .or_else(|| event.payload.get("transcript_tool_calls"))
+                .or_else(|| event.payload.get("tool_calls"))
                 .and_then(|value| value.as_array())
                 .is_some_and(|calls| {
                     calls.iter().any(|call| {
@@ -9592,6 +9622,24 @@ mod tests {
     }
 
     #[test]
+    fn transaction_rejects_maintenance_operations_accidentally_nested_in_frame_body() {
+        let error = parse_transaction(
+            r#"(context-tx
+                (base-version 7)
+                (reason "critical maintenance")
+                (derive compact-v2 (from compact-v1)
+                    (context-body
+                        (context-body (status active))
+                        (protect compact-v2)
+                        (retire compact-v1 @e42))))"#,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("被嵌套"), "{error}");
+        assert!(error.contains("context-tx 顶层"), "{error}");
+    }
+
+    #[test]
     fn render_has_kernel_mind_and_inbox_without_fixed_cognitive_schema() {
         let mut state = MindState::default();
         state.frames.push(ContextFrame {
@@ -10054,7 +10102,7 @@ mod tests {
                 TYPE_AGENT_CALL,
                 "chat/assistant_call",
                 json!({
-                    "tool_calls": [{
+                    "continuation_tool_calls": [{
                         "function": {"name": "context_tx", "arguments": "{}"}
                     }]
                 }),
