@@ -744,6 +744,24 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .progress-note { display: grid; width: min(720px, 100%); grid-template-columns: 12px minmax(0, 1fr) auto; gap: 11px; align-self: flex-start; padding: 12px 14px; border-left: 2px solid var(--accent); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: linear-gradient(90deg, var(--accent-soft), transparent); color: var(--muted); font-size: 11px; line-height: 1.55; }
 .progress-note i { width: 5px; height: 5px; margin-top: 6px; border: 1px solid var(--accent); transform: rotate(45deg); }
 .progress-note time { color: var(--faint); font-family: var(--mono); font-size: 9px; }
+/* Progress notes carry model prose, so they render Markdown like any other
+   message body. The grid cell absorbs block content without losing the note's
+   compact rhythm, and a wide table scrolls inside the note rather than forcing
+   the conversation column open. */
+.progress-note-body { min-width: 0; }
+.progress-note-body > :first-child { margin-top: 0; }
+.progress-note-body > :last-child { margin-bottom: 0; }
+.progress-note-body p { margin: 0 0 6px; }
+.progress-note-body ul, .progress-note-body ol { margin: 0 0 6px; padding-left: 1.3em; }
+.progress-note-body li + li { margin-top: 2px; }
+.progress-note-body code { padding: 1px 4px; border-radius: var(--radius-xs); background: var(--surface-soft); font-family: var(--mono); font-size: .92em; }
+.progress-note-body pre { margin: 0 0 6px; padding: 8px 10px; border-radius: var(--radius-xs); background: var(--surface-soft); overflow-x: auto; }
+.progress-note-body pre code { padding: 0; background: none; }
+.progress-note-body table { display: block; width: max-content; max-width: 100%; margin: 0 0 6px; border-collapse: collapse; overflow-x: auto; font-size: 10px; }
+.progress-note-body :is(th, td) { padding: 3px 8px; border: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.progress-note-body th { background: var(--surface-soft); color: var(--text-soft); font-weight: 650; }
+.progress-note-body strong { color: var(--text-soft); }
+.progress-note-body a { color: var(--accent-strong); }
 .stream-typing { display: inline-flex; gap: 4px; padding: 0 1px; }
 .stream-typing b { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); animation: waiting-dot 1.15s ease-in-out infinite; }
 .stream-typing b:nth-child(2) { animation-delay: .14s; }
@@ -1446,7 +1464,10 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .message-quote-badge:hover { transform: scale(1.15); box-shadow: 0 0 0 3px var(--accent-soft); }
 .message-quote-badge.active { box-shadow: 0 0 0 3px var(--accent-soft); }
 
-.inline-comment-box { display: block; margin-top: 4px; width: 260px; }
+/* Anchored to the message row's right edge, not to the badge: a box that grew
+   outwards from a badge sitting at the end of the selected run ran past the
+   conversation column and was clipped by it. */
+.inline-comment-box { position: absolute; right: 0; z-index: 11; display: block; width: 260px; max-width: 100%; }
 .inline-comment-input { width: 100%; padding: 6px 8px; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: var(--surface-elevated); color: var(--text); font-size: 12px; line-height: 1.5; resize: none; outline: 0; box-shadow: var(--shadow-sm); }
 .inline-comment-input::placeholder { color: var(--faint); }
 

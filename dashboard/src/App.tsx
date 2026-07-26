@@ -3787,8 +3787,9 @@ export default function App() {
   }
 
   const addQuote = useCallback((popup: SelectionPopup) => {
+    const quoteId = `quote-${Date.now()}-${Math.random().toString(16).slice(2)}`
     setQuotes(prev => [...prev, {
-      id: `quote-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      id: quoteId,
       text: popup.text,
       eventId: popup.eventId,
       eventActor: popup.eventActor,
@@ -3797,7 +3798,10 @@ export default function App() {
       badgeTop: popup.relTop,
       badgeLeft: popup.relLeft,
     }])
-    composerInputRef.current?.focus()
+    // Open the box on the selection itself: writing the comment is the reason
+    // the quote was made, so it should not cost a second click on the badge.
+    // The composer keeps the caret only once the box is dismissed.
+    setInlineCommentQuoteId(quoteId)
   }, [])
 
   const removeQuote = useCallback((quoteId: string) => {
@@ -4629,7 +4633,7 @@ export default function App() {
                   const lineage = objectiveLineage.forEvent(event)
                   const tintStyle = tintStyleForLineage(lineage)
                   if (kind === 'progress') {
-                    return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
+                    return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <div className="progress-note-body"><MarkdownBody text={typeof event.payload.text === 'string' ? event.payload.text : ''} /></div><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                   }
                   const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
                   if (kind === 'reasoning') {
@@ -4699,23 +4703,33 @@ export default function App() {
                         </div>
                       )}
                       {quotes.map((q, qi) => q.eventId === event.id ? (
-                            <span key={q.id} style={{ position: 'absolute', top: q.badgeTop, left: q.badgeLeft, zIndex: 10 }}>
+                            <span key={q.id}>
                               <button
                                 className={`message-quote-badge ${inlineCommentQuoteId === q.id ? 'active' : ''}`}
                                 type="button"
+                                style={{ position: 'absolute', top: q.badgeTop, left: q.badgeLeft, zIndex: 10 }}
                                 title={q.comment.trim() ? q.comment.trim() : t('conversation.commentPlaceholder')}
                                 onClick={() => setInlineCommentQuoteId(inlineCommentQuoteId === q.id ? '' : q.id)}
                               >
                                 {qi + 1}
                               </button>
                               {inlineCommentQuoteId === q.id && (
-                                <span className="inline-comment-box">
+                                // Positioned against the message row rather than
+                                // the badge, so the box cannot reach past the
+                                // column on either side and be clipped.
+                                <span className="inline-comment-box" style={{ top: q.badgeTop + 22 }}>
                                   <textarea
                                     className="inline-comment-input"
                                     placeholder={t('conversation.commentPlaceholder')}
                                     rows={2}
                                     value={q.comment}
                                     onChange={e => updateQuoteComment(q.id, e.target.value)}
+                                    // Collapsing on blur keeps what was typed:
+                                    // the text lives on the quote, and the
+                                    // badge carries a dot once it is non-empty.
+                                    onBlur={() => setInlineCommentQuoteId(current => (
+                                      current === q.id ? '' : current
+                                    ))}
                                     autoFocus
                                   />
                                 </span>
@@ -4813,7 +4827,7 @@ export default function App() {
                         const tintStyle = tintStyleForLineage(lineage)
                         const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
                         if (kind === 'progress') {
-                          return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <span>{event.payload.text}</span><time>{formatTime(event.timestamp, i18n.language)}</time></div>
+                          return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <div className="progress-note-body"><MarkdownBody text={typeof event.payload.text === 'string' ? event.payload.text : ''} /></div><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                         }
                         if (kind === 'reasoning') {
                           const summary = persistedReasoningSummary || String(event.payload.text ?? '')

@@ -81,6 +81,60 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
    language = "zh-CN"
    ```
 
+   Runtime 本机承接 Managed SSH 不需要再维护一套 Morphz SSH 配置。只要宿主用户已有的
+   OpenSSH 配置可以解析目标（例如 `ssh production`），Agent 就可通过
+   `resolve_target` 传入 `kind = "managed_ssh"`、`host = "production"`。直接使用 IP 或
+   DNS hostname 时可同时传入 `user` 和 `port`，例如：
+
+   ```json
+   {
+     "kind": "managed_ssh",
+     "host": "192.0.2.10",
+     "user": "deploy",
+     "port": 2222,
+     "capabilities": ["exec"]
+   }
+   ```
+
+   Runtime 会执行 `ssh -G`、按当前 Principal 动态注册稳定 Target。`full_access` 模式下，
+   Runtime-local Managed SSH 不再额外触发审批；受限模式在当前 Thread 第一次使用该 Target
+   能力时走现有自动审批，策略要求时回退到人工审批。批准 Capability Lease 后，后续命令只要
+   仍属于相同 Principal + Agent + Thread + Target 和能力边界，就直接执行，不再逐命令创建
+   Approval。Agent 不会读取 `~/.ssh/config`、私钥或认证材料，也不能通过本地 `exec` 绕过
+   Runtime 直接运行 `ssh`、`scp` 或 `sftp`。
+
+   实际连接由 Runtime 的 OpenSSH 客户端完成，沿用宿主的 `Host`、`User`、`Port`、
+   `IdentityFile`、`ProxyJump`、`SSH_AUTH_SOCK` 和 known-hosts 设置，同时强制
+   `BatchMode=yes` 与严格 host-key 校验。`host` 可直接使用 SSH config 中的 Host、
+   普通 DNS hostname 或 IPv4 地址，不需要先创建 Edge Node 或 Managed SSH Target。
+
+   管理员仍可选择预注册固定 Target（例如需要稳定显示名、平台和 Workspace 元数据时）：
+
+   ```toml
+   [[managed_ssh.targets]]
+   id = "target-server"
+   name = "Production server"
+   endpoint_ref = "production"
+   platform = "linux-x86_64"
+   workspace_root = "/srv/app"
+   ```
+
+   这种可选的固定 Target 对应宿主连接描述符保存为
+   `~/.config/morphz/edge/ssh/production.json`（实际根目录遵循 Morphz 用户配置目录）：
+
+   ```json
+   {
+     "host": "server.example",
+     "user": "deploy",
+     "port": 22,
+     "known_hosts_file": "/absolute/operator-owned/path/known_hosts",
+     "approved": true
+   }
+   ```
+
+   固定描述符模式继续要求 Runtime 继承可用的 `SSH_AUTH_SOCK`，并使用显式
+   `known_hosts_file`；它只是可选的管理员固定策略，不是 Managed SSH 的使用前提。
+
    CLI 也可以直接携带提示词；未被已注册命令和选项消费的文本都会交给 Agent：
 
    ```bash

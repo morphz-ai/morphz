@@ -44,6 +44,10 @@ tokio::task_local! {
     pub static CURRENT_CAUSAL_ROUTE: Option<ToolCausalRoute>;
     pub static CURRENT_EXECUTION_JOB: Option<ToolExecutionJobContext>;
     pub static CURRENT_TOOL_OUTPUT_SINK: Option<tokio::sync::mpsc::Sender<ToolOutputChunk>>;
+    /// Set only by the Runtime Managed SSH backend after Target authorization.
+    /// It lets the host-owned OpenSSH client read the user's SSH configuration
+    /// without making that configuration available to model-authored Shell.
+    pub static CURRENT_RUNTIME_MANAGED_SSH: bool;
 }
 
 #[derive(Debug, Clone)]
@@ -2351,6 +2355,10 @@ pub struct BackgroundTask {
     pub context_id: String,
     pub initiating_principal_id: Option<String>,
     pub causal_route: Option<ToolCausalRoute>,
+    /// Declared by the Agent that started the process: a service it means to
+    /// leave running rather than work this turn is waiting on. The distinction
+    /// belongs to whoever launched it, so the Runtime does not guess it.
+    pub keep_running: bool,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub last_output_at: chrono::DateTime<chrono::Utc>,
     pub output_bytes: usize,
@@ -2478,10 +2486,18 @@ pub(crate) fn active_background_task_count(session_id: &str, context_id: &str) -
     get_tasks_map()
         .iter()
         .filter(|task| task.session_id == session_id && task.context_id == context_id)
+        .filter(|task| !task.keep_running)
         .filter(|task| !task.status.is_terminal())
         .count()
 }
 
+/// Counts the work a turn is still waiting on.
+///
+/// A process the Agent declared with `keep_running` is deliberately outliving
+/// the turn, so it is not owed work: counting it kept a Thread from ever
+/// closing, because a dev server never exits and the condition could never
+/// clear. Anything that will finish and whose result the turn needs — a build,
+/// a test run — still counts.
 pub(crate) fn active_background_task_count_for_root(
     session_id: &str,
     context_id: &str,
@@ -2495,6 +2511,7 @@ pub(crate) fn active_background_task_count_for_root(
                 .as_ref()
                 .is_some_and(|route| route.root_turn_id == root_turn_id)
         })
+        .filter(|task| !task.keep_running)
         .filter(|task| !task.status.is_terminal())
         .count()
 }
@@ -4517,6 +4534,8 @@ struct ExecuteCommandArgs {
     cwd: Option<String>,
     wait_ms: Option<u64>,
     #[serde(default)]
+    keep_running: bool,
+    #[serde(default)]
     sandbox_permissions: SandboxPermissionMode,
     #[serde(default)]
     requested_permissions: RequestedExecPermissions,
@@ -4559,6 +4578,10 @@ impl Tool for ExecuteCommandTool {
                     "type": "integer",
                     "description": "同步等待输出的最长超时毫秒数。默认 10000 毫秒；测试/编译超过该时长后自动转入后台异步运行。"
                 },
+                "keep_running": {
+                    "type": "boolean",
+                    "description": "默认 false。设为 true 表示这个进程是要一直留着的常驻服务（dev server、watcher、后端进程），本回合不等它结束；Runtime 因此不会把它当作未完成的工作而阻止回合收口。编译、测试、脚本这类最终会退出、且结果本回合需要的命令必须保持 false。"
+                },
                 "sandbox_permissions": {
                     "type": "string",
                     "enum": ["use_default", "require_escalated"],
@@ -4600,7 +4623,7 @@ impl Tool for ExecuteCommandTool {
 
         ToolDefinition {
             name: "exec".to_string(),
-            description: "在当前操作系统的原生沙箱中执行 Shell 命令，默认仅允许配置的工作区路径且禁止网络。适合运行测试、编译和格式化；文件发现优先使用 list_files/search，修改优先使用 edit/write。确需额外网络、目录或秘密环境变量时，使用 require_escalated 申请最小能力，由独立审批者决定；若默认执行因明确的边界拒绝失败，回执会说明申请方式。命令等待超时后由 Runtime 转为后台托管；禁止通过 '&' 自行创建非托管后台进程。".to_string(),
+            description: "在当前操作系统的原生沙箱中执行 Shell 命令，默认仅允许配置的工作区路径且禁止网络。适合运行测试、编译和格式化；文件发现优先使用 list_files/search，修改优先使用 edit/write。禁止在本地 Target 直接调用 ssh/scp/sftp；远程命令必须先解析 managed_ssh Target，再把目标 ID 作为 target 参数传给 exec，由 Runtime 受管连接。确需其他网络、目录或秘密环境变量时，使用 require_escalated 申请最小能力，由独立审批者决定；若默认执行因明确的边界拒绝失败，回执会说明申请方式。命令等待超时后由 Runtime 转为后台托管；禁止通过 '&' 自行创建非托管后台进程。".to_string(),
             parameters: params_json,
         }
     }
@@ -4737,9 +4760,31 @@ impl Tool for ExecuteCommandTool {
 
         let sandbox_tmp = workspace_root.join(".morphz/tmp");
         std::fs::create_dir_all(&sandbox_tmp)?;
-        let (prepared, effective_network, approved_secret_env) = if profile.sandbox_mode
-            == SandboxMode::WorkspaceWrite
-        {
+        let runtime_managed_ssh = CURRENT_RUNTIME_MANAGED_SSH
+            .try_with(|enabled| *enabled)
+            .unwrap_or(false);
+        let (prepared, effective_network, approved_secret_env) = if runtime_managed_ssh {
+            if !cmd_trimmed.starts_with("'ssh' ")
+                || !args.requested_permissions.network
+                || !args.requested_permissions.write_paths.is_empty()
+                || args.sandbox_permissions != SandboxPermissionMode::RequireEscalated
+                || args
+                    .requested_permissions
+                    .secret_env
+                    .iter()
+                    .any(|name| name != "SSH_AUTH_SOCK")
+            {
+                return Err(
+                    "Runtime Managed SSH authority 只允许内部生成的 ssh 命令及固定网络/ssh-agent 能力"
+                        .into(),
+                );
+            }
+            (
+                self.sandbox.prepare_unconfined_shell(cmd_trimmed),
+                true,
+                validate_secret_env_names(&args.requested_permissions.secret_env)?,
+            )
+        } else if profile.sandbox_mode == SandboxMode::WorkspaceWrite {
             let mut policy = SandboxPolicy {
                 read_roots: profile.read_roots.clone(),
                 write_roots: profile.write_roots.clone(),
@@ -4913,6 +4958,7 @@ impl Tool for ExecuteCommandTool {
                 context_id: context_id.clone(),
                 initiating_principal_id: initiating_principal_id.clone(),
                 causal_route: causal_route.clone(),
+                keep_running: args.keep_running,
                 started_at: now,
                 last_output_at: now,
                 output_bytes: 0,
@@ -8247,6 +8293,22 @@ Body
         assert!(already_allowed.is_empty());
 
         let external = TempDir::new().unwrap();
+        let external_file = external.path().join("known_hosts");
+        std::fs::write(&external_file, "host ssh-ed25519 AAAA\n").unwrap();
+        let file_delta = requested_capability_delta(
+            &RequestedExecPermissions {
+                read_paths: vec![external_file.to_string_lossy().into_owned()],
+                ..RequestedExecPermissions::default()
+            },
+            &profile,
+            &policy,
+        )
+        .unwrap();
+        assert_eq!(
+            file_delta.read_roots,
+            vec![std::fs::canonicalize(external_file).unwrap()]
+        );
+
         let sensitive = external.path().join(".ssh");
         std::fs::create_dir_all(&sensitive).unwrap();
         let error = requested_capability_delta(
@@ -9460,6 +9522,7 @@ Body
                 context_id: "wait-rearm-context".to_string(),
                 initiating_principal_id: None,
                 causal_route: None,
+                keep_running: false,
                 started_at: now,
                 last_output_at: now,
                 output_bytes: 8,

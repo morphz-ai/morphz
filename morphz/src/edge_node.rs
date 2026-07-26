@@ -21,8 +21,10 @@ use crate::approval::{
     capability_lease_policy_digest, ApprovalDecision, ApprovalRequest, CapabilityDelta,
     CapabilityLeaseOffer,
 };
+pub use crate::execution_target::ManagedSshEndpoint;
 use crate::execution_target::{
-    edge_execution_scope_from_route, EdgeExecutionScope, ExecutionRouteSnapshot,
+    edge_execution_scope_from_route, prepare_managed_ssh_exec_arguments, EdgeExecutionScope,
+    ExecutionRouteSnapshot,
 };
 use crate::memory::{
     EdgeCommandRecord, EdgeCommandStatus, ExecutionNodeRecord, ExecutionTargetKind,
@@ -236,80 +238,6 @@ pub struct EdgeNodeAdvertisement {
     pub capabilities: Vec<String>,
     pub metadata: serde_json::Value,
     pub targets: Vec<ExecutionTargetRegistration>,
-}
-
-/// Provider-local descriptor for a Proxy Target. It intentionally contains no
-/// password, private key or bearer token: authentication is delegated to the
-/// device's ssh-agent, while host-key verification uses an explicit file.
-/// The descriptor never leaves the Edge Node.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ManagedSshEndpoint {
-    pub host: String,
-    pub user: Option<String>,
-    #[serde(default = "default_ssh_port")]
-    pub port: u16,
-    pub known_hosts_file: PathBuf,
-    /// Explicit local consent. A cloud Target registration cannot set this;
-    /// only the user-controlled endpoint file on the Provider Node can.
-    #[serde(default)]
-    pub approved: bool,
-}
-
-fn default_ssh_port() -> u16 {
-    22
-}
-
-impl ManagedSshEndpoint {
-    pub fn load(endpoint_ref: &str) -> Result<Self, EdgeNodeError> {
-        if endpoint_ref.is_empty()
-            || !endpoint_ref
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-        {
-            return Err("Managed SSH endpoint_ref 只能包含字母、数字、点、横线和下划线".into());
-        }
-        let home = crate::config::morphz_home_dir()
-            .ok_or("无法确定 Morphz 用户配置目录，不能解析 Managed SSH endpoint")?;
-        let path = home
-            .join("edge")
-            .join("ssh")
-            .join(format!("{endpoint_ref}.json"));
-        let endpoint: Self = serde_json::from_slice(&std::fs::read(&path).map_err(|error| {
-            format!(
-                "Managed SSH endpoint '{}' 未在 Provider Node 配置（{}）：{error}",
-                endpoint_ref,
-                path.display()
-            )
-        })?)?;
-        endpoint.validate()?;
-        Ok(endpoint)
-    }
-
-    fn validate(&self) -> Result<(), EdgeNodeError> {
-        if self.host.trim().is_empty()
-            || self.host.starts_with('-')
-            || self.host.chars().any(char::is_whitespace)
-        {
-            return Err("Managed SSH host 不能为空、不能以 '-' 开头或包含空白".into());
-        }
-        if self.user.as_deref().is_some_and(|user| {
-            user.is_empty() || user.starts_with('-') || user.chars().any(char::is_whitespace)
-        }) {
-            return Err("Managed SSH user 不能为空、不能以 '-' 开头或包含空白".into());
-        }
-        if self.port == 0 {
-            return Err("Managed SSH port 必须大于 0".into());
-        }
-        if !self.known_hosts_file.is_absolute() || !self.known_hosts_file.is_file() {
-            return Err(format!(
-                "Managed SSH known_hosts_file 必须是已存在的绝对文件：{}",
-                self.known_hosts_file.display()
-            )
-            .into());
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -827,13 +755,6 @@ impl EdgeNodeWorker {
                     .as_deref()
                     .ok_or("Managed SSH Route 缺少 endpoint_ref")?;
                 let endpoint = ManagedSshEndpoint::load(endpoint_ref)?;
-                if !endpoint.approved {
-                    return Err(format!(
-                        "Managed SSH endpoint '{}' 尚未在 Provider Node 明确批准",
-                        endpoint_ref
-                    )
-                    .into());
-                }
                 if command.tool_name != "exec" {
                     return Err(format!(
                         "Managed SSH v1 只支持 exec，Target '{}' 收到不受支持的工具 '{}'",
@@ -841,68 +762,13 @@ impl EdgeNodeWorker {
                     )
                     .into());
                 }
-                let mut arguments: serde_json::Value = serde_json::from_str(&command.arguments)?;
-                let object = arguments
-                    .as_object_mut()
-                    .ok_or("Managed SSH exec 参数必须是 JSON object")?;
-                let remote_command = object
-                    .get("command")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or("Managed SSH exec 缺少 command")?;
-                let remote_command = match object.get("cwd").and_then(serde_json::Value::as_str) {
-                    Some(cwd) if !cwd.trim().is_empty() => {
-                        format!("cd -- {} && {remote_command}", shell_quote(cwd))
-                    }
-                    _ => remote_command.to_string(),
-                };
-                let destination = endpoint
-                    .user
-                    .as_deref()
-                    .map(|user| format!("{user}@{}", endpoint.host))
-                    .unwrap_or_else(|| endpoint.host.clone());
-                let ssh = [
-                    "ssh".to_string(),
-                    "-F".to_string(),
-                    "/dev/null".to_string(),
-                    "-o".to_string(),
-                    "BatchMode=yes".to_string(),
-                    "-o".to_string(),
-                    "IdentitiesOnly=no".to_string(),
-                    "-o".to_string(),
-                    "StrictHostKeyChecking=yes".to_string(),
-                    "-o".to_string(),
-                    format!("UserKnownHostsFile={}", endpoint.known_hosts_file.display()),
-                    "-p".to_string(),
-                    endpoint.port.to_string(),
-                    "--".to_string(),
-                    destination,
-                    remote_command,
-                ]
-                .iter()
-                .map(|part| shell_quote(part))
-                .collect::<Vec<_>>()
-                .join(" ");
-                let wait_ms = object
-                    .get("wait_ms")
-                    .cloned()
-                    .unwrap_or(serde_json::json!(10_000));
-                arguments = serde_json::json!({
-                    "command": ssh,
-                    "cwd": ".",
-                    "wait_ms": wait_ms,
-                    "sandbox_permissions": "require_escalated",
-                    "requested_permissions": {
-                        "network": true,
-                        "read_paths": [endpoint.known_hosts_file],
-                        "secret_env": ["SSH_AUTH_SOCK"]
-                    },
-                    "justification": format!(
-                        "Provider Node 使用本地预授权 Managed SSH endpoint '{}' 执行 Target '{}'",
-                        endpoint_ref, command.target_id
-                    )
-                });
                 let mut prepared = command.clone();
-                prepared.arguments = serde_json::to_string(&arguments)?;
+                prepared.arguments = prepare_managed_ssh_exec_arguments(
+                    endpoint_ref,
+                    &endpoint,
+                    &command.target_id,
+                    &command.arguments,
+                )?;
                 Ok((prepared, true))
             }
             other => Err(format!(
@@ -1072,10 +938,6 @@ impl EdgeNodeWorker {
             }
         }
     }
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]

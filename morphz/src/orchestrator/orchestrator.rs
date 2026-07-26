@@ -57,7 +57,7 @@ use chrono::Utc;
 use dashmap::DashMap;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -869,6 +869,63 @@ impl DurableApprovalServices {
     }
 }
 
+async fn covering_capability_lease_grant(
+    services: &DurableApprovalServices,
+    requirement: &crate::permission::ApprovalRequirement,
+    principal_id: &str,
+    agent_id: &str,
+    thread: &ThreadRecord,
+    target: &crate::memory::ExecutionTargetRecord,
+) -> Result<Option<DurableApprovalGrant>, DynError> {
+    if !services.capability_leases_enabled
+        || services.capability_lease_ttl_secs == 0
+        || thread.lifecycle != ThreadLifecycle::Open
+    {
+        return Ok(None);
+    }
+    let permission_policy_digest = services.broker.policy_digest();
+    let lease_policy_digest =
+        capability_lease_policy_digest(&permission_policy_digest, &target.policy_digest);
+    let capability = requirement.action.lease_capability();
+    let leases = services
+        .capability_leases
+        .list_capability_leases(CapabilityLeaseFilter {
+            principal_id: Some(principal_id.to_string()),
+            agent_id: Some(agent_id.to_string()),
+            thread_id: Some(thread.id.clone()),
+            target_id: Some(target.id.clone()),
+            active_at: Some(Utc::now()),
+            limit: Some(100),
+        })
+        .await?;
+    Ok(leases.into_iter().find_map(|lease| {
+        if lease.policy_digest != lease_policy_digest
+            || !lease
+                .capabilities
+                .iter()
+                .any(|candidate| candidate == &capability)
+        {
+            return None;
+        }
+        let granted =
+            serde_json::from_value::<crate::approval::CapabilityDelta>(lease.requested.clone())
+                .ok()?;
+        if !requirement.requested.is_subset_of(&granted) {
+            return None;
+        }
+        Some(DurableApprovalGrant {
+            approval_id: lease
+                .issued_by_approval_id
+                .clone()
+                .unwrap_or_else(|| lease.id.clone()),
+            grant_id: format!("capability-lease:{}", lease.id),
+            policy_digest: permission_policy_digest.clone(),
+            action: requirement.action.clone(),
+            requested: granted,
+        })
+    }))
+}
+
 #[derive(Debug, Clone)]
 struct ActivationRoute {
     thread_id: String,
@@ -1172,6 +1229,22 @@ fn validate_schedule_tx_response(response: &crate::llm::Response) -> Result<(), 
 struct TurnToolTranscript {
     messages: Vec<Message>,
     delivered_output_ids: HashSet<String>,
+}
+
+fn retain_active_transcript_calls(
+    attempt_id: &str,
+    calls: Vec<crate::llm::ToolCall>,
+    outputs: &HashMap<(String, String), Event>,
+    retired_observation_ids: &BTreeSet<String>,
+) -> Vec<crate::llm::ToolCall> {
+    calls
+        .into_iter()
+        .filter(|call| {
+            outputs
+                .get(&(attempt_id.to_string(), call.id.clone()))
+                .is_some_and(|output| !retired_observation_ids.contains(&output.id))
+        })
+        .collect()
 }
 
 #[derive(Debug, Default)]
@@ -4009,6 +4082,7 @@ impl Orchestrator {
         session_id: &str,
         root_turn_id: Option<&str>,
         trigger_event_id: Option<&str>,
+        retired_observation_ids: &BTreeSet<String>,
     ) -> Result<TurnToolTranscript, DynError> {
         let events = self
             .store
@@ -4102,11 +4176,12 @@ impl Orchestrator {
             let Some(calls_value) = calls_value else {
                 continue;
             };
-            let calls = serde_json::from_value::<Vec<crate::llm::ToolCall>>(calls_value.clone())?;
-            let calls = calls
-                .into_iter()
-                .filter(|call| outputs.contains_key(&(attempt_id.to_string(), call.id.clone())))
-                .collect::<Vec<_>>();
+            let calls = retain_active_transcript_calls(
+                attempt_id,
+                serde_json::from_value::<Vec<crate::llm::ToolCall>>(calls_value.clone())?,
+                &outputs,
+                retired_observation_ids,
+            );
             if calls.is_empty() {
                 continue;
             }
@@ -5118,23 +5193,36 @@ impl Orchestrator {
             self.publish_no_reply(session_id, &attempt_id, None).await?;
             return Ok(());
         }
+        let context_id = activation.context_id.clone();
+        // The standard Function Calling transcript is reconstructed from the
+        // immutable Ledger, while context_tx retirement lives in the latest
+        // Mind projection.  Read that projection first so results already
+        // absorbed and retired by semantic maintenance do not reappear in the
+        // next full-work prompt.  Filtering by tool output also removes its
+        // paired assistant tool call and keeps the protocol transcript valid.
+        let mut context = self
+            .context_engine
+            .build_context_encoding_for_activation(&context_id, activation, &HashSet::new())
+            .await?;
         let transcript = self
             .turn_tool_transcript(
                 session_id,
                 Some(&activation.root_turn_id),
                 Some(&activation.trigger_event_id),
+                &context.state.retired,
             )
             .await?;
         let transcript_messages = transcript.messages.clone();
-        let context_id = activation.context_id.clone();
-        let mut context = self
-            .context_engine
-            .build_context_encoding_for_activation(
-                &context_id,
-                activation,
-                &transcript.delivered_output_ids,
-            )
-            .await?;
+        if !transcript.delivered_output_ids.is_empty() {
+            context = self
+                .context_engine
+                .build_context_encoding_for_activation(
+                    &context_id,
+                    activation,
+                    &transcript.delivered_output_ids,
+                )
+                .await?;
+        }
         self.record_activation_context_snapshot(activation, context.state.version)
             .await?;
         if let Some(mut route) = self.activation_routes.get_mut(&attempt_id) {
@@ -5996,8 +6084,38 @@ impl Orchestrator {
                         || pending_routed_inputs > 0))
             {
                 if let TerminalDecision::Deliver(content) = &decision {
-                    self.publish_progress(session_id, &attempt_id, content.clone())
+                    // `reply(deliver)` is the model's own judgement that the
+                    // turn is answered, and yielding does not overrule it.
+                    // Reporting it as progress instead left a finished answer
+                    // looking interim for good whenever the Agent had started a
+                    // long-lived process: a dev server never exits, so the
+                    // follow-up that the downgrade implied could never arrive.
+                    //
+                    // The question here is whether a person is waiting on this
+                    // turn, not how a finished Execution result would be
+                    // routed: `execution_result_is_interactive` answers the
+                    // latter and reports false as soon as the Thread holds a
+                    // detached job, which is exactly the case this fixes.
+                    // Work rooted in anything but a user message has no one
+                    // waiting, so it keeps reporting progress.
+                    let answers_a_waiting_user = self
+                        .context_engine
+                        .find_event(&activation.context_id, &activation.root_turn_id)
+                        .await?
+                        .is_some_and(|root| root.event_type == TYPE_USER_MESSAGE);
+                    if answers_a_waiting_user {
+                        self.publish_reply_for_model_attempt(
+                            session_id,
+                            &attempt_id,
+                            Some(&terminal_model_attempt_id),
+                            content.clone(),
+                            context.parent_session_id.as_deref(),
+                        )
                         .await?;
+                    } else {
+                        self.publish_progress(session_id, &attempt_id, content.clone())
+                            .await?;
+                    }
                 }
                 self.yield_thread(
                     session_id,
@@ -7454,6 +7572,7 @@ impl Orchestrator {
             .validate_for_tool(
                 &effective_target_id,
                 tool.name(),
+                &invocation.tool_arguments,
                 plan.initiating_principal_id.as_deref(),
                 &plan.agent_id,
                 &plan.context_id,
@@ -7471,8 +7590,15 @@ impl Orchestrator {
         )?;
         let requirement = if target.kind == crate::memory::ExecutionTargetKind::InProcessLocal {
             tool.approval_requirement(&invocation.tool_arguments)?
+        } else if self
+            .durable_approvals
+            .as_ref()
+            .is_some_and(|services| services.broker.profile().full_access())
+        {
+            None
         } else {
             Some(crate::execution_target::remote_target_approval_requirement(
+                &target,
                 tool.name(),
                 &invocation.tool_arguments,
             )?)
@@ -7835,6 +7961,27 @@ impl Orchestrator {
                 .clone()
                 .unwrap_or_else(|| crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string())
         };
+        if let Err(error) = crate::execution_target::reject_unmanaged_ssh_invocation(
+            &effective_target_id,
+            tool.name(),
+            &invocation.tool_arguments,
+        ) {
+            let mut output = physical_execution_preflight_rejected_tool_output(
+                output_id,
+                context_id,
+                session_id,
+                attempt_id,
+                call,
+                route,
+                action_group_id,
+                error.as_ref(),
+            );
+            output
+                .payload
+                .insert("target_id".to_string(), json!(effective_target_id));
+            self.stamp_objective_activation_route(attempt_id, &mut output.payload);
+            return Ok(PreparedPhysicalExecution::Rejected(output));
+        }
         if let Some(bound_target_id) = thread.target_id.as_deref() {
             if bound_target_id != effective_target_id {
                 let reason = format!(
@@ -7923,6 +8070,7 @@ impl Orchestrator {
             .validate_for_tool(
                 &effective_target_id,
                 tool.name(),
+                &invocation.tool_arguments,
                 route.initiating_principal_id.as_deref(),
                 agent_id,
                 context_id,
@@ -7961,14 +8109,21 @@ impl Orchestrator {
         let requirement_result =
             if target.kind == crate::memory::ExecutionTargetKind::InProcessLocal {
                 tool.approval_requirement(&invocation.tool_arguments)
+            } else if self
+                .durable_approvals
+                .as_ref()
+                .is_some_and(|services| services.broker.profile().full_access())
+            {
+                Ok(None)
             } else {
                 crate::execution_target::remote_target_approval_requirement(
+                    &target,
                     tool.name(),
                     &invocation.tool_arguments,
                 )
                 .map(Some)
             };
-        let requirement = match requirement_result {
+        let mut requirement = match requirement_result {
             Ok(requirement) => requirement,
             Err(error) => {
                 let mut output = physical_execution_preflight_rejected_tool_output(
@@ -7985,6 +8140,25 @@ impl Orchestrator {
                 return Ok(PreparedPhysicalExecution::Rejected(output));
             }
         };
+        let mut lease_grant = None;
+        if let (Some(current_requirement), Some(services), Some(principal_id)) = (
+            requirement.as_ref(),
+            self.durable_approvals.as_ref(),
+            route.initiating_principal_id.as_ref(),
+        ) {
+            lease_grant = covering_capability_lease_grant(
+                services,
+                current_requirement,
+                principal_id,
+                agent_id,
+                &thread,
+                &target,
+            )
+            .await?;
+        }
+        if lease_grant.is_some() {
+            requirement = None;
+        }
         let spec = ExecutionJobSpec {
             activation_id: route.activation_id.clone(),
             thread_id: thread_id.to_string(),
@@ -8039,7 +8213,7 @@ impl Orchestrator {
                         .await?,
                     "claim",
                 )?;
-                (job, None)
+                (job, lease_grant)
             }
             Some(requirement) => {
                 let services = self.durable_approvals.as_ref().ok_or(
@@ -8074,32 +8248,6 @@ impl Orchestrator {
                                     .unwrap_or(i64::MAX),
                             ),
                     });
-                let covering_lease = match lease_offer.as_ref() {
-                    Some(offer) => services
-                        .capability_leases
-                        .list_capability_leases(CapabilityLeaseFilter {
-                            principal_id: Some(offer.principal_id.clone()),
-                            agent_id: Some(offer.agent_id.clone()),
-                            thread_id: Some(offer.thread_id.clone()),
-                            target_id: Some(offer.target_id.clone()),
-                            active_at: Some(Utc::now()),
-                            limit: Some(100),
-                        })
-                        .await?
-                        .into_iter()
-                        .find(|lease| {
-                            lease.policy_digest == offer.policy_digest
-                                && lease
-                                    .capabilities
-                                    .iter()
-                                    .any(|capability| capability == &offer.capability)
-                                && serde_json::from_value::<crate::approval::CapabilityDelta>(
-                                    lease.requested.clone(),
-                                )
-                                .is_ok_and(|granted| offer.requested.is_subset_of(&granted))
-                        }),
-                    None => None,
-                };
                 let identity = stable_approval_identity(
                     &new_job.id,
                     &action,
@@ -8143,33 +8291,23 @@ impl Orchestrator {
                 }
 
                 if approval.status.is_pending() {
-                    let decision = if let Some(lease) = &covering_lease {
-                        ApprovalDecision::AllowOnce {
-                            rationale: format!(
-                                "请求完全包含于有效的 Thread + Target Capability Lease '{}'",
-                                lease.id
-                            ),
-                            risk_tags: vec![format!("capability-lease-used:{}", lease.id)],
-                        }
-                    } else {
-                        services
-                            .broker
-                            .review(&ApprovalRequest {
-                                approval_id: approval.id.clone(),
-                                context_id: context_id.to_string(),
-                                session_id: session_id.to_string(),
-                                attempt_id: attempt_id.to_string(),
-                                thread_id: route.thread_id.clone(),
-                                root_turn_id: route.root_turn_id.clone(),
-                                trigger_event_id: route.trigger_event_id.clone(),
-                                trigger_sequence: route.trigger_sequence,
-                                action: requirement.action.clone(),
-                                requested: requirement.requested.clone(),
-                                justification: requirement.justification.clone(),
-                                lease_offer: lease_offer.clone(),
-                            })
-                            .await?
-                    };
+                    let decision = services
+                        .broker
+                        .review(&ApprovalRequest {
+                            approval_id: approval.id.clone(),
+                            context_id: context_id.to_string(),
+                            session_id: session_id.to_string(),
+                            attempt_id: attempt_id.to_string(),
+                            thread_id: route.thread_id.clone(),
+                            root_turn_id: route.root_turn_id.clone(),
+                            trigger_event_id: route.trigger_event_id.clone(),
+                            trigger_sequence: route.trigger_sequence,
+                            action: requirement.action.clone(),
+                            requested: requirement.requested.clone(),
+                            justification: requirement.justification.clone(),
+                            lease_offer: lease_offer.clone(),
+                        })
+                        .await?;
                     let resolution = match decision {
                         ApprovalDecision::AllowOnce {
                             rationale,
@@ -11819,12 +11957,13 @@ mod tests {
         critical_maintenance_transaction_available, event_needs_signal_outbox,
         extend_exec_output_facts, harness_entry_callable_tools, persist_model_reasoning_summary,
         persist_model_usage, plan_infer_tool_scope, recovery_owns_activation, render_harness_mount,
-        render_system_contract, restrict_tools_to_scope, runtime_claimant_id,
-        semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
-        should_force_final_for_maintenance, tool_call_activity_preview, DurableEventWriter,
-        DurableEventWriterMetrics, DynError, ModelCompletionError, ModelCompletionErrorOrigin,
-        ModelReasoningSummaryAccumulator, NoReplyMode, ReadTurnGuard, SystemPromptMode,
-        TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        render_system_contract, restrict_tools_to_scope, retain_active_transcript_calls,
+        runtime_claimant_id, semantic_sexpr_vm_system_prompt,
+        should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
+        tool_call_activity_preview, DurableEventWriter, DurableEventWriterMetrics, DynError,
+        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
+        NoReplyMode, ReadTurnGuard, SystemPromptMode, TerminalDecision,
+        AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
@@ -11832,13 +11971,15 @@ mod tests {
         Event, InMemoryEventBus, TYPE_INFER_REQUEST, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
     };
     use crate::harness::{HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
-    use crate::llm::{ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition};
+    use crate::llm::{
+        FunctionCall, ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolCall, ToolDefinition,
+    };
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
         AttentionAcknowledgementRecord, EventAppend, EventStore, QueryFilter,
         ThreadActivationRecord, ThreadActivationStatus, WorkerCoordinationMode,
     };
-    use std::collections::HashSet;
+    use std::collections::{BTreeSet, HashMap, HashSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -11848,6 +11989,47 @@ mod tests {
     struct ContendedEventStore {
         remaining_contention_failures: AtomicUsize,
         committed: Mutex<Vec<Event>>,
+    }
+
+    #[test]
+    fn retired_tool_outputs_are_removed_with_their_assistant_calls() {
+        let call = |id: &str| ToolCall {
+            id: id.to_string(),
+            r#type: "function".to_string(),
+            function: FunctionCall {
+                name: "context_tx".to_string(),
+                arguments: "{}".to_string(),
+            },
+        };
+        let output = |id: &str| {
+            Event::new(
+                id.to_string(),
+                "System-Executor".to_string(),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                Default::default(),
+            )
+        };
+        let outputs = HashMap::from([
+            (
+                ("attempt-1".to_string(), "call-retired".to_string()),
+                output("output-retired"),
+            ),
+            (
+                ("attempt-1".to_string(), "call-active".to_string()),
+                output("output-active"),
+            ),
+        ]);
+        let retired = BTreeSet::from(["output-retired".to_string()]);
+
+        let retained = retain_active_transcript_calls(
+            "attempt-1",
+            vec![call("call-retired"), call("call-active")],
+            &outputs,
+            &retired,
+        );
+
+        assert_eq!(retained, vec![call("call-active")]);
     }
 
     #[async_trait::async_trait]

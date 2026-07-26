@@ -743,9 +743,20 @@ impl MorphzRuntimeBuilder {
         registry.register(Arc::new(crate::execution_target::InspectTargetTool::new(
             Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
         )));
-        registry.register(Arc::new(crate::execution_target::ResolveTargetTool::new(
-            Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
-        )));
+        let runtime_managed_ssh_endpoints = Arc::new(std::sync::RwLock::new(HashMap::new()));
+        let runtime_managed_ssh_provisioner =
+            crate::execution_target::RuntimeManagedSshProvisioner::new(
+                Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
+                Arc::clone(&runtime_managed_ssh_endpoints),
+                self.identity.principal_id.clone(),
+                permissions.policy_digest(),
+            );
+        registry.register(Arc::new(
+            crate::execution_target::ResolveTargetTool::new(
+                Arc::clone(&store) as Arc<dyn ExecutionTargetStore>
+            )
+            .with_runtime_managed_ssh(runtime_managed_ssh_provisioner),
+        ));
         let workspace_root = permissions
             .profile()
             .workspace_root
@@ -758,6 +769,66 @@ impl MorphzRuntimeBuilder {
                 permissions.policy_digest(),
             ))
             .await?;
+        let mut runtime_managed_ssh_target_ids = HashSet::new();
+        for target_config in &self.config.managed_ssh.targets {
+            if !runtime_managed_ssh_target_ids.insert(target_config.id.trim().to_string()) {
+                return Err(
+                    format!("Runtime Managed SSH Target id '{}' 重复", target_config.id).into(),
+                );
+            }
+            let endpoint =
+                crate::execution_target::ManagedSshEndpoint::load(&target_config.endpoint_ref)?;
+            if endpoint.destination.is_none() {
+                permissions
+                    .profile()
+                    .canonical_permission_root(&endpoint.known_hosts_file.to_string_lossy())
+                    .map_err(|error| {
+                        format!(
+                            "Runtime Managed SSH Target '{}' 的 known_hosts_file 不可授权：{error}",
+                            target_config.id
+                        )
+                    })?;
+            }
+            let registration = crate::execution_target::runtime_managed_ssh_registration(
+                target_config,
+                &endpoint,
+                &self.identity.principal_id,
+                &permissions.policy_digest(),
+            )?;
+            store.register_execution_target(registration).await?;
+            runtime_managed_ssh_endpoints
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(target_config.endpoint_ref.clone())
+                .or_insert(endpoint);
+        }
+        for stale in store
+            .list_execution_targets(ExecutionTargetFilter {
+                limit: Some(10_000),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .filter(|target| {
+                target.kind == crate::memory::ExecutionTargetKind::ManagedSsh
+                    && target.provider_node_id.is_none()
+                    && target
+                        .metadata
+                        .get("execution_location")
+                        .and_then(Value::as_str)
+                        == Some("runtime")
+                    && !runtime_managed_ssh_target_ids.contains(&target.id)
+                    && target.status == ExecutionTargetStatus::Online
+            })
+        {
+            let _ = store
+                .set_execution_target_status(
+                    &stale.id,
+                    stale.revision,
+                    ExecutionTargetStatus::Offline,
+                )
+                .await?;
+        }
         let execution_targets = Arc::new(crate::execution_target::ExecutionTargetDispatcher::new(
             Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,
             Arc::clone(&store) as Arc<dyn crate::memory::ExecutionTargetAuthorizationStore>,
@@ -770,8 +841,11 @@ impl MorphzRuntimeBuilder {
             ),
         ));
         execution_targets.register_backend(Arc::new(
-            crate::execution_target::EdgeNodeBackend::managed_ssh(
-                Arc::clone(&store) as Arc<dyn crate::memory::EdgeExecutionStore>
+            crate::execution_target::ManagedSshBackend::new(
+                Arc::clone(&store) as Arc<dyn crate::memory::EdgeExecutionStore>,
+                Arc::clone(&runtime_managed_ssh_endpoints),
+                permissions.policy_digest(),
+                !permissions.profile().full_access(),
             ),
         ));
         for backend in self.execution_target_backends {
@@ -4166,6 +4240,14 @@ mod tests {
         calls: AtomicU64,
     }
 
+    struct LongLivedProcessReplyClient {
+        calls: AtomicU64,
+    }
+
+    struct DeclaredServiceClient {
+        calls: AtomicU64,
+    }
+
     struct RecoveryMergeDeliveryClient {
         calls: AtomicU64,
         observed_both_results: Arc<AtomicBool>,
@@ -4194,10 +4276,40 @@ mod tests {
         observed_result: Arc<AtomicBool>,
     }
 
+    struct TwoManagedSshExecClient {
+        calls: AtomicU64,
+        target_id: String,
+    }
+
+    struct RecordingManagedSshBackend {
+        calls: AtomicU64,
+    }
+
     struct StaticApprovalProvider {
         decision: ApprovalDecision,
         delay: std::time::Duration,
         calls: AtomicU64,
+    }
+
+    /// Stops the processes a test deliberately left running. The registry is
+    /// process-wide and the suite runs in parallel, so a test that walks away
+    /// from a live process taxes every test scheduled after it.
+    fn kill_tasks_for_context(context_id: &str) {
+        let tasks = crate::tool::get_tasks_map();
+        let ids = tasks
+            .iter()
+            .filter(|task| task.context_id == context_id)
+            .map(|task| (task.id.clone(), task.pgid))
+            .collect::<Vec<_>>();
+        for (id, pgid) in ids {
+            if pgid > 0 {
+                let _ = nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(pgid),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+            }
+            tasks.remove(&id);
+        }
     }
 
     fn text_response(content: impl Into<String>) -> Response {
@@ -4686,6 +4798,60 @@ mod tests {
     }
 
     #[async_trait::async_trait]
+    impl Client for LongLivedProcessReplyClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                // A server the user asked to keep running. It outlives the
+                // turn on purpose, so the Thread still owes background work
+                // when the answer is ready.
+                0 => Ok(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallRepr {
+                        id: "long-lived-exec".to_string(),
+                        r#type: "function".to_string(),
+                        func_name: "exec".to_string(),
+                        arguments: json!({ "command": "sleep 3", "wait_ms": 1 }).to_string(),
+                    }],
+                }),
+                _ => Ok(text_response("dev server is listening on 3001")),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for DeclaredServiceClient {
+        async fn create_completion(
+            &self,
+            _messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                // Declared as a service the Agent means to leave up, so the
+                // turn is not waiting on it.
+                0 => Ok(Response {
+                    content: String::new(),
+                    tool_calls: vec![ToolCallRepr {
+                        id: "declared-service".to_string(),
+                        r#type: "function".to_string(),
+                        func_name: "exec".to_string(),
+                        arguments: json!({
+                            "command": "sleep 3",
+                            "wait_ms": 1,
+                            "keep_running": true
+                        })
+                        .to_string(),
+                    }],
+                }),
+                _ => Ok(text_response("dev server is listening on 3002")),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
     impl Client for RecoveryMergeDeliveryClient {
         async fn create_completion(
             &self,
@@ -4783,6 +4949,79 @@ mod tests {
                 }
                 _ => Err("交互式审批工具产生了冗余 Delivery 模型求值".into()),
             }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for TwoManagedSshExecClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            match call {
+                0 => {
+                    assert!(tools.iter().any(|tool| tool.name == "exec"));
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "managed-ssh-first".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "exec".to_string(),
+                            arguments: json!({
+                                "command": "printf first",
+                                "target": self.target_id,
+                            })
+                            .to_string(),
+                        }],
+                    })
+                }
+                1 => {
+                    let transcript = serde_json::to_string(&messages)?;
+                    if !transcript.contains("managed-ssh-result-1") {
+                        return Err("first Managed SSH result was not observed".into());
+                    }
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "managed-ssh-second".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "exec".to_string(),
+                            arguments: json!({
+                                "command": "printf second",
+                                "target": self.target_id,
+                            })
+                            .to_string(),
+                        }],
+                    })
+                }
+                2 => {
+                    let transcript = serde_json::to_string(&messages)?;
+                    if !transcript.contains("managed-ssh-result-2") {
+                        return Err("second Managed SSH result was not observed".into());
+                    }
+                    Ok(text_response("managed-ssh-complete"))
+                }
+                _ => Err("Managed SSH approval test produced an extra model evaluation".into()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::execution_target::ExecutionTargetBackend for RecordingManagedSshBackend {
+        fn kind(&self) -> crate::memory::ExecutionTargetKind {
+            crate::memory::ExecutionTargetKind::ManagedSsh
+        }
+
+        async fn execute(
+            &self,
+            _context: &crate::execution_target::TargetExecutionContext,
+            _tool: Arc<dyn crate::tool::Tool>,
+            _arguments: &str,
+        ) -> Result<String, crate::execution_target::TargetExecutionError> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            Ok(format!("managed-ssh-result-{call}"))
         }
     }
 
@@ -6178,7 +6417,10 @@ mod tests {
             )
             .await
             .unwrap();
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+        // Event-driven, so the bound only decides how fast a hang is reported:
+        // enough headroom to survive a loaded parallel run, short enough that a
+        // real hang does not stall the suite for a minute.
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(15), replies.recv())
             .await
             .unwrap()
             .unwrap();
@@ -6517,6 +6759,191 @@ mod tests {
         assert!(jobs.iter().any(|job| job.tool_name == "exec/background"));
     }
 
+    #[tokio::test]
+    async fn a_finished_answer_is_a_reply_even_while_a_server_keeps_running() {
+        // The model called reply(deliver), so the turn is answered. Reporting
+        // that as progress because the Thread still owed background work made
+        // a finished answer look interim for good: a server the user asked to
+        // keep running never exits, so the follow-up reply implied by the
+        // downgrade could never arrive.
+        let database = NamedTempFile::new().unwrap();
+        let artifacts = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
+        let client = Arc::new(LongLivedProcessReplyClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            // The background task registry is process-wide, so this test needs
+            // its own Context: the server it deliberately leaves running would
+            // otherwise be counted against every other test that takes the
+            // default identity.
+            .identity(RuntimeIdentity {
+                agent_id: "agent-long-lived-reply".to_string(),
+                context_id: "context-long-lived-reply".to_string(),
+                ..Default::default()
+            })
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-long-lived-reply".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Long lived reply".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        session
+            .send(
+                "restart the dev server",
+                "User-Test",
+                Some("client-long-lived-reply".to_string()),
+            )
+            .await
+            .unwrap();
+        let reply = match tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+            .await
+        {
+            Ok(Some(reply)) => reply,
+            outcome => {
+                let events = runtime
+                    .inner
+                    .store
+                    .query(QueryFilter {
+                        session_id: Some(session.id().to_string()),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                panic!(
+                        "a finished answer never reached the user as a reply: outcome={outcome:?}, events={:?}",
+                        events
+                            .iter()
+                            .map(|event| (event.topic.as_str(), event.payload.get("text")))
+                            .collect::<Vec<_>>()
+                    );
+            }
+        };
+        assert_eq!(
+            reply.payload.get("text").and_then(Value::as_str),
+            Some("dev server is listening on 3001")
+        );
+        let events = runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                session_id: Some(session.id().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        // The answer reaches the user as an answer, and is not also filed as
+        // interim progress.
+        assert!(
+            !events.iter().any(|event| event.topic == "chat/progress"
+                && event.payload.get("text").and_then(Value::as_str)
+                    == Some("dev server is listening on 3001")),
+            "the answer must not also be published as progress"
+        );
+        kill_tasks_for_context("context-long-lived-reply");
+    }
+
+    #[tokio::test]
+    async fn a_declared_service_does_not_hold_its_turn_open() {
+        // A process the Agent declares it means to leave running is not work
+        // the turn is waiting on. Counting it kept the Thread from ever
+        // closing, because such a process never exits and the condition could
+        // never clear.
+        let database = NamedTempFile::new().unwrap();
+        let artifacts = tempfile::tempdir().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        config.background_task.artifact_dir = artifacts.path().to_string_lossy().into_owned();
+        let client = Arc::new(DeclaredServiceClient {
+            calls: AtomicU64::new(0),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .identity(RuntimeIdentity {
+                agent_id: "agent-declared-service".to_string(),
+                context_id: "context-declared-service".to_string(),
+                ..Default::default()
+            })
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-declared-service".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Declared service".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        session
+            .send(
+                "start the dev server and leave it running",
+                "User-Test",
+                Some("client-declared-service".to_string()),
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+            .await
+            .expect("declared service turn never produced a reply")
+            .expect("reply stream closed");
+        let events = runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                session_id: Some(session.id().to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let root_turn_id = events
+            .iter()
+            .find(|event| event.topic == "chat/user_message")
+            .map(|event| event.id.clone())
+            .expect("the turn has a root user message");
+        // This count is what gates closing the turn, and the service is still
+        // running as it is taken: it must not be owed work.
+        assert_eq!(
+            crate::tool::active_background_task_count_for_root(
+                session.id(),
+                runtime.identity().context_id.as_str(),
+                &root_turn_id,
+            ),
+            0,
+            "a service the Agent declared it would leave running was counted \
+             as work the turn is waiting on"
+        );
+        kill_tasks_for_context("context-declared-service");
+    }
+
     async fn run_static_approval_case(
         decision: ApprovalDecision,
         delay: std::time::Duration,
@@ -6615,6 +7042,146 @@ mod tests {
             assert!(approvals[0].grant_consumed_at.is_some());
             assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
         }
+    }
+
+    async fn run_managed_ssh_target_approval_case(
+        permission_mode: PermissionMode,
+        suffix: &str,
+        expected_approvals: usize,
+        expected_leases: usize,
+        expected_reviews: u64,
+    ) {
+        let database = NamedTempFile::new().unwrap();
+        let target_id = format!("target-managed-ssh-{suffix}");
+        let session_id = format!("session-managed-ssh-{suffix}");
+        let client = Arc::new(TwoManagedSshExecClient {
+            calls: AtomicU64::new(0),
+            target_id: target_id.clone(),
+        });
+        let backend = Arc::new(RecordingManagedSshBackend {
+            calls: AtomicU64::new(0),
+        });
+        let provider = Arc::new(StaticApprovalProvider {
+            decision: ApprovalDecision::AllowLease {
+                rationale: "approve this Thread's Managed SSH target".to_string(),
+                risk_tags: vec!["test-managed-ssh-target".to_string()],
+            },
+            delay: std::time::Duration::ZERO,
+            calls: AtomicU64::new(0),
+        });
+        let mut config = AppConfig::default();
+        config.permissions.mode = permission_mode;
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .approval_provider(provider.clone())
+            .execution_target_backend(backend.clone())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .inner
+            .store
+            .register_execution_target(crate::memory::ExecutionTargetRegistration {
+                id: target_id.clone(),
+                owner_principal_id: Some(runtime.identity().principal_id.clone()),
+                provider_node_id: None,
+                kind: crate::memory::ExecutionTargetKind::ManagedSsh,
+                name: "Managed SSH test target".to_string(),
+                status: crate::memory::ExecutionTargetStatus::Online,
+                platform: Some("linux-x86_64".to_string()),
+                workspace_root: None,
+                capabilities: vec!["exec".to_string()],
+                metadata: json!({
+                    "backend": "managed_ssh",
+                    "execution_location": "runtime",
+                    "endpoint_ref": "test"
+                }),
+                policy_digest: "target-policy-managed-ssh-test".to_string(),
+                last_seen_at: Some(chrono::Utc::now()),
+            })
+            .await
+            .unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: session_id.clone(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Managed SSH target approval".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        session
+            .send(
+                "run two commands on the managed SSH target",
+                "User-Test",
+                Some(format!("client-managed-ssh-{suffix}")),
+            )
+            .await
+            .unwrap();
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(8), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply.payload["text"], "managed-ssh-complete");
+        assert_eq!(client.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), expected_reviews);
+
+        let approvals = runtime
+            .inner
+            .store
+            .list_approvals(ApprovalFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(approvals.len(), expected_approvals);
+        let leases = runtime
+            .inner
+            .store
+            .list_capability_leases(CapabilityLeaseFilter {
+                target_id: Some(target_id),
+                ..CapabilityLeaseFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(leases.len(), expected_leases);
+        let jobs = runtime
+            .inner
+            .store
+            .list_execution_jobs(crate::memory::ExecutionJobFilter {
+                session_id: Some(session_id),
+                include_terminal: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs
+            .iter()
+            .all(|job| job.status == crate::memory::ExecutionJobStatus::Succeeded));
+        assert_eq!(
+            jobs.iter().filter(|job| job.approval_ref.is_some()).count(),
+            expected_approvals
+        );
+    }
+
+    #[tokio::test]
+    async fn full_access_managed_ssh_skips_runtime_approval() {
+        run_managed_ssh_target_approval_case(PermissionMode::FullAccess, "full-access", 0, 0, 0)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn managed_ssh_target_lease_avoids_per_command_approval() {
+        run_managed_ssh_target_approval_case(PermissionMode::AutoReview, "target-lease", 1, 1, 1)
+            .await;
     }
 
     #[tokio::test]
@@ -8908,10 +9475,9 @@ mod tests {
             })
             .await
             .unwrap();
-        // This deliberately drives 102 durable model evaluations.  Keep a real
-        // deadline, but leave enough headroom for the full test suite where
-        // other SQLite-heavy tests run concurrently.
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(30), replies.recv())
+        // Over a hundred model evaluations, so this needs more headroom than a
+        // wait for a single reply.
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(60), replies.recv())
             .await
             .unwrap()
             .unwrap();
