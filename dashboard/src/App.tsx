@@ -63,10 +63,10 @@ import {
   attentionDeliveryKey,
   attentionJobKey,
   actionableSchedulerJobs,
+  currentSchedulerSchedules,
   pendingHumanApprovals,
   schedulerApprovalAnomalies,
   schedulerAttentionJobs,
-  schedulerSchedules,
   threadCarriesExecution,
 } from './scheduler/model'
 import { findTurnSettlement } from './turnSettlement'
@@ -1843,7 +1843,7 @@ export default function App() {
   // aside for good: it exists to open on a sensible view, not to keep
   // overriding a deliberate choice.
   const [tintDimensionChosen, setTintDimensionChosen] = useState(initialTintDimensionChosen)
-  const [selectedObjectiveFilterId, setSelectedObjectiveFilterId] = useState('')
+  const [requestedObjectiveFilterId, setSelectedObjectiveFilterId] = useState('')
   const [themeMenuOpen, setThemeMenuOpen] = useState(false)
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
   const [catalogReady, setCatalogReady] = useState(false)
@@ -2046,13 +2046,6 @@ export default function App() {
   const selectCognitionView = useCallback((next: CognitionView) => {
     navigate(dashboardPath('cognition', selectedContextId, selectedSessionId, next))
   }, [navigate, selectedContextId, selectedSessionId])
-
-  const apiHeaders = useCallback((json = false) => {
-    const headers: Record<string, string> = {}
-    if (CORE_TOKEN) headers.Authorization = `Bearer ${CORE_TOKEN}`
-    if (json) headers['Content-Type'] = 'application/json'
-    return headers
-  }, [])
 
   const loadCatalog = useCallback(async () => {
     try {
@@ -2378,12 +2371,9 @@ export default function App() {
     if (!selectedContextId || !recallQuery.trim()) return
     setRecallBusy(true)
     try {
-      const response = await fetch(
-        `${CORE_HTTP_URL}/api/contexts/${encodeURIComponent(selectedContextId)}/recall/search?query=${encodeURIComponent(recallQuery.trim())}&limit=30`,
-        { headers: apiHeaders() },
+      const page = await DASHBOARD_API.get<{ matches: RecallSearchHit[] }>(
+        `/api/contexts/${encodeURIComponent(selectedContextId)}/recall/search?query=${encodeURIComponent(recallQuery.trim())}&limit=30`,
       )
-      if (!response.ok) throw new Error(t('errors.contextHttp', { status: response.status }))
-      const page = await response.json() as { matches: RecallSearchHit[] }
       setRecallMatches(page.matches)
       setError('')
     } catch (reason) {
@@ -2391,25 +2381,21 @@ export default function App() {
     } finally {
       setRecallBusy(false)
     }
-  }, [apiHeaders, recallQuery, selectedContextId, t])
+  }, [recallQuery, selectedContextId])
 
   const mutateFrameLifecycle = useCallback(async (frameId: string, action: 'restore' | 'protect' | 'unprotect') => {
     if (!selectedContextId || !selectedSessionId || !contextView) return
     setMutatingFrameId(frameId)
     try {
-      const response = await fetch(
-        `${CORE_HTTP_URL}/api/contexts/${encodeURIComponent(selectedContextId)}/frames/${encodeURIComponent(frameId)}/lifecycle`,
+      await DASHBOARD_API.command(
+        `/api/contexts/${encodeURIComponent(selectedContextId)}/frames/${encodeURIComponent(frameId)}/lifecycle`,
+        'POST',
         {
-          method: 'POST',
-          headers: apiHeaders(true),
-          body: JSON.stringify({
-            session_id: selectedSessionId,
-            expected_version: contextView.state.version,
-            action,
-          }),
+          session_id: selectedSessionId,
+          expected_version: contextView.state.version,
+          action,
         },
       )
-      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`)
       setContextEncoding(null)
       await Promise.all([
         loadContextProjection(selectedSessionId, selectedContextId),
@@ -2421,31 +2407,29 @@ export default function App() {
     } finally {
       setMutatingFrameId('')
     }
-  }, [apiHeaders, contextView, loadContextProjection, loadOverview, selectedContextId, selectedSessionId])
+  }, [contextView, loadContextProjection, loadOverview, selectedContextId, selectedSessionId])
 
   useEffect(() => {
     if (view !== 'cognition' || !selectedContextId) return
     let cancelled = false
-    void fetch(
-      `${CORE_HTTP_URL}/api/contexts/${encodeURIComponent(selectedContextId)}/recall/index`,
-      { headers: apiHeaders() },
-    ).then(async response => {
-      if (response.ok && !cancelled) setRecallIndex(await response.json() as RecallIndexAudit)
+    void DASHBOARD_API.tryGet<RecallIndexAudit>(
+      `/api/contexts/${encodeURIComponent(selectedContextId)}/recall/index`,
+    ).then(result => {
+      if (result && !cancelled) setRecallIndex(result)
     }).catch(() => {})
     return () => { cancelled = true }
-  }, [apiHeaders, selectedContextId, view])
+  }, [selectedContextId, view])
 
   useEffect(() => {
     if (view !== 'cognition' || !selectedContextId || !selectedFrameId) return
     let cancelled = false
-    void fetch(
-      `${CORE_HTTP_URL}/api/contexts/${encodeURIComponent(selectedContextId)}/frames/${encodeURIComponent(selectedFrameId)}/recall?depth=2&direction=both&include_bodies=false&max_nodes=64`,
-      { headers: apiHeaders() },
-    ).then(async response => {
-      if (response.ok && !cancelled) setFrameLineage(await response.json() as FrameRecallPage)
+    void DASHBOARD_API.tryGet<FrameRecallPage>(
+      `/api/contexts/${encodeURIComponent(selectedContextId)}/frames/${encodeURIComponent(selectedFrameId)}/recall?depth=2&direction=both&include_bodies=false&max_nodes=64`,
+    ).then(result => {
+      if (result && !cancelled) setFrameLineage(result)
     }).catch(() => {})
     return () => { cancelled = true }
-  }, [apiHeaders, selectedContextId, selectedFrameId, view])
+  }, [selectedContextId, selectedFrameId, view])
 
   useEffect(() => {
     try {
@@ -2992,6 +2976,14 @@ export default function App() {
     () => schedulerSnapshot?.threads ?? [],
     [schedulerSnapshot],
   )
+  const objectives = useMemo(
+    () => contextOverview?.objectives ?? contextView?.objectives ?? [],
+    [contextOverview?.objectives, contextView?.objectives],
+  )
+  const selectedObjectiveFilterId = requestedObjectiveFilterId
+    && objectives.some(objective => objective.id === requestedObjectiveFilterId)
+    ? requestedObjectiveFilterId
+    : ''
   const objectiveLineage = useMemo<ObjectiveLineageIndex>(
     () => buildObjectiveLineageIndex(
       schedulerThreads.map(snapshot => ({
@@ -3149,16 +3141,10 @@ export default function App() {
     }
     return [...calls.values()].sort((left, right) => left.timestamp.localeCompare(right.timestamp))
   }, [sessionEvents])
-  const objectives = contextOverview?.objectives ?? contextView?.objectives ?? []
   const activeObjectives = objectives.filter(item => !terminalObjectiveStatuses.has(item.status))
   const runningObjectives = activeObjectives.filter(item => item.status === 'active')
   const blockedObjectives = activeObjectives.filter(item => item.status === 'blocked')
   const pausedObjectives = activeObjectives.filter(item => item.status === 'paused')
-  useEffect(() => {
-    if (selectedObjectiveFilterId && !objectives.some(objective => objective.id === selectedObjectiveFilterId)) {
-      setSelectedObjectiveFilterId('')
-    }
-  }, [objectives, selectedObjectiveFilterId])
   const acknowledgedAttentionKeys = useMemo(
     () => new Set(
       attentionAcknowledgements
@@ -3209,7 +3195,7 @@ export default function App() {
   // Slot history has to survive re-renders for a colour to stay put, and the
   // key makes that history explicit rather than hiding it in a ref that is
   // read while rendering.
-  const tintCandidateKey = tintCandidateIds.join(' ')
+  const tintCandidateKey = tintCandidateIds.join('\u0000')
   const [tintSlotState, setTintSlotState] = useState<{
     key: string
     slots: ReadonlyMap<string, number>
@@ -3311,11 +3297,9 @@ export default function App() {
     return streamingAttempts.filter(attempt => activationIds.has(attempt.activationId))
   }, [streamingAttempts, threadDetail])
   const activations = schedulerThreads.flatMap(thread => thread.activations.map(item => item.activation))
-  const threadSignals = schedulerThreads.flatMap(thread => [
-    ...thread.pending_signals,
-    ...thread.activations.flatMap(activation => activation.signals),
-  ])
-  const schedules = schedulerSchedules(schedulerSnapshot)
+  // Terminal Schedule history remains available inside each causal Thread;
+  // this board and the composer status describe only present control state.
+  const schedules = currentSchedulerSchedules(schedulerSnapshot)
   const actionableJobRows = actionableSchedulerJobs(schedulerSnapshot)
   const pendingApprovals = pendingHumanApprovals(schedulerSnapshot)
   const approvalAnomalies = schedulerApprovalAnomalies(schedulerSnapshot)
@@ -3349,8 +3333,7 @@ export default function App() {
   const durableEventQueueDepth = Number(schedulerSnapshot?.event_writer?.queue_depth ?? 0)
   const durableEventContentionRetries = Number(schedulerSnapshot?.event_writer?.contention_retries ?? 0)
   const waitingCount = schedulerSnapshot
-    ? actionableJobRows.filter(item => item.job.status === 'waiting_approval').length
-      + schedulerSnapshot.summary.active_schedules
+    ? schedulerThreads.filter(item => item.phase === 'waiting').length
     : runningObjectives.filter(item => Boolean(item.wait_condition)).length
   const selectedFrame = contextView?.state.frames.find(frame => frame.id === selectedFrameId)
   const activePrincipalId = contextView?.active_principal_id
@@ -3576,16 +3559,10 @@ export default function App() {
     }
     setCreatingContext(true)
     try {
-      const response = await fetch(`${CORE_HTTP_URL}/api/contexts`, {
-        method: 'POST',
-        headers: apiHeaders(true),
-        body: JSON.stringify({
-          agent_id: agentId,
-          title: t('header.newContextTitle', { count: visibleContexts.length + 1 }),
-        }),
+      const context = await DASHBOARD_API.command<ContextRecord>('/api/contexts', 'POST', {
+        agent_id: agentId,
+        title: t('header.newContextTitle', { count: visibleContexts.length + 1 }),
       })
-      if (!response.ok) throw new Error(t('errors.createContext', { status: response.status }))
-      const context = await response.json() as ContextRecord
       setContexts(current => [...current.filter(item => item.id !== context.id), context])
       activateContext(context)
       setError('')
@@ -3596,7 +3573,7 @@ export default function App() {
     } finally {
       setCreatingContext(false)
     }
-  }, [activateContext, agents, apiHeaders, creatingContext, selectedAgentId, status?.agent_id, t, visibleContexts.length])
+  }, [activateContext, agents, creatingContext, selectedAgentId, status?.agent_id, t, visibleContexts.length])
 
   const createSession = useCallback(async (targetContext?: ContextRecord): Promise<SessionRecord | null> => {
     if (creatingSession) return null
@@ -3610,17 +3587,11 @@ export default function App() {
     const count = sessions.filter(item => item.context_id === contextId).length
     setCreatingSession(true)
     try {
-      const response = await fetch(`${CORE_HTTP_URL}/api/sessions`, {
-        method: 'POST',
-        headers: apiHeaders(true),
-        body: JSON.stringify({
+      const session = await DASHBOARD_API.command<SessionRecord>('/api/sessions', 'POST', {
           agent_id: agentId,
           title: t('header.newSessionTitle', { count: count + 1 }),
           mount: { type: 'existing_context', context_id: contextId },
-        }),
       })
-      if (!response.ok) throw new Error(t('errors.createSession', { status: response.status }))
-      const session = await response.json() as SessionRecord
       setSessions(current => [...current.filter(item => item.id !== session.id), session])
       setPendingTurn(null)
       setSelectedAgentId(session.agent_id)
@@ -3638,7 +3609,7 @@ export default function App() {
     } finally {
       setCreatingSession(false)
     }
-  }, [apiHeaders, creatingSession, navigate, selectedAgentId, selectedContext, selectedContextId, sessions, status?.agent_id, t])
+  }, [creatingSession, navigate, selectedAgentId, selectedContext, selectedContextId, sessions, status?.agent_id, t])
 
   const chooseSession = (session: SessionRecord) => {
     if (session.id !== selectedSessionId) {
@@ -3848,16 +3819,14 @@ export default function App() {
       }
       startedAt = Date.now()
       setPendingTurn({ startedAt, rootTurnId: null })
-      const response = await fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(targetSession.id)}/messages`, {
-        method: 'POST',
-        headers: apiHeaders(true),
-        body: JSON.stringify({
+      const receipt = await DASHBOARD_API.command<{ event_id?: string }>(
+        `/api/sessions/${encodeURIComponent(targetSession.id)}/messages`,
+        'POST',
+        {
           text: composedText,
           client_message_id: `dashboard-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        }),
-      })
-      if (!response.ok) throw new Error(t('errors.sendMessage', { status: response.status }))
-      const receipt = await response.json() as { event_id?: string }
+        },
+      )
       setPendingTurn(current => current?.startedAt === startedAt
         ? { ...current, rootTurnId: receipt.event_id ?? null }
         : current)
@@ -3874,30 +3843,32 @@ export default function App() {
     } finally {
       setSending(false)
     }
-  }, [apiHeaders, createContext, createSession, loadSession, quotes, selectedContext, selectedSession, sending, t])
+  }, [createContext, createSession, loadSession, quotes, selectedContext, selectedSession, sending])
 
   const cancelCurrentSession = useCallback(async () => {
     if (!selectedSessionId) return
-    const response = await fetch(`${CORE_HTTP_URL}/api/sessions/${encodeURIComponent(selectedSessionId)}/cancel`, {
-      method: 'POST',
-      headers: apiHeaders(),
-    })
-    if (!response.ok) setError(t('errors.cancelSession', { status: response.status }))
-  }, [apiHeaders, selectedSessionId, t])
+    try {
+      await DASHBOARD_API.command(
+        `/api/sessions/${encodeURIComponent(selectedSessionId)}/cancel`,
+        'POST',
+      )
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [selectedSessionId])
 
   const changeReasoningEffort = async (value: string) => {
     if (changingReasoning) return
     setChangingReasoning(true)
     try {
-      const response = await fetch(`${CORE_HTTP_URL}/api/runtime/inference`, {
-        method: 'PUT',
-        headers: apiHeaders(true),
-        body: JSON.stringify({
+      const inference = await DASHBOARD_API.command<{ reasoning_effort?: ReasoningEffortSetting | null }>(
+        '/api/runtime/inference',
+        'PUT',
+        {
           reasoning_effort: value === 'default' ? null : value,
-        }),
-      })
-      if (!response.ok) throw new Error(t('errors.reasoning', { status: response.status }))
-      const inference = await response.json() as { reasoning_effort?: ReasoningEffortSetting | null }
+        },
+      )
       setStatus(current => current ? { ...current, reasoning_effort: inference.reasoning_effort } : current)
       setError('')
     } catch (reason) {
@@ -3937,21 +3908,20 @@ export default function App() {
     if (pausingObjectiveId || resumingObjectiveId || deletingObjectiveId) return
     setPausingObjectiveId(objective.id)
     try {
-      const response = await fetch(`${CORE_HTTP_URL}/api/objectives/${encodeURIComponent(objective.id)}/pause`, {
-        method: 'POST',
-        headers: apiHeaders(true),
-        body: JSON.stringify({
+      await DASHBOARD_API.command(
+        `/api/objectives/${encodeURIComponent(objective.id)}/pause`,
+        'POST',
+        {
           expected_revision: objective.revision,
           reason: t('reason.pauseByUser'),
-        }),
-      })
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({})) as { error?: string }
-        throw new Error(detail.error ?? t('errors.pauseObjective', { status: response.status }))
-      }
+        },
+      )
       await loadSession(selectedSessionId, selectedContextId)
       setError('')
     } catch (reason) {
+      // Runtime control mutations are revision fenced. Refresh after a
+      // conflict so the next action does not resubmit stale control state.
+      await loadSession(selectedSessionId, selectedContextId).catch(() => {})
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setPausingObjectiveId('')
@@ -3962,18 +3932,14 @@ export default function App() {
     if (pausingObjectiveId || resumingObjectiveId || deletingObjectiveId) return
     setResumingObjectiveId(objective.id)
     try {
-      const response = await fetch(`${CORE_HTTP_URL}/api/objectives/${encodeURIComponent(objective.id)}/resume`, {
-        method: 'POST',
-        headers: apiHeaders(true),
-        body: JSON.stringify({
+      await DASHBOARD_API.command(
+        `/api/objectives/${encodeURIComponent(objective.id)}/resume`,
+        'POST',
+        {
           expected_revision: objective.revision,
           reason: t('reason.resumeByUser'),
-        }),
-      })
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({})) as { error?: string }
-        throw new Error(detail.error ?? t('errors.resumeObjective', { status: response.status }))
-      }
+        },
+      )
       await loadSession(selectedSessionId, selectedContextId)
       setError('')
     } catch (reason) {
@@ -3995,18 +3961,14 @@ export default function App() {
     if (!confirmed) return
     setDeletingObjectiveId(objective.id)
     try {
-      const response = await fetch(`${CORE_HTTP_URL}/api/objectives/${encodeURIComponent(objective.id)}`, {
-        method: 'DELETE',
-        headers: apiHeaders(true),
-        body: JSON.stringify({
+      await DASHBOARD_API.command(
+        `/api/objectives/${encodeURIComponent(objective.id)}`,
+        'DELETE',
+        {
           expected_revision: objective.revision,
           reason: t('reason.deleteByUser'),
-        }),
-      })
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({})) as { error?: string }
-        throw new Error(detail.error ?? t('errors.deleteObjective', { status: response.status }))
-      }
+        },
+      )
       await loadSession(selectedSessionId, selectedContextId)
       setExpandedObjectiveIds(current => {
         const next = new Set(current)
@@ -4034,16 +3996,11 @@ export default function App() {
     }
     setDecidingApprovalId(approval.id)
     try {
-      const response = await fetch(`${CORE_HTTP_URL}/api/approvals/${encodeURIComponent(approval.id)}`, {
-        method: 'POST',
-        headers: apiHeaders(true),
-        body: JSON.stringify({ decision, rationale: t(`reason.approval.${decision}`) }),
-      })
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({})) as { error?: string }
-        await loadSession(selectedSessionId, selectedContextId)
-        throw new Error(detail.error ?? t('errors.approvalDecision', { status: response.status }))
-      }
+      await DASHBOARD_API.command(
+        `/api/approvals/${encodeURIComponent(approval.id)}`,
+        'POST',
+        { decision, rationale: t(`reason.approval.${decision}`) },
+      )
       await loadSession(selectedSessionId, selectedContextId)
       setError('')
     } catch (reason) {
@@ -4138,27 +4095,22 @@ export default function App() {
     }
     setMutatingScheduleId(schedule.id)
     try {
-      const response = await fetch(`${CORE_HTTP_URL}/api/schedules/${encodeURIComponent(schedule.id)}`, {
-        method: 'POST',
-        headers: apiHeaders(true),
-        body: JSON.stringify({
+      await DASHBOARD_API.command(
+        `/api/schedules/${encodeURIComponent(schedule.id)}`,
+        'POST',
+        {
           action,
           expected_revision: schedule.revision,
           not_before: notBefore,
           interval_seconds: intervalSeconds,
-        }),
-      })
-      if (!response.ok) {
-        const detail = await response.json().catch(() => ({})) as { error?: string }
-        // Schedule mutations are revision fenced. Refresh the authoritative
-        // projection even on conflict so the next user action carries the
-        // winning revision instead of repeatedly submitting stale state.
-        await loadSession(selectedSessionId, selectedContextId)
-        throw new Error(detail.error ?? t('errors.scheduleMutation', { status: response.status }))
-      }
+        },
+      )
       await loadSession(selectedSessionId, selectedContextId)
       setError('')
     } catch (reason) {
+      // Schedule mutations are revision fenced. Refresh after a conflict so
+      // the next action carries the winning revision.
+      await loadSession(selectedSessionId, selectedContextId).catch(() => {})
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setMutatingScheduleId('')
@@ -4557,7 +4509,7 @@ export default function App() {
               }}
               execution={{
                 activeJobs: contextOverview?.scheduler.active_jobs ?? schedulerSnapshot?.summary.active_jobs ?? 0,
-                activeEvaluations: activeWorkCount,
+                activeActivations: activeWorkCount,
                 pendingApprovals: pendingApprovals.length,
               }}
               attention={{
@@ -4567,7 +4519,8 @@ export default function App() {
                 inactiveObjectives: blockedObjectives.length + pausedObjectives.length,
               }}
               activities={schedulerThreads
-                .filter(item => item.thread.lifecycle === 'open')
+                .filter(item => item.phase !== 'idle')
+                .sort((left, right) => right.thread.updated_at.localeCompare(left.thread.updated_at))
                 .slice(0, 8)
                 .map(snapshot => ({
                   id: snapshot.thread.id,
@@ -4991,7 +4944,7 @@ export default function App() {
               <div className="work-metrics">
                 <div><CircleDot size={17} /><span><small>{t('work.metrics.active').toUpperCase()}</small><strong>{activeWorkCount}</strong></span></div>
                 <div><Clock3 size={17} /><span><small>{t('work.metrics.waiting').toUpperCase()}</small><strong>{waitingCount}</strong></span></div>
-                <div><Radio size={17} /><span><small>{t('work.metrics.pendingSignals').toUpperCase()}</small><strong>{threadSignals.length}</strong></span></div>
+                <div><Radio size={17} /><span><small>{t('work.metrics.pendingSignals').toUpperCase()}</small><strong>{schedulerSnapshot?.summary.pending_signals ?? 0}</strong></span></div>
                 <div><Layers3 size={17} /><span><small>{t('work.metrics.objectives').toUpperCase()}</small><strong>{activeObjectives.length}</strong></span></div>
               </div>
 
@@ -5292,11 +5245,11 @@ export default function App() {
 
               <div className="mind-metrics">
                 <div><Brain size={18} /><span><small>{t('mindView.metrics.frames').toUpperCase()}</small><strong className="frame-lifecycle-counts" aria-label={t('mindView.metrics.frameLifecycle.summary', { active: activeFrameCount, retiring: retiringFrameCount, retired: retired.size })}>
-                  <span className="frame-lifecycle-value" tabIndex={0} title={t('mindView.metrics.frameLifecycle.active', { count: activeFrameCount })}>{activeFrameCount}</span>
+                  <span className="frame-lifecycle-value" tabIndex={0} aria-label={t('mindView.metrics.frameLifecycle.active', { count: activeFrameCount })} data-hover={t('mindView.metrics.frameLifecycle.active', { count: activeFrameCount })}>{activeFrameCount}</span>
                   <i aria-hidden="true">·</i>
-                  <span className="frame-lifecycle-value" tabIndex={0} title={t('mindView.metrics.frameLifecycle.retiring', { count: retiringFrameCount })}>{retiringFrameCount}</span>
+                  <span className="frame-lifecycle-value" tabIndex={0} aria-label={t('mindView.metrics.frameLifecycle.retiring', { count: retiringFrameCount })} data-hover={t('mindView.metrics.frameLifecycle.retiring', { count: retiringFrameCount })}>{retiringFrameCount}</span>
                   <i aria-hidden="true">·</i>
-                  <span className="frame-lifecycle-value" tabIndex={0} title={t('mindView.metrics.frameLifecycle.retired', { count: retired.size })}>{retired.size}</span>
+                  <span className="frame-lifecycle-value" tabIndex={0} aria-label={t('mindView.metrics.frameLifecycle.retired', { count: retired.size })} data-hover={t('mindView.metrics.frameLifecycle.retired', { count: retired.size })}>{retired.size}</span>
                 </strong></span></div>
                 <div><GitBranch size={18} /><span><small>{t('mindView.metrics.relations').toUpperCase()}</small><strong>{contextView?.state.relations.length ?? 0}</strong></span></div>
                 <div><Database size={18} /><span><small>{t('mindView.metrics.observations').toUpperCase()}</small><strong>{contextView?.observations.length ?? 0}</strong></span></div>

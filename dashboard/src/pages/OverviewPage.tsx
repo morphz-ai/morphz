@@ -20,7 +20,7 @@ interface OverviewPageProps {
   mindRevision: number
   frames: { active: number; retiring: number; retired: number }
   scheduling: { openThreads: number; pendingSignals: number; activeSchedules: number }
-  execution: { activeJobs: number; activeEvaluations: number; pendingApprovals: number }
+  execution: { activeJobs: number; activeActivations: number; pendingApprovals: number }
   attention: { approvals: number; failedJobs: number; failedDeliveries: number; inactiveObjectives: number }
   activities: OverviewActivity[]
   canRefresh: boolean
@@ -96,7 +96,7 @@ export function OverviewPage({
         <button type="button" onClick={() => onNavigate('scheduler')}>
           <Radio size={18} />
           <span><small>{t('overview.planes.execution').toUpperCase()}</small><strong>{execution.activeJobs}</strong><em>{t('overview.planes.jobs')}</em></span>
-          <p>{t('overview.planes.executionDetail', { activations: execution.activeEvaluations, approvals: execution.pendingApprovals })}</p>
+          <p>{t('overview.planes.executionDetail', { activations: execution.activeActivations, approvals: execution.pendingApprovals })}</p>
         </button>
       </div>
 

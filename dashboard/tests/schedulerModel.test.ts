@@ -6,6 +6,7 @@ import {
   attentionJobKey,
   actionableSchedulerJobs,
   activeSchedulerThreads,
+  currentSchedulerSchedules,
   pendingHumanApprovals,
   schedulerApprovals,
   schedulerApprovalAnomalies,
@@ -178,6 +179,15 @@ test('open lifecycle does not make an idle Thread physically active', () => {
   snapshot.threads[0].thread.lifecycle = 'open'
 
   assert.deepEqual(activeSchedulerThreads(snapshot), [])
+})
+
+test('current Schedule projection excludes terminal causal history', () => {
+  const snapshot = fixture()
+  const completed = { ...snapshot.threads[0].schedules[0], id: 'schedule-completed', status: 'completed' as const }
+  snapshot.threads[0].schedules.push(completed)
+
+  assert.deepEqual(schedulerSchedules(snapshot).map(item => item.id), ['schedule-1', 'schedule-completed'])
+  assert.deepEqual(currentSchedulerSchedules(snapshot).map(item => item.id), ['schedule-1'])
 })
 
 test('attention fingerprints reopen when their source revision changes', () => {

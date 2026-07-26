@@ -74,11 +74,18 @@ export class DashboardApiClient {
       method,
       body: body === undefined ? undefined : JSON.stringify(body),
     })
-    return this.readJson<T>(path, response)
+    return this.readJson<T>(path, response, true)
   }
 
-  private async readJson<T>(path: string, response: Response): Promise<T> {
-    if (response.ok) return response.json() as Promise<T>
+  private async readJson<T>(path: string, response: Response, allowEmpty = false): Promise<T> {
+    if (response.ok) {
+      if (allowEmpty && (response.status === 204 || response.headers.get('content-length') === '0')) {
+        return undefined as T
+      }
+      const text = await response.text()
+      if (allowEmpty && !text.trim()) return undefined as T
+      return JSON.parse(text) as T
+    }
     let detail = `HTTP ${response.status}`
     try {
       const body = await response.json() as DashboardApiErrorBody

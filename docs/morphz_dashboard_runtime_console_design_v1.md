@@ -7,6 +7,8 @@
 > 定位：Morphz 底层 Runtime 的可操作投影，而不是套用了任务卡片的聊天产品
 >
 > 产品边界：Dashboard 保留产品名称，`Runtime Console` 是功能定位；面向最终用户的 Web App、Desktop App 与紧凑 TUI 的关系见[产品界面与交付架构 v1](./morphz_product_surfaces_and_delivery_architecture_v1.md)
+>
+> 最新实现审计与分阶段收口见[Dashboard / Runtime Console 全面审计（2026-07-26）](./morphz_dashboard_runtime_console_audit_2026_07_26.md)
 
 ## 1. 产品定位
 

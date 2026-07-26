@@ -76,3 +76,12 @@ test('DashboardApiClient invokes a host fetch without rebinding its receiver', a
 
   assert.deepEqual(await client.get('/api/status'), { ok: true })
 })
+
+test('DashboardApiClient accepts an empty successful command response', async () => {
+  const client = new DashboardApiClient({
+    baseUrl: 'http://runtime.test',
+    fetchImpl: (async () => new Response(null, { status: 204 })) as typeof fetch,
+  })
+
+  assert.equal(await client.command<void>('/api/cancel', 'POST'), undefined)
+})

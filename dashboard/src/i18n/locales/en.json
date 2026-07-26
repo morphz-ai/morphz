@@ -41,13 +41,13 @@
       "schedulerDetail": "{{signals}} pending Signals · {{schedules}} active Schedules",
       "execution": "Execution",
       "jobs": "active Jobs",
-      "executionDetail": "{{activations}} evaluations · {{approvals}} pending approvals"
+      "executionDetail": "{{activations}} active Activations · {{approvals}} pending approvals"
     },
     "activity": {
       "title": "Live activity",
       "subtitle": "Grouped by Thread instead of mixing global tool traffic",
       "openScheduler": "Open Scheduler",
-      "empty": "No open Threads"
+      "empty": "No live Thread activity"
     }
   },
   "cognition": {
@@ -321,14 +321,14 @@
     "layout": {
       "title": "Conversation presentation",
       "merged": "Merged",
-      "mergedHint": "Merge ordinary dialogue and work-thread output by time",
+      "mergedHint": "Merge ordinary dialogue and Execution Thread output by time",
       "split": "Dual track",
-      "splitHint": "Separate ordinary dialogue from model output produced by work threads",
+      "splitHint": "Separate ordinary dialogue from model output produced by Execution Threads",
       "mobileTitle": "Choose the active track",
       "dialogueLane": "Dialogue",
       "executionLane": "Execution output",
-      "executionLaneHint": "Reasoning, progress and deliveries from work threads",
-      "executionEmpty": "No work-thread output yet"
+      "executionLaneHint": "Reasoning, progress and deliveries from Execution Threads",
+      "executionEmpty": "No Execution Thread output yet"
     },
     "activity": {
       "title": "Task activity",

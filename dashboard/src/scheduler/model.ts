@@ -78,6 +78,16 @@ export function schedulerSchedules(snapshot: SchedulerSnapshot | null): Schedule
   return snapshot.threads.flatMap(thread => thread.schedules)
 }
 
+/**
+ * The task board represents current control state. Terminal Schedule history
+ * remains available inside the owning causal Thread instead of masquerading
+ * as work that can still wake the Runtime.
+ */
+export function currentSchedulerSchedules(snapshot: SchedulerSnapshot | null): ScheduleRecord[] {
+  return schedulerSchedules(snapshot)
+    .filter(schedule => schedule.status === 'queued' || schedule.status === 'paused')
+}
+
 export function activeSchedulerThreads(snapshot: SchedulerSnapshot | null): SchedulerThreadSnapshot[] {
   if (!snapshot) return []
   return snapshot.threads.filter(thread => thread.phase !== 'idle')

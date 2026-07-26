@@ -216,7 +216,7 @@ export function ThreadCausalCard({
         <span className={`status-pill ${snapshot.phase}`}>{statusLabel(snapshot.phase, t)}</span>
         <div><strong>{threadKindLabel(thread.kind, t)}</strong><small>{shortId(thread.id, 30)} · {t('header.session')} {shortId(thread.session_id, 18)} · {t('work.causal.executor')} {thread.executor_kind}{thread.executor_id ? `/${shortId(thread.executor_id, 16)}` : ''}</small></div>
         <span className="causal-counts">{snapshot.activations.length}A · {snapshot.activations.reduce((sum, item) => sum + item.jobs.length, 0)}J</span>
-        <em>{thread.delivery_status}</em>
+        <em>{statusLabel(thread.delivery_status, t)}</em>
         <ChevronDown size={14} />
       </summary>
       <div className="causal-thread-body">

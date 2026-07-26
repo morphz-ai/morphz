@@ -2873,7 +2873,11 @@ impl MorphzRuntime {
         let mut all_signals = self
             .inner
             .store
-            .list_context_thread_signals(context_id, None)
+            // Signals already claimed or acknowledged belong to their
+            // Activation history. They must never fall back into the
+            // standalone pending bucket merely because that Activation is
+            // outside this bounded history page.
+            .list_context_thread_signals(context_id, Some(ThreadSignalStatus::Pending))
             .await?;
         all_signals.retain(|signal| thread_ids.contains(&signal.thread_id));
         all_signals.sort_by(|left, right| {
@@ -2981,17 +2985,8 @@ impl MorphzRuntime {
         orphan_jobs.extend(jobs_by_activation.into_values().flatten());
 
         let mut pending_signals_by_thread = HashMap::<String, Vec<ThreadSignalRecord>>::new();
-        let claimed_signal_ids = activations_by_thread
-            .values()
-            .flatten()
-            .chain(orphan_activations.iter())
-            .flat_map(|activation| activation.signals.iter().map(|signal| signal.id.clone()))
-            .collect::<HashSet<_>>();
         let mut orphan_signals = Vec::new();
         for signal in all_signals {
-            if claimed_signal_ids.contains(&signal.id) {
-                continue;
-            }
             if thread_ids.contains(&signal.thread_id) {
                 pending_signals_by_thread
                     .entry(signal.thread_id.clone())
@@ -3050,8 +3045,9 @@ impl MorphzRuntime {
             .saturating_sub(context_loaded_queued);
         let pending_signals = threads
             .iter()
-            .map(|thread| thread.pending_signals.len())
-            .sum::<usize>()
+            .flat_map(|thread| thread.pending_signals.iter())
+            .filter(|signal| signal.status == ThreadSignalStatus::Pending)
+            .count()
             + orphan_signals
                 .iter()
                 .filter(|signal| signal.status == ThreadSignalStatus::Pending)
@@ -3499,7 +3495,7 @@ impl MorphzRuntime {
         let mut pending_signals = self
             .inner
             .store
-            .list_context_thread_signals(context_id, None)
+            .list_context_thread_signals(context_id, Some(ThreadSignalStatus::Pending))
             .await?
             .into_iter()
             .filter(|signal| {
@@ -6295,6 +6291,8 @@ mod tests {
             .unwrap();
         assert_eq!(snapshot.threads.len(), 1);
         assert_eq!(snapshot.threads[0].activations.len(), 4);
+        assert!(snapshot.threads[0].pending_signals.is_empty());
+        assert_eq!(snapshot.summary.pending_signals, 0);
         assert!(snapshot.orphan_activations.is_empty());
         assert!(snapshot.orphan_jobs.is_empty());
     }

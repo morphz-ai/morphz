@@ -1,6 +1,8 @@
 import { Brain, CheckCircle2, Database, GitBranch, Layers3, Radio, RefreshCw, Server, ShieldCheck, Terminal, TriangleAlert } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
+import { statusLabel } from '../app/presentation'
+
 interface RuntimePageProps {
   connection: string
   endpoint: string
@@ -116,7 +118,7 @@ export function RuntimePage(props: RuntimePageProps) {
                 <article key={job.id}>
                   <i data-status={job.status} />
                   <span><strong>{job.tool_name}</strong><small title={job.id}>{job.target_id} · {job.thread_id}</small></span>
-                  <em>{job.status}</em>
+                  <em>{statusLabel(job.status, t)}</em>
                   {!['succeeded', 'failed', 'cancelled', 'lost'].includes(job.status) && <button type="button" onClick={() => props.onCancelJob(job.id, job.revision)}>{t('runtime.cancel')}</button>}
                 </article>
               ))}
@@ -130,7 +132,7 @@ export function RuntimePage(props: RuntimePageProps) {
                 <article key={lease.id}>
                   <i data-status={lease.status} />
                   <span><strong>{lease.capabilities.join(', ') || '—'}</strong><small title={lease.id}>{lease.target_id} · {lease.thread_id}</small></span>
-                  <em>{lease.status}</em>
+                  <em>{statusLabel(lease.status, t)}</em>
                   {lease.status === 'active' && <button type="button" onClick={() => props.onRevokeLease(lease.id, lease.revision)}>{t('runtime.revoke')}</button>}
                 </article>
               ))}

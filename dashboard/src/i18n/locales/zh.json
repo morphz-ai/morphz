@@ -41,13 +41,13 @@
       "schedulerDetail": "{{signals}} 待处理信号 · {{schedules}} 活跃计划",
       "execution": "执行",
       "jobs": "活跃作业",
-      "executionDetail": "{{activations}} 次求值 · {{approvals}} 项待审批"
+      "executionDetail": "{{activations}} 个活跃激活 · {{approvals}} 项待审批"
     },
     "activity": {
       "title": "实时活动",
       "subtitle": "按线程聚合，而不是混合工具流水",
       "openScheduler": "打开调度器",
-      "empty": "当前没有开放线程"
+      "empty": "当前没有实时线程活动"
     }
   },
   "cognition": {
@@ -320,14 +320,14 @@
     "layout": {
       "title": "对话呈现方式",
       "merged": "合流",
-      "mergedHint": "把普通对话与工作线程输出按时间合并显示",
+      "mergedHint": "把普通对话与执行线程输出按时间合并显示",
       "split": "双轨",
-      "splitHint": "把普通对话与工作线程的模型输出分轨显示",
+      "splitHint": "把普通对话与执行线程的模型输出分轨显示",
       "mobileTitle": "选择当前轨道",
       "dialogueLane": "对话",
       "executionLane": "执行输出",
-      "executionLaneHint": "工作线程的推理、进度与交付",
-      "executionEmpty": "当前没有工作线程输出"
+      "executionLaneHint": "执行线程的推理、进度与交付",
+      "executionEmpty": "当前没有执行线程输出"
     },
     "activity": {
       "title": "任务活动",
