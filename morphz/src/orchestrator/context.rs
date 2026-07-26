@@ -2842,15 +2842,6 @@ impl ContextEngine {
             .collect::<Vec<_>>();
         projected.sort_by_key(|observation| observation.sequence);
         for observation in &mut projected {
-            // Causal roots and trigger signals are present so the model can
-            // preserve responsibility while compacting the surrounding
-            // Inbox. They are not maintenance candidates. Reflect the
-            // Runtime retirement fence in the projection itself so a bulk
-            // retire transaction cannot mistake them for ordinary active
-            // observations and roll the whole atomic transaction back.
-            if required_ids.contains(observation.id.as_str()) {
-                observation.protected = true;
-            }
             let (preview, truncated) =
                 bounded_maintenance_preview(&observation.preview, preview_limit);
             if truncated {
@@ -11959,20 +11950,6 @@ mod tests {
             .build_context_encoding(session_id, session_id, &HashSet::new())
             .await
             .unwrap();
-        view.activation = Some(ActivationFocus {
-            activation_id: "maintenance-activation".to_string(),
-            session_id: session_id.to_string(),
-            root_turn_id: "event:0".to_string(),
-            thread_kind: "objective".to_string(),
-            root_kind: TYPE_USER_MESSAGE.to_string(),
-            root_preview: "root".to_string(),
-            trigger_event_id: "event:541".to_string(),
-            trigger_kind: TYPE_USER_MESSAGE.to_string(),
-            trigger_preview: "trigger".to_string(),
-            signal_batch: Vec::new(),
-            objective_id: Some("objective-1".to_string()),
-            objective_evaluation_id: Some("evaluation-1".to_string()),
-        });
         assert_eq!(view.observations.len(), 542);
         assert_eq!(view.pressure.level, "critical");
 
@@ -11984,19 +11961,9 @@ mod tests {
                 .iter()
                 .map(|observation| observation.sequence)
                 .collect::<Vec<_>>(),
-            vec![1, 2, 542],
+            vec![1, 2, 3],
             "recovery projection should expose the oldest maintenance candidates first"
         );
-        assert!(view
-            .observations
-            .iter()
-            .filter(|observation| observation.id == "event:0" || observation.id == "event:541")
-            .all(|observation| observation.protected));
-        assert!(view
-            .observations
-            .iter()
-            .find(|observation| observation.id == "event:1")
-            .is_some_and(|observation| !observation.protected));
         assert!(view
             .observations
             .iter()
