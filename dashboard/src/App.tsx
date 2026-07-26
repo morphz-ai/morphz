@@ -260,15 +260,24 @@ const configuredHttpUrl = import.meta.env.VITE_MORPHZ_HTTP_URL as string | undef
 const configuredWsUrl = import.meta.env.VITE_MORPHZ_WS_URL as string | undefined
 const CORE_HTTP_URL = (configuredHttpUrl ?? window.location.origin).replace(/\/$/, '')
 const CORE_WS_URL = configuredWsUrl ?? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
-let dashboardTokenStorage: Storage | undefined
+let dashboardTokenPersistentStorage: Storage | undefined
 try {
-  dashboardTokenStorage = window.sessionStorage
+  dashboardTokenPersistentStorage = window.localStorage
 } catch {
-  // Sandboxed/privacy-restricted documents can deny sessionStorage entirely.
+  // Sandboxed/privacy-restricted documents can deny localStorage entirely.
+}
+let dashboardTokenSessionStorage: Storage | undefined
+try {
+  dashboardTokenSessionStorage = window.sessionStorage
+} catch {
+  // Session storage remains an optional same-tab fallback.
 }
 const CORE_TOKEN = resolveDashboardToken(
   window.location,
-  dashboardTokenStorage,
+  {
+    persistent: dashboardTokenPersistentStorage,
+    session: dashboardTokenSessionStorage,
+  },
   import.meta.env.VITE_MORPHZ_TOKEN as string | undefined,
 )
 const DASHBOARD_API = new DashboardApiClient({ baseUrl: CORE_HTTP_URL, token: CORE_TOKEN })
