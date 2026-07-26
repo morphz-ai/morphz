@@ -2815,53 +2815,72 @@ async fn monitor_objective(
     delivery_session_id: &str,
     events: &mut RuntimeEventStream,
 ) -> Result<(), AppError> {
-    while let Some(event) = events.recv().await {
-        let Some((event_session, text, kind)) = console_message_from_event(&event) else {
-            continue;
-        };
-        if event_session != delivery_session_id {
-            continue;
+    const TERMINAL_DELIVERY_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+    let mut poll = tokio::time::interval(std::time::Duration::from_millis(250));
+    poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut terminal_observed_at: Option<std::time::Instant> = None;
+
+    loop {
+        let mut terminal_delivery = false;
+        tokio::select! {
+            event = events.recv() => {
+                let event = event.ok_or("Objective 事件通道已关闭")?;
+                let Some((event_session, text, kind)) = console_message_from_event(&event) else {
+                    continue;
+                };
+                if event_session != delivery_session_id {
+                    continue;
+                }
+                match kind {
+                    ConsoleMessageKind::Final => {
+                        if !text.trim().is_empty() {
+                            println!("{text}");
+                        }
+                    }
+                    ConsoleMessageKind::NoReply => {}
+                    ConsoleMessageKind::Message => {
+                        if !text.trim().is_empty() {
+                            println!("{text}");
+                        }
+                    }
+                    ConsoleMessageKind::Progress => {
+                        if !text.trim().is_empty() {
+                            eprintln!("[Agent 进度] {text}");
+                        }
+                    }
+                    ConsoleMessageKind::ToolCall => eprintln!("{text}"),
+                    ConsoleMessageKind::Approval => {
+                        let mut stdin = std::io::stdin().lock();
+                        let mut stderr = std::io::stderr();
+                        prompt_for_human_approval(&text, runtime, &mut stdin, &mut stderr)
+                            .await
+                            .map_err(|error| format!("审批失败: {error}"))?;
+                    }
+                }
+                terminal_delivery = matches!(
+                    kind,
+                    ConsoleMessageKind::Final | ConsoleMessageKind::NoReply
+                );
+            }
+            _ = poll.tick() => {}
         }
-        match kind {
-            ConsoleMessageKind::Final => {
-                if !text.trim().is_empty() {
-                    println!("{text}");
-                }
-            }
-            ConsoleMessageKind::NoReply => {}
-            ConsoleMessageKind::Message => {
-                if !text.trim().is_empty() {
-                    println!("{text}");
-                }
-            }
-            ConsoleMessageKind::Progress => {
-                if !text.trim().is_empty() {
-                    eprintln!("[Agent 进度] {text}");
-                }
-            }
-            ConsoleMessageKind::ToolCall => eprintln!("{text}"),
-            ConsoleMessageKind::Approval => {
-                let mut stdin = std::io::stdin().lock();
-                let mut stderr = std::io::stderr();
-                prompt_for_human_approval(&text, runtime, &mut stdin, &mut stderr)
-                    .await
-                    .map_err(|error| format!("审批失败: {error}"))?;
-            }
-        }
-        if matches!(
-            kind,
-            ConsoleMessageKind::Final | ConsoleMessageKind::NoReply
-        ) {
-            let objective = runtime
-                .get_objective(objective_id)
-                .await?
-                .ok_or_else(|| format!("Objective '{objective_id}' 在运行中丢失"))?;
-            if objective.status.is_terminal()
-                || matches!(
-                    objective.status,
-                    ObjectiveStatus::Paused | ObjectiveStatus::Blocked
-                )
-            {
+
+        let objective = runtime
+            .get_objective(objective_id)
+            .await?
+            .ok_or_else(|| format!("Objective '{objective_id}' 在运行中丢失"))?;
+        let stopped = objective.status.is_terminal()
+            || matches!(
+                objective.status,
+                ObjectiveStatus::Paused | ObjectiveStatus::Blocked
+            );
+        if stopped {
+            let observed_at = *terminal_observed_at.get_or_insert_with(std::time::Instant::now);
+            // Prefer the semantic delivery boundary. If a terminal
+            // objective_update cancelled every successor Activation before a
+            // Final/NoReply could be emitted, the durable Objective remains
+            // authoritative and ends the CLI after a short delivery grace.
+            if terminal_delivery || observed_at.elapsed() >= TERMINAL_DELIVERY_GRACE {
                 eprintln!(
                     "[Objective 结束监控] {}  status={}  revision={}",
                     objective.id,
@@ -2870,9 +2889,10 @@ async fn monitor_objective(
                 );
                 return Ok(());
             }
+        } else {
+            terminal_observed_at = None;
         }
     }
-    Err("Objective 事件通道已关闭".into())
 }
 
 async fn list_jobs(runtime: &MorphzRuntime, invocation: &Invocation) -> Result<(), AppError> {

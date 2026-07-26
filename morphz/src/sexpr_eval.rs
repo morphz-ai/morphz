@@ -105,8 +105,8 @@ pub const OPERATORS: [OperatorSpec; 9] = [
     },
     OperatorSpec {
         name: "infer",
-        form: "(infer (task \"要判断什么\") argument...)",
-        description: "把判断交回非确定性求值器（你自己）：(task ...) 必填，其余 (参数名 值) 是给它看的证据。它可先调用工具取证，返回值是数据（文本），绑定后继续求值。",
+        form: "(infer (task \"要判断什么\") (tools TOOL...) (returns text|json) argument...)",
+        description: "把判断交回非确定性求值器（你自己）：(task ...) 必填，其余 (参数名 值) 是给它看的证据；(tools ...) 可选并收窄本节点工具，空 (tools) 表示纯推断；(returns ...) 可选，默认 text。returns=json 时最终正文必须是一个完整 JSON 值，Runtime 解析成功后才绑定并继续求值。",
         available: Availability::RuntimeEval,
     },
     OperatorSpec {
@@ -225,6 +225,29 @@ pub struct PlanArgument {
     pub values: Vec<PlanValue>,
 }
 
+/// The value contract at the non-deterministic boundary.
+///
+/// `infer` still decides *what* the answer is; this only tells Runtime how the
+/// answer crosses back into deterministic data flow.  Keeping the contract in
+/// Typed Plan IR makes restart recovery apply the same decoding rule as the
+/// initial in-process execution.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InferResultKind {
+    #[default]
+    Text,
+    Json,
+}
+
+impl InferResultKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Json => "json",
+        }
+    }
+}
+
 /// Runtime's typed, serializable representation of one Yao program.
 ///
 /// It deliberately contains no tool implementation or Future.  A later
@@ -259,6 +282,13 @@ pub enum PlanNode {
     },
     Infer {
         arguments: Vec<PlanArgument>,
+        /// Optional per-node evidence tool scope. `None` inherits the outer
+        /// `(requires (tools ...))` declaration; `Some([])` explicitly makes
+        /// this infer node pure model computation over its supplied data.
+        #[serde(default)]
+        tools: Option<Vec<String>>,
+        #[serde(default)]
+        result: InferResultKind,
     },
     Call {
         tool: String,
@@ -276,20 +306,19 @@ pub struct Program {
     ///
     /// Callers settle capability and approval from this before the Job starts,
     /// and derive retry safety by taking the strictest `retry_safety` among
-    /// them. Note what is deliberately absent: `infer` contributes nothing to
-    /// that decision. It is non-deterministic but still safe to replay, because
-    /// replaying accumulates no external effect — each run simply judges the
-    /// environment as it stands, which is the whole point of the step.
-    /// Demanding identical output from a non-deterministic evaluator would be
-    /// the wrong test; the right one is whether a second run can corrupt
-    /// anything, and here it cannot.
+    /// them. A pure `infer` contributes nothing; an `infer` with an explicit
+    /// `(tools ...)` scope contributes exactly those evidence tools. The model
+    /// computation itself has no physical effect, while any evidence gathering
+    /// still crosses the ordinary Scheduler/permission boundary.
     tools: Vec<String>,
     /// Tools declared by `(requires (tools NAME...))` inside the explicit
     /// `eval`/`infer` root.
     ///
     /// Declaration exists for the part static analysis cannot see: which
-    /// tools an `infer` may gather evidence with is decided at run time, so
-    /// only the program itself can bound it. It lives in the program text —
+    /// tools an `infer` may gather evidence with is decided at run time. An
+    /// infer node may inherit this scope or narrow it locally with `(tools
+    /// ...)`; `(tools)` explicitly closes the scope. The declaration lives in
+    /// the program text —
     /// not in a side channel — because a `.yao` file loaded by the Runtime
     /// has no other way to state its needs; the model's `program` argument
     /// and a `.yao` file are the same artifact. `None` means no declaration
@@ -647,7 +676,12 @@ fn check(
             if args.is_empty() {
                 return err("(infer (task \"...\") ...) 至少需要一个 (task ...) 参数".to_string());
             }
-            check_pair_arguments("infer", args, scope)?;
+            let data_arguments = args
+                .iter()
+                .filter(|argument| argument_name(argument) != Some("tools"))
+                .cloned()
+                .collect::<Vec<_>>();
+            check_pair_arguments("infer", &data_arguments, scope)?;
             let has_task = args.iter().any(|argument| {
                 matches!(argument, SExpr::List(items)
                     if items.first() == Some(&SExpr::Atom("task".to_string())))
@@ -655,6 +689,20 @@ fn check(
             if !has_task {
                 return err("(infer ...) 必须给出 (task ...) 说明要判断什么".to_string());
             }
+            if let Some(tools) = infer_tool_names(args)? {
+                for tool in tools {
+                    if !gate.is_callable(&tool) {
+                        return err(gate.describe_refusal(&tool));
+                    }
+                    if registry.get(&tool).is_none() {
+                        return err(format!("infer 声明的工具 '{tool}' 不存在"));
+                    }
+                    if !facts.tools.iter().any(|seen| seen == &tool) {
+                        facts.tools.push(tool);
+                    }
+                }
+            }
+            infer_result_kind(args)?;
             Ok(())
         }
         "call" => {
@@ -767,6 +815,81 @@ fn lower_arguments(args: &[SExpr]) -> Result<Vec<PlanArgument>, EvalError> {
         .collect()
 }
 
+fn argument_name(expr: &SExpr) -> Option<&str> {
+    let SExpr::List(items) = expr else {
+        return None;
+    };
+    let Some(SExpr::Atom(name)) = items.first() else {
+        return None;
+    };
+    Some(name)
+}
+
+fn infer_result_kind(args: &[SExpr]) -> Result<InferResultKind, EvalError> {
+    let declarations = args
+        .iter()
+        .filter(|argument| argument_name(argument) == Some("returns"))
+        .collect::<Vec<_>>();
+    if declarations.len() > 1 {
+        return err("(infer ...) 重复指定了参数 '(returns ...)'".to_string());
+    }
+    let Some(returns) = declarations.first().copied() else {
+        return Ok(InferResultKind::Text);
+    };
+    let SExpr::List(items) = returns else {
+        unreachable!("argument_name accepted only a list")
+    };
+    let [SExpr::Atom(_), SExpr::Atom(kind)] = items.as_slice() else {
+        return err("(returns text|json) 必须且只能给出一个静态结果类型".to_string());
+    };
+    match kind.as_str() {
+        "text" => Ok(InferResultKind::Text),
+        "json" => Ok(InferResultKind::Json),
+        other => err(format!(
+            "未知 infer 结果类型 '{other}'；当前只支持 text 或 json"
+        )),
+    }
+}
+
+fn infer_tool_names(args: &[SExpr]) -> Result<Option<Vec<String>>, EvalError> {
+    let declarations = args
+        .iter()
+        .filter(|argument| argument_name(argument) == Some("tools"))
+        .collect::<Vec<_>>();
+    if declarations.len() > 1 {
+        return err("(infer ...) 重复指定了参数 '(tools ...)'".to_string());
+    }
+    let Some(tools) = declarations.first().copied() else {
+        return Ok(None);
+    };
+    let SExpr::List(items) = tools else {
+        unreachable!("argument_name accepted only a list")
+    };
+    let mut names = Vec::new();
+    for item in &items[1..] {
+        let SExpr::Atom(name) = item else {
+            return err("(tools ...) 只接受静态工具名原子".to_string());
+        };
+        if name.starts_with('$') {
+            return err("(tools ...) 不接受动态绑定引用".to_string());
+        }
+        if names.iter().any(|seen| seen == name) {
+            return err(format!("(tools ...) 重复声明工具 '{name}'"));
+        }
+        names.push(name.clone());
+    }
+    Ok(Some(names))
+}
+
+fn lower_infer_arguments(args: &[SExpr]) -> Result<Vec<PlanArgument>, EvalError> {
+    let data_arguments = args
+        .iter()
+        .filter(|argument| !matches!(argument_name(argument), Some("returns") | Some("tools")))
+        .cloned()
+        .collect::<Vec<_>>();
+    lower_arguments(&data_arguments)
+}
+
 fn lower_expr(expr: &SExpr) -> Result<PlanNode, EvalError> {
     if matches!(expr, SExpr::Atom(_)) {
         return Ok(PlanNode::Value {
@@ -817,7 +940,9 @@ fn lower_expr(expr: &SExpr) -> Result<PlanNode, EvalError> {
             })
         }
         "infer" => Ok(PlanNode::Infer {
-            arguments: lower_arguments(args)?,
+            arguments: lower_infer_arguments(args)?,
+            tools: infer_tool_names(args)?,
+            result: infer_result_kind(args)?,
         }),
         "call" => {
             let Some(SExpr::Atom(tool)) = args.first() else {
@@ -874,6 +999,8 @@ pub enum PlanEffect {
         sequence: u64,
         request: JsonMap<String, JsonValue>,
         tools: Option<Vec<String>>,
+        #[serde(default)]
+        result: InferResultKind,
     },
 }
 
@@ -1119,7 +1246,11 @@ impl PlanMachine {
                             ))),
                             Err(error) => self.raise(error),
                         },
-                        PlanNode::Infer { arguments } => {
+                        PlanNode::Infer {
+                            arguments,
+                            tools,
+                            result,
+                        } => {
                             if self.budget.infers_left == 0 {
                                 self.raise(EvalError::from(format!(
                                     "程序的 infer 次数超过上限 {MAX_PROGRAM_INFERS}"
@@ -1132,7 +1263,8 @@ impl PlanMachine {
                                     let effect = PlanEffect::Infer {
                                         sequence: self.take_effect_sequence(),
                                         request,
-                                        tools: self.declared_tools.clone(),
+                                        tools: tools.or_else(|| self.declared_tools.clone()),
+                                        result,
                                     };
                                     self.pending = Some(effect.clone());
                                     return PlanAdvance::Suspended(effect);
@@ -1353,11 +1485,15 @@ pub async fn evaluate(
                             .map(as_json)
                             .map_err(|error| error.to_string())
                     }
-                    PlanEffect::Infer { request, tools, .. } => host
-                        .infer(&request, tools.as_deref())
-                        .await
-                        .map(JsonValue::String)
-                        .map_err(|error| error.to_string()),
+                    PlanEffect::Infer {
+                        request,
+                        tools,
+                        result,
+                        ..
+                    } => match host.infer(&request, tools.as_deref()).await {
+                        Ok(value) => decode_infer_result(result, JsonValue::String(value)),
+                        Err(error) => Err(error.to_string()),
+                    },
                 };
                 machine.resume_effect(sequence, outcome)?;
             }
@@ -1456,6 +1592,24 @@ fn literal(atom: &str) -> JsonValue {
 /// into it, and when it does not it stays a string.
 fn as_json(output: String) -> JsonValue {
     serde_json::from_str(&output).unwrap_or(JsonValue::String(output))
+}
+
+/// Applies the explicit result contract after a nested Evaluation completes.
+///
+/// No Markdown fence stripping or best-effort repair is performed: accepting
+/// malformed output would make a supposedly typed Runtime program depend on a
+/// heuristic parser.  A Harness can use `fallback` around the infer when it
+/// wants a recovery path.
+pub fn decode_infer_result(kind: InferResultKind, value: JsonValue) -> Result<JsonValue, String> {
+    match kind {
+        InferResultKind::Text => Ok(value),
+        InferResultKind::Json => match value {
+            JsonValue::String(text) => serde_json::from_str(text.trim()).map_err(|error| {
+                format!("infer 声明 returns=json，但最终正文不是合法 JSON: {error}")
+            }),
+            structured => Ok(structured),
+        },
+    }
 }
 
 fn truthy(value: &JsonValue) -> bool {
@@ -1970,6 +2124,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn json_infer_results_become_addressable_plan_data() {
+        let (registry, seen) = fixture(&[("search", serde_json::json!(["matched"]))]);
+        let program = validate(
+            r#"(eval
+                 (requires (tools search))
+                 (seq
+                   (bind decision
+                     (infer
+                       (task "选择查询词")
+                       (returns json)
+                       (evidence "fixture")))
+                   (call search (query $decision.query))))"#,
+            &registry,
+            &AllowList::new(["search"]),
+        )
+        .unwrap();
+        let (inference, requests) = host(r#"{"query":"needle"}"#);
+        let value = evaluate(&program, registry, inference).await.unwrap();
+
+        assert_eq!(value, serde_json::json!(["matched"]));
+        assert_eq!(
+            seen.lock().unwrap().as_slice(),
+            &[r#"search:{"query":"needle"}"#.to_string()]
+        );
+        assert_eq!(requests.lock().unwrap()[0]["task"], "选择查询词");
+        assert!(requests.lock().unwrap()[0].get("returns").is_none());
+    }
+
+    #[tokio::test]
+    async fn malformed_json_infer_results_are_classified_failures_for_fallback() {
+        let registry = fixture(&[]).0;
+        let program = validate(
+            r#"(eval
+                 (fallback
+                   (infer (task "返回对象") (returns json))
+                   "recovered"))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let (inference, _) = host("not-json");
+
+        assert_eq!(
+            evaluate(&program, registry, inference).await.unwrap(),
+            serde_json::json!("recovered")
+        );
+    }
+
+    #[test]
+    fn infer_result_contract_is_static_and_known_before_execution() {
+        let registry = fixture(&[]).0;
+        for source in [
+            r#"(eval (infer (task "x") (returns yaml)))"#,
+            r#"(eval (infer (task "x") (returns json text)))"#,
+            r#"(eval (infer (task "x") (returns json) (returns text)))"#,
+            r#"(eval (infer (task "x") (tools) (tools search)))"#,
+        ] {
+            let error = validate(source, &registry, &AllowList::new(Vec::<String>::new()))
+                .unwrap_err()
+                .message;
+            assert!(
+                error.contains("returns") || error.contains("结果类型") || error.contains("tools"),
+                "{error}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn infer_must_say_what_it_is_asking() {
         let registry = fixture(&[]).0;
         let error = validate(r#"(infer (evidence "x"))"#, &registry, &gate())
@@ -2200,6 +2422,54 @@ mod tests {
         evaluate(&program, Arc::clone(&registry), host)
             .await
             .unwrap();
+        assert_eq!(
+            offered.lock().unwrap().as_slice(),
+            &[Some(vec!["search".to_string()])]
+        );
+    }
+
+    #[tokio::test]
+    async fn infer_can_explicitly_close_or_narrow_its_own_tool_scope() {
+        let (registry, _) = fixture(&[
+            ("read", serde_json::json!("evidence")),
+            ("search", serde_json::json!([])),
+        ]);
+        let pure = validate(
+            r#"(eval
+                 (requires (tools read search))
+                 (seq
+                   (bind evidence (call read (path "a")))
+                   (infer (task "judge") (tools) (evidence $evidence))))"#,
+            &registry,
+            &gate(),
+        )
+        .unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let offered = Arc::new(Mutex::new(Vec::new()));
+        let host: Arc<dyn RuntimeInference> = Arc::new(ScriptedHost {
+            answer: "ok".to_string(),
+            seen,
+            tools_offered: Arc::clone(&offered),
+        });
+        evaluate(&pure, Arc::clone(&registry), host).await.unwrap();
+        assert_eq!(offered.lock().unwrap().as_slice(), &[Some(Vec::new())]);
+
+        let narrowed = validate(
+            r#"(eval
+                 (requires (tools read search))
+                 (infer (task "research") (tools search)))"#,
+            &registry,
+            &gate(),
+        )
+        .unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let offered = Arc::new(Mutex::new(Vec::new()));
+        let host: Arc<dyn RuntimeInference> = Arc::new(ScriptedHost {
+            answer: "ok".to_string(),
+            seen,
+            tools_offered: Arc::clone(&offered),
+        });
+        evaluate(&narrowed, registry, host).await.unwrap();
         assert_eq!(
             offered.lock().unwrap().as_slice(),
             &[Some(vec!["search".to_string()])]

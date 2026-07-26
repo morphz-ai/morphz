@@ -240,6 +240,8 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
     (bind plan
       (infer
         (task "根据仓库证据制定修改方案")
+        (tools)
+        (returns json)
         (input repository)))
 
     (call apply-plan
@@ -259,6 +261,26 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
 - `call` 物化为正式 Execution Job；
 - 内层 `infer` 物化为子 Evaluation，交给 LLM 做非确定性求值；
 - 子 Evaluation 交付结果后，Runtime 从原节点继续。
+
+内部 `infer` 可以显式声明自己的结果和工具边界：
+
+```lisp
+(infer
+  (task "根据显式证据生成编辑参数")
+  (tools)
+  (returns json)
+  (evidence $repository))
+```
+
+- 不写 `(tools ...)`：继承程序根部 `(requires (tools ...))` 的范围；
+- `(tools)`：纯模型计算，只能使用传入值；
+- `(tools read search)`：只允许列出的证据工具，并且仍须是外层能力的子集；
+- `(returns text)`：返回普通文本值，也是默认行为；
+- `(returns json)`：Runtime 严格解析一个 JSON 值，不剥离 Markdown fence、不修复
+  近似 JSON；失败作为分类错误进入 Plan，而不是猜测后继续产生副作用。
+
+这使 Coding Harness 可以让 Runtime 固定取证和验证顺序，同时把真正需要语言
+理解的局部决策交给模型，而不会让 child infer 绕过程序自行编辑或执行命令。
 
 模型主导型入口可以写成：
 
@@ -358,6 +380,10 @@ enum PlanNode {
     Value(ValueExpr),
 }
 ```
+
+实际 v1 的 `Infer` 还携带可选的 per-node tool scope 与
+`InferResultKind::{Text, Json}`；它们进入可序列化 IR，因此进程内执行与重启恢复
+使用完全相同的边界规则。
 
 第一版不需要建设复杂编译器。“SExpr Parser → 严格校验 → Rust 枚举”已经构成 Typed Plan IR。
 
@@ -462,6 +488,8 @@ Harness 不拥有第二套调度器。Plan Executor 只把 IR 节点物化到已
   用户 Delivery；
 - 父 Plan 根据稳定 Activation ID、Thread executor route 与结果 Event
   回填确切的 `infer` effect；崩溃后可通过有界扫描继续。
+- 父 Plan 等待整个 infer Thread 的终态结果，而不是把某个中间 Activation 的
+  reasoning 或 continuation 错当成交付；terminal result 才能解除等待。
 
 是否限制内部 `infer` 的轮数属于 Profile / Budget 策略，不写死为一个很小的语言常量。正常推理可以持续；Runtime 只保留安全级 hard limit、停滞观测和可人工干预能力。
 
@@ -572,6 +600,9 @@ morphz objective create --harness=coding@1.0.0 "修复当前项目的测试"
 - 正式 `eval` 工具在静态校验后建立稳定 `PlanExecution`；
 - `call` 复用现有 Execution Job、Target、审批、沙箱与结果事件链；
 - `infer` 建立正式 child Activation，终态结果回填后继续 Plan；
+- 内部 `infer` 支持 `(returns text|json)` 与 per-node `(tools ...)` 收窄；空
+  `(tools)` 可建立不具备任何物理工具的纯推断边界；
+- 严格 JSON 解码失败在重启恢复后仍然失败关闭，后续物理 effect 不会被创建；
 - Planner 失败会终结 Plan，不再遗留无法恢复的 `running` 状态；
 - Runtime 集成测试已覆盖 `eval → read Execution Job → Plan 成功 → 最终回复`；
 - 规范化 package hash 不受单文件/目录形态及无意义空白影响；

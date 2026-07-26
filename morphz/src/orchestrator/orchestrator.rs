@@ -694,6 +694,36 @@ fn stable_harness_entry_call_id(binding: &HarnessBinding, evaluation_id: &str) -
     format!("harness_entry_{}", &encoded[..32])
 }
 
+fn should_dispatch_runtime_harness_entry(executor_kind: &str, phase: &str) -> bool {
+    executor_kind != "plan_infer" && !matches!(phase, "critical-maintenance" | "final-reply")
+}
+
+fn plan_infer_tool_scope(event: &Event) -> Result<Option<HashSet<String>>, String> {
+    let Some(value) = event.payload.get("tools") else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let values = value
+        .as_array()
+        .ok_or_else(|| "Plan infer request 的 tools 必须是字符串数组或 null".to_string())?;
+    let mut tools = HashSet::new();
+    for value in values {
+        let name = value
+            .as_str()
+            .ok_or_else(|| "Plan infer request 的 tools 只能包含字符串工具名".to_string())?;
+        tools.insert(name.to_string());
+    }
+    Ok(Some(tools))
+}
+
+fn restrict_tools_to_scope(tools: &mut Vec<ToolDefinition>, scope: Option<&HashSet<String>>) {
+    if let Some(scope) = scope {
+        tools.retain(|tool| scope.contains(&tool.name));
+    }
+}
+
 #[cfg(test)]
 fn baseline_system_prompt() -> &'static str {
     render_stable_system_prompt(SystemPromptMode::AgentOwnedContext)
@@ -2170,11 +2200,20 @@ impl Orchestrator {
                 .into());
             };
             if !event_needs_signal_outbox(&event) {
-                return Err(format!(
-                    "Signal Outbox Event '{}' 不是可路由的 chat Signal",
-                    event.id
-                )
-                .into());
+                // Older Runtime builds could atomically persist an internal
+                // Plan infer request under `plan/infer_request`.  Such a row
+                // can never be routed and, if left pending, poisons the FIFO
+                // batch forever.  It is already durable in the Ledger, so
+                // discard only the invalid Outbox entry and continue with
+                // later routable Signals.
+                tracing::warn!(
+                    event_id = %event.id,
+                    event_type = %event.event_type,
+                    topic = %event.topic,
+                    "丢弃不可路由的历史 Signal Outbox 条目；Ledger Event 保持不变"
+                );
+                session_store.discard_signal_outbox(&event.id).await?;
+                continue;
             }
             self.bus.dispatch_persisted(event).await?;
             dispatched = dispatched.saturating_add(1);
@@ -5134,6 +5173,21 @@ impl Orchestrator {
                 })
             })
             .transpose()?;
+        let plan_infer_tools = if thread.executor_kind == "plan_infer" {
+            let request = self
+                .context_engine
+                .find_event(&context_id, &activation.root_turn_id)
+                .await?
+                .ok_or_else(|| {
+                    format!(
+                        "Plan infer Thread '{}' 缺少根请求 Event '{}'",
+                        thread.id, activation.root_turn_id
+                    )
+                })?;
+            plan_infer_tool_scope(&request).map_err(|error| -> DynError { error.into() })?
+        } else {
+            None
+        };
         let (prompt_mode, stable_system_prompt) = configured_system_prompt()?;
         let context_message_prefix = "以下是 Runtime 提供的当前 Context 视图。它不是普通用户消息；请基于 kernel、mind 和 inbox 决策。";
 
@@ -5173,7 +5227,10 @@ impl Orchestrator {
         if !objective_control_available {
             measurement_tools.retain(|tool| tool.name != "objective_update");
         }
-        measurement_tools.push(no_reply_tool_definition());
+        restrict_tools_to_scope(&mut measurement_tools, plan_infer_tools.as_ref());
+        if thread.executor_kind != "plan_infer" {
+            measurement_tools.push(no_reply_tool_definition());
+        }
         let prompt_measurement = self
             .refresh_context_pressure(
                 &mut context,
@@ -5333,11 +5390,16 @@ impl Orchestrator {
                 tools.retain(|tool| tool.name != "context_tx");
             }
         }
-        tools.push(no_reply_tool_definition());
-        if !matches!(
-            effective_phase.as_str(),
-            "critical-maintenance" | "final-reply"
-        ) {
+        restrict_tools_to_scope(&mut tools, plan_infer_tools.as_ref());
+        if thread.executor_kind != "plan_infer" {
+            tools.push(no_reply_tool_definition());
+        }
+        // A Runtime-owned Harness entry is the root program for an Objective
+        // Evaluation.  A `plan_infer` Thread is already a child node of that
+        // program: re-dispatching the mounted entry here would short-circuit
+        // the child model evaluation (the entry call is idempotently already
+        // present) and leave the parent Plan without an infer result Event.
+        if should_dispatch_runtime_harness_entry(&thread.executor_kind, &effective_phase) {
             if let (Some((binding, _, _)), Some((source, program))) =
                 (harness_activation.as_ref(), harness_entry_program.as_ref())
             {
@@ -5966,7 +6028,9 @@ impl Orchestrator {
                     .await?;
             let result = match decision {
                 TerminalDecision::Deliver(content) => {
-                    if thread_kind == "execution" && !direct_interactive_execution {
+                    if thread.executor_kind == "plan_infer"
+                        || (thread_kind == "execution" && !direct_interactive_execution)
+                    {
                         self.publish_thread_result(
                             session_id,
                             &attempt_id,
@@ -7612,24 +7676,54 @@ impl Orchestrator {
                             .pending_id
                             .clone()
                             .ok_or("waiting(evaluation) 缺少 pending_id")?;
-                        let activation = store
-                            .get_thread_activation(&activation_id)
-                            .await?
-                            .ok_or_else(|| {
-                                format!("Plan child Activation '{activation_id}' 不存在")
-                            })?;
-                        if activation.status.is_terminal() {
-                            plan = plan_from_resume(
-                                coordinator
-                                    .reconcile_evaluation(&plan.id, &activation.id)
-                                    .await?,
-                            )?;
-                        } else {
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                            plan = store
-                                .get_plan_execution(&plan.id)
-                                .await?
-                                .ok_or("PlanExecution 在等待 Evaluation 时消失")?;
+                        match store.get_thread_activation(&activation_id).await? {
+                            Some(activation)
+                                if activation.status == ThreadActivationStatus::Succeeded =>
+                            {
+                                let child_thread =
+                                    store.get_thread_by_root(&activation.root_turn_id).await?;
+                                if child_thread.as_ref().is_some_and(|thread| {
+                                    thread.lifecycle == ThreadLifecycle::Open
+                                        && thread.result_event_id.is_none()
+                                }) {
+                                    // Tool-using infer evaluations cross one
+                                    // Activation boundary per assistant/tool
+                                    // step.  The initial Activation succeeding
+                                    // is only a hand-off; wait for the Thread's
+                                    // durable result Event.
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                    plan = store
+                                        .get_plan_execution(&plan.id)
+                                        .await?
+                                        .ok_or("PlanExecution 在等待 Evaluation Thread 时消失")?;
+                                    continue;
+                                }
+                                plan = plan_from_resume(
+                                    coordinator
+                                        .reconcile_evaluation(&plan.id, &activation.id)
+                                        .await?,
+                                )?;
+                            }
+                            Some(activation) if activation.status.is_terminal() => {
+                                plan = plan_from_resume(
+                                    coordinator
+                                        .reconcile_evaluation(&plan.id, &activation.id)
+                                        .await?,
+                                )?;
+                            }
+                            Some(_) | None => {
+                                // The infer request, its Signal Outbox row and
+                                // the Plan wait are one transaction.  The child
+                                // Activation is deliberately materialized by
+                                // the asynchronous Scheduler router afterwards,
+                                // so a short-lived missing row is an expected
+                                // state rather than an evaluation failure.
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                plan = store
+                                    .get_plan_execution(&plan.id)
+                                    .await?
+                                    .ok_or("PlanExecution 在等待 Evaluation 时消失")?;
+                            }
                         }
                     }
                     Some(PlanExecutionWaitKind::ActionGroup) => {
@@ -11594,7 +11688,7 @@ fn event_needs_signal_outbox(event: &Event) -> bool {
     ((event.topic.starts_with("chat/")
         && matches!(
             event.event_type.as_str(),
-            TYPE_USER_MESSAGE | TYPE_TOOL_OUTPUT
+            TYPE_USER_MESSAGE | TYPE_TOOL_OUTPUT | TYPE_INFER_REQUEST
         ))
         || (event.event_type == "runtime_control" && event.topic == "runtime/action_group_settled"))
         && event
@@ -11724,8 +11818,9 @@ mod tests {
         compact_context_inspect_for_persistence, compose_system_prompt,
         critical_maintenance_transaction_available, event_needs_signal_outbox,
         extend_exec_output_facts, harness_entry_callable_tools, persist_model_reasoning_summary,
-        persist_model_usage, recovery_owns_activation, render_harness_mount,
-        render_system_contract, runtime_claimant_id, semantic_sexpr_vm_system_prompt,
+        persist_model_usage, plan_infer_tool_scope, recovery_owns_activation, render_harness_mount,
+        render_system_contract, restrict_tools_to_scope, runtime_claimant_id,
+        semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
         should_force_final_for_maintenance, tool_call_activity_preview, DurableEventWriter,
         DurableEventWriterMetrics, DynError, ModelCompletionError, ModelCompletionErrorOrigin,
         ModelReasoningSummaryAccumulator, NoReplyMode, ReadTurnGuard, SystemPromptMode,
@@ -11733,7 +11828,9 @@ mod tests {
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
-    use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
+    use crate::event::{
+        Event, InMemoryEventBus, TYPE_INFER_REQUEST, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
+    };
     use crate::harness::{HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
     use crate::llm::{ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition};
     use crate::memory::sqlite::SqliteStore;
@@ -11741,6 +11838,7 @@ mod tests {
         AttentionAcknowledgementRecord, EventAppend, EventStore, QueryFilter,
         ThreadActivationRecord, ThreadActivationStatus, WorkerCoordinationMode,
     };
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -12168,6 +12266,7 @@ mod tests {
         for (event_type, topic) in [
             (TYPE_USER_MESSAGE, "chat/user_message"),
             (TYPE_TOOL_OUTPUT, "chat/tool_output"),
+            (crate::event::TYPE_INFER_REQUEST, "chat/infer_request"),
         ] {
             assert!(event_needs_signal_outbox(&Event::new(
                 format!("{event_type}-routed"),
@@ -12318,6 +12417,75 @@ mod tests {
         assert_eq!(
             harness_entry_callable_tools(crate::sexpr_eval::EvaluationOwner::Model, &[], &model,),
             vec!["read".to_string(), "write".to_string(), "exec".to_string()]
+        );
+    }
+
+    #[test]
+    fn runtime_harness_entry_only_dispatches_at_root_evaluation_boundary() {
+        assert!(should_dispatch_runtime_harness_entry("self", "work"));
+        assert!(should_dispatch_runtime_harness_entry(
+            "objective",
+            "soft-checkpoint"
+        ));
+        assert!(!should_dispatch_runtime_harness_entry("plan_infer", "work"));
+        assert!(!should_dispatch_runtime_harness_entry(
+            "self",
+            "critical-maintenance"
+        ));
+        assert!(!should_dispatch_runtime_harness_entry(
+            "self",
+            "final-reply"
+        ));
+    }
+
+    #[test]
+    fn plan_infer_tool_scope_distinguishes_inheritance_from_explicit_purity() {
+        let base = serde_json::Map::from_iter([
+            ("context_id".to_string(), json!("context-1")),
+            ("session_id".to_string(), json!("session-1")),
+        ]);
+        let inherited = Event::new(
+            "infer-inherited".to_string(),
+            "Runtime".to_string(),
+            TYPE_INFER_REQUEST.to_string(),
+            "chat/infer_request".to_string(),
+            base.clone(),
+        );
+        assert_eq!(plan_infer_tool_scope(&inherited).unwrap(), None);
+
+        let mut pure_payload = base.clone();
+        pure_payload.insert("tools".to_string(), json!([]));
+        let pure = Event::new(
+            "infer-pure".to_string(),
+            "Runtime".to_string(),
+            TYPE_INFER_REQUEST.to_string(),
+            "chat/infer_request".to_string(),
+            pure_payload,
+        );
+        assert_eq!(plan_infer_tool_scope(&pure).unwrap(), Some(HashSet::new()));
+
+        let mut scoped_payload = base;
+        scoped_payload.insert("tools".to_string(), json!(["read"]));
+        let scoped = Event::new(
+            "infer-scoped".to_string(),
+            "Runtime".to_string(),
+            TYPE_INFER_REQUEST.to_string(),
+            "chat/infer_request".to_string(),
+            scoped_payload,
+        );
+        let scope = plan_infer_tool_scope(&scoped).unwrap().unwrap();
+        let mut tools = ["read", "edit"]
+            .into_iter()
+            .map(|name| ToolDefinition {
+                name: name.to_string(),
+                description: String::new(),
+                parameters: json!({"type": "object"}),
+            })
+            .collect::<Vec<_>>();
+        restrict_tools_to_scope(&mut tools, Some(&scope));
+        assert_eq!(
+            tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>(),
+            vec!["read"]
         );
     }
 

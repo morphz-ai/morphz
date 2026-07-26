@@ -1124,7 +1124,7 @@ mod tests {
             "infer-request-atomic".to_string(),
             "Runtime-Yao".to_string(),
             crate::event::TYPE_INFER_REQUEST.to_string(),
-            "plan/infer_request".to_string(),
+            "chat/infer_request".to_string(),
             serde_json::Map::from_iter([
                 ("agent_id".to_string(), serde_json::json!(running.agent_id)),
                 (

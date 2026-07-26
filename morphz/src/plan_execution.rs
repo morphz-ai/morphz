@@ -20,7 +20,7 @@ use crate::memory::{
     PlanEvaluationCommit, PlanExecutionFilter, PlanExecutionMutation, PlanExecutionRecord,
     PlanExecutionStatus, PlanExecutionWaitKind, QueryFilter, RuntimeStore, ThreadActivationStatus,
 };
-use crate::sexpr_eval::{PlanAdvance, PlanEffect, PlanMachine, Program};
+use crate::sexpr_eval::{decode_infer_result, PlanAdvance, PlanEffect, PlanMachine, Program};
 use crate::tool::Registry;
 
 pub type PlanExecutionResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -68,12 +68,12 @@ pub trait PlanCallPlanner: Send + Sync {
 pub enum PlanDriveReceipt {
     WaitingForExecutionJob {
         plan: PlanExecutionRecord,
-        job: ExecutionJobRecord,
+        job: Box<ExecutionJobRecord>,
         existing: bool,
     },
     WaitingForEvaluation {
         plan: PlanExecutionRecord,
-        request_event: Event,
+        request_event: Box<Event>,
         activation_id: String,
         existing: bool,
     },
@@ -282,7 +282,7 @@ impl PlanExecutionCoordinator {
                     .await?;
                 Ok(PlanDriveReceipt::WaitingForExecutionJob {
                     plan: committed.plan,
-                    job: committed.execution_job,
+                    job: Box::new(committed.execution_job),
                     existing: committed.existing,
                 })
             }
@@ -313,7 +313,7 @@ impl PlanExecutionCoordinator {
                 );
                 Ok(PlanDriveReceipt::WaitingForEvaluation {
                     plan: committed.plan,
-                    request_event: committed.request_event,
+                    request_event: Box::new(committed.request_event),
                     activation_id: committed.activation_id,
                     existing: committed.existing,
                 })
@@ -515,13 +515,20 @@ impl PlanExecutionCoordinator {
                 plan.id
             )
         })?;
-        let PlanEffect::Infer { sequence, .. } = effect else {
+        let PlanEffect::Infer {
+            sequence, result, ..
+        } = effect
+        else {
             return Err("PlanExecution 等待 Evaluation，但 pending effect 不是 infer".into());
         };
         let request_event = infer_request_event(&plan, &effect)?;
         if deterministic_infer_activation_id(&request_event.id)? != activation.id {
             return Err("child Activation 与 Plan infer effect 的稳定身份不一致".into());
         }
+        let outcome = match outcome {
+            Ok(value) => decode_infer_result(result, value),
+            Err(error) => Err(error),
+        };
         machine.resume_effect(sequence, outcome)?;
         let state_json = serde_json::to_value(&machine)?;
         let budget_json = machine.budget_json()?;
@@ -703,6 +710,24 @@ impl PlanExecutionCoordinator {
                 report.still_waiting.push(plan.id);
                 continue;
             }
+            // One logical infer Thread can span several Activations while the
+            // model calls tools.  A successful Activation without a Thread
+            // result only means that one step handed off to a successor; it
+            // is not the terminal infer value.  Resolve the parent Plan from
+            // the Thread outcome boundary, not from the first Activation.
+            if activation.status == ThreadActivationStatus::Succeeded {
+                let thread = self
+                    .store
+                    .get_thread_by_root(&activation.root_turn_id)
+                    .await?;
+                if thread.as_ref().is_some_and(|thread| {
+                    thread.lifecycle == crate::memory::ThreadLifecycle::Open
+                        && thread.result_event_id.is_none()
+                }) {
+                    report.still_waiting.push(plan.id);
+                    continue;
+                }
+            }
             match self.reconcile_evaluation(&plan.id, &activation.id).await? {
                 PlanResumeReceipt::Queued(record) | PlanResumeReceipt::Existing(record) => {
                     report.resumed.push(record);
@@ -863,6 +888,7 @@ fn infer_request_event(
         sequence,
         request,
         tools,
+        result,
     } = effect
     else {
         return Err("只有 infer effect 能生成内部求值请求".into());
@@ -920,9 +946,17 @@ fn infer_request_event(
                 .unwrap_or(JsonValue::Null),
         ),
         (
+            "result_kind".to_string(),
+            JsonValue::String(result.as_str().to_string()),
+        ),
+        (
             "text".to_string(),
             JsonValue::String(format!(
-                "这是 Runtime 正在执行的 Yao 程序提出的内部 infer 请求。请根据 request 中的任务与证据完成判断；可使用 tools 声明允许的工具补充证据。最终正文只返回供父 Plan 继续求值的结果，不要把它当作用户消息。\n\n{}",
+                "这是 Runtime 正在执行的 Yao 程序提出的内部 infer 请求。请根据 request 中的任务与证据完成判断；可使用 tools 声明允许的工具补充证据。最终正文只返回供父 Plan 继续求值的结果，不要把它当作用户消息。{}\n\n{}",
+                match result {
+                    crate::sexpr_eval::InferResultKind::Text => "",
+                    crate::sexpr_eval::InferResultKind::Json => "本节点声明 returns=json；最终正文必须只包含一个完整、合法的 JSON 值，不要使用 Markdown 代码围栏或附加说明。",
+                },
                 serde_json::to_string(&JsonValue::Object(request.clone()))?
             )),
         ),
@@ -949,7 +983,11 @@ fn infer_request_event(
         event_id,
         "Runtime-Yao".to_string(),
         TYPE_INFER_REQUEST.to_string(),
-        "plan/infer_request".to_string(),
+        // An infer request is an internal evaluation input, but it still
+        // enters the ordinary chat Signal router so the Scheduler can
+        // materialize its child Activation.  Keep the dedicated Event type
+        // to distinguish it from a user message.
+        "chat/infer_request".to_string(),
         payload,
     );
     // Exact replay must be byte-identical. The claim transition timestamp is
@@ -1119,9 +1157,10 @@ mod tests {
     use crate::llm::ToolDefinition;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        ActivationStore, ExecutionJobMutation, ExecutionJobStore, ExecutionJobTerminal,
-        ExecutionRetrySafety, NewCognitiveContext, NewSession, NewThread, NewThreadActivation,
-        SessionDirectoryStore, SessionMountKind, ThreadActivationMutation, ThreadKind, ThreadStore,
+        ActivationStore, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobStore,
+        ExecutionJobTerminal, ExecutionRetrySafety, NewCognitiveContext, NewSession, NewThread,
+        NewThreadActivation, SessionDirectoryStore, SessionMountKind, ThreadActivationMutation,
+        ThreadKind, ThreadStore,
     };
     use crate::sexpr_eval::{validate, AllowList};
     use crate::tool::Tool;
@@ -1479,7 +1518,10 @@ mod tests {
             r#"(eval
                  (seq
                    (bind judgement
-                     (infer (task "判断证据是否充分") (evidence "A")))
+                     (infer
+                       (task "判断证据是否充分")
+                       (returns json)
+                       (evidence "A")))
                    $judgement))"#,
             &registry,
             &AllowList::new(Vec::<String>::new()),
@@ -1522,6 +1564,19 @@ mod tests {
             Some(PlanExecutionWaitKind::Evaluation)
         );
         assert_eq!(waiting.pending_id.as_deref(), Some(activation_id.as_str()));
+        assert_eq!(request_event.payload["result_kind"], "json");
+
+        // The durable infer hand-off intentionally precedes asynchronous
+        // Scheduler materialization.  A reconciler observing this crash
+        // window must keep waiting instead of turning the missing child into
+        // a failed Plan.
+        let pre_materialization = coordinator
+            .reconcile_waiting_evaluations(Some(&waiting.context_id), 16)
+            .await
+            .unwrap();
+        assert!(pre_materialization.resumed.is_empty());
+        assert!(pre_materialization.conflicts.is_empty());
+        assert_eq!(pre_materialization.still_waiting, vec![waiting.id.clone()]);
 
         let child_thread = store
             .ensure_thread(NewThread {
@@ -1576,13 +1631,12 @@ mod tests {
                     "disposition".to_string(),
                     serde_json::json!("complete_internal_evaluation"),
                 ),
-                ("text".to_string(), serde_json::json!("证据充分，可以继续")),
+                (
+                    "text".to_string(),
+                    serde_json::json!(r#"{"sufficient":true,"next":"continue"}"#),
+                ),
             ]),
         );
-        store
-            .commit_activation_outcome(&activation_id, &result_event)
-            .await
-            .unwrap();
         let child_activation = match store
             .update_thread_activation(
                 &child_activation.id,
@@ -1599,6 +1653,19 @@ mod tests {
             other => panic!("expected terminal child activation, got {other:?}"),
         };
         assert_eq!(child_activation.status, ThreadActivationStatus::Succeeded);
+
+        let between_tool_steps = coordinator
+            .reconcile_waiting_evaluations(Some(&waiting.context_id), 16)
+            .await
+            .unwrap();
+        assert!(between_tool_steps.resumed.is_empty());
+        assert!(between_tool_steps.conflicts.is_empty());
+        assert_eq!(between_tool_steps.still_waiting, vec![waiting.id.clone()]);
+
+        store
+            .commit_activation_outcome(&activation_id, &result_event)
+            .await
+            .unwrap();
 
         let resumed = match coordinator
             .reconcile_evaluation(&waiting.id, &activation_id)
@@ -1621,10 +1688,185 @@ mod tests {
             .unwrap()
         {
             PlanDriveReceipt::Succeeded { plan, value } => {
-                assert_eq!(value, serde_json::json!("证据充分，可以继续"));
+                assert_eq!(
+                    value,
+                    serde_json::json!({"sufficient": true, "next": "continue"})
+                );
                 assert_eq!(plan.status, PlanExecutionStatus::Succeeded);
             }
             other => panic!("expected completed infer plan, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn malformed_json_infer_result_fails_closed_after_restart_without_physical_call() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        registry.register(Arc::new(DefinitionOnlyTool));
+        let program = validate(
+            r#"(eval
+                 (requires (tools read))
+                 (seq
+                   (bind decision
+                     (infer
+                       (task "返回后续 read 的结构化决策")
+                       (returns json)))
+                   (call read (path $decision.path))))"#,
+            &registry,
+            &AllowList::new(["read"]),
+        )
+        .unwrap();
+        let route = seed_route(&store).await;
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, registry.clone());
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+        let (waiting, request_event, activation_id) = match coordinator
+            .drive_once(
+                &queued.id,
+                queued.revision,
+                "plan-worker-before-restart",
+                "plan-malformed-claim-1",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::WaitingForEvaluation {
+                plan,
+                request_event,
+                activation_id,
+                ..
+            } => (plan, request_event, activation_id),
+            other => panic!("expected evaluation suspension, got {other:?}"),
+        };
+
+        let child_thread = store
+            .ensure_thread(NewThread {
+                id: "plan-malformed-infer-thread".to_string(),
+                agent_id: waiting.agent_id.clone(),
+                context_id: waiting.context_id.clone(),
+                session_id: waiting.session_id.clone(),
+                initiating_principal_id: waiting.initiating_principal_id.clone(),
+                root_turn_id: request_event.id.clone(),
+                kind: ThreadKind::Execution,
+                executor_kind: "plan_infer".to_string(),
+                executor_id: Some(waiting.id.clone()),
+                target_id: None,
+            })
+            .await
+            .unwrap();
+        let child_activation = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: activation_id.clone(),
+                agent_id: waiting.agent_id.clone(),
+                context_id: waiting.context_id.clone(),
+                session_id: waiting.session_id.clone(),
+                initiating_principal_id: waiting.initiating_principal_id.clone(),
+                trigger_event_id: request_event.id.clone(),
+                trigger_sequence: 2,
+                trigger_kind: TYPE_INFER_REQUEST.to_string(),
+                parent_activation_id: Some(waiting.activation_id.clone()),
+                root_turn_id: request_event.id.clone(),
+            })
+            .await
+            .unwrap();
+        let child_activation = match store
+            .update_thread_activation(
+                &child_activation.id,
+                child_activation.revision,
+                ThreadActivationStatus::Succeeded,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(record) => record,
+            other => panic!("expected terminal child activation, got {other:?}"),
+        };
+        assert_eq!(child_activation.status, ThreadActivationStatus::Succeeded);
+        let malformed_result = Event::new(
+            "plan-malformed-infer-result".to_string(),
+            "Test-Evaluator".to_string(),
+            "agent/result".to_string(),
+            "plan/infer_result".to_string(),
+            serde_json::Map::from_iter([
+                (
+                    "context_id".to_string(),
+                    serde_json::json!(waiting.context_id),
+                ),
+                (
+                    "session_id".to_string(),
+                    serde_json::json!(waiting.session_id),
+                ),
+                ("thread_id".to_string(), serde_json::json!(child_thread.id)),
+                (
+                    "root_turn_id".to_string(),
+                    serde_json::json!(request_event.id),
+                ),
+                (
+                    "text".to_string(),
+                    serde_json::json!("```json\n{\"path\":\"README.md\"}\n```"),
+                ),
+            ]),
+        );
+        store
+            .commit_activation_outcome(&activation_id, &malformed_result)
+            .await
+            .unwrap();
+
+        // Recreate the coordinator to prove recovery only depends on durable
+        // Plan, Thread and Event facts rather than an in-process response.
+        drop(coordinator);
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let restarted = PlanExecutionCoordinator::new(runtime_store, registry);
+        let resumed = match restarted
+            .reconcile_evaluation(&waiting.id, &activation_id)
+            .await
+            .unwrap()
+        {
+            PlanResumeReceipt::Queued(plan) => plan,
+            other => panic!("expected queued plan after durable refill, got {other:?}"),
+        };
+        match restarted
+            .drive_once(
+                &resumed.id,
+                resumed.revision,
+                "plan-worker-after-restart",
+                "plan-malformed-claim-2",
+                Utc::now() + Duration::minutes(1),
+                &TestPlanner,
+            )
+            .await
+            .unwrap()
+        {
+            PlanDriveReceipt::Failed { plan, error } => {
+                assert_eq!(plan.status, PlanExecutionStatus::Failed);
+                assert!(error.contains("合法 JSON"), "got: {error}");
+            }
+            other => panic!("expected fail-closed plan, got {other:?}"),
+        }
+        let jobs = store
+            .list_execution_jobs(ExecutionJobFilter {
+                context_id: Some(waiting.context_id),
+                include_terminal: true,
+                ..ExecutionJobFilter::default()
+            })
+            .await
+            .unwrap();
+        assert!(
+            jobs.is_empty(),
+            "malformed infer output must not reach the following physical call"
+        );
     }
 }

@@ -2053,10 +2053,7 @@ impl MorphzRuntime {
         package: HarnessPackage,
     ) -> Result<Arc<HarnessPackage>, RuntimeError> {
         persist_harness_package(self.inner.store.as_ref(), &package).await?;
-        self.inner
-            .harness_registry
-            .register_package(package)
-            .map_err(Into::into)
+        self.inner.harness_registry.register_package(package)
     }
 
     /// Binds one exact installed package to an Objective. The v1 binding is
@@ -5477,7 +5474,14 @@ mod tests {
             .build()
             .await
             .unwrap();
-        runtime.start().await.unwrap();
+        runtime
+            .ensure_context(NewCognitiveContext {
+                id: runtime.identity().context_id.clone(),
+                agent_id: runtime.identity().agent_id.clone(),
+                title: "Scheduler snapshot context".to_string(),
+            })
+            .await
+            .unwrap();
         runtime
             .ensure_session(NewSession {
                 id: "session-scheduler-snapshot".to_string(),
@@ -8170,7 +8174,10 @@ mod tests {
             .unwrap();
         let mut replies = recovered_runtime.subscribe("chat/reply", 8);
         recovered_runtime.start().await.unwrap();
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+        // Startup recovery performs durable Outbox materialization before the
+        // reply can be emitted.  Preserve a finite failure bound while leaving
+        // headroom for SQLite contention in the full parallel test suite.
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
             .await
             .unwrap()
             .unwrap();
@@ -8901,7 +8908,10 @@ mod tests {
             })
             .await
             .unwrap();
-        let reply = tokio::time::timeout(std::time::Duration::from_secs(10), replies.recv())
+        // This deliberately drives 102 durable model evaluations.  Keep a real
+        // deadline, but leave enough headroom for the full test suite where
+        // other SQLite-heavy tests run concurrently.
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(30), replies.recv())
             .await
             .unwrap()
             .unwrap();

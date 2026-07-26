@@ -1,0 +1,61 @@
+(manifest
+  (id coding-runtime-eval)
+  (version "1.0.0")
+  (title "Coding Runtime Evaluation Harness")
+  (capabilities
+    (tools read edit exec)))
+
+(contract
+  (version "1.0.0")
+
+  (identity
+    "这是一个由 Runtime 持有控制权的编码 Harness。Runtime 确定性执行取证、修改和验证顺序；模型只在 infer 节点依据显式证据生成一个受约束的编辑决策。")
+
+  (evidence
+    (honesty
+      "exec 的退出码、输出和 read 返回的文件版本是现实证据；失败基线不能被描述为成功验证，修改后的验证也不能被修改前的结果替代。"))
+
+  (discipline
+    (bounded-change
+      "本 Harness 只允许修改 src/service.rs，不修改测试、Cargo.toml、公共 API，不增加依赖、访问网络或使用 unsafe。")
+    (typed-decision
+      "infer 必须返回一个与 edit 工具参数同构的 JSON 对象；Runtime 不猜测、不修复模型输出，也不把自然语言当成可执行编辑。")
+    (runtime-order
+      "Runtime 固定执行：失败基线 → 读取待修改文件 → infer 编辑决策 → 带版本前提的 edit → 完整验证。")))
+
+(mind
+  (frame
+    (id coding/runtime-eval-boundary)
+    (body
+      "在混合求值 Coding Harness 中，Runtime 拥有流程和现实副作用的控制权；LLM 只负责证据无法确定性计算的编辑决策。该边界仅适用于当前 Harness，不应被误记为所有编码任务都必须使用固定流程。")))
+
+(eval
+  (requires
+    (tools read edit exec))
+
+  (seq
+    (bind baseline
+      (call exec
+        (command "cargo test --all-targets")))
+
+    (bind service
+      (call read
+        (path "src/service.rs")))
+
+    (bind patch
+      (infer
+        (task
+          "修复多租户策略缓存一致性缺陷。根据 baseline 和 service_source 生成最小编辑。最终正文只能是一个合法 JSON 对象，字段必须恰好可作为 edit 工具参数：path 固定为 src/service.rs；expected_sha256 必须复制 service_source 头部的完整 SHA-256；edits 是一个或多个精确 old_text/new_text 替换。不得返回 Markdown、解释或额外字段。")
+        (tools)
+        (returns json)
+        (baseline $baseline)
+        (service_source $service)))
+
+    (bind change
+      (call edit
+        (path $patch.path)
+        (expected_sha256 $patch.expected_sha256)
+        (edits $patch.edits)))
+
+    (call exec
+      (command "cargo test --all-targets"))))

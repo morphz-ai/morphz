@@ -7,7 +7,10 @@ use crate::eval_sandbox::{
 use chrono::Utc;
 use morphz::harness_package::{HarnessPackage, HARNESS_BINDING_TOPIC, HARNESS_PACKAGE_TOPIC};
 use morphz::memory::sqlite::SqliteStore;
-use morphz::memory::{EventStore, QueryFilter};
+use morphz::memory::{
+    EventStore, ExecutionJobFilter, ExecutionJobStore, PlanExecutionFilter, PlanExecutionStatus,
+    PlanExecutionStore, QueryFilter,
+};
 use morphz::orchestrator::orchestrator::{
     SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE, SYSTEM_PROMPT_MODE_ENV,
 };
@@ -29,6 +32,12 @@ pub const PROCEDURE_PROBE_HARNESS_VERSION: &str = "1.0.0";
 pub const PROCEDURE_PROBE_HARNESS_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/harnesses/coding-procedure-probe.hns"
+));
+pub const RUNTIME_EVAL_HARNESS_ID: &str = "coding-runtime-eval";
+pub const RUNTIME_EVAL_HARNESS_VERSION: &str = "1.0.0";
+pub const RUNTIME_EVAL_HARNESS_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/harnesses/coding-runtime-eval.hns"
 ));
 
 const CODING_HARNESS_SCENARIO: &str = "coding_harness_ab_v1";
@@ -57,6 +66,7 @@ pub enum CodingHarnessScenario {
     RetryStateMachine,
     CacheCoherence,
     ProcedureAdherence,
+    RuntimeEval,
 }
 
 impl CodingHarnessScenario {
@@ -65,13 +75,16 @@ impl CodingHarnessScenario {
             Self::RetryStateMachine => "retry-state-machine",
             Self::CacheCoherence => "cache-coherence",
             Self::ProcedureAdherence => "procedure-adherence",
+            Self::RuntimeEval => "runtime-eval",
         }
     }
 
     fn neutral_prompt(self) -> &'static str {
         match self {
             Self::RetryStateMachine => RETRY_STATE_MACHINE_PROMPT,
-            Self::CacheCoherence | Self::ProcedureAdherence => CACHE_COHERENCE_PROMPT,
+            Self::CacheCoherence | Self::ProcedureAdherence | Self::RuntimeEval => {
+                CACHE_COHERENCE_PROMPT
+            }
         }
     }
 
@@ -88,6 +101,12 @@ impl CodingHarnessScenario {
                 version: PROCEDURE_PROBE_HARNESS_VERSION,
                 filename: "coding-procedure-probe.hns",
                 source: PROCEDURE_PROBE_HARNESS_SOURCE,
+            },
+            Self::RuntimeEval => HarnessCandidate {
+                id: RUNTIME_EVAL_HARNESS_ID,
+                version: RUNTIME_EVAL_HARNESS_VERSION,
+                filename: "coding-runtime-eval.hns",
+                source: RUNTIME_EVAL_HARNESS_SOURCE,
             },
         }
     }
@@ -123,6 +142,20 @@ pub struct ProcedureAdherenceEvidence {
     pub strict_order_satisfied: bool,
 }
 
+/// Evidence that a Runtime-owned mixed plan, rather than an unconstrained
+/// model loop, controlled the physical workflow.
+#[derive(Debug, Clone, Serialize)]
+pub struct RuntimeEvalEvidence {
+    pub plan_statuses: Vec<String>,
+    pub physical_effect_order: Vec<String>,
+    pub infer_request_count: usize,
+    pub infer_result_count: usize,
+    pub infer_tool_call_count: usize,
+    pub infer_is_pure: bool,
+    pub infer_returns_json: bool,
+    pub strict_control_flow_satisfied: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct CodingHarnessEvalRun {
     pub arm: CodingHarnessArm,
@@ -138,6 +171,7 @@ pub struct CodingHarnessEvalRun {
     pub discipline: CodingDisciplineReport,
     pub harness: CodingHarnessEvidence,
     pub procedure_adherence: Option<ProcedureAdherenceEvidence>,
+    pub runtime_eval: Option<RuntimeEvalEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -178,9 +212,16 @@ pub fn procedure_probe_harness_path() -> PathBuf {
         .join("coding-procedure-probe.hns")
 }
 
+pub fn runtime_eval_harness_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("harnesses")
+        .join("coding-runtime-eval.hns")
+}
+
 fn harness_path(scenario: CodingHarnessScenario) -> PathBuf {
     match scenario {
         CodingHarnessScenario::ProcedureAdherence => procedure_probe_harness_path(),
+        CodingHarnessScenario::RuntimeEval => runtime_eval_harness_path(),
         CodingHarnessScenario::RetryStateMachine | CodingHarnessScenario::CacheCoherence => {
             coding_harness_path()
         }
@@ -199,9 +240,9 @@ pub fn create_coding_harness_eval_environment(
     }
     let mut environment = match scenario {
         CodingHarnessScenario::RetryStateMachine => create_coding_eval_v2(base_dir)?,
-        CodingHarnessScenario::CacheCoherence | CodingHarnessScenario::ProcedureAdherence => {
-            create_coding_eval_v3(base_dir)?
-        }
+        CodingHarnessScenario::CacheCoherence
+        | CodingHarnessScenario::ProcedureAdherence
+        | CodingHarnessScenario::RuntimeEval => create_coding_eval_v3(base_dir)?,
     };
     environment.manifest.benchmark = format!(
         "{CODING_HARNESS_SCENARIO}-{}-{}",
@@ -228,6 +269,12 @@ pub async fn run_coding_harness_eval(
         SYSTEM_PROMPT_MODE_ENV.to_string(),
         SEMANTIC_SEXPR_VM_SYSTEM_PROMPT_MODE.to_string(),
     );
+    if scenario == CodingHarnessScenario::RuntimeEval {
+        environment.environment.insert(
+            "MORPHZ_EVAL_CALLABLE_TOOLS".to_string(),
+            "read,edit,exec".to_string(),
+        );
+    }
     let objective_id = format!("objective-{}", environment.manifest.id);
     let candidate = scenario.harness_candidate();
     let started = Instant::now();
@@ -316,6 +363,11 @@ pub async fn run_coding_harness_eval(
     } else {
         None
     };
+    let runtime_eval = if scenario == CodingHarnessScenario::RuntimeEval {
+        Some(inspect_runtime_eval(&environment, &objective_id).await?)
+    } else {
+        None
+    };
     let run = CodingHarnessEvalRun {
         arm,
         scenario,
@@ -330,6 +382,7 @@ pub async fn run_coding_harness_eval(
         discipline,
         harness,
         procedure_adherence,
+        runtime_eval,
     };
     std::fs::write(
         environment.run_root.join("coding_harness_run.json"),
@@ -680,6 +733,121 @@ async fn inspect_procedure_adherence(
     })
 }
 
+async fn inspect_runtime_eval(
+    environment: &CodingEvalEnvironment,
+    objective_id: &str,
+) -> Result<RuntimeEvalEvidence, DynError> {
+    let store = SqliteStore::new(
+        environment
+            .manifest
+            .database_path
+            .to_string_lossy()
+            .as_ref(),
+    )
+    .await?;
+    let plans = store
+        .list_plan_executions(PlanExecutionFilter {
+            context_id: Some(environment.manifest.context_id.clone()),
+            objective_id: Some(objective_id.to_string()),
+            include_terminal: true,
+            ..PlanExecutionFilter::default()
+        })
+        .await?;
+    let mut jobs = store
+        .list_execution_jobs(ExecutionJobFilter {
+            context_id: Some(environment.manifest.context_id.clone()),
+            include_terminal: true,
+            ..ExecutionJobFilter::default()
+        })
+        .await?;
+    jobs.sort_by_key(|job| job.created_at);
+
+    let events = store
+        .query(QueryFilter {
+            context_id: Some(environment.manifest.context_id.clone()),
+            ..QueryFilter::default()
+        })
+        .await?;
+    let infer_requests = events
+        .iter()
+        .filter(|event| event.topic == "chat/infer_request")
+        .collect::<Vec<_>>();
+    let infer_roots = infer_requests
+        .iter()
+        .filter_map(|event| {
+            event
+                .payload
+                .get("root_turn_id")
+                .and_then(|value| value.as_str())
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let infer_tool_call_count = events
+        .iter()
+        .filter(|event| event.topic == "chat/assistant_call")
+        .filter(|event| {
+            event
+                .payload
+                .get("root_turn_id")
+                .and_then(|value| value.as_str())
+                .is_some_and(|root| infer_roots.contains(root))
+        })
+        .map(|event| {
+            event
+                .payload
+                .get("tool_calls")
+                .and_then(|value| value.as_array())
+                .map_or(0, Vec::len)
+        })
+        .sum();
+    let infer_result_count = events
+        .iter()
+        .filter(|event| event.topic == "plan/infer_result")
+        .count();
+    let infer_is_pure = !infer_requests.is_empty()
+        && infer_requests.iter().all(|event| {
+            event
+                .payload
+                .get("tools")
+                .and_then(|value| value.as_array())
+                .is_some_and(Vec::is_empty)
+        });
+    let infer_returns_json = !infer_requests.is_empty()
+        && infer_requests.iter().all(|event| {
+            event
+                .payload
+                .get("result_kind")
+                .and_then(|value| value.as_str())
+                == Some("json")
+        });
+    let plan_statuses = plans
+        .iter()
+        .map(|plan| plan.status.as_str().to_string())
+        .collect::<Vec<_>>();
+    let physical_effect_order = jobs
+        .iter()
+        .map(|job| job.tool_name.clone())
+        .collect::<Vec<_>>();
+    let strict_control_flow_satisfied = plans.len() == 1
+        && plans[0].status == PlanExecutionStatus::Succeeded
+        && physical_effect_order == ["exec", "read", "edit", "exec"]
+        && infer_requests.len() == 1
+        && infer_result_count == 1
+        && infer_tool_call_count == 0
+        && infer_is_pure
+        && infer_returns_json;
+
+    Ok(RuntimeEvalEvidence {
+        plan_statuses,
+        physical_effect_order,
+        infer_request_count: infer_requests.len(),
+        infer_result_count,
+        infer_tool_call_count,
+        infer_is_pure,
+        infer_returns_json,
+        strict_control_flow_satisfied,
+    })
+}
+
 fn parse_function_arguments(value: Option<&serde_json::Value>) -> serde_json::Value {
     match value {
         Some(serde_json::Value::String(text)) => {
@@ -705,8 +873,9 @@ pub fn parse_scenario(value: &str) -> Result<CodingHarnessScenario, DynError> {
         "procedure-adherence" | "procedure" | "probe" => {
             Ok(CodingHarnessScenario::ProcedureAdherence)
         }
+        "runtime-eval" | "eval" | "mixed" => Ok(CodingHarnessScenario::RuntimeEval),
         _ => Err(format!(
-            "未知 Coding Harness scenario '{value}'；支持 retry-state-machine、cache-coherence、procedure-adherence"
+            "未知 Coding Harness scenario '{value}'；支持 retry-state-machine、cache-coherence、procedure-adherence、runtime-eval"
         )
         .into()),
     }
@@ -726,6 +895,17 @@ mod tests {
             package.entry.owner,
             morphz::sexpr_eval::EvaluationOwner::Model
         );
+
+        let runtime =
+            HarnessPackage::from_source("coding-runtime-eval.hns", RUNTIME_EVAL_HARNESS_SOURCE)
+                .unwrap();
+        assert_eq!(runtime.manifest.id, RUNTIME_EVAL_HARNESS_ID);
+        assert_eq!(
+            runtime.entry.owner,
+            morphz::sexpr_eval::EvaluationOwner::Runtime
+        );
+        assert!(runtime.entry.source.contains("(returns json)"));
+        assert!(runtime.entry.source.contains("(tools)"));
         assert!(package.contract.to_string().contains("inspect-before-edit"));
         assert!(package.mind.is_some());
 
@@ -748,6 +928,7 @@ mod tests {
             CodingHarnessScenario::RetryStateMachine,
             CodingHarnessScenario::CacheCoherence,
             CodingHarnessScenario::ProcedureAdherence,
+            CodingHarnessScenario::RuntimeEval,
         ] {
             let base = TempDir::new().unwrap();
             let baseline = create_coding_harness_eval_environment(
@@ -813,6 +994,18 @@ mod tests {
                 .harness_candidate()
                 .id,
             PROCEDURE_PROBE_HARNESS_ID
+        );
+
+        let runtime = create_coding_harness_eval_environment(
+            Some(base.path()),
+            CodingHarnessArm::Harness,
+            CodingHarnessScenario::RuntimeEval,
+        )
+        .unwrap();
+        assert_eq!(runtime.manifest.user_prompt, cache.manifest.user_prompt);
+        assert_eq!(
+            CodingHarnessScenario::RuntimeEval.harness_candidate().id,
+            RUNTIME_EVAL_HARNESS_ID
         );
     }
 }

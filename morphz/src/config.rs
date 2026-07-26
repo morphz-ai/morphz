@@ -1600,6 +1600,19 @@ impl AppConfig {
                 _ => return Err(format!("MORPHZ_PERMISSION_MODE 不是合法模式: {value}")),
             };
         }
+        if let Ok(value) = std::env::var("MORPHZ_EVAL_CALLABLE_TOOLS") {
+            let mut tools = Vec::new();
+            for name in value
+                .split(|character: char| character == ',' || character.is_whitespace())
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                if !tools.iter().any(|existing| existing == name) {
+                    tools.push(name.to_string());
+                }
+            }
+            self.orchestrator.eval_callable_tools = tools;
+        }
         apply_usize_env(
             "MORPHZ_CONTEXT_SOFT_TOKEN_LIMIT",
             &mut self.orchestrator.context_soft_token_limit,

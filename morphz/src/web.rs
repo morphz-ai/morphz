@@ -4239,14 +4239,23 @@ mod tests {
             assert_eq!(response.status(), expected_status);
         }
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        let events = runtime
-            .query_events(QueryFilter {
-                session_id: Some("api-session".to_string()),
-                ..QueryFilter::default()
-            })
-            .await
-            .unwrap();
+        let events = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let events = runtime
+                    .query_events(QueryFilter {
+                        session_id: Some("api-session".to_string()),
+                        ..QueryFilter::default()
+                    })
+                    .await
+                    .unwrap();
+                if events.iter().any(|event| event.topic == "chat/reply") {
+                    break events;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("idempotent message reply was not durably committed");
         assert_eq!(
             events
                 .iter()
