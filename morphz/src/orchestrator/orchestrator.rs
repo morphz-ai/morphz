@@ -47,7 +47,7 @@ use chrono::Utc;
 use dashmap::DashMap;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -1027,6 +1027,22 @@ fn validate_schedule_tx_response(response: &crate::llm::Response) -> Result<(), 
 struct TurnToolTranscript {
     messages: Vec<Message>,
     delivered_output_ids: HashSet<String>,
+}
+
+fn retain_active_transcript_calls(
+    attempt_id: &str,
+    calls: Vec<crate::llm::ToolCall>,
+    outputs: &HashMap<(String, String), Event>,
+    retired_observation_ids: &BTreeSet<String>,
+) -> Vec<crate::llm::ToolCall> {
+    calls
+        .into_iter()
+        .filter(|call| {
+            outputs
+                .get(&(attempt_id.to_string(), call.id.clone()))
+                .is_some_and(|output| !retired_observation_ids.contains(&output.id))
+        })
+        .collect()
 }
 
 #[derive(Debug, Default)]
@@ -3819,6 +3835,7 @@ impl Orchestrator {
         session_id: &str,
         root_turn_id: Option<&str>,
         trigger_event_id: Option<&str>,
+        retired_observation_ids: &BTreeSet<String>,
     ) -> Result<TurnToolTranscript, DynError> {
         let events = self
             .store
@@ -3912,11 +3929,12 @@ impl Orchestrator {
             let Some(calls_value) = calls_value else {
                 continue;
             };
-            let calls = serde_json::from_value::<Vec<crate::llm::ToolCall>>(calls_value.clone())?;
-            let calls = calls
-                .into_iter()
-                .filter(|call| outputs.contains_key(&(attempt_id.to_string(), call.id.clone())))
-                .collect::<Vec<_>>();
+            let calls = retain_active_transcript_calls(
+                attempt_id,
+                serde_json::from_value::<Vec<crate::llm::ToolCall>>(calls_value.clone())?,
+                &outputs,
+                retired_observation_ids,
+            );
             if calls.is_empty() {
                 continue;
             }
@@ -4928,23 +4946,36 @@ impl Orchestrator {
             self.publish_no_reply(session_id, &attempt_id, None).await?;
             return Ok(());
         }
+        let context_id = activation.context_id.clone();
+        // The standard Function Calling transcript is reconstructed from the
+        // immutable Ledger, while context_tx retirement lives in the latest
+        // Mind projection.  Read that projection first so results already
+        // absorbed and retired by semantic maintenance do not reappear in the
+        // next full-work prompt.  Filtering by tool output also removes its
+        // paired assistant tool call and keeps the protocol transcript valid.
+        let mut context = self
+            .context_engine
+            .build_context_encoding_for_activation(&context_id, activation, &HashSet::new())
+            .await?;
         let transcript = self
             .turn_tool_transcript(
                 session_id,
                 Some(&activation.root_turn_id),
                 Some(&activation.trigger_event_id),
+                &context.state.retired,
             )
             .await?;
         let transcript_messages = transcript.messages.clone();
-        let context_id = activation.context_id.clone();
-        let mut context = self
-            .context_engine
-            .build_context_encoding_for_activation(
-                &context_id,
-                activation,
-                &transcript.delivered_output_ids,
-            )
-            .await?;
+        if !transcript.delivered_output_ids.is_empty() {
+            context = self
+                .context_engine
+                .build_context_encoding_for_activation(
+                    &context_id,
+                    activation,
+                    &transcript.delivered_output_ids,
+                )
+                .await?;
+        }
         self.record_activation_context_snapshot(activation, context.state.version)
             .await?;
         if let Some(mut route) = self.activation_routes.get_mut(&attempt_id) {
@@ -10781,8 +10812,8 @@ mod tests {
         compact_context_inspect_for_persistence, compose_system_prompt,
         critical_maintenance_transaction_available, event_needs_signal_outbox,
         extend_exec_output_facts, persist_model_reasoning_summary, persist_model_usage,
-        recovery_owns_activation, render_system_contract, runtime_claimant_id,
-        semantic_sexpr_vm_system_prompt, should_force_final_for_maintenance,
+        recovery_owns_activation, render_system_contract, retain_active_transcript_calls,
+        runtime_claimant_id, semantic_sexpr_vm_system_prompt, should_force_final_for_maintenance,
         tool_call_activity_preview, DurableEventWriter, DurableEventWriterMetrics, DynError,
         ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
         NoReplyMode, ReadTurnGuard, SystemPromptMode, TerminalDecision,
@@ -10791,12 +10822,13 @@ mod tests {
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
     use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE};
-    use crate::llm::{ModelUsage, PromptTokenAccuracy, PromptTokenCount};
+    use crate::llm::{FunctionCall, ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolCall};
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
         AttentionAcknowledgementRecord, EventAppend, EventStore, QueryFilter,
         ThreadActivationRecord, ThreadActivationStatus, WorkerCoordinationMode,
     };
+    use std::collections::{BTreeSet, HashMap};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -10806,6 +10838,47 @@ mod tests {
     struct ContendedEventStore {
         remaining_contention_failures: AtomicUsize,
         committed: Mutex<Vec<Event>>,
+    }
+
+    #[test]
+    fn retired_tool_outputs_are_removed_with_their_assistant_calls() {
+        let call = |id: &str| ToolCall {
+            id: id.to_string(),
+            r#type: "function".to_string(),
+            function: FunctionCall {
+                name: "context_tx".to_string(),
+                arguments: "{}".to_string(),
+            },
+        };
+        let output = |id: &str| {
+            Event::new(
+                id.to_string(),
+                "System-Executor".to_string(),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                Default::default(),
+            )
+        };
+        let outputs = HashMap::from([
+            (
+                ("attempt-1".to_string(), "call-retired".to_string()),
+                output("output-retired"),
+            ),
+            (
+                ("attempt-1".to_string(), "call-active".to_string()),
+                output("output-active"),
+            ),
+        ]);
+        let retired = BTreeSet::from(["output-retired".to_string()]);
+
+        let retained = retain_active_transcript_calls(
+            "attempt-1",
+            vec![call("call-retired"), call("call-active")],
+            &outputs,
+            &retired,
+        );
+
+        assert_eq!(retained, vec![call("call-active")]);
     }
 
     #[async_trait::async_trait]
