@@ -808,12 +808,13 @@ const MAINTENANCE_BUDGET_EXHAUSTED_PROMPT: &str = r#"Runtime 检测到 Context �
 
 const CONTEXT_TX_COOLDOWN_PROMPT: &str = r#"上一次独立 context_tx 已成功提交，且当前不再处于 critical。Runtime 本次隐藏 context_tx 以阻断连续 housekeeping；请返回普通文本结束当前 Evaluation、独占调用 no_reply，或仅执行完成当前任务确实必需的物理动作。新的 user/tool observation 到达后，context_tx 会恢复。"#;
 const NO_REPLY_TOOL_NAME: &str = "no_reply";
-const CRITICAL_MAINTENANCE_MAX_OBSERVATIONS: usize = 48;
 const CRITICAL_MAINTENANCE_PREVIEW_CHARS: usize = 768;
 // Emergency maintenance is intentionally separate from the ordinary per-turn
-// housekeeping budget. A bounded slice may require several transactions to
-// drain a Context that was already allowed to grow beyond the model window.
-const CRITICAL_MAINTENANCE_TRANSACTION_SAFETY_LIMIT: usize = 256;
+// housekeeping budget. A bounded slice may require several transactions, but
+// this is an incident fuse, not an autonomous work allowance: it must remain
+// small enough that ineffective maintenance cannot consume an Objective's
+// entire token budget before producing a visible terminal result.
+const CRITICAL_MAINTENANCE_TRANSACTION_SAFETY_LIMIT: usize = 8;
 const MAX_RESPONSE_PROTOCOL_RETRIES: usize = 2;
 const TOOL_ARGUMENT_PREVIEW_CHARS: usize = 4_096;
 const EMPTY_RESPONSE_ERROR: &str = "既没有非空正文，也没有工具调用";
@@ -831,7 +832,7 @@ enum ContextTxReceipt {
 struct ToolExecutionOptions {
     context_tx_allowed: bool,
     wake_on_output: bool,
-    transcript_tool_calls: Option<Vec<crate::llm::ToolCall>>,
+    continuation_tool_calls: Option<Vec<crate::llm::ToolCall>>,
     allowed_tool_names: HashSet<String>,
     record_assistant_call: bool,
     model_attempt_id: Option<String>,
@@ -1278,12 +1279,12 @@ fn validate_schedule_tx_response(response: &crate::llm::Response) -> Result<(), 
 }
 
 #[derive(Debug, Default)]
-struct TurnToolTranscript {
+struct ToolContinuationEnvelope {
     messages: Vec<Message>,
     delivered_output_ids: HashSet<String>,
 }
 
-fn retain_active_transcript_calls(
+fn retain_pending_continuation_calls(
     attempt_id: &str,
     calls: Vec<crate::llm::ToolCall>,
     outputs: &HashMap<(String, String), Event>,
@@ -1294,7 +1295,16 @@ fn retain_active_transcript_calls(
         .filter(|call| {
             outputs
                 .get(&(attempt_id.to_string(), call.id.clone()))
-                .is_some_and(|output| !retired_observation_ids.contains(&output.id))
+                .is_some_and(|output| {
+                    // A successful context transaction is already reflected by
+                    // the freshly compiled Mind projection. Replaying its large
+                    // request/receipt pair through the Provider protocol creates
+                    // a second, non-retirable context and can make maintenance
+                    // increase pressure instead of relieving it. Failures remain
+                    // in the current envelope so the model can correct the transaction.
+                    !context_tx_output_succeeded(output)
+                        && !retired_observation_ids.contains(&output.id)
+                })
         })
         .collect()
 }
@@ -4125,65 +4135,56 @@ impl Orchestrator {
         Ok(true)
     }
 
-    /// Rebuild the standard Function Calling transcript for the active user
-    /// turn. Long-term conversation history is still represented only by the
-    /// compiled Context snapshot; assistant/tool messages here are transient
-    /// protocol messages since the latest user observation.
-    async fn turn_tool_transcript(
+    /// Build only the standard Function Calling handshake for the tool batch
+    /// that triggered this Activation. Earlier settled tool results are already
+    /// durable observations in the compiled Context and must not be replayed as
+    /// a second, ever-growing prompt history.
+    async fn tool_continuation_for_trigger(
         &self,
         session_id: &str,
         root_turn_id: Option<&str>,
         trigger_event_id: Option<&str>,
         retired_observation_ids: &BTreeSet<String>,
-    ) -> Result<TurnToolTranscript, DynError> {
+    ) -> Result<ToolContinuationEnvelope, DynError> {
+        let Some(trigger_event_id) = trigger_event_id else {
+            return Ok(ToolContinuationEnvelope::default());
+        };
+        let trigger = self
+            .store
+            .query(QueryFilter {
+                event_id: Some(trigger_event_id.to_string()),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .next();
+        let Some(trigger_attempt_id) = trigger
+            .as_ref()
+            .and_then(|event| event.payload.get("attempt_id"))
+            .and_then(|value| value.as_str())
+        else {
+            return Ok(ToolContinuationEnvelope::default());
+        };
         let events = self
             .store
             .query(QueryFilter {
                 session_id: Some(session_id.to_string()),
+                root_turn_id: root_turn_id.map(ToOwned::to_owned),
                 types: vec![TYPE_AGENT_CALL.to_string(), TYPE_TOOL_OUTPUT.to_string()],
                 excluded_topics: vec!["chat/context_inspect".to_string()],
                 ..Default::default()
             })
             .await?;
-        let trigger_attempt_id = trigger_event_id.and_then(|trigger_event_id| {
-            events
-                .iter()
-                .find(|event| event.id == trigger_event_id)
-                .and_then(|event| event.payload.get("attempt_id"))
-                .and_then(|value| value.as_str())
-        });
-        let turn_events = match root_turn_id {
-            Some(root_turn_id) => events
-                .iter()
-                .filter(|event| {
-                    let same_root = event
-                        .payload
-                        .get("root_turn_id")
-                        .and_then(|value| value.as_str())
-                        == Some(root_turn_id);
-                    let is_trigger = trigger_event_id == Some(event.id.as_str());
-                    let legacy_assistant_call = trigger_attempt_id.is_some_and(|attempt_id| {
-                        event.topic == "chat/assistant_call"
-                            && event
-                                .payload
-                                .get("attempt_id")
-                                .and_then(|value| value.as_str())
-                                == Some(attempt_id)
-                    });
-                    same_root || is_trigger || legacy_assistant_call
-                })
-                .collect::<Vec<_>>(),
-            None => {
-                let turn_start = events
-                    .iter()
-                    .rposition(|event| {
-                        event.event_type == TYPE_USER_MESSAGE
-                            || event.topic == "objective/evaluation_started"
-                    })
-                    .unwrap_or(0);
-                events[turn_start..].iter().collect::<Vec<_>>()
-            }
-        };
+        let turn_events = events
+            .iter()
+            .filter(|event| {
+                event
+                    .payload
+                    .get("attempt_id")
+                    .and_then(|value| value.as_str())
+                    == Some(trigger_attempt_id)
+            })
+            .collect::<Vec<_>>();
         let mut outputs = HashMap::<(String, String), Event>::new();
         for event in &turn_events {
             if event.event_type != TYPE_TOOL_OUTPUT {
@@ -4209,7 +4210,7 @@ impl Orchestrator {
             );
         }
 
-        let mut transcript = TurnToolTranscript::default();
+        let mut continuation = ToolContinuationEnvelope::default();
         for event in &turn_events {
             if event.topic != "chat/assistant_call" {
                 continue;
@@ -4223,12 +4224,15 @@ impl Orchestrator {
             };
             let calls_value = event
                 .payload
-                .get("transcript_tool_calls")
+                .get("continuation_tool_calls")
+                // Backward-compatible read for Ledger events written before
+                // the one-shot continuation envelope replaced turn transcripts.
+                .or_else(|| event.payload.get("transcript_tool_calls"))
                 .or_else(|| event.payload.get("tool_calls"));
             let Some(calls_value) = calls_value else {
                 continue;
             };
-            let calls = retain_active_transcript_calls(
+            let calls = retain_pending_continuation_calls(
                 attempt_id,
                 serde_json::from_value::<Vec<crate::llm::ToolCall>>(calls_value.clone())?,
                 &outputs,
@@ -4238,7 +4242,7 @@ impl Orchestrator {
                 continue;
             }
 
-            transcript.messages.push(Message {
+            continuation.messages.push(Message {
                 role: "assistant".to_string(),
                 content: event
                     .payload
@@ -4254,13 +4258,13 @@ impl Orchestrator {
                 let Some(output) = outputs.get(&(attempt_id.to_string(), call.id.clone())) else {
                     continue;
                 };
-                transcript.delivered_output_ids.insert(output.id.clone());
-                transcript
+                continuation.delivered_output_ids.insert(output.id.clone());
+                continuation
                     .messages
                     .push(self.standard_tool_result_message(&call, output));
             }
         }
-        Ok(transcript)
+        Ok(continuation)
     }
 
     fn standard_tool_result_message(&self, call: &crate::llm::ToolCall, output: &Event) -> Message {
@@ -5080,9 +5084,10 @@ impl Orchestrator {
             .map(|call| call.func_name.clone())
             .filter(|name| !unavailable_names.contains(name))
             .collect::<HashSet<_>>();
-        let transcript_tool_calls = assistant_call
+        let continuation_tool_calls = assistant_call
             .payload
-            .get("transcript_tool_calls")
+            .get("continuation_tool_calls")
+            .or_else(|| assistant_call.payload.get("transcript_tool_calls"))
             .and_then(|value| {
                 serde_json::from_value::<Vec<crate::llm::ToolCall>>(value.clone()).ok()
             });
@@ -5114,7 +5119,7 @@ impl Orchestrator {
             ToolExecutionOptions {
                 context_tx_allowed,
                 wake_on_output: true,
-                transcript_tool_calls,
+                continuation_tool_calls,
                 allowed_tool_names,
                 record_assistant_call: false,
                 model_attempt_id,
@@ -5250,32 +5255,30 @@ impl Orchestrator {
             return Ok(());
         }
         let context_id = activation.context_id.clone();
-        // The standard Function Calling transcript is reconstructed from the
-        // immutable Ledger, while context_tx retirement lives in the latest
-        // Mind projection.  Read that projection first so results already
-        // absorbed and retired by semantic maintenance do not reappear in the
-        // next full-work prompt.  Filtering by tool output also removes its
-        // paired assistant tool call and keeps the protocol transcript valid.
+        // Tool protocol state is activation-local, not a second Context. Read
+        // the latest Mind first, then build only the one-shot Provider envelope
+        // for the tool batch that triggered this Activation. Earlier settled
+        // outputs remain ordinary observations and are never replayed here.
         let mut context = self
             .context_engine
             .build_context_encoding_for_activation(&context_id, activation, &HashSet::new())
             .await?;
-        let transcript = self
-            .turn_tool_transcript(
+        let continuation = self
+            .tool_continuation_for_trigger(
                 session_id,
                 Some(&activation.root_turn_id),
                 Some(&activation.trigger_event_id),
                 &context.state.retired,
             )
             .await?;
-        let transcript_messages = transcript.messages.clone();
-        if !transcript.delivered_output_ids.is_empty() {
+        let continuation_messages = continuation.messages.clone();
+        if !continuation.delivered_output_ids.is_empty() {
             context = self
                 .context_engine
                 .build_context_encoding_for_activation(
                     &context_id,
                     activation,
-                    &transcript.delivered_output_ids,
+                    &continuation.delivered_output_ids,
                 )
                 .await?;
         }
@@ -5367,7 +5370,7 @@ impl Orchestrator {
                 tool_calls: None,
             },
         ];
-        measurement_messages.extend(transcript.messages.clone());
+        measurement_messages.extend(continuation.messages.clone());
         let mut measurement_tools = self.tool_definitions.clone();
         if thread_kind == "delivery" {
             measurement_tools.clear();
@@ -5396,11 +5399,27 @@ impl Orchestrator {
                 CRITICAL_MAINTENANCE_TRANSACTION_SAFETY_LIMIT;
             context.turn_budget.context_tx_available = critical_context_tx_available;
         }
-        let maintenance_budget_exhausted = should_force_final_for_maintenance(
-            &context.turn_budget.phase,
-            &context.pressure.level,
-            context.turn_budget.context_tx_available,
-        );
+        let committed_context_tx_relief = if context_tx_receipt == ContextTxReceipt::Committed {
+            match context.wake.event_id.as_deref() {
+                Some(event_id) => self
+                    .context_engine
+                    .find_event(&context_id, event_id)
+                    .await?
+                    .as_ref()
+                    .map(context_tx_immediate_relief),
+                None => None,
+            }
+        } else {
+            None
+        };
+        let ineffective_critical_maintenance = context.pressure.level == "critical"
+            && committed_context_tx_relief.is_some_and(|relief| relief == 0);
+        let maintenance_budget_exhausted = ineffective_critical_maintenance
+            || should_force_final_for_maintenance(
+                &context.turn_budget.phase,
+                &context.pressure.level,
+                context.turn_budget.context_tx_available,
+            );
         let mut effective_phase = if maintenance_budget_exhausted {
             "final-reply".to_string()
         } else if context.pressure.level == "critical" {
@@ -5409,21 +5428,21 @@ impl Orchestrator {
             context.turn_budget.phase.clone()
         };
         let mut bounded_critical_projection = context.pressure.level == "critical";
-        let mut recovery_observation_limit = CRITICAL_MAINTENANCE_MAX_OBSERVATIONS;
+        let mut recovery_observation_limit = 1usize;
         let mut critical_recovery_source = None;
         if bounded_critical_projection {
-            // Standard Function Calling transcripts deliberately carry full
-            // tool results, while Context Encoding omits those same delivered
-            // outputs. Once the complete request is already over limit, that
-            // representation cannot be used to repair itself. Rebuild the
-            // active projection with all routed results available as ordinary
-            // recallable observations, then expose a deterministic bounded
-            // slice for semantic maintenance. Nothing is retired here.
+            // The current one-shot tool envelope may carry full results while
+            // Context Encoding omits that same just-delivered batch. Once the
+            // request is already over limit, rebuild the active projection with
+            // all routed results available as ordinary recallable observations,
+            // then expose a deterministic bounded maintenance slice. Nothing
+            // is retired here and no settled Provider history is replayed.
             let full_pressure = context.pressure.clone();
             let mut recovery_context = self
                 .context_engine
                 .build_context_encoding_for_activation(&context_id, activation, &HashSet::new())
                 .await?;
+            recovery_observation_limit = recovery_context.observations.len().max(1);
             recovery_context.pressure = full_pressure;
             recovery_context.turn_budget = context.turn_budget.clone();
             critical_recovery_source = Some(recovery_context.clone());
@@ -5479,7 +5498,7 @@ impl Orchestrator {
             },
         ];
         if !bounded_critical_projection {
-            messages.extend(transcript_messages.clone());
+            messages.extend(continuation_messages.clone());
         }
 
         let mut tools = self.tool_definitions.clone();
@@ -5579,36 +5598,57 @@ impl Orchestrator {
                 .hard_limit
                 .saturating_sub(context.pressure.maintenance_reserve)
                 .max(1);
-            let mut observation_limit = CRITICAL_MAINTENANCE_MAX_OBSERVATIONS;
-            let mut previous_visible = context.observations.len();
-            while request_prompt_measurement
+            // Pack the maintenance projection by the physical token budget,
+            // not by an arbitrary observation-count ceiling. Find the largest
+            // deterministic prefix that fits below hard-limit minus the
+            // configured maintenance/output reserve.
+            let source = critical_recovery_source
                 .as_ref()
-                .is_some_and(|measurement| measurement.tokens >= recovery_prompt_limit)
-                && observation_limit > 1
-            {
-                observation_limit = (observation_limit / 2).max(1);
-                let mut smaller = critical_recovery_source
-                    .as_ref()
-                    .expect("critical recovery source must exist")
-                    .clone();
-                let (_, visible) = self.context_engine.apply_critical_maintenance_projection(
-                    &mut smaller,
-                    observation_limit,
+                .expect("critical recovery source must exist");
+            let total_candidates = source.observations.len().max(1);
+            let mut low = 1usize;
+            let mut high = total_candidates;
+            let mut best: Option<(usize, ContextView, Vec<Message>, PromptTokenCount)> = None;
+            while low <= high {
+                let candidate_limit = low + (high - low) / 2;
+                let mut candidate = source.clone();
+                self.context_engine.apply_critical_maintenance_projection(
+                    &mut candidate,
+                    candidate_limit,
                     CRITICAL_MAINTENANCE_PREVIEW_CHARS,
                 );
-                if visible >= previous_visible {
-                    break;
-                }
-                previous_visible = visible;
-                messages[1].content = compose_context_message(
+                let mut candidate_messages = messages.clone();
+                candidate_messages[1].content = compose_context_message(
                     context_message_prefix,
-                    &smaller.sexpr,
+                    &candidate.sexpr,
                     request_overlay,
                 )?;
-                context = smaller;
-                request_prompt_measurement = self
-                    .count_projected_prompt_tokens(&context, &messages, &tools)
+                let candidate_measurement = self
+                    .count_projected_prompt_tokens(&candidate, &candidate_messages, &tools)
                     .await;
+                match candidate_measurement {
+                    Some(measurement) if measurement.tokens < recovery_prompt_limit => {
+                        best = Some((candidate_limit, candidate, candidate_messages, measurement));
+                        low = candidate_limit.saturating_add(1);
+                    }
+                    Some(_) => {
+                        if candidate_limit == 1 {
+                            break;
+                        }
+                        high = candidate_limit - 1;
+                    }
+                    None => {
+                        // Without a counter, retain the current projection and
+                        // let the Provider remain the physical-limit authority.
+                        break;
+                    }
+                }
+            }
+            if let Some((limit, packed_context, packed_messages, measurement)) = best {
+                recovery_observation_limit = limit;
+                context = packed_context;
+                messages = packed_messages;
+                request_prompt_measurement = Some(measurement);
             }
             if request_prompt_measurement
                 .as_ref()
@@ -5655,7 +5695,7 @@ impl Orchestrator {
         let mut inspect_delivered_output_ids = if bounded_critical_projection {
             no_delivered_output_ids.clone()
         } else {
-            transcript.delivered_output_ids.clone()
+            continuation.delivered_output_ids.clone()
         };
         let mut context_maintenance_owner = None;
         let mut context_maintenance_gate = None;
@@ -5796,7 +5836,6 @@ impl Orchestrator {
                         }
                         recovery_observation_limit = (recovery_observation_limit / 2).max(1);
                     } else {
-                        recovery_observation_limit = CRITICAL_MAINTENANCE_MAX_OBSERVATIONS;
                         let mut recovery_context = self
                             .context_engine
                             .build_context_encoding_for_activation(
@@ -5805,6 +5844,7 @@ impl Orchestrator {
                                 &HashSet::new(),
                             )
                             .await?;
+                        recovery_observation_limit = recovery_context.observations.len().max(1);
                         recovery_context.pressure.level = "critical".to_string();
                         recovery_context.pressure.estimated_tokens = recovery_context
                             .pressure
@@ -6277,7 +6317,7 @@ impl Orchestrator {
                         context_tx_allowed: context.turn_budget.context_tx_available
                             && !context_tx_cooldown,
                         wake_on_output: true,
-                        transcript_tool_calls: None,
+                        continuation_tool_calls: None,
                         allowed_tool_names,
                         record_assistant_call: true,
                         model_attempt_id: Some(terminal_model_attempt_id.clone()),
@@ -7985,7 +8025,7 @@ impl Orchestrator {
             ToolExecutionOptions {
                 context_tx_allowed: false,
                 wake_on_output: false,
-                transcript_tool_calls: None,
+                continuation_tool_calls: None,
                 allowed_tool_names: HashSet::from([tool]),
                 record_assistant_call: false,
                 model_attempt_id: None,
@@ -8981,12 +9021,12 @@ impl Orchestrator {
                 "模型调用了本轮未提供的工具；Runtime 已拒绝执行"
             );
         }
-        let transcript_ids = selected_tool_calls
+        let continuation_ids = selected_tool_calls
             .iter()
             .chain(unavailable_tool_calls.iter())
             .map(|call| call.id.as_str())
             .collect::<HashSet<_>>();
-        let mut transcript_tool_calls = options.transcript_tool_calls.unwrap_or_else(|| {
+        let mut continuation_tool_calls = options.continuation_tool_calls.unwrap_or_else(|| {
             selected_tool_calls
                 .iter()
                 .chain(unavailable_tool_calls.iter())
@@ -9000,10 +9040,10 @@ impl Orchestrator {
                 })
                 .collect::<Vec<_>>()
         });
-        transcript_tool_calls.retain(|call| transcript_ids.contains(call.id.as_str()));
-        drop(transcript_ids);
+        continuation_tool_calls.retain(|call| continuation_ids.contains(call.id.as_str()));
+        drop(continuation_ids);
         if context_tx_batch_error.is_some() {
-            transcript_tool_calls.push(crate::llm::ToolCall {
+            continuation_tool_calls.push(crate::llm::ToolCall {
                 id: "context_tx_batch_rejected".to_string(),
                 r#type: "function".to_string(),
                 function: crate::llm::FunctionCall {
@@ -9044,8 +9084,8 @@ impl Orchestrator {
             ("text".to_string(), json!(response.content)),
             ("tool_calls".to_string(), json!(mapped_tool_calls)),
             (
-                "transcript_tool_calls".to_string(),
-                json!(transcript_tool_calls),
+                "continuation_tool_calls".to_string(),
+                json!(continuation_tool_calls),
             ),
             (
                 "deduplicated_context_tx_ids".to_string(),
@@ -10424,7 +10464,7 @@ impl Orchestrator {
             ToolExecutionOptions {
                 context_tx_allowed: false,
                 wake_on_output: true,
-                transcript_tool_calls: None,
+                continuation_tool_calls: None,
                 allowed_tool_names: HashSet::from(["eval".to_string()]),
                 record_assistant_call: true,
                 model_attempt_id: None,
@@ -11326,6 +11366,34 @@ fn context_tx_output_succeeded(event: &Event) -> bool {
         })
 }
 
+fn context_tx_immediate_relief(event: &Event) -> usize {
+    event
+        .payload
+        .get("text")
+        .and_then(|value| value.as_str())
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        .and_then(|value| {
+            value
+                .get("changes")
+                .and_then(|changes| changes.as_array())
+                .cloned()
+        })
+        .map(|changes| {
+            changes
+                .iter()
+                .filter_map(|change| {
+                    change
+                        .get("token_effect")
+                        .and_then(|effect| effect.get("estimated_immediate_relief"))
+                        .and_then(|relief| relief.as_u64())
+                })
+                .fold(0usize, |total, relief| {
+                    total.saturating_add(usize::try_from(relief).unwrap_or(usize::MAX))
+                })
+        })
+        .unwrap_or(0)
+}
+
 fn infer_tool_status(text: &str) -> &'static str {
     if text.starts_with("执行失败:")
         || text.starts_with("系统报错:")
@@ -12146,7 +12214,7 @@ mod tests {
         extend_exec_output_facts, harness_entry_callable_tools, persist_model_reasoning_summary,
         persist_model_usage, plan_infer_tool_scope, recovery_owns_activation,
         render_harness_context, render_system_contract, restrict_tools_to_scope,
-        retain_active_transcript_calls, runtime_claimant_id, semantic_sexpr_vm_system_prompt,
+        retain_pending_continuation_calls, runtime_claimant_id, semantic_sexpr_vm_system_prompt,
         should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
         tool_call_activity_preview, DurableEventWriter, DurableEventWriterMetrics, DynError,
         EvaluationContextOverlay, ModelCompletionError, ModelCompletionErrorOrigin,
@@ -12181,11 +12249,11 @@ mod tests {
 
     #[test]
     fn retired_tool_outputs_are_removed_with_their_assistant_calls() {
-        let call = |id: &str| ToolCall {
+        let call = |id: &str, name: &str| ToolCall {
             id: id.to_string(),
             r#type: "function".to_string(),
             function: FunctionCall {
-                name: "context_tx".to_string(),
+                name: name.to_string(),
                 arguments: "{}".to_string(),
             },
         };
@@ -12210,14 +12278,42 @@ mod tests {
         ]);
         let retired = BTreeSet::from(["output-retired".to_string()]);
 
-        let retained = retain_active_transcript_calls(
+        let retained = retain_pending_continuation_calls(
             "attempt-1",
-            vec![call("call-retired"), call("call-active")],
+            vec![call("call-retired", "read"), call("call-active", "read")],
             &outputs,
             &retired,
         );
 
-        assert_eq!(retained, vec![call("call-active")]);
+        assert_eq!(retained, vec![call("call-active", "read")]);
+    }
+
+    #[test]
+    fn committed_context_transactions_are_not_added_to_provider_continuation() {
+        let call = ToolCall {
+            id: "context-call".to_string(),
+            r#type: "function".to_string(),
+            function: FunctionCall {
+                name: "context_tx".to_string(),
+                arguments: r#"{"transaction":"(context-tx ...)"}"#.to_string(),
+            },
+        };
+        let output = Event::new(
+            "context-output".to_string(),
+            "System-Executor".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::from_iter([
+                ("tool_name".to_string(), json!("context_tx")),
+                ("text".to_string(), json!(r#"{"status":"committed"}"#)),
+            ]),
+        );
+        let outputs = HashMap::from([(("attempt-1".to_string(), call.id.clone()), output)]);
+
+        let retained =
+            retain_pending_continuation_calls("attempt-1", vec![call], &outputs, &BTreeSet::new());
+
+        assert!(retained.is_empty());
     }
 
     #[async_trait::async_trait]
@@ -13005,8 +13101,8 @@ mod tests {
     #[test]
     fn critical_recovery_uses_a_separate_high_safety_budget() {
         assert!(critical_maintenance_transaction_available(6));
-        assert!(critical_maintenance_transaction_available(255));
-        assert!(!critical_maintenance_transaction_available(256));
+        assert!(critical_maintenance_transaction_available(7));
+        assert!(!critical_maintenance_transaction_available(8));
     }
 
     #[test]

@@ -1331,7 +1331,7 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
                 ("phase".to_string(), json!("work")),
                 ("text".to_string(), json!("")),
                 ("tool_calls".to_string(), persisted_call.clone()),
-                ("transcript_tool_calls".to_string(), persisted_call),
+                ("continuation_tool_calls".to_string(), persisted_call),
                 ("unavailable_tool_names".to_string(), json!([])),
                 ("context_tx_rejection_status".to_string(), json!(null)),
                 ("activation_id".to_string(), json!(running.id)),
@@ -1514,7 +1514,7 @@ async fn runtime_restart_resumes_context_tx_continuation_until_final_reply() {
                 ("phase".to_string(), json!("work")),
                 ("text".to_string(), json!("")),
                 ("tool_calls".to_string(), persisted_call.clone()),
-                ("transcript_tool_calls".to_string(), persisted_call),
+                ("continuation_tool_calls".to_string(), persisted_call),
                 ("root_turn_id".to_string(), json!(root.id)),
             ]
             .into_iter()
@@ -1675,11 +1675,9 @@ async fn runtime_restart_resumes_context_tx_continuation_until_final_reply() {
             .is_empty()
     );
     assert_eq!(client.messages_seen().len(), 1);
-    assert!(client.messages_seen()[0].iter().any(|message| {
-        message.role == "tool"
-            && message.tool_call_id.as_deref() == Some("context-tx-recovery-call")
-            && message.content.contains("after_version")
-    }));
+    assert!(client.messages_seen()[0]
+        .iter()
+        .all(|message| message.role != "tool"));
     let mut terminal_status = None;
     for _ in 0..80 {
         let status = store
@@ -2766,16 +2764,9 @@ async fn test_context_only_call_commits_then_cooldown_forces_user_response() {
             .iter()
             .map(|message| message.role.as_str())
             .collect::<Vec<_>>(),
-        vec!["system", "user", "assistant", "tool"]
+        vec!["system", "user"]
     );
     assert!(messages[1][1].content.contains("(id state)"));
-    assert_eq!(messages[1][3].tool_call_id.as_deref(), Some("context-only"));
-    let receipt: serde_json::Value = serde_json::from_str(&messages[1][3].content).unwrap();
-    assert_eq!(receipt["status"], "success");
-    assert_eq!(receipt["observation_ref"], serde_json::Value::Null);
-    assert!(receipt["result"]
-        .as_str()
-        .is_some_and(|result| result.contains("committed")));
     let outputs = wait_for_topic(&store, "chat/tool_output", session_id).await;
     assert_eq!(outputs.len(), 1);
     assert_eq!(
@@ -3047,8 +3038,12 @@ async fn critical_maintenance_rejects_unoffered_physical_tool_with_same_call_id_
     assert_eq!(tools_seen[1], vec!["context_tx", "no_reply"]);
     let messages = client.messages_seen();
     assert_eq!(messages.len(), 2);
-    assert!(messages[0][0].content.contains("critical-maintenance"));
-    assert!(messages[0][0].content.contains("外部物理工具已被暂时撤下"));
+    assert!(messages[0]
+        .iter()
+        .any(|message| message.content.contains("critical-maintenance")));
+    assert!(messages[0]
+        .iter()
+        .any(|message| message.content.contains("外部物理工具已被暂时撤下")));
     // The next critical-maintenance request deliberately uses a bounded
     // Context projection instead of replaying an unbounded Function Calling
     // transcript. The same immutable receipt must still be visible, including
@@ -3125,7 +3120,7 @@ async fn test_critical_transaction_that_relieves_pressure_cools_down_next_attemp
 }
 
 #[tokio::test]
-async fn test_critical_pressure_does_not_cool_down_context_tool() {
+async fn test_critical_pressure_stops_after_committed_transaction_with_no_relief() {
     let session_id = "attempt_context_critical_no_cooldown";
     let config = morphz::config::OrchestratorConfig {
         context_soft_token_limit: 100,
@@ -3148,7 +3143,7 @@ async fn test_critical_pressure_does_not_cool_down_context_tool() {
                 }],
             },
             Response {
-                content: "仍处于 critical，可以继续维护".to_string(),
+                content: "维护事务没有释放容量，停止继续维护".to_string(),
                 tool_calls: Vec::new(),
             },
         ],
@@ -3164,7 +3159,7 @@ async fn test_critical_pressure_does_not_cool_down_context_tool() {
     let tools_seen = client.tools_seen();
     assert_eq!(tools_seen.len(), 2);
     assert_eq!(tools_seen[0], vec!["context_tx", "no_reply"]);
-    assert_eq!(tools_seen[1], vec!["context_tx", "no_reply"]);
+    assert_eq!(tools_seen[1], vec!["no_reply"]);
 }
 
 #[tokio::test]

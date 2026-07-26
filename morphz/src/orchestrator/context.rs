@@ -6908,9 +6908,10 @@ fn turn_budget_for(events: &[Event], config: &OrchestratorConfig) -> TurnBudget 
     let context_transactions_limit = config.max_context_transactions_per_turn.max(1);
     let after_cycle_boundary = events
         .iter()
-        .rposition(|event| {
-            event.event_type == TYPE_USER_MESSAGE || event.topic == "objective/evaluation_started"
-        })
+        // Objective evaluations are continuations of the same user-owned work,
+        // not fresh maintenance budgets. Resetting here allowed a stuck
+        // Objective to receive another emergency allowance indefinitely.
+        .rposition(|event| event.event_type == TYPE_USER_MESSAGE)
         .map(|index| &events[index + 1..])
         .unwrap_or(events);
     let assistant_calls = after_cycle_boundary
@@ -7864,7 +7865,8 @@ fn pending_tool_names(activation: &ThreadActivationRecord, events: &[Event]) -> 
     {
         let Some(calls) = event
             .payload
-            .get("transcript_tool_calls")
+            .get("continuation_tool_calls")
+            .or_else(|| event.payload.get("transcript_tool_calls"))
             .or_else(|| event.payload.get("tool_calls"))
         else {
             continue;
@@ -10036,7 +10038,7 @@ mod tests {
     }
 
     #[test]
-    fn objective_evaluation_started_resets_attempt_and_context_tx_cycle_budgets() {
+    fn objective_evaluation_started_does_not_reset_context_tx_cycle_budget() {
         let event = |id: &str, event_type: &str, topic: &str, payload: serde_json::Value| {
             Event::new(
                 id.to_string(),
@@ -10075,9 +10077,9 @@ mod tests {
             ..OrchestratorConfig::default()
         };
         let budget = turn_budget_for(&events, &config);
-        assert_eq!(budget.attempt, 2);
-        assert_eq!(budget.context_transactions_used, 1);
-        assert!(budget.context_tx_available);
+        assert_eq!(budget.attempt, 4);
+        assert_eq!(budget.context_transactions_used, 3);
+        assert!(!budget.context_tx_available);
     }
 
     #[test]
