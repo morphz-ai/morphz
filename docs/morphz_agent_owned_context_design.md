@@ -10,6 +10,8 @@
 
 > Protocol v16 更新（2026-07-15）：当前每次模型请求只有一个 active Session；无工具非空普通文本是该 Session 的终态响应，独占 `no_reply` 表示静默，`send_message` 用于其他 Session。空响应不是终态，Runtime 最多纠错两次后熔断。完整定义见 [单 Session 求值与响应路由协议 v1](./morphz_response_routing_protocol_v1.md)。
 
+> Context Encoding 的物理顺序、历史不可变边界、System/Harness 挂载方式及 Prefix Cache 成本验收，以 [Prefix Cache 友好的 Context Encoding 正式布局 v1](morphz_prefix_cache_context_encoding_layout_v1.md) 为准。该布局只优化同一语义状态的序列化与请求成本，不收回 Agent 对 Mind、retire、restore 和 recall 的语义控制权。
+
 ## 1. 设计命题
 
 Morphz 的 Context 不是由 Runtime 按固定规则拼装出来的一份“结构化 Prompt”，也不是一段只能随对话线性增长、最终由框架统一压缩的聊天历史。

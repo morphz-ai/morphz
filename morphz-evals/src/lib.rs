@@ -23,6 +23,15 @@ pub struct EvalRuntimeOverrides {
 /// Build evaluation clients through exactly the same explicit
 /// Provider/Protocol/Model/Credential path as the production Runtime.
 pub fn configured_model_client() -> Result<(Arc<dyn Client>, String), EvalError> {
+    let (client, model, _) = configured_model_client_with_config()?;
+    Ok((client, model))
+}
+
+/// Build the production-equivalent evaluation client and retain its resolved
+/// configuration for measurements that also need the operator's pricing
+/// catalog or other non-secret model metadata.
+pub fn configured_model_client_with_config(
+) -> Result<(Arc<dyn Client>, String, config::AppConfig), EvalError> {
     if let Some(path) = config::host_env_path() {
         if let Err(error) = config::load_env(&path.to_string_lossy()) {
             if error.kind() != std::io::ErrorKind::NotFound {
@@ -39,7 +48,7 @@ pub fn configured_model_client() -> Result<(Arc<dyn Client>, String), EvalError>
     let mut resolved = config::resolve_config(&cwd, None, active_profile.as_deref())?;
     resolved.config.apply_runtime_env_overrides()?;
     let (client, selected) = build_configured_client(&resolved.config, None, None)?;
-    Ok((client, selected.model))
+    Ok((client, selected.model, resolved.config))
 }
 
 /// Give a spawned Morphz process an isolated, explicit Provider configuration.
@@ -178,6 +187,7 @@ pub mod coding_harness_eval;
 pub mod concurrent_objective_eval;
 pub mod context_long_run_eval;
 pub mod context_metacognition_eval;
+pub mod context_prefix_cache_eval;
 pub mod context_pressure_eval;
 pub mod eval_sandbox;
 pub mod long_horizon_agent_eval;

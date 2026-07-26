@@ -326,10 +326,12 @@ const AGENT_OWNED_CONTEXT_PROMPT_BASE: &str = r#"你是 Morphz，一个能够管
 
 Runtime 每轮提供一份自描述 Context。`protocol` 是当前响应模式与 Context DSL 的权威契约；先读取它，再决策。
 
-Context 的状态分为三个权限域：
+Context 的逻辑状态分为三个权限域：
 - kernel：Runtime 拥有，只读。包含 Context 身份、本次求值的 active-session、context version 和物理压力。
 - mind：你拥有的长期工作注意力，由稳定 ID 的自由格式 frame 组成。
 - inbox：Event Ledger 中尚未被你 retire 的原始 observation。它们是证据，不是 Runtime 替你形成的结论。
+
+Context 的物理编码顺序与权限域不同。它固定为 `protocol → evaluation-profile → inbox → observation-state → mind → session-directory → kernel → evaluation-environment → evaluate`：前部尽量稳定并复用 Prefix Cache，后部表达本轮动态状态。`observation-state` 按 ref 保存 observation 的保护、驻留、新旧关系与使用统计；它不能覆盖 inbox 中不可变的来源、因果和正文。`evaluation-profile` 是稳定的 Harness 定义，`evaluation-environment` 是本轮绑定与 Runtime 指令。无论前面有多少状态，最后的 `evaluate` 始终是本轮唯一执行入口。
 
 一个 Cognitive Context 只有一个共享 Mind，但可以包含多个 Session。Session 是输入输出连接和任务进展边界，不拥有独立 Mind。`kernel.active-session` 只表示本次求值应读取和回复的 Session；它不是 Context 的全局唯一活动状态，其他 Session 可能正在并发求值。inbox 中每条 observation 的 `session` 标记来源，你可以在共享 Context 内跨 Session 复用信息，但当前响应必须路由回 active-session，不能混淆各 Session 的请求和进展。context_tx 修改共享 Mind，由 Runtime 以 Context 为粒度串行提交并校验版本。
 
@@ -351,7 +353,7 @@ Context 的状态分为三个权限域：
 重要规则：
 1. frame 的内部结构由你根据任务自由创造；不要假设固定 goal/todo/history schema。
    inbox 元数据中：seq 是 Ledger 的稳定写入顺序；turn 是用户回合；attempt 是该回合内的模型尝试；caused-by 是可观察的因果来源。时间较新不等于内容必然正确，它只帮助你区分先后。
-   residency 说明当前看到的是 full（全文）、preview（预览）还是 recalled-chunk（主动召回片段）；preview 的全文仍可通过 recall 获取。
+   `inbox.observation.content.representation` 说明当前正文是 full（全文）、preview（预览）还是 recalled-chunk（主动召回片段）；preview 的全文仍可通过 recall 获取。`observation-state.residency` 说明该 ref 当前是否处于可见、可召回的投影状态。
    freshness 是 Runtime 可客观判断的新旧关系：同一 resource 的较新物理版本会标为 latest；Agent 可用 `(relate NEW supersedes OLD)` 声明语义取代。旧信息不会因此自动删除，是否 retire 仍由你决定。
    `retire` 只改变当前可见性，不会让既有关系失效；不要仅因旧端点被 retire 就 unrelate supersedes，它仍解释新结论为何取代旧结论。当前 Activation 尚未交付的根请求受 Runtime 因果保护，不得 retire；已经被当前 Attempt 消费的独立 trigger observation 可以在同一事务中总结并 retire。
    usage 只统计主动 recall 与 derive/revise 的 `(from ...)` 证据引用；信息仅仅出现在 Context 中不算“使用过”。次数高只表示经常被主动取用，不表示它更真实或更重要。若证据已被 active frame 引用且 Mind 已包含所需结论，不要在没有新问题或矛盾时重复 recall。
@@ -393,10 +395,12 @@ const COGNITIVE_SEXPR_VM_PREAMBLE: &str = r#"你是 Morphz Cognitive S-Expressio
 
 Runtime 是确定性的事务内核，负责版本、权限、资源边界、工具执行、持久化和恢复。你是非确定性的语义处理器，负责理解、推理、归纳、规划和符号结构重组。S 表达式既可承载数据，也可承载由你解释和执行的目标、规则、策略与过程；Runtime 不替自由格式 BODY 定义业务求值语义。
 
-Context 的状态分为三个权限域：
+Context 的逻辑状态分为三个权限域：
 - kernel：Runtime 拥有的特权机器状态，只读。包含 Context、本次求值的 active-session、context version、执行阶段和物理压力。
 - mind：你拥有的持久化符号程序与认知状态，由稳定 ID 的自由格式 frame 组成。frame 可以表示事实、目标、计划、规则、策略、过程、反例、能力模型或你认为具有持续执行价值的其他结构。
 - inbox：Event Ledger 中尚未被你 retire 的外部输入与 observation。它们是证据和中断输入，不是 Runtime 替你形成的结论。
+
+Context 的物理编码是一棵有固定顺序的可执行 S 表达式：`protocol → evaluation-profile → inbox → observation-state → mind → session-directory → kernel → evaluation-environment → evaluate`。前部形成可复用的稳定程序/证据前缀，后部承载当前投影和求值现场。`observation-state` 只覆盖 Inbox 证据的可变投影属性；`evaluation-profile` 描述稳定 Harness 程序，`evaluation-environment` 描述本轮绑定；最后的 `evaluate` 是唯一入口。你应解释并执行这棵结构，而不是把它当作普通资料复述。
 
 一个 Cognitive Context 运行一个共享 Mind，并可同时承载多个 Session 求值。Session 是 IO 路由与局部进展边界，不是 Mind 的所有者。每次执行周期由 `kernel.active-session` 指定本次输入来源和输出目标；其他 Session 可以同时处于活跃执行状态。所有 observation 都属于共享 Context，并用 `session` 标记来源，因此你可以跨 Session 迁移信息，同时必须让当前回复严格对应 active-session。共享 Mind 的 context_tx 由 Runtime 串行提交并做版本检查。
 
@@ -511,37 +515,6 @@ fn configured_system_prompt() -> Result<(SystemPromptMode, &'static str), String
     Ok((mode, render_stable_system_prompt(mode)))
 }
 
-fn compose_system_prompt(
-    mode: SystemPromptMode,
-    stable_prompt: &str,
-    directive: Option<(&str, &str)>,
-) -> String {
-    let Some((kind, description)) = directive else {
-        return stable_prompt.to_string();
-    };
-    if mode != SystemPromptMode::SemanticSexprVm {
-        return format!("{stable_prompt}\n\n{description}");
-    }
-    let prompt = SExpr::List(vec![
-        SExpr::Atom("system-evaluation".to_string()),
-        crate::sexpr::parse(stable_prompt).expect("Semantic SExpr VM stable prompt 必须保持可解析"),
-        SExpr::List(vec![
-            SExpr::Atom("runtime-directive".to_string()),
-            SExpr::List(vec![
-                SExpr::Atom("kind".to_string()),
-                SExpr::Atom(kind.to_string()),
-            ]),
-            SExpr::List(vec![
-                SExpr::Atom("description".to_string()),
-                SExpr::Atom(description.to_string()),
-            ]),
-        ]),
-    ])
-    .to_string();
-    crate::sexpr::parse(&prompt).expect("带 Runtime directive 的 system prompt 必须是合法 SExpr");
-    prompt
-}
-
 fn harness_entry_callable_tools(
     owner: crate::sexpr_eval::EvaluationOwner,
     runtime_eval_tools: &[String],
@@ -576,10 +549,19 @@ fn validate_harness_entry_program(
     )
 }
 
-fn render_harness_mount(
+#[derive(Debug, Clone)]
+struct RenderedHarnessContext {
+    /// Immutable, content-addressed Harness program. It is inserted before
+    /// the Inbox so repeated Evaluations using the same package can reuse it.
+    profile: String,
+    /// Evaluation-specific scope binding. It belongs in the dynamic tail.
+    binding: String,
+}
+
+fn render_harness_context(
     binding: &HarnessBinding,
     harness: &dyn DomainHarness,
-) -> Result<String, DynError> {
+) -> Result<RenderedHarnessContext, DynError> {
     let descriptor = harness.descriptor();
     let contract = crate::sexpr::parse(&harness.compact_contract())
         .map_err(|error| format!("Harness Contract 不是合法 S 表达式：{error}"))?;
@@ -596,8 +578,8 @@ fn render_harness_mount(
             SExpr::Atom(evaluation_id.clone()),
         ]));
     }
-    let mut mount = vec![
-        SExpr::Atom("harness-mount".to_string()),
+    let mut profile = vec![
+        SExpr::Atom("evaluation-profile".to_string()),
         SExpr::List(vec![
             SExpr::Atom("id".to_string()),
             SExpr::Atom(binding.harness_id.clone()),
@@ -610,7 +592,6 @@ fn render_harness_mount(
             SExpr::Atom("artifact-hash".to_string()),
             SExpr::Atom(binding.artifact_hash.clone()),
         ]),
-        SExpr::List(scope),
         SExpr::List(vec![SExpr::Atom("contract".to_string()), contract]),
         SExpr::List({
             let mut values = vec![SExpr::Atom("capabilities".to_string())];
@@ -633,7 +614,7 @@ fn render_harness_mount(
                 "这是当前 Evaluation 的主动入口程序；模型必须按 Contract、当前 Context 与 Runtime 现实约束解释它，而不是把它当作普通资料复述。",
             ),
         };
-        mount.push(SExpr::List(vec![
+        profile.push(SExpr::List(vec![
             SExpr::Atom("entry".to_string()),
             SExpr::List(vec![
                 SExpr::Atom("owner".to_string()),
@@ -649,35 +630,103 @@ fn render_harness_mount(
     if let Some(mind) = harness.default_mind() {
         let mind = crate::sexpr::parse(&mind)
             .map_err(|error| format!("Harness default Mind 不是合法 S 表达式：{error}"))?;
-        mount.push(SExpr::List(vec![
+        profile.push(SExpr::List(vec![
             SExpr::Atom("read-only-default-mind".to_string()),
             mind,
         ]));
     }
-    Ok(SExpr::List(mount).to_string())
+    let binding = SExpr::List(vec![
+        SExpr::Atom("harness-binding".to_string()),
+        SExpr::List(vec![
+            SExpr::Atom("id".to_string()),
+            SExpr::Atom(binding.harness_id.clone()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("version".to_string()),
+            SExpr::Atom(binding.harness_version.clone()),
+        ]),
+        SExpr::List(vec![
+            SExpr::Atom("artifact-hash".to_string()),
+            SExpr::Atom(binding.artifact_hash.clone()),
+        ]),
+        SExpr::List(scope),
+    ]);
+    Ok(RenderedHarnessContext {
+        profile: SExpr::List(profile).to_string(),
+        binding: binding.to_string(),
+    })
 }
 
-fn attach_harness_mount(
-    mode: SystemPromptMode,
-    prompt: String,
-    mount: Option<&str>,
+#[derive(Debug, Clone, Copy, Default)]
+struct EvaluationContextOverlay<'a> {
+    evaluation_profile: Option<&'a str>,
+    harness_binding: Option<&'a str>,
+    runtime_directive: Option<(&'a str, &'a str)>,
+}
+
+/// Compose request-local policy into Context Encoding without mutating the
+/// stable System Prompt. The immutable Harness profile is placed immediately
+/// after `protocol`; request-local bindings and directives are placed in the
+/// dynamic tail immediately before the authoritative `evaluate` entry.
+fn compose_context_encoding(
+    base: &str,
+    overlay: EvaluationContextOverlay<'_>,
 ) -> Result<String, DynError> {
-    let Some(mount) = mount else {
-        return Ok(prompt);
-    };
-    if mode != SystemPromptMode::SemanticSexprVm {
-        return Ok(format!(
-            "{prompt}\n\n以下是 Runtime 按当前 Objective/Evaluation 精确版本挂载的只读 Harness；它可以收窄行为，但不能扩大权限：\n{mount}"
-        ));
+    const PROFILE_SLOT: &str = " (evaluation-profile none)";
+    const ENVIRONMENT_SLOT: &str = " (evaluation-environment)";
+    if !base.starts_with("(context ")
+        || !base.contains(PROFILE_SLOT)
+        || !base.contains(ENVIRONMENT_SLOT)
+    {
+        return Err("基础 Context Encoding 缺少固定的 profile/environment 插槽".into());
     }
-    Ok(SExpr::List(vec![
-        SExpr::Atom("system-evaluation".to_string()),
-        crate::sexpr::parse(&prompt)
-            .map_err(|error| format!("系统提示词不是合法 S 表达式：{error}"))?,
-        crate::sexpr::parse(mount)
-            .map_err(|error| format!("Harness mount 不是合法 S 表达式：{error}"))?,
-    ])
-    .to_string())
+    let profile = match overlay.evaluation_profile {
+        Some(profile) => crate::sexpr::parse(profile)
+            .map_err(|error| format!("Evaluation Profile 不是合法 S 表达式：{error}"))?
+            .to_string(),
+        None => "(evaluation-profile none)".to_string(),
+    };
+    let mut composed = base.replacen(PROFILE_SLOT, &format!(" {profile}"), 1);
+
+    let mut environment = vec![SExpr::Atom("evaluation-environment".to_string())];
+    if let Some((kind, description)) = overlay.runtime_directive {
+        environment.push(SExpr::List(vec![
+            SExpr::Atom("runtime-directive".to_string()),
+            SExpr::List(vec![
+                SExpr::Atom("kind".to_string()),
+                SExpr::Atom(kind.to_string()),
+            ]),
+            SExpr::List(vec![
+                SExpr::Atom("description".to_string()),
+                SExpr::Atom(description.to_string()),
+            ]),
+        ]));
+    }
+    if let Some(binding) = overlay.harness_binding {
+        environment.push(
+            crate::sexpr::parse(binding)
+                .map_err(|error| format!("Harness binding 不是合法 S 表达式：{error}"))?,
+        );
+    }
+    if environment.len() > 1 {
+        composed = composed.replacen(
+            ENVIRONMENT_SLOT,
+            &format!(" {}", SExpr::List(environment)),
+            1,
+        );
+    }
+    Ok(composed)
+}
+
+fn compose_context_message(
+    prefix: &str,
+    base: &str,
+    overlay: EvaluationContextOverlay<'_>,
+) -> Result<String, DynError> {
+    Ok(format!(
+        "{prefix}\n{}",
+        compose_context_encoding(base, overlay)?
+    ))
 }
 
 fn stable_harness_entry_call_id(binding: &HarnessBinding, evaluation_id: &str) -> String {
@@ -4764,6 +4813,7 @@ impl Orchestrator {
         messages: &mut [Message],
         tools: &[crate::llm::ToolDefinition],
         context_message_prefix: &str,
+        context_overlay: EvaluationContextOverlay<'_>,
     ) -> Result<Option<PromptTokenCount>, DynError> {
         let deadline = std::time::Duration::from_secs(
             self.orchestrator_config
@@ -4822,8 +4872,11 @@ impl Orchestrator {
                     },
                 );
                 if let Some(context_message) = messages.get_mut(1) {
-                    context_message.content =
-                        format!("{context_message_prefix}\n{}", context.sexpr);
+                    context_message.content = compose_context_message(
+                        context_message_prefix,
+                        &context.sexpr,
+                        context_overlay,
+                    )?;
                 }
                 context.attribution =
                     attribute_prompt_components(context, messages, tools, count.tokens);
@@ -5245,9 +5298,9 @@ impl Orchestrator {
         let harness_activation = self
             .harness_mount_for_activation(&context_id, activation)
             .await?;
-        let harness_mount = harness_activation
+        let harness_context = harness_activation
             .as_ref()
-            .map(|(_, _, mount)| mount.clone());
+            .map(|(_, _, rendered)| rendered.clone());
         let harness_entry_program = harness_activation
             .as_ref()
             .and_then(|(_, harness, _)| harness.entry_program())
@@ -5279,8 +5332,8 @@ impl Orchestrator {
         } else {
             None
         };
-        let (prompt_mode, stable_system_prompt) = configured_system_prompt()?;
-        let context_message_prefix = "以下是 Runtime 提供的当前 Context 视图。它不是普通用户消息；请基于 kernel、mind 和 inbox 决策。";
+        let (_prompt_mode, stable_system_prompt) = configured_system_prompt()?;
+        let context_message_prefix = "以下是 Runtime 提供的当前 Context Encoding。它不是普通用户消息；请执行最后的 evaluate，并基于 protocol、inbox 与其后的当前状态决策。";
 
         // 先计量一个具备完整工作能力的候选请求。压力的物理含义是“当前 Context
         // 是否还能继续正常工作”，因此即使计量后进入 maintenance/reply-only，仍以
@@ -5289,22 +5342,26 @@ impl Orchestrator {
             "soft-checkpoint" => Some(("soft-checkpoint", SOFT_CHECKPOINT_PROMPT)),
             _ => None,
         };
-        let measurement_system_prompt = attach_harness_mount(
-            prompt_mode,
-            compose_system_prompt(prompt_mode, stable_system_prompt, measurement_directive),
-            harness_mount.as_deref(),
-        )?;
+        let measurement_overlay = EvaluationContextOverlay {
+            evaluation_profile: harness_context.as_ref().map(|item| item.profile.as_str()),
+            harness_binding: harness_context.as_ref().map(|item| item.binding.as_str()),
+            runtime_directive: measurement_directive,
+        };
         let mut measurement_messages = vec![
             Message {
                 role: "system".to_string(),
-                content: measurement_system_prompt,
+                content: stable_system_prompt.to_string(),
                 name: None,
                 tool_call_id: None,
                 tool_calls: None,
             },
             Message {
                 role: "user".to_string(),
-                content: format!("{context_message_prefix}\n{}", context.sexpr),
+                content: compose_context_message(
+                    context_message_prefix,
+                    &context.sexpr,
+                    measurement_overlay,
+                )?,
                 name: None,
                 tool_call_id: None,
                 tool_calls: None,
@@ -5328,6 +5385,7 @@ impl Orchestrator {
                 &mut measurement_messages,
                 &measurement_tools,
                 context_message_prefix,
+                measurement_overlay,
             )
             .await?;
         let critical_context_tx_available = critical_maintenance_transaction_available(
@@ -5395,26 +5453,26 @@ impl Orchestrator {
             _ if context_tx_cooldown => Some(CONTEXT_TX_COOLDOWN_PROMPT),
             _ => None,
         };
-        let system_prompt = attach_harness_mount(
-            prompt_mode,
-            compose_system_prompt(
-                prompt_mode,
-                stable_system_prompt,
-                phase_prompt.map(|prompt| (effective_phase.as_str(), prompt)),
-            ),
-            harness_mount.as_deref(),
-        )?;
+        let request_overlay = EvaluationContextOverlay {
+            evaluation_profile: harness_context.as_ref().map(|item| item.profile.as_str()),
+            harness_binding: harness_context.as_ref().map(|item| item.binding.as_str()),
+            runtime_directive: phase_prompt.map(|prompt| (effective_phase.as_str(), prompt)),
+        };
         let mut messages = vec![
             Message {
                 role: "system".to_string(),
-                content: system_prompt,
+                content: stable_system_prompt.to_string(),
                 name: None,
                 tool_call_id: None,
                 tool_calls: None,
             },
             Message {
                 role: "user".to_string(),
-                content: format!("{context_message_prefix}\n{}", context.sexpr),
+                content: compose_context_message(
+                    context_message_prefix,
+                    &context.sexpr,
+                    request_overlay,
+                )?,
                 name: None,
                 tool_call_id: None,
                 tool_calls: None,
@@ -5542,7 +5600,11 @@ impl Orchestrator {
                     break;
                 }
                 previous_visible = visible;
-                messages[1].content = format!("{context_message_prefix}\n{}", smaller.sexpr);
+                messages[1].content = compose_context_message(
+                    context_message_prefix,
+                    &smaller.sexpr,
+                    request_overlay,
+                )?;
                 context = smaller;
                 request_prompt_measurement = self
                     .count_projected_prompt_tokens(&context, &messages, &tools)
@@ -5770,26 +5832,31 @@ impl Orchestrator {
                         );
                     context = recovery_context;
                     effective_phase = "critical-maintenance".to_string();
-                    let recovery_system_prompt = attach_harness_mount(
-                        prompt_mode,
-                        compose_system_prompt(
-                            prompt_mode,
-                            stable_system_prompt,
-                            Some((effective_phase.as_str(), CRITICAL_MAINTENANCE_PROMPT)),
-                        ),
-                        harness_mount.as_deref(),
-                    )?;
+                    let recovery_overlay = EvaluationContextOverlay {
+                        evaluation_profile: harness_context
+                            .as_ref()
+                            .map(|item| item.profile.as_str()),
+                        harness_binding: harness_context.as_ref().map(|item| item.binding.as_str()),
+                        runtime_directive: Some((
+                            effective_phase.as_str(),
+                            CRITICAL_MAINTENANCE_PROMPT,
+                        )),
+                    };
                     base_protocol_messages = vec![
                         Message {
                             role: "system".to_string(),
-                            content: recovery_system_prompt,
+                            content: stable_system_prompt.to_string(),
                             name: None,
                             tool_call_id: None,
                             tool_calls: None,
                         },
                         Message {
                             role: "user".to_string(),
-                            content: format!("{context_message_prefix}\n{}", context.sexpr),
+                            content: compose_context_message(
+                                context_message_prefix,
+                                &context.sexpr,
+                                recovery_overlay,
+                            )?,
                             name: None,
                             tool_call_id: None,
                             tool_calls: None,
@@ -10134,7 +10201,14 @@ impl Orchestrator {
         &self,
         context_id: &str,
         activation: &ThreadActivationRecord,
-    ) -> Result<Option<(HarnessBinding, Arc<dyn DomainHarness>, String)>, DynError> {
+    ) -> Result<
+        Option<(
+            HarnessBinding,
+            Arc<dyn DomainHarness>,
+            RenderedHarnessContext,
+        )>,
+        DynError,
+    > {
         let active = self
             .objective_evaluations
             .get_for_activation(&activation.id);
@@ -10251,8 +10325,8 @@ impl Orchestrator {
             )
             .into());
         }
-        let mount = render_harness_mount(&binding, harness.as_ref())?;
-        Ok(Some((binding, harness, mount)))
+        let rendered = render_harness_context(&binding, harness.as_ref())?;
+        Ok(Some((binding, harness, rendered)))
     }
 
     /// Starts one Runtime-owned Harness entry through the same durable
@@ -12065,18 +12139,18 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        activation_admission_class, apply_prompt_estimate_delta, attach_harness_mount,
-        baseline_system_prompt, classify_terminal_response, cognitive_sexpr_vm_system_prompt,
-        compact_context_inspect_for_persistence, compose_system_prompt,
+        activation_admission_class, apply_prompt_estimate_delta, baseline_system_prompt,
+        classify_terminal_response, cognitive_sexpr_vm_system_prompt,
+        compact_context_inspect_for_persistence, compose_context_encoding,
         critical_maintenance_transaction_available, event_needs_signal_outbox,
         extend_exec_output_facts, harness_entry_callable_tools, persist_model_reasoning_summary,
-        persist_model_usage, plan_infer_tool_scope, recovery_owns_activation, render_harness_mount,
-        render_system_contract, restrict_tools_to_scope, retain_active_transcript_calls,
-        runtime_claimant_id, semantic_sexpr_vm_system_prompt,
+        persist_model_usage, plan_infer_tool_scope, recovery_owns_activation,
+        render_harness_context, render_system_contract, restrict_tools_to_scope,
+        retain_active_transcript_calls, runtime_claimant_id, semantic_sexpr_vm_system_prompt,
         should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
         tool_call_activity_preview, DurableEventWriter, DurableEventWriterMetrics, DynError,
-        ModelCompletionError, ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator,
-        NoReplyMode, ReadTurnGuard, SystemPromptMode, TerminalDecision,
+        EvaluationContextOverlay, ModelCompletionError, ModelCompletionErrorOrigin,
+        ModelReasoningSummaryAccumulator, NoReplyMode, ReadTurnGuard, TerminalDecision,
         AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
@@ -12615,7 +12689,7 @@ mod tests {
     }
 
     #[test]
-    fn semantic_prompt_mounts_exact_harness_as_parseable_dynamic_suffix() {
+    fn context_encoding_mounts_exact_harness_as_stable_profile_and_dynamic_binding() {
         let package = crate::harness_package::HarnessPackage::from_source(
             "coding.hns",
             r#"
@@ -12642,23 +12716,34 @@ mod tests {
             evaluation_id: Some("evaluation-2".to_string()),
             inherited_from_objective_id: Some("objective-1".to_string()),
         };
-        let mount = render_harness_mount(&binding, harness.as_ref()).unwrap();
-        let prompt = attach_harness_mount(
-            SystemPromptMode::SemanticSexprVm,
-            semantic_sexpr_vm_system_prompt().to_string(),
-            Some(&mount),
+        let rendered = render_harness_context(&binding, harness.as_ref()).unwrap();
+        let base = "(context (protocol (version 1)) (evaluation-profile none) (inbox) (mind) (evaluation-environment) (evaluate (root-input test)))";
+        let context = compose_context_encoding(
+            base,
+            EvaluationContextOverlay {
+                evaluation_profile: Some(&rendered.profile),
+                harness_binding: Some(&rendered.binding),
+                runtime_directive: Some(("work", "继续执行")),
+            },
         )
         .unwrap();
 
-        crate::sexpr::parse(&prompt).expect("mounted prompt must stay one S-expression");
-        assert!(prompt.contains("(harness-mount"));
-        assert!(prompt.contains("(objective objective-1)"));
-        assert!(prompt.contains("(evaluation evaluation-2)"));
-        assert!(prompt.contains("(read-only-default-mind (mind"));
-        assert!(prompt.contains("(capabilities read rust)"));
-        assert!(prompt.contains("(entry (owner runtime)"));
-        assert!(prompt.contains("(program (eval"));
-        assert!(prompt.contains("Runtime 自动降低为 Typed Plan IR"));
+        crate::sexpr::parse(&context).expect("mounted context must stay one S-expression");
+        assert!(context.contains("(evaluation-profile"));
+        assert!(context.contains("(evaluation-environment"));
+        assert!(context.contains("(harness-binding"));
+        assert!(context.contains("(objective objective-1)"));
+        assert!(context.contains("(evaluation evaluation-2)"));
+        assert!(context.contains("(read-only-default-mind (mind"));
+        assert!(context.contains("(capabilities read rust)"));
+        assert!(context.contains("(entry (owner runtime)"));
+        assert!(context.contains("(program (eval"));
+        assert!(context.contains("Runtime 自动降低为 Typed Plan IR"));
+        assert!(context.find("(evaluation-profile").unwrap() < context.find("(inbox").unwrap());
+        assert!(context.find("(evaluation-environment").unwrap() > context.find("(inbox").unwrap());
+        assert!(
+            context.find("(evaluation-environment").unwrap() < context.find("(evaluate ").unwrap()
+        );
     }
 
     #[test]
@@ -12687,11 +12772,11 @@ mod tests {
             evaluation_id: Some("evaluation-research".to_string()),
             inherited_from_objective_id: Some("objective-research".to_string()),
         };
-        let mount = render_harness_mount(&binding, harness.as_ref()).unwrap();
+        let rendered = render_harness_context(&binding, harness.as_ref()).unwrap();
 
-        assert!(mount.contains("(entry (owner model)"));
-        assert!(mount.contains("(program (infer"));
-        assert!(mount.contains("当前 Evaluation 的主动入口程序"));
+        assert!(rendered.profile.contains("(entry (owner model)"));
+        assert!(rendered.profile.contains("(program (infer"));
+        assert!(rendered.profile.contains("当前 Evaluation 的主动入口程序"));
     }
 
     #[test]
@@ -12842,24 +12927,29 @@ mod tests {
     }
 
     #[test]
-    fn semantic_vm_dynamic_directives_remain_inside_one_sexpr() {
-        let stable = semantic_sexpr_vm_system_prompt();
-        let composed = compose_system_prompt(
-            SystemPromptMode::SemanticSexprVm,
-            stable,
-            Some(("final-reply", "返回普通文本")),
-        );
-        assert!(composed.starts_with("(system-evaluation"));
+    fn runtime_directives_live_in_context_tail_not_system_prompt() {
+        let stable = semantic_sexpr_vm_system_prompt().to_string();
+        let composed = compose_context_encoding(
+            "(context (protocol (version 1)) (evaluation-profile none) (inbox) (mind) (evaluation-environment) (evaluate (root-input test)))",
+            EvaluationContextOverlay {
+                runtime_directive: Some((
+                    "final-reply",
+                    "仅在本轮动态尾部返回最终文本",
+                )),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(composed.starts_with("(context"));
         assert!(composed.contains("(runtime-directive"));
         assert!(composed.contains("(kind final-reply)"));
-        crate::sexpr::parse(&composed).expect("dynamic semantic prompt must remain one SExpr");
-
-        let cognitive = compose_system_prompt(
-            SystemPromptMode::CognitiveSexprVm,
-            cognitive_sexpr_vm_system_prompt(),
-            Some(("final-reply", "返回普通文本")),
+        assert!(composed.find("(runtime-directive").unwrap() > composed.find("(inbox").unwrap());
+        assert!(
+            composed.find("(runtime-directive").unwrap() < composed.find("(evaluate ").unwrap()
         );
-        assert!(cognitive.ends_with("返回普通文本"));
+        crate::sexpr::parse(&composed).expect("dynamic Context must remain one SExpr");
+        assert_eq!(stable, semantic_sexpr_vm_system_prompt());
+        assert!(!stable.contains("仅在本轮动态尾部返回最终文本"));
     }
 
     #[test]

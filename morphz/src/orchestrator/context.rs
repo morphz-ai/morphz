@@ -29,12 +29,12 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use tokio::sync::Mutex;
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
-pub const CONTEXT_PROTOCOL_VERSION: u64 = 25;
+pub const CONTEXT_PROTOCOL_VERSION: u64 = 26;
 const EVENT_REFERENCE_PREFIX: &str = "@e";
 const FRAME_RECALL_PAGE_CHAR_BUDGET: usize = 24_000;
 
@@ -5074,6 +5074,7 @@ fn render_evaluation_directive(
             let mut fields = vec![
                 pair("id", atom(&objective.id)),
                 pair("status", atom(objective.status.as_str())),
+                pair("revision", atom(objective.revision.to_string())),
                 pair("role", atom(role)),
                 pair("goal", atom(&objective.stated_objective)),
             ];
@@ -6079,57 +6080,43 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
     }
 
     let mut inbox = vec![atom("inbox")];
+    let mut observation_state = vec![atom("observation-state")];
     for observation in observations {
         let mut fields = vec![
             pair("ref", atom(&observation.reference)),
             pair("seq", atom(observation.sequence.to_string())),
             pair("turn", atom(observation.turn.to_string())),
+        ];
+        if let Some(session_id) = &observation.session_id {
+            fields.push(pair("session", atom(session_id)));
+        }
+        if let Some(principal_id) = &observation.principal_id {
+            fields.push(pair("principal", atom(principal_id)));
+        }
+        if let Some(attempt) = observation.attempt {
+            fields.push(pair("attempt", atom(attempt.to_string())));
+        }
+        if let Some(caused_by) = &observation.caused_by {
+            fields.push(pair("caused-by", atom(caused_by)));
+        }
+        if let Some(tool_name) = &observation.tool_name {
+            fields.push(pair("tool", atom(tool_name)));
+        }
+        fields.extend([
             pair("kind", atom(&observation.kind)),
             pair("topic", atom(&observation.topic)),
             pair("actor", atom(&observation.actor)),
             pair("timestamp", atom(&observation.timestamp)),
-            pair(
-                "protected",
-                atom(if observation.protected {
-                    "true"
-                } else {
-                    "false"
-                }),
-            ),
             list(
-                "residency",
+                "content",
                 vec![
-                    pair("state", atom("active")),
                     pair("representation", atom(&observation.representation)),
                     pair("visible-chars", atom(observation.visible_chars.to_string())),
                     pair("total-chars", atom(observation.total_chars.to_string())),
-                    pair(
-                        "retrievable",
-                        atom(if observation.retrievable {
-                            "true"
-                        } else {
-                            "false"
-                        }),
-                    ),
+                    pair("text", atom(&observation.preview)),
                 ],
             ),
-            pair("preview", atom(&observation.preview)),
-        ];
-        if let Some(session_id) = &observation.session_id {
-            fields.insert(2, pair("session", atom(session_id)));
-        }
-        if let Some(principal_id) = &observation.principal_id {
-            fields.insert(3, pair("principal", atom(principal_id)));
-        }
-        if let Some(attempt) = observation.attempt {
-            fields.insert(3, pair("attempt", atom(attempt.to_string())));
-        }
-        if let Some(caused_by) = &observation.caused_by {
-            fields.insert(4, pair("caused-by", atom(caused_by)));
-        }
-        if let Some(tool_name) = &observation.tool_name {
-            fields.insert(5, pair("tool", atom(tool_name)));
-        }
+        ]);
         if let Some(tool_status) = &observation.tool_status {
             fields.push(pair("tool-status", atom(tool_status)));
         }
@@ -6149,52 +6136,70 @@ fn render_context(input: ContextRenderInput<'_>) -> String {
             }
             fields.push(list("resource", resource_fields));
         }
+        inbox.push(list("observation", fields));
+
+        // Observation payload and causal identity are immutable Ledger facts.
+        // Mutable projection metadata lives after the long Inbox so changes
+        // in protection, residency, freshness, or usage do not invalidate the
+        // cached prefix containing earlier observations.
+        let mut state_fields = vec![
+            pair("ref", atom(&observation.reference)),
+            pair(
+                "protected",
+                atom(if observation.protected {
+                    "true"
+                } else {
+                    "false"
+                }),
+            ),
+            list(
+                "residency",
+                vec![
+                    pair("state", atom("active")),
+                    pair(
+                        "retrievable",
+                        atom(if observation.retrievable {
+                            "true"
+                        } else {
+                            "false"
+                        }),
+                    ),
+                ],
+            ),
+        ];
         if observation.freshness.latest.is_some()
             || !observation.freshness.supersedes.is_empty()
             || !observation.freshness.superseded_by.is_empty()
         {
-            fields.push(render_freshness(&observation.freshness, references));
+            state_fields.push(render_freshness(&observation.freshness, references));
         }
         if observation.usage != ContextUsage::default() {
-            fields.push(render_usage(&observation.usage));
+            state_fields.push(render_usage(&observation.usage));
         }
-        inbox.push(list("observation", fields));
+        observation_state.push(list("state", state_fields));
     }
 
-    // Prefix-cache order is intentional: protocol is immutable, the shared
-    // Mind usually changes less often than routing/turn state, the Session
-    // directory changes less often than wake/budget, and Inbox is highest
-    // churn. Concurrent Session evaluations of the same Context therefore
-    // reuse the protocol + Mind prefix whenever they observe the same version.
-    let directive = activation.map(|evaluation| {
-        render_evaluation_directive(evaluation, objectives, references).to_string()
-    });
-    match directive {
-        Some(directive) => format!(
-            "{} {} {} {} {} {})",
-            stable_context_prefix(),
-            SExpr::List(mind),
-            session_directory,
-            SExpr::List(kernel),
-            SExpr::List(inbox),
-            directive,
-        ),
-        None => format!(
-            "{} {} {} {} {})",
-            stable_context_prefix(),
-            SExpr::List(mind),
-            session_directory,
-            SExpr::List(kernel),
-            SExpr::List(inbox)
-        ),
+    // Prefix-cache order is a physical request invariant. The immutable
+    // protocol and append-mostly Inbox must precede all ordinary per-request
+    // state. Retiring an old observation intentionally changes the Inbox and
+    // starts a new cache lineage; ordinary wake/budget/Mind changes do not.
+    let mut context = vec![
+        atom("context"),
+        render_protocol(),
+        list("evaluation-profile", vec![atom("none")]),
+        SExpr::List(inbox),
+        SExpr::List(observation_state),
+        SExpr::List(mind),
+        session_directory,
+        SExpr::List(kernel),
+        list("evaluation-environment", Vec::new()),
+    ];
+    if let Some(evaluation) = activation {
+        context.push(render_evaluation_directive(
+            evaluation, objectives, references,
+        ));
     }
-}
-
-fn stable_context_prefix() -> &'static str {
-    static PREFIX: OnceLock<String> = OnceLock::new();
-    PREFIX
-        .get_or_init(|| format!("(context {}", render_protocol()))
-        .as_str()
+    SExpr::List(context).to_string()
 }
 
 fn freshness_for_id(state: &MindState, id: &str) -> ContextFreshness {
@@ -6287,6 +6292,31 @@ fn render_protocol() -> SExpr {
         "protocol",
         vec![
             pair("version", atom(CONTEXT_PROTOCOL_VERSION.to_string())),
+            list(
+                "layout-contract",
+                vec![
+                    pair(
+                        "physical-order",
+                        atom("protocol → evaluation-profile → inbox → observation-state → mind → session-directory → kernel → evaluation-environment → evaluate"),
+                    ),
+                    pair(
+                        "prefix",
+                        atom("protocol 与 evaluation-profile 是当前协议/能力谱系；inbox 是按 Ledger 顺序投影的追加式证据前缀"),
+                    ),
+                    pair(
+                        "dynamic-tail",
+                        atom("observation-state、mind、session-directory、kernel、evaluation-environment 与 evaluate 是当前求值状态；evaluate 始终是最后且唯一的执行入口"),
+                    ),
+                    pair(
+                        "retirement",
+                        atom("retire 旧 observation 会重写 inbox 投影并有意开启新的缓存谱系；普通 wake、预算或 active-session 变化不得改写此前的稳定证据字节"),
+                    ),
+                    pair(
+                        "profile",
+                        atom("evaluation-profile 是内容寻址的稳定 Harness 定义；本轮绑定只允许出现在 evaluation-environment"),
+                    ),
+                ],
+            ),
             list(
                 "routing-contract",
                 vec![
@@ -6405,7 +6435,7 @@ fn render_protocol() -> SExpr {
                     pair("caused-by", atom("产生本 observation 的调用或事件")),
                     pair(
                         "residency",
-                        atom("当前可见状态：full 全文、preview 预览、recalled-chunk 召回片段"),
+                        atom("observation-state 中的当前投影状态；content.representation 表示 full 全文、preview 预览或 recalled-chunk 召回片段"),
                     ),
                     pair(
                         "freshness",
@@ -6418,6 +6448,10 @@ fn render_protocol() -> SExpr {
                     pair(
                         "resource",
                         atom("工具可选提供的通用资源 kind/key/version；不限定为代码文件"),
+                    ),
+                    pair(
+                        "observation-state",
+                        atom("按 ref 覆盖 Inbox observation 的可变保护、驻留、新旧关系与使用统计；Inbox 中的因果身份和 content 是 Ledger 投影事实"),
                     ),
                 ],
             ),
@@ -9599,6 +9633,33 @@ mod tests {
             visible_in_inbox: true,
         };
         let references = ContextReferences::default();
+        let observations = vec![ContextObservation {
+            id: "user:1".to_string(),
+            reference: "@e7".to_string(),
+            session_id: Some("s1".to_string()),
+            principal_id: Some("principal-default".to_string()),
+            sequence: 7,
+            turn: 1,
+            attempt: None,
+            caused_by: None,
+            kind: "user_message".to_string(),
+            topic: "chat/user_message".to_string(),
+            actor: "User".to_string(),
+            timestamp: "2026-07-26T00:00:00Z".to_string(),
+            preview: "先回答我".to_string(),
+            truncated: false,
+            representation: "full".to_string(),
+            visible_chars: 4,
+            total_chars: 4,
+            retrievable: true,
+            protected: true,
+            tool_name: None,
+            tool_status: None,
+            output_empty: None,
+            resource: None,
+            freshness: ContextFreshness::default(),
+            usage: ContextUsage::default(),
+        }];
         let evaluation = ActivationFocus {
             activation_id: "work-current".to_string(),
             session_id: "s1".to_string(),
@@ -9662,7 +9723,7 @@ mod tests {
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
             state: &state,
-            observations: &[],
+            observations: &observations,
             pressure: &pressure,
             turn_budget: &budget,
             wake: &wake,
@@ -9730,7 +9791,8 @@ mod tests {
         assert!(rendered.contains("(source-placement"));
         assert!(rendered.contains("(syntax \"(retire ID...)\")"));
         assert!(rendered.contains("(mind (frame"));
-        assert!(rendered.contains("(inbox)"));
+        assert!(rendered.contains("(inbox (observation (ref @e7)"));
+        assert!(rendered.contains("(observation-state (state (ref @e7)"));
         assert!(!rendered.contains("todo_stack"));
         assert!(!rendered.contains("(maintenance-candidates"));
         assert!(rendered.contains("(capacity-relief-priority discard-absorbed-observations-first)"));
@@ -9759,7 +9821,7 @@ mod tests {
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
             state: &state,
-            observations: &[],
+            observations: &observations,
             pressure: &warning_pressure,
             turn_budget: &budget,
             wake: &wake,
@@ -9769,10 +9831,36 @@ mod tests {
         assert!(!warning.contains("(maintenance-candidates"));
         assert!(!warning.contains("active-token-cost-estimate"));
 
-        assert!(rendered.starts_with(stable_context_prefix()));
-        let shared_mind_offset = stable_context_prefix().len();
-        assert!(rendered[shared_mind_offset..].starts_with(" (mind"));
-        assert!(shared_mind_offset < rendered.rfind(" (kernel").unwrap());
+        assert!(rendered.starts_with("(context (protocol"));
+        let top_level_names = match parse(&rendered).unwrap() {
+            SExpr::List(items) => items
+                .iter()
+                .filter_map(|item| match item {
+                    SExpr::Atom(name) => Some(name.clone()),
+                    SExpr::List(values) => values.first().and_then(|value| match value {
+                        SExpr::Atom(name) => Some(name.clone()),
+                        _ => None,
+                    }),
+                })
+                .collect::<Vec<_>>(),
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            top_level_names,
+            vec![
+                "context",
+                "protocol",
+                "evaluation-profile",
+                "inbox",
+                "observation-state",
+                "mind",
+                "session-directory",
+                "kernel",
+                "evaluation-environment",
+                "evaluate",
+            ]
+        );
+        let kernel_offset = rendered.find(" (kernel (context context-1)").unwrap();
         budget.attempt = 2;
         let changed = render_context(ContextRenderInput {
             context_id: "context-1",
@@ -9794,15 +9882,57 @@ mod tests {
             cognitive_clock: &cognitive_clock,
             frame_retirement_cooling_ticks: 8,
             state: &state,
-            observations: &[],
+            observations: &observations,
             pressure: &pressure,
             turn_budget: &budget,
             wake: &wake,
             references: &references,
         });
         assert_ne!(rendered, changed);
-        assert!(changed.starts_with(stable_context_prefix()));
-        assert!(changed[shared_mind_offset..].starts_with(" (mind"));
+        assert_eq!(
+            &rendered[..kernel_offset],
+            &changed[..changed.find(" (kernel (context context-1)").unwrap()],
+            "ordinary active-session/turn changes must not invalidate the protocol + Inbox + observation-state + Mind + Session prefix",
+        );
+
+        let mut observations_with_new_projection_state = observations.clone();
+        observations_with_new_projection_state[0].protected = false;
+        observations_with_new_projection_state[0]
+            .usage
+            .recall_count_total = 1;
+        let state_changed = render_context(ContextRenderInput {
+            context_id: "context-1",
+            active_session_id: "s1",
+            active_principal_id: None,
+            parent_session_id: None,
+            sessions: &[],
+            session_working_set: &working_set,
+            active_activations: &[],
+            threads: &[],
+            thread_signals: &[],
+            schedules: &[],
+            activation: Some(&evaluation),
+            concurrent_activations: &concurrent_activations,
+            background_tasks: &[],
+            objectives: &[],
+            execution_targets: &[],
+            execution_target_access: &[],
+            cognitive_clock: &cognitive_clock,
+            frame_retirement_cooling_ticks: 8,
+            state: &state,
+            observations: &observations_with_new_projection_state,
+            pressure: &pressure,
+            turn_budget: &budget,
+            wake: &wake,
+            references: &references,
+        });
+        let observation_state_offset = rendered.find(" (observation-state").unwrap();
+        assert_eq!(
+            &rendered[..observation_state_offset],
+            &state_changed[..state_changed.find(" (observation-state").unwrap()],
+            "mutable Observation projection metadata must not rewrite the append-mostly Inbox prefix",
+        );
+        assert_ne!(rendered, state_changed);
     }
 
     #[test]

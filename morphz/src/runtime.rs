@@ -4869,9 +4869,9 @@ mod tests {
                             && message.content.contains("discovery-test")
                             && message.content.contains("1.0.0")
                     }));
-                    assert!(!messages
-                        .iter()
-                        .any(|message| message.content.contains("(harness-mount")));
+                    assert!(!messages.iter().any(|message| message
+                        .content
+                        .contains("(evaluation-profile (id discovery-test)")));
                     Ok(Response {
                         content: String::new(),
                         tool_calls: vec![ToolCallRepr {
@@ -4889,7 +4889,8 @@ mod tests {
                 }
                 2 => {
                     let observed = messages.iter().any(|message| {
-                        message.content.contains("(harness-mount")
+                        message.content.contains("(evaluation-profile")
+                            && message.content.contains("(harness-binding")
                             && message.content.contains("(id discovery-test)")
                             && message.content.contains("discovery-contract")
                     });
@@ -5621,7 +5622,10 @@ mod tests {
     }
 
     fn objective_revision_from_messages(messages: &[Message], objective_id: &str) -> u64 {
-        let marker = format!("(id {objective_id})");
+        // Only a complete Objective state record owns the revision used for
+        // objective_update CAS. The same id can also appear in routing,
+        // binding and scheduler structures followed by unrelated revisions.
+        let marker = format!("(objective (id {objective_id})");
         messages
             .iter()
             .find_map(|message| {
