@@ -18,7 +18,10 @@ use crate::execution::{
     ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat, JobOutcome, JobReceipt,
 };
 use crate::harness::{DomainHarness, HarnessBinding, HarnessRegistry as DomainHarnessRegistry};
-use crate::harness_package::load_objective_harness_binding;
+use crate::harness_package::{
+    load_evaluation_harness_binding, load_objective_harness_binding,
+    persist_evaluation_harness_binding,
+};
 use crate::llm::{
     Client, Message, ModelFailure, ModelFailureKind, ModelUsage, PromptTokenAccuracy,
     PromptTokenCount, ToolDefinition,
@@ -580,13 +583,13 @@ fn render_harness_mount(
     let descriptor = harness.descriptor();
     let contract = crate::sexpr::parse(&harness.compact_contract())
         .map_err(|error| format!("Harness Contract 不是合法 S 表达式：{error}"))?;
-    let mut scope = vec![
-        SExpr::Atom("scope".to_string()),
-        SExpr::List(vec![
+    let mut scope = vec![SExpr::Atom("scope".to_string())];
+    if let Some(objective_id) = &binding.objective_id {
+        scope.push(SExpr::List(vec![
             SExpr::Atom("objective".to_string()),
-            SExpr::Atom(binding.objective_id.clone()),
-        ]),
-    ];
+            SExpr::Atom(objective_id.clone()),
+        ]));
+    }
     if let Some(evaluation_id) = &binding.evaluation_id {
         scope.push(SExpr::List(vec![
             SExpr::Atom("evaluation".to_string()),
@@ -684,7 +687,7 @@ fn stable_harness_entry_call_id(binding: &HarnessBinding, evaluation_id: &str) -
         binding.harness_id.as_str(),
         binding.harness_version.as_str(),
         binding.artifact_hash.as_str(),
-        binding.objective_id.as_str(),
+        binding.objective_id.as_deref().unwrap_or(""),
         evaluation_id,
     ] {
         digest.update(value.as_bytes());
@@ -5240,7 +5243,7 @@ impl Orchestrator {
                 })
             });
         let harness_activation = self
-            .harness_mount_for_activation(&context_id, &activation.id)
+            .harness_mount_for_activation(&context_id, activation)
             .await?;
         let harness_mount = harness_activation
             .as_ref()
@@ -5482,8 +5485,8 @@ impl Orchestrator {
         if thread.executor_kind != "plan_infer" {
             tools.push(no_reply_tool_definition());
         }
-        // A Runtime-owned Harness entry is the root program for an Objective
-        // Evaluation.  A `plan_infer` Thread is already a child node of that
+        // A Runtime-owned Harness entry is the root program for the current
+        // Evaluation. A `plan_infer` Thread is already a child node of that
         // program: re-dispatching the mounted entry here would short-circuit
         // the child model evaluation (the entry call is idempotently already
         // present) and leave the parent Plan without an infer result Event.
@@ -7638,34 +7641,51 @@ impl Orchestrator {
                 .cloned()
                 .ok_or("Orchestrator 尚未启动，不能执行持久化 Plan")?,
         };
-        let artifact_binding = if let Some(objective_id) = route.objective_id.as_deref() {
-            let binding = load_objective_harness_binding(
-                self.store.as_ref(),
-                &route.context_id,
-                objective_id,
-                route.objective_evaluation_id.as_deref(),
-            )
-            .await?;
-            if let Some(binding) = binding {
-                let harness = self
-                    .harness_registry
-                    .get(&binding.harness_id, &binding.harness_version)
-                    .ok_or_else(|| {
-                        format!(
-                            "Plan 绑定的 Harness '{}@{}' 未加载",
-                            binding.harness_id, binding.harness_version
-                        )
-                    })?;
-                if harness.artifact_hash().as_deref() != Some(binding.artifact_hash.as_str()) {
-                    return Err("Plan Harness binding hash 与 Registry 不一致".into());
+        let ordinary_evaluation_id = if route.objective_evaluation_id.is_none() {
+            self.context_engine
+                .session_store()
+                .ok_or("Yao Plan 需要持久化 ThreadStore")?
+                .get_thread_activation(&route.activation_id)
+                .await?
+                .map(|activation| activation.root_turn_id)
+        } else {
+            None
+        };
+        let direct_evaluation_id = route
+            .objective_evaluation_id
+            .as_deref()
+            .or(ordinary_evaluation_id.as_deref())
+            .unwrap_or(route.activation_id.as_str());
+        let binding = load_evaluation_harness_binding(self.store.as_ref(), direct_evaluation_id)
+            .await?
+            .or(match route.objective_id.as_deref() {
+                Some(objective_id) => {
+                    load_objective_harness_binding(
+                        self.store.as_ref(),
+                        &route.context_id,
+                        objective_id,
+                    )
+                    .await?
                 }
-                PlanArtifactBinding {
-                    harness_id: Some(binding.harness_id),
-                    harness_version: Some(binding.harness_version),
-                    source_artifact_hash: Some(binding.artifact_hash),
-                }
-            } else {
-                PlanArtifactBinding::default()
+                None => None,
+            });
+        let artifact_binding = if let Some(binding) = binding {
+            let harness = self
+                .harness_registry
+                .get(&binding.harness_id, &binding.harness_version)
+                .ok_or_else(|| {
+                    format!(
+                        "Plan 绑定的 Harness '{}@{}' 未加载",
+                        binding.harness_id, binding.harness_version
+                    )
+                })?;
+            if harness.artifact_hash().as_deref() != Some(binding.artifact_hash.as_str()) {
+                return Err("Plan Harness binding hash 与 Registry 不一致".into());
+            }
+            PlanArtifactBinding {
+                harness_id: Some(binding.harness_id),
+                harness_version: Some(binding.harness_version),
+                source_artifact_hash: Some(binding.artifact_hash),
             }
         } else {
             PlanArtifactBinding::default()
@@ -10113,19 +10133,106 @@ impl Orchestrator {
     async fn harness_mount_for_activation(
         &self,
         context_id: &str,
-        activation_id: &str,
+        activation: &ThreadActivationRecord,
     ) -> Result<Option<(HarnessBinding, Arc<dyn DomainHarness>, String)>, DynError> {
-        let Some(active) = self.objective_evaluations.get_for_activation(activation_id) else {
-            return Ok(None);
-        };
-        let Some(binding) = load_objective_harness_binding(
-            self.store.as_ref(),
-            context_id,
-            &active.objective_id,
-            Some(&active.evaluation_id),
-        )
-        .await?
-        else {
+        let active = self
+            .objective_evaluations
+            .get_for_activation(&activation.id);
+        // Objective Evaluations already have their own durable identity.
+        // Ordinary dialogue/work Evaluation is the complete causal Thread,
+        // not one scheduler Activation: tool outputs create successor
+        // Activations but retain the same root_turn_id.
+        let evaluation_id = active
+            .as_ref()
+            .map(|active| active.evaluation_id.as_str())
+            .unwrap_or(activation.root_turn_id.as_str());
+        let mut binding =
+            load_evaluation_harness_binding(self.store.as_ref(), evaluation_id).await?;
+
+        // An explicit SDK/HTTP/CLI selection is carried by the immutable root
+        // message. Materialize it as an Evaluation binding before the first
+        // Provider request so transport metadata never becomes prompt policy.
+        if binding.is_none() {
+            if let Some(trigger) = self
+                .context_engine
+                .find_event(context_id, &activation.trigger_event_id)
+                .await?
+            {
+                if let (Some(id), Some(version), Some(hash)) = (
+                    trigger
+                        .payload
+                        .get("requested_harness_id")
+                        .and_then(|value| value.as_str()),
+                    trigger
+                        .payload
+                        .get("requested_harness_version")
+                        .and_then(|value| value.as_str()),
+                    trigger
+                        .payload
+                        .get("requested_harness_artifact_hash")
+                        .and_then(|value| value.as_str()),
+                ) {
+                    let harness = self
+                        .harness_registry
+                        .get(id, version)
+                        .ok_or_else(|| format!("请求的 Harness '{id}@{version}' 未加载"))?;
+                    if harness.artifact_hash().as_deref() != Some(hash) {
+                        return Err(format!(
+                            "请求的 Harness '{id}@{version}' artifact hash 与 Registry 不一致"
+                        )
+                        .into());
+                    }
+                    binding = Some(
+                        persist_evaluation_harness_binding(
+                            self.store.as_ref(),
+                            context_id,
+                            evaluation_id,
+                            active.as_ref().map(|item| item.objective_id.as_str()),
+                            None,
+                            harness.as_ref(),
+                        )
+                        .await?,
+                    );
+                }
+            }
+        }
+
+        // Objective binding is only an optional inherited default. Every
+        // concrete Objective Evaluation receives its own immutable binding.
+        if binding.is_none() {
+            if let Some(active) = active.as_ref() {
+                if let Some(default) = load_objective_harness_binding(
+                    self.store.as_ref(),
+                    context_id,
+                    &active.objective_id,
+                )
+                .await?
+                {
+                    let harness = self
+                        .harness_registry
+                        .get(&default.harness_id, &default.harness_version)
+                        .ok_or_else(|| {
+                            format!(
+                                "Objective '{}' 默认 Harness '{}@{}' 未加载",
+                                active.objective_id, default.harness_id, default.harness_version
+                            )
+                        })?;
+                    binding = Some(
+                        persist_evaluation_harness_binding(
+                            self.store.as_ref(),
+                            context_id,
+                            evaluation_id,
+                            Some(&active.objective_id),
+                            Some(&active.objective_id),
+                            harness.as_ref(),
+                        )
+                        .await?,
+                    );
+                }
+            }
+        }
+
+        let Some(binding) = binding else {
             return Ok(None);
         };
         let harness = self
@@ -10133,14 +10240,14 @@ impl Orchestrator {
             .get(&binding.harness_id, &binding.harness_version)
             .ok_or_else(|| {
                 format!(
-                    "Objective '{}' 绑定的 Harness '{}@{}' 未加载",
-                    binding.objective_id, binding.harness_id, binding.harness_version
+                    "Evaluation '{}' 绑定的 Harness '{}@{}' 未加载",
+                    evaluation_id, binding.harness_id, binding.harness_version
                 )
             })?;
         if harness.artifact_hash().as_deref() != Some(binding.artifact_hash.as_str()) {
             return Err(format!(
-                "Objective '{}' 的 Harness binding hash 与 Registry 不一致",
-                binding.objective_id
+                "Evaluation '{}' 的 Harness binding hash 与 Registry 不一致",
+                evaluation_id
             )
             .into());
         }
@@ -10151,7 +10258,7 @@ impl Orchestrator {
     /// Starts one Runtime-owned Harness entry through the same durable
     /// `eval`/PlanExecution boundary used by an explicit model Function Call.
     ///
-    /// The synthetic call ID is stable for the exact Objective Evaluation and
+    /// The synthetic call ID is stable for the exact Evaluation and
     /// package hash. A tool result creates the continuation Activation; that
     /// continuation finds the existing terminal Plan and proceeds to the model
     /// instead of executing the entry a second time.
@@ -10168,16 +10275,23 @@ impl Orchestrator {
         }
         let active = self
             .objective_evaluations
-            .get_for_activation(&activation.id)
-            .ok_or("Runtime-owned Harness entry 缺少 Objective Evaluation route")?;
-        if active.objective_id != binding.objective_id {
-            return Err(format!(
-                "Harness binding Objective '{}' 与当前 Evaluation Objective '{}' 不一致",
-                binding.objective_id, active.objective_id
-            )
-            .into());
+            .get_for_activation(&activation.id);
+        let evaluation_id = binding
+            .evaluation_id
+            .as_deref()
+            .ok_or("Runtime-owned Harness entry 缺少 Evaluation binding identity")?;
+        if let (Some(active), Some(bound_objective_id)) =
+            (active.as_ref(), binding.objective_id.as_deref())
+        {
+            if active.objective_id != bound_objective_id {
+                return Err(format!(
+                    "Harness binding Objective '{}' 与当前 Evaluation Objective '{}' 不一致",
+                    bound_objective_id, active.objective_id
+                )
+                .into());
+            }
         }
-        let tool_call_id = stable_harness_entry_call_id(binding, &active.evaluation_id);
+        let tool_call_id = stable_harness_entry_call_id(binding, evaluation_id);
         let store = self
             .plan_store
             .as_ref()
@@ -10187,8 +10301,8 @@ impl Orchestrator {
                 context_id: Some(activation.context_id.clone()),
                 session_id: Some(session_id.to_string()),
                 tool_call_id: Some(tool_call_id.clone()),
-                objective_id: Some(active.objective_id.clone()),
-                objective_evaluation_id: Some(active.evaluation_id.clone()),
+                objective_id: active.as_ref().map(|item| item.objective_id.clone()),
+                objective_evaluation_id: active.as_ref().map(|item| item.evaluation_id.clone()),
                 harness_id: Some(binding.harness_id.clone()),
                 harness_version: Some(binding.harness_version.clone()),
                 source_artifact_hash: Some(binding.artifact_hash.clone()),
@@ -10202,8 +10316,8 @@ impl Orchestrator {
                 return Ok(false);
             }
             tracing::debug!(
-                objective_id = %active.objective_id,
-                evaluation_id = %active.evaluation_id,
+                objective_id = ?active.as_ref().map(|item| item.objective_id.as_str()),
+                evaluation_id,
                 plan_id = %plan.id,
                 status = plan.status.as_str(),
                 "Harness entry Plan 尚未终结；当前 Activation 不启动重复模型求值"
@@ -10223,8 +10337,8 @@ impl Orchestrator {
             }],
         };
         tracing::info!(
-            objective_id = %active.objective_id,
-            evaluation_id = %active.evaluation_id,
+            objective_id = ?active.as_ref().map(|item| item.objective_id.as_str()),
+            evaluation_id,
             harness = %format!("{}@{}", binding.harness_id, binding.harness_version),
             "Runtime 自动分派绑定 Harness 的 eval 入口"
         );
@@ -12523,8 +12637,10 @@ mod tests {
             harness_id: "coding".to_string(),
             harness_version: "1.0.0".to_string(),
             artifact_hash: package.artifact_hash,
-            objective_id: "objective-1".to_string(),
+            scope: crate::harness::HarnessBindingScope::Evaluation,
+            objective_id: Some("objective-1".to_string()),
             evaluation_id: Some("evaluation-2".to_string()),
+            inherited_from_objective_id: Some("objective-1".to_string()),
         };
         let mount = render_harness_mount(&binding, harness.as_ref()).unwrap();
         let prompt = attach_harness_mount(
@@ -12566,8 +12682,10 @@ mod tests {
             harness_id: "research".to_string(),
             harness_version: "1.0.0".to_string(),
             artifact_hash: package.artifact_hash,
-            objective_id: "objective-research".to_string(),
+            scope: crate::harness::HarnessBindingScope::Evaluation,
+            objective_id: Some("objective-research".to_string()),
             evaluation_id: Some("evaluation-research".to_string()),
+            inherited_from_objective_id: Some("objective-research".to_string()),
         };
         let mount = render_harness_mount(&binding, harness.as_ref()).unwrap();
 

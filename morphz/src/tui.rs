@@ -3897,6 +3897,7 @@ pub async fn run(
     runtime: MorphzRuntime,
     session: SessionHandle,
     initial_prompt: Option<String>,
+    initial_harness: Option<crate::harness::ExactHarnessRef>,
 ) -> Result<(), TuiError> {
     let mut state = UiState::new(&runtime, &session);
     if let Ok(Some(record)) = session.record().await {
@@ -3916,8 +3917,16 @@ pub async fn run(
     }
 
     let mut runtime_events = runtime.subscribe("*", 2_048);
+    let mut pending_harness = initial_harness;
     if let Some(prompt) = initial_prompt.filter(|value| !value.trim().is_empty()) {
-        submit_prompt(&runtime, &session, &mut state, prompt).await;
+        submit_prompt(
+            &runtime,
+            &session,
+            &mut state,
+            prompt,
+            pending_harness.take(),
+        )
+        .await;
     }
 
     let mut terminal = TerminalSession::enter()?;
@@ -4038,7 +4047,14 @@ pub async fn run(
                                 if handle_command(&runtime, &session, &mut state, &text).await? {
                                     continue;
                                 }
-                                submit_prompt(&runtime, &session, &mut state, text).await;
+                                submit_prompt(
+                                    &runtime,
+                                    &session,
+                                    &mut state,
+                                    text,
+                                    pending_harness.take(),
+                                )
+                                .await;
                             }
                         }
                     }
@@ -4101,6 +4117,7 @@ async fn submit_prompt(
     session: &SessionHandle,
     state: &mut UiState,
     prompt: String,
+    harness: Option<crate::harness::ExactHarnessRef>,
 ) {
     state.begin_request(&prompt);
     let message_id = format!(
@@ -4117,6 +4134,7 @@ async fn submit_prompt(
                 text: prompt,
                 actor: "User".to_string(),
                 client_message_id: Some(message_id),
+                harness,
             },
         )
         .await

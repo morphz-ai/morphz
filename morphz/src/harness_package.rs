@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use crate::event::Event;
 use crate::harness::{
-    DomainHarness, HarnessBinding, HarnessDescriptor, HarnessError, HarnessRegistry,
+    DomainHarness, HarnessBinding, HarnessBindingScope, HarnessDescriptor, HarnessError,
+    HarnessRegistry,
 };
 use crate::memory::{EventStore, QueryFilter};
 use crate::sexpr::SExpr;
@@ -21,6 +22,7 @@ use sha2::{Digest, Sha256};
 
 pub const HARNESS_PACKAGE_TOPIC: &str = "runtime/harness_package_registered";
 pub const HARNESS_BINDING_TOPIC: &str = "runtime/harness_binding";
+pub const EVALUATION_HARNESS_BINDING_TOPIC: &str = "runtime/evaluation_harness_binding";
 
 #[derive(Debug)]
 pub struct HarnessPackageError {
@@ -430,8 +432,10 @@ pub fn objective_harness_binding_event(
         harness_id: descriptor.id,
         harness_version: descriptor.version,
         artifact_hash,
-        objective_id: objective_id.to_string(),
+        scope: HarnessBindingScope::ObjectiveDefault,
+        objective_id: Some(objective_id.to_string()),
         evaluation_id: None,
+        inherited_from_objective_id: None,
     };
     let event = Event::new(
         stable_catalog_event_id("harness_binding", objective_id),
@@ -469,7 +473,7 @@ pub async fn persist_objective_harness_binding(
         })
         .await?;
     if let Some(event) = existing.first() {
-        let current = binding_from_event(event, None)?;
+        let current = binding_from_event(event)?;
         if current == binding {
             return Ok(current);
         }
@@ -491,7 +495,6 @@ pub async fn load_objective_harness_binding(
     store: &dyn EventStore,
     context_id: &str,
     objective_id: &str,
-    evaluation_id: Option<&str>,
 ) -> Result<Option<HarnessBinding>, HarnessError> {
     let events = store
         .query(QueryFilter {
@@ -502,22 +505,132 @@ pub async fn load_objective_harness_binding(
             ..Default::default()
         })
         .await?;
-    events
-        .first()
-        .map(|event| binding_from_event(event, evaluation_id))
-        .transpose()
+    events.first().map(binding_from_event).transpose()
 }
 
-fn binding_from_event(
-    event: &Event,
-    evaluation_id: Option<&str>,
+/// Persists the exact package identity used by one concrete Runtime
+/// Evaluation. The binding is immutable: retries and successor Activations
+/// may repeat the same request, but cannot silently replace it.
+pub async fn persist_evaluation_harness_binding(
+    store: &dyn EventStore,
+    context_id: &str,
+    evaluation_id: &str,
+    objective_id: Option<&str>,
+    inherited_from_objective_id: Option<&str>,
+    harness: &dyn DomainHarness,
 ) -> Result<HarnessBinding, HarnessError> {
+    let descriptor = harness.descriptor();
+    let artifact_hash = harness.artifact_hash().ok_or_else(|| {
+        format!(
+            "Harness '{}@{}' 没有 artifact hash，不能建立持久 Evaluation binding",
+            descriptor.id, descriptor.version
+        )
+    })?;
+    let binding = HarnessBinding {
+        harness_id: descriptor.id,
+        harness_version: descriptor.version,
+        artifact_hash,
+        scope: HarnessBindingScope::Evaluation,
+        objective_id: objective_id.map(str::to_string),
+        evaluation_id: Some(evaluation_id.to_string()),
+        inherited_from_objective_id: inherited_from_objective_id.map(str::to_string),
+    };
+    let mut payload = serde_json::Map::from_iter([
+        ("context_id".to_string(), json!(context_id)),
+        ("evaluation_id".to_string(), json!(evaluation_id)),
+        ("harness_id".to_string(), json!(binding.harness_id)),
+        (
+            "harness_version".to_string(),
+            json!(binding.harness_version),
+        ),
+        ("artifact_hash".to_string(), json!(binding.artifact_hash)),
+        ("scope".to_string(), json!("evaluation")),
+    ]);
+    if let Some(objective_id) = objective_id {
+        payload.insert("objective_id".to_string(), json!(objective_id));
+    }
+    if let Some(inherited) = inherited_from_objective_id {
+        payload.insert("inherited_from_objective_id".to_string(), json!(inherited));
+    }
+    let event = Event::new(
+        stable_catalog_event_id("harness_evaluation_binding", evaluation_id),
+        "Runtime-HarnessRegistry".to_string(),
+        "harness_binding".to_string(),
+        EVALUATION_HARNESS_BINDING_TOPIC.to_string(),
+        payload,
+    );
+    let existing = store
+        .query(QueryFilter {
+            event_id: Some(event.id.clone()),
+            ..Default::default()
+        })
+        .await?;
+    if let Some(event) = existing.first() {
+        let current = binding_from_event(event)?;
+        if current == binding {
+            return Ok(current);
+        }
+        return Err(format!(
+            "Evaluation '{}' 已绑定 '{}@{}'，不能改绑为 '{}@{}'",
+            evaluation_id,
+            current.harness_id,
+            current.harness_version,
+            binding.harness_id,
+            binding.harness_version
+        )
+        .into());
+    }
+    store.append(event).await?;
+    Ok(binding)
+}
+
+pub async fn load_evaluation_harness_binding(
+    store: &dyn EventStore,
+    evaluation_id: &str,
+) -> Result<Option<HarnessBinding>, HarnessError> {
+    let events = store
+        .query(QueryFilter {
+            event_id: Some(stable_catalog_event_id(
+                "harness_evaluation_binding",
+                evaluation_id,
+            )),
+            ..Default::default()
+        })
+        .await?;
+    events.first().map(binding_from_event).transpose()
+}
+
+fn binding_from_event(event: &Event) -> Result<HarnessBinding, HarnessError> {
+    let scope = match event
+        .payload
+        .get("scope")
+        .and_then(|value| value.as_str())
+        .unwrap_or("objective")
+    {
+        "objective" | "objective_default" => HarnessBindingScope::ObjectiveDefault,
+        "evaluation" => HarnessBindingScope::Evaluation,
+        value => return Err(format!("未知 Harness binding scope '{value}'").into()),
+    };
     Ok(HarnessBinding {
         harness_id: required_event_string(event, "harness_id")?.to_string(),
         harness_version: required_event_string(event, "harness_version")?.to_string(),
         artifact_hash: required_event_string(event, "artifact_hash")?.to_string(),
-        objective_id: required_event_string(event, "objective_id")?.to_string(),
-        evaluation_id: evaluation_id.map(str::to_string),
+        scope,
+        objective_id: event
+            .payload
+            .get("objective_id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        evaluation_id: event
+            .payload
+            .get("evaluation_id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
+        inherited_from_objective_id: event
+            .payload
+            .get("inherited_from_objective_id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string),
     })
 }
 
@@ -956,17 +1069,32 @@ mod tests {
         assert_eq!(loaded[0].artifact_hash, package.artifact_hash);
         assert_eq!(loaded[0].canonical_source(), package.canonical_source());
 
-        let binding = load_objective_harness_binding(
-            &reopened,
-            "context-1",
-            "objective-1",
-            Some("evaluation-2"),
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let binding = load_objective_harness_binding(&reopened, "context-1", "objective-1")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(binding.harness_id, "coding");
         assert_eq!(binding.harness_version, "1.0.0");
-        assert_eq!(binding.evaluation_id.as_deref(), Some("evaluation-2"));
+        assert_eq!(binding.scope, HarnessBindingScope::ObjectiveDefault);
+        assert_eq!(binding.evaluation_id, None);
+
+        let evaluation = persist_evaluation_harness_binding(
+            &reopened,
+            "context-1",
+            "evaluation-2",
+            Some("objective-1"),
+            Some("objective-1"),
+            registry.get("coding", "1.0.0").unwrap().as_ref(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(evaluation.scope, HarnessBindingScope::Evaluation);
+        assert_eq!(evaluation.evaluation_id.as_deref(), Some("evaluation-2"));
+        assert_eq!(
+            load_evaluation_harness_binding(&reopened, "evaluation-2")
+                .await
+                .unwrap(),
+            Some(evaluation)
+        );
     }
 }

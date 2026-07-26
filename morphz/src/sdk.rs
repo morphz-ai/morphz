@@ -7,6 +7,7 @@
 
 use crate::event::Event;
 use crate::execution::JobReceipt;
+pub use crate::harness::ExactHarnessRef;
 use crate::harness::{HarnessBinding, HarnessDescriptor};
 use crate::harness_package::HarnessPackage;
 use crate::identity::PrincipalAssertion;
@@ -91,6 +92,10 @@ pub struct SendMessageCommand {
     pub text: String,
     pub actor: String,
     pub client_message_id: Option<String>,
+    /// Optional exact Harness selection for this ordinary Evaluation. Omit to
+    /// let the model either answer normally or discover/select one lazily.
+    #[serde(default)]
+    pub harness: Option<crate::harness::ExactHarnessRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -219,12 +224,6 @@ pub struct AuthorizeExecutionTargetCommand {
     pub target_id: String,
     pub scope: ExecutionTargetAuthorizationScope,
     pub scope_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExactHarnessRef {
-    pub id: String,
-    pub version: String,
 }
 
 #[derive(Debug, Clone)]
@@ -392,6 +391,18 @@ impl MorphzSdk {
                     format!("Harness '{id}@{version}' 未安装"),
                 )
             })
+    }
+
+    /// Reads the immutable exact Harness binding that was actually selected
+    /// for one Evaluation. This does not substitute an Objective default.
+    pub async fn evaluation_harness_binding(
+        &self,
+        evaluation_id: &str,
+    ) -> SdkResult<Option<HarnessBinding>> {
+        self.runtime
+            .evaluation_harness_binding(evaluation_id)
+            .await
+            .map_err(SdkError::internal)
     }
 
     /// Creates one Objective through the same principal-aware application
@@ -1504,11 +1515,12 @@ impl MorphzSdk {
             .await?;
         self.runtime
             .session(command.session_id)
-            .send_as_principal(
+            .send_as_principal_with_harness(
                 command.text,
                 command.actor,
                 principal.principal_id.clone(),
                 command.client_message_id,
+                command.harness,
             )
             .await
             .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))

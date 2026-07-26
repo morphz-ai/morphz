@@ -14,6 +14,7 @@ pub mod execution_target;
 pub mod extension;
 pub mod harness;
 pub mod harness_package;
+pub mod harness_tool;
 pub mod i18n;
 pub mod identity;
 pub mod llm;

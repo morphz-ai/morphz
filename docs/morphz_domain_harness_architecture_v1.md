@@ -3,8 +3,9 @@
 > 状态：架构边界已稳定；`.hns` v1 Loader、显式双求值、Typed Plan IR、
 > 持久 `PlanExecution`、`call → Execution Job` 原子交接、终态结果回填
 > 与重启扫描、正式 Orchestrator 驱动及 `infer → child Activation`
-> 交接、版本化 Harness Registry、持久包目录、Objective Binding 与只读
-> Contract/Mind 挂载、顶层入口 Program 自动分派已实现
+> 交接、版本化 Harness Registry、持久包目录、Evaluation Scope Binding、
+> Objective 可选默认值、只读 Contract/Mind 挂载、模型按需发现与顶层入口
+> Program 自动分派已实现
 > 日期：2026-07-26
 > 适用范围：Runtime、Context Encoding、Objective / Evaluation、Skill、工具、领域认知 Frame 与未来 Harness 包
 > 配套设计：[Yao Harness `.hns` 包、显式双求值与 Typed Plan IR v1](morphz_yao_harness_file.md)
@@ -38,12 +39,13 @@ Harness 不只是一组 Prompt 或默认 Frame。它还可以提供由 Runtime �
 
 当前已经明确并实现最小 `.hns` 包边界、显式 `eval/infer` 求值语义、
 Scheduler Kernel 的持久 Plan 执行链、精确版本 Registry、不可变包目录和
-Objective 级 Binding。绑定后的求值能看到只读 Contract 与默认 Mind，且 Plan
-携带精确包 provenance。Runtime 会按精确 Objective Evaluation 自动分派入口：
-顶层 `eval` 复用持久 Plan 与 Scheduler Kernel，顶层 `infer` 由当前模型
-Evaluation 主动解释。Objective 与精确 Harness Binding 已能通过同一个
-SQLite/PostgreSQL 事务创建，并由 SDK、HTTP 与 CLI 共享这一产品接口；包安装、
-目录管理与发布接口仍待实现。
+Evaluation Scope Binding。权威绑定属于一次 Evaluation；Objective 只保存可选的
+继承默认值。普通对话无需先创建 Objective，也可以由用户通过 SDK、HTTP、CLI
+精确选择，或由模型通过紧凑的 `harness_list / harness_select` 按需发现。绑定后的
+求值能看到只读 Contract 与默认 Mind，且 Plan 携带精确包 provenance。顶层
+`eval` 复用持久 Plan 与 Scheduler Kernel，顶层 `infer` 由当前模型 Evaluation
+主动解释。Objective 与可选默认 Binding 仍能通过同一个 SQLite/PostgreSQL
+事务创建；包的远端目录、签名与发布接口仍待实现。
 
 ## 2. 为什么需要 Harness 层
 
@@ -59,14 +61,23 @@ SQLite/PostgreSQL 事务创建，并由 SDK、HTTP 与 CLI 共享这一产品接
 
 Harness 正好位于两者之间：Runtime 提供通用机制，Harness 赋予机制领域含义，模型保留最终决策权。
 
+可以把它的核心工作概括为：
+
+> Harness 不替 Agent 完成任务，而是把模型的通用智能约束、组织和投射成
+> 某个领域中可靠、可复用、可观察的工作方式。
+
+它既符合“挽具引导动力”的含义，也符合“执行 / 测试支架提供受控环境”的
+工程含义。模型提供非确定性理解和生成能力；Harness 提供领域对象、证据纪律、
+有限过程与能力语义，但不复制 Runtime 的生命期和调度控制。
+
 ## 3. Harness 在整体架构中的位置
 
-Harness 不是简单地位于“人格之上”或“人格之下”。Agent 的持续身份与 Mind 是主体，Harness 是主体在求值某个 Objective 时挂载的领域工作环境。
+Harness 不是简单地位于“人格之上”或“人格之下”。Agent 的持续身份与 Mind 是主体，Harness 是主体在一次 Evaluation 中挂载的领域工作环境；这次 Evaluation 可以来自普通对话，也可以推进一个 Objective。
 
 ```text
                    Agent Identity + Shared Mind
                               │
-                 Objective / Evaluation Activation
+                   Evaluation (Objective optional)
                               │ mounts
                       Domain Harness
                     ┌─────────┴─────────┐
@@ -83,12 +94,12 @@ Harness 不是简单地位于“人格之上”或“人格之下”。Agent 的
 
 这意味着同一个 Agent 可以：
 
-- 在一个 Objective 中挂载 Coding Harness；
-- 在另一个 Objective 中挂载 Research Harness；
-- 在第三个 Objective 中挂载 Video Editing Harness；
+- 在一次普通对话 Evaluation 中挂载 Coding Harness；
+- 在一个 Objective 的 Evaluation 中继承 Research Harness 默认值；
+- 在另一次并发 Evaluation 中挂载 Video Editing Harness；
 - 继续共享它自身的身份、Mind 和跨领域经验。
 
-Harness 最适合绑定在 Objective / Evaluation，而不是永久绑定在 Agent，也不等同于 Session。Session 负责对话关系和消息路由；Harness 负责当前求值所处的领域运行环境。
+Harness 的权威绑定属于 Evaluation，而不是永久绑定在 Agent，也不等同于 Session。Objective 可以提供可选默认值，但每次实际推进时仍物化为不可变的精确 Evaluation Binding。Session 负责对话关系和消息路由；Harness 负责当前求值所处的领域运行环境。
 
 ## 4. 四类职责的边界
 
@@ -153,8 +164,11 @@ Harness 可以给出领域调度建议和默认策略，但 Objective、Evaluati
 6. **Default Frames（默认认知 Frame）**：由人精心构造的领域认识纪律和可复用经验。
 7. **Skill Index（技能索引）**：紧凑描述可发现的 Skill，具体内容按需加载。
 8. **Evidence / Validator Adapter（证据与校验适配）**：把测试、编译、渲染或业务验证结果转换为具有来源的 Observation。
-9. **Presentation Metadata（可选展示元数据）**：帮助 Dashboard 或 CLI 展示领域对象，但不能成为 Runtime 正确性的依赖。
-10. **Migration（迁移规则）**：Harness 契约升级时处理其命名空间内的 Projection 和默认 Frame。
+9. **Process Library（过程库，规划中）**：用无递归、静态可解析的 Yao
+   `process` 复用有限领域过程；它降低为 SubPlan，不能绕过 Runtime Tool
+   边界，也不负责开放式长期循环。
+10. **Presentation Metadata（可选展示元数据）**：帮助 Dashboard 或 CLI 展示领域对象，但不能成为 Runtime 正确性的依赖。
+11. **Migration（迁移规则）**：Harness 契约升级时处理其命名空间内的 Projection 和默认 Frame。
 
 Harness 可以拥有命名空间化的 Projection 和 Event 类型，但不应为了每个领域不断扩大 Kernel 的核心数据库模型。
 
@@ -165,6 +179,7 @@ coding.hns
   (manifest ...)
   (contract ...)
   (mind ...)
+  (process ...)*  ; 目标设计，当前 Loader 尚未实现
   (eval ...)
 ```
 
@@ -176,6 +191,7 @@ coding.hns/
 ├── contract.yao
 ├── mind.yao
 ├── programs/
+├── processes/    # 目标设计，当前 Loader 尚未实现
 ├── skills/
 ├── validators/
 └── migrations/
@@ -213,7 +229,7 @@ Harness 内部有两种性质完全不同的内容。
 - 如何协调并发 Objective；
 - 从长期实践中总结出的领域经验。
 
-这些内容可以作为 Frame 被 Agent `derive`、`revise`、`retire`、交换或从外部植入。它们不是物理真理，也不应伪装为 Runtime 契约。Harness 自带的默认 Frame 首先以只读、Objective / Evaluation-scoped 方式挂载；只有 Agent 或用户通过显式 Context 事务/import 选择保留时，才进入共享 Mind。
+这些内容可以作为 Frame 被 Agent `derive`、`revise`、`retire`、交换或从外部植入。它们不是物理真理，也不应伪装为 Runtime 契约。Harness 自带的默认 Frame 首先以只读、Evaluation-scoped 方式挂载；只有 Agent 或用户通过显式 Context 事务/import 选择保留时，才进入共享 Mind。
 
 这一分离避免两个极端：既不把易变经验硬编码进 Runtime，也不允许模型把工具和现实规则重新解释成自己希望的样子。
 
@@ -272,20 +288,53 @@ Harness 契约可以使用 SExpr 提供结构，同时在基础算子和领域�
 
 Runtime 不直接解释字符串并调用物理工具。Yao 程序必须先解析、校验并 lowering 为 Typed Plan IR；`call` 物化为 Execution Job / Action Group，`infer` 物化为 Evaluation，等待结果后再从持久化程序位置恢复。
 
+这里必须区分“有限领域程序”和“开放式 Agent 循环”：
+
+```text
+Runtime / Objective
+  长期语义目标、未知次数推进、等待、恢复和最终收口
+        │
+        ▼
+Evaluation + Harness
+  当前一轮应遵循的领域结构、证据纪律与有限程序
+        │
+        ├── eval：Runtime 确定性推进
+        ├── infer：LLM 非确定性判断
+        ├── process：包内有限过程复用（规划中）
+        └── call：跨越 Tool / Execution Job 物理边界
+```
+
+因此代码反复修复直到测试通过、小说持续修订直到一致性满足、视频持续调整直到
+验收通过，都优先由 Objective 维持开放式语义循环。Yao 不需要为了“完整”而
+加入通用 `while/until`；已知集合使用 `map`，每轮有限步骤由 Harness 组织，
+下一轮是否继续由模型依据最新事实和 Objective 状态判断。
+
+当前 `call` 只调用 Runtime 注册 Tool。未来的包内 `process` 将复用同一表面
+调用形式，但在加载期静态解析并 lowering 为 SubPlan；Process 与 Tool 禁止
+同名，且第一版禁止递归。这一能力用于模块复用，不会成为第二套调度器。
+
+显式并行若经评测证明确有必要，候选算子为与 `seq` 对称的 `par`，并直接
+lowering 为已有 Action Group。它目前只是保留方向，不属于已实现 v1。
+
 完整边界见 [Yao Harness `.hns` 包、显式双求值与 Typed Plan IR v1](morphz_yao_harness_file.md)。
 
 知识工作 Harness 可以定义人员、组织、日历、消息、审批、委派和截止时间；视频编辑 Harness 可以定义素材、时间线、轨道、时间码、渲染、预览和转码。它们复用同一组 Runtime 事务与调度机制，但不会把不同领域强行压成相同的数据对象。
 
 ## 9. 挂载、切换与生命周期
 
-第一阶段最稳妥的语义是：
+第一阶段已经收敛的语义是：
 
-- 一次 Objective / Evaluation 最多挂载一个 Primary Harness；
-- Agent 可以根据用户指定、Objective 元数据或自身判断选择 Harness；
+- 一次 Evaluation 最多挂载一个 Primary Harness，并固定精确 `id/version/hash`；
+- Objective 上的 Harness 只是可选继承默认值，不是实际求值绑定；
+- 用户可以为普通消息或 Objective 显式指定 Harness；模型也可以调用
+  `harness_list` 读取紧凑索引，再用 `harness_select` 为当前 Evaluation 选择；
+- 自主选择在当前工具调用之后的 successor Activation 生效，但仍属于同一条
+  Evaluation 因果链，不会重复运行 Runtime-owned 入口；
 - Harness 只改变当前领域求值环境，不清空 Agent 的 Mind、人格或 Session；
 - Harness 的动态领域状态使用独立命名空间，可随工作集 swap in / swap out；
 - 卸载 Harness 不删除 Agent 从实践中形成的 Frame，但 Frame 应保留来源、适用领域和版本信息；
-- 同一个 Context 中的不同 Evaluation 可以并发挂载不同 Harness。
+- 同一个 Context 中的不同 Evaluation 可以并发挂载不同 Harness；完整 Harness
+  Catalog 不进入每轮 Context Encoding，只有被选中的 Contract/Mind/入口被挂载。
 
 未来可以探索 Primary Harness 加 Auxiliary Harness 的组合，例如 Coding + Security Review，但第一版不应直接支持任意多 Harness 叠加。组合会带来工具同名、上下文优先级、纪律冲突、Projection 归属和 Token 预算等问题，必须有显式冲突规则后再开放。
 
@@ -349,6 +398,8 @@ Harness 以 `.hns` 单文件或目录包成为可版本化、可分享、可交�
 本设计当前不承诺：
 
 - 冻结 `.hns` 中所有可选字段或完整 Yao 算子集合；
+- 已经实现包内 `process` 或显式 `par`；
+- 在 Yao 中提供通用 `while/until`、递归或第二套长期任务循环；
 - 在 Scheduler Kernel 中加入 Coding 专用字段；
 - 支持任意多个 Harness 组合；
 - 自动相信 Harness 提供的校验结果；
@@ -366,15 +417,17 @@ Harness 以 `.hns` 单文件或目录包成为可版本化、可分享、可交�
 2. 让 `call/infer` 分别物化为正式 Execution Job / Evaluation，并实现 Plan suspend/resume；
 3. 实现最小 `.hns` loader、Manifest、Contract、默认 Frame 挂载与 HarnessBinding；（已完成）
 4. 按 Binding 分派顶层 `eval/infer` 入口；（已完成）
-5. 提供原子创建 Objective + Binding 的 SDK/HTTP/CLI 接口；（已完成）
-6. 用外部 Coding Harness 对现有编码任务做严格 A/B；
-7. 增加崩溃恢复、审批、Edge Target、并发 Objective 和 Context pressure 场景；
-8. 用较弱模型和非 Coding 任务复测，判断增益与领域污染；
-9. 稳定增益出现后，再扩展 migration、签名、组合规则和发布生态。
+5. 提供 Evaluation 精确 Binding、Objective 可选默认值及 SDK/HTTP/CLI/模型选择接口；（已完成）
+6. 用外部 Coding Harness 对现有编码任务做严格 A/B；（首组已完成）
+7. 从 Coding、Writing、Video 三类真实 Harness 中提取重复结构，验证并实现
+   无递归包内 Process；
+8. 增加崩溃恢复、审批、Edge Target、并发 Objective 和 Context pressure 场景；
+9. 用较弱模型和非 Coding 任务复测，判断增益与领域污染；
+10. 只有出现明确的确定性并发需求时才增加 `par → Action Group`；
+11. 稳定增益出现后，再扩展 migration、签名、组合规则和发布生态。
 
 ## 16. 仍需回答的问题
 
-- Harness 应由用户显式选择，还是允许 Agent 自动选择并说明理由？
 - Agent 从 Harness 默认 Frame 派生的持久 Frame 默认属于 Agent、Context、Harness 实例还是 Objective？
 - 一个 Frame 从 Coding 迁移到 Research 时，适用范围如何表达？
 - Harness 升级时，旧 Frame 与新契约冲突如何检测？

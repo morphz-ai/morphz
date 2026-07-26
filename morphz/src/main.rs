@@ -721,13 +721,17 @@ async fn dispatch_runtime_command(
             )
             .await?;
             let prompt = nonempty_prompt(invocation.prompt());
+            let harness = option_value(&invocation, "harness")
+                .map(parse_exact_harness_ref)
+                .transpose()?;
             if tui_mode {
-                morphz::tui::run(runtime, session, prompt).await
+                morphz::tui::run(runtime, session, prompt, harness).await
             } else {
                 run_interactive(
                     runtime,
                     session,
                     prompt,
+                    harness,
                     app_config.orchestrator.reply_wait_notice_secs,
                 )
                 .await
@@ -743,7 +747,10 @@ async fn dispatch_runtime_command(
                 &default_context_id,
             )
             .await?;
-            run_once(runtime, session, prompt).await
+            let harness = option_value(&invocation, "harness")
+                .map(parse_exact_harness_ref)
+                .transpose()?;
+            run_once(runtime, session, prompt, harness).await
         }
         "serve" => {
             let server = Arc::new(
@@ -823,13 +830,17 @@ async fn dispatch_runtime_command(
         "profile use" => use_profile(&invocation),
         "resume" | "session resume" => {
             let (session, prompt) = resolve_resumed_session(&runtime, &invocation).await?;
+            let harness = option_value(&invocation, "harness")
+                .map(parse_exact_harness_ref)
+                .transpose()?;
             if tui_mode {
-                morphz::tui::run(runtime, session, nonempty_prompt(prompt)).await
+                morphz::tui::run(runtime, session, nonempty_prompt(prompt), harness).await
             } else {
                 run_interactive(
                     runtime,
                     session,
                     nonempty_prompt(prompt),
+                    harness,
                     app_config.orchestrator.reply_wait_notice_secs,
                 )
                 .await
@@ -2958,6 +2969,7 @@ async fn run_once(
     runtime: MorphzRuntime,
     session: SessionHandle,
     prompt: String,
+    harness: Option<ExactHarnessRef>,
 ) -> Result<(), AppError> {
     let session_id = session.id().to_string();
     let sdk = MorphzSdk::new(runtime.clone());
@@ -2970,6 +2982,7 @@ async fn run_once(
             text: prompt,
             actor: "User".to_string(),
             client_message_id: Some(generated_id("cli")),
+            harness,
         },
     )
     .await?;
@@ -3009,6 +3022,7 @@ async fn run_interactive(
     runtime: MorphzRuntime,
     session: SessionHandle,
     initial_prompt: Option<String>,
+    initial_harness: Option<ExactHarnessRef>,
     reply_wait_notice_secs: u64,
 ) -> Result<(), AppError> {
     tracing::info!(session_id = session.id(), "Morphz 交互终端已启动");
@@ -3051,6 +3065,7 @@ async fn run_interactive(
         let rt = tokio::runtime::Handle::current();
         let mut msg_counter = 0;
         let mut initial_prompt = initial_prompt;
+        let mut initial_harness = initial_harness;
         let stdin = std::io::stdin();
         let mut stdin = stdin.lock();
         // Do not keep a StdoutLock alive while waiting for the Agent. Tracing and
@@ -3191,6 +3206,10 @@ async fn run_interactive(
                     text,
                     actor: "User-Shafreeck".to_string(),
                     client_message_id: Some(client_message_id),
+                    // `--harness` selects the first real Evaluation, whether
+                    // its prompt came from argv or was typed interactively.
+                    // Console-only commands above do not consume it.
+                    harness: initial_harness.take(),
                 },
             )) {
                 if let Ok(mut waiting) = waiting_for_reply.lock() {

@@ -1,4 +1,6 @@
 use crate::event::{Event, InMemoryEventBus, TYPE_TOOL_OUTPUT};
+use crate::harness::{ExactHarnessRef, HarnessRegistry};
+use crate::harness_package::{load_objective_harness_binding, objective_harness_binding_event};
 use crate::llm::ToolDefinition;
 use crate::memory::{
     EventStore, ExecutionJobRecord, ExecutionJobStore, NewObjective, NewRuntimeTimer,
@@ -33,6 +35,10 @@ struct ObjectiveCreateArgs {
     parent_objective_id: Option<String>,
     #[serde(default)]
     token_budget: Option<u64>,
+    /// Optional inherited default. Every concrete Objective Evaluation still
+    /// receives its own immutable binding before Provider execution.
+    #[serde(default)]
+    harness: Option<ExactHarnessRef>,
 }
 
 /// 允许模型把当前工作显式升级为 First-Class Objective。Context、Session、
@@ -41,14 +47,20 @@ struct ObjectiveCreateArgs {
 pub struct ObjectiveCreateTool {
     supervisor: Arc<ObjectiveSupervisor>,
     context_engine: Arc<ContextEngine>,
+    harness_registry: Arc<HarnessRegistry>,
     creation_locks: DashMap<String, Arc<Mutex<()>>>,
 }
 
 impl ObjectiveCreateTool {
-    pub fn new(supervisor: Arc<ObjectiveSupervisor>, context_engine: Arc<ContextEngine>) -> Self {
+    pub fn new(
+        supervisor: Arc<ObjectiveSupervisor>,
+        context_engine: Arc<ContextEngine>,
+        harness_registry: Arc<HarnessRegistry>,
+    ) -> Self {
         Self {
             supervisor,
             context_engine,
+            harness_registry,
             creation_locks: DashMap::new(),
         }
     }
@@ -92,6 +104,16 @@ impl Tool for ObjectiveCreateTool {
                         "type": "integer",
                         "minimum": 1,
                         "description": "可选 Prompt Token 预算；省略表示继承 Runtime 的无显式 Objective 预算策略"
+                    },
+                    "harness": {
+                        "type": "object",
+                        "description": "可选的 Objective Harness 默认值。只有确定该长期目标需要某个已安装 Harness 时填写；先用 harness_list 发现精确版本。每次 Evaluation 会把它物化为自己的不可变 binding。",
+                        "properties": {
+                            "id": { "type": "string", "minLength": 1 },
+                            "version": { "type": "string", "minLength": 1 }
+                        },
+                        "required": ["id", "version"],
+                        "additionalProperties": false
                     }
                 },
                 "required": ["stated_objective", "reason", "source_refs"]
@@ -128,6 +150,19 @@ impl Tool for ObjectiveCreateTool {
         if args.token_budget == Some(0) {
             return Err("objective_create.token_budget 必须大于 0".into());
         }
+        let requested_harness = match args.harness.as_ref() {
+            Some(reference) => {
+                let id = reference.id.trim();
+                let version = reference.version.trim();
+                if id.is_empty() || version.is_empty() {
+                    return Err("objective_create.harness.id/version 不能为空".into());
+                }
+                Some(self.harness_registry.get(id, version).ok_or_else(|| {
+                    format!("Harness '{id}@{version}' 未安装；先调用 harness_list")
+                })?)
+            }
+            None => None,
+        };
 
         let session_store = self
             .context_engine
@@ -206,6 +241,37 @@ impl Tool for ObjectiveCreateTool {
                         == normalized_statement
             })
         {
+            if let Some(requested) = requested_harness.as_ref() {
+                let descriptor = requested.descriptor();
+                let existing_binding = load_objective_harness_binding(
+                    self.supervisor.audit_store.as_ref(),
+                    &context_id,
+                    &existing.id,
+                )
+                .await?;
+                match existing_binding {
+                    Some(binding)
+                        if binding.harness_id == descriptor.id
+                            && binding.harness_version == descriptor.version => {}
+                    Some(binding) => {
+                        return Err(format!(
+                            "相同 Objective 已默认绑定 '{}@{}'，不能改绑为 '{}@{}'",
+                            binding.harness_id,
+                            binding.harness_version,
+                            descriptor.id,
+                            descriptor.version
+                        )
+                        .into());
+                    }
+                    None => {
+                        return Err(format!(
+                            "相同 Objective 已存在但没有 Harness 默认值，不能通过重复创建补绑 '{}@{}'；请创建不同目标或显式选择当前 Evaluation Harness",
+                            descriptor.id, descriptor.version
+                        )
+                        .into());
+                    }
+                }
+            }
             let adopted = if self
                 .supervisor
                 .evaluations
@@ -258,6 +324,15 @@ impl Tool for ObjectiveCreateTool {
         if let Some(principal_id) = &initiating_principal_id {
             request_payload.push(("principal_id".to_string(), json!(principal_id)));
         }
+        if let Some(harness) = requested_harness.as_ref() {
+            let descriptor = harness.descriptor();
+            request_payload.push(("harness_id".to_string(), json!(descriptor.id)));
+            request_payload.push(("harness_version".to_string(), json!(descriptor.version)));
+            request_payload.push((
+                "harness_artifact_hash".to_string(),
+                json!(harness.artifact_hash()),
+            ));
+        }
         let request_event = Event::new(
             source_event_id.clone(),
             "Agent-Morphz".to_string(),
@@ -265,28 +340,36 @@ impl Tool for ObjectiveCreateTool {
             "objective/autonomous_requested".to_string(),
             request_payload.into_iter().collect(),
         );
-        self.supervisor
-            .audit_store
-            .append(request_event.clone())
-            .await?;
-        self.supervisor.bus.publish(request_event).await?;
+        let mut initial_events = vec![request_event.clone()];
+        let harness_binding = if let Some(harness) = requested_harness.as_ref() {
+            let (binding, binding_event) =
+                objective_harness_binding_event(&context_id, &objective_id, harness.as_ref())?;
+            initial_events.push(binding_event);
+            Some(binding)
+        } else {
+            None
+        };
 
         let created = self
             .supervisor
             .store
-            .create_objective(NewObjective {
-                id: objective_id,
-                agent_id: session.agent_id,
-                context_id: context_id.clone(),
-                coordinator_session_id: session_id.clone(),
-                delivery_session_id: session_id.clone(),
-                parent_objective_id,
-                source_event_id,
-                initiating_principal_id,
-                stated_objective: stated_objective.to_string(),
-                token_budget: args.token_budget,
-            })
+            .create_objective_with_events(
+                NewObjective {
+                    id: objective_id,
+                    agent_id: session.agent_id,
+                    context_id: context_id.clone(),
+                    coordinator_session_id: session_id.clone(),
+                    delivery_session_id: session_id.clone(),
+                    parent_objective_id,
+                    source_event_id,
+                    initiating_principal_id,
+                    stated_objective: stated_objective.to_string(),
+                    token_budget: args.token_budget,
+                },
+                initial_events,
+            )
             .await?;
+        self.supervisor.bus.publish(request_event).await?;
 
         let adopted = if self
             .supervisor
@@ -321,6 +404,7 @@ impl Tool for ObjectiveCreateTool {
             "context_id": current.context_id,
             "coordinator_session_id": current.coordinator_session_id,
             "parent_objective_id": current.parent_objective_id,
+            "harness_default": harness_binding,
             "activation_adoption": if adopted.is_some() { "current-activation" } else { "independent-continuation" },
             "guidance": "Objective 已持久化。不要重复创建；继续当前工作。普通文本或 no_reply 只结束当前 Activation，Objective 未完成时 Supervisor 会自动续跑。"
         }))?)

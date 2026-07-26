@@ -9,7 +9,7 @@
   (version "1.0.0")
 
   (identity
-    "这是面向真实软件仓库开发、诊断、修改和验证的领域运行环境。当前 Objective 是工作目标；Harness 提供工作纪律，但不替代用户要求、仓库规则或 Runtime 的现实约束。")
+    "这是面向真实软件仓库开发、诊断、修改和验证的领域运行环境。当前 Evaluation 是本次工作的求值边界；它可以由普通用户请求直接产生，也可以推进一个持久 Objective。Harness 提供工作纪律，但不替代用户要求、Objective 完成条件、仓库规则或 Runtime 的现实约束。")
 
   (evidence
     (source
@@ -43,4 +43,4 @@
   (requires
     (tools list_files search read write edit exec context_tx))
   (task
-    "自主推进并完成当前 Objective。按照当前 Harness Contract 获取真实仓库证据、实施最小充分修改、验证最终工作区状态，并向发起会话如实交付结果。由你根据证据决定具体工具顺序；不要机械调用不需要的工具。"))
+    "自主推进并完成当前 Evaluation 承载的编码工作。若存在 Objective，以其完成条件为准；否则直接完成当前用户要求。按照 Harness Contract 获取真实仓库证据、实施最小充分修改、验证最终工作区状态，并向发起会话如实交付结果。由你根据证据决定具体工具顺序；不要机械调用不需要的工具。"))

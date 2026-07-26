@@ -152,6 +152,8 @@ struct UpdateSessionRequest {
 struct SendMessageRequest {
     text: String,
     client_message_id: Option<String>,
+    #[serde(default)]
+    harness: Option<crate::harness::ExactHarnessRef>,
 }
 
 #[derive(serde::Deserialize)]
@@ -2687,6 +2689,7 @@ async fn handle_send_message(
                 text: request.text,
                 actor: "User-API".to_string(),
                 client_message_id: Some(client_message_id),
+                harness: request.harness,
             },
         )
         .await
@@ -4129,6 +4132,7 @@ mod tests {
             Json(SendMessageRequest {
                 text: "I am user 1".to_string(),
                 client_message_id: Some("forged-identity-message".to_string()),
+                harness: None,
             }),
         )
         .await
@@ -4232,6 +4236,7 @@ mod tests {
                 Json(SendMessageRequest {
                     text: "hello".to_string(),
                     client_message_id: Some("client-message-1".to_string()),
+                    harness: None,
                 }),
             )
             .await
@@ -4303,6 +4308,7 @@ mod tests {
             Json(SendMessageRequest {
                 text: "stream please".to_string(),
                 client_message_id: Some("stream-message-1".to_string()),
+                harness: None,
             }),
         )
         .await
@@ -4484,6 +4490,7 @@ mod tests {
             Json(SendMessageRequest {
                 text: "persist summary".to_string(),
                 client_message_id: Some("summary-restart-message".to_string()),
+                harness: None,
             }),
         )
         .await

@@ -24,13 +24,36 @@ pub struct HarnessDescriptor {
     pub capabilities: Vec<String>,
 }
 
+/// Public, transport-safe reference to one exact installed Harness package.
+/// The Runtime deliberately does not resolve floating versions such as
+/// `latest`, because a durable Evaluation must remain reproducible.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExactHarnessRef {
+    pub id: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessBindingScope {
+    /// Optional default inherited by each Evaluation started for an Objective.
+    ObjectiveDefault,
+    /// The authoritative, exact binding used by one Runtime Evaluation.
+    Evaluation,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HarnessBinding {
     pub harness_id: String,
     pub harness_version: String,
     pub artifact_hash: String,
-    pub objective_id: String,
+    pub scope: HarnessBindingScope,
+    pub objective_id: Option<String>,
     pub evaluation_id: Option<String>,
+    /// Set when an Evaluation binding was materialized from an Objective
+    /// default. Successor Activations share the same Evaluation identity and
+    /// therefore read this same binding rather than creating a new one.
+    pub inherited_from_objective_id: Option<String>,
 }
 
 /// Domain semantics may narrow Runtime behavior and propose work, but cannot

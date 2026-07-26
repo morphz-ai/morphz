@@ -3,8 +3,8 @@
 > 状态：显式根、Typed Plan IR、`.hns` v1 Loader、持久 `PlanExecution` 与
 > `call → Execution Job`、`infer → child Activation` 原子交接、终态结果
 > 回填、重启扫描、正式 `eval → Orchestrator → Scheduler Kernel` 驱动，
-> 版本化 Registry、持久包目录、Objective Binding、只读认知挂载及绑定入口
-> 自动分派已实现
+> 版本化 Registry、持久包目录、Evaluation Scope Binding、Objective 可选
+> 默认值、只读认知挂载、模型按需发现及绑定入口自动分派已实现
 > 日期：2026-07-26
 > 前置：[Domain Harness 架构](morphz_domain_harness_architecture_v1.md)、[Yao 表征分层](morphz_yao_representation_layers.md)、[Scheduler Kernel](morphz_scheduler_kernel_and_domain_model_v1.md)
 > 适用范围：Yao 源语言、Harness 包、`eval/infer`、Typed Plan IR、Objective / Evaluation / Execution Job 的映射
@@ -88,6 +88,10 @@ coding.hns
 - 恰好一个 `(eval ...)` 或 `(infer ...)`；
 - 未知顶层 artifact 在加载期拒绝，不能静默忽略。
 
+后续语言版本计划允许零到多个 `(process ...)` 顶层 artifact，作为包内可复用
+的有限过程；当前 Loader 尚未接受该语法，不能把下文的目标设计误认为已实现
+能力。
+
 这非常适合内置 Coding Harness：源码可以通过 `include_str!("coding.hns")`
 编进单一二进制，安装与版本校验仍走同一个加载器。
 
@@ -103,6 +107,7 @@ coding.hns/
 ├── programs/
 │   ├── main.yao
 │   └── review.yao
+├── processes/          # 目标设计；当前 Loader 尚未实现
 ├── skills/
 ├── validators/
 └── migrations/
@@ -214,7 +219,7 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
 
 第一版的正确语义是 **挂载**，不是安装时直接 seed 进 Agent 的共享 Mind：
 
-- 挂载期间作为 Objective / Evaluation 可见的只读默认 Frame；
+- 挂载期间作为当前 Evaluation 可见的只读默认 Frame；
 - 卸载 Harness 后不再自动激活；
 - 不因同名 Frame 覆盖 Agent 已有认知；
 - Agent 可以在实践后通过正常 `context_tx` 派生自己的持久 Frame；
@@ -295,7 +300,67 @@ Contract 的紧凑稳定部分进入 Context Encoding 的稳定前缀，以利�
 
 它挂载 Harness Contract 和 Mind 后进入现有 Agent attempt loop。工具调用仍由 Runtime 调度，不因为 LLM 持有主控制权而绕过 Kernel。
 
-### 3.5 `skills/` 与 `validators/`
+### 3.5 `process`：计划中的包内模块复用
+
+当前 `call` 只能指向 Runtime 已注册 Tool。前文的 `inspect-repository`、
+`apply-plan` 和 `run-tests` 如果没有对应 Tool，只是概念示例，并不是当前 Yao
+自动提供的函数。长期来看，所有组合逻辑都必须写成 Rust Tool 会让 Harness
+退化成工具配置，因此 `.hns` 还需要包内命名过程。
+
+目标语法采用已有的 `process` 概念，而不增加另一套 `fn/def` 方言：
+
+```lisp
+(process apply-plan
+  (description
+    "按照已经形成的修改计划逐项修改文件。")
+
+  (params plan)
+
+  (body
+    (map $plan.changes change
+      (call edit
+        (path $change.path)
+        (content $change.content)))))
+```
+
+入口仍使用统一的 `call`：
+
+```lisp
+(eval
+  (seq
+    (bind repository
+      (call inspect-repository))
+
+    (bind decision
+      (infer
+        (task "制定本轮修改方案")
+        (input $repository)))
+
+    (call apply-plan
+      (plan $decision))))
+```
+
+编译期必须把同一种表面语法静态解析为不同 IR，而不是到执行时猜测：
+
+```text
+call apply-plan  → package-local Process → SubPlan / 静态展开
+call edit        → Runtime Tool          → Execution Job
+```
+
+第一版 Process 应冻结以下边界：
+
+- Process 与 Runtime Tool 不得同名；每个 `call` 在加载期完成符号解析；
+- 参数和局部绑定不可变，最后一个表达式是返回值；
+- Process 可以组合 `seq/bind/if/fallback/map/call/infer`，但不能绕过 Tool
+  的权限、沙箱、租约和 Execution Job；
+- 禁止递归和循环调用，构建静态无环调用图；
+- 限制调用深度、展开节点数、参数大小和静态能力集合；
+- Process 只提供模块复用，不成为第二套调度器，也不引入通用循环。
+
+单文件包未来可以直接包含多个 Process；目录包可使用 `processes/*.yao`。两种
+形态仍归一化为同一个 HarnessPackage 和同一张静态调用图。
+
+### 3.6 `skills/` 与 `validators/`
 
 - `skills/` 保存按需发现的详细领域知识和操作说明；它们不在每轮全量注入；
 - `validators/` 提供真实的外部校验入口，例如编译、测试、渲染检查或业务规则验证；
@@ -488,6 +553,33 @@ Harness 不拥有第二套调度器。Plan Executor 只把 IR 节点物化到已
   用户 Delivery；
 - 父 Plan 根据稳定 Activation ID、Thread executor route 与结果 Event
   回填确切的 `infer` effect；崩溃后可通过有界扫描继续。
+
+### 8.1 开放式语义循环属于 Objective
+
+Yao `eval` 描述一次 Evaluation 内有限、可验证、可恢复的求值结构；它不负责
+表达“持续工作直到语义目标完成”的未知次数循环。长期推进由现有 Objective
+Supervisor 承担：每轮 Evaluation 在 Harness 纪律下产生真实进展和新证据，
+Objective 未完成时再创建后续 Evaluation。
+
+```text
+Objective：完成整部小说并通过连续性检查
+  ├── Evaluation 1 + Writing Harness：规划、创作、校验
+  ├── Evaluation 2 + Writing Harness：根据缺陷修订
+  └── ……直到模型基于证据提交完成，或进入等待 / 受阻状态
+```
+
+因此冻结以下语言纪律：
+
+- 不向 Yao `eval` 加入通用 `while/until` 或无限递归；
+- 已知集合的有限迭代使用 `map`；
+- 未知次数、需要重新理解最新状态的语义推进使用 Objective；
+- 只有真实评测证明局部机械重试产生显著额外模型成本时，才考虑语义极窄且
+  明确有界的 `retry`，不能借此重新引入通用循环。
+
+未来若需要显式并行，候选规范写法是与 `seq` 对称的 `(par ...)`，并 lowering
+为 Scheduler Kernel 已有 Action Group。`par` 只是确定性计划的并发表达，不
+建立新的并发系统；在真实 Harness 证明需要前不加入 v1，也不同时提供
+`par/parallel` 两种别名。
 - 父 Plan 等待整个 infer Thread 的终态结果，而不是把某个中间 Activation 的
   reasoning 或 continuation 错当成交付；terminal result 才能解除等待。
 
@@ -545,7 +637,7 @@ Manifest 和 Program 声明的是需求及局部边界，不是授权。Harness�
 → 校验显式 eval/infer 根节点
 → 将 eval 程序 lowering 为 Typed Plan IR
 → 注册 Harness descriptor 与 artifact hashes
-→ 在 Objective / Evaluation 上建立 HarnessBinding
+→ 为 Evaluation 建立精确 HarnessBinding（Objective 只可提供默认值）
 → 挂载紧凑 Contract、默认 Frame 和 Skill Index
 → 按入口创建 PlanExecution 或 LLM Evaluation
 ```
@@ -554,7 +646,7 @@ Manifest 和 Program 声明的是需求及局部边界，不是授权。Harness�
 
 ```text
 用户显式选择 Harness
-Agent 根据 Objective 建议或选择 Harness
+Agent 通过紧凑索引为当前 Evaluation 选择 Harness
 服务端按产品策略固定 Harness
 ```
 
@@ -564,17 +656,23 @@ Agent 根据 Objective 建议或选择 Harness
 morphz harness install ./coding.hns
 morphz harness list
 morphz harness show coding@1.0.0
+morphz --harness=coding@1.0.0 "修复当前项目的测试"
 morphz objective create --harness=coding@1.0.0 "修复当前项目的测试"
 ```
 
 `ID@VERSION` 必须精确指定，不存在隐式 `latest`。CLI 通过正式 Rust SDK
-安装、列举和精确读取 Harness；`objective create` 再把不可变 package hash
-原子绑定到新 Objective。单文件与目录 `.hns` 使用同一个 Loader 和 Registry。
+安装、列举和精确读取 Harness。普通消息把精确选择写入不可变根 Event，并在
+首次模型请求前物化为 Evaluation Binding；`objective create` 则把 Objective
+可选默认值与新 Objective 原子创建。单文件与目录 `.hns` 使用同一个 Loader 和
+Registry。
 
 ## 11. 挂载、卸载和学习
 
-- Harness 最适合绑定到 Objective / Evaluation，而不是永久绑定 Agent 或 Session；
+- Harness 的权威绑定属于 Evaluation，而不是永久绑定 Agent 或 Session；
+- Objective 只保存可选默认值，具体推进前必须物化自己的 Evaluation Binding；
 - 第一阶段一次 Evaluation 只允许一个 Primary Harness；
+- 普通对话 Evaluation 不需要为了使用 Coding Harness 先创建 Objective；
+- 用户显式选择与模型 `harness_select` 都精确固定版本，不存在隐式 `latest`；
 - 同一 Context 中不同 Evaluation 可以并发挂载不同 Harness；
 - 卸载不删除 Agent 在真实工作中形成的持久 Frame；
 - 持久 Frame 仍由 Agent 自己通过 `context_tx` 维护；
@@ -608,21 +706,21 @@ morphz objective create --harness=coding@1.0.0 "修复当前项目的测试"
 - 规范化 package hash 不受单文件/目录形态及无意义空白影响；
 - Registry 以 `(harness_id, version)` 精确寻址，不存在隐式 `latest`，也不允许
   同版本内容被静默覆盖；
-- `.hns` 规范源码与 Objective 级 `HarnessBinding` 已持久化到 Event Ledger，
+- `.hns` 规范源码、Objective 默认 Binding 与 Evaluation 精确 Binding 已持久化到 Event Ledger，
   并能在 SQLite 重启后恢复；
 - 绑定后的 Evaluation 在 Context Encoding 中得到只读 Contract、默认 Mind、
   capability 与精确 package hash；不会把默认 Mind 隐式写入共享认知；
-- 绑定 Objective 内由 `eval` 创建的 Plan 会携带精确
+- 绑定 Evaluation 内由 `eval` 创建的 Plan 会携带精确
   `harness_id/version/artifact_hash` provenance；
-- Binding 中的顶层 `(eval ...)` 会由 Runtime 自动、且每个精确 Objective
+- Binding 中的顶层 `(eval ...)` 会由 Runtime 自动、且每个精确
   Evaluation 只分派一次；它复用正式 `EvalTool → PlanExecution → Scheduler
   Kernel` 路径，不存在第二套入口执行器；
 - Binding 中的顶层 `(infer ...)` 会作为明确的 model-owned 主动入口挂载进当前
   Evaluation；Context Encoding 同时给出精确源码和自然语言求值责任；
-- 自动入口使用由 Objective、Evaluation 和 package hash 派生的稳定调用身份，
+- 自动入口使用由 Evaluation 和 package hash 派生的稳定调用身份，
   终态 Plan 不会在 continuation 或恢复后重复执行；
 - Runtime 集成测试覆盖
-  `Objective Binding → 自动 eval → read Execution Job → Plan 结果回填
+  `Objective 默认值 → Evaluation Binding → 自动 eval → read Execution Job → Plan 结果回填
   → objective_update → 最终交付`。
 - `ObjectiveStore::create_objective_with_events` 在 SQLite 与 PostgreSQL 中把
   Objective 行和不可变初始化事件放进同一个数据库事务；Harness Binding
@@ -630,9 +728,15 @@ morphz objective create --harness=coding@1.0.0 "修复当前项目的测试"
 - SDK、HTTP `POST /api/objectives` 与 CLI
   `objective create --harness=ID@VERSION` 复用同一个 principal-aware
   创建接口；不会由各入口分别执行“先建目标、后补 Binding”。
-- Rust SDK 已提供 `install_harness_package`、`list_harnesses` 和
-  `get_harness`；CLI `harness install/list/show` 只负责参数与展示，不建立
-  第二套 Registry 路径。
+- SDK/HTTP 普通消息和 CLI 根提示、`exec`、`resume` 支持精确 Harness；Runtime
+  在首次 Provider 请求前物化 Evaluation Binding。模型侧提供紧凑
+  `harness_list / harness_select`，完整 Catalog 不占据每轮 Context Encoding；
+- Runtime 集成测试覆盖普通消息显式选择、模型自主选择、successor Activation
+  共享同一 Evaluation Binding，以及 Runtime-owned `eval` 入口只执行一次；
+- Rust SDK 已提供 `install_harness_package`、`list_harnesses`、
+  `get_harness` 和 `evaluation_harness_binding`；后者读取某次 Evaluation
+  实际采用的权威绑定，不会把 Objective 默认值伪装成已求值事实。CLI
+  `harness install/list/show` 只负责参数与展示，不建立第二套 Registry 路径。
 - model-owned 顶层 `(infer ...)` 的 `requires` 按普通 Function Calling
   工具面校验；Runtime-owned 顶层 `(eval ...)` 仍按独立
   `eval_callable_tools` 安全白名单校验。两者都只能收窄能力，不能扩大沙箱、
@@ -649,7 +753,7 @@ morphz objective create --harness=coding@1.0.0 "修复当前项目的测试"
 | 内部 `infer` 直接发本地 completion | 创建正式、可持久化的 child Activation |
 | 根是 `infer`，其余默认 Runtime | 已改为只接受显式 `(eval ...)` 或 `(infer ...)` |
 | 依靠物理文件位置猜测 artifact 职责 | 已实现单文件/目录 `.hns` 归一化为同一 HarnessPackage |
-| Harness Mind 安装时 seed 共享 Mind | 默认 Frame 按 Objective / Evaluation 挂载 |
+| Harness Mind 安装时 seed 共享 Mind | 默认 Frame 按 Evaluation 挂载 |
 | 崩溃后整轮重跑 | 持久化 PlanExecution，从效应边界恢复 |
 | 共享算子只检查表面拼写 | 同一 canonical operator schema 生成 parser、validator、Contract 和测试 |
 | `eval` 由普通工具固定墙钟超时控制 | 持久 Plan 独立等待 Job / Evaluation，不被普通工具超时截断 |
@@ -658,9 +762,10 @@ morphz objective create --harness=coding@1.0.0 "修复当前项目的测试"
 
 - 可发现、可签名、可远端分发的 Harness catalog（本地 install/list/show
   已完成）；
-- Objective 创建以外的显式 bind/run 产品语义，以及已启动 Objective 是否允许
-  后绑定（第一版仍禁止）；
+- 已启动 Objective 是否允许修改默认 Harness（第一版仍禁止；具体 Evaluation
+  可以在尚未绑定时自主选择）；
 - package 签名、依赖、migration 与可重建的 Registry Projection；
+- 无递归、静态可解析的包内命名 Process；
 - Action Group 级并行 Plan 节点；
 - Plan 运行时释放父 Activation admission slot 的完全异步 continuation；
 - Edge Target、人工审批和进程崩溃交错下的系统级故障注入；
@@ -699,14 +804,16 @@ Runtime 进程级 fault injection。
 3. 默认 Frame 的只读挂载；
 4. 能力交集、Skill Index 与 validator；
 5. package hash、签名和 migration 预留。
+6. 包内命名 Process、静态调用图与 ProcessCall IR。
 
 当前状态：第 1～4 项的最小闭环已完成；第 5 项已完成规范化 package hash，
 签名和 migration 尚未实现。包目录和 Binding 目前以不可变 Ledger Event
 持久化，后续可增加可重建 Projection，但不改变其身份语义。顶层
-`eval/infer` 已按 Binding 正式分派；原子“创建 Objective 并绑定 Harness”的
-SDK/HTTP/CLI 产品接口也已完成。本地 package 的 install/list/show 和外部
-Coding Harness 的首个真实 A/B 也已落地；下一阶段是扩大样本与任务族，而
-不是继续扩充包格式。
+`eval/infer` 已按 Evaluation Binding 正式分派；Objective 可选默认值的原子
+创建、普通消息显式选择、模型按需发现与精确选择均已完成。本地 package 的
+install/list/show 和外部 Coding Harness 的首个真实 A/B 也已落地。第 6 项是
+本轮新冻结的下一项语言能力，但在实施前仍先扩大样本与任务族，确认哪些重复
+结构真正应进入 Process Library，避免凭想象扩充包格式。
 
 ### Phase 4：真实对照评测
 
@@ -721,7 +828,7 @@ Coding Harness 的首个真实 A/B 也已落地；下一阶段是扩大样本与
 
 当前已完成第一项严格配对样本，结果与结论边界见
 [Coding Harness 正式链路 A/B v1](morphz_coding_harness_ab_v1.md)。该样本
-证明单文件包、显式 `infer`、正式工具循环和 Objective Binding 可以协同工作；
+证明单文件包、显式 `infer`、正式工具循环和 Harness Binding 可以协同工作；
 尚未覆盖 Runtime-owned Plan、故障恢复、Edge Target 与负向场景。
 
 ## 14. 本轮明确否决的设计
@@ -735,6 +842,8 @@ Coding Harness 的首个真实 A/B 也已落地；下一阶段是扩大样本与
 - 安装 Harness 时隐式污染共享 Mind；
 - 崩溃后默认整轮重跑；
 - 让 Harness 自己成为第二套 Scheduler。
+- 在 Yao 中复制 Objective 的开放式循环，或以通用 `while/until`、递归制造
+  第二套长期生命期。
 
 最终边界是：
 

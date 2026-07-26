@@ -435,6 +435,15 @@ fn global_args(locale: Locale) -> Vec<Arg> {
             locale.text("Reattach an existing Session", "重新连接现有会话"),
         ),
         value_arg(
+            "harness",
+            "harness",
+            "ID@VERSION",
+            locale.text(
+                "Select an exact installed Harness for the initial Evaluation",
+                "为首次求值选择已安装 Harness 的精确版本",
+            ),
+        ),
+        value_arg(
             "sandbox",
             "sandbox",
             "MODE",
@@ -1625,15 +1634,6 @@ fn objective_command(locale: Locale) -> Command {
                             },
                         )),
                     )
-                    .arg(local_value_arg(
-                        "harness",
-                        "harness",
-                        "ID@VERSION",
-                        locale.text(
-                            "Bind an exact installed Harness version",
-                            "绑定已安装 Harness 的精确版本",
-                        ),
-                    ))
                     .arg(
                         prompt_arg("GOAL", 1, None).help(locale.text("Objective goal", "目标内容")),
                     ),
@@ -2205,6 +2205,17 @@ mod tests {
             pause.option("reason").unwrap().last_value(),
             Some("等待用户确认范围")
         );
+    }
+
+    #[test]
+    fn ordinary_prompt_accepts_an_optional_exact_evaluation_harness() {
+        let invocation = parse(&["--harness=coding@1.0.0", "修复", "当前", "工作区"]);
+        assert!(invocation.command_path().is_empty());
+        assert_eq!(
+            invocation.option("harness").unwrap().last_value(),
+            Some("coding@1.0.0")
+        );
+        assert_eq!(invocation.prompt(), "修复 当前 工作区");
     }
 
     #[test]

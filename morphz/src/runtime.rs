@@ -12,10 +12,11 @@ use crate::event::{Event, InMemoryEventBus, TYPE_USER_MESSAGE};
 use crate::execution::ExecutionJobManager;
 use crate::harness::{HarnessBinding, HarnessDescriptor, HarnessRegistry as DomainHarnessRegistry};
 use crate::harness_package::{
-    load_objective_harness_binding, load_persisted_harness_packages,
-    objective_harness_binding_event, persist_harness_package, persist_objective_harness_binding,
-    HarnessPackage,
+    load_evaluation_harness_binding, load_objective_harness_binding,
+    load_persisted_harness_packages, objective_harness_binding_event, persist_harness_package,
+    persist_objective_harness_binding, HarnessPackage,
 };
+use crate::harness_tool::{HarnessListTool, HarnessSelectTool};
 use crate::identity::{
     IdentityEvidence, IdentityProvider, PrincipalAssertion, StaticIdentityProvider,
 };
@@ -730,6 +731,9 @@ impl MorphzRuntimeBuilder {
             registry: &registry,
             context_engine: &context_engine,
             objective_supervisor: &objective_supervisor,
+            objective_evaluations: &objective_evaluations,
+            harness_registry: &harness_registry,
+            event_store: &(Arc::clone(&store) as Arc<dyn EventStore>),
             permissions: &permissions,
             bus: &bus,
             thread_scheduler: &thread_scheduler,
@@ -913,6 +917,9 @@ struct DefaultToolDependencies<'a> {
     registry: &'a Arc<Registry>,
     context_engine: &'a Arc<ContextEngine>,
     objective_supervisor: &'a Arc<ObjectiveSupervisor>,
+    objective_evaluations: &'a Arc<ObjectiveEvaluationRegistry>,
+    harness_registry: &'a Arc<DomainHarnessRegistry>,
+    event_store: &'a Arc<dyn EventStore>,
     permissions: &'a Arc<PermissionBroker>,
     bus: &'a Arc<InMemoryEventBus>,
     thread_scheduler: &'a Arc<ThreadScheduler>,
@@ -926,6 +933,9 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         registry,
         context_engine,
         objective_supervisor,
+        objective_evaluations,
+        harness_registry,
+        event_store,
         permissions,
         bus,
         thread_scheduler,
@@ -941,9 +951,16 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         Arc::clone(registry),
         config.orchestrator.eval_callable_tools.clone(),
     )));
+    registry.register(Arc::new(HarnessListTool::new(Arc::clone(harness_registry))));
+    registry.register(Arc::new(HarnessSelectTool::new(
+        Arc::clone(harness_registry),
+        Arc::clone(event_store),
+        Arc::clone(objective_evaluations),
+    )));
     registry.register(Arc::new(ObjectiveCreateTool::new(
         Arc::clone(objective_supervisor),
         Arc::clone(context_engine),
+        Arc::clone(harness_registry),
     )));
     registry.register(Arc::new(ObjectiveUpdateTool::new(
         Arc::clone(objective_supervisor),
@@ -2167,9 +2184,19 @@ impl MorphzRuntime {
             self.inner.store.as_ref(),
             &objective.context_id,
             objective_id,
-            objective.active_evaluation_id.as_deref(),
         )
         .await
+    }
+
+    /// Returns the exact Primary Harness selected for one concrete
+    /// Evaluation. Objective defaults are deliberately not synthesized here:
+    /// callers can distinguish an inherited default from the authoritative
+    /// Evaluation-scoped binding that was actually evaluated.
+    pub async fn evaluation_harness_binding(
+        &self,
+        evaluation_id: &str,
+    ) -> Result<Option<HarnessBinding>, RuntimeError> {
+        load_evaluation_harness_binding(self.inner.store.as_ref(), evaluation_id).await
     }
 
     pub async fn get_objective(&self, id: &str) -> Result<Option<ObjectiveRecord>, RuntimeError> {
@@ -3981,6 +4008,18 @@ impl SessionHandle {
         principal_id: impl Into<String>,
         client_message_id: Option<String>,
     ) -> Result<MessageReceipt, RuntimeError> {
+        self.send_as_principal_with_harness(text, actor, principal_id, client_message_id, None)
+            .await
+    }
+
+    pub async fn send_as_principal_with_harness(
+        &self,
+        text: impl Into<String>,
+        actor: impl Into<String>,
+        principal_id: impl Into<String>,
+        client_message_id: Option<String>,
+        requested_harness: Option<crate::harness::ExactHarnessRef>,
+    ) -> Result<MessageReceipt, RuntimeError> {
         let session = self
             .runtime
             .get_session(&self.id)
@@ -4012,20 +4051,41 @@ impl SessionHandle {
         }
         let client_message_id = client_message_id.unwrap_or_else(|| runtime_id("client"));
         let event_id = runtime_id("msg");
+        let mut payload = serde_json::Map::from_iter([
+            ("context_id".to_string(), json!(session.context_id)),
+            ("session_id".to_string(), json!(self.id)),
+            ("principal_id".to_string(), json!(principal_id)),
+            ("client_message_id".to_string(), json!(client_message_id)),
+            ("text".to_string(), json!(text)),
+        ]);
+        if let Some(reference) = requested_harness {
+            let id = reference.id.trim();
+            let version = reference.version.trim();
+            if id.is_empty() || version.is_empty() {
+                return Err("Harness id/version 不能为空".into());
+            }
+            let harness = self
+                .runtime
+                .inner
+                .harness_registry
+                .get(id, version)
+                .ok_or_else(|| format!("Harness '{id}@{version}' 未安装"))?;
+            let artifact_hash = harness.artifact_hash().ok_or_else(|| {
+                format!("Harness '{id}@{version}' 没有 artifact hash，不能精确绑定")
+            })?;
+            payload.insert("requested_harness_id".to_string(), json!(id));
+            payload.insert("requested_harness_version".to_string(), json!(version));
+            payload.insert(
+                "requested_harness_artifact_hash".to_string(),
+                json!(artifact_hash),
+            );
+        }
         let event = Event::new(
             event_id.clone(),
             actor.into(),
             TYPE_USER_MESSAGE.to_string(),
             "chat/user_message".to_string(),
-            [
-                ("context_id".to_string(), json!(session.context_id)),
-                ("session_id".to_string(), json!(self.id)),
-                ("principal_id".to_string(), json!(principal_id)),
-                ("client_message_id".to_string(), json!(client_message_id)),
-                ("text".to_string(), json!(text)),
-            ]
-            .into_iter()
-            .collect(),
+            payload,
         );
         match self
             .runtime
@@ -4234,6 +4294,16 @@ mod tests {
         calls: AtomicU64,
         objective_id: String,
         observed_entry_result: Arc<AtomicBool>,
+    }
+
+    struct OrdinaryHarnessEntryClient {
+        calls: AtomicU64,
+        observed_entry_result: Arc<AtomicBool>,
+    }
+
+    struct HarnessDiscoveryClient {
+        calls: AtomicU64,
+        observed_mount: Arc<AtomicBool>,
     }
 
     struct DetachedExecClient {
@@ -4741,6 +4811,95 @@ mod tests {
                 }
                 1 => Ok(text_response("automatic-harness-entry-complete")),
                 _ => Err("Harness entry 被重复求值".into()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for OrdinaryHarnessEntryClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Err("普通 Evaluation 的 Harness entry 被重复求值".into());
+            }
+            assert!(messages
+                .iter()
+                .any(|message| message.content.contains("(entry (owner runtime)")));
+            let observed = messages.iter().any(|message| {
+                message.role == "tool" && message.content.contains("ordinary-harness-entry-fixture")
+            });
+            self.observed_entry_result.store(observed, Ordering::SeqCst);
+            if !observed {
+                return Err("Harness entry 的 Plan 结果没有回到普通 Evaluation".into());
+            }
+            Ok(text_response("ordinary-harness-entry-complete"))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Client for HarnessDiscoveryClient {
+        async fn create_completion(
+            &self,
+            messages: Vec<Message>,
+            tools: Vec<ToolDefinition>,
+        ) -> Result<Response, RuntimeError> {
+            match self.calls.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert!(tools.iter().any(|tool| tool.name == "harness_list"));
+                    assert!(tools.iter().any(|tool| tool.name == "harness_select"));
+                    assert!(!messages
+                        .iter()
+                        .any(|message| message.content.contains("Harness discovery-test@1.0.0")));
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "list-discoverable-harnesses".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "harness_list".to_string(),
+                            arguments: "{}".to_string(),
+                        }],
+                    })
+                }
+                1 => {
+                    assert!(messages.iter().any(|message| {
+                        message.role == "tool"
+                            && message.content.contains("discovery-test")
+                            && message.content.contains("1.0.0")
+                    }));
+                    assert!(!messages
+                        .iter()
+                        .any(|message| message.content.contains("(harness-mount")));
+                    Ok(Response {
+                        content: String::new(),
+                        tool_calls: vec![ToolCallRepr {
+                            id: "select-discovered-harness".to_string(),
+                            r#type: "function".to_string(),
+                            func_name: "harness_select".to_string(),
+                            arguments: json!({
+                                "id": "discovery-test",
+                                "version": "1.0.0",
+                                "reason": "当前请求需要测试领域纪律"
+                            })
+                            .to_string(),
+                        }],
+                    })
+                }
+                2 => {
+                    let observed = messages.iter().any(|message| {
+                        message.content.contains("(harness-mount")
+                            && message.content.contains("(id discovery-test)")
+                            && message.content.contains("discovery-contract")
+                    });
+                    self.observed_mount.store(observed, Ordering::SeqCst);
+                    if !observed {
+                        return Err("自主选择的 Harness 没有挂载到 successor Evaluation".into());
+                    }
+                    Ok(text_response("discovered-harness-complete"))
+                }
+                _ => Err("Harness 自主发现产生了冗余模型求值".into()),
             }
         }
     }
@@ -6672,6 +6831,166 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].tool_name, "read");
         assert_eq!(jobs[0].status, crate::memory::ExecutionJobStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn ordinary_message_can_bind_exact_harness_to_its_evaluation() {
+        let database = NamedTempFile::new().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let fixture_path = workspace.path().join("ordinary-harness-entry.txt");
+        std::fs::write(&fixture_path, "ordinary-harness-entry-fixture").unwrap();
+        let quoted_path =
+            serde_json::to_string(&fixture_path.to_string_lossy().into_owned()).unwrap();
+        let package = HarnessPackage::from_source(
+            "ordinary.hns",
+            &format!(
+                r#"
+                    (manifest
+                      (id ordinary)
+                      (version "1.0.0")
+                      (title "Ordinary Harness")
+                      (capabilities (tools read)))
+                    (contract (identity "ordinary"))
+                    (eval
+                      (requires (tools read))
+                      (call read (path {quoted_path})))
+                "#
+            ),
+        )
+        .unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.workspace_root = workspace.path().to_string_lossy().into_owned();
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let observed_entry_result = Arc::new(AtomicBool::new(false));
+        let client = Arc::new(OrdinaryHarnessEntryClient {
+            calls: AtomicU64::new(0),
+            observed_entry_result: Arc::clone(&observed_entry_result),
+        });
+        let runtime = MorphzRuntime::builder(config, client.clone())
+            .database_path(database.path().to_string_lossy())
+            .harness_package(package)
+            .tool_policy(RuntimeToolPolicy {
+                context_only: false,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-ordinary-harness".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Ordinary Harness".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime.bind_default_principal(session.id()).await.unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        session
+            .send_as_principal_with_harness(
+                "use the exact harness",
+                "User-Test",
+                runtime.identity().principal_id.clone(),
+                Some("client-ordinary-harness".to_string()),
+                Some(crate::harness::ExactHarnessRef {
+                    id: "ordinary".to_string(),
+                    version: "1.0.0".to_string(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload.get("text").and_then(Value::as_str),
+            Some("ordinary-harness-entry-complete")
+        );
+        assert!(observed_entry_result.load(Ordering::SeqCst));
+        assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+        let bindings = runtime
+            .query_events(QueryFilter {
+                context_id: Some(runtime.identity().context_id.clone()),
+                topic: Some(crate::harness_package::EVALUATION_HARNESS_BINDING_TOPIC.to_string()),
+                top_k: Some(10),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(!bindings.is_empty());
+        assert!(bindings
+            .iter()
+            .all(|event| event.payload["scope"] == "evaluation"));
+    }
+
+    #[tokio::test]
+    async fn model_can_discover_and_select_harness_for_ordinary_evaluation() {
+        let database = NamedTempFile::new().unwrap();
+        let package = HarnessPackage::from_source(
+            "discovery-test.hns",
+            r#"
+                (manifest
+                  (id discovery-test)
+                  (version "1.0.0")
+                  (title "Discovery Test")
+                  (capabilities (tools read)))
+                (contract (identity "discovery-contract"))
+                (infer (task "complete the current evaluation"))
+            "#,
+        )
+        .unwrap();
+        let observed_mount = Arc::new(AtomicBool::new(false));
+        let client = Arc::new(HarnessDiscoveryClient {
+            calls: AtomicU64::new(0),
+            observed_mount: Arc::clone(&observed_mount),
+        });
+        let runtime = MorphzRuntime::builder(AppConfig::default(), client.clone())
+            .database_path(database.path().to_string_lossy())
+            .harness_package(package)
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .ensure_session(NewSession {
+                id: "session-harness-discovery".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Harness discovery".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        runtime.bind_default_principal(session.id()).await.unwrap();
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        session
+            .send_as_principal(
+                "choose a suitable harness",
+                "User-Test",
+                runtime.identity().principal_id.clone(),
+                Some("client-harness-discovery".to_string()),
+            )
+            .await
+            .unwrap();
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(5), replies.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            reply.payload.get("text").and_then(Value::as_str),
+            Some("discovered-harness-complete")
+        );
+        assert!(observed_mount.load(Ordering::SeqCst));
+        assert_eq!(client.calls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
