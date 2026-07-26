@@ -799,6 +799,7 @@ const SOFT_CHECKPOINT_PROMPT: &str = r#"Runtime 当前处于 soft-checkpoint。�
 
 const CRITICAL_MAINTENANCE_PROMPT: &str = r#"Runtime 当前进入 critical-maintenance：本轮 Context 已达到临界压力，必须先释放 Context 预算，再继续外部工作。
 - 为保证维护请求本身仍能被模型接收，Runtime 可能只投影 Inbox 的一个有界维护切片。kernel.context-pressure.active-observations 是完整活动数量；当前 Inbox 只包含本批当前因果根与一组最旧、未保护的维护候选。未出现的 observation 仍在 Ledger 中，既没有丢失也没有被 retire；本批提交后 Runtime 会重新求值并在仍超限时提供下一批。
+- Inbox 中 protected=true 的当前因果根、trigger 与 signal 只用于保持本轮责任，不是维护候选，绝不能放入 retire。context_tx 是原子事务；混入任一受保护引用会导致整批 retire 全部回滚。
 - 本次只能调用当前实际提供的工具。外部物理工具已被暂时撤下；不要重复刚才的物理工具调用，也不要假定它已执行。
 - 优先用一次 context_tx 准确压缩 Mind/Inbox：保留当前目标、用户约束、最新可靠事实、未完成工作和继续执行所需证据；摘要或 retire 陈旧、重复、已被新事实取代的内容。
 - recall 仅用于维护前确实缺失的原始证据；不要借此展开新的外部工作。完成维护后 Runtime 会重新计算压力并恢复适用的物理工具。
