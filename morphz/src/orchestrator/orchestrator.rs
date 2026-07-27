@@ -1030,8 +1030,114 @@ struct ProviderCircuitState {
     consecutive_failures: u32,
     generation: u64,
     retry_at: tokio::time::Instant,
-    probe_in_flight: bool,
+    /// Monotonically increasing identity for half-open probes.  A generation
+    /// alone is insufficient because a cancelled probe and its replacement
+    /// both belong to the same outage generation.
+    next_probe_id: u64,
+    /// Exact owner of the current half-open probe.  The token lets a stale
+    /// dropped Future prove that it no longer owns the probe before clearing
+    /// anything acquired by a replacement Activation.
+    active_probe_id: Option<u64>,
     waiting_contexts: HashSet<String>,
+}
+
+/// Cancellation-safe ownership of one Provider half-open recovery probe.
+///
+/// Model requests are routinely cancelled by Objective pause/delete,
+/// Activation fencing and Runtime shutdown.  Normal success/failure paths
+/// settle the circuit explicitly, but a dropped request never reaches those
+/// branches.  Releasing from `Drop` prevents a process-local phantom owner
+/// from blocking every later Activation indefinitely.
+struct ProviderCircuitProbeLease {
+    resource: String,
+    circuit: Arc<std::sync::Mutex<ProviderCircuitState>>,
+    bus: Arc<InMemoryEventBus>,
+    probe_id: u64,
+}
+
+impl Drop for ProviderCircuitProbeLease {
+    fn drop(&mut self) {
+        let (generation, contexts) = {
+            let mut state = self
+                .circuit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if state.phase != ProviderCircuitPhase::HalfOpen
+                || state.active_probe_id != Some(self.probe_id)
+            {
+                return;
+            }
+            state.active_probe_id = None;
+            (
+                state.generation,
+                state.waiting_contexts.iter().cloned().collect::<Vec<_>>(),
+            )
+        };
+
+        tracing::warn!(
+            provider_resource = %self.resource,
+            generation,
+            probe_id = self.probe_id,
+            "Provider 半开恢复探针被取消；所有权已归还"
+        );
+
+        // Releasing ownership is synchronous and therefore guaranteed even
+        // if no executor remains.  While Runtime is alive, also wake durable
+        // Objective waiters so one of them can acquire the replacement probe.
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let bus = Arc::clone(&self.bus);
+        let resource = self.resource.clone();
+        let probe_id = self.probe_id;
+        runtime.spawn(async move {
+            publish_provider_probe_available(
+                &bus,
+                &resource,
+                generation,
+                Some(probe_id),
+                "probe_cancelled",
+                contexts,
+            )
+            .await;
+        });
+    }
+}
+
+async fn publish_provider_probe_available(
+    bus: &InMemoryEventBus,
+    resource: &str,
+    generation: u64,
+    replaced_probe_id: Option<u64>,
+    reason: &str,
+    contexts: Vec<String>,
+) {
+    for context_id in contexts {
+        let event = Event::new(
+            format!(
+                "provider_recovery_probe_{}_{}_{}",
+                generation,
+                replaced_probe_id.unwrap_or_default(),
+                Utc::now().timestamp_nanos_opt().unwrap_or_default()
+            ),
+            "Runtime-ProviderRecovery".to_string(),
+            "runtime_control".to_string(),
+            "runtime/resource_available".to_string(),
+            [
+                ("context_id".to_string(), json!(context_id)),
+                ("resource".to_string(), json!(resource)),
+                ("recovery_phase".to_string(), json!("half_open")),
+                ("recovery_reason".to_string(), json!(reason)),
+                ("generation".to_string(), json!(generation)),
+                ("replaced_probe_id".to_string(), json!(replaced_probe_id)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        if let Err(error) = bus.publish(event).await {
+            tracing::error!(%error, provider_resource = %resource, "发布 Provider 半开恢复事件失败");
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1504,7 +1610,7 @@ pub struct Orchestrator {
     /// Shared outage gate for one physical Provider endpoint/model. Adapter
     /// retries are request-local; this circuit prevents many independent
     /// Activations from amplifying the same outage after those retries fail.
-    provider_circuits: DashMap<String, Arc<Mutex<ProviderCircuitState>>>,
+    provider_circuits: DashMap<String, Arc<std::sync::Mutex<ProviderCircuitState>>>,
     /// Provider-observed Context overflow may be discovered by many
     /// Activations at once. Exactly one owner is allowed to run the semantic
     /// maintenance request; waiters restart from the newer projection after
@@ -1781,21 +1887,26 @@ impl Orchestrator {
         self.context_engine.capacity_metrics()
     }
 
-    async fn admit_provider_circuit(&self, context_id: &str) -> Result<(), ModelFailure> {
+    async fn admit_provider_circuit(
+        &self,
+        context_id: &str,
+    ) -> Result<Option<ProviderCircuitProbeLease>, ModelFailure> {
         let resource = self.client.provider_resource_key();
         let Some(circuit) = self
             .provider_circuits
             .get(&resource)
             .map(|entry| Arc::clone(entry.value()))
         else {
-            return Ok(());
+            return Ok(None);
         };
-        let mut state = circuit.lock().await;
+        let mut state = circuit
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.waiting_contexts.insert(context_id.to_string());
         let now = tokio::time::Instant::now();
         if state.phase == ProviderCircuitPhase::Open && now >= state.retry_at {
             state.phase = ProviderCircuitPhase::HalfOpen;
-            state.probe_in_flight = false;
+            state.active_probe_id = None;
         }
         match state.phase {
             ProviderCircuitPhase::Open => {
@@ -1810,14 +1921,24 @@ impl Orchestrator {
                 )
                 .with_retry_after(Some(retry_after)))
             }
-            ProviderCircuitPhase::HalfOpen if state.probe_in_flight => Err(ModelFailure::new(
-                ModelFailureKind::ServerUnavailable,
-                "Provider circuit half-open; another Activation owns the recovery probe",
-            )
-            .with_retry_after(Some(1))),
+            ProviderCircuitPhase::HalfOpen if state.active_probe_id.is_some() => {
+                Err(ModelFailure::new(
+                    ModelFailureKind::ServerUnavailable,
+                    "Provider circuit half-open; another Activation owns the recovery probe",
+                )
+                .with_retry_after(Some(1)))
+            }
             ProviderCircuitPhase::HalfOpen => {
-                state.probe_in_flight = true;
-                Ok(())
+                state.next_probe_id = state.next_probe_id.saturating_add(1);
+                let probe_id = state.next_probe_id;
+                state.active_probe_id = Some(probe_id);
+                drop(state);
+                Ok(Some(ProviderCircuitProbeLease {
+                    resource,
+                    circuit,
+                    bus: Arc::clone(&self.bus),
+                    probe_id,
+                }))
             }
         }
     }
@@ -1831,22 +1952,25 @@ impl Orchestrator {
             .provider_circuits
             .entry(resource.clone())
             .or_insert_with(|| {
-                Arc::new(Mutex::new(ProviderCircuitState {
+                Arc::new(std::sync::Mutex::new(ProviderCircuitState {
                     phase: ProviderCircuitPhase::Open,
                     consecutive_failures: 0,
                     generation: 0,
                     retry_at: tokio::time::Instant::now(),
-                    probe_in_flight: false,
+                    next_probe_id: 0,
+                    active_probe_id: None,
                     waiting_contexts: HashSet::new(),
                 }))
             })
             .clone();
         let (generation, delay) = {
-            let mut state = circuit.lock().await;
+            let mut state = circuit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.consecutive_failures = state.consecutive_failures.saturating_add(1);
             state.generation = state.generation.saturating_add(1);
             state.phase = ProviderCircuitPhase::Open;
-            state.probe_in_flight = false;
+            state.active_probe_id = None;
             state.waiting_contexts.insert(context_id.to_string());
             let exponent = state.consecutive_failures.saturating_sub(1).min(6);
             let calculated = 5_u64.saturating_mul(1_u64 << exponent).min(300);
@@ -1866,37 +1990,25 @@ impl Orchestrator {
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
             let contexts = {
-                let mut state = circuit.lock().await;
+                let mut state = circuit
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 if state.generation != generation || state.phase != ProviderCircuitPhase::Open {
                     return;
                 }
                 state.phase = ProviderCircuitPhase::HalfOpen;
-                state.probe_in_flight = false;
+                state.active_probe_id = None;
                 state.waiting_contexts.iter().cloned().collect::<Vec<_>>()
             };
-            for context_id in contexts {
-                let event = Event::new(
-                    format!(
-                        "provider_recovery_probe_{}_{}",
-                        generation,
-                        Utc::now().timestamp_nanos_opt().unwrap_or_default()
-                    ),
-                    "Runtime-ProviderRecovery".to_string(),
-                    "runtime_control".to_string(),
-                    "runtime/resource_available".to_string(),
-                    [
-                        ("context_id".to_string(), json!(context_id)),
-                        ("resource".to_string(), json!(&resource)),
-                        ("recovery_phase".to_string(), json!("half_open")),
-                        ("generation".to_string(), json!(generation)),
-                    ]
-                    .into_iter()
-                    .collect(),
-                );
-                if let Err(error) = bus.publish(event).await {
-                    tracing::error!(%error, provider_resource = %resource, "发布 Provider 半开恢复事件失败");
-                }
-            }
+            publish_provider_probe_available(
+                &bus,
+                &resource,
+                generation,
+                None,
+                "backoff_elapsed",
+                contexts,
+            )
+            .await;
         });
     }
 
@@ -1905,13 +2017,16 @@ impl Orchestrator {
         let Some((_, circuit)) = self.provider_circuits.remove(&resource) else {
             return;
         };
-        let contexts = circuit
-            .lock()
-            .await
-            .waiting_contexts
-            .iter()
-            .cloned()
-            .collect::<Vec<_>>();
+        let contexts = {
+            let mut state = circuit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Settle the exact probe before any async publication.  Its RAII
+            // lease may be dropped at any later await without producing a
+            // false cancellation wake-up.
+            state.active_probe_id = None;
+            state.waiting_contexts.iter().cloned().collect::<Vec<_>>()
+        };
         tracing::info!(provider_resource = %resource, "Provider 恢复探测成功；共享熔断已关闭");
         for context_id in contexts {
             let event = Event::new(
@@ -4530,7 +4645,11 @@ impl Orchestrator {
         let stream_context_id = self
             .context_id_for_session(session_id)
             .map_err(ModelCompletionError::internal)?;
-        self.admit_provider_circuit(&stream_context_id)
+        // Keep the half-open probe lease alive across queueing, streaming and
+        // terminal circuit settlement.  If this Future is cancelled at any
+        // boundary, Drop immediately returns ownership and wakes waiters.
+        let _provider_probe_lease = self
+            .admit_provider_circuit(&stream_context_id)
             .await
             .map_err(|failure| ModelCompletionError::provider(Box::new(failure) as DynError))?;
         let queue_timeout = std::time::Duration::from_secs(
@@ -12474,7 +12593,8 @@ mod tests {
         should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
         tool_call_activity_preview, DialogueThreadGate, DialogueThreadLease, DurableEventWriter,
         DurableEventWriterMetrics, DynError, EvaluationContextOverlay, ModelCompletionError,
-        ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator, NoReplyMode, ReadTurnGuard,
+        ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator, NoReplyMode,
+        ProviderCircuitPhase, ProviderCircuitProbeLease, ProviderCircuitState, ReadTurnGuard,
         TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
@@ -12531,6 +12651,93 @@ mod tests {
 
         assert!(gate.owns("turn-a").await);
         assert!(gate.release("turn-a"));
+    }
+
+    #[tokio::test]
+    async fn dropped_provider_probe_lease_releases_owner_and_wakes_waiters() {
+        let bus = Arc::new(InMemoryEventBus::new());
+        let wake_count = Arc::new(AtomicUsize::new(0));
+        let wake_notify = Arc::new(tokio::sync::Notify::new());
+        let observed_count = Arc::clone(&wake_count);
+        let observed_notify = Arc::clone(&wake_notify);
+        bus.subscribe(
+            "runtime/resource_available".to_string(),
+            Arc::new(move |event| {
+                let observed_count = Arc::clone(&observed_count);
+                let observed_notify = Arc::clone(&observed_notify);
+                Box::pin(async move {
+                    assert_eq!(
+                        event
+                            .payload
+                            .get("recovery_reason")
+                            .and_then(serde_json::Value::as_str),
+                        Some("probe_cancelled")
+                    );
+                    observed_count.fetch_add(1, Ordering::SeqCst);
+                    observed_notify.notify_one();
+                    Ok(())
+                })
+            }),
+        );
+        let circuit = Arc::new(std::sync::Mutex::new(ProviderCircuitState {
+            phase: ProviderCircuitPhase::HalfOpen,
+            consecutive_failures: 1,
+            generation: 7,
+            retry_at: tokio::time::Instant::now(),
+            next_probe_id: 41,
+            active_probe_id: Some(41),
+            waiting_contexts: HashSet::from(["context-a".to_string()]),
+        }));
+
+        drop(ProviderCircuitProbeLease {
+            resource: "provider-a".to_string(),
+            circuit: Arc::clone(&circuit),
+            bus,
+            probe_id: 41,
+        });
+
+        assert_eq!(
+            circuit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .active_probe_id,
+            None,
+            "cancellation must synchronously return half-open ownership"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(1), wake_notify.notified())
+            .await
+            .expect("cancelled probe must arrange a replacement recovery wake-up");
+        assert_eq!(wake_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn stale_provider_probe_lease_cannot_release_replacement_owner() {
+        let bus = Arc::new(InMemoryEventBus::new());
+        let circuit = Arc::new(std::sync::Mutex::new(ProviderCircuitState {
+            phase: ProviderCircuitPhase::HalfOpen,
+            consecutive_failures: 1,
+            generation: 7,
+            retry_at: tokio::time::Instant::now(),
+            next_probe_id: 42,
+            active_probe_id: Some(42),
+            waiting_contexts: HashSet::from(["context-a".to_string()]),
+        }));
+
+        drop(ProviderCircuitProbeLease {
+            resource: "provider-a".to_string(),
+            circuit: Arc::clone(&circuit),
+            bus,
+            probe_id: 41,
+        });
+
+        assert_eq!(
+            circuit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .active_probe_id,
+            Some(42),
+            "a stale cancelled Future must not clear a newer probe token"
+        );
     }
 
     #[test]
