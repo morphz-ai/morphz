@@ -77,6 +77,7 @@ struct ReasoningContinuationClient {
 
 struct SharedTransientFailureClient {
     calls: AtomicUsize,
+    health_probe_calls: AtomicUsize,
     initial_barrier: tokio::sync::Barrier,
 }
 
@@ -292,9 +293,20 @@ impl Client for SharedTransientFailureClient {
         if call < 2 {
             self.initial_barrier.wait().await;
         }
+        Err(Box::new(
+            ModelFailure::new(
+                ModelFailureKind::TransientNetwork,
+                "simulated shared provider outage",
+            )
+            .with_retry_after(Some(1)),
+        ))
+    }
+
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.health_probe_calls.fetch_add(1, Ordering::SeqCst);
         Err(Box::new(ModelFailure::new(
             ModelFailureKind::TransientNetwork,
-            "simulated shared provider outage",
+            "simulated independent health probe failure",
         )))
     }
 }
@@ -1008,6 +1020,21 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
             .unwrap()[0]
             .sequence
             .unwrap();
+        store
+            .ensure_thread(NewThread {
+                id: format!("recovery-thread-{index}"),
+                agent_id: "recovery-agent".to_string(),
+                context_id: "recovery-context".to_string(),
+                session_id: session_id.to_string(),
+                initiating_principal_id: None,
+                root_turn_id: event.id.clone(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+            })
+            .await
+            .unwrap();
         let activation = store
             .ensure_thread_activation(NewThreadActivation {
                 id: format!("recovery-work-{index}"),
@@ -1093,6 +1120,21 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
         .unwrap()[0]
         .sequence
         .unwrap();
+    store
+        .ensure_thread(NewThread {
+            id: "recovery-orphan-thread".to_string(),
+            agent_id: "recovery-agent".to_string(),
+            context_id: "recovery-context".to_string(),
+            session_id: orphan_session_id.to_string(),
+            initiating_principal_id: None,
+            root_turn_id: orphan_root.id.clone(),
+            kind: ThreadKind::Execution,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+        })
+        .await
+        .unwrap();
     let orphan_activation = store
         .ensure_thread_activation(NewThreadActivation {
             id: "recovery-orphan-work".to_string(),
@@ -1119,22 +1161,6 @@ async fn runtime_start_resumes_unfinished_dialogue_activations() {
         )
         .await
         .unwrap();
-    store
-        .ensure_thread(NewThread {
-            id: "recovery-orphan-thread".to_string(),
-            agent_id: "recovery-agent".to_string(),
-            context_id: "recovery-context".to_string(),
-            session_id: orphan_session_id.to_string(),
-            initiating_principal_id: None,
-            root_turn_id: orphan_root.id,
-            kind: ThreadKind::Execution,
-            executor_kind: "self".to_string(),
-            executor_id: None,
-            target_id: None,
-        })
-        .await
-        .unwrap();
-
     let client = Arc::new(MockClient::new(vec![
         text_reply_response("recovered"),
         text_reply_response("recovered"),
@@ -1276,6 +1302,21 @@ async fn runtime_restart_reuses_persisted_tool_plan_without_reasking_model() {
         .into_iter()
         .find(|event| event.id == trigger.id)
         .and_then(|event| event.sequence)
+        .unwrap();
+    store
+        .ensure_thread(NewThread {
+            id: "plan-recovery-thread".to_string(),
+            agent_id: "plan-recovery-agent".to_string(),
+            context_id: "plan-recovery-context".to_string(),
+            session_id: "plan-recovery-session".to_string(),
+            initiating_principal_id: None,
+            root_turn_id: root.id.clone(),
+            kind: ThreadKind::DialogueTurn,
+            executor_kind: "self".to_string(),
+            executor_id: None,
+            target_id: None,
+        })
+        .await
         .unwrap();
     let activation = store
         .ensure_thread_activation(NewThreadActivation {
@@ -4772,7 +4813,7 @@ async fn test_distinct_sessions_evaluate_concurrently_in_shared_context() {
 }
 
 #[tokio::test]
-async fn shared_provider_outage_opens_one_circuit_and_one_user_incident() {
+async fn shared_provider_outage_requires_three_small_probe_failures_before_opening() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("shared-provider-outage.db");
     let bus = Arc::new(InMemoryEventBus::new());
@@ -4780,6 +4821,7 @@ async fn shared_provider_outage_opens_one_circuit_and_one_user_incident() {
     install_test_session_registry(&bus, &store);
     let client = Arc::new(SharedTransientFailureClient {
         calls: AtomicUsize::new(0),
+        health_probe_calls: AtomicUsize::new(0),
         initial_barrier: tokio::sync::Barrier::new(2),
     });
     let config = morphz::config::OrchestratorConfig::default();
@@ -4812,7 +4854,7 @@ async fn shared_provider_outage_opens_one_circuit_and_one_user_incident() {
         &bus,
         "provider-outage-context",
         "outage-c",
-        "third while circuit is open",
+        "third while outage is still unconfirmed",
     )
     .await;
     assert_eq!(
@@ -4821,7 +4863,35 @@ async fn shared_provider_outage_opens_one_circuit_and_one_user_incident() {
             .len(),
         1
     );
-    assert_eq!(client.calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        client.calls.load(Ordering::SeqCst),
+        3,
+        "business requests remain independent while only an application request has failed"
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while client.health_probe_calls.load(Ordering::SeqCst) < 3 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("three independent small health probes must confirm the outage");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    publish_user_in_context(
+        &bus,
+        "provider-outage-context",
+        "outage-d",
+        "fourth after health probes confirm the outage",
+    )
+    .await;
+    assert_eq!(
+        wait_for_topic(&store, "chat/no_reply", "outage-d")
+            .await
+            .len(),
+        1
+    );
+    assert_eq!(client.calls.load(Ordering::SeqCst), 3);
 
     let replies = store
         .query(QueryFilter {
@@ -4852,7 +4922,7 @@ async fn shared_provider_outage_opens_one_circuit_and_one_user_incident() {
         1,
         "one outage must produce one visible notice"
     );
-    assert_eq!(silent.len(), 2, "other failed Activations still terminate");
+    assert_eq!(silent.len(), 3, "other failed Activations still terminate");
     assert_eq!(incidents.len(), 1, "one outage must create one incident");
     assert!(silent.iter().all(
         |event| event.payload.get("runtime_failure_user_notice_suppressed") == Some(&json!(true))
@@ -4860,7 +4930,7 @@ async fn shared_provider_outage_opens_one_circuit_and_one_user_incident() {
 }
 
 #[tokio::test]
-async fn partial_reasoning_before_provider_failure_still_opens_recovery_circuit() {
+async fn partial_reasoning_before_provider_failure_does_not_retry_business_request() {
     let tmp = TempDir::new().unwrap();
     let db_path = tmp.path().join("partial-reasoning-provider-outage.db");
     let bus = Arc::new(InMemoryEventBus::new());
@@ -4893,9 +4963,9 @@ async fn partial_reasoning_before_provider_failure_still_opens_recovery_circuit(
     );
     assert_eq!(client.calls.load(Ordering::SeqCst), 1);
 
-    // The partial reasoning must not suppress outage coordination: the
-    // immediate continuation is denied by the recovery circuit and therefore
-    // does not make a second physical Provider call.
+    // Partial reasoning is useful progress, but a real transport failure is
+    // not a reasoning-only boundary. Runtime must not turn it into another
+    // application request; only the independent health monitor may probe.
     assert_eq!(client.calls.load(Ordering::SeqCst), 1);
     assert!(
         store
@@ -4913,9 +4983,11 @@ async fn partial_reasoning_before_provider_failure_still_opens_recovery_circuit(
                         .payload
                         .get("detail")
                         .and_then(|value| value.as_str())
-                        .is_some_and(|detail| detail.contains("Provider circuit open"))
+                        .is_some_and(|detail| {
+                            detail.contains("simulated disconnect after partial reasoning")
+                        })
             }),
-        "a real disconnect after partial reasoning must still enter provider recovery"
+        "a real disconnect after partial reasoning must terminate the application attempt"
     );
     assert_eq!(
         store

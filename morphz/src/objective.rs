@@ -1618,16 +1618,7 @@ impl ObjectiveSupervisor {
             .get("runtime_failure_stage")
             .and_then(|value| value.as_str())
             == Some("critical_maintenance_minimum_projection");
-        let provider_recoverable = matches!(
-            failure_kind,
-            "rate_limited"
-                | "transient_network"
-                | "server_unavailable"
-                | "authentication"
-                | "invalid_model_or_request"
-                | "stream_idle_timeout"
-                | "unknown"
-        );
+        let provider_recoverable = provider_failure_is_recoverable(failure_kind);
         let recoverable =
             !maintenance_exhausted && (failure_kind == "context_limit" || provider_recoverable);
         let (status, wait_condition, reason) = if recoverable {
@@ -2430,6 +2421,22 @@ impl ObjectiveSupervisor {
     }
 }
 
+fn provider_failure_is_recoverable(failure_kind: &str) -> bool {
+    matches!(
+        failure_kind,
+        "rate_limited"
+            | "transient_network"
+            | "server_unavailable"
+            | "authentication"
+            | "invalid_model_or_request"
+            | "first_byte_timeout"
+            | "stream_stalled"
+            | "hard_deadline_exceeded"
+            | "stream_idle_timeout"
+            | "unknown"
+    )
+}
+
 fn objective_wait_timer_id(objective_id: &str) -> String {
     format!("objective-wait:{objective_id}")
 }
@@ -2495,6 +2502,13 @@ mod tests {
         ThreadStore as _, TimerStore,
     };
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn request_scoped_stream_timeouts_keep_objectives_recoverable() {
+        assert!(provider_failure_is_recoverable("first_byte_timeout"));
+        assert!(provider_failure_is_recoverable("stream_stalled"));
+        assert!(provider_failure_is_recoverable("hard_deadline_exceeded"));
+    }
 
     async fn seed_objective_bundle(store: &SqliteStore, suffix: &str) -> ObjectiveRecord {
         let agent_id = format!("agent-{suffix}");

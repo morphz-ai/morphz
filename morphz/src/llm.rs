@@ -16,6 +16,16 @@ pub enum ModelFailureKind {
     ServerUnavailable,
     Authentication,
     InvalidModelOrRequest,
+    /// HTTP response headers were accepted, but the Provider emitted no body
+    /// bytes before the first-byte deadline. This is request-local latency,
+    /// not evidence that the shared Provider is unavailable.
+    FirstByteTimeout,
+    /// At least one response-body byte was received, then the stream stopped
+    /// making progress for the configured idle interval.
+    StreamStalled,
+    /// Runtime's optional absolute wall-clock deadline ended one physical
+    /// request. This is request-local policy, not shared Provider health.
+    HardDeadlineExceeded,
     StreamIdleTimeout,
     Unknown,
 }
@@ -29,6 +39,9 @@ impl ModelFailureKind {
             Self::ServerUnavailable => "server_unavailable",
             Self::Authentication => "authentication",
             Self::InvalidModelOrRequest => "invalid_model_or_request",
+            Self::FirstByteTimeout => "first_byte_timeout",
+            Self::StreamStalled => "stream_stalled",
+            Self::HardDeadlineExceeded => "hard_deadline_exceeded",
             Self::StreamIdleTimeout => "stream_idle_timeout",
             Self::Unknown => "unknown",
         }
@@ -40,7 +53,20 @@ impl ModelFailureKind {
             Self::RateLimited
                 | Self::TransientNetwork
                 | Self::ServerUnavailable
+                | Self::FirstByteTimeout
+                | Self::StreamStalled
+                | Self::HardDeadlineExceeded
                 | Self::StreamIdleTimeout
+        )
+    }
+
+    /// A single slow/large request must never poison the endpoint+model
+    /// circuit shared by unrelated Sessions. It may still be retried by the
+    /// owning Dialogue Turn or Objective.
+    pub const fn is_request_scoped_latency(self) -> bool {
+        matches!(
+            self,
+            Self::FirstByteTimeout | Self::StreamStalled | Self::HardDeadlineExceeded
         )
     }
 
@@ -129,6 +155,21 @@ impl ModelFailure {
             ModelFailureKind::ContextLimit
         } else if contains_any(&normalized, &["429", "rate limit", "too many requests"]) {
             ModelFailureKind::RateLimited
+        } else if contains_any(
+            &normalized,
+            &["first byte timeout", "first-byte timeout", "首字节超时"],
+        ) {
+            ModelFailureKind::FirstByteTimeout
+        } else if contains_any(
+            &normalized,
+            &["stream stalled", "stream_stalled", "流已停滞"],
+        ) {
+            ModelFailureKind::StreamStalled
+        } else if contains_any(
+            &normalized,
+            &["hard deadline exceeded", "hard_deadline_exceeded"],
+        ) {
+            ModelFailureKind::HardDeadlineExceeded
         } else if contains_any(
             &normalized,
             &[
@@ -556,5 +597,24 @@ pub trait Client: Send + Sync {
                 Err(error)
             }
         }
+    }
+
+    /// Small request used exclusively to confirm shared Provider health.
+    /// Implementations should not reuse an application request or its large
+    /// Context as a recovery probe.
+    async fn probe_health(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let _response = self
+            .create_completion(
+                vec![Message {
+                    role: "user".to_string(),
+                    content: "Reply MORPHZ_OK.".to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }],
+                Vec::new(),
+            )
+            .await?;
+        Ok(())
     }
 }

@@ -643,9 +643,12 @@ pub struct LlmConfig {
     pub initial_backoff_secs: u64,
     /// 建立 TCP/TLS 连接的超时秒数。
     pub connect_timeout_secs: u64,
-    /// 等待响应头或相邻两个流式数据块的最长静默时间。每收到一个
+    /// 收到首个响应体字节后，相邻两个流式数据块的最长静默时间。每收到一个
     /// chunk 都会重新计时，因此持续输出 reasoning 不会被误杀。
     pub stream_idle_timeout_secs: u64,
+    /// 等待响应头、以及收到成功响应头后等待第一个响应体字节的最长时间。
+    /// 大 Context 的首字节延迟通常显著长于流中相邻 chunk，因此必须独立配置。
+    pub first_byte_timeout_secs: u64,
     /// 单次 completion 最大输出 Token；None 表示由模型服务决定默认值
     pub max_output_tokens: Option<u32>,
     /// 模型原生推理深度；None 表示不发送控制字段，保留模型默认行为。
@@ -661,6 +664,7 @@ impl Default for LlmConfig {
             initial_backoff_secs: 1,
             connect_timeout_secs: 30,
             stream_idle_timeout_secs: 120,
+            first_byte_timeout_secs: 300,
             max_output_tokens: None,
             reasoning_effort: None,
         }
@@ -1662,6 +1666,10 @@ impl AppConfig {
             &mut self.llm.stream_idle_timeout_secs,
         )?;
         apply_u64_env(
+            "MORPHZ_LLM_FIRST_BYTE_TIMEOUT_SECS",
+            &mut self.llm.first_byte_timeout_secs,
+        )?;
+        apply_u64_env(
             "MORPHZ_REPLY_WAIT_NOTICE_SECS",
             &mut self.orchestrator.reply_wait_notice_secs,
         )?;
@@ -2174,6 +2182,7 @@ mod tests {
         assert_eq!(cfg.llm.max_retries, 5);
         assert_eq!(cfg.llm.connect_timeout_secs, 30);
         assert_eq!(cfg.llm.stream_idle_timeout_secs, 120);
+        assert_eq!(cfg.llm.first_byte_timeout_secs, 300);
         assert_eq!(cfg.llm.max_output_tokens, None);
         assert_eq!(cfg.llm.reasoning_effort, None);
         assert_eq!(cfg.orchestrator.reply_wait_notice_secs, 120);
@@ -2286,6 +2295,7 @@ mod tests {
         writeln!(tmp_file, "[llm]").unwrap();
         writeln!(tmp_file, "connect_timeout_secs = 7").unwrap();
         writeln!(tmp_file, "stream_idle_timeout_secs = 11").unwrap();
+        writeln!(tmp_file, "first_byte_timeout_secs = 17").unwrap();
         writeln!(tmp_file, "max_retries = 1").unwrap();
         writeln!(tmp_file, "max_output_tokens = 131072").unwrap();
         writeln!(tmp_file, "reasoning_effort = 'high'").unwrap();
@@ -2294,6 +2304,7 @@ mod tests {
             .unwrap();
         assert_eq!(cfg.llm.connect_timeout_secs, 7);
         assert_eq!(cfg.llm.stream_idle_timeout_secs, 11);
+        assert_eq!(cfg.llm.first_byte_timeout_secs, 17);
         assert_eq!(cfg.llm.max_retries, 1);
         assert_eq!(cfg.llm.max_output_tokens, Some(131_072));
         assert_eq!(cfg.llm.reasoning_effort, Some(ReasoningEffort::High));

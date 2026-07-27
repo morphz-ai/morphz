@@ -183,6 +183,7 @@ pub struct ProtocolClient {
     max_retries: u32,
     initial_backoff_secs: u64,
     stream_idle_timeout: Duration,
+    first_byte_timeout: Duration,
     max_output_tokens: Option<u32>,
     reasoning_effort: RwLock<Option<ReasoningEffort>>,
     usage_anchors: Mutex<HashMap<u64, PromptUsageAnchor>>,
@@ -317,6 +318,7 @@ impl ProtocolClient {
             max_retries: llm.max_retries.max(1),
             initial_backoff_secs: llm.initial_backoff_secs,
             stream_idle_timeout: Duration::from_secs(llm.stream_idle_timeout_secs.max(1)),
+            first_byte_timeout: Duration::from_secs(llm.first_byte_timeout_secs.max(1)),
             max_output_tokens: llm.max_output_tokens,
             reasoning_effort: RwLock::new(llm.reasoning_effort),
             usage_anchors: Mutex::new(HashMap::new()),
@@ -501,7 +503,7 @@ impl ProtocolClient {
             let mut retry_after = None;
             let request = self.authorize(self.http.post(&endpoint));
             let send_result = match tokio::time::timeout(
-                self.stream_idle_timeout,
+                self.first_byte_timeout,
                 request.json(&streaming_body).send(),
             )
             .await
@@ -509,11 +511,11 @@ impl ProtocolClient {
                 Ok(Ok(response)) => Ok(response),
                 Ok(Err(error)) => Err(request_model_failure(error)),
                 Err(_) => Err(ModelFailure::new(
-                    ModelFailureKind::StreamIdleTimeout,
+                    ModelFailureKind::FirstByteTimeout,
                     format!(
-                        "{} Provider 流等待响应头超过 {} 秒 idle timeout",
+                        "{} Provider first byte timeout：等待 HTTP 响应头超过 {} 秒",
                         self.protocol.as_str(),
-                        self.stream_idle_timeout.as_secs()
+                        self.first_byte_timeout.as_secs()
                     ),
                 )),
             };
@@ -566,25 +568,48 @@ impl ProtocolClient {
         let mut accumulator = StreamAccumulator::default();
         let mut bytes = response.bytes_stream();
         let mut pending = Vec::new();
+        let mut received_body_bytes = false;
         loop {
-            let chunk = tokio::time::timeout(self.stream_idle_timeout, bytes.next())
+            let timeout = if received_body_bytes {
+                self.stream_idle_timeout
+            } else {
+                self.first_byte_timeout
+            };
+            let chunk = tokio::time::timeout(timeout, bytes.next())
                 .await
                 .map_err(|_| -> ProviderError {
+                    let (kind, message) = if received_body_bytes {
+                        (
+                            ModelFailureKind::StreamStalled,
+                            format!(
+                                "{} Provider stream stalled：连续 {} 秒没有收到后续响应体字节",
+                                self.protocol.as_str(),
+                                timeout.as_secs()
+                            ),
+                        )
+                    } else {
+                        (
+                            ModelFailureKind::FirstByteTimeout,
+                            format!(
+                                "{} Provider first byte timeout：收到 HTTP 响应头后 {} 秒仍无响应体字节",
+                                self.protocol.as_str(),
+                                timeout.as_secs()
+                            ),
+                        )
+                    };
                     boxed_model_failure(ModelFailure::new(
-                        ModelFailureKind::StreamIdleTimeout,
-                        format!(
-                            "{} Provider 流连续 {} 秒没有收到数据块",
-                            self.protocol.as_str(),
-                            self.stream_idle_timeout.as_secs()
-                        ),
+                        kind,
+                        message,
                     ))
                 })?;
             let Some(chunk) = chunk else {
                 break;
             };
-            pending.extend_from_slice(
-                &chunk.map_err(|error| boxed_model_failure(request_model_failure(error)))?,
-            );
+            let chunk = chunk.map_err(|error| boxed_model_failure(request_model_failure(error)))?;
+            if !chunk.is_empty() {
+                received_body_bytes = true;
+            }
+            pending.extend_from_slice(&chunk);
             while let Some((frame, consumed)) = take_sse_frame(&pending) {
                 pending.drain(..consumed);
                 if let Some(data) = sse_data(&frame)? {
@@ -920,6 +945,59 @@ impl Client for ProtocolClient {
                 Err(error)
             }
         }
+    }
+
+    async fn probe_health(&self) -> Result<(), ProviderError> {
+        const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+        let messages = [Message {
+            role: "user".to_string(),
+            content: "Reply with the plain text MORPHZ_OK.".to_string(),
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        }];
+        // This request is intentionally independent from every Activation and
+        // never carries Context, tools, configured long reasoning, or the
+        // application's output budget.
+        let body = build_request(self.protocol, &self.model, Some(64), None, &messages, &[]);
+        let endpoint = self.endpoint()?;
+        let response = tokio::time::timeout(
+            HEALTH_PROBE_TIMEOUT,
+            self.authorize(self.http.post(&endpoint)).json(&body).send(),
+        )
+        .await
+        .map_err(|_| {
+            boxed_model_failure(ModelFailure::new(
+                ModelFailureKind::FirstByteTimeout,
+                "Provider health probe response header timeout",
+            ))
+        })?
+        .map_err(|error| boxed_model_failure(request_model_failure(error)))?;
+        let status = response.status();
+        if !status.is_success() {
+            let retry_after = retry_after_seconds(response.headers());
+            let text = response.text().await.unwrap_or_default();
+            return Err(boxed_model_failure(http_model_failure(
+                status,
+                text,
+                retry_after,
+            )));
+        }
+        let value = tokio::time::timeout(HEALTH_PROBE_TIMEOUT, response.json::<Value>())
+            .await
+            .map_err(|_| {
+                boxed_model_failure(ModelFailure::new(
+                    ModelFailureKind::FirstByteTimeout,
+                    "Provider health probe first byte timeout",
+                ))
+            })?
+            .map_err(|error| boxed_model_failure(request_model_failure(error)))?;
+        // A reasoning model may legitimately spend this tiny budget on a
+        // reasoning-only item. For circuit health, a schema-valid successful
+        // response is sufficient; instruction following is not what this
+        // probe measures.
+        let _ = parse_response(self.protocol, value)?;
+        Ok(())
     }
 }
 
@@ -2113,6 +2191,30 @@ mod tests {
             .unwrap()
     }
 
+    fn gated_first_sse(
+        chunks: Vec<&'static str>,
+        gate: Arc<tokio::sync::Semaphore>,
+    ) -> AxumResponse {
+        let body = futures_util::stream::unfold(
+            (chunks.into_iter(), gate),
+            |(mut chunks, gate)| async move {
+                gate.acquire()
+                    .await
+                    .expect("test gate must remain open")
+                    .forget();
+                let chunk = chunks.next()?;
+                Some((
+                    Ok::<_, std::convert::Infallible>(chunk.to_string()),
+                    (chunks, gate),
+                ))
+            },
+        );
+        AxumResponse::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::from_stream(body))
+            .unwrap()
+    }
+
     fn messages() -> Vec<Message> {
         vec![
             Message {
@@ -3003,6 +3105,144 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(response.content, "ab");
+    }
+
+    #[tokio::test]
+    async fn streaming_distinguishes_first_byte_timeout_from_provider_outage() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let route_gate = Arc::clone(&gate);
+        let app = Router::new().route(
+            "/chat/completions",
+            post(move || {
+                let gate = Arc::clone(&route_gate);
+                async move {
+                    gated_first_sse(
+                        vec![concat!(
+                            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                            "data: [DONE]\n\n"
+                        )],
+                        gate,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiChat,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "test-model".to_string(),
+            None,
+            &LlmConfig {
+                max_retries: 0,
+                first_byte_timeout_secs: 1,
+                stream_idle_timeout_secs: 5,
+                ..LlmConfig::default()
+            },
+        )
+        .unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let error = client
+            .create_completion_measured_stream(
+                vec![Message {
+                    role: "user".to_string(),
+                    content: "large prompt".to_string(),
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }],
+                Vec::new(),
+                None,
+                tx,
+            )
+            .await
+            .unwrap_err();
+        let failure = error.downcast_ref::<ModelFailure>().unwrap();
+        assert_eq!(failure.kind, ModelFailureKind::FirstByteTimeout);
+        assert!(failure.kind.is_request_scoped_latency());
+    }
+
+    #[tokio::test]
+    async fn streaming_reports_stall_only_after_forwarding_received_output() {
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let route_gate = Arc::clone(&gate);
+        let app = Router::new().route(
+            "/chat/completions",
+            post(move || {
+                let gate = Arc::clone(&route_gate);
+                async move {
+                    gated_sse(
+                        vec![
+                            "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+                            concat!(
+                                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                                "data: [DONE]\n\n"
+                            ),
+                        ],
+                        gate,
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiChat,
+                base_url: format!("http://{address}"),
+                ..ProviderConfig::default()
+            },
+            "test-model".to_string(),
+            None,
+            &LlmConfig {
+                max_retries: 0,
+                first_byte_timeout_secs: 5,
+                stream_idle_timeout_secs: 1,
+                ..LlmConfig::default()
+            },
+        )
+        .unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let request = tokio::spawn(async move {
+            client
+                .create_completion_measured_stream(
+                    vec![Message {
+                        role: "user".to_string(),
+                        content: "hello".to_string(),
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: None,
+                    }],
+                    Vec::new(),
+                    None,
+                    tx,
+                )
+                .await
+        });
+        let partial = loop {
+            match tokio::time::timeout(Duration::from_secs(1), rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                ModelStreamEvent::TextDelta { text } => break text,
+                _ => continue,
+            }
+        };
+        assert_eq!(partial, "partial");
+        let error = request.await.unwrap().unwrap_err();
+        let failure = error.downcast_ref::<ModelFailure>().unwrap();
+        assert_eq!(failure.kind, ModelFailureKind::StreamStalled);
+        assert!(failure.kind.is_request_scoped_latency());
     }
 
     #[tokio::test]

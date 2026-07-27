@@ -1004,6 +1004,7 @@ struct ActivationRoute {
 #[derive(Debug, Default)]
 struct ModelReasoningSummaryAccumulator {
     text: String,
+    public_text: String,
     complete: bool,
     persist_started: bool,
     usage: ModelUsage,
@@ -1015,6 +1016,7 @@ struct ModelReasoningSummaryAccumulator {
 struct ModelCompletionError {
     source: DynError,
     reasoning_summary: String,
+    partial_text: String,
     origin: ModelCompletionErrorOrigin,
 }
 
@@ -1027,8 +1029,8 @@ enum ModelCompletionErrorOrigin {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderCircuitPhase {
+    Confirming,
     Open,
-    HalfOpen,
 }
 
 #[derive(Debug)]
@@ -1037,78 +1039,10 @@ struct ProviderCircuitState {
     consecutive_failures: u32,
     generation: u64,
     retry_at: tokio::time::Instant,
-    /// Monotonically increasing identity for half-open probes.  A generation
-    /// alone is insufficient because a cancelled probe and its replacement
-    /// both belong to the same outage generation.
-    next_probe_id: u64,
-    /// Exact owner of the current half-open probe.  The token lets a stale
-    /// dropped Future prove that it no longer owns the probe before clearing
-    /// anything acquired by a replacement Activation.
-    active_probe_id: Option<u64>,
+    /// Dedicated small health monitor ownership. Application requests never
+    /// acquire this flag and therefore never become recovery probes.
+    health_probe_in_flight: bool,
     waiting_contexts: HashSet<String>,
-}
-
-/// Cancellation-safe ownership of one Provider half-open recovery probe.
-///
-/// Model requests are routinely cancelled by Objective pause/delete,
-/// Activation fencing and Runtime shutdown.  Normal success/failure paths
-/// settle the circuit explicitly, but a dropped request never reaches those
-/// branches.  Releasing from `Drop` prevents a process-local phantom owner
-/// from blocking every later Activation indefinitely.
-struct ProviderCircuitProbeLease {
-    resource: String,
-    circuit: Arc<std::sync::Mutex<ProviderCircuitState>>,
-    bus: Arc<InMemoryEventBus>,
-    probe_id: u64,
-}
-
-impl Drop for ProviderCircuitProbeLease {
-    fn drop(&mut self) {
-        let (generation, contexts) = {
-            let mut state = self
-                .circuit
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.phase != ProviderCircuitPhase::HalfOpen
-                || state.active_probe_id != Some(self.probe_id)
-            {
-                return;
-            }
-            state.active_probe_id = None;
-            (
-                state.generation,
-                state.waiting_contexts.iter().cloned().collect::<Vec<_>>(),
-            )
-        };
-
-        tracing::warn!(
-            provider_resource = %self.resource,
-            generation,
-            probe_id = self.probe_id,
-            "Provider 半开恢复探针被取消；所有权已归还"
-        );
-
-        // Releasing ownership is synchronous and therefore guaranteed even
-        // if no executor remains.  While Runtime is alive, also wake durable
-        // Objective waiters so one of them can acquire the replacement probe.
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
-        };
-        let bus = Arc::clone(&self.bus);
-        let resource = self.resource.clone();
-        let probe_id = self.probe_id;
-        runtime.spawn(async move {
-            publish_provider_probe_available(
-                &bus,
-                &resource,
-                generation,
-                Some(probe_id),
-                "probe_cancelled",
-                contexts,
-            )
-            .await;
-        });
-    }
 }
 
 async fn publish_provider_probe_available(
@@ -1119,6 +1053,11 @@ async fn publish_provider_probe_available(
     reason: &str,
     contexts: Vec<String>,
 ) {
+    let recovery_phase = match reason {
+        "health_probe_succeeded" => "closed",
+        "request_retry_elapsed" => "request_retry",
+        _ => "half_open",
+    };
     for context_id in contexts {
         let event = Event::new(
             format!(
@@ -1133,7 +1072,7 @@ async fn publish_provider_probe_available(
             [
                 ("context_id".to_string(), json!(context_id)),
                 ("resource".to_string(), json!(resource)),
-                ("recovery_phase".to_string(), json!("half_open")),
+                ("recovery_phase".to_string(), json!(recovery_phase)),
                 ("recovery_reason".to_string(), json!(reason)),
                 ("generation".to_string(), json!(generation)),
                 ("replaced_probe_id".to_string(), json!(replaced_probe_id)),
@@ -1158,6 +1097,7 @@ impl ModelCompletionError {
         Self {
             source,
             reasoning_summary: String::new(),
+            partial_text: String::new(),
             origin: ModelCompletionErrorOrigin::Provider,
         }
     }
@@ -1166,6 +1106,7 @@ impl ModelCompletionError {
         Self {
             source,
             reasoning_summary: String::new(),
+            partial_text: String::new(),
             origin: ModelCompletionErrorOrigin::RuntimePersistence,
         }
     }
@@ -1174,6 +1115,7 @@ impl ModelCompletionError {
         Self {
             source,
             reasoning_summary: String::new(),
+            partial_text: String::new(),
             origin: ModelCompletionErrorOrigin::RuntimeInternal,
         }
     }
@@ -1183,9 +1125,11 @@ impl ModelCompletionError {
         accumulator: &Arc<Mutex<ModelReasoningSummaryAccumulator>>,
         origin: ModelCompletionErrorOrigin,
     ) -> Self {
+        let accumulator = accumulator.lock().await;
         Self {
             source,
-            reasoning_summary: accumulator.lock().await.text.clone(),
+            reasoning_summary: accumulator.text.clone(),
+            partial_text: accumulator.public_text.clone(),
             origin,
         }
     }
@@ -1872,6 +1816,10 @@ fn reasoning_continuation_prompt(summaries: &[String]) -> String {
     )
 }
 
+fn interrupted_text_continuation_prompt() -> &'static str {
+    "上一条 assistant 正文在 Provider 流中断时只传输了一部分。该部分已由 Runtime 保留并作为紧邻的 assistant 消息提供。请从断点继续完成同一份正文，不要重新开头、不要复述已给出的内容；完成后返回剩余正文。"
+}
+
 impl Orchestrator {
     pub fn activation_admission_snapshot(
         &self,
@@ -1894,28 +1842,25 @@ impl Orchestrator {
         self.context_engine.capacity_metrics()
     }
 
-    async fn admit_provider_circuit(
-        &self,
-        context_id: &str,
-    ) -> Result<Option<ProviderCircuitProbeLease>, ModelFailure> {
+    async fn admit_provider_circuit(&self, context_id: &str) -> Result<(), ModelFailure> {
         let resource = self.client.provider_resource_key();
         let Some(circuit) = self
             .provider_circuits
             .get(&resource)
             .map(|entry| Arc::clone(entry.value()))
         else {
-            return Ok(None);
+            return Ok(());
         };
         let mut state = circuit
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.waiting_contexts.insert(context_id.to_string());
         let now = tokio::time::Instant::now();
-        if state.phase == ProviderCircuitPhase::Open && now >= state.retry_at {
-            state.phase = ProviderCircuitPhase::HalfOpen;
-            state.active_probe_id = None;
-        }
         match state.phase {
+            // A business request reported a Provider-scoped error, but the
+            // independent small probes have not confirmed an outage. Keep
+            // unrelated Sessions available during that confirmation window.
+            ProviderCircuitPhase::Confirming => Ok(()),
             ProviderCircuitPhase::Open => {
                 let retry_after = state
                     .retry_at
@@ -1928,25 +1873,6 @@ impl Orchestrator {
                 )
                 .with_retry_after(Some(retry_after)))
             }
-            ProviderCircuitPhase::HalfOpen if state.active_probe_id.is_some() => {
-                Err(ModelFailure::new(
-                    ModelFailureKind::ServerUnavailable,
-                    "Provider circuit half-open; another Activation owns the recovery probe",
-                )
-                .with_retry_after(Some(1)))
-            }
-            ProviderCircuitPhase::HalfOpen => {
-                state.next_probe_id = state.next_probe_id.saturating_add(1);
-                let probe_id = state.next_probe_id;
-                state.active_probe_id = Some(probe_id);
-                drop(state);
-                Ok(Some(ProviderCircuitProbeLease {
-                    resource,
-                    circuit,
-                    bus: Arc::clone(&self.bus),
-                    probe_id,
-                }))
-            }
         }
     }
 
@@ -1955,67 +1881,144 @@ impl Orchestrator {
             return;
         }
         let resource = self.client.provider_resource_key();
+        if failure.kind.is_request_scoped_latency() {
+            // A large request with a slow first byte, or one stalled stream,
+            // is request-local evidence. Wake only its owning Context after a
+            // short delay; never poison the endpoint+model shared circuit.
+            let delay =
+                std::time::Duration::from_secs(failure.retry_after_secs.unwrap_or(5).clamp(1, 300));
+            let bus = Arc::clone(&self.bus);
+            let context_id = context_id.to_string();
+            tokio::spawn(async move {
+                tokio::time::sleep(delay).await;
+                publish_provider_probe_available(
+                    &bus,
+                    &resource,
+                    0,
+                    None,
+                    "request_retry_elapsed",
+                    vec![context_id],
+                )
+                .await;
+            });
+            return;
+        }
+
         let circuit = self
             .provider_circuits
             .entry(resource.clone())
             .or_insert_with(|| {
                 Arc::new(std::sync::Mutex::new(ProviderCircuitState {
-                    phase: ProviderCircuitPhase::Open,
+                    phase: ProviderCircuitPhase::Confirming,
                     consecutive_failures: 0,
-                    generation: 0,
+                    generation: 1,
                     retry_at: tokio::time::Instant::now(),
-                    next_probe_id: 0,
-                    active_probe_id: None,
+                    health_probe_in_flight: false,
                     waiting_contexts: HashSet::new(),
                 }))
             })
             .clone();
-        let (generation, delay) = {
+        let (generation, should_start_probe, initial_delay) = {
             let mut state = circuit
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-            state.generation = state.generation.saturating_add(1);
-            state.phase = ProviderCircuitPhase::Open;
-            state.active_probe_id = None;
             state.waiting_contexts.insert(context_id.to_string());
-            let exponent = state.consecutive_failures.saturating_sub(1).min(6);
-            let calculated = 5_u64.saturating_mul(1_u64 << exponent).min(300);
-            let delay_secs = calculated.max(failure.retry_after_secs.unwrap_or_default());
-            let delay = std::time::Duration::from_secs(delay_secs.max(1));
-            state.retry_at = tokio::time::Instant::now() + delay;
-            (state.generation, delay)
+            let should_start_probe = !state.health_probe_in_flight;
+            if should_start_probe {
+                state.health_probe_in_flight = true;
+            }
+            (
+                state.generation,
+                should_start_probe,
+                std::time::Duration::from_secs(failure.retry_after_secs.unwrap_or(5).clamp(1, 300)),
+            )
         };
+        if !should_start_probe {
+            return;
+        }
         tracing::warn!(
             provider_resource = %resource,
             failure_kind = failure.kind.as_str(),
-            delay_secs = delay.as_secs(),
             generation,
-            "Provider 共享熔断已打开"
+            "Provider 故障待独立健康探针确认；共享熔断尚未打开"
         );
         let bus = Arc::clone(&self.bus);
+        let client = Arc::clone(&self.client);
         tokio::spawn(async move {
-            tokio::time::sleep(delay).await;
-            let contexts = {
-                let mut state = circuit
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if state.generation != generation || state.phase != ProviderCircuitPhase::Open {
-                    return;
+            const FAILURE_THRESHOLD: u32 = 3;
+            tokio::time::sleep(initial_delay).await;
+            let mut independent_failures = 0u32;
+            loop {
+                {
+                    let state = circuit
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if state.generation != generation || !state.health_probe_in_flight {
+                        return;
+                    }
                 }
-                state.phase = ProviderCircuitPhase::HalfOpen;
-                state.active_probe_id = None;
-                state.waiting_contexts.iter().cloned().collect::<Vec<_>>()
-            };
-            publish_provider_probe_available(
-                &bus,
-                &resource,
-                generation,
-                None,
-                "backoff_elapsed",
-                contexts,
-            )
-            .await;
+                match client.probe_health().await {
+                    Ok(()) => {
+                        let contexts = {
+                            let mut state = circuit
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            if state.generation != generation {
+                                return;
+                            }
+                            state.phase = ProviderCircuitPhase::Confirming;
+                            state.consecutive_failures = 0;
+                            state.health_probe_in_flight = false;
+                            state.waiting_contexts.drain().collect::<Vec<_>>()
+                        };
+                        tracing::info!(provider_resource = %resource, generation, "独立小型健康探针成功；Provider 共享熔断保持/恢复关闭");
+                        publish_provider_probe_available(
+                            &bus,
+                            &resource,
+                            generation,
+                            None,
+                            "health_probe_succeeded",
+                            contexts,
+                        )
+                        .await;
+                        return;
+                    }
+                    Err(error) => {
+                        independent_failures = independent_failures.saturating_add(1);
+                        tracing::warn!(provider_resource = %resource, generation, independent_failures, error = %error, "Provider 独立小型健康探针失败");
+                    }
+                }
+
+                if independent_failures < FAILURE_THRESHOLD {
+                    tokio::time::sleep(std::time::Duration::from_secs(
+                        1_u64 << independent_failures.min(5),
+                    ))
+                    .await;
+                    continue;
+                }
+
+                let delay = {
+                    let mut state = circuit
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if state.generation != generation {
+                        return;
+                    }
+                    state.phase = ProviderCircuitPhase::Open;
+                    state.consecutive_failures = state
+                        .consecutive_failures
+                        .saturating_add(independent_failures);
+                    let exponent = state.consecutive_failures.saturating_sub(1).min(6);
+                    let delay = std::time::Duration::from_secs(
+                        5_u64.saturating_mul(1_u64 << exponent).min(300),
+                    );
+                    state.retry_at = tokio::time::Instant::now() + delay;
+                    delay
+                };
+                tracing::warn!(provider_resource = %resource, generation, delay_secs = delay.as_secs(), probe_failures = independent_failures, "多个独立小型健康探针失败；Provider 共享熔断已打开");
+                tokio::time::sleep(delay).await;
+                independent_failures = 0;
+            }
         });
     }
 
@@ -2028,10 +2031,8 @@ impl Orchestrator {
             let mut state = circuit
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            // Settle the exact probe before any async publication.  Its RAII
-            // lease may be dropped at any later await without producing a
-            // false cancellation wake-up.
-            state.active_probe_id = None;
+            state.health_probe_in_flight = false;
+            state.generation = state.generation.saturating_add(1);
             state.waiting_contexts.iter().cloned().collect::<Vec<_>>()
         };
         tracing::info!(provider_resource = %resource, "Provider 恢复探测成功；共享熔断已关闭");
@@ -4794,11 +4795,7 @@ impl Orchestrator {
         let stream_context_id = self
             .context_id_for_session(session_id)
             .map_err(ModelCompletionError::internal)?;
-        // Keep the half-open probe lease alive across queueing, streaming and
-        // terminal circuit settlement.  If this Future is cancelled at any
-        // boundary, Drop immediately returns ownership and wakes waiters.
-        let _provider_probe_lease = self
-            .admit_provider_circuit(&stream_context_id)
+        self.admit_provider_circuit(&stream_context_id)
             .await
             .map_err(|failure| ModelCompletionError::provider(Box::new(failure) as DynError))?;
         let queue_timeout = std::time::Duration::from_secs(
@@ -4865,6 +4862,11 @@ impl Orchestrator {
                     crate::llm::ModelStreamEvent::TextDelta { text } => {
                         text_delta_count = text_delta_count.saturating_add(1);
                         text_chars = text_chars.saturating_add(text.chars().count());
+                        forward_reasoning_summary
+                            .lock()
+                            .await
+                            .public_text
+                            .push_str(text);
                         first_text_delta_ms.get_or_insert_with(|| {
                             u64::try_from(stream_started_at.elapsed().as_millis())
                                 .unwrap_or(u64::MAX)
@@ -4989,7 +4991,7 @@ impl Orchestrator {
                     Ok(result) => result,
                     Err(_) => {
                         let failure = ModelFailure::new(
-                            ModelFailureKind::StreamIdleTimeout,
+                            ModelFailureKind::HardDeadlineExceeded,
                             format!("model hard deadline exceeded after {seconds}s"),
                         );
                         stream_forwarder.abort();
@@ -5072,7 +5074,7 @@ impl Orchestrator {
                     Ok(Err(error)) => Err(error.into()),
                     Err(_) => {
                         let failure = ModelFailure::new(
-                            ModelFailureKind::StreamIdleTimeout,
+                            ModelFailureKind::HardDeadlineExceeded,
                             format!("model hard deadline exceeded after {seconds}s"),
                         );
                         stream_forwarder.abort();
@@ -5175,6 +5177,16 @@ impl Orchestrator {
                     && error.to_string().contains(EMPTY_RESPONSE_ERROR) =>
             {
                 self.record_provider_success().await;
+            }
+            Err(error)
+                if error.origin == ModelCompletionErrorOrigin::Provider
+                    && error.failure().kind.is_request_scoped_latency()
+                    && (!error.reasoning_summary.trim().is_empty()
+                        || !error.partial_text.trim().is_empty()) =>
+            {
+                // The caller can continue from durable reasoning or the
+                // already received public-text prefix. Do not schedule a
+                // competing Objective wake-up for the same Activation.
             }
             Err(error) if error.origin == ModelCompletionErrorOrigin::Provider => {
                 // A real transport/provider failure may also have emitted a
@@ -6166,6 +6178,7 @@ impl Orchestrator {
         let mut stalled_reasoning_continuations = 0usize;
         let mut previous_reasoning_summary: Option<String> = None;
         let mut reasoning_history = Vec::new();
+        let mut interrupted_public_text = String::new();
         let (response, terminal_decision, terminal_model_attempt_id) = loop {
             let request_index = model_request_index;
             model_request_index = model_request_index.saturating_add(1);
@@ -6202,7 +6215,11 @@ impl Orchestrator {
                 )
                 .await;
             let response = match completion {
-                Ok(response) => {
+                Ok(mut response) => {
+                    if !interrupted_public_text.is_empty() {
+                        response.content = format!("{interrupted_public_text}{}", response.content);
+                        interrupted_public_text.clear();
+                    }
                     self.record_model_attempt_terminal_state(
                         session_id,
                         &model_attempt_id,
@@ -6377,6 +6394,7 @@ impl Orchestrator {
                     stalled_reasoning_continuations = 0;
                     previous_reasoning_summary = None;
                     reasoning_history.clear();
+                    interrupted_public_text.clear();
                     tracing::warn!(
                         context_id = %context_id,
                         session_id,
@@ -6388,7 +6406,41 @@ impl Orchestrator {
                     );
                     continue;
                 }
-                Err(error) if !error.reasoning_summary.trim().is_empty() => {
+                Err(error)
+                    if error.failure().kind.is_request_scoped_latency()
+                        && !error.partial_text.is_empty() =>
+                {
+                    let provider_error = error.to_string();
+                    self.record_model_attempt_terminal_state(
+                        session_id,
+                        &model_attempt_id,
+                        "continued",
+                        Some(&provider_error),
+                    )
+                    .await?;
+                    interrupted_public_text.push_str(&error.partial_text);
+                    protocol_messages = base_protocol_messages.clone();
+                    protocol_messages.push(Message {
+                        role: "assistant".to_string(),
+                        content: interrupted_public_text.clone(),
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: None,
+                    });
+                    protocol_messages.push(Message {
+                        role: "user".to_string(),
+                        content: interrupted_text_continuation_prompt().to_string(),
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: None,
+                    });
+                    continue;
+                }
+                Err(error)
+                    if !error.reasoning_summary.trim().is_empty()
+                        && (error.failure().kind.is_request_scoped_latency()
+                            || error.to_string().contains(EMPTY_RESPONSE_ERROR)) =>
+                {
                     let provider_error = error.to_string();
                     self.record_model_attempt_terminal_state(
                         session_id,
@@ -12995,8 +13047,7 @@ mod tests {
         should_force_final_for_maintenance, tool_call_activity_preview, DialogueThreadGate,
         DialogueThreadLease, DurableEventWriter, DurableEventWriterMetrics, DynError,
         EvaluationContextOverlay, ModelCompletionError, ModelCompletionErrorOrigin,
-        ModelReasoningSummaryAccumulator, NoReplyMode, ProviderCircuitPhase,
-        ProviderCircuitProbeLease, ProviderCircuitState, ReadTurnGuard, TerminalDecision,
+        ModelReasoningSummaryAccumulator, NoReplyMode, ReadTurnGuard, TerminalDecision,
         AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
@@ -13053,93 +13104,6 @@ mod tests {
 
         assert!(gate.owns("turn-a").await);
         assert!(gate.release("turn-a"));
-    }
-
-    #[tokio::test]
-    async fn dropped_provider_probe_lease_releases_owner_and_wakes_waiters() {
-        let bus = Arc::new(InMemoryEventBus::new());
-        let wake_count = Arc::new(AtomicUsize::new(0));
-        let wake_notify = Arc::new(tokio::sync::Notify::new());
-        let observed_count = Arc::clone(&wake_count);
-        let observed_notify = Arc::clone(&wake_notify);
-        bus.subscribe(
-            "runtime/resource_available".to_string(),
-            Arc::new(move |event| {
-                let observed_count = Arc::clone(&observed_count);
-                let observed_notify = Arc::clone(&observed_notify);
-                Box::pin(async move {
-                    assert_eq!(
-                        event
-                            .payload
-                            .get("recovery_reason")
-                            .and_then(serde_json::Value::as_str),
-                        Some("probe_cancelled")
-                    );
-                    observed_count.fetch_add(1, Ordering::SeqCst);
-                    observed_notify.notify_one();
-                    Ok(())
-                })
-            }),
-        );
-        let circuit = Arc::new(std::sync::Mutex::new(ProviderCircuitState {
-            phase: ProviderCircuitPhase::HalfOpen,
-            consecutive_failures: 1,
-            generation: 7,
-            retry_at: tokio::time::Instant::now(),
-            next_probe_id: 41,
-            active_probe_id: Some(41),
-            waiting_contexts: HashSet::from(["context-a".to_string()]),
-        }));
-
-        drop(ProviderCircuitProbeLease {
-            resource: "provider-a".to_string(),
-            circuit: Arc::clone(&circuit),
-            bus,
-            probe_id: 41,
-        });
-
-        assert_eq!(
-            circuit
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .active_probe_id,
-            None,
-            "cancellation must synchronously return half-open ownership"
-        );
-        tokio::time::timeout(std::time::Duration::from_secs(1), wake_notify.notified())
-            .await
-            .expect("cancelled probe must arrange a replacement recovery wake-up");
-        assert_eq!(wake_count.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn stale_provider_probe_lease_cannot_release_replacement_owner() {
-        let bus = Arc::new(InMemoryEventBus::new());
-        let circuit = Arc::new(std::sync::Mutex::new(ProviderCircuitState {
-            phase: ProviderCircuitPhase::HalfOpen,
-            consecutive_failures: 1,
-            generation: 7,
-            retry_at: tokio::time::Instant::now(),
-            next_probe_id: 42,
-            active_probe_id: Some(42),
-            waiting_contexts: HashSet::from(["context-a".to_string()]),
-        }));
-
-        drop(ProviderCircuitProbeLease {
-            resource: "provider-a".to_string(),
-            circuit: Arc::clone(&circuit),
-            bus,
-            probe_id: 41,
-        });
-
-        assert_eq!(
-            circuit
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .active_probe_id,
-            Some(42),
-            "a stale cancelled Future must not clear a newer probe token"
-        );
     }
 
     #[test]

@@ -514,6 +514,10 @@ fn mark_environment_config_sources(resolved: &mut config::ResolvedConfig) {
             "MORPHZ_LLM_STREAM_IDLE_TIMEOUT_SECS",
             "llm.stream_idle_timeout_secs",
         ),
+        (
+            "MORPHZ_LLM_FIRST_BYTE_TIMEOUT_SECS",
+            "llm.first_byte_timeout_secs",
+        ),
         ("MORPHZ_LLM_MAX_OUTPUT_TOKENS", "llm.max_output_tokens"),
         ("MORPHZ_LLM_REASONING_EFFORT", "llm.reasoning_effort"),
         ("MORPHZ_LANGUAGE", "ui.language"),
