@@ -7022,6 +7022,10 @@ fn wake_for_event(event: &Event) -> WakeSignal {
         .map(ToOwned::to_owned);
     let cause = if event.event_type == TYPE_USER_MESSAGE {
         "user-message"
+    } else if event.topic == "chat/dialogue_retry" {
+        // This is the same logical DialogueTurn with a new fenced generation,
+        // not a new user utterance or an unrelated infer program.
+        "dialogue-retry"
     } else if event.event_type == TYPE_INFER_REQUEST {
         // The Agent has to be able to tell that its own half-evaluated program
         // is what is waiting, not a person.
@@ -10259,6 +10263,19 @@ mod tests {
         let inference = wake_for(&[user.clone(), infer_request]);
         assert_eq!(inference.cause, "infer-request");
         assert!(inference.visible_in_inbox);
+
+        let dialogue_retry = Event::new(
+            "retry:1".to_string(),
+            "Runtime-DialogueRetry".to_string(),
+            crate::event::TYPE_INFER_REQUEST.to_string(),
+            "chat/dialogue_retry".to_string(),
+            vec![("root_turn_id".to_string(), json!("user:1"))]
+                .into_iter()
+                .collect(),
+        );
+        let retry_wake = wake_for(&[user.clone(), dialogue_retry]);
+        assert_eq!(retry_wake.cause, "dialogue-retry");
+        assert!(retry_wake.visible_in_inbox);
 
         let policy = Event::new(
             "output:context-policy".to_string(),

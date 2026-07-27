@@ -312,6 +312,12 @@
     "threadToolChain": "工具调用链",
     "threadToolChainEmpty": "线程已经建立，尚未产生工具调用。",
     "threadToolChainHint": "点击打开完整因果链",
+    "retryTurn": {
+      "title": "本轮模型求值失败",
+      "description": "保留原消息与因果身份，在同一对话轮次中启动新一代求值。",
+      "action": "重新求值",
+      "retrying": "正在重启"
+    },
     "lineage": {
       "title": "因果归属",
       "thread": "线程",
@@ -641,7 +647,7 @@
       "persistingEvents": "等待事件持久化",
       "eventWriterQueue": "{{count}} 个事件等待持久提交 · 累计争用重试 {{retries}} 次",
       "delegating": "正在委派",
-      "summary": "{{executing}} 执行 · {{waiting}} 等待"
+      "summary": "{{dialogue}} 对话 · {{executing}} 执行 · {{waiting}} 等待"
     },
     "shortcuts": {
       "send": "Enter 发送",

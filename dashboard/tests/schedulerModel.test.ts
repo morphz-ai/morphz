@@ -9,12 +9,14 @@ import {
   currentSchedulerSchedules,
   pendingHumanApprovals,
   schedulerApprovals,
+  schedulerActivityCounts,
   schedulerApprovalAnomalies,
   schedulerAttentionJobs,
   schedulerAttentionCount,
   schedulerJobs,
   schedulerSchedules,
   threadCarriesExecution,
+  retryableDialogueThread,
 } from '../src/scheduler/model.ts'
 import type { SchedulerSnapshot } from '../src/scheduler/types.ts'
 
@@ -181,6 +183,15 @@ test('open lifecycle does not make an idle Thread physically active', () => {
   assert.deepEqual(activeSchedulerThreads(snapshot), [])
 })
 
+test('composer activity distinguishes dialogue evaluation from physical execution', () => {
+  const snapshot = fixture()
+  snapshot.threads[0].thread.kind = 'dialogue_turn'
+  snapshot.summary.active_jobs = 0
+
+  assert.deepEqual(schedulerActivityCounts(snapshot), { dialogue: 1, execution: 0 })
+  assert.deepEqual(schedulerActivityCounts(null), { dialogue: 0, execution: 0 })
+})
+
 test('current Schedule projection excludes terminal causal history', () => {
   const snapshot = fixture()
   const completed = { ...snapshot.threads[0].schedules[0], id: 'schedule-completed', status: 'completed' as const }
@@ -245,4 +256,33 @@ test('dialogue Threads become visible task activity when they carry Execution Jo
   assert.equal(threadCarriesExecution(thread), true)
   thread.activations[0].jobs = []
   assert.equal(threadCarriesExecution(thread), false)
+})
+
+test('failure reply retries only the still-authoritative failed DialogueTurn generation', () => {
+  const failed = fixture().threads[0]
+  failed.thread.kind = 'dialogue_turn'
+  failed.thread.lifecycle = 'failed'
+  failed.thread.result_event_id = 'failure-reply-1'
+  assert.equal(
+    retryableDialogueThread([failed], 'failure-reply-1', {
+      runtime_failure_kind: 'network',
+      thread_id: failed.thread.id,
+      root_turn_id: failed.thread.root_turn_id,
+    })?.thread.id,
+    failed.thread.id,
+  )
+
+  failed.thread.lifecycle = 'open'
+  failed.thread.generation = 2
+  assert.equal(retryableDialogueThread([failed], 'failure-reply-1', {
+    runtime_failure_kind: 'network',
+    thread_id: failed.thread.id,
+  }), undefined)
+
+  failed.thread.lifecycle = 'failed'
+  failed.thread.result_event_id = 'newer-failure-reply'
+  assert.equal(retryableDialogueThread([failed], 'failure-reply-1', {
+    runtime_failure_kind: 'network',
+    thread_id: failed.thread.id,
+  }), undefined)
 })

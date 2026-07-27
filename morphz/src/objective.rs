@@ -3,9 +3,10 @@ use crate::harness::{ExactHarnessRef, HarnessRegistry};
 use crate::harness_package::{load_objective_harness_binding, objective_harness_binding_event};
 use crate::llm::ToolDefinition;
 use crate::memory::{
-    EventStore, ExecutionJobRecord, ExecutionJobStore, NewObjective, NewRuntimeTimer,
-    ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
-    QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
+    ActivationStore, EventStore, ExecutionJobRecord, ExecutionJobStore, NewObjective,
+    NewRuntimeTimer, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
+    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
+    ThreadActivationMutation, ThreadActivationStatus,
 };
 use crate::orchestrator::context::ContextEngine;
 use crate::timer::{TimerDisposition, TimerEngine};
@@ -876,6 +877,7 @@ pub struct ObjectiveSupervisor {
     store: Arc<dyn ObjectiveStore>,
     audit_store: Arc<dyn EventStore>,
     execution_jobs: Option<Arc<dyn ExecutionJobStore>>,
+    activation_store: Option<Arc<dyn ActivationStore>>,
     bus: Arc<InMemoryEventBus>,
     evaluations: Arc<ObjectiveEvaluationRegistry>,
     timers: Arc<TimerEngine>,
@@ -900,6 +902,7 @@ impl ObjectiveSupervisor {
             store,
             audit_store,
             execution_jobs: None,
+            activation_store: None,
             bus,
             evaluations,
             timers,
@@ -916,6 +919,14 @@ impl ObjectiveSupervisor {
     /// real Runtime-managed background ExecutionJob.
     pub fn with_execution_job_store(mut self, store: Arc<dyn ExecutionJobStore>) -> Self {
         self.execution_jobs = Some(store);
+        self
+    }
+
+    /// Attach the physical Activation authority. This lets an expired
+    /// Objective Evaluation durably cancel every process-local Activation
+    /// bound to its fencing token before a replacement Evaluation is claimed.
+    pub fn with_activation_store(mut self, store: Arc<dyn ActivationStore>) -> Self {
+        self.activation_store = Some(store);
         self
     }
 
@@ -1760,7 +1771,7 @@ impl ObjectiveSupervisor {
                 self.schedule_lease_expiry(&objective, expires_at).await?;
                 return Ok(());
             }
-            self.revoke_local_evaluation(&objective);
+            self.revoke_local_evaluation(&objective).await?;
         }
         self.schedule(objective.id).await
     }
@@ -2162,7 +2173,7 @@ impl ObjectiveSupervisor {
         // Revoke the exact expired Evaluation before making the Objective
         // schedulable again. Its Activation observes the tombstone and stops;
         // a new claim receives a different evaluation_id fencing token.
-        self.revoke_local_evaluation(&current);
+        self.revoke_local_evaluation(&current).await?;
         self.reconcile(current).await?;
         Ok(TimerDisposition::Complete)
     }
@@ -2229,12 +2240,107 @@ impl ObjectiveSupervisor {
         }
     }
 
-    fn revoke_local_evaluation(&self, objective: &ObjectiveRecord) {
+    async fn revoke_local_evaluation(&self, objective: &ObjectiveRecord) -> Result<(), DynError> {
         if let Some(evaluation_id) = objective.active_evaluation_id.as_deref() {
+            let mut activation_ids = self
+                .evaluations
+                .activation_ids_for_evaluation(&objective.id, evaluation_id)
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>();
             self.evaluations
                 .cancel_evaluation(&objective.id, evaluation_id);
+            if let Some(store) = self.activation_store.as_ref() {
+                // The registry is deliberately process-local, so it is empty
+                // after a Runtime restart. Recover the same exact fencing
+                // relation from each nonterminal Activation's immutable
+                // Trigger Event before claiming a replacement Evaluation.
+                // Event-id reads are indexed and this path runs only at an
+                // expired Objective lease boundary, not in the hot scheduler
+                // loop.
+                for activation in store
+                    .list_context_thread_activations(&objective.context_id, false)
+                    .await?
+                {
+                    if activation_ids.contains(&activation.id) {
+                        continue;
+                    }
+                    let routed = self
+                        .audit_store
+                        .query(QueryFilter {
+                            event_id: Some(activation.trigger_event_id.clone()),
+                            ..QueryFilter::default()
+                        })
+                        .await?
+                        .into_iter()
+                        .find(|event| event.id == activation.trigger_event_id)
+                        .is_some_and(|event| {
+                            event
+                                .payload
+                                .get("objective_id")
+                                .and_then(|value| value.as_str())
+                                == Some(objective.id.as_str())
+                                && event
+                                    .payload
+                                    .get("objective_evaluation_id")
+                                    .and_then(|value| value.as_str())
+                                    == Some(evaluation_id)
+                        });
+                    if routed {
+                        activation_ids.insert(activation.id);
+                    }
+                }
+                for activation_id in activation_ids {
+                    // The Orchestrator may observe the cancellation tombstone
+                    // and finish concurrently. CAS conflicts are therefore
+                    // reloaded; a terminal row is already the desired fence.
+                    let mut fenced = false;
+                    for _ in 0..5 {
+                        let Some(current) = store.get_thread_activation(&activation_id).await?
+                        else {
+                            fenced = true;
+                            break;
+                        };
+                        if current.status.is_terminal() {
+                            fenced = true;
+                            break;
+                        }
+                        match store
+                            .update_thread_activation(
+                                &current.id,
+                                current.revision,
+                                ThreadActivationStatus::Cancelled,
+                                None,
+                                None,
+                                current.context_snapshot_version,
+                            )
+                            .await?
+                        {
+                            ThreadActivationMutation::Updated(_)
+                            | ThreadActivationMutation::NotFound => {
+                                fenced = true;
+                                break;
+                            }
+                            ThreadActivationMutation::Conflict { current }
+                                if current.status.is_terminal() =>
+                            {
+                                fenced = true;
+                                break;
+                            }
+                            ThreadActivationMutation::Conflict { .. } => continue,
+                        }
+                    }
+                    if !fenced {
+                        return Err(format!(
+                            "Objective '{}' Evaluation '{}' 的旧 Activation '{}' 在 5 次 CAS 后仍未终结；拒绝创建替代 Evaluation",
+                            objective.id, evaluation_id, activation_id
+                        )
+                        .into());
+                    }
+                }
+            }
         }
         self.clear_local_binding(objective);
+        Ok(())
     }
 
     async fn publish_state_event(
@@ -2383,9 +2489,10 @@ mod tests {
     use super::*;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
-        ActivationStore as _, ExecutionJobStatus, ExecutionJobTerminal, ExecutionRetrySafety,
-        NewAgent, NewCognitiveContext, NewExecutionJob, NewSession, NewThread, NewThreadActivation,
-        SessionDirectoryStore as _, SessionMountKind, ThreadKind, ThreadStore as _, TimerStore,
+        ExecutionJobStatus, ExecutionJobTerminal, ExecutionRetrySafety, NewAgent,
+        NewCognitiveContext, NewExecutionJob, NewSession, NewThread, NewThreadActivation,
+        SessionDirectoryStore as _, SessionMountKind, ThreadActivationStatus, ThreadKind,
+        ThreadStore as _, TimerStore,
     };
     use tempfile::NamedTempFile;
 
@@ -2636,6 +2743,167 @@ mod tests {
             .status_reason
             .as_deref()
             .is_some_and(|reason| reason.contains("等待 Runtime 恢复资源")));
+    }
+
+    #[tokio::test]
+    async fn expired_objective_evaluation_cancels_old_activation_before_replacement() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "expired-evaluation-fence").await;
+        let old_evaluation_id = "evaluation-expired-evaluation-fence";
+        let claimed = match store
+            .claim_objective_evaluation(
+                &objective.id,
+                objective.revision,
+                old_evaluation_id,
+                Utc::now() - Duration::seconds(1),
+            )
+            .await
+            .unwrap()
+        {
+            ObjectiveMutation::Updated(objective) => objective,
+            mutation => panic!("unexpected claim: {mutation:?}"),
+        };
+
+        let root_turn_id = "root-expired-evaluation-fence";
+        let activation_id = "activation-expired-evaluation-fence";
+        let trigger_event_id = "trigger-expired-evaluation-fence";
+        store
+            .ensure_thread(NewThread {
+                id: "thread-expired-evaluation-fence".to_string(),
+                agent_id: claimed.agent_id.clone(),
+                context_id: claimed.context_id.clone(),
+                session_id: claimed.coordinator_session_id.clone(),
+                initiating_principal_id: claimed.initiating_principal_id.clone(),
+                root_turn_id: root_turn_id.to_string(),
+                kind: ThreadKind::Objective,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+            })
+            .await
+            .unwrap();
+        store
+            .append(Event::new(
+                trigger_event_id.to_string(),
+                "Runtime-ObjectiveSupervisor".to_string(),
+                TYPE_TOOL_OUTPUT.to_string(),
+                "chat/tool_output".to_string(),
+                [
+                    ("context_id".to_string(), json!(claimed.context_id)),
+                    (
+                        "session_id".to_string(),
+                        json!(claimed.coordinator_session_id),
+                    ),
+                    ("objective_id".to_string(), json!(claimed.id)),
+                    (
+                        "objective_evaluation_id".to_string(),
+                        json!(old_evaluation_id),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .await
+            .unwrap();
+        let activation = store
+            .ensure_thread_activation(NewThreadActivation {
+                id: activation_id.to_string(),
+                agent_id: claimed.agent_id.clone(),
+                context_id: claimed.context_id.clone(),
+                session_id: claimed.coordinator_session_id.clone(),
+                initiating_principal_id: claimed.initiating_principal_id.clone(),
+                trigger_event_id: trigger_event_id.to_string(),
+                trigger_sequence: 1,
+                trigger_kind: "chat/tool_output".to_string(),
+                parent_activation_id: None,
+                root_turn_id: root_turn_id.to_string(),
+            })
+            .await
+            .unwrap();
+        let activation = match store
+            .update_thread_activation(
+                &activation.id,
+                activation.revision,
+                ThreadActivationStatus::Running,
+                Some("worker-old"),
+                Some(Utc::now() + Duration::minutes(10)),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(activation) => activation,
+            mutation => panic!("unexpected activation claim: {mutation:?}"),
+        };
+
+        // Simulate a process restart: the process-local routing registry is
+        // empty, while the immutable Trigger Event still carries the exact
+        // Objective/Evaluation fencing route.
+        let evaluations = Arc::new(ObjectiveEvaluationRegistry::default());
+        let supervisor = Arc::new(
+            ObjectiveSupervisor::new(
+                Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::new(InMemoryEventBus::new()),
+                evaluations,
+                Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+                std::time::Duration::from_secs(600),
+            )
+            .with_activation_store(Arc::clone(&store) as Arc<dyn ActivationStore>),
+        );
+        // Drive the same path used by the live lease timer without starting a
+        // background dispatcher in the test process.
+        supervisor.started.store(true, Ordering::Release);
+        supervisor.reconcile(claimed.clone()).await.unwrap();
+
+        let old_activation = store
+            .get_thread_activation(&activation.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(old_activation.status, ThreadActivationStatus::Cancelled);
+        let stale_commit = store
+            .commit_activation_outcome(
+                &old_activation.id,
+                &Event::new(
+                    "stale-objective-outcome".to_string(),
+                    "Agent-Test".to_string(),
+                    "agent_call".to_string(),
+                    "runtime/thread_result".to_string(),
+                    [
+                        (
+                            "session_id".to_string(),
+                            json!(claimed.coordinator_session_id),
+                        ),
+                        ("root_turn_id".to_string(), json!(root_turn_id)),
+                        (
+                            "thread_id".to_string(),
+                            json!("thread-expired-evaluation-fence"),
+                        ),
+                        ("text".to_string(), json!("stale")),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            stale_commit,
+            crate::memory::ActivationOutcomeCommit::StaleActivation
+        );
+        let replacement = store.get_objective(&claimed.id).await.unwrap().unwrap();
+        assert_eq!(replacement.status, ObjectiveStatus::Active);
+        assert_ne!(
+            replacement.active_evaluation_id.as_deref(),
+            Some(old_evaluation_id)
+        );
+        assert!(replacement.active_evaluation_id.is_some());
     }
 
     #[tokio::test]

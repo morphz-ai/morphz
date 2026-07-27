@@ -14,6 +14,7 @@ use sqlx::{PgPool, Row};
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_context_status
            ON threads(context_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_session_delivery
@@ -62,6 +63,7 @@ pub(super) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
     Ok(ThreadRecord {
         id: row.get("id"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        generation: u64::try_from(row.get::<i64, _>("generation"))?,
         agent_id: row.get("agent_id"),
         context_id: row.get("context_id"),
         session_id: row.get("session_id"),

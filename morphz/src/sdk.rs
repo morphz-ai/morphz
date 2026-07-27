@@ -26,8 +26,9 @@ use crate::memory::{
 use crate::orchestrator::context::MindProjectionAudit;
 use crate::runtime::{
     AcknowledgeAttentionCommand, AttentionAcknowledgement, ContextOverview, ContextOverviewQuery,
-    LedgerQuery, LedgerQueryPage, MessageReceipt, ModelUsagePage, ModelUsageQuery, MorphzRuntime,
-    RuntimeEventStream, RuntimeStatus, SchedulerQuery, SchedulerSnapshot, ThreadDetail,
+    DialogueTurnRetryReceipt, LedgerQuery, LedgerQueryPage, MessageReceipt, ModelUsagePage,
+    ModelUsageQuery, MorphzRuntime, RuntimeEventStream, RuntimeStatus, SchedulerQuery,
+    SchedulerSnapshot, ThreadDetail,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -96,6 +97,18 @@ pub struct SendMessageCommand {
     /// let the model either answer normally or discover/select one lazily.
     #[serde(default)]
     pub harness: Option<crate::harness::ExactHarnessRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RetryDialogueTurnCommand {
+    pub session_id: String,
+    pub root_turn_id: String,
+    pub expected_thread_revision: u64,
+    pub expected_result_event_id: String,
+    /// Caller-generated idempotency key. Retrying the HTTP request with the
+    /// same key returns the same logical restart instead of advancing another
+    /// generation.
+    pub retry_request_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1524,6 +1537,26 @@ impl MorphzSdk {
             )
             .await
             .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))
+    }
+
+    pub async fn retry_dialogue_turn(
+        &self,
+        principal: &PrincipalAssertion,
+        command: RetryDialogueTurnCommand,
+    ) -> SdkResult<DialogueTurnRetryReceipt> {
+        self.authorize_session(&principal.principal_id, &command.session_id)
+            .await?;
+        self.runtime
+            .session(command.session_id)
+            .retry_dialogue_turn_as_principal(
+                command.root_turn_id,
+                principal.principal_id.clone(),
+                command.expected_thread_revision,
+                command.expected_result_event_id,
+                command.retry_request_id,
+            )
+            .await
+            .map_err(|error| SdkError::new(SdkErrorCode::Conflict, error.to_string()))
     }
 
     pub async fn session_events(

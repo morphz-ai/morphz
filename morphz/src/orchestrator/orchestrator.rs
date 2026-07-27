@@ -1131,7 +1131,10 @@ struct AdmittedThreadActivation {
 
 #[derive(Debug, Default)]
 struct DialogueThreadGate {
-    owner_root_turn_id: Mutex<Option<String>>,
+    // The critical section only reads or replaces one String and is never held
+    // across an await. A synchronous mutex lets a dropped Activation release
+    // ownership immediately instead of depending on another Tokio task.
+    owner_root_turn_id: std::sync::Mutex<Option<String>>,
     changed: Notify,
 }
 
@@ -1140,7 +1143,10 @@ impl DialogueThreadGate {
         loop {
             let changed = self.changed.notified();
             {
-                let mut owner = self.owner_root_turn_id.lock().await;
+                let mut owner = self
+                    .owner_root_turn_id
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 match owner.as_deref() {
                     None => {
                         *owner = Some(root_turn_id.to_string());
@@ -1155,12 +1161,19 @@ impl DialogueThreadGate {
     }
 
     async fn owns(&self, root_turn_id: &str) -> bool {
-        self.owner_root_turn_id.lock().await.as_deref() == Some(root_turn_id)
+        self.owner_root_turn_id
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_deref()
+            == Some(root_turn_id)
     }
 
-    async fn release(&self, root_turn_id: &str) -> bool {
+    fn release_now(&self, root_turn_id: &str) -> bool {
         let released = {
-            let mut owner = self.owner_root_turn_id.lock().await;
+            let mut owner = self
+                .owner_root_turn_id
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if owner.as_deref() == Some(root_turn_id) {
                 *owner = None;
                 true
@@ -1169,9 +1182,64 @@ impl DialogueThreadGate {
             }
         };
         if released {
-            self.changed.notify_waiters();
+            // Only one distinct root turn may enter next. `notify_one` also
+            // retains a permit when release races with a waiter between its
+            // ownership check and `.await`; `notify_waiters` would lose that
+            // wake-up when no `Notified` future has been polled yet.
+            self.changed.notify_one();
         }
         released
+    }
+
+    fn release(&self, root_turn_id: &str) -> bool {
+        self.release_now(root_turn_id)
+    }
+}
+
+/// Owns the process-local dialogue serialization gate for one root turn.
+///
+/// Dialogue evaluation has several fallible and cancellable boundaries before
+/// it reaches a terminal reply.  Keeping release calls only on successful
+/// branches leaves the Session permanently blocked when any of those
+/// boundaries returns early.  This lease releases on every dropped future,
+/// including model errors and `tokio::select!` cancellation.  The one explicit
+/// exception is a successful context-maintenance handoff: that continuation
+/// keeps ownership for the same root turn and calls `retain_for_continuation`.
+struct DialogueThreadLease {
+    gate: Arc<DialogueThreadGate>,
+    root_turn_id: String,
+    release_on_drop: bool,
+}
+
+impl DialogueThreadLease {
+    fn new(gate: Arc<DialogueThreadGate>, root_turn_id: impl Into<String>) -> Self {
+        Self {
+            gate,
+            root_turn_id: root_turn_id.into(),
+            release_on_drop: true,
+        }
+    }
+
+    fn release(&mut self) {
+        if !self.release_on_drop {
+            return;
+        }
+        self.gate.release(&self.root_turn_id);
+        self.release_on_drop = false;
+    }
+
+    fn retain_for_continuation(&mut self) {
+        self.release_on_drop = false;
+    }
+}
+
+impl Drop for DialogueThreadLease {
+    fn drop(&mut self) {
+        if !self.release_on_drop {
+            return;
+        }
+        self.release_on_drop = false;
+        self.gate.release_now(&self.root_turn_id);
     }
 }
 
@@ -2158,6 +2226,46 @@ impl Orchestrator {
                 });
             }
         }
+        let Some(thread) = session_store
+            .get_thread_by_root(&current.root_turn_id)
+            .await?
+        else {
+            return Err(format!(
+                "Activation '{}' 所属 root Thread '{}' 不存在",
+                current.id, current.root_turn_id
+            )
+            .into());
+        };
+        if thread.lifecycle.is_terminal() || thread.generation != current.generation {
+            // A restarted/cancelled logical Thread fences every physical
+            // Evaluation from an older generation.  Never resurrect it merely
+            // because its process-local lease expired.
+            match session_store
+                .update_thread_activation(
+                    &current.id,
+                    current.revision,
+                    ThreadActivationStatus::Cancelled,
+                    None,
+                    None,
+                    current.context_snapshot_version,
+                )
+                .await?
+            {
+                ThreadActivationMutation::Updated(cancelled) => {
+                    self.activation_admission.forget(&cancelled.id);
+                    tracing::info!(
+                        activation_id = %cancelled.id,
+                        activation_generation = cancelled.generation,
+                        thread_id = %thread.id,
+                        thread_generation = thread.generation,
+                        thread_lifecycle = thread.lifecycle.as_str(),
+                        "取消已被逻辑 Thread fencing 的过期 Activation"
+                    );
+                }
+                ThreadActivationMutation::Conflict { .. } | ThreadActivationMutation::NotFound => {}
+            }
+            return Ok(TimerDisposition::Complete);
+        }
         let Some(trigger) = self
             .store
             .query(QueryFilter {
@@ -2174,10 +2282,60 @@ impl Orchestrator {
             )
             .into());
         };
-        // Dispatch is idempotent at Thread Activation claim. The claimant CAS
-        // advances the revision and arms the next lease generation before any
-        // model work can be stranded again.
-        self.bus.dispatch_persisted(trigger).await?;
+        let mut trigger = trigger;
+        trigger
+            .payload
+            .insert("runtime_force_evaluation".to_string(), json!(true));
+        trigger.payload.insert(
+            "runtime_recovery_activation_id".to_string(),
+            json!(&current.id),
+        );
+        // The timer is the live-process crash detector.  Replaying the Event
+        // alone is insufficient: claim_thread_signal_batch intentionally
+        // reuses the existing running row, so no evaluator can acquire it.
+        // First CAS it back to queued, then restore the same durable row into
+        // admission and redispatch the immutable Trigger Event.
+        match session_store
+            .update_thread_activation(
+                &current.id,
+                current.revision,
+                ThreadActivationStatus::Queued,
+                None,
+                None,
+                None,
+            )
+            .await?
+        {
+            ThreadActivationMutation::Updated(queued) => {
+                self.activation_admission.forget(&queued.id);
+                match self
+                    .activation_admission
+                    .restore_queued(activation_admission_key(&queued, &trigger))?
+                {
+                    RestoreQueuedOutcome::Restored => {
+                        tracing::warn!(
+                            activation_id = %queued.id,
+                            thread_id = %thread.id,
+                            generation = queued.generation,
+                            "运行期回收 lease 已过期的僵尸 Activation"
+                        );
+                        self.bus.dispatch_persisted(trigger).await?;
+                    }
+                    RestoreQueuedOutcome::AlreadyTracked
+                    | RestoreQueuedOutcome::DeferredWindowFull => {
+                        // The durable queued row remains recoverable.  The
+                        // admission refill loop dispatches it once capacity is
+                        // available; do not fabricate a failure.
+                    }
+                }
+            }
+            ThreadActivationMutation::Conflict { current }
+                if current.status == ThreadActivationStatus::Running =>
+            {
+                self.arm_activation_lease(&current).await?;
+            }
+            ThreadActivationMutation::Conflict { .. } | ThreadActivationMutation::NotFound => {}
+        }
         Ok(TimerDisposition::Complete)
     }
 
@@ -3753,7 +3911,7 @@ impl Orchestrator {
             .unwrap_or_else(|| event.id.clone());
         let initial_thread_kind = if event.topic == "chat/thread_completion_ready" {
             ThreadKind::Delivery
-        } else if event.event_type == TYPE_USER_MESSAGE {
+        } else if is_dialogue_trigger(event) {
             ThreadKind::DialogueTurn
         } else {
             ThreadKind::Execution
@@ -3884,43 +4042,85 @@ impl Orchestrator {
             .context_engine
             .session_store()
             .ok_or("Thread Activation 需要持久化 SessionStore")?;
-        let Some(current) = session_store.get_thread_activation(&activation.id).await? else {
-            return Err(format!("Thread Activation '{}' 在结束时消失", activation.id).into());
-        };
-        if current.status.is_terminal() {
-            self.cancel_activation_lease(&current.id).await?;
-            return Ok(current);
-        }
-        let updated = match session_store
-            .update_thread_activation(
-                &current.id,
-                current.revision,
-                status,
-                None,
-                None,
-                current.context_snapshot_version,
-            )
-            .await?
-        {
-            ThreadActivationMutation::Updated(updated) => updated,
-            ThreadActivationMutation::Conflict { current } if current.status.is_terminal() => {
-                current
+        let mut last_error = None;
+        for retry in 0..5u64 {
+            let current = match session_store.get_thread_activation(&activation.id).await {
+                Ok(Some(current)) => current,
+                Ok(None) => {
+                    return Err(
+                        format!("Thread Activation '{}' 在结束时消失", activation.id).into(),
+                    );
+                }
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        25u64.saturating_mul(1 << retry),
+                    ))
+                    .await;
+                    continue;
+                }
+            };
+            if current.status.is_terminal() {
+                if let Err(error) = self.cancel_activation_lease(&current.id).await {
+                    tracing::warn!(activation_id = %current.id, %error, "Activation 已终止，但取消 lease timer 失败");
+                }
+                return Ok(current);
             }
-            ThreadActivationMutation::Conflict { current } => {
-                return Err(format!(
-                    "Thread Activation '{}' 终态提交冲突：当前 revision={} status={}",
-                    current.id,
+            match session_store
+                .update_thread_activation(
+                    &current.id,
                     current.revision,
-                    current.status.as_str()
+                    status,
+                    None,
+                    None,
+                    current.context_snapshot_version,
                 )
-                .into())
+                .await
+            {
+                Ok(ThreadActivationMutation::Updated(updated)) => {
+                    if let Err(error) = self.cancel_activation_lease(&updated.id).await {
+                        tracing::warn!(activation_id = %updated.id, %error, "Activation 已终止，但取消 lease timer 失败");
+                    }
+                    return Ok(updated);
+                }
+                Ok(ThreadActivationMutation::Conflict { current })
+                    if current.status.is_terminal() =>
+                {
+                    if let Err(error) = self.cancel_activation_lease(&current.id).await {
+                        tracing::warn!(activation_id = %current.id, %error, "Activation 已终止，但取消 lease timer 失败");
+                    }
+                    return Ok(current);
+                }
+                Ok(ThreadActivationMutation::Conflict { current }) => {
+                    // Lease heartbeats and recovery both advance revision.
+                    // Reload and retry the terminal CAS instead of stranding a
+                    // healthy completed evaluation as `running`.
+                    last_error = Some(format!(
+                        "revision={} status={}",
+                        current.revision,
+                        current.status.as_str()
+                    ));
+                }
+                Ok(ThreadActivationMutation::NotFound) => {
+                    return Err(
+                        format!("Thread Activation '{}' 在结束时消失", activation.id).into(),
+                    );
+                }
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                }
             }
-            ThreadActivationMutation::NotFound => {
-                return Err(format!("Thread Activation '{}' 在结束时消失", activation.id).into());
-            }
-        };
-        self.cancel_activation_lease(&updated.id).await?;
-        Ok(updated)
+            tokio::time::sleep(std::time::Duration::from_millis(
+                25u64.saturating_mul(1 << retry),
+            ))
+            .await;
+        }
+        Err(format!(
+            "Thread Activation '{}' 终态持久化重试耗尽：{}",
+            activation.id,
+            last_error.unwrap_or_else(|| "unknown persistence error".to_string())
+        )
+        .into())
     }
 
     async fn record_activation_context_snapshot(
@@ -5148,13 +5348,19 @@ impl Orchestrator {
                 .unwrap_or(false)
         });
         let dialogue_gate = self.dialogue_thread_gate(session_id);
-        let dialogue_bound =
-            if activation.trigger_kind == "chat/user_message" && !persisted_physical_plan {
-                dialogue_gate.acquire(&activation.root_turn_id).await;
-                true
-            } else {
-                dialogue_gate.owns(&activation.root_turn_id).await
-            };
+        let dialogue_bound = if matches!(
+            activation.trigger_kind.as_str(),
+            "chat/user_message" | "chat/dialogue_retry"
+        ) && !persisted_physical_plan
+        {
+            dialogue_gate.acquire(&activation.root_turn_id).await;
+            true
+        } else {
+            dialogue_gate.owns(&activation.root_turn_id).await
+        };
+        let mut dialogue_lease = dialogue_bound.then(|| {
+            DialogueThreadLease::new(Arc::clone(&dialogue_gate), activation.root_turn_id.clone())
+        });
         let thread_kind = if activation.trigger_kind == "chat/thread_completion_ready" {
             "delivery"
         } else if self
@@ -5237,8 +5443,12 @@ impl Orchestrator {
             .resume_persisted_activation(session_id, activation)
             .await?
         {
-            if dialogue_bound && persisted_terminal {
-                dialogue_gate.release(&activation.root_turn_id).await;
+            if let Some(lease) = dialogue_lease.as_mut() {
+                if persisted_terminal {
+                    lease.release();
+                } else {
+                    lease.retain_for_continuation();
+                }
             }
             return Ok(());
         }
@@ -6218,8 +6428,8 @@ impl Orchestrator {
                     decision.disposition(),
                 )
                 .await?;
-                if dialogue_bound {
-                    dialogue_gate.release(&activation.root_turn_id).await;
+                if let Some(lease) = dialogue_lease.as_mut() {
+                    lease.release();
                 }
                 return Ok(());
             }
@@ -6269,8 +6479,8 @@ impl Orchestrator {
                     .await
                 }
             };
-            if dialogue_bound {
-                dialogue_gate.release(&activation.root_turn_id).await;
+            if let Some(lease) = dialogue_lease.as_mut() {
+                lease.release();
             }
             return result;
         }
@@ -6286,8 +6496,10 @@ impl Orchestrator {
                 .tool_calls
                 .iter()
                 .all(|call| call.func_name == "context_tx");
-            if dialogue_bound && !context_maintenance_only {
-                dialogue_gate.release(&activation.root_turn_id).await;
+            if !context_maintenance_only {
+                if let Some(lease) = dialogue_lease.as_mut() {
+                    lease.release();
+                }
             }
             let result = self
                 .execute_tool_calls(
@@ -6306,9 +6518,6 @@ impl Orchestrator {
                     },
                 )
                 .await;
-            if result.is_err() && dialogue_bound && context_maintenance_only {
-                dialogue_gate.release(&activation.root_turn_id).await;
-            }
             let outcome = result?;
             if outcome.context_tx_succeeded {
                 if let Some(gate) = context_maintenance_gate.as_ref() {
@@ -6318,6 +6527,11 @@ impl Orchestrator {
                         activation_id = %activation.id,
                         "Context maintenance owner 已提交事务；等待者将从新 Projection 重新求值"
                     );
+                }
+            }
+            if context_maintenance_only {
+                if let Some(lease) = dialogue_lease.as_mut() {
+                    lease.retain_for_continuation();
                 }
             }
             return Ok(());
@@ -7145,42 +7359,126 @@ impl Orchestrator {
             .context_engine
             .session_store()
             .ok_or("Evaluation outcome 需要持久化 SessionStore")?;
-        match session_store
-            .commit_activation_outcome(&route.activation_id, event)
-            .await?
-        {
-            ActivationOutcomeCommit::Committed => {
-                self.bus.dispatch_persisted(event.clone()).await?;
-                self.revoke_thread_capability_leases(
-                    &route.thread_id,
-                    "owning Thread reached a terminal outcome",
-                )
-                .await;
-                if let Some(scheduler) = &self.thread_scheduler {
-                    if let Err(error) = scheduler.dependency_completed(&route.thread_id).await {
-                        // The terminal Thread and outcome are already
-                        // durable. Startup recovery re-arms every queued
-                        // schedule, so dependency notification failure must
-                        // not suppress the user-visible terminal outcome.
-                        tracing::error!(
-                            thread_id = %route.thread_id,
-                            %error,
-                            "Thread 已终止，但依赖 Schedule 即时唤醒失败；等待恢复路径重放"
-                        );
-                    }
+        let mut committed = None;
+        for retry in 0..5u64 {
+            match session_store
+                .commit_activation_outcome(&route.activation_id, event)
+                .await
+            {
+                Ok(commit) => {
+                    committed = Some(commit);
+                    break;
                 }
-                Ok(true)
+                Err(error) if retry < 4 => {
+                    tracing::warn!(
+                        activation_id = %route.activation_id,
+                        event_id = %event.id,
+                        %error,
+                        retry,
+                        "Evaluation outcome 持久化失败；安全地重试同一幂等提交"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        50u64.saturating_mul(1 << retry),
+                    ))
+                    .await;
+                }
+                Err(error) => return Err(error),
             }
-            ActivationOutcomeCommit::Existing { event_id } => {
+        }
+        let commit = committed.ok_or("Evaluation outcome 持久化没有产生结果")?;
+        let should_dispatch = match commit {
+            ActivationOutcomeCommit::Committed => true,
+            ActivationOutcomeCommit::Existing { ref event_id } if event_id == &event.id => {
+                // The process may have committed the immutable outcome and
+                // failed before dispatching it.  Redispatching that exact
+                // Event is safe and closes the durable/live handoff.
+                tracing::warn!(
+                    activation_id = %route.activation_id,
+                    event_id = %event.id,
+                    "恢复已持久化但尚未确认派发的 Evaluation outcome"
+                );
+                true
+            }
+            ActivationOutcomeCommit::Existing { ref event_id } => {
                 tracing::warn!(
                     activation_id = %route.activation_id,
                     duplicate_event_id = %event.id,
                     committed_event_id = %event_id,
                     "抑制同一 Thread Activation 的重复终态输出"
                 );
-                Ok(false)
+                false
             }
+            ActivationOutcomeCommit::StaleGeneration => {
+                tracing::warn!(
+                    activation_id = %route.activation_id,
+                    event_id = %event.id,
+                    "抑制已被 DialogueTurn generation fencing 的过期终态输出"
+                );
+                false
+            }
+            ActivationOutcomeCommit::StaleActivation => {
+                tracing::warn!(
+                    activation_id = %route.activation_id,
+                    event_id = %event.id,
+                    "抑制已被取消或终结的物理 Activation 过期输出"
+                );
+                false
+            }
+        };
+        if should_dispatch {
+            let mut dispatched = false;
+            let mut dispatch_error = None;
+            for retry in 0..4u64 {
+                match self.bus.dispatch_persisted(event.clone()).await {
+                    Ok(()) => {
+                        dispatched = true;
+                        break;
+                    }
+                    Err(error) => {
+                        dispatch_error = Some(error.to_string());
+                        tracing::warn!(
+                            activation_id = %route.activation_id,
+                            event_id = %event.id,
+                            %error,
+                            retry,
+                            "持久 Evaluation outcome 派发失败；保留同一 Event 并重试"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            50u64.saturating_mul(1 << retry),
+                        ))
+                        .await;
+                    }
+                }
+            }
+            if !dispatched {
+                return Err(format!(
+                    "Evaluation outcome '{}' 已持久化但派发重试耗尽：{}",
+                    event.id,
+                    dispatch_error.unwrap_or_else(|| "unknown dispatch error".to_string())
+                )
+                .into());
+            }
+            self.revoke_thread_capability_leases(
+                &route.thread_id,
+                "owning Thread reached a terminal outcome",
+            )
+            .await;
+            if let Some(scheduler) = &self.thread_scheduler {
+                if let Err(error) = scheduler.dependency_completed(&route.thread_id).await {
+                    // The terminal Thread and outcome are already durable.
+                    // Startup recovery re-arms every queued schedule, so
+                    // dependency notification failure must not suppress the
+                    // user-visible terminal outcome.
+                    tracing::error!(
+                        thread_id = %route.thread_id,
+                        %error,
+                        "Thread 已终止，但依赖 Schedule 即时唤醒失败；等待恢复路径重放"
+                    );
+                }
+            }
+            return Ok(true);
         }
+        Ok(false)
     }
 
     async fn revoke_thread_capability_leases(&self, thread_id: &str, reason: &str) {
@@ -10502,7 +10800,7 @@ impl Orchestrator {
 
     async fn release_dialogue_thread(&self, session_id: &str, root_turn_id: &str) -> bool {
         let gate = self.dialogue_thread_gate(session_id);
-        gate.release(root_turn_id).await
+        gate.release(root_turn_id)
     }
 
     /// Cancel only the Activation(s) bound to one persistent Objective
@@ -12051,6 +12349,10 @@ fn event_needs_signal_outbox(event: &Event) -> bool {
             .is_some()
 }
 
+fn is_dialogue_trigger(event: &Event) -> bool {
+    event.event_type == TYPE_USER_MESSAGE || event.topic == "chat/dialogue_retry"
+}
+
 fn should_force_final_for_maintenance(
     phase: &str,
     pressure: &str,
@@ -12170,10 +12472,10 @@ mod tests {
         render_harness_context, render_system_contract, restrict_tools_to_scope,
         retain_pending_continuation_calls, runtime_claimant_id, semantic_sexpr_vm_system_prompt,
         should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
-        tool_call_activity_preview, DurableEventWriter, DurableEventWriterMetrics, DynError,
-        EvaluationContextOverlay, ModelCompletionError, ModelCompletionErrorOrigin,
-        ModelReasoningSummaryAccumulator, NoReplyMode, ReadTurnGuard, TerminalDecision,
-        AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        tool_call_activity_preview, DialogueThreadGate, DialogueThreadLease, DurableEventWriter,
+        DurableEventWriterMetrics, DynError, EvaluationContextOverlay, ModelCompletionError,
+        ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator, NoReplyMode, ReadTurnGuard,
+        TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
@@ -12199,6 +12501,36 @@ mod tests {
     struct ContendedEventStore {
         remaining_contention_failures: AtomicUsize,
         committed: Mutex<Vec<Event>>,
+    }
+
+    #[tokio::test]
+    async fn dropped_dialogue_lease_releases_gate_after_failed_or_cancelled_attempt() {
+        let gate = Arc::new(DialogueThreadGate::default());
+        gate.acquire("turn-a").await;
+        let lease = DialogueThreadLease::new(Arc::clone(&gate), "turn-a");
+        drop(lease);
+
+        let acquired = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            gate.acquire("turn-b").await;
+        })
+        .await;
+        assert!(
+            acquired.is_ok(),
+            "dropped attempt must not strand the Session dialogue gate"
+        );
+        assert!(gate.release("turn-b"));
+    }
+
+    #[tokio::test]
+    async fn retained_dialogue_lease_keeps_gate_for_context_maintenance_continuation() {
+        let gate = Arc::new(DialogueThreadGate::default());
+        gate.acquire("turn-a").await;
+        let mut lease = DialogueThreadLease::new(Arc::clone(&gate), "turn-a");
+        lease.retain_for_continuation();
+        drop(lease);
+
+        assert!(gate.owns("turn-a").await);
+        assert!(gate.release("turn-a"));
     }
 
     #[test]
@@ -12330,6 +12662,7 @@ mod tests {
         let activation = |status, lease_expires_at| ThreadActivationRecord {
             id: "activation".to_string(),
             revision: 1,
+            generation: 0,
             agent_id: "agent".to_string(),
             context_id: "context".to_string(),
             session_id: "session".to_string(),

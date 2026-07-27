@@ -17,8 +17,8 @@ use crate::sdk::{
     AppendEdgeOutputCommand, AuthorizeExecutionTargetCommand, ClaimEdgeCommand,
     ConnectExecutionNodeCommand, CreateNodePairingCodeCommand, CreateObjectiveCommand,
     ExactHarnessRef, ExecutionJobQuery, ExecutionNodeHeartbeatCommand, FinishEdgeCommand,
-    HeartbeatEdgeCommand, MorphzSdk, PairExecutionNodeCommand, RotateExecutionNodeKeyCommand,
-    SdkError, SdkErrorCode, SendMessageCommand, SessionEventsQuery,
+    HeartbeatEdgeCommand, MorphzSdk, PairExecutionNodeCommand, RetryDialogueTurnCommand,
+    RotateExecutionNodeKeyCommand, SdkError, SdkErrorCode, SendMessageCommand, SessionEventsQuery,
 };
 use axum::{
     body::Body,
@@ -154,6 +154,13 @@ struct SendMessageRequest {
     client_message_id: Option<String>,
     #[serde(default)]
     harness: Option<crate::harness::ExactHarnessRef>,
+}
+
+#[derive(serde::Deserialize)]
+struct RetryDialogueTurnRequest {
+    expected_thread_revision: u64,
+    expected_result_event_id: String,
+    retry_request_id: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -671,6 +678,10 @@ impl Server {
             .route(
                 "/api/sessions/:session_id/messages",
                 post(handle_send_message),
+            )
+            .route(
+                "/api/sessions/:session_id/dialogue-turns/:root_turn_id/retry",
+                post(handle_retry_dialogue_turn),
             )
             .route(
                 "/api/sessions/:session_id/principal",
@@ -2710,6 +2721,50 @@ async fn handle_send_message(
                 })),
             )
                 .into_response()
+        }
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_retry_dialogue_turn(
+    State(state): State<Arc<AppState>>,
+    Path((session_id, root_turn_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<RetryDialogueTurnRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let retry_request_id = request.retry_request_id.unwrap_or_else(|| api_id("retry"));
+    if let Err(error) = validate_identifier("retry_request_id", &retry_request_id) {
+        return error_response(StatusCode::BAD_REQUEST, error);
+    }
+    match state
+        .sdk
+        .retry_dialogue_turn(
+            &principal,
+            RetryDialogueTurnCommand {
+                session_id,
+                root_turn_id,
+                expected_thread_revision: request.expected_thread_revision,
+                expected_result_event_id: request.expected_result_event_id,
+                retry_request_id,
+            },
+        )
+        .await
+    {
+        Ok(receipt) => {
+            let status = if receipt.duplicate {
+                StatusCode::OK
+            } else {
+                StatusCode::ACCEPTED
+            };
+            (status, Json(json!(receipt))).into_response()
         }
         Err(error) => sdk_error_response(error),
     }

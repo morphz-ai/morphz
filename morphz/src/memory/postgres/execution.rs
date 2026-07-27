@@ -22,6 +22,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         r#"CREATE TABLE IF NOT EXISTS threads (
             id TEXT PRIMARY KEY,
             revision BIGINT NOT NULL DEFAULT 1,
+            generation BIGINT NOT NULL DEFAULT 1,
             agent_id TEXT NOT NULL REFERENCES agents(id),
             context_id TEXT NOT NULL REFERENCES cognitive_contexts(id),
             session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -42,6 +43,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         r#"CREATE TABLE IF NOT EXISTS thread_activations (
             id TEXT PRIMARY KEY,
             revision BIGINT NOT NULL DEFAULT 1,
+            generation BIGINT NOT NULL DEFAULT 1,
             agent_id TEXT NOT NULL REFERENCES agents(id),
             context_id TEXT NOT NULL REFERENCES cognitive_contexts(id),
             session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -60,7 +62,9 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         )"#,
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS target_id TEXT"#,
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
+        r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         r#"CREATE TABLE IF NOT EXISTS execution_jobs (
             id TEXT PRIMARY KEY,
             revision BIGINT NOT NULL DEFAULT 1,

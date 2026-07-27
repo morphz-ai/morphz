@@ -1,13 +1,14 @@
 use super::{
-    append_event_in_tx, now_text, parse_time, stored_event_in_tx, thread::thread_from_row,
-    PostgresStore, StoreError,
+    append_event_in_tx, append_signal_outbox_in_tx, now_text, parse_time, stored_event_in_tx,
+    thread::thread_from_row, PostgresStore, StoreError,
 };
 use crate::admission::AdmissionClass;
 use crate::event::Event;
 use crate::memory::{
-    ActivationOutcomeCommit, ActivationStore, NewThreadActivation, NewThreadSignal,
-    SessionAttentionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadSignalRecord, ThreadSignalStatus,
+    ActivationOutcomeCommit, ActivationStore, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
+    NewThreadActivation, NewThreadSignal, SessionAttentionUpdate, SignalOutboxRecord,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadKind, ThreadLifecycle, ThreadSignalRecord, ThreadSignalStatus,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -16,6 +17,8 @@ use sqlx::{PgPool, Row};
 
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
+        r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_session_status
            ON thread_activations(session_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_context_status
@@ -24,6 +27,8 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
            ON thread_activations(status, lease_expires_at)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_root_turn
            ON thread_activations(root_turn_id, updated_at)"#,
+        r#"CREATE INDEX IF NOT EXISTS idx_pg_thread_activations_root_generation_status
+           ON thread_activations(root_turn_id, generation, status, updated_at)"#,
         r#"CREATE TABLE IF NOT EXISTS thread_signals (
             id TEXT PRIMARY KEY,
             thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
@@ -104,6 +109,7 @@ fn activation_from_row(row: &PgRow) -> Result<ThreadActivationRecord, StoreError
     Ok(ThreadActivationRecord {
         id: row.get("id"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,
+        generation: u64::try_from(row.get::<i64, _>("generation"))?,
         agent_id: row.get("agent_id"),
         context_id: row.get("context_id"),
         session_id: row.get("session_id"),
@@ -301,6 +307,8 @@ impl ActivationStore for PostgresStore {
         if let Some(row) = sqlx::query(
             r#"SELECT activations.* FROM activation_signals links
                JOIN thread_activations activations ON activations.id = links.activation_id
+               JOIN threads thread ON thread.root_turn_id = activations.root_turn_id
+                                  AND thread.generation = activations.generation
                WHERE links.signal_id = $1"#,
         )
         .bind(&stored_signal.id)
@@ -344,13 +352,43 @@ impl ActivationStore for PostgresStore {
             )
             .into());
         }
+        if thread.lifecycle.is_terminal() {
+            sqlx::query(
+                r#"UPDATE thread_signals SET status = 'acknowledged', acknowledged_at = $1
+                   WHERE thread_id = $2 AND status = 'pending'"#,
+            )
+            .bind(&now)
+            .bind(&thread.id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(None);
+        }
+        sqlx::query(
+            r#"UPDATE thread_signals signals
+               SET status = 'acknowledged', acknowledged_at = $1
+               WHERE signals.thread_id = $2 AND signals.status = 'pending'
+                 AND signals.parent_activation_id IS NOT NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM thread_activations parent
+                   WHERE parent.id = signals.parent_activation_id
+                     AND parent.generation = $3
+                 )"#,
+        )
+        .bind(&now)
+        .bind(&thread.id)
+        .bind(i64::try_from(thread.generation)?)
+        .execute(&mut *tx)
+        .await?;
         if let Some(row) = sqlx::query(
             r#"SELECT * FROM thread_activations
                WHERE root_turn_id = $1 AND trigger_event_id = $2
+                 AND generation = $3
                  AND status IN ('queued', 'running') LIMIT 1"#,
         )
         .bind(&thread.root_turn_id)
         .bind(&stored_signal.event_id)
+        .bind(i64::try_from(thread.generation)?)
         .fetch_optional(&mut *tx)
         .await?
         {
@@ -376,9 +414,11 @@ impl ActivationStore for PostgresStore {
         }
         if sqlx::query_scalar::<_, bool>(
             r#"SELECT EXISTS(SELECT 1 FROM thread_activations
-               WHERE root_turn_id = $1 AND status IN ('queued', 'running'))"#,
+               WHERE root_turn_id = $1 AND generation = $2
+                 AND status IN ('queued', 'running'))"#,
         )
         .bind(&thread.root_turn_id)
+        .bind(i64::try_from(thread.generation)?)
         .fetch_one(&mut *tx)
         .await?
         {
@@ -424,12 +464,13 @@ impl ActivationStore for PostgresStore {
         }
         sqlx::query(
             r#"INSERT INTO thread_activations
-               (id, revision, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
+               (id, revision, generation, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
                 trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
                 status, created_at, updated_at)
-               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $11)"#,
+               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'queued', $12, $12)"#,
         )
         .bind(&activation.id)
+        .bind(i64::try_from(thread.generation)?)
         .bind(&activation.agent_id)
         .bind(&activation.context_id)
         .bind(&activation.session_id)
@@ -617,13 +658,14 @@ impl ActivationStore for PostgresStore {
         let now = now_text();
         sqlx::query(
             r#"INSERT INTO thread_activations
-               (id, revision, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
+               (id, revision, generation, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
                 trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
                 status, created_at, updated_at)
-               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'queued', $11, $11)
+               VALUES ($1, 1, (SELECT generation FROM threads WHERE root_turn_id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $2, 'queued', $11, $11)
                ON CONFLICT DO NOTHING"#,
         )
         .bind(&activation.id)
+        .bind(&activation.root_turn_id)
         .bind(&activation.agent_id)
         .bind(&activation.context_id)
         .bind(&activation.session_id)
@@ -632,7 +674,6 @@ impl ActivationStore for PostgresStore {
         .bind(i64::try_from(activation.trigger_sequence)?)
         .bind(&activation.trigger_kind)
         .bind(&activation.parent_activation_id)
-        .bind(&activation.root_turn_id)
         .bind(now)
         .execute(&self.pool)
         .await?;
@@ -863,6 +904,45 @@ impl ActivationStore for PostgresStore {
             .ok_or("Evaluation outcome Event 缺少 thread_id")?;
         let now = now_text();
         let mut tx = self.pool.begin().await?;
+        let activation_route = sqlx::query(
+            r#"SELECT activation.generation AS activation_generation,
+                      activation.status AS activation_status,
+                      thread.generation AS thread_generation
+               FROM thread_activations activation
+               JOIN threads thread ON thread.root_turn_id = activation.root_turn_id
+               WHERE activation.id = $1 AND thread.id = $2
+               FOR UPDATE OF thread"#,
+        )
+        .bind(activation_id)
+        .bind(thread_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "Activation '{}' 或其 Thread '{}' 不存在",
+                activation_id, thread_id
+            )
+        })?;
+        let activation_generation: i64 = activation_route.get("activation_generation");
+        let thread_generation: i64 = activation_route.get("thread_generation");
+        if activation_generation != thread_generation {
+            tx.commit().await?;
+            return Ok(ActivationOutcomeCommit::StaleGeneration);
+        }
+        let activation_status: String = activation_route.get("activation_status");
+        if activation_status != ThreadActivationStatus::Running.as_str() {
+            let existing = sqlx::query_scalar::<_, String>(
+                "SELECT event_id FROM thread_outcomes WHERE root_turn_id = $1",
+            )
+            .bind(root_turn_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(match existing {
+                Some(event_id) => ActivationOutcomeCommit::Existing { event_id },
+                None => ActivationOutcomeCommit::StaleActivation,
+            });
+        }
         let result = sqlx::query(
             r#"INSERT INTO thread_outcomes
                (thread_id, root_turn_id, activation_id, session_id, disposition, event_id, created_at)
@@ -889,18 +969,25 @@ impl ActivationStore for PostgresStore {
             return Ok(ActivationOutcomeCommit::Existing { event_id: existing });
         }
         let result_text = event.payload.get("text").and_then(JsonValue::as_str);
+        let thread_status =
+            if event.topic == "chat/reply" && event.payload.get("runtime_failure_kind").is_some() {
+                ThreadLifecycle::Failed.as_str()
+            } else {
+                ThreadLifecycle::Completed.as_str()
+            };
         let (delivery_status, delivery_event_id) = match event.topic.as_str() {
             "chat/reply" => ("delivered", Some(event.id.as_str())),
             "runtime/thread_result" => ("pending", None),
             _ => ("none", None),
         };
         let terminal = sqlx::query(
-            r#"UPDATE threads SET revision = revision + 1, status = 'completed',
-               result_text = COALESCE($1, result_text), result_event_id = $2,
-               delivery_status = $3, delivery_event_id = $4, updated_at = $5
-               WHERE id = $6 AND root_turn_id = $7 AND session_id = $8
+            r#"UPDATE threads SET revision = revision + 1, status = $1,
+               result_text = COALESCE($2, result_text), result_event_id = $3,
+               delivery_status = $4, delivery_event_id = $5, updated_at = $6
+               WHERE id = $7 AND root_turn_id = $8 AND session_id = $9
                  AND status NOT IN ('completed', 'failed', 'cancelled')"#,
         )
+        .bind(thread_status)
         .bind(result_text)
         .bind(&event.id)
         .bind(delivery_status)
@@ -979,5 +1066,140 @@ impl ActivationStore for PostgresStore {
             .await?;
         tx.commit().await?;
         Ok(ActivationOutcomeCommit::Committed)
+    }
+
+    async fn restart_dialogue_turn(
+        &self,
+        request: DialogueTurnRetryRequest,
+    ) -> Result<DialogueTurnRetryMutation, StoreError> {
+        let root_turn_id = request
+            .event
+            .payload
+            .get("root_turn_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("DialogueTurn retry Event 缺少 root_turn_id")?;
+        let context_id = request
+            .event
+            .payload
+            .get("context_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("DialogueTurn retry Event 缺少 context_id")?;
+        let session_id = request
+            .event
+            .payload
+            .get("session_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("DialogueTurn retry Event 缺少 session_id")?;
+        let expected_revision = i64::try_from(request.expected_thread_revision)?;
+        let now = now_text();
+        let mut tx = self.pool.begin().await?;
+
+        // Lock the logical Thread before the idempotency read.  Concurrent
+        // callers using the same request id must observe the first caller's
+        // durable retry Event rather than race through the initial absence
+        // check and report a spurious revision conflict.
+        let row = sqlx::query("SELECT * FROM threads WHERE root_turn_id = $1 FOR UPDATE")
+            .bind(root_turn_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::NotFound);
+        };
+        let current = thread_from_row(&row)?;
+        if stored_event_in_tx(&mut tx, &request.event.id, context_id)
+            .await?
+            .is_some()
+        {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Existing {
+                thread_id: current.id,
+                generation: current.generation,
+            });
+        }
+
+        if current.revision != request.expected_thread_revision {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Conflict { current });
+        }
+        let rejected = if current.kind != ThreadKind::DialogueTurn {
+            Some("只有 DialogueTurn 可以通过此原语重启".to_string())
+        } else if !current.lifecycle.is_terminal() {
+            Some("DialogueTurn 尚未进入终态".to_string())
+        } else if current.context_id != context_id || current.session_id != session_id {
+            Some("Retry Event 与 DialogueTurn route 不一致".to_string())
+        } else if current.result_event_id.as_deref()
+            != Some(request.expected_result_event_id.as_str())
+        {
+            Some("DialogueTurn 的当前结果已经变化".to_string())
+        } else {
+            None
+        };
+        if let Some(reason) = rejected {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Rejected { current, reason });
+        }
+        let result_event =
+            stored_event_in_tx(&mut tx, &request.expected_result_event_id, context_id).await?;
+        if !result_event.as_ref().is_some_and(|event| {
+            event.topic == "chat/reply" && event.payload.get("runtime_failure_kind").is_some()
+        }) {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Rejected {
+                current,
+                reason: "只有 Runtime 失败回复可以原位重试".to_string(),
+            });
+        }
+        // The failure outcome and Thread terminal state are committed
+        // atomically, while Activation cleanup is deliberately a separate
+        // projection update.  A crash in between must not make an otherwise
+        // retryable logical turn permanently unrestartable.
+        sqlx::query(
+            r#"UPDATE thread_activations
+               SET revision = revision + 1, status = 'cancelled',
+                   claimed_by = NULL, lease_expires_at = NULL, updated_at = $1
+               WHERE root_turn_id = $2 AND generation = $3
+                 AND status IN ('queued', 'running')"#,
+        )
+        .bind(&now)
+        .bind(root_turn_id)
+        .bind(i64::try_from(current.generation)?)
+        .execute(&mut *tx)
+        .await?;
+        let generation = current.generation.saturating_add(1);
+        let updated = sqlx::query(
+            r#"UPDATE threads
+               SET revision = revision + 1, generation = $1, status = 'open',
+                   result_text = NULL, result_event_id = NULL,
+                   delivery_status = 'none', delivery_event_id = NULL,
+                   updated_at = $2
+               WHERE id = $3 AND revision = $4"#,
+        )
+        .bind(i64::try_from(generation)?)
+        .bind(&now)
+        .bind(&current.id)
+        .bind(expected_revision)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            let row = sqlx::query("SELECT * FROM threads WHERE id = $1")
+                .bind(&current.id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let current = thread_from_row(&row)?;
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Conflict { current });
+        }
+        sqlx::query("DELETE FROM thread_outcomes WHERE thread_id = $1")
+            .bind(&current.id)
+            .execute(&mut *tx)
+            .await?;
+        append_event_in_tx(&mut tx, &request.event).await?;
+        append_signal_outbox_in_tx(&mut tx, &request.event).await?;
+        tx.commit().await?;
+        Ok(DialogueTurnRetryMutation::Accepted {
+            thread_id: current.id,
+            generation,
+        })
     }
 }

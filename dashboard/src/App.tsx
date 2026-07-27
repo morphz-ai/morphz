@@ -66,8 +66,10 @@ import {
   currentSchedulerSchedules,
   pendingHumanApprovals,
   schedulerApprovalAnomalies,
+  schedulerActivityCounts,
   schedulerAttentionJobs,
   threadCarriesExecution,
+  retryableDialogueThread,
 } from './scheduler/model'
 import { findTurnSettlement } from './turnSettlement'
 import type {
@@ -1906,6 +1908,7 @@ export default function App() {
   const [decidingApprovalId, setDecidingApprovalId] = useState('')
   const [mutatingScheduleId, setMutatingScheduleId] = useState('')
   const [copiedMessageId, setCopiedMessageId] = useState('')
+  const [retryingTurnEventId, setRetryingTurnEventId] = useState('')
   const [pendingTurn, setPendingTurn] = useState<PendingTurnState | null>(null)
   const [error, setError] = useState('')
   const [quotes, setQuotes] = useState<QuoteItem[]>([])
@@ -3330,6 +3333,10 @@ export default function App() {
   const activeWorkCount = schedulerSnapshot
     ? schedulerSnapshot.summary.running_activations + schedulerSnapshot.summary.queued_activations
     : 0
+  const {
+    dialogue: activeDialogueCount,
+    execution: activeExecutionCount,
+  } = schedulerActivityCounts(schedulerSnapshot)
   const durableEventQueueDepth = Number(schedulerSnapshot?.event_writer?.queue_depth ?? 0)
   const durableEventContentionRetries = Number(schedulerSnapshot?.event_writer?.contention_retries ?? 0)
   const waitingCount = schedulerSnapshot
@@ -3844,6 +3851,43 @@ export default function App() {
       setSending(false)
     }
   }, [createContext, createSession, loadSession, quotes, selectedContext, selectedSession, sending])
+
+  const retryDialogueTurn = useCallback(async (
+    failureEvent: MorphzEvent,
+    snapshot: SchedulerThreadSnapshot,
+  ) => {
+    if (!selectedSessionId || retryingTurnEventId) return
+    const thread = snapshot.thread
+    setRetryingTurnEventId(failureEvent.id)
+    conversationPinnedToEnd.current = true
+    try {
+      const receipt = await DASHBOARD_API.command<{
+        event_id: string
+        root_turn_id: string
+        thread_id: string
+        generation: number
+        duplicate: boolean
+      }>(
+        `/api/sessions/${encodeURIComponent(selectedSessionId)}/dialogue-turns/${encodeURIComponent(thread.root_turn_id)}/retry`,
+        'POST',
+        {
+          expected_thread_revision: thread.revision,
+          expected_result_event_id: failureEvent.id,
+          retry_request_id: `dashboard-retry-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        },
+      )
+      setPendingTurn({ startedAt: Date.now(), rootTurnId: receipt.root_turn_id })
+      setError('')
+      window.setTimeout(() => {
+        void loadSession(selectedSessionId, selectedContextId)
+        void loadOverview(selectedContextId, selectedSessionId)
+      }, 120)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setRetryingTurnEventId('')
+    }
+  }, [loadOverview, loadSession, retryingTurnEventId, selectedContextId, selectedSessionId])
 
   const cancelCurrentSession = useCallback(async () => {
     if (!selectedSessionId) return
@@ -4624,6 +4668,7 @@ export default function App() {
                         : t('conversation.roleRuntime')
                   const showRole = kind === 'background' || kind === 'system'
                   const derivedThreads = derivedThreadsByRootTurn.get(event.id) ?? []
+                  const retryableTurn = retryableDialogueThread(schedulerThreads, event.id, event.payload)
                   return (
                     <article className={`message-row ${kind} ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
                       {showRole && (
@@ -4650,6 +4695,24 @@ export default function App() {
                           ? <MarkdownBody text={event.payload.text} />
                           : t('conversation.noText')}
                       </div>
+                      {retryableTurn && (
+                        <div className="message-retry-panel">
+                          <span>
+                            <strong>{t('conversation.retryTurn.title')}</strong>
+                            <small>{t('conversation.retryTurn.description')}</small>
+                          </span>
+                          <button
+                            type="button"
+                            disabled={Boolean(retryingTurnEventId)}
+                            onClick={() => void retryDialogueTurn(event, retryableTurn)}
+                          >
+                            <RefreshCw size={13} className={retryingTurnEventId === event.id ? 'is-spinning' : ''} />
+                            {retryingTurnEventId === event.id
+                              ? t('conversation.retryTurn.retrying')
+                              : t('conversation.retryTurn.action')}
+                          </button>
+                        </div>
+                      )}
                       {derivedThreads.length > 0 && (
                         <div className="message-thread-capsules" aria-label={t('conversation.derivedThreads')}>
                           {derivedThreads.map(snapshot => (
@@ -5451,7 +5514,11 @@ export default function App() {
               <i className={activeWorkCount || turnPending ? 'busy' : taskStrip.state} />
               <strong>{turnPending ? turnStatus : taskStrip.label}</strong>
               {!turnPending && <span>{taskStrip.summary}</span>}
-              <em>{t('composer.status.summary', { executing: activeWorkCount, waiting: waitingCount })}</em>
+              <em>{t('composer.status.summary', {
+                dialogue: activeDialogueCount,
+                executing: activeExecutionCount,
+                waiting: waitingCount,
+              })}</em>
             </button>
             {pendingApprovals[0] && (
               <div className="composer-approval-actions" aria-label={t('work.approvals.quickActions')}>

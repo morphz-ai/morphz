@@ -8,7 +8,7 @@ use crate::config::{AppConfig, StorageBackend};
 use crate::context_tools::{ContextTxTool, RecallTool};
 #[cfg(test)]
 use crate::event::TYPE_TOOL_OUTPUT;
-use crate::event::{Event, InMemoryEventBus, TYPE_USER_MESSAGE};
+use crate::event::{Event, InMemoryEventBus, TYPE_INFER_REQUEST, TYPE_USER_MESSAGE};
 use crate::execution::ExecutionJobManager;
 use crate::harness::{HarnessBinding, HarnessDescriptor, HarnessRegistry as DomainHarnessRegistry};
 use crate::harness_package::{
@@ -27,20 +27,20 @@ use crate::memory::{
     AgentBootstrapRecord, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalRecord,
     ApprovalResolution, ApprovalStore, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
     CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord, ContextUpdate,
-    DelegationRecord, DelegationStatus, EdgeCommandMutation, EdgeCommandOutputChunk,
-    EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, EventStore, ExecutionApprovalStore,
-    ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionTargetAuthorizationFilter,
-    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
-    ExecutionTargetFilter, ExecutionTargetMutation, ExecutionTargetRecord,
-    ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore, MessageClaim,
-    MindProjectionStore, NewAgent, NewCognitiveContext, NewDelegation, NewExecutionNodeChallenge,
-    NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewPrincipal, NewSession,
-    ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition,
-    PairExecutionNode, QueryFilter, RecallDocumentKind, RecallProjectionStore, RuntimeStore,
-    ScheduleMutation, ScheduleRecord, ScheduleStatus, SessionRecord, SessionStore, SessionUpdate,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadPhase, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, TimerStore,
+    DelegationRecord, DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
+    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
+    EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
+    ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
+    ExecutionTargetStore, MessageClaim, MindProjectionStore, NewAgent, NewCognitiveContext,
+    NewDelegation, NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode,
+    NewObjective, NewPrincipal, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
+    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, QueryFilter, RecallDocumentKind,
+    RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord, ScheduleStatus,
+    SessionRecord, SessionStore, SessionUpdate, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -63,6 +63,7 @@ use crate::tool::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -709,7 +710,8 @@ impl MorphzRuntimeBuilder {
                 Arc::clone(&timer_engine),
                 std::time::Duration::from_secs(objective_lease_secs),
             )
-            .with_execution_job_store(Arc::clone(&store) as Arc<dyn ExecutionJobStore>),
+            .with_execution_job_store(Arc::clone(&store) as Arc<dyn ExecutionJobStore>)
+            .with_activation_store(Arc::clone(&store) as Arc<dyn crate::memory::ActivationStore>),
         );
         objective_supervisor.register_timer_handlers()?;
         let registry = Arc::new(Registry::new());
@@ -3527,22 +3529,13 @@ impl MorphzRuntime {
             "runtime/model_attempt_state",
             "runtime/model_reasoning_summary",
         ] {
-            // Rows written before the causal Event columns carry their route
-            // only in the payload. A Thread that spans that upgrade holds both
-            // projected and legacy rows, so a non-empty result is no evidence
-            // that the fill already ran — asking only when the query came back
-            // empty would hide the legacy half of such a Thread permanently.
-            // The store keeps a marker and settles the filled case with a
-            // keyed read, so this stays cheap in the polling path.
-            self.inner
-                .store
-                .backfill_causal_projection_for_thread(
-                    context_id,
-                    &thread.session_id,
-                    thread_id,
-                    topic,
-                )
-                .await?;
+            // Thread-detail inspection is a read path.  It must never perform
+            // a compatibility migration: SQLite has one Writer, and locating
+            // even a bounded number of legacy rows can scan a large JSON
+            // history while that Writer is held.  New Events populate the
+            // causal columns at append time.  Legacy projection repair remains
+            // an explicit/background maintenance operation and may not delay
+            // durable outcomes, Timers, Recall, or ordinary Dashboard reads.
             model_attempt_events.extend(
                 self.query_events(QueryFilter {
                     context_id: Some(context_id.to_string()),
@@ -3953,6 +3946,18 @@ pub struct MessageReceipt {
     pub duplicate: bool,
 }
 
+/// Result of restarting one failed logical DialogueTurn in place. The user
+/// Event and logical Thread identity remain stable; only the physical
+/// Evaluation generation advances.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DialogueTurnRetryReceipt {
+    pub event_id: String,
+    pub root_turn_id: String,
+    pub thread_id: String,
+    pub generation: u64,
+    pub duplicate: bool,
+}
+
 #[derive(Clone)]
 pub struct SessionHandle {
     runtime: MorphzRuntime,
@@ -4135,6 +4140,169 @@ impl SessionHandle {
                     })
                     .collect()
             })
+    }
+
+    pub async fn retry_dialogue_turn(
+        &self,
+        root_turn_id: impl Into<String>,
+        expected_thread_revision: u64,
+        expected_result_event_id: impl Into<String>,
+        retry_request_id: impl Into<String>,
+    ) -> Result<DialogueTurnRetryReceipt, RuntimeError> {
+        self.runtime.bind_default_principal(&self.id).await?;
+        self.retry_dialogue_turn_as_principal(
+            root_turn_id,
+            self.runtime.identity().principal_id.clone(),
+            expected_thread_revision,
+            expected_result_event_id,
+            retry_request_id,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn retry_dialogue_turn_as_principal(
+        &self,
+        root_turn_id: impl Into<String>,
+        principal_id: impl Into<String>,
+        expected_thread_revision: u64,
+        expected_result_event_id: impl Into<String>,
+        retry_request_id: impl Into<String>,
+    ) -> Result<DialogueTurnRetryReceipt, RuntimeError> {
+        let session = self
+            .runtime
+            .get_session(&self.id)
+            .await?
+            .ok_or_else(|| format!("Session '{}' 不存在", self.id))?;
+        if session.status == crate::memory::SessionStatus::Archived {
+            return Err("归档 Session 不能重启 DialogueTurn".into());
+        }
+        let principal_id = principal_id.into();
+        if !self
+            .runtime
+            .inner
+            .store
+            .verify_session_principal(&self.id, &principal_id)
+            .await?
+        {
+            return Err(format!(
+                "Principal '{}' 未绑定到 Session '{}'，拒绝重启 DialogueTurn",
+                principal_id, self.id
+            )
+            .into());
+        }
+        let root_turn_id = root_turn_id.into();
+        let retry_request_id = retry_request_id.into();
+        if root_turn_id.trim().is_empty() || retry_request_id.trim().is_empty() {
+            return Err("root_turn_id 与 retry_request_id 不能为空".into());
+        }
+        let expected_result_event_id = expected_result_event_id.into();
+        let thread = self
+            .runtime
+            .inner
+            .store
+            .get_thread_by_root(&root_turn_id)
+            .await?
+            .ok_or_else(|| format!("DialogueTurn '{}' 不存在", root_turn_id))?;
+        if thread.session_id != self.id || thread.context_id != session.context_id {
+            return Err(format!(
+                "DialogueTurn '{}' 不属于 Session '{}'",
+                root_turn_id, self.id
+            )
+            .into());
+        }
+        if thread
+            .initiating_principal_id
+            .as_deref()
+            .is_some_and(|owner| owner != principal_id)
+        {
+            return Err("当前 Principal 不能重启其他身份发起的 DialogueTurn".into());
+        }
+
+        let digest = Sha256::digest(
+            format!("{}\0{}\0{}", self.id, root_turn_id, retry_request_id).as_bytes(),
+        );
+        let event_id = format!("dialogue_retry_{digest:x}");
+        let event_id = event_id[..48].to_string();
+        let event = Event::new(
+            event_id.clone(),
+            "Runtime-DialogueRetry".to_string(),
+            TYPE_INFER_REQUEST.to_string(),
+            "chat/dialogue_retry".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!(session.context_id)),
+                ("session_id".to_string(), json!(self.id)),
+                ("principal_id".to_string(), json!(principal_id)),
+                ("root_turn_id".to_string(), json!(root_turn_id)),
+                ("thread_id".to_string(), json!(thread.id)),
+                ("retry_request_id".to_string(), json!(retry_request_id)),
+                (
+                    "previous_result_event_id".to_string(),
+                    json!(expected_result_event_id),
+                ),
+                ("runtime_force_evaluation".to_string(), json!(true)),
+            ]),
+        );
+        let mutation = self
+            .runtime
+            .inner
+            .store
+            .restart_dialogue_turn(DialogueTurnRetryRequest {
+                expected_thread_revision,
+                expected_result_event_id,
+                event: event.clone(),
+            })
+            .await?;
+        let (thread_id, generation, duplicate) = match mutation {
+            DialogueTurnRetryMutation::Accepted {
+                thread_id,
+                generation,
+            } => (thread_id, generation, false),
+            DialogueTurnRetryMutation::Existing {
+                thread_id,
+                generation,
+            } => (thread_id, generation, true),
+            DialogueTurnRetryMutation::Conflict { current } => {
+                return Err(format!(
+                    "DialogueTurn 已变化：期望 r{}，当前 r{} / generation {}",
+                    expected_thread_revision, current.revision, current.generation
+                )
+                .into());
+            }
+            DialogueTurnRetryMutation::Rejected { reason, .. } => return Err(reason.into()),
+            DialogueTurnRetryMutation::NotFound => {
+                return Err(format!("DialogueTurn '{}' 不存在", root_turn_id).into());
+            }
+        };
+
+        // The retry Event and its Signal Outbox were committed atomically by
+        // the Store. Dispatch the exact durable representation; the Outbox
+        // remains the crash-safe fallback and materialization is idempotent.
+        let durable_event = self
+            .runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                event_id: Some(event_id.clone()),
+                context_id: Some(session.context_id),
+                ..QueryFilter::default()
+            })
+            .await?
+            .into_iter()
+            .find(|stored| stored.id == event_id)
+            .ok_or_else(|| format!("DialogueTurn retry Event '{}' 未持久化", event_id))?;
+        self.runtime
+            .inner
+            .bus
+            .dispatch_persisted(durable_event)
+            .await?;
+        Ok(DialogueTurnRetryReceipt {
+            event_id,
+            root_turn_id,
+            thread_id,
+            generation,
+            duplicate,
+        })
     }
 }
 
@@ -8736,6 +8904,173 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(timer.generation, renewed.revision);
+    }
+
+    #[tokio::test]
+    async fn expired_activation_is_recovered_without_restarting_the_runtime() {
+        let database = NamedTempFile::new().unwrap();
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::Custom;
+        config.permissions.reviewer = ReviewerKind::Deny;
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database.path().to_string_lossy())
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: true,
+            })
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        runtime
+            .ensure_session(NewSession {
+                id: "session-live-activation-recovery".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Live Activation recovery".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let trigger = Event::new(
+            "event-live-activation-recovery".to_string(),
+            "System-Test".to_string(),
+            crate::event::TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            [
+                (
+                    "context_id".to_string(),
+                    json!(runtime.identity().context_id),
+                ),
+                (
+                    "session_id".to_string(),
+                    json!("session-live-activation-recovery"),
+                ),
+                ("tool_name".to_string(), json!("recovery_fixture")),
+                ("text".to_string(), json!("recover without restart")),
+                (
+                    "root_turn_id".to_string(),
+                    json!("root-live-activation-recovery"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        runtime.inner.store.append(trigger.clone()).await.unwrap();
+        let trigger_sequence = runtime
+            .inner
+            .store
+            .query(QueryFilter {
+                event_id: Some(trigger.id.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        runtime
+            .inner
+            .store
+            .ensure_thread(crate::memory::NewThread {
+                id: "thread-live-activation-recovery".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                session_id: "session-live-activation-recovery".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "root-live-activation-recovery".to_string(),
+                kind: crate::memory::ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+            })
+            .await
+            .unwrap();
+        let queued = runtime
+            .inner
+            .store
+            .claim_thread_signal_batch(
+                crate::memory::NewThreadSignal {
+                    id: "signal-live-activation-recovery".to_string(),
+                    thread_id: "thread-live-activation-recovery".to_string(),
+                    event_id: trigger.id.clone(),
+                    principal_id: None,
+                    sequence: trigger_sequence,
+                    kind: trigger.topic.clone(),
+                    parent_activation_id: None,
+                },
+                crate::memory::NewThreadActivation {
+                    id: "activation-live-recovery".to_string(),
+                    agent_id: runtime.identity().agent_id.clone(),
+                    context_id: runtime.identity().context_id.clone(),
+                    session_id: "session-live-activation-recovery".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: trigger.id.clone(),
+                    trigger_sequence,
+                    trigger_kind: trigger.topic.clone(),
+                    parent_activation_id: None,
+                    root_turn_id: "root-live-activation-recovery".to_string(),
+                },
+                32,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let expired = match runtime
+            .inner
+            .store
+            .update_thread_activation(
+                &queued.id,
+                queued.revision,
+                crate::memory::ThreadActivationStatus::Running,
+                Some("runtime:dead-owner"),
+                Some(chrono::Utc::now() - chrono::Duration::milliseconds(1)),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            crate::memory::ThreadActivationMutation::Updated(expired) => expired,
+            other => panic!("unexpected activation mutation: {other:?}"),
+        };
+        let mut replies = runtime.subscribe("chat/reply", 4);
+        runtime
+            .inner
+            .timer_engine
+            .schedule(crate::memory::NewRuntimeTimer {
+                id: format!("activation-lease:{}", expired.id),
+                generation: expired.revision,
+                kind: crate::memory::RuntimeTimerKind::ActivationLease,
+                owner_id: expired.id.clone(),
+                due_at: expired.lease_expires_at.unwrap(),
+                payload: json!({
+                    "activation_id": expired.id,
+                    "revision": expired.revision,
+                    "trigger_event_id": expired.trigger_event_id,
+                }),
+            })
+            .await
+            .unwrap();
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(3), replies.recv())
+            .await
+            .expect("the live timer must recover an expired Activation")
+            .unwrap();
+        assert_eq!(reply.payload["text"], "runtime-ok");
+        let recovered = runtime
+            .inner
+            .store
+            .get_thread_activation("activation-live-recovery")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(recovered.status.is_terminal());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(150), replies.recv())
+                .await
+                .is_err(),
+            "one expired physical Activation must yield only one recovery reply",
+        );
     }
 
     #[tokio::test]

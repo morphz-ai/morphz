@@ -1641,19 +1641,22 @@ mod tests {
             .update_thread_activation(
                 &child_activation.id,
                 child_activation.revision,
-                ThreadActivationStatus::Succeeded,
-                None,
-                None,
+                ThreadActivationStatus::Running,
+                Some("plan-infer-test-worker"),
+                Some(Utc::now() + Duration::minutes(1)),
                 None,
             )
             .await
             .unwrap()
         {
             ThreadActivationMutation::Updated(record) => record,
-            other => panic!("expected terminal child activation, got {other:?}"),
+            other => panic!("expected running child activation, got {other:?}"),
         };
-        assert_eq!(child_activation.status, ThreadActivationStatus::Succeeded);
+        assert_eq!(child_activation.status, ThreadActivationStatus::Running);
 
+        // A running child without a committed outcome is still in flight.
+        // Production commits the logical Thread outcome first and only then
+        // closes the physical Activation projection.
         let between_tool_steps = coordinator
             .reconcile_waiting_evaluations(Some(&waiting.context_id), 16)
             .await
@@ -1666,6 +1669,23 @@ mod tests {
             .commit_activation_outcome(&activation_id, &result_event)
             .await
             .unwrap();
+        match store
+            .update_thread_activation(
+                &child_activation.id,
+                child_activation.revision,
+                ThreadActivationStatus::Succeeded,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(record) => {
+                assert_eq!(record.status, ThreadActivationStatus::Succeeded)
+            }
+            other => panic!("expected terminal child activation, got {other:?}"),
+        }
 
         let resumed = match coordinator
             .reconcile_evaluation(&waiting.id, &activation_id)
@@ -1783,18 +1803,18 @@ mod tests {
             .update_thread_activation(
                 &child_activation.id,
                 child_activation.revision,
-                ThreadActivationStatus::Succeeded,
-                None,
-                None,
+                ThreadActivationStatus::Running,
+                Some("plan-infer-malformed-test-worker"),
+                Some(Utc::now() + Duration::minutes(1)),
                 None,
             )
             .await
             .unwrap()
         {
             ThreadActivationMutation::Updated(record) => record,
-            other => panic!("expected terminal child activation, got {other:?}"),
+            other => panic!("expected running child activation, got {other:?}"),
         };
-        assert_eq!(child_activation.status, ThreadActivationStatus::Succeeded);
+        assert_eq!(child_activation.status, ThreadActivationStatus::Running);
         let malformed_result = Event::new(
             "plan-malformed-infer-result".to_string(),
             "Test-Evaluator".to_string(),
@@ -1824,6 +1844,23 @@ mod tests {
             .commit_activation_outcome(&activation_id, &malformed_result)
             .await
             .unwrap();
+        match store
+            .update_thread_activation(
+                &child_activation.id,
+                child_activation.revision,
+                ThreadActivationStatus::Succeeded,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(record) => {
+                assert_eq!(record.status, ThreadActivationStatus::Succeeded)
+            }
+            other => panic!("expected terminal child activation, got {other:?}"),
+        }
 
         // Recreate the coordinator to prove recovery only depends on durable
         // Plan, Thread and Event facts rather than an in-process response.

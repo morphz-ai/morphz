@@ -14,6 +14,7 @@ export interface ThreadSignalRecord {
 export interface ThreadActivationRecord {
   id: string
   revision: number
+  generation?: number
   agent_id: string
   context_id: string
   session_id: string
@@ -33,6 +34,7 @@ export interface ThreadActivationRecord {
 export interface ThreadRecord {
   id: string
   revision: number
+  generation?: number
   agent_id: string
   context_id: string
   session_id: string

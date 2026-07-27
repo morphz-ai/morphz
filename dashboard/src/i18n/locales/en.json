@@ -313,6 +313,12 @@
     "threadToolChain": "Tool call chain",
     "threadToolChainEmpty": "The Thread exists but has not produced a tool call yet.",
     "threadToolChainHint": "Open the complete causal chain",
+    "retryTurn": {
+      "title": "Model evaluation failed for this turn",
+      "description": "Keep the original message and causal identity, then start a new evaluation generation in place.",
+      "action": "Retry turn",
+      "retrying": "Restarting"
+    },
     "lineage": {
       "title": "Causal ownership",
       "thread": "Thread",
@@ -640,7 +646,7 @@
       "persistingEvents": "Waiting for event persistence",
       "eventWriterQueue": "{{count}} event(s) awaiting durable commit · {{retries}} contention retries total",
       "delegating": "Delegating",
-      "summary": "{{executing}} running · {{waiting}} waiting"
+      "summary": "{{dialogue}} dialogue · {{executing}} execution · {{waiting}} waiting"
     },
     "shortcuts": {
       "send": "Enter to send",

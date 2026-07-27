@@ -12,12 +12,13 @@ use crate::memory::{
     CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
     CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock, ContextUpdate,
     DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore,
-    DeliveryStatus, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
-    EdgeCommandStatus, EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend,
-    EventStore, ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter,
-    ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore,
-    ExecutionJobTerminal, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
-    ExecutionRetrySafety, ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
+    DeliveryStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
+    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeExecutionStore,
+    EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore, ExecutionApprovalMutation,
+    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal, ExecutionNodeMutation,
+    ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
@@ -525,6 +526,7 @@ impl SqliteStore {
         CREATE TABLE IF NOT EXISTS thread_activations (
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            generation INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1),
             agent_id TEXT NOT NULL,
             context_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
@@ -565,6 +567,7 @@ impl SqliteStore {
         CREATE TABLE IF NOT EXISTS threads (
             id TEXT PRIMARY KEY,
             revision INTEGER NOT NULL DEFAULT 1 CHECK(revision >= 1),
+            generation INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1),
             agent_id TEXT NOT NULL,
             context_id TEXT NOT NULL,
             session_id TEXT NOT NULL,
@@ -1070,6 +1073,27 @@ impl SqliteStore {
                     .await?;
             }
         }
+        for table in ["threads", "thread_activations"] {
+            let columns = sqlx::query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(&pool)
+                .await?
+                .into_iter()
+                .map(|row| row.get::<String, _>("name"))
+                .collect::<std::collections::HashSet<_>>();
+            if !columns.contains("generation") {
+                sqlx::query(&format!(
+                    "ALTER TABLE {table} ADD COLUMN generation INTEGER NOT NULL DEFAULT 1 CHECK(generation >= 1)"
+                ))
+                .execute(&pool)
+                .await?;
+            }
+        }
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_thread_activations_root_generation_status
+               ON thread_activations(root_turn_id, generation, status, updated_at)"#,
+        )
+        .execute(&pool)
+        .await?;
         migrate_runtime_timer_delivery_flush_kind(&pool).await?;
         migrate_schedule_paused_status(&pool).await?;
         // Backfill databases created before the reverse dependency index was
@@ -2237,6 +2261,7 @@ fn thread_activation_from_row(
     Ok(ThreadActivationRecord {
         id: row.get("id"),
         revision: sqlite_u64(row, "revision")?,
+        generation: sqlite_u64(row, "generation")?,
         agent_id: row.get("agent_id"),
         context_id: row.get("context_id"),
         session_id: row.get("session_id"),
@@ -2285,6 +2310,7 @@ fn thread_from_row(
     Ok(ThreadRecord {
         id: row.get("id"),
         revision: sqlite_u64(row, "revision")?,
+        generation: sqlite_u64(row, "generation")?,
         agent_id: row.get("agent_id"),
         context_id: row.get("context_id"),
         session_id: row.get("session_id"),
@@ -4738,6 +4764,8 @@ impl ActivationStore for SqliteStore {
         if let Some(row) = sqlx::query(
             r#"SELECT ew.* FROM activation_signals links
                JOIN thread_activations ew ON ew.id = links.activation_id
+               JOIN threads thread ON thread.root_turn_id = ew.root_turn_id
+                                  AND thread.generation = ew.generation
                WHERE links.signal_id = ?"#,
         )
         .bind(&stored_signal.id)
@@ -4781,6 +4809,49 @@ impl ActivationStore for SqliteStore {
             .into());
         }
 
+        // A terminal Thread cannot accept another physical result.  Dialogue
+        // retry reopens the logical Thread and advances its generation in one
+        // transaction before the retry Event is dispatched, so acknowledging
+        // pending Signals here cannot consume a legitimate retry trigger.
+        if thread.lifecycle.is_terminal() {
+            sqlx::query(
+                r#"UPDATE thread_signals
+                   SET status = 'acknowledged', acknowledged_at = ?
+                   WHERE thread_id = ? AND status = 'pending'"#,
+            )
+            .bind(&now)
+            .bind(&thread.id)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        // Signals produced by a physical Activation belong to that exact
+        // Evaluation generation.  A late tool result from an old generation
+        // must never be folded into a restarted DialogueTurn.  Signals without
+        // a parent Activation (user input, retry and external wakeups) remain
+        // eligible for the current generation.
+        sqlx::query(
+            r#"UPDATE thread_signals
+               SET status = 'acknowledged', acknowledged_at = ?
+               WHERE thread_id = ? AND status = 'pending'
+                 AND parent_activation_id IS NOT NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM thread_activations parent
+                   WHERE parent.id = thread_signals.parent_activation_id
+                     AND parent.generation = ?
+                 )"#,
+        )
+        .bind(&now)
+        .bind(&thread.id)
+        .bind(
+            i64::try_from(thread.generation)
+                .map_err(|_| "Thread generation 超出 SQLite INTEGER 范围")?,
+        )
+        .execute(&mut *tx)
+        .await?;
+
         // One-way adoption for durable Activations created before explicit
         // Thread Signals existed. The matching trigger Event is unambiguous;
         // attaching it here avoids creating a second Activation or stranding
@@ -4788,10 +4859,15 @@ impl ActivationStore for SqliteStore {
         if let Some(row) = sqlx::query(
             r#"SELECT * FROM thread_activations
                WHERE root_turn_id = ? AND trigger_event_id = ?
+                 AND generation = ?
                  AND status IN ('queued', 'running') LIMIT 1"#,
         )
         .bind(&thread.root_turn_id)
         .bind(&stored_signal.event_id)
+        .bind(
+            i64::try_from(thread.generation)
+                .map_err(|_| "Thread generation 超出 SQLite INTEGER 范围")?,
+        )
         .fetch_optional(&mut *tx)
         .await?
         {
@@ -4819,9 +4895,13 @@ impl ActivationStore for SqliteStore {
         // model activation waiting on a new physical Signal and must not block
         // its successor.
         let active = sqlx::query(
-            "SELECT id FROM thread_activations WHERE root_turn_id = ? AND status IN ('queued', 'running') LIMIT 1",
+            "SELECT id FROM thread_activations WHERE root_turn_id = ? AND generation = ? AND status IN ('queued', 'running') LIMIT 1",
         )
         .bind(&thread.root_turn_id)
+        .bind(
+            i64::try_from(thread.generation)
+                .map_err(|_| "Thread generation 超出 SQLite INTEGER 范围")?,
+        )
         .fetch_optional(&mut *tx)
         .await?;
         if active.is_some() {
@@ -4871,12 +4951,13 @@ impl ActivationStore for SqliteStore {
             .map_err(|_| "Activation trigger sequence 超出 SQLite INTEGER 范围")?;
         sqlx::query(
             r#"INSERT INTO thread_activations
-               (id, revision, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
+               (id, revision, generation, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
                 trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
                 status, created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
         )
         .bind(&activation.id)
+        .bind(i64::try_from(thread.generation).map_err(|_| "Thread generation 超出 SQLite INTEGER 范围")?)
         .bind(&activation.agent_id)
         .bind(&activation.context_id)
         .bind(&activation.session_id)
@@ -5072,12 +5153,13 @@ impl ActivationStore for SqliteStore {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         sqlx::query(
             r#"INSERT OR IGNORE INTO thread_activations
-               (id, revision, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
+               (id, revision, generation, agent_id, context_id, session_id, initiating_principal_id, trigger_event_id,
                 trigger_sequence, trigger_kind, parent_activation_id, root_turn_id,
                 status, created_at, updated_at)
-               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
+               VALUES (?, 1, (SELECT generation FROM threads WHERE root_turn_id = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)"#,
         )
         .bind(&activation.id)
+        .bind(&activation.root_turn_id)
         .bind(&activation.agent_id)
         .bind(&activation.context_id)
         .bind(&activation.session_id)
@@ -5354,6 +5436,44 @@ impl ActivationStore for SqliteStore {
             .ok_or("Evaluation outcome Event 缺少 thread_id")?;
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
+        let activation_route = sqlx::query(
+            r#"SELECT activation.generation AS activation_generation,
+                      activation.status AS activation_status,
+                      thread.generation AS thread_generation
+               FROM thread_activations activation
+               JOIN threads thread ON thread.root_turn_id = activation.root_turn_id
+               WHERE activation.id = ? AND thread.id = ?"#,
+        )
+        .bind(activation_id)
+        .bind(thread_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| {
+            format!(
+                "Activation '{}' 或其 Thread '{}' 不存在",
+                activation_id, thread_id
+            )
+        })?;
+        let activation_generation: i64 = activation_route.get("activation_generation");
+        let thread_generation: i64 = activation_route.get("thread_generation");
+        if activation_generation != thread_generation {
+            tx.commit().await?;
+            return Ok(ActivationOutcomeCommit::StaleGeneration);
+        }
+        let activation_status: String = activation_route.get("activation_status");
+        if activation_status != ThreadActivationStatus::Running.as_str() {
+            let existing = sqlx::query_scalar::<_, String>(
+                "SELECT event_id FROM thread_outcomes WHERE root_turn_id = ?",
+            )
+            .bind(root_turn_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok(match existing {
+                Some(event_id) => ActivationOutcomeCommit::Existing { event_id },
+                None => ActivationOutcomeCommit::StaleActivation,
+            });
+        }
         let result = sqlx::query(
             "INSERT INTO thread_outcomes (thread_id, root_turn_id, activation_id, session_id, disposition, event_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(root_turn_id) DO NOTHING",
         )
@@ -5378,6 +5498,12 @@ impl ActivationStore for SqliteStore {
             });
         }
         let result_text = event.payload.get("text").and_then(JsonValue::as_str);
+        let thread_status =
+            if event.topic == "chat/reply" && event.payload.get("runtime_failure_kind").is_some() {
+                ThreadLifecycle::Failed.as_str()
+            } else {
+                ThreadLifecycle::Completed.as_str()
+            };
         let (delivery_status, delivery_event_id) = match event.topic.as_str() {
             "chat/reply" => ("delivered", Some(event.id.as_str())),
             "runtime/thread_result" => ("pending", None),
@@ -5386,7 +5512,7 @@ impl ActivationStore for SqliteStore {
         let terminal = sqlx::query(
             r#"UPDATE threads
                SET revision = revision + 1,
-                   status = 'completed',
+                   status = ?,
                    result_text = COALESCE(?, result_text),
                    result_event_id = ?,
                    delivery_status = ?,
@@ -5395,6 +5521,7 @@ impl ActivationStore for SqliteStore {
                WHERE id = ? AND root_turn_id = ? AND session_id = ?
                  AND status NOT IN ('completed', 'failed', 'cancelled')"#,
         )
+        .bind(thread_status)
         .bind(result_text)
         .bind(&event.id)
         .bind(delivery_status)
@@ -5470,6 +5597,161 @@ impl ActivationStore for SqliteStore {
             .await?;
         tx.commit().await?;
         Ok(ActivationOutcomeCommit::Committed)
+    }
+
+    async fn restart_dialogue_turn(
+        &self,
+        request: DialogueTurnRetryRequest,
+    ) -> Result<DialogueTurnRetryMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let root_turn_id = request
+            .event
+            .payload
+            .get("root_turn_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("DialogueTurn retry Event 缺少 root_turn_id")?;
+        let context_id = request
+            .event
+            .payload
+            .get("context_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("DialogueTurn retry Event 缺少 context_id")?;
+        let session_id = request
+            .event
+            .payload
+            .get("session_id")
+            .and_then(JsonValue::as_str)
+            .ok_or("DialogueTurn retry Event 缺少 session_id")?;
+        let expected_revision = i64::try_from(request.expected_thread_revision)
+            .map_err(|_| "DialogueTurn Thread revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let mut tx = self.pool.begin().await?;
+
+        // Take SQLite's single Writer before the idempotency read.  Without
+        // this first no-op write, two concurrent requests can both observe a
+        // missing retry Event in deferred read transactions; the loser then
+        // fails with SQLITE_BUSY_SNAPSHOT instead of observing the winner's
+        // durable Event as an idempotent retry.
+        sqlx::query("UPDATE threads SET revision = revision WHERE root_turn_id = ?")
+            .bind(root_turn_id)
+            .execute(&mut *tx)
+            .await?;
+        if stored_event_in_transaction(&mut tx, &request.event.id, context_id)
+            .await?
+            .is_some()
+        {
+            let row = sqlx::query("SELECT * FROM threads WHERE root_turn_id = ?")
+                .bind(root_turn_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            let Some(row) = row else {
+                tx.commit().await?;
+                return Ok(DialogueTurnRetryMutation::NotFound);
+            };
+            let current = thread_from_row(&row)?;
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Existing {
+                thread_id: current.id,
+                generation: current.generation,
+            });
+        }
+
+        let row = sqlx::query("SELECT * FROM threads WHERE root_turn_id = ?")
+            .bind(root_turn_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::NotFound);
+        };
+        let current = thread_from_row(&row)?;
+        if current.revision != request.expected_thread_revision {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Conflict { current });
+        }
+        let rejected = if current.kind != ThreadKind::DialogueTurn {
+            Some("只有 DialogueTurn 可以通过此原语重启".to_string())
+        } else if !current.lifecycle.is_terminal() {
+            Some("DialogueTurn 尚未进入终态".to_string())
+        } else if current.context_id != context_id || current.session_id != session_id {
+            Some("Retry Event 与 DialogueTurn route 不一致".to_string())
+        } else if current.result_event_id.as_deref()
+            != Some(request.expected_result_event_id.as_str())
+        {
+            Some("DialogueTurn 的当前结果已经变化".to_string())
+        } else {
+            None
+        };
+        if let Some(reason) = rejected {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Rejected { current, reason });
+        }
+        let result_event =
+            stored_event_in_transaction(&mut tx, &request.expected_result_event_id, context_id)
+                .await?;
+        if !result_event.as_ref().is_some_and(|event| {
+            event.topic == "chat/reply" && event.payload.get("runtime_failure_kind").is_some()
+        }) {
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Rejected {
+                current,
+                reason: "只有 Runtime 失败回复可以原位重试".to_string(),
+            });
+        }
+        // A runtime-failure reply is already the authoritative terminal
+        // outcome for this generation.  If the process crashed between that
+        // atomic outcome commit and Activation cleanup, the old row may still
+        // say queued/running.  Fence and close it in the same transaction as
+        // the generation bump instead of making the user restart the Runtime
+        // merely to recover the stale lease.
+        sqlx::query(
+            r#"UPDATE thread_activations
+               SET revision = revision + 1, status = 'cancelled',
+                   claimed_by = NULL, lease_expires_at = NULL, updated_at = ?
+               WHERE root_turn_id = ? AND generation = ?
+                 AND status IN ('queued', 'running')"#,
+        )
+        .bind(&now)
+        .bind(root_turn_id)
+        .bind(i64::try_from(current.generation)?)
+        .execute(&mut *tx)
+        .await?;
+        let generation = current.generation.saturating_add(1);
+        let generation_i64 = i64::try_from(generation)
+            .map_err(|_| "DialogueTurn generation 超出 SQLite INTEGER 范围")?;
+        let updated = sqlx::query(
+            r#"UPDATE threads
+               SET revision = revision + 1, generation = ?, status = 'open',
+                   result_text = NULL, result_event_id = NULL,
+                   delivery_status = 'none', delivery_event_id = NULL,
+                   updated_at = ?
+               WHERE id = ? AND revision = ?"#,
+        )
+        .bind(generation_i64)
+        .bind(&now)
+        .bind(&current.id)
+        .bind(expected_revision)
+        .execute(&mut *tx)
+        .await?;
+        if updated.rows_affected() != 1 {
+            let row = sqlx::query("SELECT * FROM threads WHERE id = ?")
+                .bind(&current.id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let current = thread_from_row(&row)?;
+            tx.commit().await?;
+            return Ok(DialogueTurnRetryMutation::Conflict { current });
+        }
+        sqlx::query("DELETE FROM thread_outcomes WHERE thread_id = ?")
+            .bind(&current.id)
+            .execute(&mut *tx)
+            .await?;
+        append_event_idempotent_in_transaction(&mut tx, &request.event).await?;
+        append_signal_outbox_in_transaction(&mut tx, &request.event).await?;
+        tx.commit().await?;
+        Ok(DialogueTurnRetryMutation::Accepted {
+            thread_id: current.id,
+            generation,
+        })
     }
 }
 
@@ -11271,16 +11553,18 @@ impl EventStore for SqliteStore {
         thread_id: &str,
         topic: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Existing Event payloads remain immutable. This marker makes the
-        // legacy compatibility projection one bounded write per
-        // (Context, Session, Thread, topic), rather than repeating JSON work
-        // on every three-second Dashboard refresh.
+        // Existing Event payloads remain immutable.  The mutable causal
+        // columns are only a query projection.  Most importantly, a
+        // Dashboard read must never hold SQLite's single Writer while it
+        // rewrites an unbounded legacy history: that used to block durable
+        // outcomes, timers and Recall for the full busy timeout.
         //
-        // Callers invoke this before every read, because a Thread that spans
-        // the projection upgrade has both projected and legacy rows and a
-        // non-empty query is therefore no evidence that the fill already ran.
-        // Settle that common case with a keyed read so a poll never opens a
-        // write transaction once the Thread has been filled.
+        // Each inspection therefore migrates at most one small batch.  Until
+        // all rows have crossed the projection boundary, later polls continue
+        // where the previous one stopped.  The completion marker is written
+        // only after the transaction proves that no matching legacy row
+        // remains; a crash can at worst repeat one idempotent batch.
+        const BACKFILL_BATCH_SIZE: i64 = 32;
         let filled = sqlx::query_scalar::<_, i64>(
             r#"SELECT COUNT(*) FROM event_causal_projection_backfills
                WHERE context_id = ? AND session_id = ? AND thread_id = ? AND topic = ?"#,
@@ -11295,23 +11579,7 @@ impl EventStore for SqliteStore {
             return Ok(());
         }
         let mut tx = self.pool.begin().await?;
-        let claimed = sqlx::query(
-            r#"INSERT OR IGNORE INTO event_causal_projection_backfills
-               (context_id, session_id, thread_id, topic, completed_at)
-               VALUES (?, ?, ?, ?, ?)"#,
-        )
-        .bind(context_id)
-        .bind(session_id)
-        .bind(thread_id)
-        .bind(topic)
-        .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
-        .execute(&mut *tx)
-        .await?;
-        if claimed.rows_affected() == 0 {
-            tx.rollback().await?;
-            return Ok(());
-        }
-        sqlx::query(
+        let updated = sqlx::query(
             r#"UPDATE events
                SET thread_id = COALESCE(
                        thread_id,
@@ -11333,20 +11601,55 @@ impl EventStore for SqliteStore {
                        json_extract(payload, '$.objective_id'),
                        json_extract(payload, '$.route.objective_id')
                    )
-               WHERE context_id = ? AND session_id = ? AND topic = ?
-                 AND thread_id IS NULL
-                 AND COALESCE(
-                       json_extract(payload, '$.thread_id'),
-                       json_extract(payload, '$.route.thread_id')
-                   ) = ?"#,
+               WHERE rowid IN (
+                   SELECT rowid FROM events
+                   WHERE context_id = ? AND session_id = ? AND topic = ?
+                     AND thread_id IS NULL
+                     AND COALESCE(
+                           json_extract(payload, '$.thread_id'),
+                           json_extract(payload, '$.route.thread_id')
+                       ) = ?
+                   ORDER BY rowid
+                   LIMIT ?
+               )"#,
         )
         .bind(context_id)
         .bind(session_id)
         .bind(topic)
         .bind(thread_id)
+        .bind(BACKFILL_BATCH_SIZE)
         .execute(&mut *tx)
         .await?;
+        // Fewer rows than the batch limit proves exhaustion without another
+        // unbounded JSON scan while the Writer is held.  Exactly-full final
+        // batches need one harmless zero-row poll before receiving the marker.
+        let complete = updated.rows_affected() < BACKFILL_BATCH_SIZE as u64;
+        if complete {
+            sqlx::query(
+                r#"INSERT OR IGNORE INTO event_causal_projection_backfills
+                   (context_id, session_id, thread_id, topic, completed_at)
+                   VALUES (?, ?, ?, ?, ?)"#,
+            )
+            .bind(context_id)
+            .bind(session_id)
+            .bind(thread_id)
+            .bind(topic)
+            .bind(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .execute(&mut *tx)
+            .await?;
+        }
         tx.commit().await?;
+        if updated.rows_affected() > 0 {
+            tracing::debug!(
+                context_id,
+                session_id,
+                thread_id,
+                topic,
+                rows = updated.rows_affected(),
+                complete,
+                "有界回填 Event causal projection"
+            );
+        }
         Ok(())
     }
 
@@ -15966,6 +16269,460 @@ mod tests {
             .await
             .unwrap(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_causal_projection_backfill_is_bounded_and_resumable() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        for index in 0..40 {
+            let id = format!("bounded-legacy-{index:02}");
+            store
+                .append(Event::new(
+                    id.clone(),
+                    "Runtime-Orchestrator".to_string(),
+                    "runtime_control".to_string(),
+                    "runtime/model_attempt_state".to_string(),
+                    serde_json::json!({
+                        "context_id": "bounded-context",
+                        "session_id": "bounded-session",
+                        "route": {
+                            "thread_id": "bounded-thread",
+                            "activation_id": format!("bounded-activation-{index:02}"),
+                            "root_turn_id": "bounded-root"
+                        }
+                    })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                ))
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "UPDATE events SET thread_id = NULL, activation_id = NULL, root_turn_id = NULL, objective_id = NULL WHERE context_id = ?",
+        )
+        .bind("bounded-context")
+        .execute(&store.pool)
+        .await
+        .unwrap();
+
+        store
+            .backfill_causal_projection_for_thread(
+                "bounded-context",
+                "bounded-session",
+                "bounded-thread",
+                "runtime/model_attempt_state",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM events WHERE context_id = ? AND thread_id = ?",
+            )
+            .bind("bounded-context")
+            .bind("bounded-thread")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            32,
+            "one Dashboard inspection must migrate only one bounded batch",
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM event_causal_projection_backfills WHERE thread_id = ?",
+            )
+            .bind("bounded-thread")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            0,
+            "a partial batch must not claim that the projection is complete",
+        );
+
+        store
+            .backfill_causal_projection_for_thread(
+                "bounded-context",
+                "bounded-session",
+                "bounded-thread",
+                "runtime/model_attempt_state",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM events WHERE context_id = ? AND thread_id = ?",
+            )
+            .bind("bounded-context")
+            .bind("bounded-thread")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            40,
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM event_causal_projection_backfills WHERE thread_id = ?",
+            )
+            .bind("bounded-thread")
+            .fetch_one(&store.pool)
+            .await
+            .unwrap(),
+            1,
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_dialogue_turn_restarts_in_place_and_fences_old_generation() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "retry-context".to_string(),
+                agent_id: "retry-agent".to_string(),
+                title: "Retry Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "retry-session".to_string(),
+                agent_id: "retry-agent".to_string(),
+                context_id: "retry-context".to_string(),
+                parent_session_id: None,
+                title: "Retry Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let root = Event::new(
+            "retry-root".to_string(),
+            "User".to_string(),
+            crate::event::TYPE_USER_MESSAGE.to_string(),
+            "chat/user_message".to_string(),
+            serde_json::json!({
+                "context_id": "retry-context",
+                "session_id": "retry-session",
+                "text": "do it"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(root.clone()).await.unwrap();
+        let root_sequence = store
+            .query(QueryFilter {
+                event_id: Some(root.id.clone()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        let thread = store
+            .ensure_thread(NewThread {
+                id: "retry-thread".to_string(),
+                agent_id: "retry-agent".to_string(),
+                context_id: "retry-context".to_string(),
+                session_id: "retry-session".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: root.id.clone(),
+                kind: ThreadKind::DialogueTurn,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+            })
+            .await
+            .unwrap();
+        let activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: "retry-root-signal".to_string(),
+                    thread_id: thread.id.clone(),
+                    event_id: root.id.clone(),
+                    principal_id: None,
+                    sequence: root_sequence,
+                    kind: root.topic.clone(),
+                    parent_activation_id: None,
+                },
+                NewThreadActivation {
+                    id: "retry-old-activation".to_string(),
+                    agent_id: "retry-agent".to_string(),
+                    context_id: "retry-context".to_string(),
+                    session_id: "retry-session".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: root.id.clone(),
+                    trigger_sequence: root_sequence,
+                    trigger_kind: root.topic.clone(),
+                    parent_activation_id: None,
+                    root_turn_id: root.id.clone(),
+                },
+                32,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let running = match store
+            .update_thread_activation(
+                &activation.id,
+                activation.revision,
+                ThreadActivationStatus::Running,
+                Some("test-runtime"),
+                Some(Utc::now() + chrono::Duration::seconds(30)),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(record) => record,
+            other => panic!("unexpected activation mutation: {other:?}"),
+        };
+        let failure = Event::new(
+            "retry-failure-reply".to_string(),
+            "Runtime-Orchestrator".to_string(),
+            "assistant_message".to_string(),
+            "chat/reply".to_string(),
+            serde_json::json!({
+                "context_id": "retry-context",
+                "session_id": "retry-session",
+                "root_turn_id": "retry-root",
+                "thread_id": "retry-thread",
+                "disposition": "deliver",
+                "text": "provider failed",
+                "runtime_failure_kind": "network",
+                "runtime_failure_stage": "llm_completion"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert_eq!(
+            store
+                .commit_activation_outcome(&running.id, &failure)
+                .await
+                .unwrap(),
+            ActivationOutcomeCommit::Committed
+        );
+        // Reproduce a crash after the atomic failure outcome has committed but
+        // before the Activation projection is closed.  The retry primitive
+        // must recover this row itself rather than requiring a Runtime restart.
+        assert_eq!(
+            store
+                .get_thread_activation(&running.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ThreadActivationStatus::Running
+        );
+        let failed_thread = store.get_thread("retry-thread").await.unwrap().unwrap();
+        assert_eq!(failed_thread.lifecycle, ThreadLifecycle::Failed);
+        assert_eq!(
+            failed_thread.result_event_id.as_deref(),
+            Some(failure.id.as_str())
+        );
+
+        let retry_event = Event::new(
+            "retry-request-event".to_string(),
+            "Runtime-DialogueRetry".to_string(),
+            crate::event::TYPE_INFER_REQUEST.to_string(),
+            "chat/dialogue_retry".to_string(),
+            serde_json::json!({
+                "context_id": "retry-context",
+                "session_id": "retry-session",
+                "root_turn_id": "retry-root",
+                "thread_id": "retry-thread",
+                "runtime_force_evaluation": true
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let request = DialogueTurnRetryRequest {
+            expected_thread_revision: failed_thread.revision,
+            expected_result_event_id: failure.id.clone(),
+            event: retry_event.clone(),
+        };
+        assert_eq!(
+            store.restart_dialogue_turn(request.clone()).await.unwrap(),
+            DialogueTurnRetryMutation::Accepted {
+                thread_id: "retry-thread".to_string(),
+                generation: 2,
+            }
+        );
+        assert_eq!(
+            store.restart_dialogue_turn(request).await.unwrap(),
+            DialogueTurnRetryMutation::Existing {
+                thread_id: "retry-thread".to_string(),
+                generation: 2,
+            }
+        );
+        let reopened = store.get_thread("retry-thread").await.unwrap().unwrap();
+        assert_eq!(reopened.lifecycle, ThreadLifecycle::Open);
+        assert_eq!(reopened.generation, 2);
+        assert!(reopened.result_event_id.is_none());
+        let fenced_activation = store
+            .get_thread_activation(&running.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fenced_activation.status, ThreadActivationStatus::Cancelled);
+        assert!(fenced_activation.claimed_by.is_none());
+        assert!(fenced_activation.lease_expires_at.is_none());
+        assert_eq!(
+            store
+                .list_signal_outbox(SignalOutboxStatus::Pending, 16)
+                .await
+                .unwrap()[0]
+                .event_id,
+            retry_event.id
+        );
+
+        let stale_outcome = Event::new(
+            "retry-stale-outcome".to_string(),
+            "Runtime-Orchestrator".to_string(),
+            "assistant_message".to_string(),
+            "chat/reply".to_string(),
+            serde_json::json!({
+                "context_id": "retry-context",
+                "session_id": "retry-session",
+                "root_turn_id": "retry-root",
+                "thread_id": "retry-thread",
+                "disposition": "deliver",
+                "text": "late old reply"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        assert_eq!(
+            store
+                .commit_activation_outcome(&fenced_activation.id, &stale_outcome)
+                .await
+                .unwrap(),
+            ActivationOutcomeCommit::StaleGeneration
+        );
+        assert!(store
+            .query(QueryFilter {
+                event_id: Some(stale_outcome.id),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()
+            .is_empty());
+
+        let retry_sequence = store
+            .query(QueryFilter {
+                event_id: Some(retry_event.id.clone()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        let retry_activation = store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: "retry-generation-2-signal".to_string(),
+                    thread_id: thread.id.clone(),
+                    event_id: retry_event.id.clone(),
+                    principal_id: None,
+                    sequence: retry_sequence,
+                    kind: retry_event.topic.clone(),
+                    parent_activation_id: None,
+                },
+                NewThreadActivation {
+                    id: "retry-generation-2-activation".to_string(),
+                    agent_id: "retry-agent".to_string(),
+                    context_id: "retry-context".to_string(),
+                    session_id: "retry-session".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: retry_event.id.clone(),
+                    trigger_sequence: retry_sequence,
+                    trigger_kind: retry_event.topic.clone(),
+                    parent_activation_id: None,
+                    root_turn_id: root.id.clone(),
+                },
+                32,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(retry_activation.generation, 2);
+
+        let late_tool = Event::new(
+            "retry-late-tool-output".to_string(),
+            "Runtime-Tool".to_string(),
+            "tool_output".to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::json!({
+                "context_id": "retry-context",
+                "session_id": "retry-session",
+                "root_turn_id": "retry-root",
+                "thread_id": "retry-thread",
+                "activation_id": running.id,
+                "text": "late generation-one tool result"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        store.append(late_tool.clone()).await.unwrap();
+        let late_sequence = store
+            .query(QueryFilter {
+                event_id: Some(late_tool.id.clone()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap()[0]
+            .sequence
+            .unwrap();
+        assert!(store
+            .claim_thread_signal_batch(
+                NewThreadSignal {
+                    id: "retry-late-tool-signal".to_string(),
+                    thread_id: thread.id,
+                    event_id: late_tool.id,
+                    principal_id: None,
+                    sequence: late_sequence,
+                    kind: late_tool.topic,
+                    parent_activation_id: Some(fenced_activation.id),
+                },
+                NewThreadActivation {
+                    id: "retry-must-not-create-activation".to_string(),
+                    agent_id: "retry-agent".to_string(),
+                    context_id: "retry-context".to_string(),
+                    session_id: "retry-session".to_string(),
+                    initiating_principal_id: None,
+                    trigger_event_id: "retry-late-tool-output".to_string(),
+                    trigger_sequence: late_sequence,
+                    trigger_kind: "chat/tool_output".to_string(),
+                    parent_activation_id: Some("retry-old-activation".to_string()),
+                    root_turn_id: root.id,
+                },
+                32,
+            )
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store
+                .list_context_thread_signals(
+                    "retry-context",
+                    Some(ThreadSignalStatus::Acknowledged),
+                )
+                .await
+                .unwrap()
+                .iter()
+                .filter(|signal| signal.id == "retry-late-tool-signal")
+                .count(),
+            1,
+            "a late old-generation tool Signal must be acknowledged, never claimed",
         );
     }
 

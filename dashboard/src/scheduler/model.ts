@@ -93,6 +93,25 @@ export function activeSchedulerThreads(snapshot: SchedulerSnapshot | null): Sche
   return snapshot.threads.filter(thread => thread.phase !== 'idle')
 }
 
+/**
+ * Composer activity must not collapse model evaluation and physical work into
+ * one ambiguous "running" number. Dialogue counts active DialogueTurn
+ * Activations; execution counts authoritative non-terminal ExecutionJobs.
+ */
+export function schedulerActivityCounts(snapshot: SchedulerSnapshot | null): {
+  dialogue: number
+  execution: number
+} {
+  if (!snapshot) return { dialogue: 0, execution: 0 }
+  const dialogue = snapshot.threads.reduce((count, thread) => {
+    if (thread.thread.kind !== 'dialogue_turn') return count
+    return count + thread.activations.filter(item => (
+      item.activation.status === 'queued' || item.activation.status === 'running'
+    )).length
+  }, 0)
+  return { dialogue, execution: snapshot.summary.active_jobs }
+}
+
 export function attentionJobKey(
   kind: 'approval_anomaly' | 'execution_job',
   snapshot: SchedulerJobSnapshot,
@@ -125,6 +144,33 @@ export function attentionDeliveryKey(snapshot: SchedulerThreadSnapshot): string 
 export function threadCarriesExecution(thread: SchedulerThreadSnapshot): boolean {
   return thread.thread.kind !== 'dialogue_turn'
     || thread.activations.some(activation => activation.jobs.length > 0)
+}
+
+/**
+ * A failure reply is retryable only while it is still the authoritative
+ * terminal result of the same logical DialogueTurn. This prevents an old
+ * failure card from starting another generation after the Turn has already
+ * been reopened, completed, or superseded by a newer result.
+ */
+export function retryableDialogueThread(
+  threads: SchedulerThreadSnapshot[],
+  eventId: string,
+  payload: Record<string, unknown>,
+): SchedulerThreadSnapshot | undefined {
+  if (typeof payload.runtime_failure_kind !== 'string' || !payload.runtime_failure_kind.trim()) {
+    return undefined
+  }
+  const threadId = typeof payload.thread_id === 'string' ? payload.thread_id : ''
+  const rootTurnId = typeof payload.root_turn_id === 'string' ? payload.root_turn_id : ''
+  return threads.find(snapshot => {
+    const thread = snapshot.thread
+    return thread.kind === 'dialogue_turn'
+      && thread.lifecycle === 'failed'
+      && thread.result_event_id === eventId
+      && ((!threadId && !rootTurnId)
+        || (threadId !== '' && thread.id === threadId)
+        || (rootTurnId !== '' && thread.root_turn_id === rootTurnId))
+  })
 }
 
 export function schedulerAttentionCount(snapshot: SchedulerSnapshot | null): number {

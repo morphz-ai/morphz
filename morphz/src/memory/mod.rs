@@ -592,6 +592,10 @@ impl ThreadActivationStatus {
 pub struct ThreadActivationRecord {
     pub id: String,
     pub revision: u64,
+    /// Fences this physical Evaluation against restarts of the same logical
+    /// Thread. A restarted DialogueTurn keeps its causal root but increments
+    /// the Thread generation; outcomes from older generations are ignored.
+    pub generation: u64,
     pub agent_id: String,
     pub context_id: String,
     pub session_id: String,
@@ -633,7 +637,41 @@ pub enum ThreadActivationMutation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActivationOutcomeCommit {
     Committed,
-    Existing { event_id: String },
+    Existing {
+        event_id: String,
+    },
+    StaleGeneration,
+    /// The physical Activation was already cancelled or otherwise reached a
+    /// terminal state before it claimed an outcome. This durably fences an
+    /// expired Objective Evaluation from its replacement.
+    StaleActivation,
+}
+
+#[derive(Debug, Clone)]
+pub struct DialogueTurnRetryRequest {
+    pub expected_thread_revision: u64,
+    pub expected_result_event_id: String,
+    pub event: crate::event::Event,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialogueTurnRetryMutation {
+    Accepted {
+        thread_id: String,
+        generation: u64,
+    },
+    Existing {
+        thread_id: String,
+        generation: u64,
+    },
+    Conflict {
+        current: ThreadRecord,
+    },
+    Rejected {
+        current: ThreadRecord,
+        reason: String,
+    },
+    NotFound,
 }
 
 /// Fenced commit result for one persistent Delivery Timer generation.
@@ -2222,6 +2260,8 @@ impl DeliveryStatus {
 pub struct ThreadRecord {
     pub id: String,
     pub revision: u64,
+    /// Monotonic Evaluation generation for this logical Thread.
+    pub generation: u64,
     pub agent_id: String,
     pub context_id: String,
     pub session_id: String,
@@ -3213,6 +3253,14 @@ pub trait ActivationStore: Send + Sync {
         activation_id: &str,
         event: &crate::event::Event,
     ) -> Result<ActivationOutcomeCommit, Box<dyn std::error::Error + Send + Sync>>;
+    /// Atomically starts a new Evaluation generation for one failed logical
+    /// DialogueTurn. The immutable user Event remains the causal root; the
+    /// retry Event and its Signal Outbox are committed with the generation
+    /// bump, so a crash cannot leave a reopened Thread without a wakeup.
+    async fn restart_dialogue_turn(
+        &self,
+        request: DialogueTurnRetryRequest,
+    ) -> Result<DialogueTurnRetryMutation, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Durable deterministic control plane for Runtime-owned Yao programs.

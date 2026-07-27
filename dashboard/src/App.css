@@ -696,6 +696,14 @@ kbd { font-family: var(--mono); font-size: 11px; font-weight: 500; }
 .message-time { color: var(--faint); font-family: var(--mono); font-size: 10px; }
 .message-copy { display: inline-flex; width: 22px; height: 22px; align-items: center; justify-content: center; border-radius: var(--radius-xs); color: var(--faint); transition: background .12s ease, color .12s ease; }
 .message-copy:hover { background: var(--surface-strong); color: var(--text-soft); }
+.message-retry-panel { display: flex; width: min(700px, 100%); align-items: center; justify-content: space-between; gap: 14px; margin-top: 10px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--red) 28%, var(--line)); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--red-soft) 58%, var(--surface)); }
+.message-retry-panel > span { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.message-retry-panel strong { color: var(--text-soft); font-size: 10px; }
+.message-retry-panel small { color: var(--muted); font-size: 9px; line-height: 1.45; }
+.message-retry-panel button { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 6px; padding: 7px 9px; border: 1px solid color-mix(in srgb, var(--red) 36%, var(--line)); border-radius: var(--radius-xs); background: var(--surface-elevated); color: var(--text-soft); font-size: 9px; font-weight: 650; }
+.message-retry-panel button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-strong); }
+.message-retry-panel button:disabled { cursor: wait; opacity: .65; }
+.message-retry-panel .is-spinning { animation: spin 1s linear infinite; }
 .message-body { max-width: min(800px, 85%); color: var(--text); font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }
 .message-row.user .message-body { background: var(--surface-elevated); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 12px 16px; }
 .message-row.agent .message-body { max-width: 1000px; padding: 2px 0; }

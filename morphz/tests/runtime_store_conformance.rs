@@ -742,6 +742,21 @@ where
         })
         .await
         .unwrap();
+    let outcome_activation = match store
+        .update_thread_activation(
+            &outcome_activation.id,
+            outcome_activation.revision,
+            ThreadActivationStatus::Running,
+            Some("conformance-worker"),
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            Some(1),
+        )
+        .await
+        .unwrap()
+    {
+        ThreadActivationMutation::Updated(activation) => activation,
+        mutation => panic!("outcome Activation must enter running before commit: {mutation:?}"),
+    };
     let outcome_event = Event::new(
         "conformance-activation-outcome".to_string(),
         "Store-Conformance".to_string(),
