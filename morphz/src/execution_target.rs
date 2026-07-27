@@ -1307,7 +1307,7 @@ impl Tool for ListTargetsTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "列出当前身份可使用的 Execution Target 紧凑索引。物理工具的 target 参数应使用这里返回的稳定 ID。".to_string(),
+            description: "列出当前身份可使用的 Execution Target 紧凑索引。物理工具的 target 参数应使用这里返回的稳定 ID。注意：Runtime 托管 SSH 是按命令拨号，不维护常驻 SSH 租约；其 offline 只可能表示当前 Runtime 路由待重建，不等于远端主机物理离线，应按 recommended_action 调用 resolve_target 恢复。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1332,6 +1332,7 @@ impl Tool for ListTargetsTool {
             .into_iter()
             .filter(target_visible_to_active_principal)
             .map(|target| {
+                let runtime_availability = target_runtime_availability(&target);
                 serde_json::json!({
                     "target_id": target.id,
                     "name": target.name,
@@ -1341,6 +1342,7 @@ impl Tool for ListTargetsTool {
                     "capabilities": target.capabilities,
                     "provider_node_id": target.provider_node_id,
                     "workspace_root": target.workspace_root,
+                    "runtime_availability": runtime_availability,
                 })
             })
             .collect::<Vec<_>>();
@@ -1443,6 +1445,183 @@ impl RuntimeManagedSshProvisioner {
             .insert(endpoint_ref, endpoint);
         Ok(target)
     }
+
+    /// Rebuilds the process-local OpenSSH route for a durable Runtime-managed
+    /// target. Runtime-managed SSH has no persistent connection or heartbeat:
+    /// an `offline` record after restart means the route has not been
+    /// rehydrated, not that the remote machine was observed offline.
+    pub async fn rehydrate(
+        &self,
+        target: &ExecutionTargetRecord,
+    ) -> Result<ExecutionTargetRecord, TargetExecutionError> {
+        if target.kind != ExecutionTargetKind::ManagedSsh
+            || target.provider_node_id.is_some()
+            || target
+                .metadata
+                .get("execution_location")
+                .and_then(serde_json::Value::as_str)
+                != Some("runtime")
+        {
+            return Err(format!(
+                "Execution Target '{}' 不是 Runtime 托管的 SSH 路由",
+                target.id
+            )
+            .into());
+        }
+        if target.status == ExecutionTargetStatus::Disabled {
+            return Err(format!(
+                "Managed SSH Target '{}' 已被管理员禁用；需要显式 enable 后才能使用",
+                target.id
+            )
+            .into());
+        }
+        let host = target
+            .metadata
+            .get("host")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                format!(
+                    "Runtime Managed SSH Target '{}' 缺少可恢复的 host 元数据",
+                    target.id
+                )
+            })?;
+        let user = target
+            .metadata
+            .get("user")
+            .and_then(serde_json::Value::as_str);
+        let port = target
+            .metadata
+            .get("port")
+            .and_then(serde_json::Value::as_u64)
+            .map(u16::try_from)
+            .transpose()
+            .map_err(|_| format!("Managed SSH Target '{}' 的 port 无效", target.id))?;
+        let endpoint_ref = target
+            .metadata
+            .get("endpoint_ref")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                format!(
+                    "Runtime Managed SSH Target '{}' 缺少 endpoint_ref 元数据",
+                    target.id
+                )
+            })?;
+        validate_endpoint_ref(endpoint_ref)?;
+        let owner_principal_id = target.owner_principal_id.as_deref().ok_or_else(|| {
+            format!(
+                "Runtime Managed SSH Target '{}' 缺少 owner_principal_id",
+                target.id
+            )
+        })?;
+        let endpoint = resolve_runtime_ssh_host(host, user, port).await?;
+        let config = ManagedSshTargetConfig {
+            id: target.id.clone(),
+            name: target.name.clone(),
+            endpoint_ref: endpoint_ref.to_string(),
+            owner_principal_id: Some(owner_principal_id.to_string()),
+            platform: target.platform.clone(),
+            workspace_root: target.workspace_root.clone(),
+        };
+        let registration = runtime_managed_ssh_registration(
+            &config,
+            &endpoint,
+            owner_principal_id,
+            &self.permission_policy_digest,
+        )?;
+        let target = self.targets.register_execution_target(registration).await?;
+        if target.status != ExecutionTargetStatus::Online {
+            return Err(format!(
+                "Managed SSH Target '{}' 路由恢复后仍为 {}",
+                target.id,
+                target.status.as_str()
+            )
+            .into());
+        }
+        self.endpoints
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(endpoint_ref.to_string(), endpoint);
+        Ok(target)
+    }
+}
+
+fn target_runtime_availability(target: &ExecutionTargetRecord) -> serde_json::Value {
+    if target.status == ExecutionTargetStatus::Disabled {
+        return serde_json::json!({
+            "availability": "disabled",
+            "usable_now": false,
+            "recoverable": false,
+            "connection_model": if target.provider_node_id.is_some() {
+                "provider_heartbeat"
+            } else if target.kind == ExecutionTargetKind::ManagedSsh {
+                "dial_on_demand"
+            } else {
+                "local"
+            },
+            "status_explanation": "Target 被显式禁用；这不是临时离线状态",
+            "recommended_action": "仅管理员可以显式启用该 Target"
+        });
+    }
+    if target.kind == ExecutionTargetKind::ManagedSsh && target.provider_node_id.is_none() {
+        if target.status == ExecutionTargetStatus::Online {
+            return serde_json::json!({
+                "availability": "ready_on_demand",
+                "usable_now": true,
+                "recoverable": true,
+                "connection_model": "dial_on_demand",
+                "status_explanation": "Runtime 已配置 SSH 路由；SSH 连接只在执行命令时建立，不存在需要续租的常驻连接",
+                "recommended_action": "可直接把 target_id 用于 exec；不要把没有常驻 SSH 连接解释为节点离线"
+            });
+        }
+        return serde_json::json!({
+            "availability": "route_needs_rehydration",
+            "usable_now": false,
+            "recoverable": true,
+            "connection_model": "dial_on_demand",
+            "status_explanation": "当前 Runtime 尚未重建此按需 SSH 路由；这不表示远端主机已被探测为离线",
+            "recommended_action": "调用 resolve_target 并传入此 target_id 重新解析路由，然后继续执行"
+        });
+    }
+    if target.provider_node_id.is_some() {
+        if target.status == ExecutionTargetStatus::Online {
+            return serde_json::json!({
+                "availability": "provider_connected",
+                "usable_now": true,
+                "recoverable": true,
+                "connection_model": "provider_heartbeat",
+                "status_explanation": "提供此 Target 的 Edge Node 心跳正常",
+                "recommended_action": "可直接执行"
+            });
+        }
+        return serde_json::json!({
+            "availability": "provider_temporarily_disconnected",
+            "usable_now": false,
+            "recoverable": true,
+            "connection_model": "provider_heartbeat",
+            "status_explanation": "提供此 Target 的 Edge Node 心跳暂时过期；Target 并未删除",
+            "recommended_action": "可等待 Provider Node 恢复，或在允许时选择持久离线排队"
+        });
+    }
+    serde_json::json!({
+        "availability": if target.status == ExecutionTargetStatus::Online {
+            "ready"
+        } else {
+            "unavailable"
+        },
+        "usable_now": target.status == ExecutionTargetStatus::Online,
+        "recoverable": target.status != ExecutionTargetStatus::Disabled,
+        "connection_model": "local",
+        "status_explanation": if target.status == ExecutionTargetStatus::Online {
+            "Target 当前可用"
+        } else {
+            "Target 当前不可用"
+        },
+        "recommended_action": if target.status == ExecutionTargetStatus::Online {
+            "可直接执行"
+        } else {
+            "等待 Runtime 恢复 Target"
+        }
+    })
 }
 
 impl ResolveTargetTool {
@@ -1462,6 +1641,7 @@ impl ResolveTargetTool {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ResolveTargetArgs {
+    target_id: Option<String>,
     #[serde(default)]
     capabilities: Vec<String>,
     platform: Option<String>,
@@ -1487,10 +1667,14 @@ impl Tool for ResolveTargetTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: self.name().to_string(),
-            description: "按能力、平台和 Backend 确定性选择当前身份可用的 Execution Target。Managed SSH 可直接传入宿主机已有的 OpenSSH alias；Runtime 会按需解析并注册 Target，无需额外 Morphz SSH 配置。返回的稳定 target_id 必须显式用于随后的非本地物理工具调用。".to_string(),
+            description: "按稳定 ID或按能力、平台和 Backend 确定性选择当前身份可用的 Execution Target。Runtime 托管 SSH 没有常驻连接租约：若 list_targets 显示 route_needs_rehydration，传入 target_id 即可重建路由；这不是对远端主机离线的判断。Managed SSH 也可直接传入宿主机已有的 OpenSSH alias 按需注册。返回的稳定 target_id 必须显式用于随后的非本地物理工具调用。".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "target_id": {
+                        "type": "string",
+                        "description": "可选的稳定 Target ID。Runtime Managed SSH 路由待恢复时，传入该 ID 可原地重建；不要同时传 host/user/port"
+                    },
                     "capabilities": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -1531,6 +1715,11 @@ impl Tool for ResolveTargetTool {
 
     async fn execute(&self, arguments: &str) -> Result<String, TargetExecutionError> {
         let args: ResolveTargetArgs = serde_json::from_str(arguments)?;
+        if args.target_id.is_some()
+            && (args.host.is_some() || args.user.is_some() || args.port.is_some())
+        {
+            return Err("resolve_target.target_id 不能与 host/user/port 同时使用".into());
+        }
         if (args.host.is_some() || args.user.is_some() || args.port.is_some())
             && args
                 .kind
@@ -1557,7 +1746,41 @@ impl Tool for ResolveTargetTool {
         {
             return Err("resolve_target.workspace_root 不能为空".into());
         }
-        let selected = if let Some(host) = args.host.as_deref() {
+        let selected = if let Some(target_id) = args.target_id.as_deref() {
+            let target = self
+                .targets
+                .get_execution_target(target_id)
+                .await?
+                .ok_or_else(|| format!("Execution Target '{target_id}' 不存在"))?;
+            if !target_visible_to_active_principal(&target) {
+                return Err(format!("当前身份不能使用 Execution Target '{}'", target.id).into());
+            }
+            if target.status == ExecutionTargetStatus::Offline
+                && target.kind == ExecutionTargetKind::ManagedSsh
+                && target.provider_node_id.is_none()
+            {
+                self.runtime_managed_ssh
+                    .as_ref()
+                    .ok_or("当前 Runtime 未启用按需 Managed SSH Target")?
+                    .rehydrate(&target)
+                    .await?
+            } else if target.status == ExecutionTargetStatus::Online
+                || (args.allow_offline_queue
+                    && target.status == ExecutionTargetStatus::Offline
+                    && (target.kind == ExecutionTargetKind::EdgeNode
+                        || (target.kind == ExecutionTargetKind::ManagedSsh
+                            && target.provider_node_id.is_some())))
+            {
+                target
+            } else {
+                return Err(format!(
+                    "Execution Target '{}' 当前为 {}，不能按当前策略选择",
+                    target.id,
+                    target.status.as_str()
+                )
+                .into());
+            }
+        } else if let Some(host) = args.host.as_deref() {
             let provisioner = self
                 .runtime_managed_ssh
                 .as_ref()
@@ -1642,6 +1865,7 @@ impl Tool for ResolveTargetTool {
             "host": selected.metadata.get("host"),
             "user": selected.metadata.get("user"),
             "port": selected.metadata.get("port"),
+            "runtime_availability": target_runtime_availability(&selected),
             "selection": "deterministic_online_then_target_id"
         })
         .to_string())
@@ -1695,7 +1919,13 @@ impl Tool for InspectTargetTool {
         if !target_visible_to_active_principal(&target) {
             return Err(format!("当前身份不能查看 Execution Target '{}'", target.id).into());
         }
-        Ok(serde_json::to_string(&target)?)
+        let runtime_availability = target_runtime_availability(&target);
+        let mut output = serde_json::to_value(target)?;
+        output
+            .as_object_mut()
+            .ok_or("Execution Target 序列化结果不是 object")?
+            .insert("runtime_availability".to_string(), runtime_availability);
+        Ok(output.to_string())
     }
 }
 
@@ -2026,6 +2256,66 @@ mod tests {
         assert_ne!(second["target_id"], output["target_id"]);
         assert_eq!(second["user"], "root");
         assert_eq!(endpoints.read().unwrap().len(), 2);
+
+        let first = store
+            .get_execution_target(target_id)
+            .await
+            .unwrap()
+            .unwrap();
+        store
+            .set_execution_target_status(target_id, first.revision, ExecutionTargetStatus::Offline)
+            .await
+            .unwrap();
+        endpoints.write().unwrap().clear();
+
+        let recovered = CURRENT_PRINCIPAL_ID
+            .scope(
+                Some("principal-a".to_string()),
+                tool.execute(&format!(r#"{{"target_id":"{target_id}"}}"#)),
+            )
+            .await
+            .unwrap();
+        let recovered: serde_json::Value = serde_json::from_str(&recovered).unwrap();
+        assert_eq!(recovered["target_id"], target_id);
+        assert_eq!(recovered["status"], "online");
+        assert_eq!(
+            recovered["runtime_availability"]["availability"],
+            "ready_on_demand"
+        );
+        assert_eq!(endpoints.read().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn runtime_managed_ssh_offline_is_described_as_recoverable_route_state() {
+        let now = Utc::now();
+        let target = ExecutionTargetRecord {
+            id: "target-ssh-a".to_string(),
+            revision: 2,
+            owner_principal_id: Some("principal-a".to_string()),
+            provider_node_id: None,
+            kind: ExecutionTargetKind::ManagedSsh,
+            name: "SSH production".to_string(),
+            status: ExecutionTargetStatus::Offline,
+            platform: None,
+            workspace_root: None,
+            capabilities: vec!["exec".to_string()],
+            metadata: serde_json::json!({
+                "execution_location": "runtime",
+                "host": "production"
+            }),
+            policy_digest: "policy-a".to_string(),
+            created_at: now,
+            updated_at: now,
+            last_seen_at: Some(now),
+        };
+
+        let availability = target_runtime_availability(&target);
+        assert_eq!(availability["availability"], "route_needs_rehydration");
+        assert_eq!(availability["recoverable"], true);
+        assert!(availability["status_explanation"]
+            .as_str()
+            .unwrap()
+            .contains("不表示远端主机"));
     }
 
     #[test]

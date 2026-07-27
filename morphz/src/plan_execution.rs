@@ -212,20 +212,47 @@ impl PlanExecutionCoordinator {
             }
         };
 
-        let mut machine: PlanMachine = serde_json::from_value(running.state_json.clone())
-            .map_err(|error| format!("PlanExecution '{}' state 无法恢复: {error}", running.id))?;
-        match machine.advance(&self.registry) {
-            PlanAdvance::Suspended(effect @ PlanEffect::Call { sequence, .. }) => {
-                let state_json = serde_json::to_value(&machine)?;
-                let budget_json = machine.budget_json()?;
-                let effect_tool_call_id = deterministic_plan_effect_id(&running.id, sequence)?;
-                let job = match planner
-                    .plan_call(&running, &effect, &effect_tool_call_id)
-                    .await
-                {
-                    Ok(job) => job,
-                    Err(error) => {
-                        let message = format!("Yao call 规划失败: {error}");
+        let advance: PlanExecutionResult<PlanDriveReceipt> = async {
+            let mut machine: PlanMachine = serde_json::from_value(running.state_json.clone())
+                .map_err(|error| {
+                    format!("PlanExecution '{}' state 无法恢复: {error}", running.id)
+                })?;
+            match machine.advance(&self.registry) {
+                PlanAdvance::Suspended(effect @ PlanEffect::Call { sequence, .. }) => {
+                    let state_json = serde_json::to_value(&machine)?;
+                    let budget_json = machine.budget_json()?;
+                    let effect_tool_call_id = deterministic_plan_effect_id(&running.id, sequence)?;
+                    let job = match planner
+                        .plan_call(&running, &effect, &effect_tool_call_id)
+                        .await
+                    {
+                        Ok(job) => job,
+                        Err(error) => {
+                            let message = format!("Yao call 规划失败: {error}");
+                            let mutation = self
+                                .store
+                                .finish_plan_execution(
+                                    &running.id,
+                                    running.revision,
+                                    claim_token,
+                                    PlanExecutionStatus::Failed,
+                                    &state_json,
+                                    &budget_json,
+                                    None,
+                                    Some(&message),
+                                )
+                                .await?;
+                            let plan = updated_or_conflict(mutation, "fail call planning")?;
+                            return Ok(PlanDriveReceipt::Failed {
+                                plan,
+                                error: message,
+                            });
+                        }
+                    };
+                    if let Err(error) =
+                        validate_planned_job(&running, &effect, &effect_tool_call_id, &job)
+                    {
+                        let message = format!("Yao call 规划结果非法: {error}");
                         let mutation = self
                             .store
                             .finish_plan_execution(
@@ -239,17 +266,83 @@ impl PlanExecutionCoordinator {
                                 Some(&message),
                             )
                             .await?;
-                        let plan = updated_or_conflict(mutation, "fail call planning")?;
+                        let plan = updated_or_conflict(mutation, "fail invalid call planning")?;
                         return Ok(PlanDriveReceipt::Failed {
                             plan,
                             error: message,
                         });
                     }
-                };
-                if let Err(error) =
-                    validate_planned_job(&running, &effect, &effect_tool_call_id, &job)
-                {
-                    let message = format!("Yao call 规划结果非法: {error}");
+                    let committed = self
+                        .store
+                        .create_execution_job_and_suspend_plan(
+                            &running.id,
+                            running.revision,
+                            claim_token,
+                            &state_json,
+                            &budget_json,
+                            job,
+                        )
+                        .await?;
+                    Ok(PlanDriveReceipt::WaitingForExecutionJob {
+                        plan: committed.plan,
+                        job: Box::new(committed.execution_job),
+                        existing: committed.existing,
+                    })
+                }
+                PlanAdvance::Suspended(effect @ PlanEffect::Infer { sequence, .. }) => {
+                    let state_json = serde_json::to_value(&machine)?;
+                    let budget_json = machine.budget_json()?;
+                    let request_event = infer_request_event(&running, &effect)?;
+                    let activation_id = deterministic_infer_activation_id(&request_event.id)?;
+                    let committed: PlanEvaluationCommit = self
+                        .store
+                        .create_evaluation_and_suspend_plan(
+                            &running.id,
+                            running.revision,
+                            claim_token,
+                            &state_json,
+                            &budget_json,
+                            &request_event,
+                            &activation_id,
+                        )
+                        .await?;
+                    debug_assert_eq!(
+                        deterministic_plan_effect_id(&running.id, sequence)?,
+                        request_event
+                            .payload
+                            .get("plan_effect_id")
+                            .and_then(JsonValue::as_str)
+                            .unwrap_or_default()
+                    );
+                    Ok(PlanDriveReceipt::WaitingForEvaluation {
+                        plan: committed.plan,
+                        request_event: Box::new(committed.request_event),
+                        activation_id: committed.activation_id,
+                        existing: committed.existing,
+                    })
+                }
+                PlanAdvance::Complete(value) => {
+                    let state_json = serde_json::to_value(&machine)?;
+                    let budget_json = machine.budget_json()?;
+                    let mutation = self
+                        .store
+                        .finish_plan_execution(
+                            &running.id,
+                            running.revision,
+                            claim_token,
+                            PlanExecutionStatus::Succeeded,
+                            &state_json,
+                            &budget_json,
+                            Some(&value),
+                            None,
+                        )
+                        .await?;
+                    let plan = updated_or_conflict(mutation, "complete")?;
+                    Ok(PlanDriveReceipt::Succeeded { plan, value })
+                }
+                PlanAdvance::Failed(error) => {
+                    let state_json = serde_json::to_value(&machine)?;
+                    let budget_json = machine.budget_json()?;
                     let mutation = self
                         .store
                         .finish_plan_execution(
@@ -260,106 +353,120 @@ impl PlanExecutionCoordinator {
                             &state_json,
                             &budget_json,
                             None,
-                            Some(&message),
+                            Some(&error.message),
                         )
                         .await?;
-                    let plan = updated_or_conflict(mutation, "fail invalid call planning")?;
-                    return Ok(PlanDriveReceipt::Failed {
+                    let plan = updated_or_conflict(mutation, "fail")?;
+                    Ok(PlanDriveReceipt::Failed {
                         plan,
-                        error: message,
-                    });
+                        error: error.message,
+                    })
                 }
-                let committed = self
-                    .store
-                    .create_execution_job_and_suspend_plan(
-                        &running.id,
-                        running.revision,
-                        claim_token,
-                        &state_json,
-                        &budget_json,
-                        job,
-                    )
-                    .await?;
-                Ok(PlanDriveReceipt::WaitingForExecutionJob {
-                    plan: committed.plan,
-                    job: Box::new(committed.execution_job),
-                    existing: committed.existing,
-                })
-            }
-            PlanAdvance::Suspended(effect @ PlanEffect::Infer { sequence, .. }) => {
-                let state_json = serde_json::to_value(&machine)?;
-                let budget_json = machine.budget_json()?;
-                let request_event = infer_request_event(&running, &effect)?;
-                let activation_id = deterministic_infer_activation_id(&request_event.id)?;
-                let committed: PlanEvaluationCommit = self
-                    .store
-                    .create_evaluation_and_suspend_plan(
-                        &running.id,
-                        running.revision,
-                        claim_token,
-                        &state_json,
-                        &budget_json,
-                        &request_event,
-                        &activation_id,
-                    )
-                    .await?;
-                debug_assert_eq!(
-                    deterministic_plan_effect_id(&running.id, sequence)?,
-                    request_event
-                        .payload
-                        .get("plan_effect_id")
-                        .and_then(JsonValue::as_str)
-                        .unwrap_or_default()
-                );
-                Ok(PlanDriveReceipt::WaitingForEvaluation {
-                    plan: committed.plan,
-                    request_event: Box::new(committed.request_event),
-                    activation_id: committed.activation_id,
-                    existing: committed.existing,
-                })
-            }
-            PlanAdvance::Complete(value) => {
-                let state_json = serde_json::to_value(&machine)?;
-                let budget_json = machine.budget_json()?;
-                let mutation = self
-                    .store
-                    .finish_plan_execution(
-                        &running.id,
-                        running.revision,
-                        claim_token,
-                        PlanExecutionStatus::Succeeded,
-                        &state_json,
-                        &budget_json,
-                        Some(&value),
-                        None,
-                    )
-                    .await?;
-                let plan = updated_or_conflict(mutation, "complete")?;
-                Ok(PlanDriveReceipt::Succeeded { plan, value })
-            }
-            PlanAdvance::Failed(error) => {
-                let state_json = serde_json::to_value(&machine)?;
-                let budget_json = machine.budget_json()?;
-                let mutation = self
-                    .store
-                    .finish_plan_execution(
-                        &running.id,
-                        running.revision,
-                        claim_token,
-                        PlanExecutionStatus::Failed,
-                        &state_json,
-                        &budget_json,
-                        None,
-                        Some(&error.message),
-                    )
-                    .await?;
-                let plan = updated_or_conflict(mutation, "fail")?;
-                Ok(PlanDriveReceipt::Failed {
-                    plan,
-                    error: error.message,
-                })
             }
         }
+        .await;
+
+        if let Err(error) = &advance {
+            // A store error after claim (most commonly SQLITE_BUSY) used to
+            // drop this Future while leaving the row `running` until its
+            // lease expired. Release with the exact fence before propagating
+            // the error, so replay can resume immediately and a stale worker
+            // can never commit after a newer owner takes over.
+            let release_deadline = running.lease_expires_at.unwrap_or_else(Utc::now);
+            let mut delay = std::time::Duration::from_millis(25);
+            loop {
+                match self
+                    .store
+                    .release_plan_execution_claim(&running.id, running.revision, claim_token)
+                    .await
+                {
+                    Ok(PlanExecutionMutation::Updated(requeued)) => {
+                        tracing::warn!(
+                            plan_execution_id = %requeued.id,
+                            revision = requeued.revision,
+                            %error,
+                            "PlanExecution 推进失败；已按 claim fence 回滚为 queued"
+                        );
+                        break;
+                    }
+                    Ok(PlanExecutionMutation::Conflict { current })
+                    | Ok(PlanExecutionMutation::Rejected {
+                        current: Some(current),
+                        ..
+                    }) if current.status != PlanExecutionStatus::Running
+                        || current.claim_token.as_deref() != Some(claim_token) =>
+                    {
+                        // A durable hand-off or a newer fenced owner already
+                        // won. Never overwrite that authoritative state.
+                        break;
+                    }
+                    Ok(PlanExecutionMutation::NotFound)
+                    | Ok(PlanExecutionMutation::Rejected { current: None, .. }) => break,
+                    Ok(PlanExecutionMutation::Existing(_))
+                    | Ok(PlanExecutionMutation::Conflict { .. })
+                    | Ok(PlanExecutionMutation::Rejected { .. }) => {
+                        if Utc::now() >= release_deadline {
+                            break;
+                        }
+                    }
+                    Err(release_error) => {
+                        if Utc::now() >= release_deadline {
+                            tracing::error!(
+                                plan_execution_id = %running.id,
+                                %release_error,
+                                "PlanExecution 错误后的 claim 释放持续失败；等待 lease recovery 接管"
+                            );
+                            break;
+                        }
+                    }
+                }
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(std::time::Duration::from_millis(500));
+            }
+        }
+        advance
+    }
+
+    /// Requeues expired pure-control claims with their exact persisted fence.
+    /// This is safe while the old Future still exists: clearing its token
+    /// makes every later stale commit lose deterministically.
+    pub async fn recover_expired_running(
+        &self,
+        context_id: Option<&str>,
+        limit: usize,
+    ) -> PlanExecutionResult<Vec<PlanExecutionRecord>> {
+        let plans = self
+            .store
+            .list_plan_executions(PlanExecutionFilter {
+                context_id: context_id.map(str::to_string),
+                status: Some(PlanExecutionStatus::Running),
+                include_terminal: false,
+                limit: Some(limit.max(1)),
+                ..PlanExecutionFilter::default()
+            })
+            .await?;
+        let now = Utc::now();
+        let mut recovered = Vec::new();
+        for plan in plans {
+            if !plan.lease_expires_at.is_some_and(|expiry| expiry <= now) {
+                continue;
+            }
+            let Some(claim_token) = plan.claim_token.as_deref() else {
+                continue;
+            };
+            match self
+                .store
+                .release_plan_execution_claim(&plan.id, plan.revision, claim_token)
+                .await?
+            {
+                PlanExecutionMutation::Updated(plan) => recovered.push(plan),
+                PlanExecutionMutation::Existing(_)
+                | PlanExecutionMutation::Conflict { .. }
+                | PlanExecutionMutation::Rejected { .. }
+                | PlanExecutionMutation::NotFound => {}
+            }
+        }
+        Ok(recovered)
     }
 
     /// Reconciles one terminal Execution Job into its exact suspended effect.
@@ -1159,8 +1266,8 @@ mod tests {
     use crate::memory::{
         ActivationStore, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobStore,
         ExecutionJobTerminal, ExecutionRetrySafety, NewCognitiveContext, NewSession, NewThread,
-        NewThreadActivation, SessionDirectoryStore, SessionMountKind, ThreadActivationMutation,
-        ThreadKind, ThreadStore,
+        NewThreadActivation, PlanExecutionStore, SessionDirectoryStore, SessionMountKind,
+        ThreadActivationMutation, ThreadKind, ThreadStore,
     };
     use crate::sexpr_eval::{validate, AllowList};
     use crate::tool::Tool;
@@ -1503,6 +1610,62 @@ mod tests {
             }
             other => panic!("expected failed PlanExecution, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn expired_running_plan_is_fenced_and_requeued_for_immediate_recovery() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(tmp_file.path().to_str().unwrap())
+                .await
+                .unwrap(),
+        );
+        let registry = Arc::new(Registry::new());
+        let program = validate(
+            r#"(eval (seq "done"))"#,
+            &registry,
+            &AllowList::new(Vec::<String>::new()),
+        )
+        .unwrap();
+        let route = seed_route(&store).await;
+        let runtime_store: Arc<dyn RuntimeStore> = store.clone();
+        let coordinator = PlanExecutionCoordinator::new(runtime_store, registry);
+        let queued = coordinator
+            .ensure(route, &program, PlanArtifactBinding::default())
+            .await
+            .unwrap();
+        let running = match store
+            .claim_plan_execution(
+                &queued.id,
+                queued.revision,
+                "abandoned-worker",
+                "abandoned-claim",
+                Utc::now() - Duration::seconds(1),
+            )
+            .await
+            .unwrap()
+        {
+            PlanExecutionMutation::Updated(running) => running,
+            other => panic!("expected running PlanExecution, got {other:?}"),
+        };
+
+        let recovered = coordinator
+            .recover_expired_running(Some(&running.context_id), 16)
+            .await
+            .unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].id, running.id);
+        assert_eq!(recovered[0].status, PlanExecutionStatus::Queued);
+        assert!(recovered[0].claim_token.is_none());
+        assert!(recovered[0].lease_expires_at.is_none());
+
+        let persisted = store
+            .get_plan_execution(&running.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.status, PlanExecutionStatus::Queued);
+        assert!(persisted.revision > running.revision);
     }
 
     #[tokio::test]

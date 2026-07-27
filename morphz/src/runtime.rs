@@ -761,7 +761,7 @@ impl MorphzRuntimeBuilder {
             crate::execution_target::ResolveTargetTool::new(
                 Arc::clone(&store) as Arc<dyn ExecutionTargetStore>
             )
-            .with_runtime_managed_ssh(runtime_managed_ssh_provisioner),
+            .with_runtime_managed_ssh(runtime_managed_ssh_provisioner.clone()),
         ));
         let workspace_root = permissions
             .profile()
@@ -808,7 +808,7 @@ impl MorphzRuntimeBuilder {
                 .entry(target_config.endpoint_ref.clone())
                 .or_insert(endpoint);
         }
-        for stale in store
+        for durable_target in store
             .list_execution_targets(ExecutionTargetFilter {
                 limit: Some(10_000),
                 ..Default::default()
@@ -824,16 +824,37 @@ impl MorphzRuntimeBuilder {
                         .and_then(Value::as_str)
                         == Some("runtime")
                     && !runtime_managed_ssh_target_ids.contains(&target.id)
-                    && target.status == ExecutionTargetStatus::Online
+                    && target.status != ExecutionTargetStatus::Disabled
             })
         {
-            let _ = store
-                .set_execution_target_status(
-                    &stale.id,
-                    stale.revision,
-                    ExecutionTargetStatus::Offline,
-                )
-                .await?;
+            match runtime_managed_ssh_provisioner
+                .rehydrate(&durable_target)
+                .await
+            {
+                Ok(target) => {
+                    tracing::debug!(
+                        target_id = %target.id,
+                        host = ?target.metadata.get("host"),
+                        "Runtime Managed SSH 按需路由已从持久 Target 重建"
+                    );
+                }
+                Err(error) => {
+                    if durable_target.status == ExecutionTargetStatus::Online {
+                        let _ = store
+                            .set_execution_target_status(
+                                &durable_target.id,
+                                durable_target.revision,
+                                ExecutionTargetStatus::Offline,
+                            )
+                            .await?;
+                    }
+                    tracing::warn!(
+                        target_id = %durable_target.id,
+                        error = %error,
+                        "Runtime Managed SSH 路由暂未重建；远端主机在线状态未知，可稍后通过 resolve_target(target_id) 重试"
+                    );
+                }
+            }
         }
         let execution_targets = Arc::new(crate::execution_target::ExecutionTargetDispatcher::new(
             Arc::clone(&store) as Arc<dyn ExecutionTargetStore>,

@@ -386,6 +386,39 @@ impl PlanExecutionStore for SqliteStore {
         }
     }
 
+    async fn release_plan_execution_claim(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        claim_token: &str,
+    ) -> Result<PlanExecutionMutation, StoreError> {
+        let row = sqlx::query(
+            r#"UPDATE plan_executions
+               SET revision = revision + 1, status = 'queued', claimed_by = NULL,
+                   claim_token = NULL, lease_expires_at = NULL, updated_at = ?
+               WHERE id = ? AND revision = ? AND status = 'running' AND claim_token = ?
+               RETURNING *"#,
+        )
+        .bind(now_text())
+        .bind(id)
+        .bind(i64::try_from(expected_revision)?)
+        .bind(claim_token)
+        .fetch_optional(&self.pool)
+        .await?;
+        match row {
+            Some(row) => Ok(PlanExecutionMutation::Updated(record_from_row(&row)?)),
+            None => {
+                failed_mutation(
+                    self,
+                    id,
+                    expected_revision,
+                    "PlanExecution release fence 不匹配",
+                )
+                .await
+            }
+        }
+    }
+
     async fn suspend_plan_execution(
         &self,
         id: &str,

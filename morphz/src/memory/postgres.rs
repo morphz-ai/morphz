@@ -1897,24 +1897,33 @@ impl RecallProjectionStore for PostgresStore {
         normalized_query: &str,
         limit: usize,
     ) -> Result<Vec<RecallSearchHit>, StoreError> {
-        let limit = i64::try_from(limit.clamp(1, 100))?;
+        let limit = limit.clamp(1, 100);
+        let candidate_limit = i64::try_from((limit.saturating_mul(8)).clamp(64, 512))?;
         let capability = postgres_recall_capability(&self.pool).await?;
         // The index stores Runtime-segmented terms, so the query is segmented
-        // the same way and matched whole. `plainto_tsquery` and
-        // `phraseto_tsquery` treat their argument as literal text rather than
-        // tsquery syntax, so an Agent query can never become an operator
-        // expression. A quoted query asks for adjacency instead of `AND`.
+        // the same way and matched whole. A quoted query asks for adjacency;
+        // ordinary queries use web-search OR syntax to build a broad candidate
+        // set, followed by backend-independent coverage ranking.
         let (requested, phrase) = crate::memory::recall_phrase_request(normalized_query);
         let terms = crate::memory::segment_recall_terms(requested);
+        let mut seen = std::collections::HashSet::new();
+        let distinct_terms = terms
+            .iter()
+            .filter(|term| seen.insert(term.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
         let segmented_query = terms.join(" ");
+        let web_query = distinct_terms.join(" OR ");
         let tsquery = if phrase {
             "phraseto_tsquery"
         } else {
-            "plainto_tsquery"
+            "websearch_to_tsquery"
         };
+        let physical_query = if phrase { &segmented_query } else { &web_query };
         let rows = if capability.indexed && !terms.is_empty() {
             sqlx::query(&format!(
                 r#"SELECT document_kind, document_id, revision, retired, preview,
+                          searchable_text,
                           updated_sequence,
                           CASE WHEN document_id = $2 THEN 1000000.0
                                ELSE ts_rank(to_tsvector('simple', searchable_text),
@@ -1931,13 +1940,14 @@ impl RecallProjectionStore for PostgresStore {
             ))
             .bind(context_id)
             .bind(normalized_query)
-            .bind(&segmented_query)
-            .bind(limit)
+            .bind(physical_query)
+            .bind(candidate_limit)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query(
                 r#"SELECT document_kind, document_id, revision, retired, preview,
+                          searchable_text,
                           updated_sequence,
                           CASE WHEN document_id = $2 THEN 1000000.0 ELSE 1.0 END AS score
                    FROM recall_documents
@@ -1947,23 +1957,34 @@ impl RecallProjectionStore for PostgresStore {
             )
             .bind(context_id)
             .bind(normalized_query)
-            .bind(limit)
+            .bind(i64::try_from(limit)?)
             .fetch_all(&self.pool)
             .await?
         };
-        rows.into_iter()
+        let candidates = rows
+            .into_iter()
             .map(|row| {
-                Ok(RecallSearchHit {
-                    document_kind: pg_recall_kind(&row.get::<String, _>("document_kind"))?,
-                    document_id: row.get("document_id"),
-                    revision: u64::try_from(row.get::<i64, _>("revision"))?,
-                    retired: row.get("retired"),
-                    score: row.get("score"),
-                    preview: row.get("preview"),
-                    updated_sequence: u64::try_from(row.get::<i64, _>("updated_sequence"))?,
+                Ok(crate::memory::RecallSearchCandidate {
+                    searchable_text: row.get("searchable_text"),
+                    hit: RecallSearchHit {
+                        document_kind: pg_recall_kind(&row.get::<String, _>("document_kind"))?,
+                        document_id: row.get("document_id"),
+                        revision: u64::try_from(row.get::<i64, _>("revision"))?,
+                        retired: row.get("retired"),
+                        score: row.get("score"),
+                        preview: row.get("preview"),
+                        updated_sequence: u64::try_from(row.get::<i64, _>("updated_sequence"))?,
+                    },
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        Ok(crate::memory::rank_recall_candidates(
+            candidates,
+            &terms,
+            phrase,
+            normalized_query,
+            limit,
+        ))
     }
 
     async fn replace_recall_documents(

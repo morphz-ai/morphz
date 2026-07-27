@@ -115,6 +115,9 @@ pub struct RetryDialogueTurnCommand {
 pub struct SessionEventsQuery {
     pub session_id: String,
     pub after_sequence: Option<u64>,
+    /// Stable backward cursor over the immutable Event Ledger. Mutually
+    /// exclusive with `after_sequence`.
+    pub before_sequence: Option<u64>,
     pub limit: usize,
 }
 
@@ -1567,6 +1570,12 @@ impl MorphzSdk {
         self.authorize_session(principal_id, &query.session_id)
             .await?;
         let limit = query.limit.clamp(1, 1_000);
+        if query.after_sequence.is_some() && query.before_sequence.is_some() {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "after_sequence 与 before_sequence 不能同时使用",
+            ));
+        }
         let filter = if let Some(after_sequence) = query.after_sequence {
             QueryFilter {
                 session_id: Some(query.session_id),
@@ -1578,6 +1587,7 @@ impl MorphzSdk {
         } else {
             QueryFilter {
                 session_id: Some(query.session_id),
+                before_sequence: query.before_sequence,
                 latest_k: Some(limit),
                 excluded_topics: vec!["chat/context_inspect".to_string()],
                 ..QueryFilter::default()

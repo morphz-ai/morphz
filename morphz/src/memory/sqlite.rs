@@ -11725,7 +11725,8 @@ async fn sqlite_recall_capability(
 ///
 /// Every term is quoted, so FTS5 operators inside user text stay literal. A
 /// phrase groups the terms into one quoted sequence and therefore requires
-/// them to be adjacent; otherwise they are combined with `AND`.
+/// them to be adjacent; otherwise any distinct term may enter the candidate
+/// set. Runtime-level coverage ranking removes weak one-word noise.
 fn sqlite_fts_query(terms: &[String], phrase: bool) -> String {
     let quoted = |term: &String| term.replace('"', "\"\"");
     if phrase {
@@ -11734,11 +11735,13 @@ fn sqlite_fts_query(terms: &[String], phrase: bool) -> String {
             terms.iter().map(quoted).collect::<Vec<_>>().join(" ")
         );
     }
+    let mut seen = std::collections::HashSet::new();
     terms
         .iter()
+        .filter(|term| seen.insert(term.as_str()))
         .map(|term| format!("\"{}\"", quoted(term)))
         .collect::<Vec<_>>()
-        .join(" AND ")
+        .join(" OR ")
 }
 
 /// Topics are Runtime-owned slash-separated identifiers.  SQLite's default
@@ -11985,6 +11988,7 @@ impl RecallProjectionStore for SqliteStore {
         limit: usize,
     ) -> Result<Vec<RecallSearchHit>, Box<dyn std::error::Error + Send + Sync>> {
         let limit = limit.clamp(1, 100);
+        let candidate_limit = (limit.saturating_mul(8)).clamp(64, 512);
         let capability = sqlite_recall_capability(&self.pool).await?;
         // The index stores Runtime-segmented terms, so the query has to be
         // segmented the same way or it cannot match the Projection. Every
@@ -11998,7 +12002,7 @@ impl RecallProjectionStore for SqliteStore {
             let expression = sqlite_fts_query(&terms, phrase);
             sqlx::query(
                 r#"SELECT d.document_kind, d.document_id, d.revision, d.retired,
-                          d.preview, d.updated_sequence,
+                          d.preview, d.searchable_text, d.updated_sequence,
                           CASE WHEN d.document_id = ? THEN 1000000.0
                                ELSE -bm25(recall_documents_fts) END AS score
                    FROM recall_documents_fts
@@ -12017,12 +12021,13 @@ impl RecallProjectionStore for SqliteStore {
             .bind(expression)
             .bind(context_id)
             .bind(normalized_query)
-            .bind(i64::try_from(limit)?)
+            .bind(i64::try_from(candidate_limit)?)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query(
                 r#"SELECT document_kind, document_id, revision, retired, preview,
+                          searchable_text,
                           updated_sequence,
                           CASE WHEN document_id = ? THEN 1000000.0 ELSE 1.0 END AS score
                    FROM recall_documents
@@ -12038,19 +12043,32 @@ impl RecallProjectionStore for SqliteStore {
             .fetch_all(&self.pool)
             .await?
         };
-        rows.into_iter()
+        let candidates = rows
+            .into_iter()
             .map(|row| {
-                Ok(RecallSearchHit {
-                    document_kind: recall_kind_from_str(&row.get::<String, _>("document_kind"))?,
-                    document_id: row.get("document_id"),
-                    revision: u64::try_from(row.get::<i64, _>("revision"))?,
-                    retired: row.get::<i64, _>("retired") != 0,
-                    score: row.get("score"),
-                    preview: row.get("preview"),
-                    updated_sequence: u64::try_from(row.get::<i64, _>("updated_sequence"))?,
+                Ok(crate::memory::RecallSearchCandidate {
+                    searchable_text: row.get("searchable_text"),
+                    hit: RecallSearchHit {
+                        document_kind: recall_kind_from_str(
+                            &row.get::<String, _>("document_kind"),
+                        )?,
+                        document_id: row.get("document_id"),
+                        revision: u64::try_from(row.get::<i64, _>("revision"))?,
+                        retired: row.get::<i64, _>("retired") != 0,
+                        score: row.get("score"),
+                        preview: row.get("preview"),
+                        updated_sequence: u64::try_from(row.get::<i64, _>("updated_sequence"))?,
+                    },
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, Box<dyn std::error::Error + Send + Sync>>>()?;
+        Ok(crate::memory::rank_recall_candidates(
+            candidates,
+            &terms,
+            phrase,
+            normalized_query,
+            limit,
+        ))
     }
 
     async fn replace_recall_documents(
@@ -12613,7 +12631,31 @@ mod tests {
             updated_sequence: 7,
             state_hash: "frame-hash".to_string(),
         };
-        let mut documents = vec![frame];
+        let deployment_frame = RecallDocument {
+            context_id: "recall-context".to_string(),
+            document_kind: RecallDocumentKind::Frame,
+            document_id: "memory/shared-deployment".to_string(),
+            revision: 1,
+            searchable_text: crate::memory::segment_recall_text(
+                "三个产品部署到同一个物理节点，共享服务器资源",
+            ),
+            preview: "三个产品共享物理部署节点".to_string(),
+            retired: false,
+            updated_sequence: 8,
+            state_hash: "deployment-hash".to_string(),
+        };
+        let weak_frame = RecallDocument {
+            context_id: "recall-context".to_string(),
+            document_kind: RecallDocumentKind::Frame,
+            document_id: "memory/server-only".to_string(),
+            revision: 1,
+            searchable_text: crate::memory::segment_recall_text("服务器健康检查"),
+            preview: "服务器健康检查".to_string(),
+            retired: false,
+            updated_sequence: 9,
+            state_hash: "server-hash".to_string(),
+        };
+        let mut documents = vec![frame, deployment_frame, weak_frame];
         let event_document = sqlx::query(
             "SELECT context_id, document_kind, document_id, revision, searchable_text, preview, retired, updated_sequence, state_hash FROM recall_documents WHERE document_kind = 'event'",
         )
@@ -12667,6 +12709,24 @@ mod tests {
             short.iter().any(|hit| hit.document_id == "recall-event"),
             "two-character Chinese query must stay searchable: {short:?}"
         );
+        // Default Recall is broad rather than an implicit all-terms contract:
+        // a useful document may omit several paraphrase terms. Coverage
+        // ranking still removes a document that only shares one generic word.
+        let broad = store
+            .search_recall_documents(
+                "recall-context",
+                "三个产品 部署 节点 服务器 一起部署 统一部署",
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(broad[0].document_id, "memory/shared-deployment");
+        assert!(
+            broad
+                .iter()
+                .all(|hit| hit.document_id != "memory/server-only"),
+            "one generic term must not outrank meaningful coverage: {broad:?}"
+        );
         let exact_id = store
             .search_recall_documents("recall-context", "memory/rust-sandbox", 1)
             .await
@@ -12692,7 +12752,7 @@ mod tests {
         );
         let audit = store.inspect_recall_index("recall-context").await.unwrap();
         assert_eq!(audit.event_documents, 1);
-        assert_eq!(audit.frame_documents, 1);
+        assert_eq!(audit.frame_documents, 3);
     }
 
     #[tokio::test]

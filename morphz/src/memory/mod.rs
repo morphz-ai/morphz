@@ -52,6 +52,113 @@ pub struct RecallSearchHit {
     pub updated_sequence: u64,
 }
 
+/// One physical-index candidate before Runtime-level coverage ranking.
+///
+/// The physical index is deliberately recall-first: an unquoted query may
+/// match any query term.  Ranking and the minimum useful coverage policy live
+/// above SQLite/PostgreSQL so both backends expose the same semantics.
+#[derive(Debug, Clone)]
+pub(crate) struct RecallSearchCandidate {
+    pub hit: RecallSearchHit,
+    pub searchable_text: String,
+}
+
+/// Applies backend-independent broad-recall ranking.
+///
+/// A multi-term query must normally cover at least two distinct terms.  If
+/// that would erase every candidate, the strongest one-term candidates are
+/// retained: Recall must degrade in precision, not silently become empty.
+/// Fully quoted phrase queries have already been narrowed by the physical
+/// index and therefore bypass this fallback policy.
+pub(crate) fn rank_recall_candidates(
+    mut candidates: Vec<RecallSearchCandidate>,
+    query_terms: &[String],
+    phrase: bool,
+    exact_document_id: &str,
+    limit: usize,
+) -> Vec<RecallSearchHit> {
+    use std::collections::HashSet;
+
+    let mut seen = HashSet::new();
+    let terms = query_terms
+        .iter()
+        .filter(|term| seen.insert(term.as_str()))
+        .collect::<Vec<_>>();
+    let total_weight = terms
+        .iter()
+        .map(|term| recall_term_weight(term))
+        .sum::<f64>()
+        .max(f64::EPSILON);
+
+    let mut ranked = candidates
+        .drain(..)
+        .map(|candidate| {
+            let stored = candidate
+                .searchable_text
+                .split_whitespace()
+                .collect::<HashSet<_>>();
+            let matched = terms
+                .iter()
+                .filter(|term| stored.contains(term.as_str()))
+                .collect::<Vec<_>>();
+            let matched_count = matched.len();
+            let coverage = matched
+                .iter()
+                .map(|term| recall_term_weight(term))
+                .sum::<f64>()
+                / total_weight;
+            let exact = candidate.hit.document_id == exact_document_id;
+            (candidate.hit, exact, matched_count, coverage)
+        })
+        .collect::<Vec<_>>();
+
+    let minimum_matches = usize::from(terms.len() > 1) + usize::from(!terms.is_empty());
+    if !phrase && minimum_matches > 1 {
+        let useful = ranked
+            .iter()
+            .filter(|(_, exact, matched, coverage)| {
+                *exact || (*matched >= minimum_matches && *coverage >= 0.25)
+            })
+            .count();
+        if useful > 0 {
+            ranked.retain(|(_, exact, matched, coverage)| {
+                *exact || (*matched >= minimum_matches && *coverage >= 0.25)
+            });
+        }
+    }
+
+    ranked.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| right.3.total_cmp(&left.3))
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| right.0.score.total_cmp(&left.0.score))
+            .then_with(|| right.0.updated_sequence.cmp(&left.0.updated_sequence))
+            .then_with(|| left.0.document_id.cmp(&right.0.document_id))
+    });
+    ranked
+        .into_iter()
+        .take(limit.clamp(1, 100))
+        .map(|(mut hit, exact, _, coverage)| {
+            // The public score now has one backend-independent interpretation:
+            // exact id first, otherwise distinct query-term coverage.
+            hit.score = if exact { 1_000_000.0 } else { coverage };
+            hit
+        })
+        .collect()
+}
+
+fn recall_term_weight(term: &str) -> f64 {
+    // A single CJK character is useful evidence but far less discriminating
+    // than a complete word. Longer words receive a small, bounded advantage.
+    match term.chars().count() {
+        0 => 0.0,
+        1 => 0.35,
+        count => (count.min(6) as f64).sqrt(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LexicalSearchMode {
@@ -3301,6 +3408,15 @@ pub trait PlanExecutionStore: Send + Sync {
         lease_expires_at: DateTime<Utc>,
         state_json: &JsonValue,
         budget_json: &JsonValue,
+    ) -> Result<PlanExecutionMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Cancellation/error-safe claim release. The exact claim fence must
+    /// still be current; otherwise a newer worker or a committed suspension
+    /// wins and this operation is rejected without reopening it.
+    async fn release_plan_execution_claim(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        claim_token: &str,
     ) -> Result<PlanExecutionMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Releases the claim while waiting on a child primitive that does not
     /// require an additional durable row.

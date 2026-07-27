@@ -1126,6 +1126,17 @@ impl PlanMachine {
         self.pending.as_ref()
     }
 
+    /// Highest effect sequence that may already have produced an external
+    /// artifact while recovering data written by an older Runtime.
+    ///
+    /// Normally `next_effect_sequence - 1` is the last issued effect.  The
+    /// ceiling deliberately includes `next_effect_sequence`: older builds
+    /// could persist a tool output before the Plan state checkpoint failed
+    /// with SQLITE_BUSY, leaving the durable machine one sequence behind.
+    pub fn effect_sequence_recovery_ceiling(&self) -> u64 {
+        self.next_effect_sequence.max(1)
+    }
+
     /// Durable budget projection stored beside the complete machine state.
     ///
     /// `state_json` remains self-contained; this smaller projection exists so

@@ -321,6 +321,8 @@ impl DurableEventWriter {
 const MAX_ACTIVATION_SIGNAL_BATCH: usize = 32;
 const SIGNAL_OUTBOX_DISPATCH_BATCH: usize = 128;
 const SIGNAL_OUTBOX_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+const PLAN_RECONCILE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const PLAN_RECONCILE_BATCH: usize = 128;
 
 const AGENT_OWNED_CONTEXT_PROMPT_BASE: &str = r#"你是 Morphz，一个能够管理自身工作 Context 的 AI Agent。
 
@@ -830,6 +832,10 @@ enum ContextTxReceipt {
 struct ToolExecutionOptions {
     context_tx_allowed: bool,
     wake_on_output: bool,
+    /// The owning deterministic Plan, when this is an internal `(call ...)`
+    /// effect. Plan outputs are observable child facts, never Scheduler
+    /// wakeups for the parent Activation.
+    plan_execution_id: Option<String>,
     continuation_tool_calls: Option<Vec<crate::llm::ToolCall>>,
     allowed_tool_names: HashSet<String>,
     record_assistant_call: bool,
@@ -862,6 +868,7 @@ struct ToolTaskMetadata {
     action_group_id: Option<String>,
     activation_route: Option<ActivationRoute>,
     execution_job: Option<ClaimedExecutionJob>,
+    wake_on_output: bool,
 }
 
 struct SpawnedToolTask {
@@ -2519,6 +2526,7 @@ impl Orchestrator {
         self.rebuild_activation_admission_queue().await?;
         self.recover_thread_activations().await?;
         self.dispatch_pending_signal_outbox().await?;
+        self.reconcile_durable_plans().await?;
         self.recover_pending_thread_signals().await?;
         self.recover_delegations().await?;
         self.reconcile_orphaned_threads().await?;
@@ -2527,6 +2535,7 @@ impl Orchestrator {
         self.refill_activation_admission_queue().await?;
         self.start_activation_admission_refill();
         self.start_signal_outbox_dispatcher();
+        self.start_plan_reconciler();
         Ok(())
     }
 
@@ -2579,6 +2588,59 @@ impl Orchestrator {
         });
     }
 
+    fn start_plan_reconciler(self: &Arc<Self>) {
+        if self.plan_store.is_none() {
+            return;
+        }
+        let orchestrator = Arc::downgrade(self);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(PLAN_RECONCILE_INTERVAL).await;
+                let Some(orchestrator) = orchestrator.upgrade() else {
+                    break;
+                };
+                if let Err(error) = orchestrator.reconcile_durable_plans().await {
+                    tracing::error!(
+                        %error,
+                        "PlanExecution 周期恢复失败；持久状态保留，等待下一轮重试"
+                    );
+                }
+            }
+        });
+    }
+
+    async fn reconcile_durable_plans(&self) -> Result<(), DynError> {
+        let Some(store) = self.plan_store.as_ref() else {
+            return Ok(());
+        };
+        let coordinator =
+            PlanExecutionCoordinator::new(Arc::clone(store), Arc::clone(&self.registry));
+        let recovered = coordinator
+            .recover_expired_running(None, PLAN_RECONCILE_BATCH)
+            .await?;
+        let jobs = coordinator
+            .reconcile_waiting_execution_jobs(None, PLAN_RECONCILE_BATCH)
+            .await?;
+        let evaluations = coordinator
+            .reconcile_waiting_evaluations(None, PLAN_RECONCILE_BATCH)
+            .await?;
+        if !recovered.is_empty()
+            || !jobs.resumed.is_empty()
+            || !evaluations.resumed.is_empty()
+            || !jobs.conflicts.is_empty()
+            || !evaluations.conflicts.is_empty()
+        {
+            tracing::info!(
+                expired_running_requeued = recovered.len(),
+                execution_jobs_resumed = jobs.resumed.len(),
+                evaluations_resumed = evaluations.resumed.len(),
+                conflicts = jobs.conflicts.len() + evaluations.conflicts.len(),
+                "PlanExecution 周期恢复完成"
+            );
+        }
+        Ok(())
+    }
+
     async fn dispatch_pending_signal_outbox(&self) -> Result<usize, DynError> {
         let session_store = self
             .context_engine
@@ -2605,13 +2667,15 @@ impl Orchestrator {
                 )
                 .into());
             };
-            if !event_needs_signal_outbox(&event) {
-                // Older Runtime builds could atomically persist an internal
-                // Plan infer request under `plan/infer_request`.  Such a row
-                // can never be routed and, if left pending, poisons the FIFO
-                // batch forever.  It is already durable in the Ledger, so
-                // discard only the invalid Outbox entry and continue with
-                // later routable Signals.
+            if !event_needs_signal_outbox(&event)
+                || self.is_legacy_internal_plan_output(&event).await?
+            {
+                // Older Runtime builds could enqueue Plan-internal tool
+                // outputs as ordinary chat wakeups. They remain observable
+                // Ledger facts, but routing them back through the parent
+                // Thread gate can deadlock the Plan that owns them. Discard
+                // only the invalid Outbox entry; real Plan infer requests
+                // remain routable child-evaluation inputs.
                 tracing::warn!(
                     event_id = %event.id,
                     event_type = %event.event_type,
@@ -2625,6 +2689,78 @@ impl Orchestrator {
             dispatched = dispatched.saturating_add(1);
         }
         Ok(dispatched)
+    }
+
+    /// Recognizes internal Plan tool outputs written by builds predating the
+    /// explicit `plan_execution_id`/`wake_policy:none` contract. Those builds
+    /// could leave the output in Signal Outbox while the owning Plan was still
+    /// waiting on that exact deterministic call, creating a circular wait at
+    /// the parent Thread gate after restart.
+    async fn is_legacy_internal_plan_output(&self, event: &Event) -> Result<bool, DynError> {
+        if event.event_type != TYPE_TOOL_OUTPUT || self.plan_store.is_none() {
+            return Ok(false);
+        }
+        if event
+            .payload
+            .get("plan_execution_id")
+            .and_then(|value| value.as_str())
+            .is_some()
+        {
+            return Ok(true);
+        }
+        let Some(tool_call_id) = event
+            .payload
+            .get("tool_call_id")
+            .and_then(|value| value.as_str())
+        else {
+            return Ok(false);
+        };
+        let Some(activation_id) = event
+            .payload
+            .get("activation_id")
+            .or_else(|| event.payload.get("attempt_id"))
+            .and_then(|value| value.as_str())
+        else {
+            return Ok(false);
+        };
+        let plans = self
+            .plan_store
+            .as_ref()
+            .expect("checked above")
+            .list_plan_executions(PlanExecutionFilter {
+                activation_id: Some(activation_id.to_string()),
+                // A Plan may already be terminal while one of its old
+                // internal outputs is still stranded in Signal Outbox.
+                // Stable effect IDs make including terminal history safe.
+                include_terminal: true,
+                limit: Some(PLAN_RECONCILE_BATCH),
+                ..Default::default()
+            })
+            .await?;
+        for plan in plans {
+            let Ok(machine) =
+                serde_json::from_value::<crate::sexpr_eval::PlanMachine>(plan.state_json.clone())
+            else {
+                continue;
+            };
+            let Some(sequence) = legacy_plan_effect_sequence(
+                tool_call_id,
+                &plan.id,
+                machine.effect_sequence_recovery_ceiling(),
+            )?
+            else {
+                continue;
+            };
+            tracing::warn!(
+                event_id = %event.id,
+                plan_execution_id = %plan.id,
+                plan_effect_sequence = sequence,
+                tool_call_id,
+                "识别并丢弃旧版本误入 Signal Outbox 的 Plan 内部工具输出"
+            );
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     async fn recover_pending_thread_signals(&self) -> Result<(), DynError> {
@@ -3443,6 +3579,19 @@ impl Orchestrator {
             && event.event_type != TYPE_TOOL_OUTPUT
             && event.event_type != TYPE_INFER_REQUEST
             && event.topic != "runtime/action_group_settled"
+        {
+            return Ok(());
+        }
+
+        // `wake_policy:none` is an immutable semantic boundary: the Event is
+        // observable and may be consumed by its owning Plan, but it must not
+        // enter ordinary chat scheduling. This guard also protects direct
+        // in-process dispatch, not only the durable Signal Outbox path.
+        if event
+            .payload
+            .get("wake_policy")
+            .and_then(|value| value.as_str())
+            == Some("none")
         {
             return Ok(());
         }
@@ -5436,6 +5585,7 @@ impl Orchestrator {
             ToolExecutionOptions {
                 context_tx_allowed,
                 wake_on_output: true,
+                plan_execution_id: None,
                 continuation_tool_calls,
                 allowed_tool_names,
                 record_assistant_call: false,
@@ -6630,6 +6780,7 @@ impl Orchestrator {
                         context_tx_allowed: context.turn_budget.context_tx_available
                             && !context_tx_cooldown,
                         wake_on_output: true,
+                        plan_execution_id: None,
                         continuation_tool_calls: None,
                         allowed_tool_names,
                         record_assistant_call: true,
@@ -8424,6 +8575,7 @@ impl Orchestrator {
             ToolExecutionOptions {
                 context_tx_allowed: false,
                 wake_on_output: false,
+                plan_execution_id: Some(plan.id.clone()),
                 continuation_tool_calls: None,
                 allowed_tool_names: HashSet::from([tool]),
                 record_assistant_call: false,
@@ -9028,7 +9180,14 @@ impl Orchestrator {
                     ("caused_by".to_string(), json!(call.id)),
                     ("tool_name".to_string(), json!(call.func_name)),
                     ("tool_status".to_string(), json!("cancelled")),
-                    ("wake_policy".to_string(), json!("immediate")),
+                    (
+                        "wake_policy".to_string(),
+                        json!(if standalone_signal {
+                            "immediate"
+                        } else {
+                            "none"
+                        }),
+                    ),
                     ("output_empty".to_string(), json!(false)),
                     ("text".to_string(), json!(reason)),
                 ]);
@@ -9574,9 +9733,14 @@ impl Orchestrator {
         // sibling Action. It must establish the Objective route before any
         // physical Action result becomes immutable.
         for (index, call) in objective_create_calls.iter().enumerate() {
-            let (output, already_persisted) = self
+            let (mut output, already_persisted) = self
                 .execute_objective_create_prelude(&context_id, session_id, attempt_id, call)
                 .await?;
+            if !options.wake_on_output {
+                output
+                    .payload
+                    .insert("wake_policy".to_string(), json!("none"));
+            }
             let wake = options.wake_on_output
                 && ordinary_action_count == 0
                 && index + 1 == objective_create_calls.len();
@@ -9679,6 +9843,7 @@ impl Orchestrator {
                     ordinary_action_count,
                     route,
                     objective.as_ref(),
+                    options.wake_on_output,
                 ))
             })
             .transpose()?;
@@ -9840,7 +10005,7 @@ impl Orchestrator {
                         &output_id,
                         timeout_secs,
                         action_group_id.as_deref(),
-                        action_group_id.is_none(),
+                        options.wake_on_output && action_group_id.is_none(),
                     )
                     .await;
                 match prepared? {
@@ -9890,6 +10055,7 @@ impl Orchestrator {
                 action_group_id: task_action_group_id.clone(),
                 activation_route: activation_route.clone(),
                 execution_job: claimed_execution_job.clone(),
+                wake_on_output: options.wake_on_output,
             };
             let execution_jobs = self.execution_jobs.clone();
             let execution_targets = self.execution_targets.clone();
@@ -9898,6 +10064,7 @@ impl Orchestrator {
             let event_bus = Arc::clone(&self.bus);
             let objective_supervisor = self.objective_supervisor.clone();
             let objective_evaluation = self.objective_evaluations.get_for_activation(&attempt_id);
+            let task_wake_on_output = options.wake_on_output;
             // Established before the spawn, because task-locals do not cross
             // into a new task: the chain below rebuilds every one of them.
             let inference_channel: Option<Arc<dyn crate::sexpr_eval::RuntimeInference>> =
@@ -10055,7 +10222,9 @@ impl Orchestrator {
                                                             }
                                                             (reason, "cancelled")
                                                         };
-                                                        let wake_policy = if call.func_name
+                                                        let wake_policy = if !task_wake_on_output {
+                                                            "none"
+                                                        } else if call.func_name
                                                             == "delegate"
                                                             && tool_status == "success"
                                                             && delegation_mode_from_arguments(
@@ -10208,7 +10377,8 @@ impl Orchestrator {
                                                                     manager.as_ref(),
                                                                     &job,
                                                                     &mut output,
-                                                                    task_action_group_id.is_none()
+                                                                    task_wake_on_output
+                                                                        && task_action_group_id.is_none()
                                                                         && wake_policy
                                                                             != "delegation_result",
                                                                 )
@@ -10327,7 +10497,7 @@ impl Orchestrator {
         }
         for task in tasks {
             let metadata = task.metadata;
-            let (output, already_persisted, job_outcome) = match task.handle.await {
+            let (mut output, already_persisted, job_outcome) = match task.handle.await {
                 Ok(Ok(result)) => (result.output, result.already_persisted, None),
                 Ok(Err(error)) => {
                     tracing::error!(
@@ -10358,6 +10528,11 @@ impl Orchestrator {
                     (output, false, outcome)
                 }
             };
+            if !metadata.wake_on_output {
+                output
+                    .payload
+                    .insert("wake_policy".to_string(), json!("none"));
+            }
             let already_persisted = match (metadata.execution_job, job_outcome) {
                 (Some(job), Some(outcome)) => {
                     let manager = self
@@ -10372,7 +10547,7 @@ impl Orchestrator {
                                 Some(&job.claim_token),
                                 outcome,
                                 &output,
-                                action_group_id.is_none(),
+                                metadata.wake_on_output && action_group_id.is_none(),
                             )
                             .await?,
                         "terminal result commit",
@@ -10386,6 +10561,18 @@ impl Orchestrator {
         }
         if outputs.is_empty() {
             return Err("所有工具任务都在产生结果前异常终止".into());
+        }
+        if let Some(plan_execution_id) = options.plan_execution_id.as_deref() {
+            for (output, _) in &mut outputs {
+                output
+                    .payload
+                    .insert("plan_execution_id".to_string(), json!(plan_execution_id));
+                // Keep the routing boundary self-describing even if a future
+                // producer accidentally regresses the option propagation.
+                output
+                    .payload
+                    .insert("wake_policy".to_string(), json!("none"));
+            }
         }
         let mut outcome = ToolExecutionOutcome::default();
         for (output, _) in &outputs {
@@ -10430,7 +10617,12 @@ impl Orchestrator {
             }
         } else {
             debug_assert_eq!(outputs.len(), 1);
-            for (output, already_persisted) in outputs {
+            for (mut output, already_persisted) in outputs {
+                if !options.wake_on_output {
+                    output
+                        .payload
+                        .insert("wake_policy".to_string(), json!("none"));
+                }
                 let is_delegation_receipt = output
                     .payload
                     .get("wake_policy")
@@ -10863,6 +11055,7 @@ impl Orchestrator {
             ToolExecutionOptions {
                 context_tx_allowed: false,
                 wake_on_output: true,
+                plan_execution_id: None,
                 continuation_tool_calls: None,
                 allowed_tool_names: HashSet::from(["eval".to_string()]),
                 record_assistant_call: true,
@@ -12184,7 +12377,14 @@ fn lost_tool_output(metadata: &ToolTaskMetadata, reason: &str) -> Event {
         ("tool_name".to_string(), json!(metadata.tool_name.clone())),
         ("target_id".to_string(), json!(metadata.target_id.clone())),
         ("tool_status".to_string(), json!("lost")),
-        ("wake_policy".to_string(), json!("immediate")),
+        (
+            "wake_policy".to_string(),
+            json!(if metadata.wake_on_output {
+                "immediate"
+            } else {
+                "none"
+            }),
+        ),
         ("output_empty".to_string(), json!(false)),
         ("text".to_string(), json!(reason)),
     ]);
@@ -12249,6 +12449,7 @@ fn action_group_settled_event(
     member_count: usize,
     route: &ActivationRoute,
     objective: Option<&crate::objective::ActiveObjectiveEvaluation>,
+    wake_on_output: bool,
 ) -> Event {
     let mut payload = serde_json::Map::from_iter([
         ("context_id".to_string(), json!(context_id)),
@@ -12266,6 +12467,10 @@ fn action_group_settled_event(
         (
             "trigger_sequence".to_string(),
             json!(route.trigger_sequence),
+        ),
+        (
+            "wake_policy".to_string(),
+            json!(if wake_on_output { "immediate" } else { "none" }),
         ),
     ]);
     if let Some(objective) = objective {
@@ -12450,12 +12655,24 @@ fn required_payload_str<'a>(event: &'a Event, key: &str) -> Result<&'a str, DynE
 }
 
 fn event_needs_signal_outbox(event: &Event) -> bool {
-    ((event.topic.starts_with("chat/")
-        && matches!(
-            event.event_type.as_str(),
-            TYPE_USER_MESSAGE | TYPE_TOOL_OUTPUT | TYPE_INFER_REQUEST
-        ))
-        || (event.event_type == "runtime_control" && event.topic == "runtime/action_group_settled"))
+    event
+        .payload
+        .get("wake_policy")
+        .and_then(|value| value.as_str())
+        != Some("none")
+        && !(event.event_type == TYPE_TOOL_OUTPUT
+            && event
+                .payload
+                .get("plan_execution_id")
+                .and_then(|value| value.as_str())
+                .is_some())
+        && ((event.topic.starts_with("chat/")
+            && matches!(
+                event.event_type.as_str(),
+                TYPE_USER_MESSAGE | TYPE_TOOL_OUTPUT | TYPE_INFER_REQUEST
+            ))
+            || (event.event_type == "runtime_control"
+                && event.topic == "runtime/action_group_settled"))
         && event
             .payload
             .get("context_id")
@@ -12466,6 +12683,21 @@ fn event_needs_signal_outbox(event: &Event) -> bool {
             .get("session_id")
             .and_then(|value| value.as_str())
             .is_some()
+}
+
+fn legacy_plan_effect_sequence(
+    tool_call_id: &str,
+    plan_execution_id: &str,
+    recovery_ceiling: u64,
+) -> Result<Option<u64>, DynError> {
+    for sequence in 1..=recovery_ceiling.max(1) {
+        if crate::plan_execution::deterministic_plan_effect_id(plan_execution_id, sequence)?
+            == tool_call_id
+        {
+            return Ok(Some(sequence));
+        }
+    }
+    Ok(None)
 }
 
 fn is_dialogue_trigger(event: &Event) -> bool {
@@ -12586,16 +12818,17 @@ mod tests {
         classify_terminal_response, cognitive_sexpr_vm_system_prompt,
         compact_context_inspect_for_persistence, compose_context_encoding,
         critical_maintenance_transaction_available, event_needs_signal_outbox,
-        extend_exec_output_facts, harness_entry_callable_tools, persist_model_reasoning_summary,
-        persist_model_usage, plan_infer_tool_scope, recovery_owns_activation,
-        render_harness_context, render_system_contract, restrict_tools_to_scope,
-        retain_pending_continuation_calls, runtime_claimant_id, semantic_sexpr_vm_system_prompt,
-        should_dispatch_runtime_harness_entry, should_force_final_for_maintenance,
-        tool_call_activity_preview, DialogueThreadGate, DialogueThreadLease, DurableEventWriter,
-        DurableEventWriterMetrics, DynError, EvaluationContextOverlay, ModelCompletionError,
-        ModelCompletionErrorOrigin, ModelReasoningSummaryAccumulator, NoReplyMode,
-        ProviderCircuitPhase, ProviderCircuitProbeLease, ProviderCircuitState, ReadTurnGuard,
-        TerminalDecision, AGENT_OWNED_CONTEXT_PROMPT_BASE,
+        extend_exec_output_facts, harness_entry_callable_tools, legacy_plan_effect_sequence,
+        persist_model_reasoning_summary, persist_model_usage, plan_infer_tool_scope,
+        recovery_owns_activation, render_harness_context, render_system_contract,
+        restrict_tools_to_scope, retain_pending_continuation_calls, runtime_claimant_id,
+        semantic_sexpr_vm_system_prompt, should_dispatch_runtime_harness_entry,
+        should_force_final_for_maintenance, tool_call_activity_preview, DialogueThreadGate,
+        DialogueThreadLease, DurableEventWriter, DurableEventWriterMetrics, DynError,
+        EvaluationContextOverlay, ModelCompletionError, ModelCompletionErrorOrigin,
+        ModelReasoningSummaryAccumulator, NoReplyMode, ProviderCircuitPhase,
+        ProviderCircuitProbeLease, ProviderCircuitState, ReadTurnGuard, TerminalDecision,
+        AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
     use crate::config::EventWriterConfig;
@@ -13237,6 +13470,53 @@ mod tests {
             )));
         }
 
+        let muted_plan_output = Event::new(
+            "plan-internal-output".to_string(),
+            "fixture".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!("context-1")),
+                ("session_id".to_string(), json!("session-1")),
+                ("wake_policy".to_string(), json!("none")),
+            ]),
+        );
+        assert!(
+            !event_needs_signal_outbox(&muted_plan_output),
+            "Plan 内部输出必须留在 Ledger，不能进入 Scheduler Signal Outbox"
+        );
+        let self_describing_plan_output = Event::new(
+            "plan-internal-output-with-owner".to_string(),
+            "fixture".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!("context-1")),
+                ("session_id".to_string(), json!("session-1")),
+                ("wake_policy".to_string(), json!("immediate")),
+                ("plan_execution_id".to_string(), json!("plan-1")),
+            ]),
+        );
+        assert!(
+            !event_needs_signal_outbox(&self_describing_plan_output),
+            "Plan 所有权本身就是不可路由边界，不能依赖单一 wake_policy 字段"
+        );
+        let plan_infer_request = Event::new(
+            "plan-infer-request".to_string(),
+            "fixture".to_string(),
+            crate::event::TYPE_INFER_REQUEST.to_string(),
+            "chat/infer_request".to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!("context-1")),
+                ("session_id".to_string(), json!("session-1")),
+                ("plan_execution_id".to_string(), json!("plan-1")),
+            ]),
+        );
+        assert!(
+            event_needs_signal_outbox(&plan_infer_request),
+            "Plan infer request 是待执行的子求值，必须进入 Scheduler Signal Outbox"
+        );
+
         let missing_session = Event::new(
             "missing-session".to_string(),
             "fixture".to_string(),
@@ -13254,6 +13534,25 @@ mod tests {
             routed_payload,
         );
         assert!(!event_needs_signal_outbox(&audit_event));
+    }
+
+    #[test]
+    fn legacy_plan_output_matches_any_issued_effect_and_one_checkpoint_gap() {
+        let plan_id = "plan-history-fixture";
+        for sequence in 1..=5 {
+            let effect_id =
+                crate::plan_execution::deterministic_plan_effect_id(plan_id, sequence).unwrap();
+            assert_eq!(
+                legacy_plan_effect_sequence(&effect_id, plan_id, 5).unwrap(),
+                Some(sequence)
+            );
+        }
+        let unrelated =
+            crate::plan_execution::deterministic_plan_effect_id("other-plan", 2).unwrap();
+        assert_eq!(
+            legacy_plan_effect_sequence(&unrelated, plan_id, 5).unwrap(),
+            None
+        );
     }
 
     #[test]

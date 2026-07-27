@@ -36,6 +36,7 @@ import {
   Plus,
   Radio,
   RefreshCw,
+  Search,
   Send,
   Square,
   Sun,
@@ -308,6 +309,7 @@ interface AppPromptDialog extends AppDialogBase {
   defaultValue: string
   inputLabel: string
   allowEmpty?: boolean
+  multiline?: boolean
   placeholder?: string
   resolve: (value: string | null) => void
 }
@@ -450,19 +452,21 @@ function AppDialog({
 }) {
   const [value, setValue] = useState(request.kind === 'prompt' ? request.defaultValue : '')
   const inputRef = useRef<HTMLInputElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
   const confirmRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     if (request.kind === 'prompt') {
-      inputRef.current?.focus()
-      inputRef.current?.select()
+      const field = request.multiline ? textareaRef.current : inputRef.current
+      field?.focus()
+      field?.select()
     } else if (request.tone === 'danger') {
       cancelRef.current?.focus()
     } else {
       confirmRef.current?.focus()
     }
-  }, [request.kind, request.tone])
+  }, [request])
 
   const cancel = () => onResolve(request.kind === 'confirm' ? false : null)
   const confirm = () => {
@@ -486,7 +490,11 @@ function AppDialog({
         if (event.key === 'Escape') {
           event.preventDefault()
           cancel()
-        } else if (event.key === 'Enter' && !(event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)) {
+        } else if (
+          event.key === 'Enter'
+          && !(event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229)
+          && (request.kind !== 'prompt' || !request.multiline || event.metaKey || event.ctrlKey)
+        ) {
           event.preventDefault()
           confirm()
         }
@@ -510,13 +518,23 @@ function AppDialog({
         {request.kind === 'prompt' && (
           <label>
             <span>{request.inputLabel}</span>
-            <input
-              ref={inputRef}
-              autoComplete="off"
-              value={value}
-              placeholder={request.placeholder}
-              onChange={event => setValue(event.target.value)}
-            />
+            {request.multiline ? (
+              <textarea
+                ref={textareaRef}
+                rows={8}
+                value={value}
+                placeholder={request.placeholder}
+                onChange={event => setValue(event.target.value)}
+              />
+            ) : (
+              <input
+                ref={inputRef}
+                autoComplete="off"
+                value={value}
+                placeholder={request.placeholder}
+                onChange={event => setValue(event.target.value)}
+              />
+            )}
           </label>
         )}
         <footer>
@@ -886,7 +904,7 @@ interface ObjectiveRecord {
   updated_at: string
 }
 
-type ObjectiveMutationKind = 'pause' | 'resume' | 'delete' | ''
+type ObjectiveMutationKind = 'edit' | 'pause' | 'resume' | 'delete' | ''
 
 function ObjectiveCardActions({
   objective,
@@ -896,6 +914,7 @@ function ObjectiveCardActions({
   disabled,
   t,
   onFilter,
+  onEdit,
   onPause,
   onResume,
   onDelete,
@@ -908,6 +927,7 @@ function ObjectiveCardActions({
   disabled: boolean
   t: TFunction
   onFilter: () => void
+  onEdit: () => void
   onPause: () => void
   onResume: () => void
   onDelete: () => void
@@ -925,6 +945,16 @@ function ObjectiveCardActions({
         onClick={onFilter}
       >
         <Filter size={13} />
+      </button>
+      <button
+        className="objective-card-action"
+        type="button"
+        disabled={mutationPending}
+        aria-label={busy === 'edit' ? t('work.objectives.editing') : t('work.objectives.edit')}
+        title={busy === 'edit' ? t('work.objectives.editing') : t('work.objectives.edit')}
+        onClick={onEdit}
+      >
+        {busy === 'edit' ? <LoaderCircle className="is-spinning" size={13} /> : <Pencil size={13} />}
       </button>
       {objective.status === 'active' && (
         <button
@@ -1081,6 +1111,36 @@ interface RecallSearchHit {
   preview: string
 }
 
+interface DialogueHistorySearchHit {
+  event_id: string
+  sequence?: number
+  session_id: string
+  topic: 'chat/user_message' | 'chat/reply' | 'chat/outbound_message'
+  timestamp: string
+  actor: string
+  kind: 'user' | 'agent' | 'execution_result'
+  score: number
+  retired: boolean
+  preview: string
+}
+
+interface SessionEventsPage {
+  events: MorphzEvent[]
+  next_before_sequence?: number
+}
+
+function mergeSessionEvents(left: MorphzEvent[], right: MorphzEvent[]) {
+  const byId = new Map(left.map(event => [event.id, event]))
+  for (const event of right) byId.set(event.id, event)
+  return Array.from(byId.values()).sort((a, b) => {
+    if (a.sequence !== undefined && b.sequence !== undefined && a.sequence !== b.sequence) {
+      return a.sequence - b.sequence
+    }
+    const timeOrder = a.timestamp.localeCompare(b.timestamp)
+    return timeOrder !== 0 ? timeOrder : a.id.localeCompare(b.id)
+  })
+}
+
 interface FrameRecallPage {
   root_frame_id: string
   mind_version: number
@@ -1134,12 +1194,14 @@ function DialogueActivityDock({
   showReasoningSummary,
   expandedObjectiveIds,
   selectedObjectiveId,
+  currentSessionOnly,
   objectiveTintEnabled,
   tintDimension,
   tintStyleFor,
   objectiveIdsByThread,
   pausingObjectiveId,
   resumingObjectiveId,
+  editingObjectiveId,
   deletingObjectiveId,
   t,
   onOpenChange,
@@ -1148,10 +1210,12 @@ function DialogueActivityDock({
   onInspectThread,
   onObjectiveToggle,
   onObjectiveFilterChange,
+  onCurrentSessionOnlyChange,
   onObjectiveTintChange,
   onTintDimensionChange,
   onPauseObjective,
   onResumeObjective,
+  onEditObjective,
   onDeleteObjective,
 }: {
   open: boolean
@@ -1166,12 +1230,14 @@ function DialogueActivityDock({
   showReasoningSummary: boolean
   expandedObjectiveIds: ReadonlySet<string>
   selectedObjectiveId: string
+  currentSessionOnly: boolean
   objectiveTintEnabled: boolean
   tintDimension: TintDimension
   tintStyleFor: TintStyleResolver
   objectiveIdsByThread: ReadonlyMap<string, string[]>
   pausingObjectiveId: string
   resumingObjectiveId: string
+  editingObjectiveId: string
   deletingObjectiveId: string
   t: TFunction
   onOpenChange: (open: boolean) => void
@@ -1180,10 +1246,12 @@ function DialogueActivityDock({
   onInspectThread: (threadId: string) => void
   onObjectiveToggle: (objectiveId: string) => void
   onObjectiveFilterChange: (objectiveId: string) => void
+  onCurrentSessionOnlyChange: (enabled: boolean) => void
   onObjectiveTintChange: (enabled: boolean) => void
   onTintDimensionChange: (dimension: TintDimension) => void
   onPauseObjective: (objective: ObjectiveRecord) => void
   onResumeObjective: (objective: ObjectiveRecord) => void
+  onEditObjective: (objective: ObjectiveRecord) => void
   onDeleteObjective: (objective: ObjectiveRecord) => void
 }) {
   const [objectivesOpen, setObjectivesOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.objectives', false)
@@ -1215,21 +1283,20 @@ function DialogueActivityDock({
       {open && (
         <>
           <div className="dialogue-activity-controls">
-            <label className="dialogue-activity-filter">
-              <Filter size={12} aria-hidden="true" />
-              <select
-                aria-label={t('conversation.activity.filterByObjective')}
-                value={selectedObjectiveId}
-                onChange={event => onObjectiveFilterChange(event.target.value)}
-              >
-                <option value="">{t('conversation.activity.allObjectives')}</option>
-                {objectives.map(objective => (
-                  <option key={objective.id} value={objective.id}>
-                    {shortId(objective.id, 14)} · {objective.stated_objective}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <button
+              className={`current-session-filter ${currentSessionOnly ? 'is-active' : ''}`}
+              type="button"
+              aria-pressed={currentSessionOnly}
+              title={currentSessionOnly
+                ? t('conversation.activity.showAllSessions')
+                : t('conversation.activity.showCurrentSession')}
+              onClick={() => onCurrentSessionOnlyChange(!currentSessionOnly)}
+            >
+              <MessageSquare size={12} />
+              <span>{currentSessionOnly
+                ? t('conversation.activity.currentSessionOnly')
+                : t('conversation.activity.allSessions')}</span>
+            </button>
             {objectiveTintEnabled && (
               <div className="tint-dimension-tabs" role="group" aria-label={t('conversation.activity.tintDimension')}>
                 {(['objective', 'thread'] as const).map(dimension => {
@@ -1285,9 +1352,11 @@ function DialogueActivityDock({
                   ? 'pause'
                   : resumingObjectiveId === objective.id
                     ? 'resume'
-                    : deletingObjectiveId === objective.id
-                      ? 'delete'
-                      : ''
+                    : editingObjectiveId === objective.id
+                      ? 'edit'
+                      : deletingObjectiveId === objective.id
+                        ? 'delete'
+                        : ''
                 const selected = selectedObjectiveId === objective.id
                 return (
                   <article
@@ -1303,9 +1372,10 @@ function DialogueActivityDock({
                         expanded={expanded}
                         selected={selected}
                         busy={busy}
-                        disabled={Boolean(pausingObjectiveId || resumingObjectiveId || deletingObjectiveId)}
+                        disabled={Boolean(pausingObjectiveId || resumingObjectiveId || editingObjectiveId || deletingObjectiveId)}
                         t={t}
                         onFilter={() => onObjectiveFilterChange(selected ? '' : objective.id)}
+                        onEdit={() => onEditObjective(objective)}
                         onPause={() => onPauseObjective(objective)}
                         onResume={() => onResumeObjective(objective)}
                         onDelete={() => onDeleteObjective(objective)}
@@ -1846,6 +1916,9 @@ export default function App() {
   // overriding a deliberate choice.
   const [tintDimensionChosen, setTintDimensionChosen] = useState(initialTintDimensionChosen)
   const [requestedObjectiveFilterId, setSelectedObjectiveFilterId] = useState('')
+  const [dialogueCurrentSessionOnly, setDialogueCurrentSessionOnly] = useState(
+    () => initialBooleanPreference('morphz.dashboard.dialogueActivity.currentSessionOnly', false),
+  )
   const [themeMenuOpen, setThemeMenuOpen] = useState(false)
   const [status, setStatus] = useState<RuntimeStatus | null>(null)
   const [catalogReady, setCatalogReady] = useState(false)
@@ -1888,6 +1961,12 @@ export default function App() {
   const [selectedFrameId, setSelectedFrameId] = useState('')
   const [recallQuery, setRecallQuery] = useState('')
   const [recallMatches, setRecallMatches] = useState<RecallSearchHit[]>([])
+  const [dialogueSearchQuery, setDialogueSearchQuery] = useState('')
+  const [dialogueSearchMatches, setDialogueSearchMatches] = useState<DialogueHistorySearchHit[]>([])
+  const [dialogueSearchOpen, setDialogueSearchOpen] = useState(false)
+  const [dialogueSearchSubmitted, setDialogueSearchSubmitted] = useState(false)
+  const [dialogueSearchBusy, setDialogueSearchBusy] = useState(false)
+  const [pendingDialogueSearchHit, setPendingDialogueSearchHit] = useState<DialogueHistorySearchHit | null>(null)
   const [frameLineage, setFrameLineage] = useState<FrameRecallPage | null>(null)
   const [recallIndex, setRecallIndex] = useState<RecallIndexAudit | null>(null)
   const [recallBusy, setRecallBusy] = useState(false)
@@ -1903,6 +1982,7 @@ export default function App() {
   const [changingReasoning, setChangingReasoning] = useState(false)
   const [pausingObjectiveId, setPausingObjectiveId] = useState('')
   const [resumingObjectiveId, setResumingObjectiveId] = useState('')
+  const [editingObjectiveId, setEditingObjectiveId] = useState('')
   const [deletingObjectiveId, setDeletingObjectiveId] = useState('')
   const [expandedObjectiveIds, setExpandedObjectiveIds] = useState<Set<string>>(() => new Set())
   const [decidingApprovalId, setDecidingApprovalId] = useState('')
@@ -1923,7 +2003,14 @@ export default function App() {
   const executionOutputPinnedToEnd = useRef(true)
   const composerInputRef = useRef<HTMLTextAreaElement>(null)
   const [messageWindow, setMessageWindow] = useState({ sessionId: '', count: MESSAGE_PAGE_SIZE })
+  const [eventHistoryCursor, setEventHistoryCursor] = useState<number | null>(null)
+  const [loadingOlderEvents, setLoadingOlderEvents] = useState(false)
   const loadingOlder = useRef(false)
+  const eventHistoryCursorRef = useRef<{ sessionId: string, nextBeforeSequence: number | null }>({
+    sessionId: '',
+    nextBeforeSequence: null,
+  })
+  const locatingDialogueSearchEvent = useRef('')
   const pendingScrollRestore = useRef<number | null>(null)
   const wasSending = useRef(false)
   const conversationPinnedToEnd = useRef(true)
@@ -1967,6 +2054,17 @@ export default function App() {
     }
   }, [tintDimension, tintDimensionChosen])
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        'morphz.dashboard.dialogueActivity.currentSessionOnly',
+        String(dialogueCurrentSessionOnly),
+      )
+    } catch {
+      // The filter remains active for the current page lifetime.
+    }
+  }, [dialogueCurrentSessionOnly])
+
   const requestConfirmation = useCallback((options: {
     title: string
     description?: string
@@ -1996,6 +2094,7 @@ export default function App() {
     inputLabel: string
     defaultValue?: string
     allowEmpty?: boolean
+    multiline?: boolean
     placeholder?: string
     confirmLabel: string
     cancelLabel: string
@@ -2216,12 +2315,20 @@ export default function App() {
             setAttentionAcknowledgements(result.acknowledgements ?? [])
           }
         }),
-        DASHBOARD_API.tryGet<{ events?: MorphzEvent[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/events?limit=1000`)
+        DASHBOARD_API.tryGet<SessionEventsPage>(`/api/sessions/${encodeURIComponent(sessionId)}/events?limit=1000`)
           .then(eventsResult => {
             if (!eventsResult || !isCurrentScope()) return
             const nextEvents = eventsResult.events ?? []
-            setEvents(nextEvents)
+            const hasLoadedHistory = eventHistoryCursorRef.current.sessionId === sessionId
+            setEvents(previous => hasLoadedHistory
+              ? mergeSessionEvents(previous, nextEvents)
+              : nextEvents)
             setEventsSessionId(sessionId)
+            if (!hasLoadedHistory) {
+              const nextCursor = eventsResult.next_before_sequence ?? null
+              eventHistoryCursorRef.current = { sessionId, nextBeforeSequence: nextCursor }
+              setEventHistoryCursor(nextCursor)
+            }
             for (const summary of selectDurableReasoningSummaries(nextEvents)) {
               dispatchModelStream({ type: 'persisted', sessionId, causalId: summary.attemptId })
             }
@@ -2386,6 +2493,44 @@ export default function App() {
     }
   }, [recallQuery, selectedContextId])
 
+  const searchDialogueHistory = useCallback(async () => {
+    const query = dialogueSearchQuery.trim()
+    if (!selectedContextId || !query) return
+    setDialogueSearchBusy(true)
+    setDialogueSearchOpen(true)
+    try {
+      const page = await DASHBOARD_API.get<{ matches: DialogueHistorySearchHit[] }>(
+        `/api/contexts/${encodeURIComponent(selectedContextId)}/dialogue/search?query=${encodeURIComponent(query)}&limit=60`,
+      )
+      setDialogueSearchMatches(page.matches)
+      setDialogueSearchSubmitted(true)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setDialogueSearchBusy(false)
+    }
+  }, [dialogueSearchQuery, selectedContextId])
+
+  const openDialogueSearchHit = useCallback((hit: DialogueHistorySearchHit) => {
+    const targetSession = sessions.find(session => session.id === hit.session_id)
+    if (!targetSession) {
+      setError(t('conversation.search.sessionUnavailable'))
+      return
+    }
+    setSelectedObjectiveFilterId('')
+    setPendingDialogueSearchHit(hit)
+    setDialogueSearchOpen(false)
+    if (targetSession.id !== selectedSessionId) {
+      setPendingTurn(null)
+      setSelectedAgentId(targetSession.agent_id)
+      setFrameLineage(null)
+      setSelectedContextId(targetSession.context_id)
+      setSelectedSessionId(targetSession.id)
+    }
+    navigate(dashboardPath('dialogue', targetSession.context_id, targetSession.id))
+  }, [navigate, selectedSessionId, sessions, t])
+
   const mutateFrameLifecycle = useCallback(async (frameId: string, action: 'restore' | 'protect' | 'unprotect') => {
     if (!selectedContextId || !selectedSessionId || !contextView) return
     setMutatingFrameId(frameId)
@@ -2529,6 +2674,10 @@ export default function App() {
       setLedgerPage(null)
       setLedgerBeforeSequence('')
       setLedgerCursorHistory([])
+      setDialogueSearchQuery('')
+      setDialogueSearchMatches([])
+      setDialogueSearchOpen(false)
+      setDialogueSearchSubmitted(false)
     }, 0)
     return () => window.clearTimeout(reset)
   }, [selectedContextId])
@@ -2536,6 +2685,11 @@ export default function App() {
   useEffect(() => {
     const resetTimer = window.setTimeout(() => {
       dispatchModelStream({ type: 'reset_session', sessionId: selectedSessionId })
+      eventHistoryCursorRef.current = { sessionId: '', nextBeforeSequence: null }
+      locatingDialogueSearchEvent.current = ''
+      setEventHistoryCursor(null)
+      setLoadingOlderEvents(false)
+      setMessageWindow({ sessionId: selectedSessionId, count: MESSAGE_PAGE_SIZE })
       setEventsSessionId('')
       setLatestContextInspect(null)
       setContextView(null)
@@ -2851,7 +3005,10 @@ export default function App() {
           setEventsSessionId(selectedSessionId)
           setEvents(previous => {
             if (previous.some(item => item.id === event.id)) return previous
-            return [...previous, event].slice(-1000)
+            // Server-paged history is part of the current read model. Never
+            // discard it when a live Event arrives; the Event Ledger cursor,
+            // not an arbitrary browser cap, owns the history boundary.
+            return mergeSessionEvents(previous, [event])
           })
           const causalId = typeof event.payload.activation_id === 'string'
             ? event.payload.activation_id
@@ -3048,6 +3205,73 @@ export default function App() {
   const hiddenEventCount = selectedObjectiveFilterId
     ? conversationEvents.filter(event => objectiveLineage.forEvent(event).objectiveIds.includes(selectedObjectiveFilterId)).length - visibleEventsForObjective.length
     : conversationEvents.length - visibleEvents.length
+
+  useEffect(() => {
+    const hit = pendingDialogueSearchHit
+    if (!hit || hit.session_id !== selectedSessionId || eventsSessionId !== selectedSessionId) return
+
+    const eventIndex = conversationEvents.findIndex(event => event.id === hit.event_id)
+    if (eventIndex >= 0) {
+      const requiredCount = conversationEvents.length - eventIndex
+      if (visibleCount < requiredCount) {
+        const revealFrame = window.requestAnimationFrame(() => {
+          setMessageWindow({ sessionId: selectedSessionId, count: requiredCount })
+        })
+        return () => window.cancelAnimationFrame(revealFrame)
+      }
+      const hitEvent = conversationEvents[eventIndex]
+      const firstFrame = window.requestAnimationFrame(() => {
+        if (conversationLayout === 'split') {
+          setConversationMobileLane(conversationEventLane(hitEvent.topic, hitEvent.payload) === 'execution_output'
+            ? 'execution'
+            : 'dialogue')
+        }
+        window.requestAnimationFrame(() => {
+          const target = Array.from(document.querySelectorAll<HTMLElement>('[data-event-id]'))
+            .find(node => node.dataset.eventId === hit.event_id)
+          if (!target) return
+          conversationPinnedToEnd.current = false
+          target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+          setPendingDialogueSearchHit(null)
+        })
+      })
+      return () => window.cancelAnimationFrame(firstFrame)
+    }
+
+    if (hit.sequence === undefined || locatingDialogueSearchEvent.current === hit.event_id) return
+    locatingDialogueSearchEvent.current = hit.event_id
+    let cancelled = false
+    void DASHBOARD_API.get<SessionEventsPage>(
+      `/api/sessions/${encodeURIComponent(selectedSessionId)}/events?before_sequence=${hit.sequence + 1}&limit=100`,
+    ).then(page => {
+      if (cancelled || selectedScopeRef.current.sessionId !== selectedSessionId) return
+      if (!page.events.some(event => event.id === hit.event_id)) {
+        setPendingDialogueSearchHit(null)
+        setError(t('conversation.search.messageUnavailable'))
+        return
+      }
+      setEvents(previous => mergeSessionEvents(previous, page.events))
+      setEventsSessionId(selectedSessionId)
+      setError('')
+    }).catch(reason => {
+      if (!cancelled) {
+        setPendingDialogueSearchHit(null)
+        setError(reason instanceof Error ? reason.message : String(reason))
+      }
+    }).finally(() => {
+      if (locatingDialogueSearchEvent.current === hit.event_id) locatingDialogueSearchEvent.current = ''
+    })
+    return () => { cancelled = true }
+  }, [
+    conversationEvents,
+    conversationLayout,
+    eventsSessionId,
+    pendingDialogueSearchHit,
+    selectedSessionId,
+    t,
+    visibleCount,
+  ])
+
   const visibleReasoningSummaries = useMemo(() => {
     const byEventId = new Map<string, string>()
     for (const event of visibleEventsForObjective) {
@@ -3156,7 +3380,11 @@ export default function App() {
     ),
     [attentionAcknowledgements, selectedContextId],
   )
-  const dialogueActivityObjectives = [...activeObjectives].sort((left, right) => {
+  const dialogueActivityObjectives = activeObjectives
+    .filter(objective => !dialogueCurrentSessionOnly
+      || objective.coordinator_session_id === selectedSessionId
+      || objective.delivery_session_id === selectedSessionId)
+    .sort((left, right) => {
     const leftCurrent = left.coordinator_session_id === selectedSessionId || left.delivery_session_id === selectedSessionId
     const rightCurrent = right.coordinator_session_id === selectedSessionId || right.delivery_session_id === selectedSessionId
     if (leftCurrent !== rightCurrent) return leftCurrent ? -1 : 1
@@ -3166,6 +3394,7 @@ export default function App() {
     const phaseRank: Record<SchedulerThreadSnapshot['phase'], number> = { running: 0, runnable: 1, waiting: 2, idle: 3 }
     const executionBearingThreads = schedulerThreads.filter(snapshot => {
       if (!threadCarriesExecution(snapshot)) return false
+      if (dialogueCurrentSessionOnly && snapshot.thread.session_id !== selectedSessionId) return false
       return !selectedObjectiveFilterId
         || (objectiveLineage.objectiveIdsByThread.get(snapshot.thread.id) ?? []).includes(selectedObjectiveFilterId)
     })
@@ -3188,7 +3417,7 @@ export default function App() {
       dialogueActivityThreads: sortThreads(active),
       dialogueActivityHistoryThreads: sortThreads(history),
     }
-  }, [objectiveLineage, schedulerThreads, selectedObjectiveFilterId, selectedSessionId])
+  }, [dialogueCurrentSessionOnly, objectiveLineage, schedulerThreads, selectedObjectiveFilterId, selectedSessionId])
   const showDialogueActivity = Boolean(selectedContextId && selectedSessionId)
   // Colours are allocated over what is currently on screen, in a stable order,
   // so a slot belongs to one live entity at a time.
@@ -3230,6 +3459,16 @@ export default function App() {
   const handleTintDimensionChange = (dimension: TintDimension) => {
     setTintDimension(dimension)
     setTintDimensionChosen(true)
+  }
+  const handleDialogueCurrentSessionOnlyChange = (enabled: boolean) => {
+    if (enabled && selectedObjectiveFilterId) {
+      const selectedObjective = objectives.find(objective => objective.id === selectedObjectiveFilterId)
+      const belongsToCurrentSession = selectedObjective
+        && (selectedObjective.coordinator_session_id === selectedSessionId
+          || selectedObjective.delivery_session_id === selectedSessionId)
+      if (!belongsToCurrentSession) setSelectedObjectiveFilterId('')
+    }
+    setDialogueCurrentSessionOnly(enabled)
   }
   const visibleSchedulerThreads = useMemo(() => {
     const filtered = schedulerThreads.filter(snapshot => (
@@ -3324,7 +3563,11 @@ export default function App() {
   const contextDelegations = delegations.filter(item => item.parent_context_id === selectedContextId)
   const liveDelegations = contextDelegations.filter(item => !terminalTaskStatuses.has(item.status))
   const runningDelegations = liveDelegations.filter(item => item.status === 'queued' || item.status === 'running')
-  const dialogueActivityDelegations = [...liveDelegations].sort((left, right) => {
+  const dialogueActivityDelegations = liveDelegations
+    .filter(item => !dialogueCurrentSessionOnly
+      || item.parent_session_id === selectedSessionId
+      || item.child_session_id === selectedSessionId)
+    .sort((left, right) => {
     const leftCurrent = left.parent_session_id === selectedSessionId
     const rightCurrent = right.parent_session_id === selectedSessionId
     if (leftCurrent !== rightCurrent) return leftCurrent ? -1 : 1
@@ -3416,6 +3659,7 @@ export default function App() {
     pendingScrollRestore.current = null
     if (container) container.scrollTop += container.scrollHeight - previousHeight
     loadingOlder.current = false
+    setLoadingOlderEvents(false)
   }, [conversationLayout, visibleCount])
 
   useEffect(() => {
@@ -3515,15 +3759,17 @@ export default function App() {
     }
   }, [conversationLayout, selectedSessionId, view])
 
-  const handleConversationScroll = useCallback((container: HTMLDivElement) => {
-    // Ignore the scroll events fired by our own programmatic scrolling;
-    // content growth between the scroll and the event would otherwise look
-    // like the user scrolled away from the bottom.
-    if (Date.now() - lastProgrammaticScroll.current < 120) return
-    conversationPinnedToEnd.current = container.scrollHeight - container.scrollTop - container.clientHeight < 48
-    if (container.scrollTop < 80 && !loadingOlder.current && hiddenEventCount > 0) {
-      loadingOlder.current = true
-      pendingScrollRestore.current = container.scrollHeight
+  const loadOlderConversationEvents = useCallback(async (container: HTMLDivElement) => {
+    if (!selectedSessionId || loadingOlder.current) return
+
+    loadingOlder.current = true
+    setLoadingOlderEvents(true)
+    pendingScrollRestore.current = container.scrollHeight
+
+    // First reveal messages that are already resident in the browser. Once
+    // that finite window is exhausted, continue from the durable Ledger
+    // cursor instead of pretending the latest 1,000 Events are all history.
+    if (hiddenEventCount > 0) {
       setMessageWindow(current => ({
         sessionId: selectedSessionId,
         count: Math.min(
@@ -3531,8 +3777,60 @@ export default function App() {
           conversationEvents.length,
         ),
       }))
+      return
     }
-  }, [conversationEvents.length, hiddenEventCount, selectedSessionId])
+
+    const cursorState = eventHistoryCursorRef.current
+    if (cursorState.sessionId !== selectedSessionId || cursorState.nextBeforeSequence === null) {
+      pendingScrollRestore.current = null
+      loadingOlder.current = false
+      setLoadingOlderEvents(false)
+      return
+    }
+
+    try {
+      const page = await DASHBOARD_API.get<SessionEventsPage>(
+        `/api/sessions/${encodeURIComponent(selectedSessionId)}/events?before_sequence=${cursorState.nextBeforeSequence}&limit=1000`,
+      )
+      if (selectedScopeRef.current.sessionId !== selectedSessionId) return
+
+      const existingIds = new Set(conversationEvents.map(event => event.id))
+      const newlyLoadedMessages = page.events.filter(event => eventKind(event) !== null && !existingIds.has(event.id)).length
+      const nextCursor = page.next_before_sequence ?? null
+      eventHistoryCursorRef.current = { sessionId: selectedSessionId, nextBeforeSequence: nextCursor }
+      setEventHistoryCursor(nextCursor)
+      setEvents(previous => mergeSessionEvents(previous, page.events))
+      setEventsSessionId(selectedSessionId)
+
+      if (newlyLoadedMessages > 0) {
+        setMessageWindow(current => ({
+          sessionId: selectedSessionId,
+          count: (current.sessionId === selectedSessionId ? current.count : MESSAGE_PAGE_SIZE) + newlyLoadedMessages,
+        }))
+      } else {
+        pendingScrollRestore.current = null
+        loadingOlder.current = false
+        setLoadingOlderEvents(false)
+      }
+      setError('')
+    } catch (reason) {
+      pendingScrollRestore.current = null
+      loadingOlder.current = false
+      setLoadingOlderEvents(false)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [conversationEvents, hiddenEventCount, selectedSessionId])
+
+  const handleConversationScroll = useCallback((container: HTMLDivElement) => {
+    // Ignore the scroll events fired by our own programmatic scrolling;
+    // content growth between the scroll and the event would otherwise look
+    // like the user scrolled away from the bottom.
+    if (Date.now() - lastProgrammaticScroll.current < 120) return
+    conversationPinnedToEnd.current = container.scrollHeight - container.scrollTop - container.clientHeight < 48
+    if (container.scrollTop < 80) {
+      void loadOlderConversationEvents(container)
+    }
+  }, [loadOlderConversationEvents])
 
   const activateContext = useCallback((context: ContextRecord, destination?: DashboardView) => {
     const nextSession = sessions
@@ -3948,8 +4246,41 @@ export default function App() {
     })
   }, [])
 
+  const editObjective = async (objective: ObjectiveRecord) => {
+    if (pausingObjectiveId || resumingObjectiveId || editingObjectiveId || deletingObjectiveId) return
+    const requested = await requestText({
+      title: t('work.objectives.edit'),
+      description: t('dialog.editObjective'),
+      inputLabel: t('dialog.objectiveLabel'),
+      defaultValue: objective.stated_objective,
+      multiline: true,
+      confirmLabel: t('dialog.actions.save'),
+      cancelLabel: t('dialog.actions.cancel'),
+    })
+    const statedObjective = requested?.trim()
+    if (!statedObjective || statedObjective === objective.stated_objective) return
+    setEditingObjectiveId(objective.id)
+    try {
+      await DASHBOARD_API.command(
+        `/api/objectives/${encodeURIComponent(objective.id)}`,
+        'PATCH',
+        {
+          expected_revision: objective.revision,
+          stated_objective: statedObjective,
+        },
+      )
+      await loadSession(selectedSessionId, selectedContextId)
+      setError('')
+    } catch (reason) {
+      await loadSession(selectedSessionId, selectedContextId).catch(() => {})
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setEditingObjectiveId('')
+    }
+  }
+
   const pauseObjective = async (objective: ObjectiveRecord) => {
-    if (pausingObjectiveId || resumingObjectiveId || deletingObjectiveId) return
+    if (pausingObjectiveId || resumingObjectiveId || editingObjectiveId || deletingObjectiveId) return
     setPausingObjectiveId(objective.id)
     try {
       await DASHBOARD_API.command(
@@ -3973,7 +4304,7 @@ export default function App() {
   }
 
   const resumeObjective = async (objective: ObjectiveRecord) => {
-    if (pausingObjectiveId || resumingObjectiveId || deletingObjectiveId) return
+    if (pausingObjectiveId || resumingObjectiveId || editingObjectiveId || deletingObjectiveId) return
     setResumingObjectiveId(objective.id)
     try {
       await DASHBOARD_API.command(
@@ -3994,7 +4325,7 @@ export default function App() {
   }
 
   const deleteObjective = async (objective: ObjectiveRecord) => {
-    if (pausingObjectiveId || resumingObjectiveId || deletingObjectiveId) return
+    if (pausingObjectiveId || resumingObjectiveId || editingObjectiveId || deletingObjectiveId) return
     const confirmed = await requestConfirmation({
       title: t('dialog.deleteObjectiveTitle'),
       description: t('dialog.deleteObjectiveBody', { objective: objective.stated_objective }),
@@ -4281,12 +4612,14 @@ export default function App() {
       showReasoningSummary={showReasoningSummary}
       expandedObjectiveIds={expandedObjectiveIds}
       selectedObjectiveId={selectedObjectiveFilterId}
+      currentSessionOnly={dialogueCurrentSessionOnly}
       objectiveTintEnabled={objectiveTintEnabled}
       tintDimension={tintDimension}
       tintStyleFor={tintStyleFor}
       objectiveIdsByThread={objectiveLineage.objectiveIdsByThread}
       pausingObjectiveId={pausingObjectiveId}
       resumingObjectiveId={resumingObjectiveId}
+      editingObjectiveId={editingObjectiveId}
       deletingObjectiveId={deletingObjectiveId}
       t={t}
       onOpenChange={setDialogueActivityOpen}
@@ -4298,10 +4631,12 @@ export default function App() {
       onInspectThread={threadId => navigate(threadPath(selectedContextId, threadId))}
       onObjectiveToggle={toggleObjectiveExpanded}
       onObjectiveFilterChange={setSelectedObjectiveFilterId}
+      onCurrentSessionOnlyChange={handleDialogueCurrentSessionOnlyChange}
       onObjectiveTintChange={handleObjectiveTintChange}
       onTintDimensionChange={handleTintDimensionChange}
       onPauseObjective={objective => void pauseObjective(objective)}
       onResumeObjective={objective => void resumeObjective(objective)}
+      onEditObjective={objective => void editObjective(objective)}
       onDeleteObjective={objective => void deleteObjective(objective)}
     />
   )
@@ -4496,6 +4831,68 @@ export default function App() {
               <span className="conversation-toolbar-title">
                 {t('conversation.heading', { title: selectedSession?.title ?? shortId(selectedSessionId) })}
               </span>
+              <div className="conversation-history-search">
+                <form onSubmit={event => { event.preventDefault(); void searchDialogueHistory() }}>
+                  <button type="submit" disabled={dialogueSearchBusy || !dialogueSearchQuery.trim()} title={t('conversation.search.action')} aria-label={t('conversation.search.action')}>
+                    {dialogueSearchBusy ? <LoaderCircle className="spinning" size={13} /> : <Search size={13} />}
+                  </button>
+                  <input
+                    type="search"
+                    value={dialogueSearchQuery}
+                    placeholder={t('conversation.search.placeholder')}
+                    aria-label={t('conversation.search.placeholder')}
+                    onFocus={() => { if (dialogueSearchSubmitted) setDialogueSearchOpen(true) }}
+                    onChange={event => {
+                      setDialogueSearchQuery(event.target.value)
+                      setDialogueSearchSubmitted(false)
+                      setDialogueSearchOpen(false)
+                    }}
+                  />
+                  {dialogueSearchQuery && (
+                    <button
+                      type="button"
+                      title={t('conversation.search.clear')}
+                      aria-label={t('conversation.search.clear')}
+                      onClick={() => {
+                        setDialogueSearchQuery('')
+                        setDialogueSearchMatches([])
+                        setDialogueSearchSubmitted(false)
+                        setDialogueSearchOpen(false)
+                      }}
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
+                </form>
+                {dialogueSearchOpen && dialogueSearchSubmitted && (
+                  <div className="conversation-history-results" role="dialog" aria-label={t('conversation.search.results')}>
+                    <header>
+                      <span>
+                        <strong>{t('conversation.search.results')}</strong>
+                        <small>{t('conversation.search.scope')}</small>
+                      </span>
+                      <button type="button" title={t('conversation.search.close')} aria-label={t('conversation.search.close')} onClick={() => setDialogueSearchOpen(false)}><X size={13} /></button>
+                    </header>
+                    {dialogueSearchMatches.length === 0 ? (
+                      <div className="conversation-history-empty"><Search size={17} /><span>{t('conversation.search.empty')}</span></div>
+                    ) : (
+                      <div className="conversation-history-result-list">
+                        {dialogueSearchMatches.map(hit => (
+                          <button key={hit.event_id} type="button" onClick={() => openDialogueSearchHit(hit)}>
+                            <span>
+                              <b>{t(`conversation.search.kind.${hit.kind}`)}</b>
+                              <code>{sessions.find(session => session.id === hit.session_id)?.title ?? shortId(hit.session_id, 22)}</code>
+                              <code>{formatTime(hit.timestamp, i18n.language)}</code>
+                              {hit.retired && <em>{t('mindView.retired')}</em>}
+                            </span>
+                            <p>{hit.preview || t('conversation.noText')}</p>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
               <div className="conversation-layout-switch" role="group" aria-label={t('conversation.layout.title')}>
                 <button
                   className={conversationLayout === 'merged' ? 'is-active' : ''}
@@ -4526,6 +4923,11 @@ export default function App() {
           onScroll={event => {
             if (view === 'dialogue' && conversationLayout === 'merged') {
               handleConversationScroll(event.currentTarget)
+            }
+          }}
+          onWheel={event => {
+            if (view === 'dialogue' && conversationLayout === 'merged' && event.deltaY < 0 && event.currentTarget.scrollTop < 80) {
+              void loadOlderConversationEvents(event.currentTarget)
             }
           }}
         >
@@ -4619,6 +5021,11 @@ export default function App() {
                   onScroll={event => {
                     if (conversationLayout === 'split') handleConversationScroll(event.currentTarget)
                   }}
+                  onWheel={event => {
+                    if (conversationLayout === 'split' && event.deltaY < 0 && event.currentTarget.scrollTop < 80) {
+                      void loadOlderConversationEvents(event.currentTarget)
+                    }
+                  }}
                 >
               <div className="message-list" ref={conversationMessageListRef}>
                 {visibleDialogueEvents.length === 0 && dialogueStreamingAttempts.length === 0 && (
@@ -4631,8 +5038,25 @@ export default function App() {
                     </button>
                   </div>
                 )}
-                {hiddenEventCount > 0 && (
-                  <div className="history-hint">{t('conversation.historyHint', { count: hiddenEventCount })}</div>
+                {(hiddenEventCount > 0 || eventHistoryCursor !== null) && (
+                  <button
+                    className="history-hint"
+                    type="button"
+                    disabled={loadingOlderEvents}
+                    onClick={event => {
+                      const container = conversationLayout === 'split'
+                        ? conversationLaneRef.current
+                        : viewFrameRef.current
+                      if (container) void loadOlderConversationEvents(container)
+                      event.currentTarget.blur()
+                    }}
+                  >
+                    {loadingOlderEvents
+                      ? t('conversation.historyLoading')
+                      : hiddenEventCount > 0
+                        ? t('conversation.historyHint', { count: hiddenEventCount })
+                        : t('conversation.historyMore')}
+                  </button>
                 )}
                 {visibleDialogueEvents.map(event => {
                   const kind = eventKind(event) ?? 'system'
@@ -5079,9 +5503,11 @@ export default function App() {
                       ? 'pause'
                       : resumingObjectiveId === objective.id
                         ? 'resume'
-                        : deletingObjectiveId === objective.id
-                          ? 'delete'
-                          : ''
+                        : editingObjectiveId === objective.id
+                          ? 'edit'
+                          : deletingObjectiveId === objective.id
+                            ? 'delete'
+                            : ''
                     return (
                       <article className={`work-card objective-work-card ${expanded ? 'is-expanded' : ''}`} key={objective.id}>
                         <header className="objective-card-titlebar">
@@ -5092,9 +5518,10 @@ export default function App() {
                             expanded={expanded}
                             selected={selectedObjectiveFilterId === objective.id}
                             busy={busy}
-                            disabled={Boolean(pausingObjectiveId || resumingObjectiveId || deletingObjectiveId)}
+                            disabled={Boolean(pausingObjectiveId || resumingObjectiveId || editingObjectiveId || deletingObjectiveId)}
                             t={t}
                             onFilter={() => setSelectedObjectiveFilterId(current => current === objective.id ? '' : objective.id)}
+                            onEdit={() => void editObjective(objective)}
                             onPause={() => void pauseObjective(objective)}
                             onResume={() => void resumeObjective(objective)}
                             onDelete={() => void deleteObjective(objective)}

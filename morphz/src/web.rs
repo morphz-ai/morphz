@@ -189,6 +189,12 @@ struct ResumeObjectiveRequest {
 }
 
 #[derive(serde::Deserialize)]
+struct EditObjectiveRequest {
+    expected_revision: u64,
+    stated_objective: String,
+}
+
+#[derive(serde::Deserialize)]
 struct CreateObjectiveRequest {
     id: Option<String>,
     coordinator_session_id: String,
@@ -291,6 +297,13 @@ struct RecallSearchHttpQuery {
 }
 
 #[derive(Default, serde::Deserialize)]
+struct DialogueHistorySearchHttpQuery {
+    token: Option<String>,
+    query: String,
+    limit: Option<usize>,
+}
+
+#[derive(Default, serde::Deserialize)]
 struct FrameRecallHttpQuery {
     token: Option<String>,
     depth: Option<usize>,
@@ -313,6 +326,7 @@ struct MutateFrameLifecycleRequest {
 struct EventQuery {
     token: Option<String>,
     after_sequence: Option<u64>,
+    before_sequence: Option<u64>,
     limit: Option<usize>,
 }
 
@@ -648,6 +662,10 @@ impl Server {
                 get(handle_search_recall),
             )
             .route(
+                "/api/contexts/:context_id/dialogue/search",
+                get(handle_search_dialogue_history),
+            )
+            .route(
                 "/api/contexts/:context_id/recall/index",
                 get(handle_inspect_recall_index),
             )
@@ -719,7 +737,7 @@ impl Server {
             )
             .route(
                 "/api/objectives/:objective_id",
-                delete(handle_delete_objective),
+                patch(handle_edit_objective).delete(handle_delete_objective),
             )
             .route(
                 "/api/delegations/:delegation_id",
@@ -825,6 +843,153 @@ async fn handle_search_recall(
         Ok(page) => Json(page).into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
+}
+
+/// Search the human-facing transcript rather than the complete Event Ledger.
+///
+/// Recall remains the lexical candidate engine, but this read model only
+/// admits persisted messages which can actually be opened in Dialogue. Frame,
+/// transaction, diagnostic, raw tool and scheduler Events never leak into the
+/// result set.
+async fn handle_search_dialogue_history(
+    State(state): State<Arc<AppState>>,
+    Path(context_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<DialogueHistorySearchHttpQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, None) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    let query_text = query.query.trim();
+    if query_text.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "query 不能为空");
+    }
+    let limit = query.limit.unwrap_or(30).clamp(1, 100);
+    let visible_session_ids = match state.sdk.list_sessions(&principal.principal_id, true).await {
+        Ok(sessions) => sessions
+            .into_iter()
+            .filter(|session| session.context_id == context_id)
+            .map(|session| session.id)
+            .collect::<HashSet<_>>(),
+        Err(error) => return sdk_error_response(error),
+    };
+    if visible_session_ids.is_empty() {
+        return Json(json!({
+            "context_id": context_id,
+            "query": query_text,
+            "matches": [],
+        }))
+        .into_response();
+    }
+
+    // Fetch more lexical candidates than the UI limit because Frame and
+    // control-plane documents are intentionally removed below.
+    let candidate_limit = limit.saturating_mul(8).clamp(limit, 500);
+    let recall = match state
+        .runtime
+        .search_recall(RecallSearchRequest {
+            context_id: context_id.clone(),
+            query: query_text.to_string(),
+            limit: candidate_limit,
+        })
+        .await
+    {
+        Ok(page) => page,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    let event_hits = recall
+        .matches
+        .into_iter()
+        .filter(|hit| hit.document_kind == crate::memory::RecallDocumentKind::Event)
+        .collect::<Vec<_>>();
+    if event_hits.is_empty() {
+        return Json(json!({
+            "context_id": context_id,
+            "query": query_text,
+            "matches": [],
+        }))
+        .into_response();
+    }
+    let event_ids = event_hits
+        .iter()
+        .map(|hit| hit.document_id.clone())
+        .collect::<Vec<_>>();
+    let events = match state
+        .runtime
+        .query_events(QueryFilter {
+            context_id: Some(context_id.clone()),
+            session_ids: visible_session_ids.iter().cloned().collect(),
+            event_ids,
+            top_k: Some(event_hits.len()),
+            ..QueryFilter::default()
+        })
+        .await
+    {
+        Ok(events) => events,
+        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    };
+    let events_by_id = events
+        .into_iter()
+        .filter(|event| {
+            let event_session_id = event
+                .payload
+                .get("session_id")
+                .and_then(|value| value.as_str());
+            matches!(
+                event.topic.as_str(),
+                "chat/user_message" | "chat/reply" | "chat/outbound_message"
+            ) && event_session_id.is_some_and(|session_id| visible_session_ids.contains(session_id))
+        })
+        .map(|event| (event.id.clone(), event))
+        .collect::<HashMap<_, _>>();
+    let matches = event_hits
+        .into_iter()
+        .filter_map(|hit| {
+            let event = events_by_id.get(&hit.document_id)?;
+            let kind = match event.topic.as_str() {
+                "chat/user_message" => "user",
+                "chat/reply" | "chat/outbound_message"
+                    if event
+                        .payload
+                        .get("delivery_kind")
+                        .and_then(|value| value.as_str())
+                        == Some("thread_delivery")
+                        || event
+                            .payload
+                            .get("thread_kind")
+                            .and_then(|value| value.as_str())
+                            .is_some_and(|kind| kind != "dialogue_turn")
+                        || event.payload.get("objective_id").is_some() =>
+                {
+                    "execution_result"
+                }
+                _ => "agent",
+            };
+            Some(json!({
+                "event_id": event.id,
+                "sequence": event.sequence,
+                "session_id": event.payload.get("session_id"),
+                "topic": event.topic,
+                "timestamp": event.timestamp,
+                "actor": event.actor,
+                "kind": kind,
+                "score": hit.score,
+                "retired": hit.retired,
+                "preview": hit.preview,
+            }))
+        })
+        .take(limit)
+        .collect::<Vec<_>>();
+    Json(json!({
+        "context_id": context_id,
+        "query": query_text,
+        "matches": matches,
+    }))
+    .into_response()
 }
 
 async fn handle_recall_frame(
@@ -2813,6 +2978,12 @@ async fn handle_get_session_events(
         Err(error) => return sdk_error_response(error),
     };
     let limit = query.limit.unwrap_or(100).clamp(1, 1_000);
+    if query.after_sequence.is_some() && query.before_sequence.is_some() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "after_sequence 与 before_sequence 不能同时使用",
+        );
+    }
     match state
         .sdk
         .session_events(
@@ -2820,12 +2991,22 @@ async fn handle_get_session_events(
             SessionEventsQuery {
                 session_id,
                 after_sequence: query.after_sequence,
+                before_sequence: query.before_sequence,
                 limit,
             },
         )
         .await
     {
-        Ok(events) => Json(json!({ "events": events })).into_response(),
+        Ok(events) => {
+            let next_before_sequence = (events.len() == limit)
+                .then(|| events.first().and_then(|event| event.sequence))
+                .flatten();
+            Json(json!({
+                "events": events,
+                "next_before_sequence": next_before_sequence,
+            }))
+            .into_response()
+        }
         Err(error) => sdk_error_response(error),
     }
 }
@@ -3082,6 +3263,45 @@ async fn handle_create_objective(
     {
         Ok(result) => (StatusCode::CREATED, Json(result)).into_response(),
         Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_edit_objective(
+    State(state): State<Arc<AppState>>,
+    Path(objective_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<EditObjectiveRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let stated_objective = request.stated_objective.trim();
+    if stated_objective.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "stated_objective 不能为空");
+    }
+    match state
+        .runtime
+        .edit_objective(&objective_id, request.expected_revision, stated_objective)
+        .await
+    {
+        Ok(ObjectiveMutation::Updated(updated)) => Json(json!({
+            "edited": true,
+            "objective": updated,
+        }))
+        .into_response(),
+        Ok(ObjectiveMutation::Conflict { current }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Objective revision 冲突，请刷新后重试",
+                "current": current,
+            })),
+        )
+            .into_response(),
+        Ok(ObjectiveMutation::NotFound) => {
+            error_response(StatusCode::NOT_FOUND, "Objective 不存在")
+        }
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
 
@@ -3732,7 +3952,7 @@ mod tests {
         runtime.register_harness_package(package).await.unwrap();
 
         let response = handle_create_objective(
-            State(state),
+            State(Arc::clone(&state)),
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(CreateObjectiveRequest {
@@ -3766,6 +3986,41 @@ mod tests {
         assert_eq!(
             value["harness_binding"]["harness_version"],
             serde_json::json!("1.2.3")
+        );
+
+        // Objective creation may immediately hand the record to the supervisor,
+        // which advances its revision before this HTTP round trip continues.
+        // Editing must therefore fence against the latest authoritative record,
+        // not the creation response snapshot.
+        let objective_before_edit = runtime
+            .get_objective("objective-http-harness")
+            .await
+            .unwrap()
+            .unwrap();
+        let edit_response = handle_edit_objective(
+            State(state),
+            Path("objective-http-harness".to_string()),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(EditObjectiveRequest {
+                expected_revision: objective_before_edit.revision,
+                stated_objective: "通过 HTTP 编辑后的精确 Harness 目标".to_string(),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(edit_response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(edit_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let edited: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            edited["objective"]["stated_objective"],
+            serde_json::json!("通过 HTTP 编辑后的精确 Harness 目标")
+        );
+        assert_eq!(
+            edited["objective"]["revision"],
+            serde_json::json!(objective_before_edit.revision + 1)
         );
     }
 
@@ -5149,6 +5404,184 @@ mod tests {
             .unwrap();
         let audit: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(audit["frame_documents"], json!(2));
+    }
+
+    #[tokio::test]
+    async fn dialogue_history_search_only_returns_openable_messages() {
+        let (state, runtime) = test_state().await;
+        runtime
+            .ensure_session(NewSession {
+                id: "dialogue-search-session".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Dialogue Search".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+
+        for (id, topic, text, objective_id) in [
+            (
+                "dialogue-search-user",
+                "chat/user_message",
+                "dialogue-search-sentinel user request",
+                None,
+            ),
+            (
+                "dialogue-search-delivery",
+                "chat/reply",
+                "dialogue-search-sentinel application delivery",
+                Some("objective-dialogue-search"),
+            ),
+            (
+                "dialogue-search-control",
+                "runtime/model_attempt_state",
+                "dialogue-search-sentinel internal control event",
+                None,
+            ),
+        ] {
+            let mut payload = serde_json::Map::from_iter([
+                ("context_id".to_string(), json!("context-test")),
+                ("session_id".to_string(), json!("dialogue-search-session")),
+                ("text".to_string(), json!(text)),
+            ]);
+            if let Some(objective_id) = objective_id {
+                payload.insert("objective_id".to_string(), json!(objective_id));
+            }
+            runtime
+                .publish(Event::new(
+                    id.to_string(),
+                    "Dialogue-Search-Test".to_string(),
+                    "test".to_string(),
+                    topic.to_string(),
+                    payload,
+                ))
+                .await
+                .unwrap();
+        }
+        runtime.rebuild_recall_index("context-test").await.unwrap();
+
+        let response = handle_search_dialogue_history(
+            State(state),
+            Path("context-test".to_string()),
+            HeaderMap::new(),
+            Query(DialogueHistorySearchHttpQuery {
+                token: None,
+                query: "dialogue-search-sentinel".to_string(),
+                limit: Some(20),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let matches = payload["matches"].as_array().unwrap();
+        assert_eq!(matches.len(), 2);
+        assert!(matches
+            .iter()
+            .all(|hit| hit["session_id"] == "dialogue-search-session"));
+        assert!(matches
+            .iter()
+            .any(|hit| hit["kind"] == "user" && hit["event_id"] == "dialogue-search-user"));
+        assert!(matches.iter().any(|hit| {
+            hit["kind"] == "execution_result" && hit["event_id"] == "dialogue-search-delivery"
+        }));
+        assert!(!matches
+            .iter()
+            .any(|hit| hit["event_id"] == "dialogue-search-control"));
+    }
+
+    #[tokio::test]
+    async fn session_events_http_pages_backward_without_losing_old_messages() {
+        let (state, runtime) = test_state().await;
+        runtime
+            .ensure_session(NewSession {
+                id: "dialogue-page-session".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Dialogue Pagination".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        for ordinal in 1..=5 {
+            runtime
+                .publish(Event::new(
+                    format!("dialogue-page-{ordinal}"),
+                    "Dialogue-Pagination-Test".to_string(),
+                    "test".to_string(),
+                    "chat/user_message".to_string(),
+                    serde_json::Map::from_iter([
+                        ("context_id".to_string(), json!("context-test")),
+                        ("session_id".to_string(), json!("dialogue-page-session")),
+                        ("text".to_string(), json!(format!("message {ordinal}"))),
+                    ]),
+                ))
+                .await
+                .unwrap();
+        }
+
+        let latest = handle_get_session_events(
+            State(Arc::clone(&state)),
+            Path("dialogue-page-session".to_string()),
+            HeaderMap::new(),
+            Query(EventQuery {
+                token: None,
+                after_sequence: None,
+                before_sequence: None,
+                limit: Some(2),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(latest.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(latest.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let latest: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            latest["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| event["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["dialogue-page-4", "dialogue-page-5"]
+        );
+        let cursor = latest["next_before_sequence"].as_u64().unwrap();
+
+        let older = handle_get_session_events(
+            State(state),
+            Path("dialogue-page-session".to_string()),
+            HeaderMap::new(),
+            Query(EventQuery {
+                token: None,
+                after_sequence: None,
+                before_sequence: Some(cursor),
+                limit: Some(2),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(older.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(older.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let older: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            older["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| event["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["dialogue-page-2", "dialogue-page-3"]
+        );
     }
 
     #[tokio::test]
