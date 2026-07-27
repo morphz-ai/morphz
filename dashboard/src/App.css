@@ -1444,6 +1444,12 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .execution-plane-list > article > i[data-status="disabled"],
 .execution-plane-list > article > i[data-status="cancelled"] { background: var(--red); }
 .execution-plane-list > article > span { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.artifact-transfer-progress { display: flex; min-width: 0; flex-direction: column; gap: 4px; margin-top: 3px; }
+.artifact-transfer-progress > span { display: flex; min-width: 0; justify-content: space-between; gap: 8px; }
+.artifact-transfer-progress > span > b { overflow: hidden; color: var(--accent); font: 700 8px/1 var(--mono); text-overflow: ellipsis; white-space: nowrap; }
+.artifact-transfer-progress > span > em { min-width: 0; }
+.artifact-transfer-progress > i { display: block; overflow: hidden; height: 2px; border-radius: 999px; background: var(--line-strong); }
+.artifact-transfer-progress > i > b { display: block; min-width: 3px; height: 100%; border-radius: inherit; background: var(--accent); transition: width 180ms ease; }
 .execution-plane-list strong,
 .execution-plane-list small,
 .execution-plane-list em { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

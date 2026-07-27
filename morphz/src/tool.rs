@@ -189,7 +189,7 @@ fn extend_causal_route(
     );
 }
 
-fn approval_context() -> ApprovalContext {
+pub(crate) fn current_approval_context() -> ApprovalContext {
     let route = CURRENT_CAUSAL_ROUTE.try_with(Clone::clone).ok().flatten();
     ApprovalContext {
         session_id: CURRENT_SESSION_ID
@@ -220,6 +220,10 @@ fn approval_context() -> ApprovalContext {
     }
 }
 
+fn approval_context() -> ApprovalContext {
+    current_approval_context()
+}
+
 fn broker_from_config(config: Arc<PermissionConfig>) -> Arc<PermissionBroker> {
     let profile = PermissionProfile::from_config(&config)
         .unwrap_or_else(|error| panic!("无效 PermissionConfig: {error}"));
@@ -239,6 +243,13 @@ pub trait Tool: Send + Sync {
     /// durable ExecutionJob before `execute` may cross a reality boundary.
     fn execution_class(&self) -> ToolExecutionClass {
         ToolExecutionClass::PhysicalJob
+    }
+    /// Physical routing shape. Most tools execute at the Thread's single
+    /// Target. Artifact Transfer is deliberately different: it freezes and
+    /// authorizes an independent source and destination without rebinding the
+    /// caller's Thread affinity.
+    fn execution_routing(&self) -> ToolExecutionRouting {
+        ToolExecutionRouting::ThreadTarget
     }
     /// Conservative restart policy for a physical Action. Tools should opt in
     /// to idempotent replay only when repeating the exact causal request is safe.
@@ -266,6 +277,12 @@ pub enum ToolExecutionClass {
     LogicalInline,
     /// Reality-facing operation whose lifecycle belongs to ExecutionJob.
     PhysicalJob,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolExecutionRouting {
+    ThreadTarget,
+    ArtifactTransfer,
 }
 
 pub struct Registry {
@@ -333,7 +350,9 @@ impl Registry {
             .values()
             .map(|entry| {
                 let mut definition = entry.definition.clone();
-                if entry.tool.execution_class() == ToolExecutionClass::PhysicalJob {
+                if entry.tool.execution_class() == ToolExecutionClass::PhysicalJob
+                    && entry.tool.execution_routing() == ToolExecutionRouting::ThreadTarget
+                {
                     if let Some(properties) = definition
                         .parameters
                         .get_mut("properties")

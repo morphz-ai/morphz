@@ -105,7 +105,7 @@ fn parse_signal_status(value: &str) -> Result<ThreadSignalStatus, StoreError> {
     }
 }
 
-fn activation_from_row(row: &PgRow) -> Result<ThreadActivationRecord, StoreError> {
+pub(super) fn activation_from_row(row: &PgRow) -> Result<ThreadActivationRecord, StoreError> {
     Ok(ThreadActivationRecord {
         id: row.get("id"),
         revision: u64::try_from(row.get::<i64, _>("revision"))?,
@@ -782,7 +782,9 @@ impl ActivationStore for PostgresStore {
                    END AS admission_rank
                  FROM thread_activations activations
                  JOIN events ON events.id = activations.trigger_event_id
+                 JOIN threads ON threads.root_turn_id = activations.root_turn_id
                  WHERE activations.status = 'queued'
+                   AND threads.executor_kind != 'artifact_transfer'
                ), aged AS (
                  SELECT classified.*,
                    GREATEST(0, admission_rank - FLOOR(

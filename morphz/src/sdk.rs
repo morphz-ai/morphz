@@ -5,23 +5,28 @@
 //! authenticate credentials before constructing a [`PrincipalAssertion`];
 //! message text is never accepted as identity evidence.
 
+use crate::artifact::{ArtifactTransferRequest, ARTIFACT_TRANSFER_TOOL_NAME};
 use crate::event::Event;
 use crate::execution::JobReceipt;
+use crate::execution_target::{
+    edge_artifact_data_channel_from_route, EdgeArtifactDataChannel, EdgeArtifactDataDirection,
+};
 pub use crate::harness::ExactHarnessRef;
 use crate::harness::{HarnessBinding, HarnessDescriptor};
 use crate::harness_package::HarnessPackage;
 use crate::identity::PrincipalAssertion;
 use crate::memory::{
-    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord,
-    ContextUpdate, EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord,
-    EdgeCommandStatus, EdgeOutputStream, ExecutionJobFilter, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus,
-    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
-    ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope, ExecutionTargetFilter,
-    ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
-    ExecutionTargetRegistration, ExecutionTargetStatus, NewCognitiveContext,
-    NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective,
-    NewSession, ObjectiveRecord, PairExecutionNode, QueryFilter, SessionRecord, SessionUpdate,
+    ArtifactTransferExecutionRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
+    CapabilityLeaseRecord, CognitiveContextRecord, ContextUpdate, EdgeCommandMutation,
+    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream,
+    ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus, ExecutionNodeMutation,
+    ExecutionNodeRecord, ExecutionNodeStatus, ExecutionTargetAuthorizationFilter,
+    ExecutionTargetAuthorizationMutation, ExecutionTargetAuthorizationRecord,
+    ExecutionTargetAuthorizationScope, ExecutionTargetFilter, ExecutionTargetKind,
+    ExecutionTargetMutation, ExecutionTargetRecord, ExecutionTargetRegistration,
+    ExecutionTargetStatus, NewCognitiveContext, NewExecutionNodeChallenge,
+    NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewSession, ObjectiveRecord,
+    PairExecutionNode, QueryFilter, SessionRecord, SessionUpdate,
 };
 use crate::orchestrator::context::MindProjectionAudit;
 use crate::runtime::{
@@ -233,6 +238,18 @@ pub struct ExecutionJobQuery {
     pub include_terminal: bool,
     pub newest_first: bool,
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubmitArtifactTransferCommand {
+    pub session_id: String,
+    pub transfer: ArtifactTransferRequest,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ArtifactTransferOutput {
+    pub job: ExecutionJobRecord,
+    pub event: Option<Event>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1315,6 +1332,48 @@ impl MorphzSdk {
         Ok(jobs)
     }
 
+    pub async fn submit_artifact_transfer(
+        &self,
+        principal_id: &str,
+        command: SubmitArtifactTransferCommand,
+    ) -> SdkResult<ArtifactTransferExecutionRecord> {
+        self.authorize_session(principal_id, &command.session_id)
+            .await?;
+        self.runtime
+            .submit_artifact_transfer(principal_id, &command.session_id, command.transfer)
+            .await
+            .map_err(SdkError::internal)
+    }
+
+    pub async fn artifact_transfer_output(
+        &self,
+        principal_id: &str,
+        job_id: &str,
+    ) -> SdkResult<ArtifactTransferOutput> {
+        let job = self.inspect_execution_job(principal_id, job_id).await?;
+        if job.tool_name != crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Execution Job 不是 Artifact Transfer",
+            ));
+        }
+        let event = match job.result_event_id.as_deref() {
+            Some(event_id) => self
+                .runtime
+                .query_events(QueryFilter {
+                    event_id: Some(event_id.to_string()),
+                    top_k: Some(1),
+                    ..Default::default()
+                })
+                .await
+                .map_err(SdkError::internal)?
+                .into_iter()
+                .next(),
+            None => None,
+        };
+        Ok(ArtifactTransferOutput { job, event })
+    }
+
     pub async fn inspect_execution_job(
         &self,
         principal_id: &str,
@@ -1426,6 +1485,61 @@ impl MorphzSdk {
             ));
         }
         Ok(command)
+    }
+
+    /// Authorizes the private Artifact byte channel. The existing device
+    /// connection proves Node identity; the per-command claim token fences the
+    /// current Worker lease. Neither credential is encoded into a Route or an
+    /// Artifact descriptor.
+    pub async fn authorize_edge_artifact_channel(
+        &self,
+        node_id: &str,
+        device_token: &str,
+        job_id: &str,
+        claim_token: &str,
+        expected_direction: EdgeArtifactDataDirection,
+    ) -> SdkResult<(EdgeCommandRecord, EdgeArtifactDataChannel)> {
+        if claim_token.trim().is_empty() {
+            return Err(SdkError::new(
+                SdkErrorCode::Unauthorized,
+                "Edge Artifact channel 缺少 claim token",
+            ));
+        }
+        let command = self
+            .authorize_node_command(node_id, device_token, job_id)
+            .await?;
+        if command.tool_name != ARTIFACT_TRANSFER_TOOL_NAME {
+            return Err(SdkError::new(
+                SdkErrorCode::InvalidArgument,
+                "Edge Command 不是 Artifact Transfer",
+            ));
+        }
+        if command.status != EdgeCommandStatus::Claimed
+            || command.claim_token.as_deref() != Some(claim_token)
+            || command
+                .lease_expires_at
+                .is_none_or(|expires_at| expires_at <= chrono::Utc::now())
+        {
+            return Err(SdkError::new(
+                SdkErrorCode::Conflict,
+                "Edge Artifact channel 的 Command claim 已失效",
+            ));
+        }
+        let channel = edge_artifact_data_channel_from_route(&command.route)
+            .map_err(SdkError::internal)?
+            .ok_or_else(|| {
+                SdkError::new(
+                    SdkErrorCode::InvalidArgument,
+                    "Edge Artifact Command 缺少私有数据通道",
+                )
+            })?;
+        if channel.direction != expected_direction {
+            return Err(SdkError::new(
+                SdkErrorCode::Forbidden,
+                "Edge Artifact channel 方向与冻结 Route 不一致",
+            ));
+        }
+        Ok((command, channel))
     }
 
     pub async fn create_session(

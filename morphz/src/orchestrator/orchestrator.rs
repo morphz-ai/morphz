@@ -8185,6 +8185,73 @@ impl Orchestrator {
         {
             return Err("Yao Plan 与执行 Thread 的权威 route 不一致".into());
         }
+        if tool.execution_routing() == crate::tool::ToolExecutionRouting::ArtifactTransfer {
+            let transfer = crate::artifact::transfer_request_from_tool_arguments(
+                &raw_arguments,
+                format!("transfer:{effect_tool_call_id}"),
+            )?;
+            let dispatcher = self
+                .execution_targets
+                .as_ref()
+                .ok_or("Yao Plan Artifact Transfer 缺少 ExecutionTargetDispatcher")?;
+            let (source, destination) = dispatcher
+                .validate_artifact_transfer(
+                    &transfer,
+                    &raw_arguments,
+                    plan.initiating_principal_id.as_deref(),
+                    &plan.agent_id,
+                    &plan.context_id,
+                    &plan.thread_id,
+                )
+                .await?;
+            let mut request = serde_json::from_str(&raw_arguments)?;
+            crate::execution_target::attach_artifact_transfer_routes(
+                &mut request,
+                &crate::execution_target::ArtifactTransferRouteSnapshot {
+                    source: crate::execution_target::ExecutionRouteSnapshot::freeze(&source),
+                    destination: crate::execution_target::ExecutionRouteSnapshot::freeze(
+                        &destination,
+                    ),
+                },
+            )?;
+            let full_access = self
+                .durable_approvals
+                .as_ref()
+                .is_some_and(|services| services.broker.profile().full_access());
+            let requirement = if full_access {
+                None
+            } else {
+                let local = if source.kind == crate::memory::ExecutionTargetKind::InProcessLocal
+                    || destination.kind == crate::memory::ExecutionTargetKind::InProcessLocal
+                {
+                    tool.approval_requirement(&raw_arguments)?
+                } else {
+                    None
+                };
+                let remote =
+                    crate::execution_target::remote_artifact_transfer_approval_requirement(
+                        &source,
+                        &destination,
+                        &transfer,
+                    )?;
+                merge_artifact_transfer_requirements(local, remote)
+            };
+            return ExecutionJobSpec {
+                activation_id: plan.activation_id.clone(),
+                thread_id: plan.thread_id.clone(),
+                agent_id: plan.agent_id.clone(),
+                context_id: plan.context_id.clone(),
+                session_id: plan.session_id.clone(),
+                initiating_principal_id: plan.initiating_principal_id.clone(),
+                target_id: destination.id,
+                tool_call_id: effect_tool_call_id.to_string(),
+                tool_name: tool_name.clone(),
+                request,
+                retry_safety: tool.retry_safety(),
+                requires_approval: requirement.is_some(),
+            }
+            .into_new_job();
+        }
         let effective_target_id = if invocation.explicit_target {
             invocation.target_id.clone()
         } else {
@@ -8631,7 +8698,36 @@ impl Orchestrator {
             .get_thread(thread_id)
             .await?
             .ok_or_else(|| format!("Physical Execution Thread '{thread_id}' 不存在"))?;
-        let effective_target_id = if invocation.explicit_target {
+        let deterministic_job_id =
+            crate::execution::deterministic_job_id(&route.activation_id, &call.id)?;
+        let artifact_transfer =
+            if tool.execution_routing() == crate::tool::ToolExecutionRouting::ArtifactTransfer {
+                match crate::artifact::transfer_request_from_tool_arguments(
+                    &invocation.tool_arguments,
+                    format!("transfer:{deterministic_job_id}"),
+                ) {
+                    Ok(request) => Some(request),
+                    Err(error) => {
+                        let mut output = physical_execution_preflight_rejected_tool_output(
+                            output_id,
+                            context_id,
+                            session_id,
+                            attempt_id,
+                            call,
+                            route,
+                            action_group_id,
+                            error.as_ref(),
+                        );
+                        self.stamp_objective_activation_route(attempt_id, &mut output.payload);
+                        return Ok(PreparedPhysicalExecution::Rejected(output));
+                    }
+                }
+            } else {
+                None
+            };
+        let effective_target_id = if let Some(transfer) = artifact_transfer.as_ref() {
+            transfer.destination.target_id.clone()
+        } else if invocation.explicit_target {
             invocation.target_id.clone()
         } else {
             thread
@@ -8639,34 +8735,12 @@ impl Orchestrator {
                 .clone()
                 .unwrap_or_else(|| crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string())
         };
-        if let Err(error) = crate::execution_target::reject_unmanaged_ssh_invocation(
-            &effective_target_id,
-            tool.name(),
-            &invocation.tool_arguments,
-        ) {
-            let mut output = physical_execution_preflight_rejected_tool_output(
-                output_id,
-                context_id,
-                session_id,
-                attempt_id,
-                call,
-                route,
-                action_group_id,
-                error.as_ref(),
-            );
-            output
-                .payload
-                .insert("target_id".to_string(), json!(effective_target_id));
-            self.stamp_objective_activation_route(attempt_id, &mut output.payload);
-            return Ok(PreparedPhysicalExecution::Rejected(output));
-        }
-        if let Some(bound_target_id) = thread.target_id.as_deref() {
-            if bound_target_id != effective_target_id {
-                let reason = format!(
-                    "Thread '{}' 已绑定 Execution Target '{}'，不能隐式切换为 '{}'；请用 schedule_tx.spawn 创建绑定新 Target 的 Execution Thread",
-                    thread.id, bound_target_id, effective_target_id
-                );
-                let rejection = std::io::Error::other(reason);
+        if artifact_transfer.is_none() {
+            if let Err(error) = crate::execution_target::reject_unmanaged_ssh_invocation(
+                &effective_target_id,
+                tool.name(),
+                &invocation.tool_arguments,
+            ) {
                 let mut output = physical_execution_preflight_rejected_tool_output(
                     output_id,
                     context_id,
@@ -8675,31 +8749,19 @@ impl Orchestrator {
                     call,
                     route,
                     action_group_id,
-                    &rejection,
+                    error.as_ref(),
                 );
                 output
                     .payload
                     .insert("target_id".to_string(), json!(effective_target_id));
-                output
-                    .payload
-                    .insert("bound_target_id".to_string(), json!(bound_target_id));
                 self.stamp_objective_activation_route(attempt_id, &mut output.payload);
                 return Ok(PreparedPhysicalExecution::Rejected(output));
             }
-        } else {
-            match session_store
-                .bind_thread_target(&thread.id, thread.revision, &effective_target_id)
-                .await?
-            {
-                ThreadMutation::Updated(_) => {}
-                ThreadMutation::Conflict { current }
-                    if current.target_id.as_deref() == Some(effective_target_id.as_str()) => {}
-                ThreadMutation::Conflict { current } => {
+            if let Some(bound_target_id) = thread.target_id.as_deref() {
+                if bound_target_id != effective_target_id {
                     let reason = format!(
-                        "Thread '{}' 的 Execution Target 并发绑定冲突：当前为 '{}'，请求为 '{}'；请依据最新 Thread 状态重新调度",
-                        current.id,
-                        current.target_id.as_deref().unwrap_or("unbound"),
-                        effective_target_id
+                        "Thread '{}' 已绑定 Execution Target '{}'，不能隐式切换为 '{}'；请用 schedule_tx.spawn 创建绑定新 Target 的 Execution Thread",
+                        thread.id, bound_target_id, effective_target_id
                     );
                     let rejection = std::io::Error::other(reason);
                     let mut output = physical_execution_preflight_rejected_tool_output(
@@ -8717,21 +8779,55 @@ impl Orchestrator {
                         .insert("target_id".to_string(), json!(effective_target_id));
                     output
                         .payload
-                        .insert("bound_target_id".to_string(), json!(current.target_id));
+                        .insert("bound_target_id".to_string(), json!(bound_target_id));
                     self.stamp_objective_activation_route(attempt_id, &mut output.payload);
                     return Ok(PreparedPhysicalExecution::Rejected(output));
                 }
-                ThreadMutation::NotFound => {
-                    return Err(format!(
-                        "Physical Execution Thread '{}' 在绑定 Target 时消失",
-                        thread.id
-                    )
-                    .into());
+            } else {
+                match session_store
+                    .bind_thread_target(&thread.id, thread.revision, &effective_target_id)
+                    .await?
+                {
+                    ThreadMutation::Updated(_) => {}
+                    ThreadMutation::Conflict { current }
+                        if current.target_id.as_deref() == Some(effective_target_id.as_str()) => {}
+                    ThreadMutation::Conflict { current } => {
+                        let reason = format!(
+                            "Thread '{}' 的 Execution Target 并发绑定冲突：当前为 '{}'，请求为 '{}'；请依据最新 Thread 状态重新调度",
+                            current.id,
+                            current.target_id.as_deref().unwrap_or("unbound"),
+                            effective_target_id
+                        );
+                        let rejection = std::io::Error::other(reason);
+                        let mut output = physical_execution_preflight_rejected_tool_output(
+                            output_id,
+                            context_id,
+                            session_id,
+                            attempt_id,
+                            call,
+                            route,
+                            action_group_id,
+                            &rejection,
+                        );
+                        output
+                            .payload
+                            .insert("target_id".to_string(), json!(effective_target_id));
+                        output
+                            .payload
+                            .insert("bound_target_id".to_string(), json!(current.target_id));
+                        self.stamp_objective_activation_route(attempt_id, &mut output.payload);
+                        return Ok(PreparedPhysicalExecution::Rejected(output));
+                    }
+                    ThreadMutation::NotFound => {
+                        return Err(format!(
+                            "Physical Execution Thread '{}' 在绑定 Target 时消失",
+                            thread.id
+                        )
+                        .into());
+                    }
                 }
             }
         }
-        let deterministic_job_id =
-            crate::execution::deterministic_job_id(&route.activation_id, &call.id)?;
         if let Some(existing) = manager
             .store()
             .get_execution_job(&deterministic_job_id)
@@ -8741,22 +8837,38 @@ impl Orchestrator {
                 return Ok(PreparedPhysicalExecution::Terminal(event));
             }
         }
-        let target = match self
+        let dispatcher = self
             .execution_targets
             .as_ref()
-            .ok_or("Physical Execution 缺少 ExecutionTargetDispatcher")?
-            .validate_for_tool(
-                &effective_target_id,
-                tool.name(),
-                &invocation.tool_arguments,
-                route.initiating_principal_id.as_deref(),
-                agent_id,
-                context_id,
-                thread_id,
-            )
-            .await
-        {
-            Ok(target) => target,
+            .ok_or("Physical Execution 缺少 ExecutionTargetDispatcher")?;
+        let validated_targets = if let Some(transfer) = artifact_transfer.as_ref() {
+            dispatcher
+                .validate_artifact_transfer(
+                    transfer,
+                    &invocation.tool_arguments,
+                    route.initiating_principal_id.as_deref(),
+                    agent_id,
+                    context_id,
+                    thread_id,
+                )
+                .await
+                .map(|(source, destination)| (destination, Some(source)))
+        } else {
+            dispatcher
+                .validate_for_tool(
+                    &effective_target_id,
+                    tool.name(),
+                    &invocation.tool_arguments,
+                    route.initiating_principal_id.as_deref(),
+                    agent_id,
+                    context_id,
+                    thread_id,
+                )
+                .await
+                .map(|target| (target, None))
+        };
+        let (target, source_target) = match validated_targets {
+            Ok(targets) => targets,
             Err(error) => {
                 let mut output = physical_execution_preflight_rejected_tool_output(
                     output_id,
@@ -8780,27 +8892,52 @@ impl Orchestrator {
                 "raw_arguments": invocation.tool_arguments,
             })
         });
-        crate::execution_target::attach_route_snapshot(
-            &mut request,
-            &crate::execution_target::ExecutionRouteSnapshot::freeze(&target),
-        )?;
-        let requirement_result =
-            if target.kind == crate::memory::ExecutionTargetKind::InProcessLocal {
-                tool.approval_requirement(&invocation.tool_arguments)
-            } else if self
-                .durable_approvals
-                .as_ref()
-                .is_some_and(|services| services.broker.profile().full_access())
+        if let (Some(transfer), Some(source)) = (artifact_transfer.as_ref(), source_target.as_ref())
+        {
+            debug_assert_eq!(transfer.destination.target_id, target.id);
+            crate::execution_target::attach_artifact_transfer_routes(
+                &mut request,
+                &crate::execution_target::ArtifactTransferRouteSnapshot {
+                    source: crate::execution_target::ExecutionRouteSnapshot::freeze(source),
+                    destination: crate::execution_target::ExecutionRouteSnapshot::freeze(&target),
+                },
+            )?;
+        } else {
+            crate::execution_target::attach_route_snapshot(
+                &mut request,
+                &crate::execution_target::ExecutionRouteSnapshot::freeze(&target),
+            )?;
+        }
+        let full_access = self
+            .durable_approvals
+            .as_ref()
+            .is_some_and(|services| services.broker.profile().full_access());
+        let requirement_result = if full_access {
+            Ok(None)
+        } else if let (Some(transfer), Some(source)) =
+            (artifact_transfer.as_ref(), source_target.as_ref())
+        {
+            let local = if source.kind == crate::memory::ExecutionTargetKind::InProcessLocal
+                || target.kind == crate::memory::ExecutionTargetKind::InProcessLocal
             {
-                Ok(None)
+                tool.approval_requirement(&invocation.tool_arguments)?
             } else {
-                crate::execution_target::remote_target_approval_requirement(
-                    &target,
-                    tool.name(),
-                    &invocation.tool_arguments,
-                )
-                .map(Some)
+                None
             };
+            let remote = crate::execution_target::remote_artifact_transfer_approval_requirement(
+                source, &target, transfer,
+            )?;
+            Ok(merge_artifact_transfer_requirements(local, remote))
+        } else if target.kind == crate::memory::ExecutionTargetKind::InProcessLocal {
+            tool.approval_requirement(&invocation.tool_arguments)
+        } else {
+            crate::execution_target::remote_target_approval_requirement(
+                &target,
+                tool.name(),
+                &invocation.tool_arguments,
+            )
+            .map(Some)
+        };
         let mut requirement = match requirement_result {
             Ok(requirement) => requirement,
             Err(error) => {
@@ -8819,20 +8956,22 @@ impl Orchestrator {
             }
         };
         let mut lease_grant = None;
-        if let (Some(current_requirement), Some(services), Some(principal_id)) = (
-            requirement.as_ref(),
-            self.durable_approvals.as_ref(),
-            route.initiating_principal_id.as_ref(),
-        ) {
-            lease_grant = covering_capability_lease_grant(
-                services,
-                current_requirement,
-                principal_id,
-                agent_id,
-                &thread,
-                &target,
-            )
-            .await?;
+        if artifact_transfer.is_none() {
+            if let (Some(current_requirement), Some(services), Some(principal_id)) = (
+                requirement.as_ref(),
+                self.durable_approvals.as_ref(),
+                route.initiating_principal_id.as_ref(),
+            ) {
+                lease_grant = covering_capability_lease_grant(
+                    services,
+                    current_requirement,
+                    principal_id,
+                    agent_id,
+                    &thread,
+                    &target,
+                )
+                .await?;
+            }
         }
         if lease_grant.is_some() {
             requirement = None;
@@ -8908,7 +9047,8 @@ impl Orchestrator {
                     .initiating_principal_id
                     .as_ref()
                     .filter(|_| {
-                        services.capability_leases_enabled
+                        artifact_transfer.is_none()
+                            && services.capability_leases_enabled
                             && services.capability_lease_ttl_secs > 0
                             && thread.lifecycle == ThreadLifecycle::Open
                     })
@@ -12683,6 +12823,35 @@ fn event_needs_signal_outbox(event: &Event) -> bool {
             .get("session_id")
             .and_then(|value| value.as_str())
             .is_some()
+}
+
+fn merge_artifact_transfer_requirements(
+    local: Option<crate::permission::ApprovalRequirement>,
+    remote: Option<crate::permission::ApprovalRequirement>,
+) -> Option<crate::permission::ApprovalRequirement> {
+    let mut requirements = [local, remote].into_iter().flatten();
+    let mut merged = requirements.next()?;
+    for requirement in requirements {
+        merged.requested.network |= requirement.requested.network;
+        for root in requirement.requested.read_roots {
+            if !merged.requested.read_roots.contains(&root) {
+                merged.requested.read_roots.push(root);
+            }
+        }
+        for root in requirement.requested.write_roots {
+            if !merged.requested.write_roots.contains(&root) {
+                merged.requested.write_roots.push(root);
+            }
+        }
+        for name in requirement.requested.secret_env {
+            if !merged.requested.secret_env.contains(&name) {
+                merged.requested.secret_env.push(name);
+            }
+        }
+        merged.justification.push_str("；");
+        merged.justification.push_str(&requirement.justification);
+    }
+    Some(merged)
 }
 
 fn legacy_plan_effect_sequence(

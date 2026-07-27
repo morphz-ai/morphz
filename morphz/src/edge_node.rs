@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
 use reqwest::StatusCode;
 use ring::rand::SystemRandom;
 use ring::signature::{Ed25519KeyPair, KeyPair};
@@ -21,10 +22,18 @@ use crate::approval::{
     capability_lease_policy_digest, ApprovalDecision, ApprovalRequest, CapabilityDelta,
     CapabilityLeaseOffer,
 };
+use crate::artifact::{
+    execution_arguments_from_transfer_request, transfer_request_from_tool_arguments,
+    ArtifactLocation, ArtifactOverwritePolicy, ArtifactTransferStageKind,
+    ARTIFACT_TRANSFER_TOOL_NAME,
+};
 pub use crate::execution_target::ManagedSshEndpoint;
 use crate::execution_target::{
-    edge_execution_scope_from_route, prepare_managed_ssh_exec_arguments, EdgeExecutionScope,
-    ExecutionRouteSnapshot,
+    edge_artifact_data_channel_from_route, edge_execution_scope_from_route,
+    materialize_edge_directory_archive, prepare_managed_ssh_exec_arguments,
+    stage_edge_directory_archive, ArtifactTransferRouteSnapshot, EdgeArtifactDataChannel,
+    EdgeArtifactDataDirection, EdgeArtifactPayloadKind, EdgeExecutionScope, ExecutionRouteSnapshot,
+    DEFAULT_EXECUTION_TARGET_ID, EDGE_EXECUTION_SCOPE_KEY,
 };
 use crate::memory::{
     EdgeCommandRecord, EdgeCommandStatus, ExecutionNodeRecord, ExecutionTargetKind,
@@ -469,6 +478,204 @@ impl EdgeGatewayClient {
         .await
     }
 
+    pub async fn download_artifact(
+        &self,
+        credentials: &EdgeNodeCredentials,
+        command: &EdgeCommandRecord,
+        destination: &Path,
+        channel: &EdgeArtifactDataChannel,
+    ) -> Result<(u64, String), EdgeNodeError> {
+        let claim_token = command
+            .claim_token
+            .as_deref()
+            .ok_or("已领取的 Edge Artifact Command 缺少 claim_token")?;
+        if let Some(parent) = destination.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let partial = destination.with_extension("partial");
+        if tokio::fs::try_exists(destination).await? {
+            let (size, digest) = hash_edge_file(destination).await?;
+            if validate_edge_channel_payload(channel, size, &digest).is_ok() {
+                return Ok((size, digest));
+            }
+        }
+        let mut last_error: Option<EdgeNodeError> = None;
+        for attempt in 0..5_u32 {
+            let offset = tokio::fs::metadata(&partial)
+                .await
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            let response = self
+                .authorized(
+                    self.http.get(self.url(&format!(
+                        "/api/edge/nodes/{}/jobs/{}/artifact/download?offset={offset}",
+                        credentials.node_id, command.job_id
+                    ))),
+                    credentials,
+                )
+                .await?
+                .header("x-morphz-claim-token", claim_token)
+                .send()
+                .await;
+            let response = match response {
+                Ok(response) if response.status().is_success() => response,
+                Ok(response) => {
+                    last_error = Some(decode_edge_error(response).await);
+                    edge_transfer_backoff(attempt).await;
+                    continue;
+                }
+                Err(error) => {
+                    last_error = Some(error.into());
+                    edge_transfer_backoff(attempt).await;
+                    continue;
+                }
+            };
+            let server_offset = response
+                .headers()
+                .get("x-morphz-artifact-offset")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok());
+            if server_offset != Some(offset) {
+                let _ = tokio::fs::remove_file(&partial).await;
+                last_error = Some("Edge Artifact download offset 协商失败".into());
+                edge_transfer_backoff(attempt).await;
+                continue;
+            }
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&partial)
+                .await?;
+            let mut stream = response.bytes_stream();
+            use tokio::io::AsyncWriteExt as _;
+            let mut stream_failed = None;
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(chunk) => {
+                        file.write_all(&chunk).await?;
+                        file.flush().await?;
+                    }
+                    Err(error) => {
+                        stream_failed = Some(error);
+                        break;
+                    }
+                }
+            }
+            if let Some(error) = stream_failed {
+                last_error = Some(error.into());
+                edge_transfer_backoff(attempt).await;
+                continue;
+            }
+            file.sync_all().await?;
+            drop(file);
+            let (size_bytes, digest) = hash_edge_file(&partial).await?;
+            if let Err(error) = validate_edge_channel_payload(channel, size_bytes, &digest) {
+                let _ = tokio::fs::remove_file(&partial).await;
+                last_error = Some(error);
+                edge_transfer_backoff(attempt).await;
+                continue;
+            }
+            tokio::fs::rename(&partial, destination).await?;
+            return Ok((size_bytes, digest));
+        }
+        Err(last_error.unwrap_or_else(|| "Edge Artifact download 重试耗尽".into()))
+    }
+
+    pub async fn upload_artifact(
+        &self,
+        credentials: &EdgeNodeCredentials,
+        command: &EdgeCommandRecord,
+        source: &Path,
+        channel: &EdgeArtifactDataChannel,
+    ) -> Result<EdgeArtifactUploadReceipt, EdgeNodeError> {
+        let claim_token = command
+            .claim_token
+            .as_deref()
+            .ok_or("已领取的 Edge Artifact Command 缺少 claim_token")?;
+        let (size_bytes, content_digest) = hash_edge_file(source).await?;
+        validate_edge_channel_payload(channel, size_bytes, &content_digest)?;
+        let mut last_error: Option<EdgeNodeError> = None;
+        for attempt in 0..5_u32 {
+            let status: EdgeArtifactUploadStatus = match self
+                .send_json(
+                    self.authorized(
+                        self.http.get(self.url(&format!(
+                            "/api/edge/nodes/{}/jobs/{}/artifact/upload",
+                            credentials.node_id, command.job_id
+                        ))),
+                        credentials,
+                    )
+                    .await?
+                    .header("x-morphz-claim-token", claim_token),
+                )
+                .await
+            {
+                Ok(status) => status,
+                Err(error) => {
+                    last_error = Some(error);
+                    edge_transfer_backoff(attempt).await;
+                    continue;
+                }
+            };
+            if status.completed {
+                return Ok(EdgeArtifactUploadReceipt {
+                    job_id: command.job_id.clone(),
+                    content_digest,
+                    size_bytes,
+                });
+            }
+            if status.offset > size_bytes {
+                return Err("Runtime Artifact upload offset 超过 Edge source 大小".into());
+            }
+            let mut file = tokio::fs::File::open(source).await?;
+            use tokio::io::AsyncSeekExt as _;
+            file.seek(std::io::SeekFrom::Start(status.offset)).await?;
+            let stream = futures_util::stream::try_unfold(file, |mut file| async move {
+                use tokio::io::AsyncReadExt as _;
+                let mut buffer = vec![0_u8; 128 * 1024];
+                let count = file.read(&mut buffer).await?;
+                if count == 0 {
+                    Ok::<_, std::io::Error>(None)
+                } else {
+                    buffer.truncate(count);
+                    Ok(Some((buffer, file)))
+                }
+            });
+            let result: Result<EdgeArtifactUploadReceipt, EdgeNodeError> = self
+                .send_json(
+                    self.authorized(
+                        self.http.put(self.url(&format!(
+                            "/api/edge/nodes/{}/jobs/{}/artifact/upload",
+                            credentials.node_id, command.job_id
+                        ))),
+                        credentials,
+                    )
+                    .await?
+                    .header("x-morphz-claim-token", claim_token)
+                    .header("x-morphz-artifact-offset", status.offset)
+                    .header("x-morphz-artifact-total-size", size_bytes)
+                    .header("x-morphz-content-digest", &content_digest)
+                    .body(reqwest::Body::wrap_stream(stream)),
+                )
+                .await;
+            match result {
+                Ok(receipt) => {
+                    validate_edge_channel_payload(
+                        channel,
+                        receipt.size_bytes,
+                        &receipt.content_digest,
+                    )?;
+                    return Ok(receipt);
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    edge_transfer_backoff(attempt).await;
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| "Edge Artifact upload 重试耗尽".into()))
+    }
+
     async fn authorized(
         &self,
         request: reqwest::RequestBuilder,
@@ -539,6 +746,69 @@ impl EdgeGatewayClient {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EdgeArtifactUploadReceipt {
+    pub job_id: String,
+    pub content_digest: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct EdgeArtifactUploadStatus {
+    job_id: String,
+    offset: u64,
+    completed: bool,
+}
+
+async fn hash_edge_file(path: &Path) -> Result<(u64, String), EdgeNodeError> {
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    use tokio::io::AsyncReadExt as _;
+    let mut buffer = vec![0_u8; 128 * 1024];
+    loop {
+        let count = file.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+        size = size.saturating_add(count as u64);
+    }
+    Ok((size, format!("sha256:{:x}", hasher.finalize())))
+}
+
+async fn decode_edge_error(response: reqwest::Response) -> EdgeNodeError {
+    let status = response.status();
+    let detail = response
+        .text()
+        .await
+        .unwrap_or_else(|error| error.to_string());
+    format!("Edge Gateway 返回 HTTP {status}: {detail}").into()
+}
+
+async fn edge_transfer_backoff(attempt: u32) {
+    let millis = 100_u64.saturating_mul(1_u64 << attempt.min(5));
+    tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
+}
+
+fn validate_edge_channel_payload(
+    channel: &EdgeArtifactDataChannel,
+    size_bytes: u64,
+    digest: &str,
+) -> Result<(), EdgeNodeError> {
+    if channel
+        .size_bytes
+        .is_some_and(|expected| expected != size_bytes)
+        || channel
+            .expected_digest
+            .as_deref()
+            .is_some_and(|expected| expected != digest)
+    {
+        return Err("Edge Artifact 字节摘要或大小与冻结数据通道不一致".into());
+    }
+    Ok(())
+}
+
 fn encode_hex(bytes: &[u8]) -> String {
     let mut encoded = String::with_capacity(bytes.len() * 2);
     use std::fmt::Write as _;
@@ -605,6 +875,66 @@ pub struct EdgeNodeWorker {
     local_leases: EdgeLocalCapabilityLeaseStore,
 }
 
+#[derive(Debug, Clone)]
+enum PreparedEdgeArtifactChannel {
+    RuntimeToEdge {
+        channel: EdgeArtifactDataChannel,
+        stage: PathBuf,
+    },
+    EdgeToRuntime {
+        channel: EdgeArtifactDataChannel,
+        stage: PathBuf,
+    },
+}
+
+impl PreparedEdgeArtifactChannel {
+    fn stage(&self) -> &Path {
+        match self {
+            Self::RuntimeToEdge { channel, stage } | Self::EdgeToRuntime { channel, stage } => {
+                let _ = channel.direction;
+                stage
+            }
+        }
+    }
+}
+
+async fn prepare_edge_artifact_upload(
+    stage: &Path,
+    output: &str,
+    channel: &EdgeArtifactDataChannel,
+) -> Result<(PathBuf, EdgeArtifactDataChannel), EdgeNodeError> {
+    let receipt: crate::artifact::ArtifactTransferReceipt = serde_json::from_str(output)?;
+    let is_directory = receipt.source.media_type.as_deref()
+        == Some("application/vnd.morphz.directory")
+        || tokio::fs::metadata(stage).await?.is_dir();
+    if !is_directory {
+        let mut upload_channel = channel.clone();
+        upload_channel.payload_kind = EdgeArtifactPayloadKind::File;
+        return Ok((stage.to_path_buf(), upload_channel));
+    }
+
+    let archive = stage.with_extension("archive");
+    let (size_bytes, digest) = stage_edge_directory_archive(stage, &archive).await?;
+    let mut upload_channel = channel.clone();
+    upload_channel.payload_kind = EdgeArtifactPayloadKind::DirectoryArchive;
+    upload_channel.expected_digest = Some(digest);
+    upload_channel.size_bytes = Some(size_bytes);
+    Ok((archive, upload_channel))
+}
+
+async fn cleanup_edge_artifact_stages(stage: &Path) {
+    for path in [
+        stage.to_path_buf(),
+        stage.with_extension("tree"),
+        stage.with_extension("archive"),
+        stage.with_extension("metadata.json"),
+        stage.with_extension("archive.metadata.json"),
+    ] {
+        let _ = tokio::fs::remove_file(&path).await;
+        let _ = tokio::fs::remove_dir_all(&path).await;
+    }
+}
+
 impl EdgeNodeWorker {
     pub fn new(
         gateway: EdgeGatewayClient,
@@ -638,35 +968,42 @@ impl EdgeNodeWorker {
             return Ok(false);
         };
 
-        // Conservatively cross the durable boundary immediately before the
-        // physical Tool future is first polled. A crash after this point is
-        // reported as unknown/lost rather than risked as an automatic replay.
+        // Generic physical tools are at-most-once after first poll. Artifact
+        // Transfer is different: it publishes through deterministic staging,
+        // validates content, and is explicitly reconcile-safe after a crash.
+        let reconcile_safe_transfer = command.tool_name == ARTIFACT_TRANSFER_TOOL_NAME;
         command = self
             .gateway
             .heartbeat_command(
                 &self.credentials,
                 &command,
-                true,
+                !reconcile_safe_transfer,
                 Some("local sandbox and tool execution started".to_string()),
                 self.config.lease_seconds,
             )
             .await?;
 
-        let (execution_command, provider_local_preauthorized) =
-            self.prepare_execution_command(&command)?;
+        let (execution_command, provider_local_preauthorized, artifact_channel) =
+            self.prepare_execution_command(&command).await?;
         let local_authority_approved = self
             .authorize_local_capability(&execution_command, provider_local_preauthorized)
             .await?;
         let (output_tx, mut output_rx) = tokio::sync::mpsc::channel(64);
-        let execution = self.runtime.execute_edge_tool_streaming(
-            &execution_command,
-            local_authority_approved,
-            Some(output_tx),
+        let (side_effect_tx, mut side_effect_rx) = tokio::sync::mpsc::unbounded_channel();
+        let execution = crate::artifact::CURRENT_ARTIFACT_TRANSFER_SIDE_EFFECT.scope(
+            side_effect_tx,
+            self.runtime.execute_edge_tool_streaming(
+                &execution_command,
+                local_authority_approved,
+                Some(output_tx),
+            ),
         );
         tokio::pin!(execution);
         let mut heartbeat = tokio::time::interval(self.config.heartbeat_interval);
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut output_open = true;
+        let mut side_effect_open = true;
+        let mut side_effect_recorded = command.side_effect_started_at.is_some();
         loop {
             tokio::select! {
                 result = &mut execution => {
@@ -676,15 +1013,47 @@ impl EdgeNodeWorker {
                     while let Some(chunk) = output_rx.recv().await {
                         self.gateway.append_output(&self.credentials, &command, chunk).await?;
                     }
+                    let mut succeeded = false;
                     match result {
                         Ok(output) => {
-                            self.gateway.finish_command(
-                                &self.credentials,
-                                &command,
-                                EdgeCommandStatus::Succeeded,
-                                Some(output),
-                                None,
-                            ).await?;
+                            let upload_error = if let Some(PreparedEdgeArtifactChannel::EdgeToRuntime {
+                                channel,
+                                stage,
+                            }) = artifact_channel.as_ref()
+                            {
+                                match prepare_edge_artifact_upload(stage, &output, channel).await {
+                                    Ok((upload_path, upload_channel)) => self.gateway
+                                        .upload_artifact(
+                                            &self.credentials,
+                                            &command,
+                                            &upload_path,
+                                            &upload_channel,
+                                        )
+                                        .await
+                                        .err(),
+                                    Err(error) => Some(error),
+                                }
+                            } else {
+                                None
+                            };
+                            if let Some(error) = upload_error {
+                                self.gateway.finish_command(
+                                    &self.credentials,
+                                    &command,
+                                    EdgeCommandStatus::Failed,
+                                    None,
+                                    Some(format!("Artifact upload failed: {error}")),
+                                ).await?;
+                            } else {
+                                succeeded = true;
+                                self.gateway.finish_command(
+                                    &self.credentials,
+                                    &command,
+                                    EdgeCommandStatus::Succeeded,
+                                    Some(output),
+                                    None,
+                                ).await?;
+                            }
                         }
                         Err(error) => {
                             self.gateway.finish_command(
@@ -694,6 +1063,14 @@ impl EdgeNodeWorker {
                                 None,
                                 Some(error.to_string()),
                             ).await?;
+                        }
+                    }
+                    // Preserve partial stages after a transport failure so a
+                    // recovered deterministic Job resumes instead of sending
+                    // the prefix again. Successful publication can be swept.
+                    if succeeded {
+                        if let Some(channel) = artifact_channel.as_ref() {
+                            cleanup_edge_artifact_stages(channel.stage()).await;
                         }
                     }
                     return Ok(true);
@@ -706,12 +1083,32 @@ impl EdgeNodeWorker {
                         None => output_open = false,
                     }
                 }
+                side_effect = side_effect_rx.recv(), if side_effect_open => {
+                    let Some(acknowledge) = side_effect else {
+                        side_effect_open = false;
+                        continue;
+                    };
+                    // The Artifact backend is blocked on this acknowledgement
+                    // immediately before it makes the destination visible.
+                    // Persist the remote side-effect boundary first so a
+                    // cancelled or crashed Worker can never be replayed as if
+                    // publication had not started.
+                    command = self.gateway.heartbeat_command(
+                        &self.credentials,
+                        &command,
+                        true,
+                        Some("artifact destination publication started".to_string()),
+                        self.config.lease_seconds,
+                    ).await?;
+                    side_effect_recorded = true;
+                    let _ = acknowledge.send(());
+                }
                 _ = heartbeat.tick() => {
                     self.advertise().await?;
                     command = self.gateway.heartbeat_command(
                         &self.credentials,
                         &command,
-                        true,
+                        !reconcile_safe_transfer || side_effect_recorded,
                         Some("tool execution in progress".to_string()),
                         self.config.lease_seconds,
                     ).await?;
@@ -733,10 +1130,76 @@ impl EdgeNodeWorker {
         }
     }
 
-    fn prepare_execution_command(
+    async fn prepare_execution_command(
         &self,
         command: &EdgeCommandRecord,
-    ) -> Result<(EdgeCommandRecord, bool), EdgeNodeError> {
+    ) -> Result<(EdgeCommandRecord, bool, Option<PreparedEdgeArtifactChannel>), EdgeNodeError> {
+        if command.tool_name == ARTIFACT_TRANSFER_TOOL_NAME {
+            let channel = edge_artifact_data_channel_from_route(&command.route)?;
+            let routes: ArtifactTransferRouteSnapshot =
+                serde_json::from_value(command.route.clone())?;
+            if routes.source.backend_kind == ExecutionTargetKind::ManagedSsh
+                || routes.destination.backend_kind == ExecutionTargetKind::ManagedSsh
+            {
+                if channel.is_some() {
+                    return Err("Edge proxy Managed SSH v1 不接受 Runtime byte channel".into());
+                }
+                let prepared = prepare_edge_proxy_artifact_transfer_command(
+                    command,
+                    &self.credentials.node_id,
+                )?;
+                // The transfer dispatcher below performs the exact local
+                // filesystem/network approval. Avoid asking twice through the
+                // generic Tool preflight, whose route shape is single-target.
+                return Ok((prepared, true, None));
+            }
+            let stage = if channel.is_some() {
+                Some(
+                    self.runtime
+                        .artifact_transfer_stages()
+                        .prepare_stage_path(&command.job_id, ArtifactTransferStageKind::EdgeLocal)
+                        .await?,
+                )
+            } else {
+                None
+            };
+            if let (Some(channel), Some(stage)) = (channel.as_ref(), stage.as_ref()) {
+                if channel.direction == EdgeArtifactDataDirection::RuntimeToEdge {
+                    self.gateway
+                        .download_artifact(&self.credentials, command, stage, channel)
+                        .await?;
+                }
+            }
+            let materialized_stage = match (channel.as_ref(), stage.as_ref()) {
+                (Some(channel), Some(stage))
+                    if channel.direction == EdgeArtifactDataDirection::RuntimeToEdge
+                        && channel.payload_kind == EdgeArtifactPayloadKind::DirectoryArchive =>
+                {
+                    let tree = stage.with_extension("tree");
+                    materialize_edge_directory_archive(stage, &tree).await?;
+                    Some(tree)
+                }
+                _ => None,
+            };
+            let prepared = prepare_edge_local_artifact_transfer_command(
+                command,
+                &self.credentials.node_id,
+                channel.as_ref(),
+                materialized_stage.as_deref().or(stage.as_deref()),
+            )?;
+            let artifact_channel = match (channel, stage) {
+                (Some(channel), Some(stage))
+                    if channel.direction == EdgeArtifactDataDirection::RuntimeToEdge =>
+                {
+                    Some(PreparedEdgeArtifactChannel::RuntimeToEdge { channel, stage })
+                }
+                (Some(channel), Some(stage)) => {
+                    Some(PreparedEdgeArtifactChannel::EdgeToRuntime { channel, stage })
+                }
+                _ => None,
+            };
+            return Ok((prepared, false, artifact_channel));
+        }
         let route: ExecutionRouteSnapshot = serde_json::from_value(command.route.clone())?;
         if route.target_id != command.target_id
             || route.provider_node_id.as_deref() != Some(self.credentials.node_id.as_str())
@@ -748,7 +1211,7 @@ impl EdgeNodeWorker {
             .into());
         }
         match route.backend_kind {
-            ExecutionTargetKind::EdgeNode => Ok((command.clone(), false)),
+            ExecutionTargetKind::EdgeNode => Ok((command.clone(), false, None)),
             ExecutionTargetKind::ManagedSsh => {
                 let endpoint_ref = route
                     .endpoint_ref
@@ -769,7 +1232,7 @@ impl EdgeNodeWorker {
                     &command.target_id,
                     &command.arguments,
                 )?;
-                Ok((prepared, true))
+                Ok((prepared, true, None))
             }
             other => Err(format!(
                 "Edge Node 不能承接 backend_kind='{}' 的 Route",
@@ -940,9 +1403,257 @@ impl EdgeNodeWorker {
     }
 }
 
+fn prepare_edge_proxy_artifact_transfer_command(
+    command: &EdgeCommandRecord,
+    node_id: &str,
+) -> Result<EdgeCommandRecord, EdgeNodeError> {
+    let routes: ArtifactTransferRouteSnapshot = serde_json::from_value(command.route.clone())?;
+    let belongs_to_node = |route: &ExecutionRouteSnapshot| {
+        matches!(
+            route.backend_kind,
+            ExecutionTargetKind::EdgeNode | ExecutionTargetKind::ManagedSsh
+        ) && route.provider_node_id.as_deref() == Some(node_id)
+    };
+    if command.provider_node_id != node_id
+        || !belongs_to_node(&routes.source)
+        || !belongs_to_node(&routes.destination)
+        || (routes.source.backend_kind != ExecutionTargetKind::ManagedSsh
+            && routes.destination.backend_kind != ExecutionTargetKind::ManagedSsh)
+    {
+        return Err(format!(
+            "Edge Artifact proxy Command '{}' 不是当前 Node 的权威 Route",
+            command.job_id
+        )
+        .into());
+    }
+    let scope = edge_execution_scope_from_route(&command.route)?;
+    let localize_route = |mut route: ExecutionRouteSnapshot| {
+        route.provider_node_id = None;
+        if route.backend_kind == ExecutionTargetKind::EdgeNode {
+            route.target_id = DEFAULT_EXECUTION_TARGET_ID.to_string();
+            route.backend_kind = ExecutionTargetKind::InProcessLocal;
+            route.endpoint_ref = None;
+        }
+        route
+    };
+    let localized = ArtifactTransferRouteSnapshot {
+        source: localize_route(routes.source.clone()),
+        destination: localize_route(routes.destination.clone()),
+    };
+    let mut request = transfer_request_from_tool_arguments(
+        &command.arguments,
+        format!("transfer:{}", command.job_id),
+    )?;
+    if request.source.target_id != routes.source.target_id
+        || request.destination.target_id != routes.destination.target_id
+    {
+        return Err("Edge Artifact proxy 请求与冻结 Route 不一致".into());
+    }
+    request.source.target_id = localized.source.target_id.clone();
+    request.destination.target_id = localized.destination.target_id.clone();
+
+    let mut route = serde_json::to_value(&localized)?;
+    route
+        .as_object_mut()
+        .ok_or("Edge Artifact proxy Route 必须是 object")?
+        .insert(
+            EDGE_EXECUTION_SCOPE_KEY.to_string(),
+            serde_json::to_value(scope)?,
+        );
+    let mut prepared = command.clone();
+    prepared.target_id = localized.destination.target_id.clone();
+    prepared.arguments = execution_arguments_from_transfer_request(&request)?;
+    prepared.route = route;
+    Ok(prepared)
+}
+
+/// Localize the cloud-authoritative dual Target route into the Edge Node's
+/// own execution namespace.  The remote Target IDs remain frozen in the
+/// cloud-side Job/Receipt; the physical Tool only ever sees `target-default`
+/// and is therefore authorized by the Edge Node's existing PermissionBroker.
+fn prepare_edge_local_artifact_transfer_command(
+    command: &EdgeCommandRecord,
+    node_id: &str,
+    channel: Option<&EdgeArtifactDataChannel>,
+    stage: Option<&Path>,
+) -> Result<EdgeCommandRecord, EdgeNodeError> {
+    let routes: ArtifactTransferRouteSnapshot = serde_json::from_value(command.route.clone())?;
+    let edge_route = match channel.map(|channel| channel.direction) {
+        None if routes.source.backend_kind == ExecutionTargetKind::EdgeNode
+            && routes.destination.backend_kind == ExecutionTargetKind::EdgeNode
+            && routes.source.target_id == routes.destination.target_id =>
+        {
+            &routes.source
+        }
+        Some(EdgeArtifactDataDirection::RuntimeToEdge)
+            if (routes.source.backend_kind == ExecutionTargetKind::InProcessLocal
+                || routes.source.backend_kind == ExecutionTargetKind::EdgeNode)
+                && routes.destination.backend_kind == ExecutionTargetKind::EdgeNode =>
+        {
+            &routes.destination
+        }
+        Some(EdgeArtifactDataDirection::EdgeToRuntime)
+            if routes.source.backend_kind == ExecutionTargetKind::EdgeNode
+                && (routes.destination.backend_kind == ExecutionTargetKind::InProcessLocal
+                    || routes.destination.backend_kind == ExecutionTargetKind::EdgeNode) =>
+        {
+            &routes.source
+        }
+        _ => {
+            return Err(format!(
+                "Edge Artifact Command '{}' 的双 Route 与数据通道不一致",
+                command.job_id
+            )
+            .into())
+        }
+    };
+    if edge_route.target_id != command.target_id
+        || edge_route.provider_node_id.as_deref() != Some(node_id)
+        || command.provider_node_id != node_id
+    {
+        return Err(format!(
+            "Edge Artifact Command '{}' 不是当前 Node 的权威 Route",
+            command.job_id
+        )
+        .into());
+    }
+
+    let scope = edge_execution_scope_from_route(&command.route)?;
+    let mut request = transfer_request_from_tool_arguments(
+        &command.arguments,
+        format!("transfer:{}", command.job_id),
+    )?;
+    if request.source.target_id != routes.source.target_id
+        || request.destination.target_id != routes.destination.target_id
+    {
+        return Err(format!(
+            "Edge Artifact Command '{}' 的请求位置与冻结 Route 不一致",
+            command.job_id
+        )
+        .into());
+    }
+    match channel.map(|channel| channel.direction) {
+        None => {
+            request.source.target_id = DEFAULT_EXECUTION_TARGET_ID.to_string();
+            request.destination.target_id = DEFAULT_EXECUTION_TARGET_ID.to_string();
+        }
+        Some(EdgeArtifactDataDirection::RuntimeToEdge) => {
+            let stage = stage.ok_or("Runtime→Edge Artifact Command 缺少本地 stage")?;
+            request.source = ArtifactLocation {
+                target_id: DEFAULT_EXECUTION_TARGET_ID.to_string(),
+                workspace_identity: None,
+                path: stage.to_string_lossy().into_owned(),
+            };
+            request.destination.target_id = DEFAULT_EXECUTION_TARGET_ID.to_string();
+            // File payload bytes are the logical Artifact. A directory payload
+            // is only a transport archive, so retain the caller's logical
+            // precondition and let the local directory Tool validate it.
+            if channel.is_some_and(|value| value.payload_kind == EdgeArtifactPayloadKind::File) {
+                request.expected_source_digest =
+                    channel.and_then(|value| value.expected_digest.clone());
+            }
+        }
+        Some(EdgeArtifactDataDirection::EdgeToRuntime) => {
+            let stage = stage.ok_or("Edge→Runtime Artifact Command 缺少本地 stage")?;
+            request.source.target_id = DEFAULT_EXECUTION_TARGET_ID.to_string();
+            request.destination = ArtifactLocation {
+                target_id: DEFAULT_EXECUTION_TARGET_ID.to_string(),
+                workspace_identity: None,
+                path: stage.to_string_lossy().into_owned(),
+            };
+            request.overwrite = ArtifactOverwritePolicy::Replace;
+        }
+    }
+
+    let mut local_route = serde_json::to_value(edge_route)?;
+    let object = local_route
+        .as_object_mut()
+        .ok_or("Edge local Route 必须编码为 JSON object")?;
+    object.insert(
+        "target_id".to_string(),
+        serde_json::Value::String(DEFAULT_EXECUTION_TARGET_ID.to_string()),
+    );
+    object.insert(
+        EDGE_EXECUTION_SCOPE_KEY.to_string(),
+        serde_json::to_value(scope)?,
+    );
+
+    let mut prepared = command.clone();
+    prepared.arguments = execution_arguments_from_transfer_request(&request)?;
+    prepared.route = local_route;
+    Ok(prepared)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::artifact::{ArtifactLocation, ArtifactOverwritePolicy, ArtifactTransferRequest};
+    use axum::{
+        body::{to_bytes, Body},
+        extract::State,
+        http::{HeaderMap, StatusCode},
+        response::{IntoResponse, Response},
+        routing::get,
+        Json, Router,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Clone)]
+    struct InterruptedArtifactUploadState {
+        job_id: String,
+        expected_digest: String,
+        expected_size: u64,
+        stored: Arc<tokio::sync::Mutex<Vec<u8>>>,
+        offsets: Arc<tokio::sync::Mutex<Vec<u64>>>,
+        attempts: Arc<AtomicUsize>,
+    }
+
+    async fn inspect_interrupted_artifact_upload(
+        State(state): State<InterruptedArtifactUploadState>,
+    ) -> impl IntoResponse {
+        let offset = state.stored.lock().await.len() as u64;
+        Json(EdgeArtifactUploadStatus {
+            job_id: state.job_id,
+            offset,
+            completed: offset == state.expected_size,
+        })
+    }
+
+    async fn receive_interrupted_artifact_upload(
+        State(state): State<InterruptedArtifactUploadState>,
+        headers: HeaderMap,
+        body: Body,
+    ) -> Response {
+        let offset = headers
+            .get("x-morphz-artifact-offset")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap();
+        state.offsets.lock().await.push(offset);
+        let bytes = to_bytes(body, usize::MAX).await.unwrap();
+        let mut stored = state.stored.lock().await;
+        if offset != stored.len() as u64 {
+            return StatusCode::CONFLICT.into_response();
+        }
+        if state.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            // Simulate a network/server failure after a durable prefix has
+            // arrived. The Edge client must inspect the authoritative offset
+            // and seek its source instead of appending the whole file again.
+            let retained = (bytes.len() / 2).max(1);
+            stored.extend_from_slice(&bytes[..retained]);
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        stored.extend_from_slice(&bytes);
+        if stored.len() as u64 != state.expected_size {
+            return StatusCode::CONFLICT.into_response();
+        }
+        Json(EdgeArtifactUploadReceipt {
+            job_id: state.job_id,
+            content_digest: state.expected_digest,
+            size_bytes: state.expected_size,
+        })
+        .into_response()
+    }
 
     fn scope() -> EdgeExecutionScope {
         EdgeExecutionScope {
@@ -952,6 +1663,94 @@ mod tests {
             session_id: "session-a".to_string(),
             thread_id: "thread-a".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn edge_artifact_upload_resumes_from_the_server_offset_after_interruption() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("resumable.bin");
+        let bytes = (0..(384 * 1024 + 37))
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        tokio::fs::write(&source, &bytes).await.unwrap();
+        let (size_bytes, content_digest) = hash_edge_file(&source).await.unwrap();
+        let state = InterruptedArtifactUploadState {
+            job_id: "edge-resumable-upload".to_string(),
+            expected_digest: content_digest.clone(),
+            expected_size: size_bytes,
+            stored: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            offsets: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            attempts: Arc::new(AtomicUsize::new(0)),
+        };
+        let app = Router::new()
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/artifact/upload",
+                get(inspect_interrupted_artifact_upload).put(receive_interrupted_artifact_upload),
+            )
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let client = EdgeGatewayClient::new(format!("http://{address}")).unwrap();
+        *client.connection.write().await = Some(ExecutionNodeConnection {
+            token: "test-connection".to_string(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        });
+        let credentials = EdgeNodeCredentials {
+            server_url: format!("http://{address}"),
+            node_id: "node-a".to_string(),
+            device_key_fingerprint: "unused".to_string(),
+            device_public_key: "unused".to_string(),
+            device_private_key_pkcs8: "unused".to_string(),
+        };
+        let now = Utc::now();
+        let command = EdgeCommandRecord {
+            job_id: state.job_id.clone(),
+            revision: 1,
+            target_id: "target-edge".to_string(),
+            provider_node_id: credentials.node_id.clone(),
+            tool_name: ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+            arguments: "{}".to_string(),
+            route: serde_json::json!({}),
+            status: EdgeCommandStatus::Claimed,
+            claimed_by: Some("worker-a".to_string()),
+            claim_token: Some("claim-a".to_string()),
+            lease_expires_at: Some(now + chrono::Duration::minutes(1)),
+            heartbeat_at: Some(now),
+            side_effect_started_at: None,
+            progress: None,
+            output: None,
+            error: None,
+            created_at: now,
+            updated_at: now,
+            finished_at: None,
+        };
+        let receipt = client
+            .upload_artifact(
+                &credentials,
+                &command,
+                &source,
+                &EdgeArtifactDataChannel {
+                    direction: EdgeArtifactDataDirection::EdgeToRuntime,
+                    payload_kind: EdgeArtifactPayloadKind::File,
+                    expected_digest: Some(content_digest.clone()),
+                    size_bytes: Some(size_bytes),
+                },
+            )
+            .await
+            .unwrap();
+        server.abort();
+
+        assert_eq!(receipt.content_digest, content_digest);
+        assert_eq!(receipt.size_bytes, size_bytes);
+        assert_eq!(*state.stored.lock().await, bytes);
+        let offsets = state.offsets.lock().await.clone();
+        assert_eq!(offsets.len(), 2);
+        assert_eq!(offsets[0], 0);
+        assert!(offsets[1] > 0 && offsets[1] < size_bytes);
     }
 
     #[test]
@@ -988,5 +1787,371 @@ mod tests {
         assert!(!store.covers(&scope(), "target-a", "exec", &requested, "policy-b"));
         assert!(store.revoke("lease-a").unwrap());
         assert!(!store.covers(&scope(), "target-a", "exec", &requested, "policy-a"));
+    }
+
+    #[test]
+    fn edge_local_artifact_transfer_is_localized_without_losing_authority() {
+        let now = Utc::now();
+        let route = ExecutionRouteSnapshot {
+            route_id: "route:target-edge:r3".to_string(),
+            target_id: "target-edge".to_string(),
+            target_revision: 3,
+            provider_node_id: Some("node-a".to_string()),
+            backend_kind: ExecutionTargetKind::EdgeNode,
+            endpoint_ref: None,
+            policy_digest: "edge-policy".to_string(),
+        };
+        let routes = ArtifactTransferRouteSnapshot {
+            source: route.clone(),
+            destination: route,
+        };
+        let request = ArtifactTransferRequest {
+            transfer_id: "transfer-a".to_string(),
+            source: ArtifactLocation {
+                target_id: "target-edge".to_string(),
+                workspace_identity: Some("workspace-a".to_string()),
+                path: "input/source.bin".to_string(),
+            },
+            destination: ArtifactLocation {
+                target_id: "target-edge".to_string(),
+                workspace_identity: Some("workspace-a".to_string()),
+                path: "output/destination.bin".to_string(),
+            },
+            overwrite: ArtifactOverwritePolicy::Deny,
+            expected_source_digest: None,
+            media_type: Some("application/octet-stream".to_string()),
+            origin: None,
+        };
+        let mut route_value = serde_json::to_value(routes).unwrap();
+        route_value.as_object_mut().unwrap().insert(
+            EDGE_EXECUTION_SCOPE_KEY.to_string(),
+            serde_json::to_value(scope()).unwrap(),
+        );
+        let command = EdgeCommandRecord {
+            job_id: "job-a".to_string(),
+            revision: 1,
+            target_id: "target-edge".to_string(),
+            provider_node_id: "node-a".to_string(),
+            tool_name: ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+            arguments: execution_arguments_from_transfer_request(&request).unwrap(),
+            route: route_value,
+            status: EdgeCommandStatus::Claimed,
+            claimed_by: Some("worker-a".to_string()),
+            claim_token: Some("claim-a".to_string()),
+            lease_expires_at: None,
+            heartbeat_at: None,
+            side_effect_started_at: None,
+            progress: None,
+            output: None,
+            error: None,
+            created_at: now,
+            updated_at: now,
+            finished_at: None,
+        };
+
+        let prepared =
+            prepare_edge_local_artifact_transfer_command(&command, "node-a", None, None).unwrap();
+        let localized =
+            transfer_request_from_tool_arguments(&prepared.arguments, "unused").unwrap();
+        assert_eq!(localized.transfer_id, "transfer-a");
+        assert_eq!(localized.source.target_id, DEFAULT_EXECUTION_TARGET_ID);
+        assert_eq!(localized.destination.target_id, DEFAULT_EXECUTION_TARGET_ID);
+        assert_eq!(localized.source.path, "input/source.bin");
+        assert_eq!(localized.destination.path, "output/destination.bin");
+        assert_eq!(
+            edge_execution_scope_from_route(&prepared.route).unwrap(),
+            scope()
+        );
+        let local_route: ExecutionRouteSnapshot =
+            serde_json::from_value(prepared.route.clone()).unwrap();
+        assert_eq!(local_route.target_id, DEFAULT_EXECUTION_TARGET_ID);
+        assert!(
+            prepare_edge_local_artifact_transfer_command(&command, "node-b", None, None).is_err()
+        );
+    }
+
+    #[test]
+    fn runtime_edge_channels_localize_only_the_edge_physical_boundary() {
+        let now = Utc::now();
+        let local = ExecutionRouteSnapshot {
+            route_id: "route:target-default:r1".to_string(),
+            target_id: DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            target_revision: 1,
+            provider_node_id: None,
+            backend_kind: ExecutionTargetKind::InProcessLocal,
+            endpoint_ref: None,
+            policy_digest: "runtime-policy".to_string(),
+        };
+        let edge = ExecutionRouteSnapshot {
+            route_id: "route:target-edge:r2".to_string(),
+            target_id: "target-edge".to_string(),
+            target_revision: 2,
+            provider_node_id: Some("node-a".to_string()),
+            backend_kind: ExecutionTargetKind::EdgeNode,
+            endpoint_ref: None,
+            policy_digest: "edge-policy".to_string(),
+        };
+        let request = ArtifactTransferRequest {
+            transfer_id: "transfer-cross".to_string(),
+            source: ArtifactLocation {
+                target_id: DEFAULT_EXECUTION_TARGET_ID.to_string(),
+                workspace_identity: None,
+                path: "/runtime/source.bin".to_string(),
+            },
+            destination: ArtifactLocation {
+                target_id: "target-edge".to_string(),
+                workspace_identity: None,
+                path: "edge/destination.bin".to_string(),
+            },
+            overwrite: ArtifactOverwritePolicy::Deny,
+            expected_source_digest: Some(format!("sha256:{}", "a".repeat(64))),
+            media_type: None,
+            origin: None,
+        };
+        let routes = ArtifactTransferRouteSnapshot {
+            source: local,
+            destination: edge,
+        };
+        let mut route_value = serde_json::to_value(routes).unwrap();
+        route_value.as_object_mut().unwrap().insert(
+            EDGE_EXECUTION_SCOPE_KEY.to_string(),
+            serde_json::to_value(scope()).unwrap(),
+        );
+        let channel = EdgeArtifactDataChannel {
+            direction: EdgeArtifactDataDirection::RuntimeToEdge,
+            payload_kind: EdgeArtifactPayloadKind::File,
+            expected_digest: request.expected_source_digest.clone(),
+            size_bytes: Some(7),
+        };
+        crate::execution_target::attach_edge_artifact_data_channel(&mut route_value, &channel)
+            .unwrap();
+        let command = EdgeCommandRecord {
+            job_id: "job-cross".to_string(),
+            revision: 1,
+            target_id: "target-edge".to_string(),
+            provider_node_id: "node-a".to_string(),
+            tool_name: ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+            arguments: execution_arguments_from_transfer_request(&request).unwrap(),
+            route: route_value,
+            status: EdgeCommandStatus::Claimed,
+            claimed_by: Some("worker-a".to_string()),
+            claim_token: Some("claim-a".to_string()),
+            lease_expires_at: Some(Utc::now() + chrono::Duration::minutes(1)),
+            heartbeat_at: None,
+            side_effect_started_at: None,
+            progress: None,
+            output: None,
+            error: None,
+            created_at: now,
+            updated_at: now,
+            finished_at: None,
+        };
+        let stage = PathBuf::from("/runtime-owned/edge-local.bin");
+        let prepared = prepare_edge_local_artifact_transfer_command(
+            &command,
+            "node-a",
+            Some(&channel),
+            Some(&stage),
+        )
+        .unwrap();
+        let localized =
+            transfer_request_from_tool_arguments(&prepared.arguments, "unused").unwrap();
+        assert_eq!(localized.source.path, stage.to_string_lossy());
+        assert_eq!(localized.destination.path, "edge/destination.bin");
+        assert_eq!(localized.source.target_id, DEFAULT_EXECUTION_TARGET_ID);
+        assert_eq!(localized.destination.target_id, DEFAULT_EXECUTION_TARGET_ID);
+        assert_eq!(localized.expected_source_digest, channel.expected_digest);
+
+        let directory_channel = EdgeArtifactDataChannel {
+            direction: EdgeArtifactDataDirection::RuntimeToEdge,
+            payload_kind: EdgeArtifactPayloadKind::DirectoryArchive,
+            expected_digest: Some(format!("sha256:{}", "b".repeat(64))),
+            size_bytes: Some(11),
+        };
+        let directory_stage = PathBuf::from("/runtime-owned/edge-local.tree");
+        let directory_prepared = prepare_edge_local_artifact_transfer_command(
+            &command,
+            "node-a",
+            Some(&directory_channel),
+            Some(&directory_stage),
+        )
+        .unwrap();
+        let directory_request =
+            transfer_request_from_tool_arguments(&directory_prepared.arguments, "unused").unwrap();
+        assert_eq!(
+            directory_request.source.path,
+            directory_stage.to_string_lossy()
+        );
+        // The archive digest protects channel bytes; the original digest is a
+        // logical directory precondition and must survive localization.
+        assert_eq!(
+            directory_request.expected_source_digest,
+            request.expected_source_digest
+        );
+    }
+
+    #[tokio::test]
+    async fn edge_directory_upload_uses_canonical_payload_without_changing_logical_receipt() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let stage = temp.path().join("edge-local.bin");
+        tokio::fs::create_dir_all(stage.join("nested"))
+            .await
+            .unwrap();
+        tokio::fs::write(stage.join("nested/value.txt"), b"value")
+            .await
+            .unwrap();
+        let logical_digest = format!("sha256:{}", "c".repeat(64));
+        let location = ArtifactLocation {
+            target_id: DEFAULT_EXECUTION_TARGET_ID.to_string(),
+            workspace_identity: None,
+            path: stage.display().to_string(),
+        };
+        let descriptor = crate::artifact::ArtifactDescriptor {
+            artifact_id: format!("artifact:{logical_digest}"),
+            location: location.clone(),
+            content_digest: Some(logical_digest.clone()),
+            size_bytes: Some(5),
+            media_type: Some("application/vnd.morphz.directory".to_string()),
+            origin: None,
+        };
+        let output = serde_json::to_string(&crate::artifact::ArtifactTransferReceipt {
+            transfer_id: "directory-edge-upload".to_string(),
+            source: descriptor.clone(),
+            destination: descriptor,
+            transport: "local_tree_copy".to_string(),
+            bytes_transferred: 5,
+        })
+        .unwrap();
+        let channel = EdgeArtifactDataChannel {
+            direction: EdgeArtifactDataDirection::EdgeToRuntime,
+            payload_kind: EdgeArtifactPayloadKind::Detect,
+            expected_digest: None,
+            size_bytes: None,
+        };
+        let (archive, payload_channel) = prepare_edge_artifact_upload(&stage, &output, &channel)
+            .await
+            .unwrap();
+        assert_eq!(
+            payload_channel.payload_kind,
+            EdgeArtifactPayloadKind::DirectoryArchive
+        );
+        assert!(payload_channel.expected_digest.is_some());
+        assert!(payload_channel.size_bytes.unwrap() > 0);
+        assert!(tokio::fs::metadata(&archive).await.unwrap().is_file());
+
+        let materialized = temp.path().join("materialized");
+        materialize_edge_directory_archive(&archive, &materialized)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read(materialized.join("nested/value.txt"))
+                .await
+                .unwrap(),
+            b"value"
+        );
+        // The wire digest intentionally differs from and does not overwrite
+        // the logical directory digest carried in `output`.
+        assert_ne!(payload_channel.expected_digest, Some(logical_digest));
+    }
+
+    #[test]
+    fn edge_proxy_localizes_edge_endpoint_but_preserves_managed_ssh_endpoint() {
+        let now = Utc::now();
+        let source = ExecutionRouteSnapshot {
+            route_id: "route:edge:r1".to_string(),
+            target_id: "target-edge".to_string(),
+            target_revision: 1,
+            provider_node_id: Some("node-a".to_string()),
+            backend_kind: ExecutionTargetKind::EdgeNode,
+            endpoint_ref: None,
+            policy_digest: "edge-policy".to_string(),
+        };
+        let destination = ExecutionRouteSnapshot {
+            route_id: "route:ssh:r4".to_string(),
+            target_id: "target-ssh".to_string(),
+            target_revision: 4,
+            provider_node_id: Some("node-a".to_string()),
+            backend_kind: ExecutionTargetKind::ManagedSsh,
+            endpoint_ref: Some("server-a".to_string()),
+            policy_digest: "ssh-policy".to_string(),
+        };
+        let routes = ArtifactTransferRouteSnapshot {
+            source,
+            destination,
+        };
+        let request = ArtifactTransferRequest {
+            transfer_id: "transfer-proxy".to_string(),
+            source: ArtifactLocation {
+                target_id: "target-edge".to_string(),
+                workspace_identity: None,
+                path: "output/result.bin".to_string(),
+            },
+            destination: ArtifactLocation {
+                target_id: "target-ssh".to_string(),
+                workspace_identity: None,
+                path: "/srv/result.bin".to_string(),
+            },
+            overwrite: ArtifactOverwritePolicy::Replace,
+            expected_source_digest: None,
+            media_type: None,
+            origin: None,
+        };
+        let mut route = serde_json::to_value(routes).unwrap();
+        route.as_object_mut().unwrap().insert(
+            EDGE_EXECUTION_SCOPE_KEY.to_string(),
+            serde_json::to_value(scope()).unwrap(),
+        );
+        let command = EdgeCommandRecord {
+            job_id: "job-proxy".to_string(),
+            revision: 1,
+            target_id: "target-ssh".to_string(),
+            provider_node_id: "node-a".to_string(),
+            tool_name: ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+            arguments: execution_arguments_from_transfer_request(&request).unwrap(),
+            route,
+            status: EdgeCommandStatus::Claimed,
+            claimed_by: Some("worker-a".to_string()),
+            claim_token: Some("claim-a".to_string()),
+            lease_expires_at: None,
+            heartbeat_at: None,
+            side_effect_started_at: None,
+            progress: None,
+            output: None,
+            error: None,
+            created_at: now,
+            updated_at: now,
+            finished_at: None,
+        };
+
+        let prepared = prepare_edge_proxy_artifact_transfer_command(&command, "node-a").unwrap();
+        let localized: ArtifactTransferRouteSnapshot =
+            serde_json::from_value(prepared.route.clone()).unwrap();
+        assert_eq!(
+            localized.source.backend_kind,
+            ExecutionTargetKind::InProcessLocal
+        );
+        assert_eq!(localized.source.target_id, DEFAULT_EXECUTION_TARGET_ID);
+        assert_eq!(
+            localized.destination.backend_kind,
+            ExecutionTargetKind::ManagedSsh
+        );
+        assert_eq!(localized.destination.target_id, "target-ssh");
+        assert_eq!(localized.destination.provider_node_id, None);
+        assert_eq!(
+            localized.destination.endpoint_ref.as_deref(),
+            Some("server-a")
+        );
+        let localized_request =
+            transfer_request_from_tool_arguments(&prepared.arguments, "unused").unwrap();
+        assert_eq!(
+            localized_request.source.target_id,
+            DEFAULT_EXECUTION_TARGET_ID
+        );
+        assert_eq!(localized_request.destination.target_id, "target-ssh");
+        assert_eq!(
+            edge_execution_scope_from_route(&prepared.route).unwrap(),
+            scope()
+        );
+        assert!(prepare_edge_proxy_artifact_transfer_command(&command, "node-b").is_err());
     }
 }

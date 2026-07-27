@@ -133,6 +133,16 @@
     "disable": "Disable",
     "revoke": "Revoke",
     "cancel": "Cancel",
+    "artifactPhase": {
+      "copying": "Copying",
+      "copying_directory": "Copying directory",
+      "staging_source": "Staging source",
+      "downloading": "Downloading",
+      "uploading": "Uploading",
+      "edge_source": "Reading source node",
+      "edge_relay": "Relaying",
+      "edge_destination": "Writing destination node"
+    },
     "contextCapacity": "Context capacity",
     "schedulerCapacity": "Scheduler capacity",
     "host": "Host and boundaries",

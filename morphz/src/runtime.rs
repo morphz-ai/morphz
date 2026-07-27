@@ -4,12 +4,18 @@ use crate::approval::{
     HumanApprovalHub, HumanApprovalProvider, PendingHumanApproval,
     CAPABILITY_LEASE_APPROVED_RISK_TAG,
 };
+use crate::artifact::{
+    execution_arguments_from_transfer_request, ArtifactTransferProgress, ArtifactTransferRequest,
+    ARTIFACT_TRANSFER_TOOL_NAME, CURRENT_ARTIFACT_TRANSFER_PROGRESS,
+};
 use crate::config::{AppConfig, StorageBackend};
 use crate::context_tools::{ContextTxTool, RecallTool};
-#[cfg(test)]
-use crate::event::TYPE_TOOL_OUTPUT;
-use crate::event::{Event, InMemoryEventBus, TYPE_INFER_REQUEST, TYPE_USER_MESSAGE};
-use crate::execution::ExecutionJobManager;
+use crate::event::{
+    Event, InMemoryEventBus, TYPE_INFER_REQUEST, TYPE_TOOL_OUTPUT, TYPE_USER_MESSAGE,
+};
+use crate::execution::{
+    ExecutionJobManager, ExecutionJobSpec, JobClaim, JobHeartbeat, JobOutcome, JobReceipt,
+};
 use crate::harness::{HarnessBinding, HarnessDescriptor, HarnessRegistry as DomainHarnessRegistry};
 use crate::harness_package::{
     load_evaluation_harness_binding, load_objective_harness_binding,
@@ -25,22 +31,25 @@ use crate::memory::postgres::PostgresStore;
 use crate::memory::sqlite::SqliteStore;
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, ApprovalFilter, ApprovalMutation, ApprovalRecord,
-    ApprovalResolution, ApprovalStore, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
-    CapabilityLeaseMutation, CapabilityLeaseRecord, CognitiveContextRecord, ContextUpdate,
-    DelegationRecord, DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
-    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
-    EdgeOutputStream, EventStore, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
+    ApprovalResolution, ApprovalStore, ArtifactTransferExecutionRecord,
+    AttentionAcknowledgementRecord, CapabilityLeaseFilter, CapabilityLeaseMutation,
+    CapabilityLeaseRecord, CognitiveContextRecord, ContextUpdate, DelegationRecord,
+    DelegationStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
+    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeOutputStream, EventStore,
+    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobRecord, ExecutionJobStatus,
+    ExecutionJobStore, ExecutionNodeMutation, ExecutionNodeRecord,
     ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetFilter, ExecutionTargetMutation,
     ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
-    ExecutionTargetStore, MessageClaim, MindProjectionStore, NewAgent, NewCognitiveContext,
-    NewDelegation, NewExecutionNodeChallenge, NewExecutionTargetAuthorization, NewNodePairingCode,
-    NewObjective, NewPrincipal, NewSession, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
+    ExecutionTargetStore, MessageClaim, MindProjectionStore, NewAgent,
+    NewArtifactTransferExecution, NewCognitiveContext, NewDelegation, NewExecutionNodeChallenge,
+    NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewPrincipal, NewSession,
+    NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
     ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, QueryFilter, RecallDocumentKind,
     RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord, ScheduleStatus,
     SessionRecord, SessionStore, SessionUpdate, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, TimerStore,
+    ThreadKind, ThreadLifecycle, ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
+    TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -73,6 +82,46 @@ pub type RuntimeError = Box<dyn std::error::Error + Send + Sync>;
 
 static RUNTIME_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 const RUNTIME_DEFAULT_IDENTITY_PROVIDER_ID: &str = "runtime-default";
+const ARTIFACT_TRANSFER_EXECUTOR_KIND: &str = "artifact_transfer";
+const ARTIFACT_TRANSFER_REQUEST_TOPIC: &str = "runtime/artifact_transfer_requested";
+const ARTIFACT_TRANSFER_PROGRESS_TOPIC: &str = "runtime/artifact_transfer_progress";
+const ARTIFACT_TRANSFER_COMPLETED_TOPIC: &str = "runtime/artifact_transfer_completed";
+const ARTIFACT_TRANSFER_FAILED_TOPIC: &str = "runtime/artifact_transfer_failed";
+const ARTIFACT_TRANSFER_CANCELLED_TOPIC: &str = "runtime/artifact_transfer_cancelled";
+const ARTIFACT_TRANSFER_WORKER_LEASE_SECS: i64 = 300;
+
+struct ArtifactTransferExecutionIdentity {
+    event_id: String,
+    thread_id: String,
+    activation_id: String,
+    tool_call_id: String,
+    job_id: String,
+}
+
+fn artifact_transfer_execution_identity(
+    principal_id: &str,
+    session_id: &str,
+    transfer_id: &str,
+) -> ArtifactTransferExecutionIdentity {
+    let mut digest = Sha256::new();
+    digest.update(b"morphz.artifact-transfer.execution.v1\0");
+    for value in [principal_id, session_id, transfer_id] {
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+    let key = format!("{:x}", digest.finalize());
+    let activation_id = format!("activation_artifact_{key}");
+    let tool_call_id = format!("call_artifact_{key}");
+    let job_id = crate::execution::deterministic_job_id(&activation_id, &tool_call_id)
+        .expect("artifact identity components are non-empty");
+    ArtifactTransferExecutionIdentity {
+        event_id: format!("artifact_transfer_requested_{key}"),
+        thread_id: format!("thread_artifact_{key}"),
+        activation_id,
+        tool_call_id,
+        job_id,
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeIdentity {
@@ -862,17 +911,45 @@ impl MorphzRuntimeBuilder {
         ));
         execution_targets
             .register_backend(Arc::new(crate::execution_target::InProcessLocalBackend));
-        execution_targets.register_backend(Arc::new(
-            crate::execution_target::EdgeNodeBackend::new(
+        let edge_backend = Arc::new(crate::execution_target::EdgeNodeBackend::new(
+            Arc::clone(&store) as Arc<dyn crate::memory::EdgeExecutionStore>,
+        ));
+        execution_targets
+            .register_backend(Arc::clone(&edge_backend)
+                as Arc<dyn crate::execution_target::ExecutionTargetBackend>);
+        execution_targets.register_artifact_transfer_backend(edge_backend);
+        execution_targets.register_artifact_transfer_backend(Arc::new(
+            crate::execution_target::EdgeProxyArtifactTransferBackend::new(
                 Arc::clone(&store) as Arc<dyn crate::memory::EdgeExecutionStore>
             ),
         ));
-        execution_targets.register_backend(Arc::new(
-            crate::execution_target::ManagedSshBackend::new(
+        let artifact_transfer_stages = crate::artifact::ArtifactTransferStageStore::new(
+            self.config.background_task.artifact_dir.clone(),
+        );
+        let managed_ssh_backend = Arc::new(crate::execution_target::ManagedSshBackend::new(
+            Arc::clone(&store) as Arc<dyn crate::memory::EdgeExecutionStore>,
+            Arc::clone(&runtime_managed_ssh_endpoints),
+            artifact_transfer_stages.clone(),
+            Arc::clone(&permissions),
+            permissions.policy_digest(),
+            !permissions.profile().full_access(),
+        ));
+        execution_targets.register_backend(Arc::clone(&managed_ssh_backend)
+            as Arc<dyn crate::execution_target::ExecutionTargetBackend>);
+        execution_targets.register_artifact_transfer_backend(managed_ssh_backend);
+        execution_targets.register_artifact_transfer_backend(Arc::new(
+            crate::execution_target::RuntimeEdgeArtifactTransferBackend::new(
                 Arc::clone(&store) as Arc<dyn crate::memory::EdgeExecutionStore>,
-                Arc::clone(&runtime_managed_ssh_endpoints),
-                permissions.policy_digest(),
-                !permissions.profile().full_access(),
+                Arc::clone(&store) as Arc<dyn crate::memory::ExecutionJobStore>,
+                artifact_transfer_stages.clone(),
+                Arc::clone(&permissions),
+            ),
+        ));
+        execution_targets.register_artifact_transfer_backend(Arc::new(
+            crate::execution_target::EdgeRelayArtifactTransferBackend::new(
+                Arc::clone(&store) as Arc<dyn crate::memory::EdgeExecutionStore>,
+                Arc::clone(&store) as Arc<dyn crate::memory::ExecutionJobStore>,
+                artifact_transfer_stages.clone(),
             ),
         ));
         for backend in self.execution_target_backends {
@@ -892,7 +969,7 @@ impl MorphzRuntimeBuilder {
             Arc::clone(&timer_engine),
             Some(Arc::clone(&thread_scheduler)),
             Some(Arc::clone(&execution_jobs)),
-            Some(execution_targets),
+            Some(Arc::clone(&execution_targets)),
             Some(Arc::clone(&store) as Arc<dyn crate::memory::ActionGroupStore>),
             Some(Arc::clone(&background_scheduler)),
             Some(DurableApprovalServices::new(
@@ -924,6 +1001,8 @@ impl MorphzRuntimeBuilder {
                 objective_supervisor,
                 thread_scheduler,
                 execution_jobs,
+                execution_targets,
+                artifact_transfer_stages,
                 background_scheduler,
                 timer_engine,
                 human_approval_hub,
@@ -1026,6 +1105,9 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
     registry.register(Arc::new(SearchTool::new_with_permissions(Arc::clone(
         permissions,
     ))));
+    registry.register(Arc::new(crate::artifact::TransferArtifactTool::new(
+        Arc::clone(permissions),
+    )));
     registry.register(Arc::new(RecallTool::new(Arc::clone(context_engine))));
     registry.register(Arc::new(
         ExecuteCommandTool::new_with_permissions_and_scheduler(
@@ -1074,6 +1156,8 @@ struct RuntimeInner {
     objective_supervisor: Arc<ObjectiveSupervisor>,
     thread_scheduler: Arc<ThreadScheduler>,
     execution_jobs: Arc<ExecutionJobManager<dyn ExecutionJobStore>>,
+    execution_targets: Arc<crate::execution_target::ExecutionTargetDispatcher>,
+    artifact_transfer_stages: crate::artifact::ArtifactTransferStageStore,
     background_scheduler: Arc<BackgroundTaskScheduler>,
     timer_engine: Arc<TimerEngine>,
     human_approval_hub: HumanApprovalHub,
@@ -1165,10 +1249,62 @@ impl MorphzRuntime {
             recovered_background_outboxes,
             "Execution Job 启动恢复完成"
         );
+        let artifact_transfer_records = self
+            .inner
+            .store
+            .list_execution_jobs(ExecutionJobFilter {
+                include_terminal: false,
+                newest_first: false,
+                limit: Some(10_000),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .filter(|job| job.tool_name == ARTIFACT_TRANSFER_TOOL_NAME)
+            .collect::<Vec<_>>();
+        // A non-terminal relay parent may already have a succeeded source
+        // leg.  The source leg's uploaded stage is still required by the
+        // destination leg, even though that child Job is terminal.  Retain
+        // deterministic relay-leg stages with their parent so restart GC
+        // cannot delete bytes that are between physical hops.
+        let mut active_stage_job_ids = artifact_transfer_records
+            .iter()
+            .map(|job| job.id.clone())
+            .collect::<Vec<_>>();
+        for job in &artifact_transfer_records {
+            if !job.tool_call_id.ends_with(":source") && !job.tool_call_id.ends_with(":destination")
+            {
+                active_stage_job_ids.extend(
+                    ["source", "destination"].map(|leg| {
+                        crate::artifact::artifact_transfer_relay_leg_job_id(&job.id, leg)
+                    }),
+                );
+            }
+        }
+        match self
+            .inner
+            .artifact_transfer_stages
+            .cleanup_except(active_stage_job_ids.iter().map(String::as_str))
+            .await
+        {
+            Ok(removed) if removed > 0 => {
+                tracing::info!(removed, "Artifact Transfer 终态 stage 清理完成")
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "Artifact Transfer stage 启动清理失败"),
+        }
+        let artifact_transfer_jobs = artifact_transfer_records
+            .into_iter()
+            .filter(|job| job.status == ExecutionJobStatus::Queued)
+            .map(|job| job.id)
+            .collect::<Vec<_>>();
         Arc::clone(&self.inner.orchestrator).start().await?;
         Arc::clone(&self.inner.objective_supervisor).start().await?;
         self.inner.thread_scheduler.recover().await?;
         self.inner.timer_engine.start();
+        for job_id in artifact_transfer_jobs {
+            self.spawn_artifact_transfer_job(job_id);
+        }
         let recall_store = Arc::clone(&self.inner.store);
         let recall_worker_id = format!(
             "recall-projector:{}:{}",
@@ -1249,6 +1385,10 @@ impl MorphzRuntime {
 
     pub fn config(&self) -> &AppConfig {
         &self.inner.config
+    }
+
+    pub fn artifact_transfer_stages(&self) -> &crate::artifact::ArtifactTransferStageStore {
+        &self.inner.artifact_transfer_stages
     }
 
     pub fn identity(&self) -> &RuntimeIdentity {
@@ -1515,6 +1655,9 @@ impl MorphzRuntime {
         let target_scope = command.target_id.clone();
         let job_scope = command.job_id.clone();
         let principal_scope = Some(self.inner.identity.principal_id.clone());
+        let artifact_transfer =
+            tool.execution_routing() == crate::tool::ToolExecutionRouting::ArtifactTransfer;
+        let runtime = self.clone();
         let durable_grant = if provider_local_preauthorized {
             tool.approval_requirement(&command.arguments)?
                 .map(|requirement| crate::permission::DurableApprovalGrant {
@@ -1546,8 +1689,16 @@ impl MorphzRuntime {
                                                         .scope(
                                                             format!("edge-session:{target_scope}"),
                                                             async move {
-                                                                tool.execute(&command.arguments)
-                                                                    .await
+                                                                if artifact_transfer {
+                                                                    runtime
+                                                                        .execute_edge_artifact_transfer(
+                                                                            command,
+                                                                        )
+                                                                        .await
+                                                                } else {
+                                                                    tool.execute(&command.arguments)
+                                                                        .await
+                                                                }
                                                             },
                                                         )
                                                         .await
@@ -1562,6 +1713,59 @@ impl MorphzRuntime {
                     .await
             })
             .await
+    }
+
+    async fn execute_edge_artifact_transfer(
+        &self,
+        command: &crate::memory::EdgeCommandRecord,
+    ) -> Result<String, RuntimeError> {
+        let routes: crate::execution_target::ArtifactTransferRouteSnapshot =
+            serde_json::from_value(command.route.clone())?;
+        let request = crate::artifact::transfer_request_from_tool_arguments(
+            &command.arguments,
+            format!("transfer:{}", command.job_id),
+        )?;
+        let scope = crate::execution_target::edge_execution_scope_from_route(&command.route)?;
+        let now = chrono::Utc::now();
+        let job = crate::memory::ExecutionJobRecord {
+            id: command.job_id.clone(),
+            revision: command.revision,
+            activation_id: command.job_id.clone(),
+            thread_id: scope.thread_id,
+            agent_id: scope.agent_id,
+            context_id: scope.context_id,
+            session_id: scope.session_id,
+            initiating_principal_id: Some(scope.principal_id),
+            target_id: routes.destination.target_id.clone(),
+            tool_call_id: command.job_id.clone(),
+            tool_name: crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+            request: serde_json::json!({}),
+            status: crate::memory::ExecutionJobStatus::Running,
+            retry_safety: crate::memory::ExecutionRetrySafety::Idempotent,
+            claimed_by: command.claimed_by.clone(),
+            claim_token: command.claim_token.clone(),
+            lease_expires_at: command.lease_expires_at,
+            heartbeat_at: command.heartbeat_at,
+            approval_ref: None,
+            side_effect_started_at: command.side_effect_started_at,
+            cancel_requested_at: None,
+            cancel_reason: None,
+            progress_ref: command.progress.clone(),
+            result_event_id: None,
+            result_refs: Vec::new(),
+            error: None,
+            exit_code: None,
+            created_at: command.created_at,
+            started_at: Some(now),
+            updated_at: now,
+            finished_at: None,
+        };
+        let receipt = self
+            .inner
+            .execution_targets
+            .execute_edge_artifact_transfer(&job, &routes, &request)
+            .await?;
+        Ok(serde_json::to_string(&receipt)?)
     }
 
     pub fn agent(&self, id: impl Into<String>) -> AgentHandle {
@@ -2003,8 +2207,681 @@ impl MorphzRuntime {
                 | crate::execution::JobReceipt::Existing { .. }
         ) {
             let _ = self.inner.store.request_edge_command_cancel(job_id).await?;
+            if let Some(job) = receipt.applied_job() {
+                if job.tool_name == ARTIFACT_TRANSFER_TOOL_NAME {
+                    for leg in ["source", "destination"] {
+                        let leg_id =
+                            crate::artifact::artifact_transfer_relay_leg_job_id(&job.id, leg);
+                        let _ = self
+                            .inner
+                            .store
+                            .request_edge_command_cancel(&leg_id)
+                            .await?;
+                        if let Some(leg_job) = self.inner.store.get_execution_job(&leg_id).await? {
+                            if !leg_job.status.is_terminal()
+                                && leg_job.cancel_requested_at.is_none()
+                            {
+                                let _ = self
+                                    .inner
+                                    .execution_jobs
+                                    .request_cancel(
+                                        &leg_job.id,
+                                        leg_job.revision,
+                                        Some("parent Artifact Transfer was cancelled"),
+                                    )
+                                    .await?;
+                            }
+                        }
+                    }
+                }
+            }
         }
         Ok(receipt)
+    }
+
+    /// Materialize one transport-neutral Artifact intent as a durable
+    /// Event -> Execution Thread -> Activation -> ExecutionJob graph.
+    ///
+    /// Identity and both target routes are fixed before the Job is runnable.
+    /// Repeating the same `(principal, session, transfer_id)` is idempotent;
+    /// reusing it for different bytes or routes is rejected by the Store.
+    pub async fn submit_artifact_transfer(
+        &self,
+        principal_id: &str,
+        session_id: &str,
+        request: ArtifactTransferRequest,
+    ) -> Result<ArtifactTransferExecutionRecord, RuntimeError> {
+        request.validate()?;
+        let session = self
+            .get_session(session_id)
+            .await?
+            .ok_or_else(|| format!("Session '{session_id}' 不存在"))?;
+        if !self
+            .verify_session_principal(session_id, principal_id)
+            .await?
+        {
+            return Err(format!("Principal '{principal_id}' 未参与 Session '{session_id}'").into());
+        }
+
+        let identity =
+            artifact_transfer_execution_identity(principal_id, session_id, &request.transfer_id);
+        let arguments = execution_arguments_from_transfer_request(&request)?;
+        let (source, destination) = self
+            .inner
+            .execution_targets
+            .validate_artifact_transfer(
+                &request,
+                &arguments,
+                Some(principal_id),
+                &session.agent_id,
+                &session.context_id,
+                &identity.thread_id,
+            )
+            .await?;
+        let routes = crate::execution_target::ArtifactTransferRouteSnapshot {
+            source: crate::execution_target::ExecutionRouteSnapshot::freeze(&source),
+            destination: crate::execution_target::ExecutionRouteSnapshot::freeze(&destination),
+        };
+        let mut job_request: Value = serde_json::from_str(&arguments)?;
+        job_request
+            .as_object_mut()
+            .ok_or("Artifact Transfer request 必须是 JSON object")?
+            .insert("request".to_string(), serde_json::to_value(&request)?);
+        crate::execution_target::attach_artifact_transfer_routes(&mut job_request, &routes)?;
+
+        let mut request_event = Event::new(
+            identity.event_id.clone(),
+            "Runtime-ArtifactTransfer".to_string(),
+            "runtime_control".to_string(),
+            ARTIFACT_TRANSFER_REQUEST_TOPIC.to_string(),
+            serde_json::Map::from_iter([
+                ("context_id".to_string(), json!(session.context_id)),
+                ("session_id".to_string(), json!(session.id)),
+                ("principal_id".to_string(), json!(principal_id)),
+                ("thread_id".to_string(), json!(identity.thread_id)),
+                ("activation_id".to_string(), json!(identity.activation_id)),
+                ("job_id".to_string(), json!(identity.job_id)),
+                ("tool_call_id".to_string(), json!(identity.tool_call_id)),
+                ("tool_name".to_string(), json!(ARTIFACT_TRANSFER_TOOL_NAME)),
+                ("transfer_id".to_string(), json!(request.transfer_id)),
+                ("source".to_string(), serde_json::to_value(&request.source)?),
+                (
+                    "destination".to_string(),
+                    serde_json::to_value(&request.destination)?,
+                ),
+                ("request".to_string(), serde_json::to_value(&request)?),
+                ("wake_policy".to_string(), json!("none")),
+            ]),
+        );
+        if let Some(existing) = self
+            .inner
+            .store
+            .query(QueryFilter {
+                event_id: Some(identity.event_id.clone()),
+                top_k: Some(1),
+                ..Default::default()
+            })
+            .await?
+            .into_iter()
+            .next()
+        {
+            // Preserve the original timestamp so an idempotent API retry is
+            // byte-for-byte the same immutable Event.
+            request_event = existing;
+        }
+
+        let job = ExecutionJobSpec {
+            activation_id: identity.activation_id.clone(),
+            thread_id: identity.thread_id.clone(),
+            agent_id: session.agent_id.clone(),
+            context_id: session.context_id.clone(),
+            session_id: session.id.clone(),
+            initiating_principal_id: Some(principal_id.to_string()),
+            target_id: destination.id,
+            tool_call_id: identity.tool_call_id.clone(),
+            tool_name: ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+            request: job_request,
+            // A staged transfer can be retried safely only before the
+            // persisted physical side-effect boundary. Once execution starts,
+            // restart reconciliation must inspect reality instead of replaying.
+            retry_safety: crate::memory::ExecutionRetrySafety::Idempotent,
+            // PermissionBroker authorizes the exact source+destination delta
+            // at the physical boundary. `claim` is ownership, not approval.
+            requires_approval: false,
+        }
+        .into_new_job()?;
+        debug_assert_eq!(job.id, identity.job_id);
+        let record = self
+            .inner
+            .store
+            .ensure_artifact_transfer_execution(NewArtifactTransferExecution {
+                request_event: request_event.clone(),
+                thread: NewThread {
+                    id: identity.thread_id.clone(),
+                    agent_id: session.agent_id.clone(),
+                    context_id: session.context_id.clone(),
+                    session_id: session.id.clone(),
+                    initiating_principal_id: Some(principal_id.to_string()),
+                    root_turn_id: identity.event_id.clone(),
+                    kind: ThreadKind::Execution,
+                    executor_kind: ARTIFACT_TRANSFER_EXECUTOR_KIND.to_string(),
+                    executor_id: Some(identity.job_id.clone()),
+                    target_id: Some(request.destination.target_id.clone()),
+                },
+                activation: NewThreadActivation {
+                    id: identity.activation_id,
+                    agent_id: session.agent_id,
+                    context_id: session.context_id,
+                    session_id: session.id,
+                    initiating_principal_id: Some(principal_id.to_string()),
+                    trigger_event_id: identity.event_id.clone(),
+                    trigger_sequence: 0,
+                    trigger_kind: ARTIFACT_TRANSFER_REQUEST_TOPIC.to_string(),
+                    parent_activation_id: None,
+                    root_turn_id: identity.event_id,
+                },
+                job,
+            })
+            .await?;
+        self.inner.bus.dispatch_persisted(request_event).await?;
+        self.spawn_artifact_transfer_job(record.job.id.clone());
+        Ok(record)
+    }
+
+    fn spawn_artifact_transfer_job(&self, job_id: String) {
+        let runtime = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = runtime.run_artifact_transfer_job(&job_id).await {
+                tracing::error!(job_id, %error, "Artifact Transfer worker 失败");
+            }
+        });
+    }
+
+    async fn run_artifact_transfer_job(&self, job_id: &str) -> Result<(), RuntimeError> {
+        let Some(initial_job) = self.inner.store.get_execution_job(job_id).await? else {
+            return Ok(());
+        };
+        if initial_job.status.is_terminal() || initial_job.status != ExecutionJobStatus::Queued {
+            return Ok(());
+        }
+        let Some(initial_activation) = self
+            .inner
+            .store
+            .get_thread_activation(&initial_job.activation_id)
+            .await?
+        else {
+            return Err(format!("Artifact Transfer Job '{job_id}' 缺少 Activation").into());
+        };
+        if initial_activation.status == ThreadActivationStatus::Queued {
+            match self
+                .inner
+                .store
+                .update_thread_activation(
+                    &initial_activation.id,
+                    initial_activation.revision,
+                    ThreadActivationStatus::Running,
+                    Some("morphz-artifact-transfer"),
+                    Some(
+                        chrono::Utc::now()
+                            + chrono::Duration::seconds(ARTIFACT_TRANSFER_WORKER_LEASE_SECS),
+                    ),
+                    None,
+                )
+                .await?
+            {
+                crate::memory::ThreadActivationMutation::Updated(_) => {}
+                crate::memory::ThreadActivationMutation::Conflict { current }
+                    if current.status == ThreadActivationStatus::Running => {}
+                crate::memory::ThreadActivationMutation::Conflict { .. }
+                | crate::memory::ThreadActivationMutation::NotFound => return Ok(()),
+            }
+        }
+
+        let claim_token = format!(
+            "artifact-claim:{}:{}:{}",
+            std::process::id(),
+            job_id,
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        );
+        let mut job = match self
+            .inner
+            .execution_jobs
+            .claim(
+                job_id,
+                initial_job.revision,
+                JobClaim {
+                    worker_id: "morphz-artifact-transfer",
+                    claim_token: &claim_token,
+                    lease_expires_at: chrono::Utc::now()
+                        + chrono::Duration::seconds(ARTIFACT_TRANSFER_WORKER_LEASE_SECS),
+                    approval_ref: None,
+                },
+            )
+            .await?
+        {
+            JobReceipt::Applied { job, .. } | JobReceipt::Existing { job, .. } => job,
+            JobReceipt::Conflict { .. }
+            | JobReceipt::Rejected { .. }
+            | JobReceipt::NotFound { .. } => return Ok(()),
+        };
+        job = match self
+            .inner
+            .execution_jobs
+            .heartbeat(
+                job_id,
+                job.revision,
+                JobHeartbeat {
+                    claim_token: &claim_token,
+                    lease_expires_at: chrono::Utc::now()
+                        + chrono::Duration::seconds(ARTIFACT_TRANSFER_WORKER_LEASE_SECS),
+                    // Artifact publication is reconciled by content digest
+                    // and deterministic Job identity.  Do not mark the whole
+                    // transport as an unknown side-effect boundary before it
+                    // even starts; doing so would make a process crash turn an
+                    // otherwise resumable transfer into `lost`.
+                    side_effect_started_at: None,
+                    progress_ref: Some("artifact_transfer_started"),
+                },
+            )
+            .await?
+        {
+            JobReceipt::Applied { job, .. } | JobReceipt::Existing { job, .. } => job,
+            JobReceipt::Conflict { current, .. } => current,
+            JobReceipt::Rejected { reason, .. } => return Err(reason.into()),
+            JobReceipt::NotFound { .. } => return Ok(()),
+        };
+
+        let request: ArtifactTransferRequest = serde_json::from_value(
+            job.request
+                .get("request")
+                .cloned()
+                .unwrap_or_else(|| job.request.clone()),
+        )
+        .or_else(|_| {
+            crate::artifact::transfer_request_from_tool_arguments(
+                &serde_json::to_string(&job.request)?,
+                format!("transfer:{}", job.id),
+            )
+        })?;
+        let arguments = execution_arguments_from_transfer_request(&request)?;
+        let tool = self
+            .inner
+            .registry
+            .get(ARTIFACT_TRANSFER_TOOL_NAME)
+            .ok_or("Runtime 未注册 transfer_artifact 工具")?;
+        let tool_context = crate::tool::ToolExecutionJobContext {
+            parent_job_id: job.id.clone(),
+            activation_id: job.activation_id.clone(),
+            thread_id: job.thread_id.clone(),
+            agent_id: job.agent_id.clone(),
+            context_id: job.context_id.clone(),
+            session_id: job.session_id.clone(),
+            initiating_principal_id: job.initiating_principal_id.clone(),
+            target_id: job.target_id.clone(),
+            tool_call_id: job.tool_call_id.clone(),
+        };
+        let result = {
+            let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+            let (side_effect_tx, mut side_effect_rx) = tokio::sync::mpsc::unbounded_channel();
+            // The physical executor must observe one immutable claim snapshot. The
+            // control loop below advances the durable Job revision at heartbeats
+            // and at the publication boundary, so borrowing that mutable control
+            // copy for the lifetime of the executor would conflate two roles.
+            let execution_job = job.clone();
+            let execution_principal_id = job.initiating_principal_id.clone();
+            let execution_activation_id = job.activation_id.clone();
+            let execution_context_id = job.context_id.clone();
+            let execution_session_id = job.session_id.clone();
+            let execute = self
+                .inner
+                .execution_targets
+                .execute(&execution_job, tool, &arguments);
+            let execution = crate::artifact::CURRENT_ARTIFACT_TRANSFER_SIDE_EFFECT.scope(
+                side_effect_tx,
+                CURRENT_ARTIFACT_TRANSFER_PROGRESS.scope(
+                    progress_tx,
+                    crate::tool::CURRENT_EXECUTION_JOB.scope(Some(tool_context), async {
+                        crate::tool::CURRENT_PRINCIPAL_ID
+                            .scope(execution_principal_id, async {
+                                crate::tool::CURRENT_ATTEMPT_ID
+                                    .scope(execution_activation_id, async {
+                                        crate::tool::CURRENT_CONTEXT_ID
+                                            .scope(execution_context_id, async {
+                                                crate::tool::CURRENT_SESSION_ID
+                                                    .scope(execution_session_id, execute)
+                                                    .await
+                                            })
+                                            .await
+                                    })
+                                    .await
+                            })
+                            .await
+                    }),
+                ),
+            );
+            tokio::pin!(execution);
+            let mut control_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+            control_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let progress_started = std::time::Instant::now();
+            let mut latest_progress: Option<ArtifactTransferProgress> = None;
+            let mut persisted_progress: Option<ArtifactTransferProgress> = None;
+            let mut progress_open = true;
+            let mut side_effect_open = true;
+            loop {
+                tokio::select! {
+                    result = &mut execution => {
+                        while let Ok(progress) = progress_rx.try_recv() {
+                            latest_progress = Some(progress);
+                        }
+                        if latest_progress != persisted_progress {
+                            if let Some(progress) = latest_progress.clone() {
+                                if let Err(error) = self.persist_artifact_transfer_progress(&job, &request, &progress).await {
+                                    tracing::warn!(job_id = %job.id, %error, "Artifact Transfer 最终进度持久化失败");
+                                }
+                            }
+                        }
+                        break result;
+                    },
+                    progress = progress_rx.recv(), if progress_open => {
+                        match progress {
+                            Some(progress) => latest_progress = Some(progress),
+                            None => progress_open = false,
+                        }
+                    }
+                    side_effect = side_effect_rx.recv(), if side_effect_open => {
+                        let Some(acknowledge) = side_effect else {
+                            side_effect_open = false;
+                            continue;
+                        };
+                        let Some(current) = self.inner.store.get_execution_job(job_id).await? else {
+                            break Err("Artifact Transfer Job 在发布边界前消失".into());
+                        };
+                        match self.inner.execution_jobs.heartbeat(
+                            job_id,
+                            current.revision,
+                            JobHeartbeat {
+                                claim_token: &claim_token,
+                                lease_expires_at: chrono::Utc::now()
+                                    + chrono::Duration::seconds(ARTIFACT_TRANSFER_WORKER_LEASE_SECS),
+                                side_effect_started_at: Some(chrono::Utc::now()),
+                                progress_ref: Some("artifact_transfer_publishing"),
+                            },
+                        ).await? {
+                            JobReceipt::Applied { job: updated, .. }
+                            | JobReceipt::Existing { job: updated, .. } => job = updated,
+                            JobReceipt::Conflict { current, .. }
+                                if current.side_effect_started_at.is_some() => job = current,
+                            JobReceipt::Conflict { current, .. } => {
+                                break Err(format!(
+                                    "Artifact Transfer 发布边界 revision 冲突（当前 r{} / {}）",
+                                    current.revision,
+                                    current.status.as_str()
+                                ).into());
+                            }
+                            JobReceipt::Rejected { reason, .. } => break Err(reason.into()),
+                            JobReceipt::NotFound { .. } => {
+                                break Err("Artifact Transfer Job 在发布边界前消失".into());
+                            }
+                        }
+                        let _ = acknowledge.send(());
+                    }
+                    _ = control_tick.tick() => {
+                        let Some(current) = self.inner.store.get_execution_job(job_id).await? else {
+                            break Err("Artifact Transfer Job 在执行期间消失".into());
+                        };
+                        if current.cancel_requested_at.is_some() {
+                            let _ = self.inner.store.request_edge_command_cancel(job_id).await;
+                            for leg in ["source", "destination"] {
+                                let child_id = crate::artifact::artifact_transfer_relay_leg_job_id(job_id, leg);
+                                let _ = self.inner.store.request_edge_command_cancel(&child_id).await;
+                            }
+                            // Dropping the physical future closes local streams
+                            // and kills managed SSH children (`kill_on_drop`).
+                            break Err(crate::artifact::ArtifactTransferCancelled.into());
+                        }
+                        let progress_ref = latest_progress.as_ref().map(|progress| {
+                            let elapsed = progress_started.elapsed().as_secs_f64().max(0.001);
+                            serde_json::to_string(&json!({
+                                "kind": "artifact_transfer",
+                                "phase": progress.phase,
+                                "bytes_transferred": progress.bytes_transferred,
+                                "total_bytes": progress.total_bytes,
+                                "current_entry": progress.current_entry,
+                                "throughput_bytes_per_second":
+                                    (progress.bytes_transferred as f64 / elapsed).round() as u64,
+                            }))
+                            .unwrap_or_else(|_| "artifact_transfer_running".to_string())
+                        }).unwrap_or_else(|| "artifact_transfer_running".to_string());
+                        let heartbeat = self.inner.execution_jobs.heartbeat(
+                            job_id,
+                            current.revision,
+                            JobHeartbeat {
+                                claim_token: &claim_token,
+                                lease_expires_at: chrono::Utc::now()
+                                    + chrono::Duration::seconds(ARTIFACT_TRANSFER_WORKER_LEASE_SECS),
+                                side_effect_started_at: None,
+                                progress_ref: Some(&progress_ref),
+                            },
+                        ).await;
+                        let _ = heartbeat;
+                        if latest_progress != persisted_progress {
+                            if let Some(progress) = latest_progress.clone() {
+                                if let Err(error) = self.persist_artifact_transfer_progress(&job, &request, &progress).await {
+                                    tracing::warn!(job_id = %job.id, %error, "Artifact Transfer progress 持久化失败");
+                                } else {
+                                    persisted_progress = latest_progress.clone();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        let (status, text, error) = match result {
+            Ok(text) => ("success", text, None),
+            Err(error) => {
+                let cancelled = crate::artifact::is_artifact_transfer_cancelled(error.as_ref());
+                let message = error.to_string();
+                if cancelled {
+                    (
+                        "cancelled",
+                        format!("Artifact Transfer 已取消: {message}"),
+                        Some(message),
+                    )
+                } else {
+                    ("failed", format!("执行失败: {message}"), Some(message))
+                }
+            }
+        };
+        // A cancellation request increments the durable revision while the
+        // physical executor is running. Refresh before the terminal CAS so
+        // the worker never strands the Job by finishing with its stale claim
+        // revision.
+        if let Some(current) = self.inner.store.get_execution_job(job_id).await? {
+            job = current;
+        }
+        let result_event_id = format!("output_{}", job.id);
+        let mut payload = serde_json::Map::from_iter([
+            ("context_id".to_string(), json!(job.context_id)),
+            ("session_id".to_string(), json!(job.session_id)),
+            ("thread_id".to_string(), json!(job.thread_id)),
+            ("activation_id".to_string(), json!(job.activation_id)),
+            ("tool_call_id".to_string(), json!(job.tool_call_id)),
+            ("tool_name".to_string(), json!(job.tool_name)),
+            ("job_id".to_string(), json!(job.id)),
+            ("transfer_id".to_string(), json!(request.transfer_id)),
+            ("source".to_string(), json!(request.source)),
+            ("destination".to_string(), json!(request.destination)),
+            ("tool_status".to_string(), json!(status)),
+            ("text".to_string(), json!(text)),
+            ("wake_policy".to_string(), json!("none")),
+        ]);
+        if let Some(principal_id) = &job.initiating_principal_id {
+            payload.insert("principal_id".to_string(), json!(principal_id));
+        }
+        let result_topic = match status {
+            "success" => ARTIFACT_TRANSFER_COMPLETED_TOPIC,
+            "cancelled" => ARTIFACT_TRANSFER_CANCELLED_TOPIC,
+            _ => ARTIFACT_TRANSFER_FAILED_TOPIC,
+        };
+        let result_event = Event::new(
+            result_event_id.clone(),
+            "Runtime-ArtifactTransfer".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            result_topic.to_string(),
+            payload,
+        );
+        let outcome = match (status, error) {
+            ("cancelled", reason) => JobOutcome::Cancelled {
+                result_event_id: Some(result_event_id.clone()),
+                result_refs: vec![request.transfer_id.clone()],
+                reason,
+                exit_code: None,
+            },
+            (_, Some(error)) => JobOutcome::Failed {
+                result_event_id: Some(result_event_id.clone()),
+                result_refs: vec![request.transfer_id.clone()],
+                error,
+                exit_code: None,
+            },
+            _ => JobOutcome::Succeeded {
+                result_event_id: Some(result_event_id.clone()),
+                result_refs: vec![request.transfer_id.clone()],
+                exit_code: Some(0),
+            },
+        };
+        let terminal_status = match status {
+            "success" => ThreadActivationStatus::Succeeded,
+            "cancelled" => ThreadActivationStatus::Cancelled,
+            _ => ThreadActivationStatus::Failed,
+        };
+        let terminal_lifecycle = match status {
+            "success" => ThreadLifecycle::Completed,
+            "cancelled" => ThreadLifecycle::Cancelled,
+            _ => ThreadLifecycle::Failed,
+        };
+        match self
+            .inner
+            .execution_jobs
+            .finish_with_event(
+                job_id,
+                job.revision,
+                Some(&claim_token),
+                outcome,
+                &result_event,
+                false,
+            )
+            .await?
+        {
+            JobReceipt::Applied { .. } | JobReceipt::Existing { .. } => {}
+            JobReceipt::Conflict { current, .. } if current.status.is_terminal() => {}
+            JobReceipt::Conflict { current, .. } => {
+                return Err(format!(
+                    "Artifact Transfer Job '{}' 终态提交 revision 冲突（当前 r{} / {}）",
+                    current.id,
+                    current.revision,
+                    current.status.as_str()
+                )
+                .into())
+            }
+            JobReceipt::Rejected { reason, .. } => return Err(reason.into()),
+            JobReceipt::NotFound { .. } => return Err("Artifact Transfer Job 消失".into()),
+        }
+        self.inner.bus.dispatch_persisted(result_event).await?;
+        self.close_artifact_transfer_scheduler_projection(
+            &job,
+            terminal_status,
+            terminal_lifecycle,
+            &text,
+            &result_event_id,
+        )
+        .await;
+        Ok(())
+    }
+
+    async fn persist_artifact_transfer_progress(
+        &self,
+        job: &ExecutionJobRecord,
+        request: &ArtifactTransferRequest,
+        progress: &ArtifactTransferProgress,
+    ) -> Result<(), RuntimeError> {
+        let event_id = format!(
+            "artifact_transfer_progress_{}_{}",
+            job.id,
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        self.inner
+            .store
+            .append(Event::new(
+                event_id,
+                "Runtime-ArtifactTransfer".to_string(),
+                "artifact_transfer_progress".to_string(),
+                ARTIFACT_TRANSFER_PROGRESS_TOPIC.to_string(),
+                serde_json::Map::from_iter([
+                    ("context_id".to_string(), json!(job.context_id)),
+                    ("session_id".to_string(), json!(job.session_id)),
+                    ("thread_id".to_string(), json!(job.thread_id)),
+                    ("activation_id".to_string(), json!(job.activation_id)),
+                    ("job_id".to_string(), json!(job.id)),
+                    ("transfer_id".to_string(), json!(request.transfer_id)),
+                    ("progress".to_string(), json!(progress)),
+                    ("wake_policy".to_string(), json!("none")),
+                ]),
+            ))
+            .await?;
+        Ok(())
+    }
+
+    async fn close_artifact_transfer_scheduler_projection(
+        &self,
+        job: &ExecutionJobRecord,
+        activation_status: ThreadActivationStatus,
+        lifecycle: ThreadLifecycle,
+        result_text: &str,
+        result_event_id: &str,
+    ) {
+        if let Ok(Some(activation)) = self
+            .inner
+            .store
+            .get_thread_activation(&job.activation_id)
+            .await
+        {
+            if let Err(error) = self
+                .inner
+                .store
+                .update_thread_activation(
+                    &activation.id,
+                    activation.revision,
+                    activation_status,
+                    None,
+                    None,
+                    activation.context_snapshot_version,
+                )
+                .await
+            {
+                tracing::warn!(job_id = %job.id, %error, "Artifact Transfer Activation 投影收口失败");
+            }
+        }
+        if let Ok(Some(thread)) = self.inner.store.get_thread(&job.thread_id).await {
+            if let Err(error) = self
+                .inner
+                .store
+                .update_thread(
+                    &thread.id,
+                    thread.revision,
+                    None,
+                    Some(lifecycle),
+                    Some(result_text),
+                    Some(result_event_id),
+                    None,
+                    None,
+                )
+                .await
+            {
+                tracing::warn!(job_id = %job.id, %error, "Artifact Transfer Thread 投影收口失败");
+            }
+        }
     }
 
     pub async fn list_capability_leases(
@@ -4406,6 +5283,49 @@ mod tests {
     use tempfile::NamedTempFile;
 
     struct ReplyClient;
+
+    struct BlockingArtifactTransferBackend {
+        entered: Arc<tokio::sync::Notify>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    struct BlockingArtifactTransferGuard(Arc<AtomicBool>);
+
+    impl Drop for BlockingArtifactTransferGuard {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::execution_target::ArtifactTransferExecutionBackend for BlockingArtifactTransferBackend {
+        fn name(&self) -> &'static str {
+            "000_test_blocking"
+        }
+
+        fn supports(
+            &self,
+            source: &crate::execution_target::ExecutionRouteSnapshot,
+            destination: &crate::execution_target::ExecutionRouteSnapshot,
+        ) -> bool {
+            source.backend_kind == crate::memory::ExecutionTargetKind::InProcessLocal
+                && destination.backend_kind == crate::memory::ExecutionTargetKind::InProcessLocal
+        }
+
+        async fn execute_transfer(
+            &self,
+            _job: &ExecutionJobRecord,
+            _routes: &crate::execution_target::ArtifactTransferRouteSnapshot,
+            _request: &ArtifactTransferRequest,
+        ) -> Result<
+            crate::artifact::ArtifactTransferReceipt,
+            crate::execution_target::TargetExecutionError,
+        > {
+            let _guard = BlockingArtifactTransferGuard(self.dropped.clone());
+            self.entered.notify_waiters();
+            std::future::pending().await
+        }
+    }
 
     #[test]
     fn model_usage_cost_requires_explicit_versioned_rates() {
@@ -11202,5 +12122,276 @@ mod tests {
             Some("firstsecond")
         );
         assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn artifact_transfer_runtime_moves_local_bytes_and_is_idempotent() {
+        let root = tempfile::tempdir().unwrap();
+        let database_path = root.path().join("morphz.db");
+        let source_path = root.path().join("source.bin");
+        let destination_path = root.path().join("nested/destination.bin");
+        let source_bytes = b"morphz-artifact-transfer\0binary\n";
+        tokio::fs::write(&source_path, source_bytes).await.unwrap();
+
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::FullAccess;
+        config.permissions.workspace_root = root.path().to_string_lossy().into_owned();
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database_path.to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        runtime.start().await.unwrap();
+        let session = runtime
+            .create_session(NewSession {
+                id: "session-artifact-transfer".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Artifact transfer".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let request = ArtifactTransferRequest {
+            transfer_id: "transfer-local-idempotent".to_string(),
+            source: crate::artifact::ArtifactLocation {
+                target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+                workspace_identity: None,
+                path: source_path.to_string_lossy().into_owned(),
+            },
+            destination: crate::artifact::ArtifactLocation {
+                target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+                workspace_identity: None,
+                path: destination_path.to_string_lossy().into_owned(),
+            },
+            overwrite: crate::artifact::ArtifactOverwritePolicy::Deny,
+            expected_source_digest: None,
+            media_type: Some("application/octet-stream".to_string()),
+            origin: Some(crate::artifact::ArtifactOrigin {
+                kind: crate::artifact::ArtifactOriginKind::User,
+                principal_id: Some(runtime.identity().principal_id.clone()),
+                session_id: Some(session.id.clone()),
+                producer: Some("runtime-test".to_string()),
+            }),
+        };
+
+        let first = runtime
+            .submit_artifact_transfer(
+                &runtime.identity().principal_id,
+                &session.id,
+                request.clone(),
+            )
+            .await
+            .unwrap();
+        let terminal = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let job = runtime
+                    .get_execution_job(&first.job.id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if job.status.is_terminal() {
+                    break job;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("local Artifact Transfer should reach a durable terminal state");
+        assert_eq!(
+            terminal.status,
+            ExecutionJobStatus::Succeeded,
+            "unexpected terminal Artifact Transfer Job: {terminal:#?}"
+        );
+        assert!(
+            terminal.side_effect_started_at.is_some(),
+            "the destination must not become visible before the durable publication boundary"
+        );
+        assert_eq!(
+            tokio::fs::read(&destination_path).await.unwrap(),
+            source_bytes
+        );
+
+        let output_event_id = format!("output_{}", first.job.id);
+        let output = runtime
+            .query_events(QueryFilter {
+                event_id: Some(output_event_id),
+                top_k: Some(2),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(
+            output[0].payload.get("tool_status").and_then(Value::as_str),
+            Some("success")
+        );
+        let progress = runtime
+            .query_events(QueryFilter {
+                context_id: Some(runtime.identity().context_id.clone()),
+                session_id: Some(session.id.clone()),
+                topic: Some(ARTIFACT_TRANSFER_PROGRESS_TOPIC.to_string()),
+                latest_k: Some(10),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(
+            progress.iter().any(|event| {
+                event.payload.get("job_id").and_then(Value::as_str) == Some(first.job.id.as_str())
+                    && event
+                        .payload
+                        .get("progress")
+                        .and_then(|value| value.get("bytes_transferred"))
+                        .and_then(Value::as_u64)
+                        == Some(source_bytes.len() as u64)
+            }),
+            "even a short transfer must persist its final progress snapshot"
+        );
+
+        let replay = runtime
+            .submit_artifact_transfer(&runtime.identity().principal_id, &session.id, request)
+            .await
+            .unwrap();
+        assert_eq!(replay.job.id, first.job.id);
+        assert_eq!(replay.thread.id, first.thread.id);
+        assert_eq!(replay.activation.id, first.activation.id);
+        assert_eq!(replay.request_event_sequence, first.request_event_sequence);
+    }
+
+    #[tokio::test]
+    async fn artifact_transfer_cancellation_drops_physical_work_and_closes_durable_lineage() {
+        let root = tempfile::tempdir().unwrap();
+        let database_path = root.path().join("morphz.db");
+        let source_path = root.path().join("source.bin");
+        let destination_path = root.path().join("destination.bin");
+        tokio::fs::write(&source_path, b"cancel-me").await.unwrap();
+
+        let mut config = AppConfig::default();
+        config.permissions.mode = PermissionMode::FullAccess;
+        config.permissions.workspace_root = root.path().to_string_lossy().into_owned();
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient))
+            .database_path(database_path.to_string_lossy())
+            .build()
+            .await
+            .unwrap();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let dropped = Arc::new(AtomicBool::new(false));
+        runtime
+            .inner
+            .execution_targets
+            .register_artifact_transfer_backend(Arc::new(BlockingArtifactTransferBackend {
+                entered: entered.clone(),
+                dropped: dropped.clone(),
+            }));
+        runtime.start().await.unwrap();
+        let session = runtime
+            .create_session(NewSession {
+                id: "session-artifact-cancel".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Artifact cancellation".to_string(),
+                mount_kind: crate::memory::SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let submitted = runtime
+            .submit_artifact_transfer(
+                &runtime.identity().principal_id,
+                &session.id,
+                ArtifactTransferRequest {
+                    transfer_id: "transfer-cancel-before-publication".to_string(),
+                    source: crate::artifact::ArtifactLocation {
+                        target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+                        workspace_identity: None,
+                        path: source_path.to_string_lossy().into_owned(),
+                    },
+                    destination: crate::artifact::ArtifactLocation {
+                        target_id: crate::execution_target::DEFAULT_EXECUTION_TARGET_ID.to_string(),
+                        workspace_identity: None,
+                        path: destination_path.to_string_lossy().into_owned(),
+                    },
+                    overwrite: crate::artifact::ArtifactOverwritePolicy::Deny,
+                    expected_source_digest: None,
+                    media_type: Some("application/octet-stream".to_string()),
+                    origin: None,
+                },
+            )
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), entered.notified())
+            .await
+            .expect("custom Artifact backend should start");
+        let running = runtime
+            .get_execution_job(&submitted.job.id)
+            .await
+            .unwrap()
+            .unwrap();
+        runtime
+            .request_execution_job_cancel(&running.id, running.revision, Some("test cancellation"))
+            .await
+            .unwrap();
+        let terminal = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let current = runtime
+                    .get_execution_job(&running.id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if current.status.is_terminal() {
+                    break current;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("cancelled Artifact Transfer should durably close");
+        assert_eq!(terminal.status, ExecutionJobStatus::Cancelled);
+        assert!(terminal.cancel_requested_at.is_some());
+        assert!(terminal.side_effect_started_at.is_none());
+        assert!(dropped.load(Ordering::SeqCst));
+        assert!(!tokio::fs::try_exists(&destination_path).await.unwrap());
+
+        let (activation, thread) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let activation = runtime
+                    .inner
+                    .store
+                    .get_thread_activation(&submitted.activation.id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let thread = runtime
+                    .inner
+                    .store
+                    .get_thread(&submitted.thread.id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+                if activation.status == ThreadActivationStatus::Cancelled
+                    && thread.lifecycle == ThreadLifecycle::Cancelled
+                {
+                    break (activation, thread);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("cancelled Artifact Transfer should close its scheduler lineage");
+        assert_eq!(activation.status, ThreadActivationStatus::Cancelled);
+        assert_eq!(thread.lifecycle, ThreadLifecycle::Cancelled);
+        let event = runtime
+            .query_events(QueryFilter {
+                event_id: terminal.result_event_id.clone(),
+                top_k: Some(2),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(event.len(), 1);
+        assert_eq!(event[0].topic, ARTIFACT_TRANSFER_CANCELLED_TOPIC);
+        assert_eq!(event[0].payload["tool_status"], "cancelled");
     }
 }

@@ -1,6 +1,8 @@
 use crate::approval::ApprovalDecision;
+use crate::artifact::ArtifactTransferStageKind;
 use crate::config::{ServerIdentityConfig, ServerIdentityMode};
 use crate::event::Event;
+use crate::execution_target::EdgeArtifactDataDirection;
 use crate::identity::PrincipalAssertion;
 use crate::llm::ReasoningEffort;
 use crate::memory::{
@@ -19,6 +21,7 @@ use crate::sdk::{
     ExactHarnessRef, ExecutionJobQuery, ExecutionNodeHeartbeatCommand, FinishEdgeCommand,
     HeartbeatEdgeCommand, MorphzSdk, PairExecutionNodeCommand, RetryDialogueTurnCommand,
     RotateExecutionNodeKeyCommand, SdkError, SdkErrorCode, SendMessageCommand, SessionEventsQuery,
+    SubmitArtifactTransferCommand,
 };
 use axum::{
     body::Body,
@@ -31,7 +34,9 @@ use axum::{
     routing::{delete, get, patch, post},
     Json, Router,
 };
+use futures_util::StreamExt;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -290,6 +295,12 @@ struct EdgeOutputQuery {
 }
 
 #[derive(Default, serde::Deserialize)]
+struct EdgeArtifactDownloadQuery {
+    #[serde(default)]
+    offset: u64,
+}
+
+#[derive(Default, serde::Deserialize)]
 struct RecallSearchHttpQuery {
     token: Option<String>,
     query: String,
@@ -524,6 +535,7 @@ impl Server {
                 header::AUTHORIZATION,
                 header::HeaderName::from_static("x-morphz-principal"),
                 header::HeaderName::from_static("x-morphz-principal-name"),
+                header::HeaderName::from_static("x-morphz-claim-token"),
             ]);
 
         let app = Router::new()
@@ -612,6 +624,14 @@ impl Server {
                 post(handle_finish_edge_command),
             )
             .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/artifact/download",
+                get(handle_download_edge_artifact),
+            )
+            .route(
+                "/api/edge/nodes/:node_id/jobs/:job_id/artifact/upload",
+                get(handle_inspect_edge_artifact_upload).put(handle_upload_edge_artifact),
+            )
+            .route(
                 "/api/execution-jobs/:job_id/output",
                 get(handle_list_edge_command_output),
             )
@@ -622,6 +642,22 @@ impl Server {
             )
             .route(
                 "/api/execution-jobs/:job_id/cancel",
+                post(handle_cancel_execution_job),
+            )
+            .route(
+                "/api/artifact-transfers",
+                post(handle_submit_artifact_transfer),
+            )
+            .route(
+                "/api/artifact-transfers/:job_id",
+                get(handle_inspect_artifact_transfer),
+            )
+            .route(
+                "/api/artifact-transfers/:job_id/output",
+                get(handle_artifact_transfer_output),
+            )
+            .route(
+                "/api/artifact-transfers/:job_id/cancel",
                 post(handle_cancel_execution_job),
             )
             .route(
@@ -2072,6 +2108,375 @@ async fn handle_append_edge_command_output(
     }
 }
 
+async fn handle_download_edge_artifact(
+    State(state): State<Arc<AppState>>,
+    Path((node_id, job_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<EdgeArtifactDownloadQuery>,
+) -> Response {
+    let device_token = match node_device_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let claim_token = match edge_claim_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let (_, channel) = match state
+        .sdk
+        .authorize_edge_artifact_channel(
+            &node_id,
+            device_token,
+            &job_id,
+            claim_token,
+            EdgeArtifactDataDirection::RuntimeToEdge,
+        )
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => return sdk_error_response(error),
+    };
+    let path = state
+        .runtime
+        .artifact_transfer_stages()
+        .stage_path(&job_id, ArtifactTransferStageKind::RuntimeSource);
+    let metadata = match tokio::fs::metadata(&path).await {
+        Ok(metadata) if metadata.is_file() => metadata,
+        Ok(_) => return (StatusCode::CONFLICT, "Artifact stage 不是普通文件").into_response(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return (StatusCode::NOT_FOUND, "Artifact stage 不存在").into_response()
+        }
+        Err(error) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+        }
+    };
+    if channel
+        .size_bytes
+        .is_some_and(|expected| expected != metadata.len())
+    {
+        return (StatusCode::CONFLICT, "Artifact stage 大小与冻结通道不一致").into_response();
+    }
+    if query.offset > metadata.len() {
+        return (
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            "Artifact download offset 超过冻结大小",
+        )
+            .into_response();
+    }
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(error) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+        }
+    };
+    use tokio::io::AsyncSeekExt as _;
+    if let Err(error) = file.seek(std::io::SeekFrom::Start(query.offset)).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+    }
+    let stream = futures_util::stream::try_unfold(file, |mut file| async move {
+        use tokio::io::AsyncReadExt as _;
+        let mut buffer = vec![0_u8; 128 * 1024];
+        let count = file.read(&mut buffer).await?;
+        if count == 0 {
+            Ok::<_, std::io::Error>(None)
+        } else {
+            buffer.truncate(count);
+            Ok(Some((axum::body::Bytes::from(buffer), file)))
+        }
+    });
+    let mut response = Body::from_stream(stream).into_response();
+    if let Ok(value) =
+        header::HeaderValue::from_str(&metadata.len().saturating_sub(query.offset).to_string())
+    {
+        response.headers_mut().insert(header::CONTENT_LENGTH, value);
+    }
+    if let Ok(value) = header::HeaderValue::from_str(&query.offset.to_string()) {
+        response.headers_mut().insert(
+            header::HeaderName::from_static("x-morphz-artifact-offset"),
+            value,
+        );
+    }
+    if let Ok(value) = header::HeaderValue::from_str(&metadata.len().to_string()) {
+        response.headers_mut().insert(
+            header::HeaderName::from_static("x-morphz-artifact-total-size"),
+            value,
+        );
+    }
+    if query.offset > 0 {
+        *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+    }
+    if let Some(digest) = channel.expected_digest {
+        if let Ok(value) = header::HeaderValue::from_str(&digest) {
+            response.headers_mut().insert(
+                header::HeaderName::from_static("x-morphz-content-digest"),
+                value,
+            );
+        }
+    }
+    response
+}
+
+async fn handle_inspect_edge_artifact_upload(
+    State(state): State<Arc<AppState>>,
+    Path((node_id, job_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let device_token = match node_device_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let claim_token = match edge_claim_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    if let Err(error) = state
+        .sdk
+        .authorize_edge_artifact_channel(
+            &node_id,
+            device_token,
+            &job_id,
+            claim_token,
+            EdgeArtifactDataDirection::EdgeToRuntime,
+        )
+        .await
+    {
+        return sdk_error_response(error);
+    }
+    let final_path = state
+        .runtime
+        .artifact_transfer_stages()
+        .stage_path(&job_id, ArtifactTransferStageKind::EdgeUpload);
+    let partial_path = final_path.with_extension("partial");
+    let (path, completed) = if tokio::fs::try_exists(&final_path).await.unwrap_or(false) {
+        (final_path, true)
+    } else {
+        (partial_path, false)
+    };
+    let size_bytes = tokio::fs::metadata(path)
+        .await
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    Json(json!({
+        "job_id": job_id,
+        "offset": size_bytes,
+        "completed": completed,
+    }))
+    .into_response()
+}
+
+async fn handle_upload_edge_artifact(
+    State(state): State<Arc<AppState>>,
+    Path((node_id, job_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let device_token = match node_device_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let claim_token = match edge_claim_token(&headers) {
+        Ok(token) => token,
+        Err(response) => return response,
+    };
+    let (_, channel) = match state
+        .sdk
+        .authorize_edge_artifact_channel(
+            &node_id,
+            device_token,
+            &job_id,
+            claim_token,
+            EdgeArtifactDataDirection::EdgeToRuntime,
+        )
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => return sdk_error_response(error),
+    };
+    let requested_offset = match required_u64_header(&headers, "x-morphz-artifact-offset") {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let claimed_total = match required_u64_header(&headers, "x-morphz-artifact-total-size") {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let claimed_digest = match headers
+        .get("x-morphz-content-digest")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+    {
+        Some(value) => value,
+        None => return (StatusCode::BAD_REQUEST, "缺少 Artifact digest").into_response(),
+    };
+    if channel
+        .size_bytes
+        .is_some_and(|expected| expected != claimed_total)
+        || channel
+            .expected_digest
+            .as_deref()
+            .is_some_and(|expected| expected != claimed_digest)
+    {
+        return (StatusCode::CONFLICT, "上传声明与冻结通道不一致").into_response();
+    }
+    let final_path = match state
+        .runtime
+        .artifact_transfer_stages()
+        .prepare_stage_path(&job_id, ArtifactTransferStageKind::EdgeUpload)
+        .await
+    {
+        Ok(path) => path,
+        Err(error) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+        }
+    };
+    let partial_path = final_path.with_extension("partial");
+    if tokio::fs::try_exists(&final_path).await.unwrap_or(false) {
+        let metadata = match tokio::fs::metadata(&final_path).await {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+            }
+        };
+        return Json(json!({
+            "job_id": job_id,
+            "content_digest": claimed_digest,
+            "size_bytes": metadata.len()
+        }))
+        .into_response();
+    }
+    let current_offset = tokio::fs::metadata(&partial_path)
+        .await
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if requested_offset != current_offset {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Artifact upload offset 冲突",
+                "expected_offset": current_offset,
+            })),
+        )
+            .into_response();
+    }
+    let mut hasher = Sha256::new();
+    if current_offset > 0 {
+        let mut prefix = match tokio::fs::File::open(&partial_path).await {
+            Ok(prefix) => prefix,
+            Err(error) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+            }
+        };
+        use tokio::io::AsyncReadExt as _;
+        let mut buffer = vec![0_u8; 128 * 1024];
+        loop {
+            let count = match prefix.read(&mut buffer).await {
+                Ok(count) => count,
+                Err(error) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+                }
+            };
+            if count == 0 {
+                break;
+            }
+            hasher.update(&buffer[..count]);
+        }
+    }
+    let mut file = match tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&partial_path)
+        .await
+    {
+        Ok(file) => file,
+        Err(error) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+        }
+    };
+    let mut stream = body.into_data_stream();
+    let mut size_bytes = current_offset;
+    use tokio::io::AsyncWriteExt as _;
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                // Keep the flushed prefix. The Edge client asks for the
+                // authoritative offset and resumes instead of restarting.
+                let _ = file.flush().await;
+                return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
+            }
+        };
+        size_bytes = size_bytes.saturating_add(chunk.len() as u64);
+        if channel
+            .size_bytes
+            .is_some_and(|expected| size_bytes > expected)
+        {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Artifact upload 超过冻结大小",
+            )
+                .into_response();
+        }
+        hasher.update(&chunk);
+        if let Err(error) = file.write_all(&chunk).await {
+            let _ = tokio::fs::remove_file(&partial_path).await;
+            return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+        }
+    }
+    if size_bytes != claimed_total {
+        let _ = file.flush().await;
+        return (StatusCode::CONFLICT, "Artifact upload 尚未达到声明大小").into_response();
+    }
+    let digest = format!("sha256:{:x}", hasher.finalize());
+    if channel
+        .expected_digest
+        .as_deref()
+        .is_some_and(|expected| expected != digest)
+        || channel
+            .size_bytes
+            .is_some_and(|expected| expected != size_bytes)
+    {
+        let _ = tokio::fs::remove_file(&partial_path).await;
+        return (
+            StatusCode::CONFLICT,
+            "Artifact upload 摘要或大小与冻结通道不一致",
+        )
+            .into_response();
+    }
+    if digest != claimed_digest {
+        let _ = tokio::fs::remove_file(&partial_path).await;
+        return (StatusCode::CONFLICT, "Artifact upload 摘要与声明不一致").into_response();
+    }
+    if let Err(error) = file.sync_all().await {
+        let _ = tokio::fs::remove_file(&partial_path).await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+    }
+    drop(file);
+    if let Err(error) = tokio::fs::rename(&partial_path, &final_path).await {
+        let _ = tokio::fs::remove_file(&partial_path).await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+    }
+    Json(json!({
+        "job_id": job_id,
+        "content_digest": digest,
+        "size_bytes": size_bytes
+    }))
+    .into_response()
+}
+
+fn required_u64_header(headers: &HeaderMap, name: &'static str) -> Result<u64, Response> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("缺少或无效 Header: {name}"),
+            )
+                .into_response()
+        })
+}
+
 async fn handle_list_edge_command_output(
     State(state): State<Arc<AppState>>,
     Path(job_id): Path<String>,
@@ -2124,6 +2529,81 @@ async fn handle_list_execution_jobs(
         .await
     {
         Ok(jobs) => Json(json!({ "jobs": jobs })).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_submit_artifact_transfer(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(command): Json<SubmitArtifactTransferCommand>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .submit_artifact_transfer(&principal.principal_id, command)
+        .await
+    {
+        Ok(execution) => (StatusCode::ACCEPTED, Json(execution)).into_response(),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_inspect_artifact_transfer(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .inspect_execution_job(&principal.principal_id, &job_id)
+        .await
+    {
+        Ok(job) if job.tool_name == crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME => {
+            Json(job).into_response()
+        }
+        Ok(_) => error_response(
+            StatusCode::BAD_REQUEST,
+            "Execution Job 不是 Artifact Transfer",
+        ),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_artifact_transfer_output(
+    State(state): State<Arc<AppState>>,
+    Path(job_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
+        Ok(principal) => principal,
+        Err(error) => return sdk_error_response(error),
+    };
+    match state
+        .sdk
+        .artifact_transfer_output(&principal.principal_id, &job_id)
+        .await
+    {
+        Ok(output) => Json(output).into_response(),
         Err(error) => sdk_error_response(error),
     }
 }
@@ -2198,6 +2678,20 @@ fn node_device_token(headers: &HeaderMap) -> Result<&str, Response> {
             )
         })?;
     Ok(token)
+}
+
+fn edge_claim_token(headers: &HeaderMap) -> Result<&str, Response> {
+    headers
+        .get("x-morphz-claim-token")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            error_response(
+                StatusCode::UNAUTHORIZED,
+                "Edge Artifact channel 需要 x-morphz-claim-token",
+            )
+        })
 }
 
 async fn handle_get_context_working_set(

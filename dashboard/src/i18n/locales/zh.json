@@ -133,6 +133,16 @@
     "disable": "禁用",
     "revoke": "撤销",
     "cancel": "取消",
+    "artifactPhase": {
+      "copying": "正在复制",
+      "copying_directory": "正在复制目录",
+      "staging_source": "正在暂存源文件",
+      "downloading": "正在下载",
+      "uploading": "正在上传",
+      "edge_source": "正在读取源节点",
+      "edge_relay": "正在中继",
+      "edge_destination": "正在写入目标节点"
+    },
     "contextCapacity": "上下文容量",
     "schedulerCapacity": "调度容量",
     "host": "宿主与边界",

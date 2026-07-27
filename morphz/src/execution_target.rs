@@ -7,23 +7,27 @@
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::PathBuf;
+use std::path::{Component, Path};
+use std::process::Stdio;
 use std::sync::{Arc, RwLock};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::approval::{ApprovalAction, CapabilityDelta};
 use crate::config::ManagedSshTargetConfig;
 use crate::llm::ToolDefinition;
 use crate::memory::{
-    EdgeCommandStatus, EdgeExecutionStore, ExecutionJobRecord, ExecutionTargetAuthorizationFilter,
-    ExecutionTargetAuthorizationScope, ExecutionTargetAuthorizationStatus,
-    ExecutionTargetAuthorizationStore, ExecutionTargetFilter, ExecutionTargetKind,
-    ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
-    ExecutionTargetStore, NewEdgeCommand,
+    EdgeCommandStatus, EdgeExecutionStore, ExecutionJobMutation, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety,
+    ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationScope,
+    ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
+    ExecutionTargetKind, ExecutionTargetRecord, ExecutionTargetRegistration, ExecutionTargetStatus,
+    ExecutionTargetStore, NewEdgeCommand, NewExecutionJob,
 };
-use crate::tool::{Tool, ToolExecutionClass, CURRENT_PRINCIPAL_ID};
+use crate::tool::{Tool, ToolExecutionClass, ToolExecutionRouting, CURRENT_PRINCIPAL_ID};
 
 pub type TargetExecutionError = Box<dyn Error + Send + Sync>;
 
@@ -32,6 +36,8 @@ pub type TargetExecutionError = Box<dyn Error + Send + Sync>;
 /// an Execution Job.
 pub const DEFAULT_EXECUTION_TARGET_ID: &str = "target-default";
 pub const EXECUTION_ROUTE_REQUEST_KEY: &str = "_morphz_execution_route";
+pub const ARTIFACT_TRANSFER_ROUTES_REQUEST_KEY: &str =
+    crate::artifact::ARTIFACT_TRANSFER_ROUTES_REQUEST_KEY;
 pub const EDGE_EXECUTION_SCOPE_KEY: &str = "execution_scope";
 
 /// Host-owned connection descriptor for a Managed SSH Target. Authentication
@@ -242,6 +248,80 @@ pub struct ExecutionRouteSnapshot {
     pub policy_digest: String,
 }
 
+/// Immutable dual-endpoint route carried by one Artifact Transfer
+/// ExecutionJob. `ExecutionJob.target_id` remains the coordinator (currently
+/// the destination); these two snapshots are the authoritative data route.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ArtifactTransferRouteSnapshot {
+    pub source: ExecutionRouteSnapshot,
+    pub destination: ExecutionRouteSnapshot,
+}
+
+pub const EDGE_ARTIFACT_DATA_CHANNEL_KEY: &str = "_morphz_edge_artifact_channel";
+
+/// Private instruction between Runtime and an authenticated Edge Worker.  It
+/// is never accepted from the model-facing transfer arguments and never
+/// contains a credential or an arbitrary server-side path.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeArtifactDataDirection {
+    RuntimeToEdge,
+    EdgeToRuntime,
+}
+
+/// Representation carried by the private Runtime↔Edge byte channel. This is
+/// deliberately distinct from the logical Artifact media type/digest in the
+/// final Receipt: a directory travels as a canonical archive, while its
+/// logical identity is still computed from the materialized tree.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeArtifactPayloadKind {
+    #[default]
+    File,
+    DirectoryArchive,
+    /// Edge→Runtime cannot know the source kind until the target-local
+    /// permission check and Tool execution have inspected it.
+    Detect,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EdgeArtifactDataChannel {
+    pub direction: EdgeArtifactDataDirection,
+    #[serde(default)]
+    pub payload_kind: EdgeArtifactPayloadKind,
+    /// Digest of the exact bytes carried by this channel. For a directory
+    /// this is the canonical archive digest, not the logical directory digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+}
+
+pub fn attach_edge_artifact_data_channel(
+    route: &mut serde_json::Value,
+    channel: &EdgeArtifactDataChannel,
+) -> Result<(), TargetExecutionError> {
+    route
+        .as_object_mut()
+        .ok_or("Edge Artifact Route 必须编码为 JSON object")?
+        .insert(
+            EDGE_ARTIFACT_DATA_CHANNEL_KEY.to_string(),
+            serde_json::to_value(channel)?,
+        );
+    Ok(())
+}
+
+pub fn edge_artifact_data_channel_from_route(
+    route: &serde_json::Value,
+) -> Result<Option<EdgeArtifactDataChannel>, TargetExecutionError> {
+    route
+        .get(EDGE_ARTIFACT_DATA_CHANNEL_KEY)
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(Into::into)
+}
+
 impl ExecutionRouteSnapshot {
     pub fn freeze(target: &ExecutionTargetRecord) -> Self {
         Self {
@@ -274,6 +354,42 @@ pub fn attach_route_snapshot(
     Ok(())
 }
 
+pub fn attach_artifact_transfer_routes(
+    request: &mut serde_json::Value,
+    routes: &ArtifactTransferRouteSnapshot,
+) -> Result<(), TargetExecutionError> {
+    let object = request
+        .as_object_mut()
+        .ok_or("Artifact Transfer Execution Job request 必须是 JSON object")?;
+    object.insert(
+        ARTIFACT_TRANSFER_ROUTES_REQUEST_KEY.to_string(),
+        serde_json::to_value(routes)?,
+    );
+    // The ordinary dispatcher and Edge protocol still need one coordinator
+    // route. The destination owns atomic publication, so it is the natural
+    // coordinator in v1.
+    object.insert(
+        EXECUTION_ROUTE_REQUEST_KEY.to_string(),
+        serde_json::to_value(&routes.destination)?,
+    );
+    Ok(())
+}
+
+pub fn artifact_transfer_routes_from_job(
+    job: &ExecutionJobRecord,
+) -> Result<ArtifactTransferRouteSnapshot, TargetExecutionError> {
+    let routes: ArtifactTransferRouteSnapshot = serde_json::from_value(
+        job.request
+            .get(ARTIFACT_TRANSFER_ROUTES_REQUEST_KEY)
+            .cloned()
+            .ok_or("Artifact Transfer Execution Job 缺少冻结的双 Route")?,
+    )?;
+    if routes.destination.target_id != job.target_id {
+        return Err("Artifact Transfer coordinator 与 destination Route 不一致".into());
+    }
+    Ok(routes)
+}
+
 pub fn route_snapshot_from_job(
     job: &ExecutionJobRecord,
 ) -> Result<ExecutionRouteSnapshot, TargetExecutionError> {
@@ -299,6 +415,35 @@ pub fn edge_command_route_from_job(
     value
         .as_object_mut()
         .ok_or("Execution Route 必须编码为 JSON object")?
+        .insert(
+            EDGE_EXECUTION_SCOPE_KEY.to_string(),
+            serde_json::to_value(EdgeExecutionScope {
+                principal_id,
+                agent_id: job.agent_id.clone(),
+                context_id: job.context_id.clone(),
+                session_id: job.session_id.clone(),
+                thread_id: job.thread_id.clone(),
+            })?,
+        );
+    Ok(value)
+}
+
+/// Encode an Artifact Transfer's dual immutable route together with the
+/// authority scope that the Edge Node must independently enforce.  The scope
+/// is intentionally outside `ArtifactTransferRouteSnapshot`: it is execution
+/// authority, not part of the data route itself.
+pub fn edge_artifact_transfer_route_from_job(
+    job: &ExecutionJobRecord,
+    routes: &ArtifactTransferRouteSnapshot,
+) -> Result<serde_json::Value, TargetExecutionError> {
+    let mut value = serde_json::to_value(routes)?;
+    let principal_id = job
+        .initiating_principal_id
+        .clone()
+        .ok_or("远程 Artifact Transfer Job 缺少权威 Principal")?;
+    value
+        .as_object_mut()
+        .ok_or("Artifact Transfer Route 必须编码为 JSON object")?
         .insert(
             EDGE_EXECUTION_SCOPE_KEY.to_string(),
             serde_json::to_value(EdgeExecutionScope {
@@ -554,6 +699,62 @@ pub fn remote_target_approval_requirement(
     })
 }
 
+pub fn remote_artifact_transfer_approval_requirement(
+    source: &ExecutionTargetRecord,
+    destination: &ExecutionTargetRecord,
+    request: &crate::artifact::ArtifactTransferRequest,
+) -> Result<Option<crate::permission::ApprovalRequirement>, TargetExecutionError> {
+    let mut requested = CapabilityDelta::default();
+    if source.kind != ExecutionTargetKind::InProcessLocal {
+        requested
+            .read_roots
+            .push(PathBuf::from(&request.source.path));
+        extend_transfer_transport_capability(source, &mut requested);
+    }
+    if destination.kind != ExecutionTargetKind::InProcessLocal {
+        requested
+            .write_roots
+            .push(PathBuf::from(&request.destination.path));
+        extend_transfer_transport_capability(destination, &mut requested);
+    }
+    if requested.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(crate::permission::ApprovalRequirement {
+        action: ApprovalAction::ToolOperation {
+            tool: crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+            operation: "transfer".to_string(),
+            target: None,
+        },
+        requested,
+        justification: format!(
+            "Artifact Transfer 将从 Target '{}' 的 '{}' 读取，并向 Target '{}' 的 '{}' 写入；源与目的仍各自通过 Target 本地 PermissionProfile",
+            source.id,
+            request.source.path,
+            destination.id,
+            request.destination.path
+        ),
+    }))
+}
+
+fn extend_transfer_transport_capability(
+    target: &ExecutionTargetRecord,
+    requested: &mut CapabilityDelta,
+) {
+    if target.kind == ExecutionTargetKind::ManagedSsh {
+        requested.network = true;
+        if target.provider_node_id.is_none()
+            && std::env::var_os("SSH_AUTH_SOCK").is_some_and(|value| !value.is_empty())
+            && !requested
+                .secret_env
+                .iter()
+                .any(|name| name == "SSH_AUTH_SOCK")
+        {
+            requested.secret_env.push("SSH_AUTH_SOCK".to_string());
+        }
+    }
+}
+
 fn json_string_array(value: Option<&serde_json::Value>) -> Vec<String> {
     value
         .and_then(serde_json::Value::as_array)
@@ -574,6 +775,27 @@ pub trait ExecutionTargetBackend: Send + Sync {
         tool: Arc<dyn Tool>,
         arguments: &str,
     ) -> Result<String, TargetExecutionError>;
+}
+
+/// Route-pair transport selected by Runtime for cross-Target Artifact
+/// movement. It is separate from the model Tool registry: callers cannot name
+/// one of these implementations or supply credentials.
+#[async_trait::async_trait]
+pub trait ArtifactTransferExecutionBackend: Send + Sync {
+    fn name(&self) -> &'static str;
+
+    fn supports(
+        &self,
+        source: &ExecutionRouteSnapshot,
+        destination: &ExecutionRouteSnapshot,
+    ) -> bool;
+
+    async fn execute_transfer(
+        &self,
+        job: &ExecutionJobRecord,
+        routes: &ArtifactTransferRouteSnapshot,
+        request: &crate::artifact::ArtifactTransferRequest,
+    ) -> Result<crate::artifact::ArtifactTransferReceipt, TargetExecutionError>;
 }
 
 #[derive(Debug, Clone)]
@@ -710,12 +932,914 @@ impl ExecutionTargetBackend for EdgeNodeBackend {
     }
 }
 
+#[async_trait::async_trait]
+impl ArtifactTransferExecutionBackend for EdgeNodeBackend {
+    fn name(&self) -> &'static str {
+        "edge_local_copy"
+    }
+
+    fn supports(
+        &self,
+        source: &ExecutionRouteSnapshot,
+        destination: &ExecutionRouteSnapshot,
+    ) -> bool {
+        self.kind == ExecutionTargetKind::EdgeNode
+            && source.backend_kind == ExecutionTargetKind::EdgeNode
+            && destination.backend_kind == ExecutionTargetKind::EdgeNode
+            && source.target_id == destination.target_id
+            && source.provider_node_id.is_some()
+            && source.provider_node_id == destination.provider_node_id
+    }
+
+    async fn execute_transfer(
+        &self,
+        job: &ExecutionJobRecord,
+        routes: &ArtifactTransferRouteSnapshot,
+        request: &crate::artifact::ArtifactTransferRequest,
+    ) -> Result<crate::artifact::ArtifactTransferReceipt, TargetExecutionError> {
+        if !self.supports(&routes.source, &routes.destination) {
+            return Err("Edge local Artifact transport 只接受同一 Edge Target 内的传输".into());
+        }
+        let provider_node_id = routes
+            .source
+            .provider_node_id
+            .as_deref()
+            .ok_or("Edge Artifact Route 缺少 provider_node_id")?;
+        self.store
+            .create_edge_command(NewEdgeCommand {
+                job_id: job.id.clone(),
+                target_id: routes.source.target_id.clone(),
+                provider_node_id: provider_node_id.to_string(),
+                tool_name: crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+                arguments: crate::artifact::execution_arguments_from_transfer_request(request)?,
+                route: edge_artifact_transfer_route_from_job(job, routes)?,
+            })
+            .await?;
+
+        loop {
+            let command = self
+                .store
+                .get_edge_command(&job.id)
+                .await?
+                .ok_or("Edge Artifact Command 在等待期间消失")?;
+            match command.status {
+                EdgeCommandStatus::Succeeded => {
+                    let output = command
+                        .output
+                        .as_deref()
+                        .ok_or("Edge Artifact Command 成功但没有 Receipt")?;
+                    let mut receipt: crate::artifact::ArtifactTransferReceipt =
+                        serde_json::from_str(output)?;
+                    // The Edge worker localizes both endpoints to its own
+                    // `target-default` before physical execution. Restore the
+                    // cloud-authoritative locations in the public receipt.
+                    receipt.source.location = request.source.clone();
+                    receipt.destination.location = request.destination.clone();
+                    receipt.transport = "edge_local_copy".to_string();
+                    receipt.validate_against(request)?;
+                    return Ok(receipt);
+                }
+                EdgeCommandStatus::Failed => {
+                    return Err(command
+                        .error
+                        .unwrap_or_else(|| "Edge Artifact transfer failed".to_string())
+                        .into())
+                }
+                EdgeCommandStatus::Cancelled => {
+                    return Err(crate::artifact::ArtifactTransferCancelled.into())
+                }
+                EdgeCommandStatus::Lost => {
+                    return Err(command
+                        .error
+                        .unwrap_or_else(|| "Edge Artifact transfer outcome is unknown".to_string())
+                        .into())
+                }
+                EdgeCommandStatus::Queued
+                | EdgeCommandStatus::Claimed
+                | EdgeCommandStatus::CancelRequested => {
+                    tokio::time::sleep(self.poll_interval).await;
+                }
+            }
+        }
+    }
+}
+
+/// Executes a transfer wholly inside one user-owned Provider Node, while one
+/// or both logical endpoints are Managed SSH Targets proxied by that Node.
+/// The cloud never opens SSH and never receives credentials or payload bytes;
+/// it only persists the frozen dual Route and waits for the Node-side Runtime
+/// to apply its own PermissionBroker at the physical boundary.
+pub struct EdgeProxyArtifactTransferBackend {
+    store: Arc<dyn EdgeExecutionStore>,
+    poll_interval: std::time::Duration,
+}
+
+impl EdgeProxyArtifactTransferBackend {
+    pub fn new(store: Arc<dyn EdgeExecutionStore>) -> Self {
+        Self {
+            store,
+            poll_interval: std::time::Duration::from_millis(250),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ArtifactTransferExecutionBackend for EdgeProxyArtifactTransferBackend {
+    fn name(&self) -> &'static str {
+        "edge_proxy_managed_ssh"
+    }
+
+    fn supports(
+        &self,
+        source: &ExecutionRouteSnapshot,
+        destination: &ExecutionRouteSnapshot,
+    ) -> bool {
+        let supported = |route: &ExecutionRouteSnapshot| {
+            matches!(
+                route.backend_kind,
+                ExecutionTargetKind::EdgeNode | ExecutionTargetKind::ManagedSsh
+            ) && route.provider_node_id.is_some()
+        };
+        supported(source)
+            && supported(destination)
+            && source.provider_node_id == destination.provider_node_id
+            && (source.backend_kind == ExecutionTargetKind::ManagedSsh
+                || destination.backend_kind == ExecutionTargetKind::ManagedSsh)
+    }
+
+    async fn execute_transfer(
+        &self,
+        job: &ExecutionJobRecord,
+        routes: &ArtifactTransferRouteSnapshot,
+        request: &crate::artifact::ArtifactTransferRequest,
+    ) -> Result<crate::artifact::ArtifactTransferReceipt, TargetExecutionError> {
+        if !self.supports(&routes.source, &routes.destination) {
+            return Err("Edge proxy Artifact transport 只接受同一 Provider Node 内的 Edge/Managed SSH Route".into());
+        }
+        let provider_node_id = routes
+            .source
+            .provider_node_id
+            .clone()
+            .ok_or("Edge proxy Artifact Route 缺少 provider_node_id")?;
+        self.store
+            .create_edge_command(NewEdgeCommand {
+                job_id: job.id.clone(),
+                target_id: routes.destination.target_id.clone(),
+                provider_node_id,
+                tool_name: crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+                arguments: crate::artifact::execution_arguments_from_transfer_request(request)?,
+                route: edge_artifact_transfer_route_from_job(job, routes)?,
+            })
+            .await?;
+
+        loop {
+            let command = self
+                .store
+                .get_edge_command(&job.id)
+                .await?
+                .ok_or("Edge proxy Artifact Command 在等待期间消失")?;
+            match command.status {
+                EdgeCommandStatus::Succeeded => {
+                    let mut receipt: crate::artifact::ArtifactTransferReceipt =
+                        serde_json::from_str(
+                            command
+                                .output
+                                .as_deref()
+                                .ok_or("Edge proxy Artifact Command 成功但没有 Receipt")?,
+                        )?;
+                    receipt.source.location = request.source.clone();
+                    receipt.destination.location = request.destination.clone();
+                    receipt.transport = "edge_proxy_managed_ssh".to_string();
+                    receipt.validate_against(request)?;
+                    return Ok(receipt);
+                }
+                EdgeCommandStatus::Failed => {
+                    return Err(command
+                        .error
+                        .unwrap_or_else(|| "Edge proxy Artifact transfer failed".to_string())
+                        .into())
+                }
+                EdgeCommandStatus::Cancelled => {
+                    return Err(crate::artifact::ArtifactTransferCancelled.into())
+                }
+                EdgeCommandStatus::Lost => {
+                    return Err(command
+                        .error
+                        .unwrap_or_else(|| {
+                            "Edge proxy Artifact transfer outcome is unknown".to_string()
+                        })
+                        .into())
+                }
+                EdgeCommandStatus::Queued
+                | EdgeCommandStatus::Claimed
+                | EdgeCommandStatus::CancelRequested => {
+                    tokio::time::sleep(self.poll_interval).await;
+                }
+            }
+        }
+    }
+}
+
+/// Runtime↔Edge byte channel. Runtime-owned staging is not a user-visible
+/// Target and never weakens endpoint policy: the Runtime endpoint is checked
+/// here, while the Edge endpoint is checked again by the Node's own
+/// PermissionBroker before local publication/read.
+pub struct RuntimeEdgeArtifactTransferBackend {
+    store: Arc<dyn EdgeExecutionStore>,
+    jobs: Arc<dyn ExecutionJobStore>,
+    stages: crate::artifact::ArtifactTransferStageStore,
+    permissions: Arc<crate::permission::PermissionBroker>,
+    poll_interval: std::time::Duration,
+}
+
+impl RuntimeEdgeArtifactTransferBackend {
+    pub fn new(
+        store: Arc<dyn EdgeExecutionStore>,
+        jobs: Arc<dyn ExecutionJobStore>,
+        stages: crate::artifact::ArtifactTransferStageStore,
+        permissions: Arc<crate::permission::PermissionBroker>,
+    ) -> Self {
+        Self {
+            store,
+            jobs,
+            stages,
+            permissions,
+            poll_interval: std::time::Duration::from_millis(250),
+        }
+    }
+
+    async fn wait_for_edge_receipt(
+        &self,
+        job_id: &str,
+    ) -> Result<crate::artifact::ArtifactTransferReceipt, TargetExecutionError> {
+        loop {
+            if self
+                .jobs
+                .get_execution_job(job_id)
+                .await?
+                .is_some_and(|job| job.cancel_requested_at.is_some())
+            {
+                let _ = self.store.request_edge_command_cancel(job_id).await?;
+            }
+            let command = self
+                .store
+                .get_edge_command(job_id)
+                .await?
+                .ok_or("Edge Artifact Command 在等待期间消失")?;
+            match command.status {
+                EdgeCommandStatus::Succeeded => {
+                    return Ok(serde_json::from_str(command.output.as_deref().ok_or(
+                        "Edge Artifact Command 成功但没有 ArtifactTransferReceipt",
+                    )?)?)
+                }
+                EdgeCommandStatus::Failed => {
+                    return Err(command
+                        .error
+                        .unwrap_or_else(|| "Edge Artifact transfer failed".to_string())
+                        .into())
+                }
+                EdgeCommandStatus::Cancelled => {
+                    return Err(crate::artifact::ArtifactTransferCancelled.into())
+                }
+                EdgeCommandStatus::Lost => {
+                    return Err(command
+                        .error
+                        .unwrap_or_else(|| "Edge Artifact transfer outcome is unknown".to_string())
+                        .into())
+                }
+                EdgeCommandStatus::Queued
+                | EdgeCommandStatus::Claimed
+                | EdgeCommandStatus::CancelRequested => {
+                    tokio::time::sleep(self.poll_interval).await;
+                }
+            }
+        }
+    }
+
+    async fn authorize_runtime_endpoint(
+        &self,
+        request: &crate::artifact::ArtifactTransferRequest,
+        access: crate::permission::FilesystemAccess,
+    ) -> Result<PathBuf, TargetExecutionError> {
+        let location = if access == crate::permission::FilesystemAccess::Read {
+            &request.source
+        } else {
+            &request.destination
+        };
+        let mut requested = CapabilityDelta::default();
+        let path = match self
+            .permissions
+            .profile()
+            .inspect_path(&location.path, access)?
+        {
+            crate::permission::PathDecision::Allowed(path) => path,
+            crate::permission::PathDecision::Denied(reason) => return Err(reason.into()),
+            crate::permission::PathDecision::NeedsApproval {
+                candidate,
+                resolved_anchor,
+            } => {
+                match access {
+                    crate::permission::FilesystemAccess::Read => {
+                        requested.read_roots.push(resolved_anchor)
+                    }
+                    crate::permission::FilesystemAccess::Write => {
+                        requested.write_roots.push(resolved_anchor)
+                    }
+                }
+                candidate
+            }
+        };
+        self.permissions
+            .authorize_delta(
+                ApprovalAction::ToolOperation {
+                    tool: crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+                    operation: "transfer".to_string(),
+                    target: Some(path.clone()),
+                },
+                requested,
+                format!("Artifact Transfer 访问 Runtime 路径 '{}'", location.path),
+                crate::tool::current_approval_context(),
+            )
+            .await?;
+        Ok(path)
+    }
+}
+
+#[async_trait::async_trait]
+impl ArtifactTransferExecutionBackend for RuntimeEdgeArtifactTransferBackend {
+    fn name(&self) -> &'static str {
+        "runtime_edge_channel"
+    }
+
+    fn supports(
+        &self,
+        source: &ExecutionRouteSnapshot,
+        destination: &ExecutionRouteSnapshot,
+    ) -> bool {
+        matches!(
+            (source.backend_kind, destination.backend_kind),
+            (
+                ExecutionTargetKind::InProcessLocal,
+                ExecutionTargetKind::EdgeNode
+            ) | (
+                ExecutionTargetKind::EdgeNode,
+                ExecutionTargetKind::InProcessLocal
+            )
+        ) && (source.backend_kind != ExecutionTargetKind::EdgeNode
+            || source.provider_node_id.is_some())
+            && (destination.backend_kind != ExecutionTargetKind::EdgeNode
+                || destination.provider_node_id.is_some())
+    }
+
+    async fn execute_transfer(
+        &self,
+        job: &ExecutionJobRecord,
+        routes: &ArtifactTransferRouteSnapshot,
+        request: &crate::artifact::ArtifactTransferRequest,
+    ) -> Result<crate::artifact::ArtifactTransferReceipt, TargetExecutionError> {
+        request.validate()?;
+        let (direction, channel, command_target, provider_node_id) =
+            if routes.source.backend_kind == ExecutionTargetKind::InProcessLocal {
+                let source = self
+                    .authorize_runtime_endpoint(request, crate::permission::FilesystemAccess::Read)
+                    .await?;
+                let stage = self
+                    .stages
+                    .prepare_stage_path(
+                        &job.id,
+                        crate::artifact::ArtifactTransferStageKind::RuntimeSource,
+                    )
+                    .await?;
+                let staged = spool_local_artifact(&source, &stage).await?;
+                if request
+                    .expected_source_digest
+                    .as_deref()
+                    .is_some_and(|expected| expected != staged.logical_digest())
+                {
+                    return Err(format!(
+                        "Artifact source digest 冲突：期望 '{}'，实际 '{}'",
+                        request
+                            .expected_source_digest
+                            .as_deref()
+                            .unwrap_or_default(),
+                        staged.logical_digest()
+                    )
+                    .into());
+                }
+                let edge = &routes.destination;
+                (
+                    EdgeArtifactDataDirection::RuntimeToEdge,
+                    EdgeArtifactDataChannel {
+                        direction: EdgeArtifactDataDirection::RuntimeToEdge,
+                        payload_kind: staged.kind.into(),
+                        expected_digest: Some(staged.payload_digest),
+                        size_bytes: Some(staged.payload_size_bytes),
+                    },
+                    edge.target_id.clone(),
+                    edge.provider_node_id
+                        .clone()
+                        .ok_or("Edge destination Route 缺少 provider_node_id")?,
+                )
+            } else {
+                let edge = &routes.source;
+                (
+                    EdgeArtifactDataDirection::EdgeToRuntime,
+                    EdgeArtifactDataChannel {
+                        direction: EdgeArtifactDataDirection::EdgeToRuntime,
+                        payload_kind: EdgeArtifactPayloadKind::Detect,
+                        // The target-local Artifact digest is not necessarily
+                        // the digest of its wire representation (directories
+                        // use a canonical archive), so it is validated from
+                        // the Tool Receipt after materialization.
+                        expected_digest: None,
+                        size_bytes: None,
+                    },
+                    edge.target_id.clone(),
+                    edge.provider_node_id
+                        .clone()
+                        .ok_or("Edge source Route 缺少 provider_node_id")?,
+                )
+            };
+        let mut route = edge_artifact_transfer_route_from_job(job, routes)?;
+        attach_edge_artifact_data_channel(&mut route, &channel)?;
+        self.store
+            .create_edge_command(NewEdgeCommand {
+                job_id: job.id.clone(),
+                target_id: command_target,
+                provider_node_id,
+                tool_name: crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+                arguments: crate::artifact::execution_arguments_from_transfer_request(request)?,
+                route,
+            })
+            .await?;
+        let mut receipt = self.wait_for_edge_receipt(&job.id).await?;
+
+        if direction == EdgeArtifactDataDirection::EdgeToRuntime {
+            let logical_digest = receipt
+                .source
+                .content_digest
+                .clone()
+                .ok_or("Edge Artifact Receipt 缺少 source digest")?;
+            let logical_size = receipt
+                .source
+                .size_bytes
+                .ok_or("Edge Artifact Receipt 缺少大小")?;
+            let stage = self.stages.stage_path(
+                &job.id,
+                crate::artifact::ArtifactTransferStageKind::EdgeUpload,
+            );
+            let kind = if receipt.source.media_type.as_deref()
+                == Some("application/vnd.morphz.directory")
+            {
+                StagedArtifactKind::DirectoryArchive
+            } else {
+                StagedArtifactKind::File
+            };
+            let destination = self
+                .authorize_runtime_endpoint(request, crate::permission::FilesystemAccess::Write)
+                .await?;
+            let mut publish_request = request.clone();
+            // The exact upload bytes are separately verified by the Edge data
+            // channel. A directory's logical digest describes the tree, not
+            // its canonical archive, so publication must not compare those
+            // two different representations.
+            publish_request.expected_source_digest = None;
+            publish_spooled_local_artifact(&publish_request, &stage, &destination, kind).await?;
+            receipt.source.location = request.source.clone();
+            receipt.destination.location = request.destination.clone();
+            receipt.source.content_digest = Some(logical_digest.clone());
+            receipt.destination.content_digest = Some(logical_digest);
+            receipt.source.size_bytes = Some(logical_size);
+            receipt.destination.size_bytes = Some(logical_size);
+        } else {
+            receipt.source.location = request.source.clone();
+            receipt.destination.location = request.destination.clone();
+        }
+        receipt.transport = "runtime_edge_channel".to_string();
+        receipt.validate_against(request)?;
+        let _ = self.stages.remove_job(&job.id).await;
+        Ok(receipt)
+    }
+}
+
+/// Edge A→Edge B relay. Each physical leg is a durable child Execution Job
+/// under the caller-visible parent transfer, so command identity, cancellation
+/// and restart reconciliation remain explicit instead of overloading one Edge
+/// command row with two owners.
+pub struct EdgeRelayArtifactTransferBackend {
+    edges: Arc<dyn EdgeExecutionStore>,
+    jobs: Arc<dyn ExecutionJobStore>,
+    stages: crate::artifact::ArtifactTransferStageStore,
+    poll_interval: std::time::Duration,
+}
+
+impl EdgeRelayArtifactTransferBackend {
+    pub fn new(
+        edges: Arc<dyn EdgeExecutionStore>,
+        jobs: Arc<dyn ExecutionJobStore>,
+        stages: crate::artifact::ArtifactTransferStageStore,
+    ) -> Self {
+        Self {
+            edges,
+            jobs,
+            stages,
+            poll_interval: std::time::Duration::from_millis(250),
+        }
+    }
+
+    async fn create_and_claim_leg(
+        &self,
+        parent: &ExecutionJobRecord,
+        routes: &ArtifactTransferRouteSnapshot,
+        request: &crate::artifact::ArtifactTransferRequest,
+        leg: &str,
+        target_id: &str,
+    ) -> Result<(ExecutionJobRecord, String), TargetExecutionError> {
+        let id = crate::artifact::artifact_transfer_relay_leg_job_id(&parent.id, leg);
+        let mut request_value = serde_json::to_value(request)?;
+        attach_artifact_transfer_routes(&mut request_value, routes)?;
+        let job = self
+            .jobs
+            .create_execution_job(NewExecutionJob {
+                id,
+                activation_id: parent.activation_id.clone(),
+                thread_id: parent.thread_id.clone(),
+                agent_id: parent.agent_id.clone(),
+                context_id: parent.context_id.clone(),
+                session_id: parent.session_id.clone(),
+                initiating_principal_id: parent.initiating_principal_id.clone(),
+                target_id: target_id.to_string(),
+                tool_call_id: format!("{}:{leg}", parent.tool_call_id),
+                tool_name: crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+                request: request_value,
+                retry_safety: ExecutionRetrySafety::Idempotent,
+                // Keeps the generic Runtime worker from claiming this private
+                // relay leg between materialization and the relay claim.
+                requires_approval: true,
+            })
+            .await?;
+        if job.status.is_terminal() {
+            return if job.status == ExecutionJobStatus::Succeeded {
+                Ok((job, String::new()))
+            } else {
+                Err(format!(
+                    "Artifact relay leg '{}' 已以 {} 终止：{}",
+                    job.id,
+                    job.status.as_str(),
+                    job.error.as_deref().unwrap_or("没有错误详情")
+                )
+                .into())
+            };
+        }
+        let mut job = job;
+        if job.status == ExecutionJobStatus::Running
+            && job
+                .lease_expires_at
+                .is_some_and(|expires_at| expires_at <= Utc::now())
+            && job.retry_safety == ExecutionRetrySafety::Idempotent
+        {
+            job = match self
+                .jobs
+                .requeue_execution_job(&job.id, job.revision)
+                .await?
+            {
+                ExecutionJobMutation::Updated(job) | ExecutionJobMutation::Existing(job) => job,
+                ExecutionJobMutation::Conflict { current } => current,
+                ExecutionJobMutation::Rejected { reason, .. } => return Err(reason.into()),
+                ExecutionJobMutation::NotFound => {
+                    return Err("Artifact relay leg 在恢复前消失".into())
+                }
+            };
+        }
+        let claim_token = format!(
+            "relay-claim-{:x}",
+            Sha256::digest(format!("{}\0r{}", job.id, job.revision).as_bytes())
+        );
+        let claimed = self
+            .jobs
+            .claim_execution_job(
+                &job.id,
+                job.revision,
+                "artifact-relay",
+                &claim_token,
+                Utc::now() + chrono::Duration::minutes(10),
+                Some("runtime-internal-artifact-relay"),
+            )
+            .await?;
+        match claimed {
+            ExecutionJobMutation::Updated(job) | ExecutionJobMutation::Existing(job) => {
+                Ok((job, claim_token))
+            }
+            ExecutionJobMutation::Conflict { current } => Err(format!(
+                "Artifact relay leg '{}' claim 冲突：当前 {} r{}",
+                current.id,
+                current.status.as_str(),
+                current.revision
+            )
+            .into()),
+            ExecutionJobMutation::Rejected { reason, .. } => Err(reason.into()),
+            ExecutionJobMutation::NotFound => Err("Artifact relay leg 在 claim 前消失".into()),
+        }
+    }
+
+    async fn finish_leg(
+        &self,
+        job: &ExecutionJobRecord,
+        claim_token: &str,
+        status: ExecutionJobStatus,
+        error: Option<String>,
+    ) -> Result<(), TargetExecutionError> {
+        let current = self
+            .jobs
+            .get_execution_job(&job.id)
+            .await?
+            .ok_or("Artifact relay leg 在 finish 前消失")?;
+        if current.status == status && current.status.is_terminal() {
+            return Ok(());
+        }
+        let terminal = ExecutionJobTerminal {
+            status,
+            result_event_id: None,
+            result_refs: Vec::new(),
+            error,
+            exit_code: None,
+        };
+        match self
+            .jobs
+            .finish_execution_job(
+                &current.id,
+                current.revision,
+                (!claim_token.is_empty()).then_some(claim_token),
+                terminal,
+            )
+            .await?
+        {
+            ExecutionJobMutation::Updated(_) | ExecutionJobMutation::Existing(_) => Ok(()),
+            ExecutionJobMutation::Conflict { current } => Err(format!(
+                "Artifact relay leg '{}' finish 冲突：当前 {} r{}",
+                current.id,
+                current.status.as_str(),
+                current.revision
+            )
+            .into()),
+            ExecutionJobMutation::Rejected { reason, .. } => Err(reason.into()),
+            ExecutionJobMutation::NotFound => Err("Artifact relay leg 在 finish 前消失".into()),
+        }
+    }
+
+    async fn run_edge_leg(
+        &self,
+        parent_job_id: &str,
+        leg_job: &ExecutionJobRecord,
+        routes: &ArtifactTransferRouteSnapshot,
+        request: &crate::artifact::ArtifactTransferRequest,
+        route: &ExecutionRouteSnapshot,
+        channel: EdgeArtifactDataChannel,
+    ) -> Result<crate::artifact::ArtifactTransferReceipt, TargetExecutionError> {
+        let mut command_route = edge_artifact_transfer_route_from_job(leg_job, routes)?;
+        attach_edge_artifact_data_channel(&mut command_route, &channel)?;
+        self.edges
+            .create_edge_command(NewEdgeCommand {
+                job_id: leg_job.id.clone(),
+                target_id: route.target_id.clone(),
+                provider_node_id: route
+                    .provider_node_id
+                    .clone()
+                    .ok_or("Artifact relay Edge Route 缺少 provider_node_id")?,
+                tool_name: crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+                arguments: crate::artifact::execution_arguments_from_transfer_request(request)?,
+                route: command_route,
+            })
+            .await?;
+        loop {
+            if self
+                .jobs
+                .get_execution_job(parent_job_id)
+                .await?
+                .is_some_and(|job| job.cancel_requested_at.is_some())
+            {
+                let _ = self.edges.request_edge_command_cancel(&leg_job.id).await?;
+            }
+            let command = self
+                .edges
+                .get_edge_command(&leg_job.id)
+                .await?
+                .ok_or("Artifact relay Edge Command 消失")?;
+            match command.status {
+                EdgeCommandStatus::Succeeded => {
+                    return Ok(serde_json::from_str(
+                        command
+                            .output
+                            .as_deref()
+                            .ok_or("Artifact relay leg 缺少 Receipt")?,
+                    )?)
+                }
+                EdgeCommandStatus::Failed => {
+                    return Err(command
+                        .error
+                        .unwrap_or_else(|| "Edge relay failed".to_string())
+                        .into())
+                }
+                EdgeCommandStatus::Cancelled => {
+                    return Err(crate::artifact::ArtifactTransferCancelled.into())
+                }
+                EdgeCommandStatus::Lost => return Err("Edge relay leg outcome lost".into()),
+                _ => tokio::time::sleep(self.poll_interval).await,
+            }
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ArtifactTransferExecutionBackend for EdgeRelayArtifactTransferBackend {
+    fn name(&self) -> &'static str {
+        "edge_relay_channel"
+    }
+
+    fn supports(
+        &self,
+        source: &ExecutionRouteSnapshot,
+        destination: &ExecutionRouteSnapshot,
+    ) -> bool {
+        source.backend_kind == ExecutionTargetKind::EdgeNode
+            && destination.backend_kind == ExecutionTargetKind::EdgeNode
+            && source.provider_node_id.is_some()
+            && destination.provider_node_id.is_some()
+            && (source.provider_node_id != destination.provider_node_id
+                || source.target_id != destination.target_id)
+    }
+
+    async fn execute_transfer(
+        &self,
+        parent: &ExecutionJobRecord,
+        routes: &ArtifactTransferRouteSnapshot,
+        request: &crate::artifact::ArtifactTransferRequest,
+    ) -> Result<crate::artifact::ArtifactTransferReceipt, TargetExecutionError> {
+        crate::artifact::report_artifact_bytes("edge_source", 0, None);
+        let (source_leg, source_claim) = self
+            .create_and_claim_leg(parent, routes, request, "source", &routes.source.target_id)
+            .await?;
+        let source_result = self
+            .run_edge_leg(
+                &parent.id,
+                &source_leg,
+                routes,
+                request,
+                &routes.source,
+                EdgeArtifactDataChannel {
+                    direction: EdgeArtifactDataDirection::EdgeToRuntime,
+                    payload_kind: EdgeArtifactPayloadKind::Detect,
+                    expected_digest: None,
+                    size_bytes: None,
+                },
+            )
+            .await;
+        let source_receipt = match source_result {
+            Ok(receipt) => {
+                self.finish_leg(
+                    &source_leg,
+                    &source_claim,
+                    ExecutionJobStatus::Succeeded,
+                    None,
+                )
+                .await?;
+                receipt
+            }
+            Err(error) => {
+                let status = if crate::artifact::is_artifact_transfer_cancelled(error.as_ref()) {
+                    ExecutionJobStatus::Cancelled
+                } else {
+                    ExecutionJobStatus::Failed
+                };
+                let message = error.to_string();
+                let _ = self
+                    .finish_leg(&source_leg, &source_claim, status, Some(message.clone()))
+                    .await;
+                return Err(error);
+            }
+        };
+        source_receipt
+            .source
+            .content_digest
+            .as_deref()
+            .ok_or("Artifact relay source Receipt 缺少 digest")?;
+        let logical_size = source_receipt
+            .source
+            .size_bytes
+            .ok_or("Artifact relay source Receipt 缺少 size")?;
+        let payload_kind = if source_receipt.source.media_type.as_deref()
+            == Some("application/vnd.morphz.directory")
+        {
+            EdgeArtifactPayloadKind::DirectoryArchive
+        } else {
+            EdgeArtifactPayloadKind::File
+        };
+        crate::artifact::report_artifact_bytes("edge_relay", 0, Some(logical_size));
+
+        let (destination_leg, destination_claim) = self
+            .create_and_claim_leg(
+                parent,
+                routes,
+                request,
+                "destination",
+                &routes.destination.target_id,
+            )
+            .await?;
+        let source_stage = self.stages.stage_path(
+            &source_leg.id,
+            crate::artifact::ArtifactTransferStageKind::EdgeUpload,
+        );
+        let (payload_size, payload_digest) = hash_file(&source_stage).await?;
+        let destination_stage = self
+            .stages
+            .prepare_stage_path(
+                &destination_leg.id,
+                crate::artifact::ArtifactTransferStageKind::RuntimeSource,
+            )
+            .await?;
+        let mut source_file = tokio::fs::File::open(&source_stage).await?;
+        let mut destination_file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&destination_stage)
+            .await?;
+        let mut relayed = 0_u64;
+        let mut buffer = vec![0_u8; 128 * 1024];
+        loop {
+            let count = source_file.read(&mut buffer).await?;
+            if count == 0 {
+                break;
+            }
+            destination_file.write_all(&buffer[..count]).await?;
+            relayed = relayed.saturating_add(count as u64);
+            crate::artifact::report_artifact_bytes("edge_relay", relayed, Some(payload_size));
+        }
+        destination_file.flush().await?;
+        destination_file.sync_data().await?;
+        crate::artifact::report_artifact_bytes("edge_destination", 0, Some(payload_size));
+        let destination_result = self
+            .run_edge_leg(
+                &parent.id,
+                &destination_leg,
+                routes,
+                request,
+                &routes.destination,
+                EdgeArtifactDataChannel {
+                    direction: EdgeArtifactDataDirection::RuntimeToEdge,
+                    payload_kind,
+                    expected_digest: Some(payload_digest),
+                    size_bytes: Some(payload_size),
+                },
+            )
+            .await;
+        let mut receipt = match destination_result {
+            Ok(receipt) => {
+                self.finish_leg(
+                    &destination_leg,
+                    &destination_claim,
+                    ExecutionJobStatus::Succeeded,
+                    None,
+                )
+                .await?;
+                receipt
+            }
+            Err(error) => {
+                let status = if crate::artifact::is_artifact_transfer_cancelled(error.as_ref()) {
+                    ExecutionJobStatus::Cancelled
+                } else {
+                    ExecutionJobStatus::Failed
+                };
+                let message = error.to_string();
+                let _ = self
+                    .finish_leg(
+                        &destination_leg,
+                        &destination_claim,
+                        status,
+                        Some(message.clone()),
+                    )
+                    .await;
+                return Err(error);
+            }
+        };
+        receipt.source.location = request.source.clone();
+        receipt.destination.location = request.destination.clone();
+        receipt.transport = "edge_relay_channel".to_string();
+        receipt.validate_against(request)?;
+        let _ = self.stages.remove_job(&source_leg.id).await;
+        let _ = self.stages.remove_job(&destination_leg.id).await;
+        Ok(receipt)
+    }
+}
+
 /// Routes Managed SSH either through the owning Edge Node or through the
 /// current Runtime. A Target with `provider_node_id` is always remote; a
 /// Runtime-local Target must name an endpoint loaded from host-owned config.
 pub struct ManagedSshBackend {
     edge: EdgeNodeBackend,
     local_endpoints: Arc<RwLock<HashMap<String, ManagedSshEndpoint>>>,
+    stages: crate::artifact::ArtifactTransferStageStore,
+    permissions: Arc<crate::permission::PermissionBroker>,
     permission_policy_digest: String,
     approval_required: bool,
 }
@@ -724,12 +1848,16 @@ impl ManagedSshBackend {
     pub fn new(
         store: Arc<dyn EdgeExecutionStore>,
         local_endpoints: Arc<RwLock<HashMap<String, ManagedSshEndpoint>>>,
+        stages: crate::artifact::ArtifactTransferStageStore,
+        permissions: Arc<crate::permission::PermissionBroker>,
         permission_policy_digest: String,
         approval_required: bool,
     ) -> Self {
         Self {
             edge: EdgeNodeBackend::managed_ssh(store),
             local_endpoints,
+            stages,
+            permissions,
             permission_policy_digest,
             approval_required,
         }
@@ -823,6 +1951,1275 @@ impl ExecutionTargetBackend for ManagedSshBackend {
     }
 }
 
+#[async_trait::async_trait]
+impl ArtifactTransferExecutionBackend for ManagedSshBackend {
+    fn name(&self) -> &'static str {
+        "runtime_managed_ssh"
+    }
+
+    fn supports(
+        &self,
+        source: &ExecutionRouteSnapshot,
+        destination: &ExecutionRouteSnapshot,
+    ) -> bool {
+        let supported = |route: &ExecutionRouteSnapshot| {
+            route.backend_kind == ExecutionTargetKind::InProcessLocal
+                || (route.backend_kind == ExecutionTargetKind::ManagedSsh
+                    && route.provider_node_id.is_none())
+        };
+        supported(source)
+            && supported(destination)
+            && (source.backend_kind == ExecutionTargetKind::ManagedSsh
+                || destination.backend_kind == ExecutionTargetKind::ManagedSsh)
+    }
+
+    async fn execute_transfer(
+        &self,
+        job: &ExecutionJobRecord,
+        routes: &ArtifactTransferRouteSnapshot,
+        request: &crate::artifact::ArtifactTransferRequest,
+    ) -> Result<crate::artifact::ArtifactTransferReceipt, TargetExecutionError> {
+        request.validate()?;
+        self.authorize_artifact_transfer(routes, request).await?;
+
+        let spool_path = self
+            .stages
+            .prepare_stage_path(
+                &job.id,
+                crate::artifact::ArtifactTransferStageKind::RuntimeSource,
+            )
+            .await?;
+        let staged = match routes.source.backend_kind {
+            ExecutionTargetKind::InProcessLocal => {
+                let source = self.local_transfer_path(
+                    &request.source.path,
+                    crate::permission::FilesystemAccess::Read,
+                )?;
+                spool_local_artifact(&source, &spool_path).await?
+            }
+            ExecutionTargetKind::ManagedSsh => {
+                let endpoint = self.endpoint_for_route(&routes.source)?;
+                download_managed_ssh_artifact(&endpoint, &request.source.path, &spool_path).await?
+            }
+            _ => return Err("Runtime Managed SSH transport 收到不支持的 source Route".into()),
+        };
+        if request
+            .expected_source_digest
+            .as_deref()
+            .is_some_and(|expected| expected != staged.logical_digest())
+        {
+            return Err(format!(
+                "Artifact source digest 冲突：期望 '{}'，实际 '{}'",
+                request
+                    .expected_source_digest
+                    .as_deref()
+                    .unwrap_or_default(),
+                staged.logical_digest()
+            )
+            .into());
+        }
+
+        match routes.destination.backend_kind {
+            ExecutionTargetKind::InProcessLocal => {
+                let destination = self.local_transfer_path(
+                    &request.destination.path,
+                    crate::permission::FilesystemAccess::Write,
+                )?;
+                publish_spooled_local_artifact(request, &spool_path, &destination, staged.kind)
+                    .await?;
+            }
+            ExecutionTargetKind::ManagedSsh => {
+                let endpoint = self.endpoint_for_route(&routes.destination)?;
+                upload_managed_ssh_artifact(
+                    &endpoint,
+                    &spool_path,
+                    &request.destination.path,
+                    request.overwrite,
+                    &request.transfer_id,
+                    &staged.payload_digest,
+                    staged.logical_digest(),
+                    staged.kind,
+                )
+                .await?;
+            }
+            _ => return Err("Runtime Managed SSH transport 收到不支持的 destination Route".into()),
+        }
+
+        let artifact_id = format!("artifact:{}", staged.logical_digest());
+        let descriptor =
+            |location: crate::artifact::ArtifactLocation| crate::artifact::ArtifactDescriptor {
+                artifact_id: artifact_id.clone(),
+                location,
+                content_digest: Some(staged.logical_digest().to_string()),
+                size_bytes: Some(staged.logical_size_bytes()),
+                media_type: request.media_type.clone().or_else(|| {
+                    (staged.kind == StagedArtifactKind::DirectoryArchive)
+                        .then(|| "application/vnd.morphz.directory".to_string())
+                }),
+                origin: request.origin.clone(),
+            };
+        let receipt = crate::artifact::ArtifactTransferReceipt {
+            transfer_id: request.transfer_id.clone(),
+            source: descriptor(request.source.clone()),
+            destination: descriptor(request.destination.clone()),
+            transport: "runtime_managed_ssh".to_string(),
+            bytes_transferred: staged.logical_size_bytes(),
+        };
+        let _ = self.stages.remove_job(&job.id).await;
+        Ok(receipt)
+    }
+}
+
+impl ManagedSshBackend {
+    async fn authorize_artifact_transfer(
+        &self,
+        routes: &ArtifactTransferRouteSnapshot,
+        request: &crate::artifact::ArtifactTransferRequest,
+    ) -> Result<(), TargetExecutionError> {
+        let mut requested = CapabilityDelta::default();
+        if routes.source.backend_kind == ExecutionTargetKind::InProcessLocal {
+            extend_local_transfer_delta(
+                self.permissions.as_ref(),
+                &request.source.path,
+                crate::permission::FilesystemAccess::Read,
+                &mut requested,
+            )?;
+        } else {
+            requested.network = true;
+            requested
+                .read_roots
+                .push(PathBuf::from(&request.source.path));
+        }
+        if routes.destination.backend_kind == ExecutionTargetKind::InProcessLocal {
+            extend_local_transfer_delta(
+                self.permissions.as_ref(),
+                &request.destination.path,
+                crate::permission::FilesystemAccess::Write,
+                &mut requested,
+            )?;
+        } else {
+            requested.network = true;
+            requested
+                .write_roots
+                .push(PathBuf::from(&request.destination.path));
+        }
+        if (routes.source.backend_kind == ExecutionTargetKind::ManagedSsh
+            || routes.destination.backend_kind == ExecutionTargetKind::ManagedSsh)
+            && std::env::var_os("SSH_AUTH_SOCK").is_some_and(|value| !value.is_empty())
+        {
+            requested.secret_env.push("SSH_AUTH_SOCK".to_string());
+        }
+        self.permissions
+            .authorize_delta(
+                ApprovalAction::ToolOperation {
+                    tool: crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+                    operation: "transfer".to_string(),
+                    target: None,
+                },
+                requested,
+                format!(
+                    "Artifact Transfer 读取 Target '{}' 的 '{}' 并写入 Target '{}' 的 '{}'",
+                    request.source.target_id,
+                    request.source.path,
+                    request.destination.target_id,
+                    request.destination.path
+                ),
+                crate::tool::current_approval_context(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    fn local_transfer_path(
+        &self,
+        path: &str,
+        access: crate::permission::FilesystemAccess,
+    ) -> Result<PathBuf, TargetExecutionError> {
+        match self.permissions.profile().inspect_path(path, access)? {
+            crate::permission::PathDecision::Allowed(path)
+            | crate::permission::PathDecision::NeedsApproval {
+                candidate: path, ..
+            } => Ok(path),
+            crate::permission::PathDecision::Denied(reason) => Err(reason.into()),
+        }
+    }
+
+    fn endpoint_for_route(
+        &self,
+        route: &ExecutionRouteSnapshot,
+    ) -> Result<ManagedSshEndpoint, TargetExecutionError> {
+        if route.backend_kind != ExecutionTargetKind::ManagedSsh || route.provider_node_id.is_some()
+        {
+            return Err("Route 不是 Runtime Managed SSH endpoint".into());
+        }
+        let endpoint_ref = route
+            .endpoint_ref
+            .as_deref()
+            .ok_or("Runtime Managed SSH Route 缺少 endpoint_ref")?;
+        let endpoint = self
+            .local_endpoints
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(endpoint_ref)
+            .cloned()
+            .ok_or_else(|| format!("Runtime 未配置 Managed SSH endpoint '{endpoint_ref}'"))?;
+        validate_managed_ssh_endpoint_for_transfer(endpoint_ref, &endpoint)?;
+        Ok(endpoint)
+    }
+}
+
+fn extend_local_transfer_delta(
+    permissions: &crate::permission::PermissionBroker,
+    path: &str,
+    access: crate::permission::FilesystemAccess,
+    requested: &mut CapabilityDelta,
+) -> Result<(), TargetExecutionError> {
+    match permissions.profile().inspect_path(path, access)? {
+        crate::permission::PathDecision::Allowed(_) => {}
+        crate::permission::PathDecision::Denied(reason) => return Err(reason.into()),
+        crate::permission::PathDecision::NeedsApproval {
+            resolved_anchor, ..
+        } => match access {
+            crate::permission::FilesystemAccess::Read => requested.read_roots.push(resolved_anchor),
+            crate::permission::FilesystemAccess::Write => {
+                requested.write_roots.push(resolved_anchor)
+            }
+        },
+    }
+    Ok(())
+}
+
+fn validate_managed_ssh_endpoint_for_transfer(
+    endpoint_ref: &str,
+    endpoint: &ManagedSshEndpoint,
+) -> Result<(), TargetExecutionError> {
+    validate_endpoint_ref(endpoint_ref)?;
+    endpoint.validate()?;
+    if !endpoint.approved {
+        return Err(format!("Managed SSH endpoint '{endpoint_ref}' 尚未明确批准").into());
+    }
+    if endpoint.destination.is_none()
+        && std::env::var_os("SSH_AUTH_SOCK").is_none_or(|value| value.is_empty())
+    {
+        return Err("静态 Managed SSH endpoint 需要 Runtime 的 SSH_AUTH_SOCK".into());
+    }
+    Ok(())
+}
+
+fn validate_remote_artifact_path(path: &str) -> Result<(), TargetExecutionError> {
+    if path.trim().is_empty() {
+        return Err("远端 Artifact path 不能为空".into());
+    }
+    if path.bytes().any(|byte| matches!(byte, 0 | b'\n' | b'\r')) {
+        return Err("远端 Artifact path 不能包含 NUL 或换行".into());
+    }
+    Ok(())
+}
+
+fn managed_ssh_command(
+    endpoint: &ManagedSshEndpoint,
+    remote_command: &str,
+) -> Result<tokio::process::Command, TargetExecutionError> {
+    endpoint.validate()?;
+    let mut command = tokio::process::Command::new("ssh");
+    if endpoint.destination.is_none() {
+        command
+            .arg("-F")
+            .arg("/dev/null")
+            .arg("-o")
+            .arg("IdentitiesOnly=no");
+    }
+    command
+        .arg("-o")
+        .arg("BatchMode=yes")
+        .arg("-o")
+        .arg("StrictHostKeyChecking=yes");
+    let destination = match endpoint.destination.as_deref() {
+        Some(host) => {
+            if let Some(user) = endpoint.user.as_deref() {
+                command.arg("-l").arg(user);
+            }
+            command.arg("-p").arg(endpoint.port.to_string());
+            host.to_string()
+        }
+        None => {
+            command
+                .arg("-o")
+                .arg(format!(
+                    "UserKnownHostsFile={}",
+                    endpoint.known_hosts_file.display()
+                ))
+                .arg("-p")
+                .arg(endpoint.port.to_string());
+            endpoint
+                .user
+                .as_deref()
+                .map(|user| format!("{user}@{}", endpoint.host))
+                .unwrap_or_else(|| endpoint.host.clone())
+        }
+    };
+    command
+        .arg("--")
+        .arg(destination)
+        .arg(remote_command)
+        .kill_on_drop(true);
+    Ok(command)
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum StagedArtifactKind {
+    File,
+    DirectoryArchive,
+}
+
+impl From<StagedArtifactKind> for EdgeArtifactPayloadKind {
+    fn from(value: StagedArtifactKind) -> Self {
+        match value {
+            StagedArtifactKind::File => Self::File,
+            StagedArtifactKind::DirectoryArchive => Self::DirectoryArchive,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct StagedArtifact {
+    #[serde(alias = "bytes_transferred")]
+    payload_size_bytes: u64,
+    #[serde(alias = "digest")]
+    payload_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    logical_size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    logical_digest: Option<String>,
+    kind: StagedArtifactKind,
+}
+
+impl StagedArtifact {
+    fn logical_size_bytes(&self) -> u64 {
+        self.logical_size_bytes.unwrap_or(self.payload_size_bytes)
+    }
+
+    fn logical_digest(&self) -> &str {
+        self.logical_digest
+            .as_deref()
+            .unwrap_or(&self.payload_digest)
+    }
+}
+
+fn staged_artifact_metadata_path(spool: &Path) -> PathBuf {
+    spool.with_extension("metadata.json")
+}
+
+async fn persist_staged_artifact_metadata(
+    spool: &Path,
+    artifact: &StagedArtifact,
+) -> Result<(), TargetExecutionError> {
+    let path = staged_artifact_metadata_path(spool);
+    let partial = path.with_extension("json.partial");
+    tokio::fs::write(&partial, serde_json::to_vec(artifact)?).await?;
+    tokio::fs::rename(partial, path).await?;
+    Ok(())
+}
+
+async fn reusable_staged_artifact(
+    spool: &Path,
+) -> Result<Option<StagedArtifact>, TargetExecutionError> {
+    if !tokio::fs::try_exists(spool).await? {
+        return Ok(None);
+    }
+    let metadata_path = staged_artifact_metadata_path(spool);
+    if !tokio::fs::try_exists(&metadata_path).await? {
+        // Stages written by an older Runtime did not record their content
+        // kind. They cannot be safely interpreted as a directory archive.
+        tokio::fs::remove_file(spool).await?;
+        return Ok(None);
+    }
+    let artifact: StagedArtifact = serde_json::from_slice(&tokio::fs::read(&metadata_path).await?)?;
+    let (size, digest) = hash_file(spool).await?;
+    let directory_identity_available = artifact.kind != StagedArtifactKind::DirectoryArchive
+        || (artifact.logical_size_bytes.is_some() && artifact.logical_digest.is_some());
+    if size == artifact.payload_size_bytes
+        && digest == artifact.payload_digest
+        && directory_identity_available
+    {
+        Ok(Some(artifact))
+    } else {
+        let _ = tokio::fs::remove_file(spool).await;
+        let _ = tokio::fs::remove_file(metadata_path).await;
+        Ok(None)
+    }
+}
+
+async fn spool_local_artifact(
+    source: &std::path::Path,
+    spool: &std::path::Path,
+) -> Result<StagedArtifact, TargetExecutionError> {
+    if let Some(artifact) = reusable_staged_artifact(spool).await? {
+        return Ok(artifact);
+    }
+    let metadata = tokio::fs::symlink_metadata(source).await?;
+    if metadata.is_dir() {
+        return create_canonical_directory_archive(source, spool).await;
+    }
+    if !metadata.is_file() {
+        return Err(format!("Artifact source '{}' 不是普通文件或目录", source.display()).into());
+    }
+    // A completed deterministic stage is reusable after Runtime restart. The
+    // digest check below also protects against partial/foreign contents.
+    let partial = spool.with_extension("partial");
+    let _ = tokio::fs::remove_file(&partial).await;
+    let mut reader = tokio::fs::File::open(source).await?;
+    let mut writer = tokio::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&partial)
+        .await?;
+    crate::artifact::report_artifact_bytes("staging_source", 0, Some(metadata.len()));
+    let (size, digest) = copy_and_hash(
+        &mut reader,
+        &mut writer,
+        Some("staging_source"),
+        Some(metadata.len()),
+    )
+    .await?;
+    writer.flush().await?;
+    writer.sync_data().await?;
+    drop(writer);
+    tokio::fs::rename(&partial, spool).await?;
+    let artifact = StagedArtifact {
+        payload_size_bytes: size,
+        payload_digest: digest.clone(),
+        logical_size_bytes: Some(size),
+        logical_digest: Some(digest),
+        kind: StagedArtifactKind::File,
+    };
+    persist_staged_artifact_metadata(spool, &artifact).await?;
+    Ok(artifact)
+}
+
+async fn download_managed_ssh_artifact(
+    endpoint: &ManagedSshEndpoint,
+    remote_path: &str,
+    spool: &std::path::Path,
+) -> Result<StagedArtifact, TargetExecutionError> {
+    validate_remote_artifact_path(remote_path)?;
+    if let Some(artifact) = reusable_staged_artifact(spool).await? {
+        return Ok(artifact);
+    }
+    let probe = format!(
+        "if test -f {path}; then printf file; elif test -d {path}; then printf directory; else exit 44; fi",
+        path = shell_quote(remote_path)
+    );
+    let probe_output = run_managed_ssh_output(endpoint, &probe).await?;
+    if !probe_output.status.success() {
+        return Err(format!(
+            "Managed SSH Artifact source '{}' 不存在或类型不受支持",
+            remote_path
+        )
+        .into());
+    }
+    let kind = match String::from_utf8(probe_output.stdout)?.as_str() {
+        "file" => StagedArtifactKind::File,
+        "directory" => StagedArtifactKind::DirectoryArchive,
+        _ => return Err("Managed SSH Artifact 类型探测返回未知结果".into()),
+    };
+    let remote = match kind {
+        StagedArtifactKind::File => {
+            format!("set -eu; cat -- {path}", path = shell_quote(remote_path))
+        }
+        StagedArtifactKind::DirectoryArchive => format!(
+            "set -eu; command -v tar >/dev/null 2>&1; tar -C {path} -cf - .",
+            path = shell_quote(remote_path)
+        ),
+    };
+    let partial = spool.with_extension("partial");
+    let _ = tokio::fs::remove_file(&partial).await;
+    let mut command = managed_ssh_command(endpoint, &remote)?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let mut stdout = child.stdout.take().ok_or("SSH download 缺少 stdout")?;
+    let mut writer = tokio::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&partial)
+        .await?;
+    let (size, digest) = copy_and_hash(&mut stdout, &mut writer, Some("downloading"), None).await?;
+    writer.flush().await?;
+    writer.sync_data().await?;
+    let output = child.wait_with_output().await?;
+    if !output.status.success() {
+        let _ = tokio::fs::remove_file(&partial).await;
+        return Err(format!(
+            "Managed SSH 读取 '{}' 失败：{}",
+            remote_path,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    match kind {
+        StagedArtifactKind::File => {
+            tokio::fs::rename(&partial, spool).await?;
+            let artifact = StagedArtifact {
+                payload_size_bytes: size,
+                payload_digest: digest.clone(),
+                logical_size_bytes: Some(size),
+                logical_digest: Some(digest),
+                kind,
+            };
+            persist_staged_artifact_metadata(spool, &artifact).await?;
+            Ok(artifact)
+        }
+        StagedArtifactKind::DirectoryArchive => {
+            // A remote tar stream may contain host-specific metadata/order.
+            // Normalize it into the same canonical representation used for a
+            // local directory before assigning the Artifact digest.
+            let normalized = normalize_directory_archive(&partial, spool).await;
+            let _ = tokio::fs::remove_file(&partial).await;
+            normalized
+        }
+    }
+}
+
+async fn create_canonical_directory_archive(
+    source: &Path,
+    spool: &Path,
+) -> Result<StagedArtifact, TargetExecutionError> {
+    let (logical_size_bytes, logical_digest) =
+        crate::artifact::inspect_local_directory_artifact(source).await?;
+    let source = source.to_path_buf();
+    let partial = spool.with_extension("partial");
+    let _ = tokio::fs::remove_file(&partial).await;
+    crate::artifact::report_artifact_bytes("archiving_directory", 0, None);
+    let build_path = partial.clone();
+    tokio::task::spawn_blocking(move || build_canonical_directory_archive(&source, &build_path))
+        .await
+        .map_err(|error| format!("Artifact directory archive worker 失败：{error}"))??;
+    tokio::fs::rename(&partial, spool).await?;
+    let (size, digest) = hash_file(spool).await?;
+    crate::artifact::report_artifact_bytes("archiving_directory", size, Some(size));
+    let artifact = StagedArtifact {
+        payload_size_bytes: size,
+        payload_digest: digest,
+        logical_size_bytes: Some(logical_size_bytes),
+        logical_digest: Some(logical_digest),
+        kind: StagedArtifactKind::DirectoryArchive,
+    };
+    persist_staged_artifact_metadata(spool, &artifact).await?;
+    Ok(artifact)
+}
+
+/// Build the deterministic byte-channel representation of a target-local
+/// directory. The returned digest/size describe the archive bytes only; the
+/// logical directory digest remains the one produced by the local transfer
+/// Tool Receipt.
+pub(crate) async fn stage_edge_directory_archive(
+    source: &Path,
+    spool: &Path,
+) -> Result<(u64, String), TargetExecutionError> {
+    let artifact = create_canonical_directory_archive(source, spool).await?;
+    Ok((artifact.payload_size_bytes, artifact.payload_digest))
+}
+
+/// Safely materialize a canonical directory payload before the ordinary
+/// target-local transfer Tool runs. Archive entries and symlink targets are
+/// validated by `extract_directory_archive`; the caller must still run the
+/// normal PermissionBroker for the final source/destination paths.
+pub(crate) async fn materialize_edge_directory_archive(
+    archive: &Path,
+    destination: &Path,
+) -> Result<(), TargetExecutionError> {
+    let _ = tokio::fs::remove_dir_all(destination).await;
+    tokio::fs::create_dir_all(destination).await?;
+    let archive = archive.to_path_buf();
+    let destination_for_extract = destination.to_path_buf();
+    let result = tokio::task::spawn_blocking(move || {
+        extract_directory_archive(&archive, &destination_for_extract)
+    })
+    .await
+    .map_err(|error| format!("Artifact directory extract worker 失败：{error}"))?;
+    if let Err(error) = result {
+        let _ = tokio::fs::remove_dir_all(destination).await;
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn normalize_directory_archive(
+    input: &Path,
+    spool: &Path,
+) -> Result<StagedArtifact, TargetExecutionError> {
+    let tree = spool.with_extension("normalize-tree");
+    let _ = tokio::fs::remove_dir_all(&tree).await;
+    tokio::fs::create_dir(&tree).await?;
+    let input = input.to_path_buf();
+    let tree_for_extract = tree.clone();
+    let extracted =
+        tokio::task::spawn_blocking(move || extract_directory_archive(&input, &tree_for_extract))
+            .await
+            .map_err(|error| format!("Artifact directory normalize worker 失败：{error}"))?;
+    if let Err(error) = extracted {
+        let _ = tokio::fs::remove_dir_all(&tree).await;
+        return Err(error);
+    }
+    let result = create_canonical_directory_archive(&tree, spool).await;
+    let _ = tokio::fs::remove_dir_all(&tree).await;
+    result
+}
+
+fn build_canonical_directory_archive(
+    source: &Path,
+    destination: &Path,
+) -> Result<(), TargetExecutionError> {
+    let mut entries = walkdir::WalkDir::new(source)
+        .follow_links(false)
+        .min_depth(1)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by(|left, right| left.path().cmp(right.path()));
+    let output = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(destination)?;
+    let mut archive = tar::Builder::new(output);
+    archive.mode(tar::HeaderMode::Deterministic);
+    for entry in entries {
+        let relative = entry.path().strip_prefix(source)?;
+        validate_archive_relative_path(relative)?;
+        let metadata = std::fs::symlink_metadata(entry.path())?;
+        let mut header = tar::Header::new_gnu();
+        header.set_path(relative)?;
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_mtime(0);
+        if metadata.is_dir() {
+            header.set_entry_type(tar::EntryType::Directory);
+            header.set_mode(0o755);
+            header.set_size(0);
+            header.set_cksum();
+            archive.append(&header, std::io::empty())?;
+        } else if metadata.is_file() {
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_mode(canonical_file_mode(&metadata));
+            header.set_size(metadata.len());
+            header.set_cksum();
+            let mut file = std::fs::File::open(entry.path())?;
+            archive.append(&header, &mut file)?;
+        } else if metadata.file_type().is_symlink() {
+            let target = std::fs::read_link(entry.path())?;
+            validate_archive_link_target(&target)?;
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_mode(0o777);
+            header.set_size(0);
+            header.set_link_name(target)?;
+            header.set_cksum();
+            archive.append(&header, std::io::empty())?;
+        } else {
+            return Err(format!(
+                "Artifact directory 包含不支持的文件类型：'{}'",
+                entry.path().display()
+            )
+            .into());
+        }
+    }
+    archive.finish()?;
+    let output = archive.into_inner()?;
+    output.sync_all()?;
+    Ok(())
+}
+
+fn extract_directory_archive(
+    source: &Path,
+    destination: &Path,
+) -> Result<(), TargetExecutionError> {
+    let file = std::fs::File::open(source)?;
+    let mut archive = tar::Archive::new(file);
+    archive.set_preserve_permissions(true);
+    archive.set_preserve_mtime(false);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        validate_archive_relative_path(&path)?;
+        let kind = entry.header().entry_type();
+        if !(kind.is_file() || kind.is_dir() || kind.is_symlink()) {
+            return Err(format!(
+                "Artifact directory archive 包含不支持的条目：'{}'",
+                path.display()
+            )
+            .into());
+        }
+        if kind.is_symlink() {
+            let target = entry
+                .link_name()?
+                .ok_or("Artifact directory symlink 缺少 target")?;
+            validate_archive_link_target(&target)?;
+        }
+        if !entry.unpack_in(destination)? {
+            return Err(
+                format!("Artifact directory archive 条目越界：'{}'", path.display()).into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_archive_relative_path(path: &Path) -> Result<(), TargetExecutionError> {
+    if path.as_os_str().is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!(
+            "Artifact directory archive 路径不安全：'{}'",
+            path.display()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_archive_link_target(path: &Path) -> Result<(), TargetExecutionError> {
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!(
+            "Artifact directory symlink target 不安全：'{}'",
+            path.display()
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn canonical_file_mode(metadata: &std::fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    if metadata.permissions().mode() & 0o111 != 0 {
+        0o755
+    } else {
+        0o644
+    }
+}
+
+#[cfg(not(unix))]
+fn canonical_file_mode(_metadata: &std::fs::Metadata) -> u32 {
+    0o644
+}
+
+async fn hash_file(path: &std::path::Path) -> Result<(u64, String), TargetExecutionError> {
+    let mut reader = tokio::fs::File::open(path).await?;
+    let mut sink = tokio::io::sink();
+    copy_and_hash(&mut reader, &mut sink, None, None).await
+}
+
+async fn copy_and_hash<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    progress_phase: Option<&str>,
+    total_bytes: Option<u64>,
+) -> Result<(u64, String), TargetExecutionError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = vec![0_u8; 128 * 1024];
+    loop {
+        let count = reader.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        writer.write_all(&buffer[..count]).await?;
+        hasher.update(&buffer[..count]);
+        size = size.saturating_add(count as u64);
+        if let Some(phase) = progress_phase {
+            crate::artifact::report_artifact_bytes(phase, size, total_bytes);
+        }
+    }
+    Ok((size, format!("sha256:{:x}", hasher.finalize())))
+}
+
+async fn publish_spooled_local_artifact(
+    request: &crate::artifact::ArtifactTransferRequest,
+    spool: &std::path::Path,
+    destination: &std::path::Path,
+    kind: StagedArtifactKind,
+) -> Result<(), TargetExecutionError> {
+    match kind {
+        StagedArtifactKind::File => publish_spooled_local_file(request, spool, destination).await,
+        StagedArtifactKind::DirectoryArchive => {
+            publish_spooled_local_directory(request, spool, destination).await
+        }
+    }
+}
+
+async fn publish_spooled_local_file(
+    request: &crate::artifact::ArtifactTransferRequest,
+    spool: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), TargetExecutionError> {
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or("Artifact destination 缺少父目录")?;
+    if !tokio::fs::metadata(parent).await?.is_dir() {
+        return Err(format!(
+            "Artifact destination 父路径 '{}' 不是目录",
+            parent.display()
+        )
+        .into());
+    }
+    if request.overwrite == crate::artifact::ArtifactOverwritePolicy::Deny
+        && tokio::fs::try_exists(destination).await?
+    {
+        let (_, staged_digest) = hash_file(spool).await?;
+        let (_, destination_digest) = hash_file(destination).await?;
+        return if staged_digest == destination_digest {
+            Ok(())
+        } else {
+            Err(format!(
+                "Artifact destination '{}' 已存在且内容不同",
+                destination.display()
+            )
+            .into())
+        };
+    }
+    let temporary = parent.join(format!(
+        ".morphz-transfer-{}-{}.part",
+        sanitize_transfer_id(&request.transfer_id),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    tokio::fs::copy(spool, &temporary).await?;
+    let mut cleanup = LocalTransferStagingGuard::new(temporary.clone());
+    crate::artifact::mark_artifact_transfer_side_effect().await?;
+    match request.overwrite {
+        crate::artifact::ArtifactOverwritePolicy::Deny => {
+            tokio::fs::hard_link(&temporary, destination).await?;
+            tokio::fs::remove_file(&temporary).await?;
+        }
+        crate::artifact::ArtifactOverwritePolicy::Replace => {
+            if cfg!(windows) && tokio::fs::try_exists(destination).await? {
+                tokio::fs::remove_file(destination).await?;
+            }
+            tokio::fs::rename(&temporary, destination).await?;
+        }
+    }
+    cleanup.disarm();
+    Ok(())
+}
+
+async fn publish_spooled_local_directory(
+    request: &crate::artifact::ArtifactTransferRequest,
+    spool: &Path,
+    destination: &Path,
+) -> Result<(), TargetExecutionError> {
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or("Artifact directory destination 缺少父目录")?;
+    tokio::fs::create_dir_all(parent).await?;
+    if !tokio::fs::metadata(parent).await?.is_dir() {
+        return Err(format!(
+            "Artifact destination 父路径 '{}' 不是目录",
+            parent.display()
+        )
+        .into());
+    }
+    if request.overwrite == crate::artifact::ArtifactOverwritePolicy::Deny
+        && tokio::fs::try_exists(destination).await?
+    {
+        if !tokio::fs::metadata(destination).await?.is_dir() {
+            return Err(format!(
+                "Artifact destination '{}' 已存在且不是目录",
+                destination.display()
+            )
+            .into());
+        }
+        let (_, expected) = hash_file(spool).await?;
+        let actual = canonical_directory_digest(destination).await?;
+        return if actual == expected {
+            Ok(())
+        } else {
+            Err(format!(
+                "Artifact directory destination '{}' 已存在且内容不同",
+                destination.display()
+            )
+            .into())
+        };
+    }
+
+    let temporary = parent.join(format!(
+        ".morphz-transfer-{}-{}.tree",
+        sanitize_transfer_id(&request.transfer_id),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    tokio::fs::create_dir(&temporary).await?;
+    let mut cleanup = LocalTransferStagingGuard::directory(temporary.clone());
+    let archive = spool.to_path_buf();
+    let tree = temporary.clone();
+    tokio::task::spawn_blocking(move || extract_directory_archive(&archive, &tree))
+        .await
+        .map_err(|error| format!("Artifact directory extract worker 失败：{error}"))??;
+    crate::artifact::report_artifact_bytes("publishing_directory", 1, Some(1));
+
+    crate::artifact::mark_artifact_transfer_side_effect().await?;
+    match request.overwrite {
+        crate::artifact::ArtifactOverwritePolicy::Deny => {
+            tokio::fs::rename(&temporary, destination).await?;
+        }
+        crate::artifact::ArtifactOverwritePolicy::Replace => {
+            if tokio::fs::try_exists(destination).await? {
+                let backup = parent.join(format!(
+                    ".morphz-transfer-{}-{}.backup",
+                    sanitize_transfer_id(&request.transfer_id),
+                    Utc::now().timestamp_nanos_opt().unwrap_or_default()
+                ));
+                tokio::fs::rename(destination, &backup).await?;
+                match tokio::fs::rename(&temporary, destination).await {
+                    Ok(()) => tokio::fs::remove_dir_all(backup).await?,
+                    Err(error) => {
+                        let _ = tokio::fs::rename(&backup, destination).await;
+                        return Err(error.into());
+                    }
+                }
+            } else {
+                tokio::fs::rename(&temporary, destination).await?;
+            }
+        }
+    }
+    cleanup.disarm();
+    Ok(())
+}
+
+async fn canonical_directory_digest(path: &Path) -> Result<String, TargetExecutionError> {
+    let parent = path.parent().ok_or("Artifact directory 缺少父目录")?;
+    let archive = parent.join(format!(
+        ".morphz-directory-digest-{}.tar",
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    let source = path.to_path_buf();
+    let output = archive.clone();
+    tokio::task::spawn_blocking(move || build_canonical_directory_archive(&source, &output))
+        .await
+        .map_err(|error| format!("Artifact directory digest worker 失败：{error}"))??;
+    let result = hash_file(&archive).await.map(|(_, digest)| digest);
+    let _ = tokio::fs::remove_file(archive).await;
+    result
+}
+
+struct LocalTransferStagingGuard {
+    path: PathBuf,
+    directory: bool,
+    armed: bool,
+}
+
+impl LocalTransferStagingGuard {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            directory: false,
+            armed: true,
+        }
+    }
+
+    fn directory(path: PathBuf) -> Self {
+        Self {
+            path,
+            directory: true,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for LocalTransferStagingGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            if self.directory {
+                let _ = std::fs::remove_dir_all(&self.path);
+            } else {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+    }
+}
+
+async fn upload_managed_ssh_artifact(
+    endpoint: &ManagedSshEndpoint,
+    spool: &std::path::Path,
+    remote_path: &str,
+    overwrite: crate::artifact::ArtifactOverwritePolicy,
+    transfer_id: &str,
+    expected_payload_digest: &str,
+    logical_digest: &str,
+    kind: StagedArtifactKind,
+) -> Result<(), TargetExecutionError> {
+    validate_remote_artifact_path(remote_path)?;
+    let (parent, name) = remote_parent_and_name(remote_path)?;
+    let digest_marker = format!("{parent}/.{name}.morphz-artifact-digest");
+    if overwrite == crate::artifact::ArtifactOverwritePolicy::Deny {
+        let probe = match kind {
+            StagedArtifactKind::File => format!(
+                "if test -f {path}; then if command -v sha256sum >/dev/null 2>&1; then sha256sum -- {path}; else shasum -a 256 -- {path}; fi; elif test -e {path}; then printf wrong-type; fi",
+                path = shell_quote(remote_path)
+            ),
+            StagedArtifactKind::DirectoryArchive => format!(
+                "if test -d {path}; then if test -f {marker}; then cat -- {marker}; else printf unknown-directory; fi; elif test -e {path}; then printf wrong-type; fi",
+                path = shell_quote(remote_path),
+                marker = shell_quote(&digest_marker)
+            ),
+        };
+        let output = run_managed_ssh_output(endpoint, &probe).await?;
+        if !output.status.success() {
+            return Err(format!(
+                "Managed SSH 检查 destination '{}' 失败：{}",
+                remote_path,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )
+            .into());
+        }
+        if let Some(value) = String::from_utf8(output.stdout)?.split_whitespace().next() {
+            let actual = if kind == StagedArtifactKind::File {
+                format!("sha256:{}", value.to_ascii_lowercase())
+            } else {
+                value.to_string()
+            };
+            return if actual == logical_digest {
+                Ok(())
+            } else {
+                Err(format!("Managed SSH destination '{}' 已存在且内容不同", remote_path).into())
+            };
+        }
+    }
+    let temporary = format!(
+        "{parent}/.morphz-transfer-{}-{}.part",
+        sanitize_transfer_id(transfer_id),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    );
+    let upload = format!(
+        "set -eu; test -d {parent}; umask 077; trap 'rm -f -- {tmp}' EXIT HUP INT TERM; cat > {tmp}; trap - EXIT HUP INT TERM",
+        parent = shell_quote(parent),
+        tmp = shell_quote(&temporary),
+    );
+    let mut command = managed_ssh_command(endpoint, &upload)?;
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let mut stdin = child.stdin.take().ok_or("SSH upload 缺少 stdin")?;
+    let mut reader = tokio::fs::File::open(spool).await?;
+    let total_bytes = tokio::fs::metadata(spool).await?.len();
+    crate::artifact::report_artifact_bytes("uploading", 0, Some(total_bytes));
+    let mut sent = 0_u64;
+    let mut buffer = vec![0_u8; 128 * 1024];
+    loop {
+        let count = reader.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        stdin.write_all(&buffer[..count]).await?;
+        sent = sent.saturating_add(count as u64);
+        crate::artifact::report_artifact_bytes("uploading", sent, Some(total_bytes));
+    }
+    stdin.shutdown().await?;
+    drop(stdin);
+    let output = child.wait_with_output().await?;
+    if !output.status.success() {
+        return Err(format!(
+            "Managed SSH 写入临时 Artifact '{}' 失败：{}",
+            remote_path,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    let mut cleanup = RemoteTransferStagingGuard::new(endpoint.clone(), temporary.clone());
+    let verified = remote_file_digest(endpoint, &temporary).await?;
+    if verified != expected_payload_digest {
+        return Err(format!(
+            "Managed SSH destination digest 校验失败：期望 '{}'，实际 '{}'",
+            expected_payload_digest, verified
+        )
+        .into());
+    }
+    let publish = match (kind, overwrite) {
+        (StagedArtifactKind::File, crate::artifact::ArtifactOverwritePolicy::Deny) => format!(
+            "set -eu; ln -- {tmp} {dest}; rm -f -- {tmp}",
+            tmp = shell_quote(&temporary),
+            dest = shell_quote(remote_path)
+        ),
+        (StagedArtifactKind::File, crate::artifact::ArtifactOverwritePolicy::Replace) => format!(
+            "set -eu; mv -f -- {tmp} {dest}",
+            tmp = shell_quote(&temporary),
+            dest = shell_quote(remote_path)
+        ),
+        (StagedArtifactKind::DirectoryArchive, overwrite) => {
+            let temporary_tree = format!("{temporary}.tree");
+            let marker_partial = format!("{temporary}.digest");
+            let backup = format!("{temporary}.backup");
+            let prepublish = format!(
+                "command -v tar >/dev/null 2>&1; rm -rf -- {tree} {backup}; mkdir -- {tree}; tar -xf {tmp} -C {tree}; printf '%s\\n' {digest} > {marker_partial}",
+                tree = shell_quote(&temporary_tree),
+                backup = shell_quote(&backup),
+                tmp = shell_quote(&temporary),
+                digest = shell_quote(logical_digest),
+                marker_partial = shell_quote(&marker_partial),
+            );
+            match overwrite {
+                crate::artifact::ArtifactOverwritePolicy::Deny => format!(
+                    "set -eu; test ! -e {dest}; {prepublish}; trap 'rm -rf -- {tree} {backup}; rm -f -- {tmp} {marker_partial}; if test ! -d {dest}; then rm -f -- {marker}; fi' EXIT HUP INT TERM; mv -- {marker_partial} {marker}; mv -- {tree} {dest}; rm -f -- {tmp}; trap - EXIT HUP INT TERM",
+                    dest = shell_quote(remote_path),
+                    tree = shell_quote(&temporary_tree),
+                    backup = shell_quote(&backup),
+                    tmp = shell_quote(&temporary),
+                    marker_partial = shell_quote(&marker_partial),
+                    marker = shell_quote(&digest_marker),
+                ),
+                crate::artifact::ArtifactOverwritePolicy::Replace => format!(
+                    "set -eu; {prepublish}; trap 'rm -rf -- {tree}; rm -f -- {tmp} {marker_partial}; if test -e {backup} && test ! -e {dest}; then mv -- {backup} {dest}; fi' EXIT HUP INT TERM; if test -e {dest}; then mv -- {dest} {backup}; fi; mv -- {marker_partial} {marker}; mv -- {tree} {dest}; rm -rf -- {backup}; rm -f -- {tmp}; trap - EXIT HUP INT TERM",
+                    tree = shell_quote(&temporary_tree),
+                    tmp = shell_quote(&temporary),
+                    marker_partial = shell_quote(&marker_partial),
+                    backup = shell_quote(&backup),
+                    dest = shell_quote(remote_path),
+                    marker = shell_quote(&digest_marker),
+                ),
+            }
+        }
+    };
+    crate::artifact::mark_artifact_transfer_side_effect().await?;
+    let output = run_managed_ssh_output(endpoint, &publish).await?;
+    if !output.status.success() {
+        return Err(format!(
+            "Managed SSH 原子发布 '{}' 失败（父目录 '{}'，文件 '{}'）：{}",
+            remote_path,
+            parent,
+            name,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    cleanup.disarm();
+    Ok(())
+}
+
+fn remote_parent_and_name(path: &str) -> Result<(&str, &str), TargetExecutionError> {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err("远端 Artifact destination 不能是根目录".into());
+    }
+    match trimmed.rsplit_once('/') {
+        Some(("", name)) if !name.is_empty() => Ok(("/", name)),
+        Some((parent, name)) if !parent.is_empty() && !name.is_empty() => Ok((parent, name)),
+        None => Ok((".", trimmed)),
+        _ => Err("远端 Artifact destination 缺少有效文件名".into()),
+    }
+}
+
+fn sanitize_transfer_id(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .take(96)
+        .collect()
+}
+
+async fn remote_file_digest(
+    endpoint: &ManagedSshEndpoint,
+    path: &str,
+) -> Result<String, TargetExecutionError> {
+    let command = format!(
+        "set -eu; if command -v sha256sum >/dev/null 2>&1; then sha256sum -- {path}; elif command -v shasum >/dev/null 2>&1; then shasum -a 256 -- {path}; else exit 127; fi",
+        path = shell_quote(path)
+    );
+    let output = run_managed_ssh_output(endpoint, &command).await?;
+    if !output.status.success() {
+        return Err(format!(
+            "Managed SSH 远端缺少可用 SHA-256 工具或摘要失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    let hex = String::from_utf8(output.stdout)?
+        .split_whitespace()
+        .next()
+        .ok_or("Managed SSH SHA-256 输出为空")?
+        .to_ascii_lowercase();
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("Managed SSH SHA-256 输出格式无效".into());
+    }
+    Ok(format!("sha256:{hex}"))
+}
+
+async fn run_managed_ssh_output(
+    endpoint: &ManagedSshEndpoint,
+    remote_command: &str,
+) -> Result<std::process::Output, TargetExecutionError> {
+    let mut command = managed_ssh_command(endpoint, remote_command)?;
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    Ok(command.output().await?)
+}
+
+struct RemoteTransferStagingGuard {
+    endpoint: ManagedSshEndpoint,
+    path: String,
+    armed: bool,
+}
+
+impl RemoteTransferStagingGuard {
+    fn new(endpoint: ManagedSshEndpoint, path: String) -> Self {
+        Self {
+            endpoint,
+            path,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RemoteTransferStagingGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let endpoint = self.endpoint.clone();
+        let command = format!("rm -f -- {}", shell_quote(&self.path));
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = run_managed_ssh_output(&endpoint, &command).await;
+            });
+        }
+    }
+}
+
 /// Backend-neutral authority used at the physical side-effect boundary.
 /// Selection is deterministic by the Target's persisted kind; it never falls
 /// back to another Target when the requested destination is unavailable.
@@ -830,6 +3227,7 @@ pub struct ExecutionTargetDispatcher {
     targets: Arc<dyn ExecutionTargetStore>,
     authorizations: Arc<dyn ExecutionTargetAuthorizationStore>,
     backends: RwLock<HashMap<ExecutionTargetKind, Arc<dyn ExecutionTargetBackend>>>,
+    artifact_transfer_backends: RwLock<HashMap<String, Arc<dyn ArtifactTransferExecutionBackend>>>,
 }
 
 impl ExecutionTargetDispatcher {
@@ -841,6 +3239,7 @@ impl ExecutionTargetDispatcher {
             targets,
             authorizations,
             backends: RwLock::new(HashMap::new()),
+            artifact_transfer_backends: RwLock::new(HashMap::new()),
         }
     }
 
@@ -851,6 +3250,16 @@ impl ExecutionTargetDispatcher {
             .insert(backend.kind(), backend);
     }
 
+    pub fn register_artifact_transfer_backend(
+        &self,
+        backend: Arc<dyn ArtifactTransferExecutionBackend>,
+    ) {
+        self.artifact_transfer_backends
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(backend.name().to_string(), backend);
+    }
+
     pub async fn execute(
         &self,
         job: &ExecutionJobRecord,
@@ -858,6 +3267,51 @@ impl ExecutionTargetDispatcher {
         arguments: &str,
     ) -> Result<String, TargetExecutionError> {
         let route = route_snapshot_from_job(job)?;
+        if tool.execution_routing() == ToolExecutionRouting::ArtifactTransfer {
+            let routes = artifact_transfer_routes_from_job(job)?;
+            let transfer = crate::artifact::transfer_request_from_tool_arguments(
+                arguments,
+                format!("transfer:{}", job.id),
+            )?;
+            if transfer.source.target_id != routes.source.target_id
+                || transfer.destination.target_id != routes.destination.target_id
+            {
+                return Err("Artifact Transfer 参数与 Execution Job 冻结的双 Route 不一致".into());
+            }
+            let source = self
+                .authorized_target_for_route(
+                    &routes.source,
+                    job.initiating_principal_id.as_deref(),
+                    &job.agent_id,
+                    &job.context_id,
+                    &job.thread_id,
+                )
+                .await?;
+            let destination = self
+                .authorized_target_for_route(
+                    &routes.destination,
+                    job.initiating_principal_id.as_deref(),
+                    &job.agent_id,
+                    &job.context_id,
+                    &job.thread_id,
+                )
+                .await?;
+            if let Some(backend) = self.artifact_transfer_backend_for(&routes) {
+                let receipt = backend.execute_transfer(job, &routes, &transfer).await?;
+                receipt.validate_against(&transfer)?;
+                return Ok(serde_json::to_string(&receipt)?);
+            }
+            if routes.source.target_id != routes.destination.target_id {
+                return Err(format!(
+                    "没有 Runtime Artifact Transport 能处理 '{}' 到 '{}' 的冻结 Route（{} -> {}）",
+                    source.id,
+                    destination.id,
+                    routes.source.backend_kind.as_str(),
+                    routes.destination.backend_kind.as_str()
+                )
+                .into());
+            }
+        }
         let mut target = self
             .targets
             .get_execution_target(&job.target_id)
@@ -888,6 +3342,31 @@ impl ExecutionTargetDispatcher {
                 arguments,
             )
             .await
+    }
+
+    /// Node-local Artifact execution after the cloud's frozen dual Route has
+    /// already been authenticated and localized by the Edge control plane.
+    /// This deliberately skips the cloud Target registry: a Provider Node may
+    /// own private Managed SSH endpoint descriptors which are not materialized
+    /// as local Target rows. Backend permission checks still run normally.
+    pub(crate) async fn execute_edge_artifact_transfer(
+        &self,
+        job: &ExecutionJobRecord,
+        routes: &ArtifactTransferRouteSnapshot,
+        request: &crate::artifact::ArtifactTransferRequest,
+    ) -> Result<crate::artifact::ArtifactTransferReceipt, TargetExecutionError> {
+        request.validate()?;
+        if request.source.target_id != routes.source.target_id
+            || request.destination.target_id != routes.destination.target_id
+        {
+            return Err("Edge-localized Artifact 请求与冻结双 Route 不一致".into());
+        }
+        let backend = self
+            .artifact_transfer_backend_for(routes)
+            .ok_or("Edge Runtime 没有可处理本地化双 Route 的 Artifact Backend")?;
+        let receipt = backend.execute_transfer(job, routes, request).await?;
+        receipt.validate_against(request)?;
+        Ok(receipt)
     }
 
     pub async fn validate_for_tool(
@@ -931,6 +3410,44 @@ impl ExecutionTargetDispatcher {
         }
         self.backend_for(&target)?;
         Ok(target)
+    }
+
+    pub async fn validate_artifact_transfer(
+        &self,
+        request: &crate::artifact::ArtifactTransferRequest,
+        arguments: &str,
+        principal_id: Option<&str>,
+        agent_id: &str,
+        context_id: &str,
+        thread_id: &str,
+    ) -> Result<(ExecutionTargetRecord, ExecutionTargetRecord), TargetExecutionError> {
+        request.validate()?;
+        let source = self
+            .validate_for_tool(
+                &request.source.target_id,
+                crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME,
+                arguments,
+                principal_id,
+                agent_id,
+                context_id,
+                thread_id,
+            )
+            .await?;
+        let destination = if request.destination.target_id == request.source.target_id {
+            source.clone()
+        } else {
+            self.validate_for_tool(
+                &request.destination.target_id,
+                crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME,
+                arguments,
+                principal_id,
+                agent_id,
+                context_id,
+                thread_id,
+            )
+            .await?
+        };
+        Ok((source, destination))
     }
 
     async fn ensure_target_authorized(
@@ -978,6 +3495,48 @@ impl ExecutionTargetDispatcher {
             .into());
         }
         Ok(())
+    }
+
+    async fn authorized_target_for_route(
+        &self,
+        route: &ExecutionRouteSnapshot,
+        principal_id: Option<&str>,
+        agent_id: &str,
+        context_id: &str,
+        thread_id: &str,
+    ) -> Result<ExecutionTargetRecord, TargetExecutionError> {
+        let mut target = self
+            .targets
+            .get_execution_target(&route.target_id)
+            .await?
+            .ok_or_else(|| format!("Execution Target '{}' 不存在", route.target_id))?;
+        if target.status == ExecutionTargetStatus::Disabled {
+            return Err(format!("Execution Target '{}' 已被禁用", target.id).into());
+        }
+        self.ensure_target_authorized(&target, principal_id, agent_id, context_id, thread_id)
+            .await?;
+        target.provider_node_id = route.provider_node_id.clone();
+        target.kind = route.backend_kind;
+        target.policy_digest = route.policy_digest.clone();
+        Ok(target)
+    }
+
+    fn artifact_transfer_backend_for(
+        &self,
+        routes: &ArtifactTransferRouteSnapshot,
+    ) -> Option<Arc<dyn ArtifactTransferExecutionBackend>> {
+        let backends = self
+            .artifact_transfer_backends
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut names = backends.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        names.into_iter().find_map(|name| {
+            backends
+                .get(&name)
+                .filter(|backend| backend.supports(&routes.source, &routes.destination))
+                .cloned()
+        })
     }
 
     fn backend_for(
@@ -2331,5 +4890,88 @@ mod tests {
         .unwrap());
         assert!(!exec_arguments_invoke_ssh(r#"{"command":"echo ssh server"}"#).unwrap());
         assert!(!exec_arguments_invoke_ssh(r#"{"command":"rg ssh docs"}"#).unwrap());
+    }
+
+    #[tokio::test]
+    async fn canonical_directory_archive_is_stable_and_safely_published() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let first_archive = temp.path().join("first.tar");
+        let second_archive = temp.path().join("second.tar");
+        let destination = temp.path().join("destination");
+        tokio::fs::create_dir_all(source.join("nested"))
+            .await
+            .unwrap();
+        tokio::fs::write(source.join("root.txt"), b"root")
+            .await
+            .unwrap();
+        tokio::fs::write(source.join("nested/leaf.txt"), b"leaf")
+            .await
+            .unwrap();
+
+        let first = create_canonical_directory_archive(&source, &first_archive)
+            .await
+            .unwrap();
+        let second = create_canonical_directory_archive(&source, &second_archive)
+            .await
+            .unwrap();
+        assert_eq!(first.kind, StagedArtifactKind::DirectoryArchive);
+        assert_eq!(first.payload_digest, second.payload_digest);
+        assert_eq!(first.payload_size_bytes, second.payload_size_bytes);
+        assert_eq!(first.logical_digest, second.logical_digest);
+        assert_eq!(first.logical_size_bytes, second.logical_size_bytes);
+        let (logical_size, logical_digest) =
+            crate::artifact::inspect_local_directory_artifact(&source)
+                .await
+                .unwrap();
+        assert_eq!(first.logical_size_bytes, Some(logical_size));
+        assert_eq!(
+            first.logical_digest.as_deref(),
+            Some(logical_digest.as_str())
+        );
+        assert_ne!(
+            first.payload_digest,
+            first.logical_digest.clone().unwrap(),
+            "transport envelope and logical directory identity are distinct"
+        );
+
+        let request = crate::artifact::ArtifactTransferRequest {
+            transfer_id: "directory-cross-target".to_string(),
+            source: crate::artifact::ArtifactLocation {
+                target_id: "target-source".to_string(),
+                workspace_identity: None,
+                path: source.display().to_string(),
+            },
+            destination: crate::artifact::ArtifactLocation {
+                target_id: "target-default".to_string(),
+                workspace_identity: None,
+                path: destination.display().to_string(),
+            },
+            overwrite: crate::artifact::ArtifactOverwritePolicy::Deny,
+            expected_source_digest: first.logical_digest.clone(),
+            media_type: None,
+            origin: None,
+        };
+        publish_spooled_local_directory(&request, &first_archive, &destination)
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::fs::read(destination.join("nested/leaf.txt"))
+                .await
+                .unwrap(),
+            b"leaf"
+        );
+        // A retry after publication reconciles by canonical content digest.
+        publish_spooled_local_directory(&request, &first_archive, &destination)
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn directory_archive_rejects_escaping_paths_and_links() {
+        assert!(validate_archive_relative_path(Path::new("../escape")).is_err());
+        assert!(validate_archive_relative_path(Path::new("/absolute")).is_err());
+        assert!(validate_archive_link_target(Path::new("../../secret")).is_err());
+        assert!(validate_archive_link_target(Path::new("nested/file")).is_ok());
     }
 }

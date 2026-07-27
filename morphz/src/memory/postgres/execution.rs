@@ -5,12 +5,14 @@
 //! publish a terminal result.
 
 use super::{
-    append_event_in_tx, append_signal_outbox_in_tx, now_text, parse_time, PostgresStore, StoreError,
+    activation::activation_from_row, append_event_in_tx, append_signal_outbox_in_tx, now_text,
+    parse_time, thread::thread_from_row, PostgresStore, StoreError,
 };
 use crate::event::Event;
 use crate::memory::{
-    ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord, ExecutionJobStatus,
-    ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety, NewExecutionJob,
+    ArtifactTransferExecutionRecord, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord,
+    ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal, ExecutionRetrySafety,
+    NewArtifactTransferExecution, NewExecutionJob, ThreadKind,
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
@@ -388,6 +390,119 @@ fn validate_terminal_transition(
 
 #[async_trait::async_trait]
 impl ExecutionJobStore for PostgresStore {
+    async fn ensure_artifact_transfer_execution(
+        &self,
+        execution: NewArtifactTransferExecution,
+    ) -> Result<ArtifactTransferExecutionRecord, StoreError> {
+        validate_artifact_transfer_execution_shape(&execution)?;
+        let mut tx = self.pool.begin().await?;
+
+        append_event_in_tx(&mut tx, &execution.request_event).await?;
+        let request_event_sequence = u64::try_from(
+            sqlx::query_scalar::<_, i64>("SELECT sequence FROM events WHERE id = $1")
+                .bind(&execution.request_event.id)
+                .fetch_one(&mut *tx)
+                .await?,
+        )?;
+
+        let now = now_text();
+        sqlx::query(
+            r#"INSERT INTO threads
+               (id, revision, agent_id, context_id, session_id, initiating_principal_id,
+                root_turn_id, kind, status, executor_kind, executor_id, target_id,
+                delivery_status, created_at, updated_at)
+               VALUES ($1, 1, $2, $3, $4, $5, $6, 'execution', 'open',
+                       'artifact_transfer', $7, $8, 'none', $9, $9)
+               ON CONFLICT DO NOTHING"#,
+        )
+        .bind(&execution.thread.id)
+        .bind(&execution.thread.agent_id)
+        .bind(&execution.thread.context_id)
+        .bind(&execution.thread.session_id)
+        .bind(&execution.thread.initiating_principal_id)
+        .bind(&execution.thread.root_turn_id)
+        .bind(&execution.thread.executor_id)
+        .bind(&execution.thread.target_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        let thread_row = sqlx::query("SELECT * FROM threads WHERE root_turn_id = $1")
+            .bind(&execution.thread.root_turn_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let thread = thread_from_row(&thread_row)?;
+        if thread.id != execution.thread.id
+            || thread.agent_id != execution.thread.agent_id
+            || thread.context_id != execution.thread.context_id
+            || thread.session_id != execution.thread.session_id
+            || thread.initiating_principal_id != execution.thread.initiating_principal_id
+            || thread.kind != ThreadKind::Execution
+            || thread.executor_kind != "artifact_transfer"
+            || thread.executor_id != execution.thread.executor_id
+            || thread.target_id != execution.thread.target_id
+        {
+            return Err(format!(
+                "Artifact Transfer root '{}' 已被不同 Thread 占用",
+                execution.thread.root_turn_id
+            )
+            .into());
+        }
+
+        sqlx::query(
+            r#"INSERT INTO thread_activations
+               (id, revision, generation, agent_id, context_id, session_id,
+                initiating_principal_id, trigger_event_id, trigger_sequence, trigger_kind,
+                parent_activation_id, root_turn_id, status, created_at, updated_at)
+               VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8,
+                       'runtime/artifact_transfer_requested', $9, $10, 'queued', $11, $11)
+               ON CONFLICT DO NOTHING"#,
+        )
+        .bind(&execution.activation.id)
+        .bind(i64::try_from(thread.generation)?)
+        .bind(&execution.activation.agent_id)
+        .bind(&execution.activation.context_id)
+        .bind(&execution.activation.session_id)
+        .bind(&execution.activation.initiating_principal_id)
+        .bind(&execution.activation.trigger_event_id)
+        .bind(i64::try_from(request_event_sequence)?)
+        .bind(&execution.activation.parent_activation_id)
+        .bind(&execution.activation.root_turn_id)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        let activation_row =
+            sqlx::query("SELECT * FROM thread_activations WHERE trigger_event_id = $1")
+                .bind(&execution.activation.trigger_event_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let activation = activation_from_row(&activation_row)?;
+        if activation.id != execution.activation.id
+            || activation.agent_id != execution.activation.agent_id
+            || activation.context_id != execution.activation.context_id
+            || activation.session_id != execution.activation.session_id
+            || activation.initiating_principal_id != execution.activation.initiating_principal_id
+            || activation.root_turn_id != execution.activation.root_turn_id
+            || activation.trigger_sequence != request_event_sequence
+            || activation.trigger_kind != "runtime/artifact_transfer_requested"
+            || activation.parent_activation_id != execution.activation.parent_activation_id
+        {
+            return Err(format!(
+                "Artifact Transfer Event '{}' 已被不同 Activation 占用",
+                execution.activation.trigger_event_id
+            )
+            .into());
+        }
+
+        let (job, _) = ensure_job_in_tx(&mut tx, &execution.job).await?;
+        tx.commit().await?;
+        Ok(ArtifactTransferExecutionRecord {
+            request_event_sequence,
+            thread,
+            activation,
+            job,
+        })
+    }
+
     async fn create_execution_job(
         &self,
         job: NewExecutionJob,
@@ -971,6 +1086,58 @@ impl ExecutionJobStore for PostgresStore {
     }
 }
 
+fn validate_artifact_transfer_execution_shape(
+    execution: &NewArtifactTransferExecution,
+) -> Result<(), StoreError> {
+    if execution.request_event.topic != "runtime/artifact_transfer_requested"
+        || execution.request_event.event_type != "runtime_control"
+    {
+        return Err(
+            "Artifact Transfer 必须由 runtime/artifact_transfer_requested Event 启动".into(),
+        );
+    }
+    if execution.thread.kind != ThreadKind::Execution
+        || execution.thread.executor_kind != "artifact_transfer"
+    {
+        return Err("Artifact Transfer 必须使用 Execution/artifact_transfer Thread".into());
+    }
+    let event_context = execution
+        .request_event
+        .payload
+        .get("context_id")
+        .and_then(JsonValue::as_str);
+    let event_session = execution
+        .request_event
+        .payload
+        .get("session_id")
+        .and_then(JsonValue::as_str);
+    let event_thread = execution
+        .request_event
+        .payload
+        .get("thread_id")
+        .and_then(JsonValue::as_str);
+    if execution.activation.trigger_event_id != execution.request_event.id
+        || execution.activation.root_turn_id != execution.thread.root_turn_id
+        || execution.job.activation_id != execution.activation.id
+        || execution.job.thread_id != execution.thread.id
+        || execution.job.tool_name != crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME
+        || execution.job.agent_id != execution.thread.agent_id
+        || execution.job.context_id != execution.thread.context_id
+        || execution.job.session_id != execution.thread.session_id
+        || execution.activation.agent_id != execution.thread.agent_id
+        || execution.activation.context_id != execution.thread.context_id
+        || execution.activation.session_id != execution.thread.session_id
+        || execution.job.initiating_principal_id != execution.thread.initiating_principal_id
+        || execution.activation.initiating_principal_id != execution.thread.initiating_principal_id
+        || event_context != Some(execution.thread.context_id.as_str())
+        || event_session != Some(execution.thread.session_id.as_str())
+        || event_thread != Some(execution.thread.id.as_str())
+    {
+        return Err("Artifact Transfer Event/Thread/Activation/Job 因果边界不一致".into());
+    }
+    Ok(())
+}
+
 fn validate_result_event(current: &ExecutionJobRecord, event: &Event) -> Result<(), StoreError> {
     let event_context_id = event.payload.get("context_id").and_then(JsonValue::as_str);
     let event_session_id = event.payload.get("session_id").and_then(JsonValue::as_str);
@@ -990,7 +1157,7 @@ fn validate_result_event(current: &ExecutionJobRecord, event: &Event) -> Result<
         || event_tool_name != Some(current.tool_name.as_str())
         || event_activation_id != Some(current.activation_id.as_str())
         || event_thread_id != Some(current.thread_id.as_str())
-        || event.topic != "chat/tool_output"
+        || !crate::memory::execution_job_result_topic_matches(&current.tool_name, &event.topic)
         || event.event_type != crate::event::TYPE_TOOL_OUTPUT
     {
         return Err(format!(

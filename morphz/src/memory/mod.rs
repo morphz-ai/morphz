@@ -1664,6 +1664,26 @@ pub struct NewExecutionJob {
     pub requires_approval: bool,
 }
 
+/// One direct SDK/HTTP Artifact Transfer materialized as the same durable
+/// scheduler graph used by model-originated physical work. The Store commits
+/// all four authorities together so a crash cannot leave an Event without a
+/// runnable Job, or a Job without its stable Thread/Activation identity.
+#[derive(Debug, Clone)]
+pub struct NewArtifactTransferExecution {
+    pub request_event: crate::event::Event,
+    pub thread: NewThread,
+    pub activation: NewThreadActivation,
+    pub job: NewExecutionJob,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ArtifactTransferExecutionRecord {
+    pub request_event_sequence: u64,
+    pub thread: ThreadRecord,
+    pub activation: ThreadActivationRecord,
+    pub job: ExecutionJobRecord,
+}
+
 /// Durable lifecycle of one Runtime-owned Yao plan.
 ///
 /// A Plan Execution owns only deterministic control state. Reality-facing
@@ -2888,11 +2908,33 @@ pub trait TimerStore: Send + Sync {
     ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
 }
 
+/// Runtime-owned physical tools may publish a domain-specific terminal topic
+/// while retaining the canonical `tool_output` event type and complete causal
+/// identity. Keep that vocabulary explicit so Store validation does not force
+/// every physical capability back into the generic chat topic.
+pub(crate) fn execution_job_result_topic_matches(tool_name: &str, topic: &str) -> bool {
+    topic == "chat/tool_output"
+        || (tool_name == "transfer_artifact"
+            && matches!(
+                topic,
+                "runtime/artifact_transfer_completed"
+                    | "runtime/artifact_transfer_failed"
+                    | "runtime/artifact_transfer_cancelled"
+            ))
+}
+
 /// Durable physical execution plane. Every mutating operation is fenced by the
 /// Job revision; worker-owned operations additionally require the current claim
 /// token. This keeps process ownership separate from semantic Thread outcome.
 #[async_trait::async_trait]
 pub trait ExecutionJobStore: Send + Sync {
+    /// Atomically materializes one Runtime-owned direct Artifact Transfer.
+    /// Exact replay is idempotent; reuse of any causal identity for different
+    /// immutable content is rejected.
+    async fn ensure_artifact_transfer_execution(
+        &self,
+        execution: NewArtifactTransferExecution,
+    ) -> Result<ArtifactTransferExecutionRecord, Box<dyn std::error::Error + Send + Sync>>;
     /// Idempotent on `(activation_id, tool_call_id)`. Reusing that causal key
     /// with different immutable fields is rejected instead of silently merged.
     async fn create_execution_job(

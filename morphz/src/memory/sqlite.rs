@@ -8,36 +8,37 @@ use crate::memory::{
     ActionGroupMemberStatus, ActionGroupRecord, ActionGroupStatus, ActionGroupStore,
     ActivationOutcomeCommit, ActivationStore, AgentBootstrapRecord, AgentRecord,
     ApprovalAuditCommit, ApprovalFilter, ApprovalMutation, ApprovalRecord, ApprovalResolution,
-    ApprovalStatus, ApprovalStore, AttentionAcknowledgementRecord, CapabilityLeaseFilter,
-    CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus, CapabilityLeaseStore,
-    CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock, ContextUpdate,
-    DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit, DeliveryIngressStore,
-    DeliveryStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest, EdgeCommandMutation,
-    EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus, EdgeExecutionStore,
-    EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore, ExecutionApprovalMutation,
-    ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation, ExecutionJobRecord,
-    ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal, ExecutionNodeMutation,
-    ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
+    ApprovalStatus, ApprovalStore, ArtifactTransferExecutionRecord, AttentionAcknowledgementRecord,
+    CapabilityLeaseFilter, CapabilityLeaseMutation, CapabilityLeaseRecord, CapabilityLeaseStatus,
+    CapabilityLeaseStore, CognitiveClockStore, CognitiveContextRecord, ContextCognitiveClock,
+    ContextUpdate, DelegationRecord, DelegationStatus, DelegationStore, DeliveryFlushCommit,
+    DeliveryIngressStore, DeliveryStatus, DialogueTurnRetryMutation, DialogueTurnRetryRequest,
+    EdgeCommandMutation, EdgeCommandOutputChunk, EdgeCommandRecord, EdgeCommandStatus,
+    EdgeExecutionStore, EdgeOutputStream, EdgeReconciliationReport, EventAppend, EventStore,
+    ExecutionApprovalMutation, ExecutionApprovalStore, ExecutionJobFilter, ExecutionJobMutation,
+    ExecutionJobRecord, ExecutionJobStatus, ExecutionJobStore, ExecutionJobTerminal,
+    ExecutionNodeMutation, ExecutionNodeRecord, ExecutionNodeStatus, ExecutionRetrySafety,
     ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationMutation,
     ExecutionTargetAuthorizationRecord, ExecutionTargetAuthorizationScope,
     ExecutionTargetAuthorizationStatus, ExecutionTargetAuthorizationStore, ExecutionTargetFilter,
     ExecutionTargetKind, ExecutionTargetMutation, ExecutionTargetRecord,
     ExecutionTargetRegistration, ExecutionTargetStatus, ExecutionTargetStore, MessageClaim,
     MindProjectionCommit, MindProjectionRecord, MindProjectionStore, MindSnapshotRecord,
-    NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest, NewCapabilityLease,
-    NewCognitiveContext, NewDelegation, NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge,
-    NewExecutionTargetAuthorization, NewMindProjection, NewNodePairingCode, NewObjective,
-    NewPrincipal, NewRuntimeTimer, NewSchedule, NewSession, NewThread, NewThreadActivation,
-    NewThreadSignal, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, PairExecutionNode, PrincipalRecord, QueryFilter, RecallDocument,
-    RecallDocumentKind, RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch,
-    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
-    RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus, ScheduleStore,
-    SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind,
-    SessionPrincipalBinding, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
-    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
-    ThreadActivationRecord, ThreadActivationStatus, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore, TimerStore,
+    NewActionGroup, NewActionGroupMember, NewAgent, NewApprovalRequest,
+    NewArtifactTransferExecution, NewCapabilityLease, NewCognitiveContext, NewDelegation,
+    NewEdgeCommand, NewExecutionJob, NewExecutionNodeChallenge, NewExecutionTargetAuthorization,
+    NewMindProjection, NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer,
+    NewSchedule, NewSession, NewThread, NewThreadActivation, NewThreadSignal, ObjectiveMutation,
+    ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
+    PrincipalRecord, QueryFilter, RecallDocument, RecallDocumentKind, RecallIndexAudit,
+    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
+    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord,
+    ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate,
+    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
+    SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
+    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
+    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
 // SQLx supplies the Rust FFI surface; hotbundle supplies a current SQLite
@@ -5284,7 +5285,9 @@ impl ActivationStore for SqliteStore {
                       END AS admission_rank
                  FROM thread_activations activations
                  JOIN events ON events.id = activations.trigger_event_id
+                 JOIN threads ON threads.root_turn_id = activations.root_turn_id
                  WHERE activations.status = 'queued'
+                   AND threads.executor_kind != 'artifact_transfer'
                ), aged AS (
                  SELECT classified.*,
                         MAX(
@@ -9524,6 +9527,125 @@ async fn ensure_execution_job_in_transaction(
 
 #[async_trait::async_trait]
 impl ExecutionJobStore for SqliteStore {
+    async fn ensure_artifact_transfer_execution(
+        &self,
+        execution: NewArtifactTransferExecution,
+    ) -> Result<ArtifactTransferExecutionRecord, Box<dyn std::error::Error + Send + Sync>> {
+        validate_artifact_transfer_execution_shape(&execution)?;
+        let mut tx = self.pool.begin().await?;
+
+        append_event_idempotent_in_transaction(&mut tx, &execution.request_event).await?;
+        let request_event_sequence = u64::try_from(
+            sqlx::query_scalar::<_, i64>("SELECT rowid FROM events WHERE id = ?")
+                .bind(&execution.request_event.id)
+                .fetch_one(&mut *tx)
+                .await?,
+        )
+        .map_err(|_| "Artifact Transfer request Event sequence 不能为负数")?;
+
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        sqlx::query(
+            r#"INSERT OR IGNORE INTO threads
+               (id, revision, agent_id, context_id, session_id, initiating_principal_id,
+                root_turn_id, kind, status, executor_kind, executor_id, target_id,
+                delivery_status, created_at, updated_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, 'execution', 'open',
+                       'artifact_transfer', ?, ?, 'none', ?, ?)"#,
+        )
+        .bind(&execution.thread.id)
+        .bind(&execution.thread.agent_id)
+        .bind(&execution.thread.context_id)
+        .bind(&execution.thread.session_id)
+        .bind(&execution.thread.initiating_principal_id)
+        .bind(&execution.thread.root_turn_id)
+        .bind(&execution.thread.executor_id)
+        .bind(&execution.thread.target_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        let thread_row = sqlx::query("SELECT * FROM threads WHERE root_turn_id = ?")
+            .bind(&execution.thread.root_turn_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let thread = thread_from_row(&thread_row)?;
+        if thread.id != execution.thread.id
+            || thread.agent_id != execution.thread.agent_id
+            || thread.context_id != execution.thread.context_id
+            || thread.session_id != execution.thread.session_id
+            || thread.initiating_principal_id != execution.thread.initiating_principal_id
+            || thread.kind != ThreadKind::Execution
+            || thread.executor_kind != "artifact_transfer"
+            || thread.executor_id != execution.thread.executor_id
+            || thread.target_id != execution.thread.target_id
+        {
+            return Err(format!(
+                "Artifact Transfer root '{}' 已被不同 Thread 占用",
+                execution.thread.root_turn_id
+            )
+            .into());
+        }
+
+        let trigger_sequence = i64::try_from(request_event_sequence)
+            .map_err(|_| "Artifact Transfer trigger sequence 超出 SQLite INTEGER 范围")?;
+        sqlx::query(
+            r#"INSERT OR IGNORE INTO thread_activations
+               (id, revision, generation, agent_id, context_id, session_id,
+                initiating_principal_id, trigger_event_id, trigger_sequence, trigger_kind,
+                parent_activation_id, root_turn_id, status, created_at, updated_at)
+               VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, 'runtime/artifact_transfer_requested',
+                       ?, ?, 'queued', ?, ?)"#,
+        )
+        .bind(&execution.activation.id)
+        .bind(
+            i64::try_from(thread.generation)
+                .map_err(|_| "Thread generation 超出 SQLite INTEGER 范围")?,
+        )
+        .bind(&execution.activation.agent_id)
+        .bind(&execution.activation.context_id)
+        .bind(&execution.activation.session_id)
+        .bind(&execution.activation.initiating_principal_id)
+        .bind(&execution.activation.trigger_event_id)
+        .bind(trigger_sequence)
+        .bind(&execution.activation.parent_activation_id)
+        .bind(&execution.activation.root_turn_id)
+        .bind(&now)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        let activation_row =
+            sqlx::query("SELECT * FROM thread_activations WHERE trigger_event_id = ?")
+                .bind(&execution.activation.trigger_event_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        let activation = thread_activation_from_row(&activation_row)?;
+        if activation.id != execution.activation.id
+            || activation.agent_id != execution.activation.agent_id
+            || activation.context_id != execution.activation.context_id
+            || activation.session_id != execution.activation.session_id
+            || activation.initiating_principal_id != execution.activation.initiating_principal_id
+            || activation.root_turn_id != execution.activation.root_turn_id
+            || activation.trigger_sequence != request_event_sequence
+            || activation.trigger_kind != "runtime/artifact_transfer_requested"
+            || activation.parent_activation_id != execution.activation.parent_activation_id
+        {
+            return Err(format!(
+                "Artifact Transfer Event '{}' 已被不同 Activation 占用",
+                execution.activation.trigger_event_id
+            )
+            .into());
+        }
+
+        let (job, _) = ensure_execution_job_in_transaction(&mut tx, &execution.job).await?;
+        tx.commit().await?;
+        Ok(ArtifactTransferExecutionRecord {
+            request_event_sequence,
+            thread,
+            activation,
+            job,
+        })
+    }
+
     async fn create_execution_job(
         &self,
         job: NewExecutionJob,
@@ -10016,7 +10138,7 @@ impl ExecutionJobStore for SqliteStore {
             || event_tool_name != Some(current.tool_name.as_str())
             || event_activation_id != Some(current.activation_id.as_str())
             || event_thread_id != Some(current.thread_id.as_str())
-            || event.topic != "chat/tool_output"
+            || !super::execution_job_result_topic_matches(&current.tool_name, &event.topic)
             || event.event_type != crate::event::TYPE_TOOL_OUTPUT
         {
             tx.rollback().await?;
@@ -10281,6 +10403,58 @@ impl ExecutionJobStore for SqliteStore {
         tx.commit().await?;
         Ok(ExecutionJobMutation::Updated(updated))
     }
+}
+
+fn validate_artifact_transfer_execution_shape(
+    execution: &NewArtifactTransferExecution,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if execution.request_event.topic != "runtime/artifact_transfer_requested"
+        || execution.request_event.event_type != "runtime_control"
+    {
+        return Err(
+            "Artifact Transfer 必须由 runtime/artifact_transfer_requested Event 启动".into(),
+        );
+    }
+    if execution.thread.kind != ThreadKind::Execution
+        || execution.thread.executor_kind != "artifact_transfer"
+    {
+        return Err("Artifact Transfer 必须使用 Execution/artifact_transfer Thread".into());
+    }
+    let event_context = execution
+        .request_event
+        .payload
+        .get("context_id")
+        .and_then(JsonValue::as_str);
+    let event_session = execution
+        .request_event
+        .payload
+        .get("session_id")
+        .and_then(JsonValue::as_str);
+    let event_thread = execution
+        .request_event
+        .payload
+        .get("thread_id")
+        .and_then(JsonValue::as_str);
+    if execution.activation.trigger_event_id != execution.request_event.id
+        || execution.activation.root_turn_id != execution.thread.root_turn_id
+        || execution.job.activation_id != execution.activation.id
+        || execution.job.thread_id != execution.thread.id
+        || execution.job.tool_name != crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME
+        || execution.job.agent_id != execution.thread.agent_id
+        || execution.job.context_id != execution.thread.context_id
+        || execution.job.session_id != execution.thread.session_id
+        || execution.activation.agent_id != execution.thread.agent_id
+        || execution.activation.context_id != execution.thread.context_id
+        || execution.activation.session_id != execution.thread.session_id
+        || execution.job.initiating_principal_id != execution.thread.initiating_principal_id
+        || execution.activation.initiating_principal_id != execution.thread.initiating_principal_id
+        || event_context != Some(execution.thread.context_id.as_str())
+        || event_session != Some(execution.thread.session_id.as_str())
+        || event_thread != Some(execution.thread.id.as_str())
+    {
+        return Err("Artifact Transfer Event/Thread/Activation/Job 因果边界不一致".into());
+    }
+    Ok(())
 }
 
 fn validate_sqlite_result_event(

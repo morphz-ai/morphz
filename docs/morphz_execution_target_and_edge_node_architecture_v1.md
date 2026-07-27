@@ -1,6 +1,6 @@
 # Morphz Execution Target 与用户边缘执行节点架构 v1
 
-> 状态：v1 核心闭环已实现；Artifact 物理传输、Node Relay 与商业计费留待后续  
+> 状态：v1 核心闭环、Artifact 物理传输与 Node Relay 已实现；对象存储 Transport 与商业计费留待后续
 > 日期：2026-07-21  
 > 适用范围：云端 Agent、本地执行代理、多节点工具调度、远程沙箱、审批、Execution Job、商业化产品交付  
 > 相关文档：[`morphz_scheduler_kernel_and_domain_model_v1.md`](morphz_scheduler_kernel_and_domain_model_v1.md)、[`morphz_sandbox_execution_and_approval_architecture.md`](morphz_sandbox_execution_and_approval_architecture.md)、[`morphz_sdk_and_trusted_gateway_identity_v1.md`](morphz_sdk_and_trusted_gateway_identity_v1.md)、[`morphz_single_identity_distributed_cognition_architecture.md`](morphz_single_identity_distributed_cognition_architecture.md)
@@ -224,7 +224,7 @@ Target access 进入 Context protocol v23：`authorization=global|owner_wide|sco
 
 - Edge 传输 v1 使用经过认证的主动 HTTP 轮询；WebSocket／HTTP2／QUIC 多路复用是可替换传输，不属于领域语义；
 - `Cloud → Provider Edge Node → Managed SSH Target` 只支持一跳；下游 Morphz Node Relay、多跳路由、环路检测和逐跳协议尚未实现；
-- Artifact Transfer 已定义安全接口和回执验证，但尚未注册会绕过 Execution Job、审批或沙箱的物理复制 Backend；
+- Artifact Transfer 的完整数据平面语义已在 [morphz_artifact_transfer_data_plane_v1.md](morphz_artifact_transfer_data_plane_v1.md) 中冻结并实现；对象存储 multipart 等 Transport 扩展不改变领域边界；
 - Harness 只有稳定的描述、发现和绑定接口，尚未冻结 Coding／Research 等上层 DSL；
 - Managed Cloud Worker、对象存储 Artifact Backend、计费与商业配额属于产品部署层，不伪装成已完成的 Runtime 能力。
 
@@ -559,7 +559,7 @@ HTTP 使用 `/api/execution-targets`、`/api/execution-target-authorizations`、
 
 ### 阶段四：多 Target 调度
 
-**状态：核心调度已完成，扩展接口已建立。** Artifact Transfer 与 Harness 目前为安全的类型和 Backend Registry，不包含默认物理传输实现。
+**状态：核心调度与 Artifact Transfer v1 数据平面已完成。** 早期类型和 Backend Registry 不再代表最终权限、路由或生命周期语义；以 [Artifact Transfer 数据平面设计](morphz_artifact_transfer_data_plane_v1.md) 为准。
 
 - Agent 显式选择 Target；
 - Runtime 处理能力选择器、在线状态和并发上限；

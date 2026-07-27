@@ -61,6 +61,34 @@ interface RuntimePageProps {
   onCancelJob: (jobId: string, revision: number) => void
 }
 
+interface ArtifactProgress {
+  kind: 'artifact_transfer'
+  phase: string
+  bytes_transferred: number
+  total_bytes?: number
+  current_entry?: string
+  throughput_bytes_per_second?: number
+}
+
+function artifactProgress(value?: string): ArtifactProgress | null {
+  if (!value?.startsWith('{')) return null
+  try {
+    const parsed = JSON.parse(value) as Partial<ArtifactProgress>
+    return parsed.kind === 'artifact_transfer' && typeof parsed.bytes_transferred === 'number'
+      ? parsed as ArtifactProgress
+      : null
+  } catch {
+    return null
+  }
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`
+  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KiB`
+  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MiB`
+  return `${(value / 1024 ** 3).toFixed(1)} GiB`
+}
+
 export function RuntimePage(props: RuntimePageProps) {
   const { t } = useTranslation()
   return (
@@ -114,14 +142,25 @@ export function RuntimePage(props: RuntimePageProps) {
           <section>
             <header><span><Terminal size={13} /> {t('runtime.executionJobs')}</span><b>{props.executionJobs.length}</b></header>
             <div className="execution-plane-list">
-              {props.executionJobs.map(job => (
-                <article key={job.id}>
+              {props.executionJobs.map(job => {
+                const progress = artifactProgress(job.progress_ref)
+                const percent = progress?.total_bytes
+                  ? Math.min(100, progress.bytes_transferred / progress.total_bytes * 100)
+                  : undefined
+                return <article key={job.id} className={progress ? 'artifact-transfer-job' : undefined}>
                   <i data-status={job.status} />
-                  <span><strong>{job.tool_name}</strong><small title={job.id}>{job.target_id} · {job.thread_id}</small></span>
+                  <span>
+                    <strong>{job.tool_name}</strong>
+                    <small title={job.id}>{job.target_id} · {job.thread_id}</small>
+                    {progress && <span className="artifact-transfer-progress" title={progress.current_entry}>
+                      <span><b>{t(`runtime.artifactPhase.${progress.phase}`, { defaultValue: progress.phase })}</b><em>{formatBytes(progress.bytes_transferred)}{progress.total_bytes ? ` / ${formatBytes(progress.total_bytes)}` : ''}{progress.throughput_bytes_per_second ? ` · ${formatBytes(progress.throughput_bytes_per_second)}/s` : ''}</em></span>
+                      <i><b style={{ width: `${percent ?? 12}%` }} /></i>
+                    </span>}
+                  </span>
                   <em>{statusLabel(job.status, t)}</em>
                   {!['succeeded', 'failed', 'cancelled', 'lost'].includes(job.status) && <button type="button" onClick={() => props.onCancelJob(job.id, job.revision)}>{t('runtime.cancel')}</button>}
                 </article>
-              ))}
+              })}
               {props.executionJobs.length === 0 && <p>{t('runtime.noExecutionJobs')}</p>}
             </div>
           </section>
