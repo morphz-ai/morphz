@@ -3428,6 +3428,36 @@ impl Orchestrator {
             )
             .into());
         }
+        if !matches!(context_scope.as_str(), "current_session" | "mind_only") {
+            return Err(format!("不支持的 delegate context_scope: {context_scope}").into());
+        }
+        let instruction = match success_when.as_deref() {
+            Some(success_when) => format!(
+                "You are a cognitively isolated Sub Agent delegated by Session '{parent_session_id}'. This is not a new process, container, or physical sandbox: you share the same Runtime workspace and permission boundary with the parent. Never modify Runtime configuration to manufacture isolation. Complete the task autonomously.\n\nTask:\n{task}\n\nSuccess condition:\n{success_when}\n\nWhen complete, return a self-contained final result. Your result will be delivered to the parent Session; do not address sibling Sessions."
+            ),
+            None => format!(
+                "You are a cognitively isolated Sub Agent delegated by Session '{parent_session_id}'. This is not a new process, container, or physical sandbox: you share the same Runtime workspace and permission boundary with the parent. Never modify Runtime configuration to manufacture isolation. Complete the task autonomously.\n\nTask:\n{task}\n\nWhen complete, return a self-contained final result. Your result will be delivered to the parent Session; do not address sibling Sessions."
+            ),
+        };
+        // Freeze and bound the active parent Session projection before any
+        // child rows are created. A failed preflight must not leave an empty
+        // Context/Session behind, and current_session must never fall back to
+        // replaying the parent's immutable Ledger.
+        let session_projection = if context_scope == "current_session" {
+            Some(
+                self.context_engine
+                    .prepare_session_projection_seed(
+                        &parent_context_id,
+                        &parent_session_id,
+                        &child_context_id,
+                        &child_session_id,
+                        &instruction,
+                    )
+                    .await?,
+            )
+        } else {
+            None
+        };
         session_store
             .create_context(NewCognitiveContext {
                 id: child_context_id.clone(),
@@ -3435,9 +3465,20 @@ impl Orchestrator {
                 title: format!("Delegation {}", delegation_id),
             })
             .await?;
-        self.context_engine
-            .seed_context_from_mind(&parent_context_id, None, &child_context_id)
-            .await?;
+        if let Some(projection) = session_projection.as_ref() {
+            self.context_engine
+                .seed_context_from_mind_with_session_projection(
+                    &parent_context_id,
+                    Some(projection.source_mind_version),
+                    &child_context_id,
+                    projection,
+                )
+                .await?;
+        } else {
+            self.context_engine
+                .seed_context_from_mind(&parent_context_id, None, &child_context_id)
+                .await?;
+        }
         session_store
             .create_session(NewSession {
                 id: child_session_id.clone(),
@@ -3461,17 +3502,22 @@ impl Orchestrator {
                 );
             }
         }
-        if context_scope == "current_session" {
-            self.context_engine
-                .import_session_projection(
-                    &parent_context_id,
-                    &parent_session_id,
-                    &child_context_id,
-                    &child_session_id,
-                )
+        if let Some(projection) = session_projection {
+            let active_observations = projection.active_observations;
+            let source_estimated_tokens = projection.source_estimated_tokens;
+            let target_estimated_tokens = projection.target_estimated_tokens;
+            let imported = self
+                .context_engine
+                .import_prepared_session_projection(projection)
                 .await?;
-        } else if context_scope != "mind_only" {
-            return Err(format!("不支持的 delegate context_scope: {context_scope}").into());
+            tracing::info!(
+                delegation_id,
+                active_observations,
+                imported,
+                source_estimated_tokens,
+                target_estimated_tokens,
+                "Sub Agent 已从父 Session active Projection 创建有界认知快照"
+            );
         }
         session_store
             .create_delegation(NewDelegation {
@@ -3491,14 +3537,6 @@ impl Orchestrator {
             .update_delegation_status(&delegation_id, DelegationStatus::Running, None)
             .await?;
         self.register_session_context(&child_session_id, &child_context_id);
-        let instruction = match success_when {
-            Some(success_when) => format!(
-                "You are a cognitively isolated Sub Agent delegated by Session '{parent_session_id}'. This is not a new process, container, or physical sandbox: you share the same Runtime workspace and permission boundary with the parent. Never modify Runtime configuration to manufacture isolation. Complete the task autonomously.\n\nTask:\n{task}\n\nSuccess condition:\n{success_when}\n\nWhen complete, return a self-contained final result. Your result will be delivered to the parent Session; do not address sibling Sessions."
-            ),
-            None => format!(
-                "You are a cognitively isolated Sub Agent delegated by Session '{parent_session_id}'. This is not a new process, container, or physical sandbox: you share the same Runtime workspace and permission boundary with the parent. Never modify Runtime configuration to manufacture isolation. Complete the task autonomously.\n\nTask:\n{task}\n\nWhen complete, return a self-contained final result. Your result will be delivered to the parent Session; do not address sibling Sessions."
-            ),
-        };
         let mut start_payload = vec![
             ("context_id".to_string(), json!(child_context_id)),
             ("session_id".to_string(), json!(child_session_id)),

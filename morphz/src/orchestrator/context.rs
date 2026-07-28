@@ -4,7 +4,7 @@ use crate::event::{
     TYPE_USER_MESSAGE,
 };
 use crate::memory::{
-    CognitiveClockStore, ContextCognitiveClock, DeliveryStatus, EventStore,
+    CognitiveClockStore, ContextCognitiveClock, DeliveryStatus, EventAppend, EventStore,
     ExecutionTargetAuthorizationFilter, ExecutionTargetAuthorizationRecord,
     ExecutionTargetAuthorizationScope, ExecutionTargetAuthorizationStatus,
     ExecutionTargetAuthorizationStore, ExecutionTargetFilter, ExecutionTargetRecord,
@@ -386,6 +386,27 @@ pub struct MindSeedReceipt {
     pub snapshot_hash: String,
     pub projected_hash: String,
     pub inherited_frames: usize,
+}
+
+/// Frozen active Session projection prepared before a child Context exists.
+///
+/// The target Events are derived only from `session_projections`, never by
+/// replaying the immutable source Ledger. Keeping the prepared Events here
+/// also fences the child seed against concurrent retire/restore operations in
+/// the parent after delegation admission.
+#[derive(Debug, Clone)]
+pub struct SessionProjectionSeedPlan {
+    pub source_context_id: String,
+    pub source_session_id: String,
+    pub source_mind_version: u64,
+    pub target_context_id: String,
+    pub target_session_id: String,
+    pub active_observations: usize,
+    pub source_estimated_tokens: usize,
+    pub inherited_estimated_tokens: usize,
+    pub target_estimated_tokens: usize,
+    target_events: Vec<Event>,
+    protected_event_id_map: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1899,6 +1920,58 @@ impl ContextEngine {
         expected_source_version: Option<u64>,
         target_context_id: &str,
     ) -> Result<MindSeedReceipt, DynError> {
+        self.seed_context_from_mind_inner(
+            source_context_id,
+            expected_source_version,
+            target_context_id,
+            None,
+        )
+        .await
+    }
+
+    pub async fn seed_context_from_mind_with_session_projection(
+        &self,
+        source_context_id: &str,
+        expected_source_version: Option<u64>,
+        target_context_id: &str,
+        projection: &SessionProjectionSeedPlan,
+    ) -> Result<MindSeedReceipt, DynError> {
+        if projection.source_context_id != source_context_id
+            || projection.target_context_id != target_context_id
+        {
+            return Err(format!(
+                "Session Projection Seed 路由不一致：plan {} -> {}，请求 {} -> {}",
+                projection.source_context_id,
+                projection.target_context_id,
+                source_context_id,
+                target_context_id
+            )
+            .into());
+        }
+        if expected_source_version.is_some_and(|version| version != projection.source_mind_version)
+        {
+            return Err(format!(
+                "Session Projection Seed 版本不一致：plan source r{}，请求 r{:?}",
+                projection.source_mind_version, expected_source_version
+            )
+            .into());
+        }
+        self.seed_context_from_mind_inner(
+            source_context_id,
+            Some(projection.source_mind_version),
+            target_context_id,
+            Some(projection),
+        )
+        .await
+    }
+
+    async fn seed_context_from_mind_inner(
+        &self,
+        source_context_id: &str,
+        expected_source_version: Option<u64>,
+        target_context_id: &str,
+        projection: Option<&SessionProjectionSeedPlan>,
+    ) -> Result<MindSeedReceipt, DynError> {
         if source_context_id == target_context_id {
             return Err("Mind Seed 的来源与目标 Context 不能相同".into());
         }
@@ -1926,7 +1999,12 @@ impl ContextEngine {
                 .into());
             }
         }
-        let projected = project_mind_seed(&source_state);
+        let mut projected = project_mind_seed(&source_state);
+        if let Some(projection) = projection {
+            projected
+                .protected
+                .extend(projection.protected_event_id_map.values().cloned());
+        }
         let snapshot_hash = mind_state_hash(&source_state)?;
         let projected_hash = mind_state_hash(&projected)?;
         let seed_id = format!(
@@ -2024,6 +2102,141 @@ impl ContextEngine {
         })
     }
 
+    /// Freeze the parent's current active Session Projection before creating
+    /// any child Context rows. This is intentionally a two-phase API: a
+    /// rejected oversized projection leaves no half-created delegation.
+    pub async fn prepare_session_projection_seed(
+        &self,
+        source_context_id: &str,
+        source_session_id: &str,
+        target_context_id: &str,
+        target_session_id: &str,
+        additional_prompt: &str,
+    ) -> Result<SessionProjectionSeedPlan, DynError> {
+        let projection_store = self.session_projection_store.as_ref().ok_or(
+            "current_session delegation 需要 SessionProjectionStore；禁止回退到 Ledger 全量重放",
+        )?;
+        let source_state = self.load_current_mind(source_context_id, None).await?;
+        let mut source_events = projection_store
+            .query_session_projections(source_context_id, &[source_session_id.to_string()], false)
+            .await?
+            .into_iter()
+            .filter(|event| event_session(event) == Some(source_session_id))
+            .filter(is_observation)
+            // The Projection Store is authoritative, but this second fence
+            // prevents a stale/corrupt row from resurrecting a retired Event.
+            .filter(|event| !source_state.retired.contains(&event.id))
+            .collect::<Vec<_>>();
+        source_events.sort_by_key(|event| event.sequence);
+
+        let projected_mind = project_mind_seed(&source_state);
+        let source_observation_tokens = source_events
+            .iter()
+            .map(|event| estimate_observation_event_tokens(event, &self.config))
+            .sum::<usize>();
+        let source_estimated_tokens = estimate_active_mind_tokens(&source_state)
+            .saturating_add(source_observation_tokens)
+            .saturating_add(1_000);
+        let inherited_estimated_tokens = estimate_active_mind_tokens(&projected_mind)
+            .saturating_add(source_observation_tokens)
+            .saturating_add(1_000);
+        if inherited_estimated_tokens > source_estimated_tokens {
+            return Err(format!(
+                "DELEGATION_PROJECTION_AMPLIFIED：父 Session 当前 Projection 估算 {} tokens，子 Context 继承内容估算 {} tokens",
+                source_estimated_tokens, inherited_estimated_tokens
+            )
+            .into());
+        }
+
+        let mut protected_event_id_map = HashMap::new();
+        let mut target_events = Vec::with_capacity(source_events.len());
+        for (index, event) in source_events.iter().enumerate() {
+            let source_sequence = event.sequence.unwrap_or(index as u64);
+            let target_event_id = format!(
+                "context_projection_{}_{}_{}",
+                target_context_id, source_sequence, index
+            );
+            if source_state.protected.contains(&event.id) {
+                protected_event_id_map.insert(event.id.clone(), target_event_id.clone());
+            }
+            let mut payload = event.payload.clone();
+            payload.insert("context_id".to_string(), json!(target_context_id));
+            payload.insert("session_id".to_string(), json!(target_session_id));
+            payload.insert("source_context_id".to_string(), json!(source_context_id));
+            payload.insert("source_session_id".to_string(), json!(source_session_id));
+            payload.insert("source_event_id".to_string(), json!(&event.id));
+            payload.insert("source_topic".to_string(), json!(&event.topic));
+            payload.insert("projection".to_string(), json!("selected_session"));
+            target_events.push(Event::new(
+                target_event_id,
+                "System-ContextProjection".to_string(),
+                event.event_type.clone(),
+                "context/projected_observation".to_string(),
+                payload,
+            ));
+        }
+
+        let target_estimated_tokens = estimate_active_mind_tokens(&projected_mind)
+            .saturating_add(
+                target_events
+                    .iter()
+                    .map(|event| estimate_observation_event_tokens(event, &self.config))
+                    .sum::<usize>(),
+            )
+            .saturating_add(estimate_text_tokens(additional_prompt))
+            .saturating_add(1_000);
+        let work_limit = self
+            .config
+            .context_hard_token_limit
+            .saturating_sub(self.config.context_maintenance_reserve_tokens)
+            .max(1);
+        if target_estimated_tokens > work_limit {
+            return Err(format!(
+                "DELEGATION_CONTEXT_LIMIT_EXCEEDED：子 Context 创建前估算 {} tokens，工作上限 {}（hard={}，maintenance-reserve={}）；父 Session active observations={}。请先维护父 Context 或使用 mind_only",
+                target_estimated_tokens,
+                work_limit,
+                self.config.context_hard_token_limit,
+                self.config.context_maintenance_reserve_tokens,
+                source_events.len()
+            )
+            .into());
+        }
+
+        Ok(SessionProjectionSeedPlan {
+            source_context_id: source_context_id.to_string(),
+            source_session_id: source_session_id.to_string(),
+            source_mind_version: source_state.version,
+            target_context_id: target_context_id.to_string(),
+            target_session_id: target_session_id.to_string(),
+            active_observations: source_events.len(),
+            source_estimated_tokens,
+            inherited_estimated_tokens,
+            target_estimated_tokens,
+            target_events,
+            protected_event_id_map,
+        })
+    }
+
+    pub async fn import_prepared_session_projection(
+        &self,
+        projection: SessionProjectionSeedPlan,
+    ) -> Result<usize, DynError> {
+        let imported = projection.target_events.len();
+        self.store
+            .append_batch(
+                projection
+                    .target_events
+                    .into_iter()
+                    .map(|event| EventAppend {
+                        event,
+                        signal_outbox: false,
+                    })
+                    .collect(),
+            )
+            .await?;
+        Ok(imported)
+    }
+
     pub async fn import_session_projection(
         &self,
         source_context_id: &str,
@@ -2031,41 +2244,16 @@ impl ContextEngine {
         target_context_id: &str,
         target_session_id: &str,
     ) -> Result<usize, DynError> {
-        let source_events = self.context_events(source_context_id).await?;
-        let mut imported = 0usize;
-        for (index, event) in source_events
-            .iter()
-            .filter(|event| event_session(event) == Some(source_session_id))
-            .filter(|event| is_observation(event))
-            .enumerate()
-        {
-            let mut payload = event.payload.clone();
-            payload.insert("context_id".to_string(), json!(target_context_id));
-            // The physical route belongs to the child Session. Keeping the
-            // source Session here would make ordinary parent-session queries
-            // return projected copies from another Context.
-            payload.insert("session_id".to_string(), json!(target_session_id));
-            payload.insert("source_context_id".to_string(), json!(source_context_id));
-            payload.insert("source_session_id".to_string(), json!(source_session_id));
-            payload.insert("source_event_id".to_string(), json!(&event.id));
-            payload.insert("source_topic".to_string(), json!(&event.topic));
-            payload.insert("projection".to_string(), json!("selected_session"));
-            let source_sequence = event.sequence.unwrap_or(index as u64);
-            self.store
-                .append(Event::new(
-                    format!(
-                        "context_projection_{}_{}_{}",
-                        target_context_id, source_sequence, index
-                    ),
-                    "System-ContextProjection".to_string(),
-                    event.event_type.clone(),
-                    "context/projected_observation".to_string(),
-                    payload,
-                ))
-                .await?;
-            imported += 1;
-        }
-        Ok(imported)
+        let projection = self
+            .prepare_session_projection_seed(
+                source_context_id,
+                source_session_id,
+                target_context_id,
+                target_session_id,
+                "",
+            )
+            .await?;
+        self.import_prepared_session_projection(projection).await
     }
 
     pub async fn build_view(&self, session_id: &str) -> Result<ContextView, DynError> {
@@ -7080,6 +7268,12 @@ fn project_mind_seed(source: &MindState) -> MindState {
         version: 0,
         frames,
         relations,
+        // Observation retirement is materialized by SessionProjectionStore:
+        // retired observations are absent from a delegation seed, while each
+        // imported active observation receives a new target Event ID. Copying
+        // source observation IDs here would create dangling retire markers and
+        // would not prevent resurrection. Frame IDs remain stable, so only
+        // their retirement state belongs in the seeded Mind.
         retired: source
             .retired
             .iter()
@@ -11929,6 +12123,202 @@ mod tests {
         assert_eq!(audit.snapshot_revision, Some(0));
         assert_eq!(audit.incremental_transactions_scanned, Some(1));
         assert_eq!(audit.incremental_matches, Some(true));
+    }
+
+    #[tokio::test]
+    async fn delegation_seed_copies_only_active_session_projection() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(
+                tmp.path()
+                    .join("delegation-active-projection.db")
+                    .to_str()
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        );
+        store
+            .create_agent_bundle(
+                NewAgent {
+                    id: "projection-agent".to_string(),
+                    title: "Projection Agent".to_string(),
+                    root_context_id: "projection-parent".to_string(),
+                },
+                NewCognitiveContext {
+                    id: "projection-parent".to_string(),
+                    agent_id: "projection-agent".to_string(),
+                    title: "Projection Parent".to_string(),
+                },
+                NewSession {
+                    id: "projection-parent-session".to_string(),
+                    agent_id: "projection-agent".to_string(),
+                    context_id: "projection-parent".to_string(),
+                    parent_session_id: None,
+                    title: "Projection Parent Session".to_string(),
+                    mount_kind: SessionMountKind::NewBlankContext,
+                },
+            )
+            .await
+            .unwrap();
+
+        let observations = (0..180)
+            .map(|index| EventAppend {
+                event: Event::new(
+                    format!("projection-observation-{index:03}"),
+                    "User".to_string(),
+                    TYPE_USER_MESSAGE.to_string(),
+                    "chat/user_message".to_string(),
+                    vec![
+                        ("context_id".to_string(), json!("projection-parent")),
+                        ("session_id".to_string(), json!("projection-parent-session")),
+                        ("text".to_string(), json!(format!("message {index:03}"))),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                signal_outbox: false,
+            })
+            .collect::<Vec<_>>();
+        store.append_batch(observations).await.unwrap();
+
+        let engine = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig::default(),
+        )
+        .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>);
+        let mut retirement = String::from(
+            "(context-tx (base-version 0) (reason \"retire old projection observations\")",
+        );
+        for index in 0..90 {
+            retirement.push_str(&format!(" (retire projection-observation-{index:03})"));
+        }
+        retirement.push_str(" (protect projection-observation-090))");
+        engine
+            .apply_context_transaction(
+                "projection-parent",
+                "projection-parent-session",
+                &retirement,
+            )
+            .await
+            .unwrap();
+
+        let parent = engine
+            .build_context_projection(
+                "projection-parent",
+                "projection-parent-session",
+                &HashSet::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(parent.observations.len(), 90);
+        assert_eq!(parent.pressure.active_observations, 90);
+
+        let plan = engine
+            .prepare_session_projection_seed(
+                "projection-parent",
+                "projection-parent-session",
+                "projection-child",
+                "projection-child-session",
+                "Complete the delegated task.",
+            )
+            .await
+            .unwrap();
+        assert_eq!(plan.active_observations, 90);
+        assert!(plan.inherited_estimated_tokens <= plan.source_estimated_tokens);
+        assert!(
+            plan.target_estimated_tokens < OrchestratorConfig::default().context_hard_token_limit
+        );
+        let protected_child_id = plan
+            .protected_event_id_map
+            .get("projection-observation-090")
+            .cloned()
+            .expect("protected active observation must be remapped");
+
+        store
+            .create_context(NewCognitiveContext {
+                id: "projection-child".to_string(),
+                agent_id: "projection-agent".to_string(),
+                title: "Projection Child".to_string(),
+            })
+            .await
+            .unwrap();
+        engine
+            .seed_context_from_mind_with_session_projection(
+                "projection-parent",
+                Some(1),
+                "projection-child",
+                &plan,
+            )
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "projection-child-session".to_string(),
+                agent_id: "projection-agent".to_string(),
+                context_id: "projection-child".to_string(),
+                parent_session_id: None,
+                title: "Projection Child Session".to_string(),
+                mount_kind: SessionMountKind::DelegationProjection,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            engine
+                .import_prepared_session_projection(plan)
+                .await
+                .unwrap(),
+            90
+        );
+
+        let child = engine
+            .build_context_projection(
+                "projection-child",
+                "projection-child-session",
+                &HashSet::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(child.observations.len(), 90);
+        assert_eq!(child.pressure.active_observations, 90);
+        assert!(child.state.protected.contains(&protected_child_id));
+        assert!(child.observations.iter().all(|observation| {
+            observation
+                .id
+                .starts_with("context_projection_projection-child_")
+        }));
+
+        let constrained = ContextEngine::new(
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            OrchestratorConfig {
+                context_hard_token_limit: 2_000,
+                context_maintenance_reserve_tokens: 200,
+                ..OrchestratorConfig::default()
+            },
+        )
+        .with_mind_projection_store(Arc::clone(&store) as Arc<dyn MindProjectionStore>)
+        .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>);
+        let oversized_instruction = "x".repeat(20_000);
+        let error = constrained
+            .prepare_session_projection_seed(
+                "projection-parent",
+                "projection-parent-session",
+                "projection-rejected-child",
+                "projection-rejected-session",
+                &oversized_instruction,
+            )
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("DELEGATION_CONTEXT_LIMIT_EXCEEDED"));
+        assert!(store
+            .get_context("projection-rejected-child")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

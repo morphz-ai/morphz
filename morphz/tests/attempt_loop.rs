@@ -11,8 +11,8 @@ use morphz::memory::{
     ActionGroupFilter, ActionGroupStatus, ActionGroupStore as _, ActivationStore as _,
     DelegationStatus, DelegationStore as _, EventStore, NewAgent, NewCognitiveContext, NewSession,
     NewThread, NewThreadActivation, QueryFilter, SessionDirectoryStore as _, SessionMountKind,
-    SessionStore, ThreadActivationMutation, ThreadActivationStatus, ThreadKind, ThreadLifecycle,
-    ThreadStore as _, TimerStore,
+    SessionProjectionStore, SessionStore, ThreadActivationMutation, ThreadActivationStatus,
+    ThreadKind, ThreadLifecycle, ThreadStore as _, TimerStore,
 };
 use morphz::orchestrator::context::ContextEngine;
 use morphz::orchestrator::orchestrator::Orchestrator;
@@ -3945,7 +3945,8 @@ async fn test_delegate_isolates_siblings_returns_to_parent_and_parent_integrates
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
-            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>),
     );
     engine
         .apply_context_transaction(
