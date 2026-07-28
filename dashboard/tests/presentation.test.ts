@@ -10,7 +10,7 @@ import {
   tintIdForLineage,
   toneForSlot,
 } from '../src/app/objectiveLineage.ts'
-import { compactTokens, conversationEventKind, conversationEventLane, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
+import { assistantToolCalls, compactTokens, conversationEventKind, conversationEventLane, newestConversationEventsForLane, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
 
 const translations: Record<string, string> = {
   'status.running': 'Running',
@@ -62,6 +62,34 @@ test('malformed tool arguments degrade to a stable summary', () => {
   )
 })
 
+test('Assistant Call tool payloads normalize provider and Runtime call shapes', () => {
+  assert.deepEqual(assistantToolCalls({
+    tool_calls: [{
+      id: 'call-provider',
+      type: 'function',
+      function: { name: 'read', arguments: '{"path":"src/runtime.rs"}' },
+    }, {
+      id: 'call-runtime',
+      name: 'exec',
+      arguments: '{"command":"cargo test"}',
+      arguments_chars: 24,
+      truncated: false,
+    }],
+  }), [{
+    id: 'call-provider',
+    name: 'read',
+    arguments: '{"path":"src/runtime.rs"}',
+    arguments_chars: undefined,
+    truncated: undefined,
+  }, {
+    id: 'call-runtime',
+    name: 'exec',
+    arguments: '{"command":"cargo test"}',
+    arguments_chars: 24,
+    truncated: false,
+  }])
+})
+
 test('reply presentation follows delivery semantics rather than causal thread provenance', () => {
   assert.equal(conversationEventKind('chat/reply', {
     thread_kind: 'execution',
@@ -92,6 +120,33 @@ test('dual-track presentation separates execution output without moving Runtime 
   assert.equal(conversationEventLane('chat/progress', {}), 'execution_output')
   assert.equal(conversationEventLane('chat/assistant_call', { terminal_outcome: false }), 'execution_output')
   assert.equal(conversationEventLane('runtime/tool_calls_selected', {}), null)
+})
+
+test('split lanes receive independent newest-event windows', () => {
+  const events = [
+    ...Array.from({ length: 150 }, (_, index) => ({
+      id: `dialogue-${index}`,
+      topic: 'chat/user_message',
+      payload: {},
+    })),
+    ...Array.from({ length: 5 }, (_, index) => ({
+      id: `execution-${index}`,
+      topic: 'chat/assistant_call',
+      payload: { terminal_outcome: false, tool_calls: [{ id: `call-${index}` }] },
+    })),
+  ]
+  const dialogue = newestConversationEventsForLane(events, 'dialogue', 100)
+  const execution = newestConversationEventsForLane(events, 'execution_output', 100)
+
+  assert.equal(dialogue.length, 100)
+  assert.equal(dialogue[0]?.id, 'dialogue-50')
+  assert.deepEqual(execution.map(event => event.id), [
+    'execution-0',
+    'execution-1',
+    'execution-2',
+    'execution-3',
+    'execution-4',
+  ])
 })
 
 test('objective lineage links durable outputs back to their Thread and Objective', () => {

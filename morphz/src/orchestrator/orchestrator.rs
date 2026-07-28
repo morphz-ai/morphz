@@ -1300,6 +1300,48 @@ impl Drop for DialogueThreadLease {
     }
 }
 
+/// Process-local wakeup for operator cancellation of one exact Activation.
+/// The persistent Thread generation/lifecycle is the authority; this registry
+/// only makes a currently running model/tool future observe that authority
+/// immediately instead of waiting for its next durable boundary.
+struct ActivationCancellationRegistry {
+    reasons: DashMap<String, String>,
+    epoch: watch::Sender<u64>,
+}
+
+impl Default for ActivationCancellationRegistry {
+    fn default() -> Self {
+        let (epoch, _) = watch::channel(0);
+        Self {
+            reasons: DashMap::new(),
+            epoch,
+        }
+    }
+}
+
+impl ActivationCancellationRegistry {
+    fn request(&self, activation_id: &str, reason: &str) {
+        self.reasons
+            .insert(activation_id.to_string(), reason.to_string());
+        let next = self.epoch.borrow().wrapping_add(1);
+        self.epoch.send_replace(next);
+    }
+
+    fn clear(&self, activation_id: &str) {
+        self.reasons.remove(activation_id);
+    }
+
+    async fn wait(&self, activation_id: &str) -> String {
+        let mut epoch = self.epoch.subscribe();
+        loop {
+            if let Some(reason) = self.reasons.get(activation_id) {
+                return reason.clone();
+            }
+            let _ = epoch.changed().await;
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TerminalDecision {
     Deliver(String),
@@ -1585,6 +1627,7 @@ pub struct Orchestrator {
     thread_gates: DashMap<String, Arc<Mutex<()>>>,
     read_turn_guards: DashMap<String, Arc<Mutex<ReadTurnGuard>>>,
     cancellation_epochs: DashMap<String, watch::Sender<u64>>,
+    activation_cancellations: ActivationCancellationRegistry,
     active_session_turns: DashMap<String, Arc<AtomicUsize>>,
     activation_routes: DashMap<String, ActivationRoute>,
     cancelled_at: DashMap<String, chrono::DateTime<Utc>>,
@@ -2151,6 +2194,7 @@ impl Orchestrator {
             thread_gates: DashMap::new(),
             read_turn_guards: DashMap::new(),
             cancellation_epochs: DashMap::new(),
+            activation_cancellations: ActivationCancellationRegistry::default(),
             active_session_turns: DashMap::new(),
             activation_routes: DashMap::new(),
             cancelled_at: DashMap::new(),
@@ -3875,17 +3919,20 @@ impl Orchestrator {
         let attempt = tokio::select! {
             biased;
             cancelled = self.objective_evaluations.wait_for_activation_cancellation(&activation.id) => {
-                (None, Some(cancelled))
+                (None, Some(cancelled), None)
+            }
+            reason = self.activation_cancellations.wait(&activation.id) => {
+                (None, None, Some(reason))
             }
             lease = objective_lease_maintenance => {
                 match lease {
-                    Ok(revoked) => (None, Some(revoked)),
-                    Err(error) => (Some(Err(error)), None),
+                    Ok(revoked) => (None, Some(revoked), None),
+                    Err(error) => (Some(Err(error)), None, None),
                 }
             }
             _ = cancellation.changed() => {
                 debug_assert_ne!(*cancellation.borrow(), start_epoch);
-                (None, None)
+                (None, None, None)
             }
             result = async {
             if let Some(thread) = self
@@ -3928,11 +3975,11 @@ impl Orchestrator {
                 supervisor.prepare_routed_event(&event, &activation.id).await?;
             }
             self.run_attempt(&session_id, &activation).await
-            } => (Some(result), None),
+            } => (Some(result), None, None),
         };
         active_counter.fetch_sub(1, Ordering::SeqCst);
         let (result, final_status) = match attempt {
-            (Some(result), _) => {
+            (Some(result), _, _) => {
                 let status = if result.is_ok() {
                     ThreadActivationStatus::Succeeded
                 } else {
@@ -3940,7 +3987,7 @@ impl Orchestrator {
                 };
                 (result, status)
             }
-            (None, Some(cancelled)) => {
+            (None, Some(cancelled), _) => {
                 tracing::info!(
                     session_id,
                     objective_id = %cancelled.objective_id,
@@ -3960,7 +4007,20 @@ impl Orchestrator {
                     .map(|_| ());
                 (result, ThreadActivationStatus::Cancelled)
             }
-            (None, None) => {
+            (None, None, Some(reason)) => {
+                tracing::info!(
+                    session_id,
+                    activation_id = %activation.id,
+                    %reason,
+                    "当前 Thread Activation 已由 Runtime 控制取消"
+                );
+                let result = self
+                    .request_cancel_execution_jobs_for_activation(&activation.id, &reason)
+                    .await
+                    .map(|_| ());
+                (result, ThreadActivationStatus::Cancelled)
+            }
+            (None, None, None) => {
                 tracing::info!(session_id, "当前 Session 执行已由用户取消");
                 let result = self
                     .request_cancel_execution_jobs_for_activation(
@@ -4010,6 +4070,7 @@ impl Orchestrator {
                 "Thread Activation 终态提交失败；保留原始执行错误"
             );
         }
+        self.activation_cancellations.clear(&activation.id);
         self.activation_routes.remove(&activation.id);
         self.objective_evaluations.remove_activation(&activation.id);
         if matches!(
@@ -11386,6 +11447,83 @@ impl Orchestrator {
             return Err(error);
         }
         Ok(was_running)
+    }
+
+    /// Close every non-terminal Activation belonging to one exact logical
+    /// Thread generation. The Thread row is fenced by the caller first; this
+    /// method then propagates cancellation to process-local model futures and
+    /// durable physical Actions without touching sibling Threads in the same
+    /// Session.
+    pub async fn cancel_thread_activations(
+        &self,
+        thread: &ThreadRecord,
+        reason: &str,
+    ) -> Result<usize, DynError> {
+        let store = self
+            .context_engine
+            .session_store()
+            .ok_or("Thread control 需要持久化 SessionStore")?;
+        let activations = store
+            .list_context_thread_activations(&thread.context_id, false)
+            .await?
+            .into_iter()
+            .filter(|activation| {
+                activation.root_turn_id == thread.root_turn_id
+                    && activation.generation == thread.generation
+            })
+            .collect::<Vec<_>>();
+        let mut cancelled = 0usize;
+        for activation in activations {
+            self.request_cancel_execution_jobs_for_activation(&activation.id, reason)
+                .await?;
+            self.activation_cancellations
+                .request(&activation.id, reason);
+
+            let mut current = activation;
+            for _ in 0..8 {
+                if current.status.is_terminal() {
+                    break;
+                }
+                match store
+                    .update_thread_activation(
+                        &current.id,
+                        current.revision,
+                        ThreadActivationStatus::Cancelled,
+                        None,
+                        None,
+                        current.context_snapshot_version,
+                    )
+                    .await?
+                {
+                    ThreadActivationMutation::Updated(updated) => {
+                        self.activation_admission.forget(&updated.id);
+                        if let Err(error) = self.cancel_activation_lease(&updated.id).await {
+                            tracing::warn!(activation_id = %updated.id, %error, "关闭 Thread 后取消 Activation lease 失败");
+                        }
+                        cancelled = cancelled.saturating_add(1);
+                        break;
+                    }
+                    ThreadActivationMutation::Conflict { current: changed }
+                        if !changed.status.is_terminal() =>
+                    {
+                        current = changed;
+                    }
+                    ThreadActivationMutation::Conflict { .. }
+                    | ThreadActivationMutation::NotFound => break,
+                }
+            }
+        }
+        if thread.kind == ThreadKind::DialogueTurn {
+            self.release_dialogue_thread(&thread.session_id, &thread.root_turn_id)
+                .await;
+        }
+        Ok(cancelled)
+    }
+
+    /// Resume scheduler admission for the oldest durable mailbox Signal. If
+    /// the mailbox is empty this is intentionally a no-op.
+    pub async fn wake_resumed_thread(&self, root_turn_id: &str) -> Result<(), DynError> {
+        self.dispatch_next_pending_thread_signal(root_turn_id).await
     }
 
     /// Persist cancellation intent for every non-terminal physical Action

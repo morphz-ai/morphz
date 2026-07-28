@@ -8,7 +8,8 @@ use crate::llm::ReasoningEffort;
 use crate::memory::{
     ContextUpdate, DelegationStatus, ExecutionTargetRegistration, ExecutionTargetStatus, NewAgent,
     NewCognitiveContext, NewObjective, NewSession, ObjectiveMutation, ObjectiveStatus, QueryFilter,
-    ScheduleMutation, SessionMountKind, SessionStatus, SessionUpdate,
+    ScheduleMutation, SessionMountKind, SessionStatus, SessionUpdate, ThreadControlAction,
+    ThreadMutation,
 };
 use crate::orchestrator::context::{FrameRecallDirection, FrameRecallRequest, RecallSearchRequest};
 use crate::runtime::{
@@ -220,6 +221,13 @@ struct AcknowledgeAttentionRequest {
 }
 
 #[derive(serde::Deserialize)]
+struct ControlThreadRequest {
+    action: ThreadControlAction,
+    expected_revision: u64,
+    reason: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 struct MutateExecutionTargetRequest {
     expected_revision: u64,
     status: ExecutionTargetStatus,
@@ -338,6 +346,8 @@ struct EventQuery {
     token: Option<String>,
     after_sequence: Option<u64>,
     before_sequence: Option<u64>,
+    #[serde(default)]
+    conversation_only: bool,
     limit: Option<usize>,
 }
 
@@ -686,7 +696,7 @@ impl Server {
             )
             .route(
                 "/api/contexts/:context_id/threads/:thread_id",
-                get(handle_get_thread_detail),
+                get(handle_get_thread_detail).post(handle_control_thread),
             )
             .route("/api/contexts/:context_id/ledger", get(handle_query_ledger))
             .route(
@@ -2923,6 +2933,51 @@ async fn handle_get_thread_detail(
     }
 }
 
+async fn handle_control_thread(
+    State(state): State<Arc<AppState>>,
+    Path((context_id, thread_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Query(query): Query<AuthQuery>,
+    Json(request): Json<ControlThreadRequest>,
+) -> impl IntoResponse {
+    if !is_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let reason = request
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|reason| !reason.is_empty())
+        .unwrap_or("用户通过 Dashboard 控制 Thread");
+    match state
+        .sdk
+        .control_thread(
+            &context_id,
+            &thread_id,
+            request.expected_revision,
+            request.action,
+            reason,
+        )
+        .await
+    {
+        Ok(ThreadMutation::Updated(thread)) => Json(json!({
+            "updated": true,
+            "thread": thread,
+        }))
+        .into_response(),
+        Ok(ThreadMutation::Conflict { current }) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": "Thread revision 冲突，请刷新后重试",
+                "current": current,
+            })),
+        )
+            .into_response(),
+        Ok(ThreadMutation::NotFound) => error_response(StatusCode::NOT_FOUND, "Thread 不存在"),
+        Err(error) => sdk_error_response(error),
+    }
+}
+
 async fn handle_query_ledger(
     State(state): State<Arc<AppState>>,
     Path(context_id): Path<String>,
@@ -3486,6 +3541,7 @@ async fn handle_get_session_events(
                 session_id,
                 after_sequence: query.after_sequence,
                 before_sequence: query.before_sequence,
+                conversation_only: query.conversation_only,
                 limit,
             },
         )
@@ -6004,16 +6060,35 @@ mod tests {
             .await
             .unwrap();
         for ordinal in 1..=5 {
+            let mut event = Event::new(
+                format!("dialogue-page-{ordinal}"),
+                "Dialogue-Pagination-Test".to_string(),
+                "test".to_string(),
+                "chat/user_message".to_string(),
+                serde_json::Map::from_iter([
+                    ("context_id".to_string(), json!("context-test")),
+                    ("session_id".to_string(), json!("dialogue-page-session")),
+                    ("text".to_string(), json!(format!("message {ordinal}"))),
+                ]),
+            );
+            event.timestamp =
+                chrono::Utc::now() - chrono::Duration::days(1) + chrono::Duration::seconds(ordinal);
+            runtime.publish(event).await.unwrap();
+        }
+        // Recent Runtime noise must not evict an old but still newest
+        // Dialogue tail. The initial page is defined by message count and
+        // immutable Ledger sequence, not by wall-clock date or arbitrary
+        // Event count.
+        for ordinal in 1..=8 {
             runtime
                 .publish(Event::new(
-                    format!("dialogue-page-{ordinal}"),
+                    format!("dialogue-page-runtime-{ordinal}"),
                     "Dialogue-Pagination-Test".to_string(),
                     "test".to_string(),
-                    "chat/user_message".to_string(),
+                    "runtime/internal_signal".to_string(),
                     serde_json::Map::from_iter([
                         ("context_id".to_string(), json!("context-test")),
                         ("session_id".to_string(), json!("dialogue-page-session")),
-                        ("text".to_string(), json!(format!("message {ordinal}"))),
                     ]),
                 ))
                 .await
@@ -6028,6 +6103,7 @@ mod tests {
                 token: None,
                 after_sequence: None,
                 before_sequence: None,
+                conversation_only: true,
                 limit: Some(2),
             }),
         )
@@ -6057,6 +6133,7 @@ mod tests {
                 token: None,
                 after_sequence: None,
                 before_sequence: Some(cursor),
+                conversation_only: true,
                 limit: Some(2),
             }),
         )

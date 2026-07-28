@@ -4,8 +4,8 @@ use super::{
 };
 use crate::event::Event;
 use crate::memory::{
-    DeliveryFlushCommit, DeliveryStatus, RuntimeTimerRecord, ThreadKind, ThreadLifecycle,
-    ThreadMutation, ThreadRecord, ThreadStore,
+    DeliveryFlushCommit, DeliveryStatus, RuntimeTimerRecord, ThreadControlAction,
+    ThreadControlState, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadStore,
 };
 use chrono::Duration;
 use serde_json::{json, Value as JsonValue};
@@ -15,6 +15,7 @@ use sqlx::{PgPool, Row};
 pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
     for statement in [
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS control_state TEXT NOT NULL DEFAULT 'active'"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_context_status
            ON threads(context_id, status, updated_at DESC)"#,
         r#"CREATE INDEX IF NOT EXISTS idx_pg_threads_session_delivery
@@ -49,6 +50,14 @@ fn parse_lifecycle(value: &str) -> Result<ThreadLifecycle, StoreError> {
     }
 }
 
+fn parse_control_state(value: &str) -> Result<ThreadControlState, StoreError> {
+    match value {
+        "active" => Ok(ThreadControlState::Active),
+        "paused" => Ok(ThreadControlState::Paused),
+        other => Err(format!("未知 Thread control state: {other}").into()),
+    }
+}
+
 fn parse_delivery(value: &str) -> Result<DeliveryStatus, StoreError> {
     match value {
         "none" => Ok(DeliveryStatus::None),
@@ -71,6 +80,7 @@ pub(super) fn thread_from_row(row: &PgRow) -> Result<ThreadRecord, StoreError> {
         root_turn_id: row.get("root_turn_id"),
         kind: parse_kind(&row.get::<String, _>("kind"))?,
         lifecycle: parse_lifecycle(&row.get::<String, _>("status"))?,
+        control_state: parse_control_state(&row.get::<String, _>("control_state"))?,
         executor_kind: row.get("executor_kind"),
         executor_id: row.get("executor_id"),
         target_id: row.get("target_id"),
@@ -529,6 +539,40 @@ impl ThreadStore for PostgresStore {
         if result.rows_affected() == 1 {
             return Ok(ThreadMutation::Updated(
                 self.get_thread(id).await?.ok_or("Thread 更新后无法读取")?,
+            ));
+        }
+        Ok(match self.get_thread(id).await? {
+            Some(current) => ThreadMutation::Conflict { current },
+            None => ThreadMutation::NotFound,
+        })
+    }
+
+    async fn control_thread(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        action: ThreadControlAction,
+    ) -> Result<ThreadMutation, StoreError> {
+        let expected_revision = i64::try_from(expected_revision)?;
+        let (control_state, lifecycle, generation_delta, predicate) = match action {
+            ThreadControlAction::Pause => ("paused", "open", 0_i64, "control_state = 'active'"),
+            ThreadControlAction::Resume => ("active", "open", 0_i64, "control_state = 'paused'"),
+            ThreadControlAction::Close => ("active", "cancelled", 1_i64, "status = 'open'"),
+        };
+        let result = sqlx::query(&format!(
+            "UPDATE threads SET revision = revision + 1, generation = generation + $1, control_state = $2, status = $3, updated_at = $4 WHERE id = $5 AND revision = $6 AND status = 'open' AND {predicate}"
+        ))
+        .bind(generation_delta)
+        .bind(control_state)
+        .bind(lifecycle)
+        .bind(now_text())
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ThreadMutation::Updated(
+                self.get_thread(id).await?.ok_or("Thread 控制后无法读取")?,
             ));
         }
         Ok(match self.get_thread(id).await? {

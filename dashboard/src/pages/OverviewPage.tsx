@@ -1,7 +1,8 @@
-import { Brain, Check, Clock3, GitBranch, Layers3, MessageSquare, Radio, RefreshCw, Send, Square } from 'lucide-react'
+import { Brain, Check, Clock3, GitBranch, Layers3, MessageSquare, Pause, Play, Radio, RefreshCw, Send, Square, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import type { DashboardView } from '../app/routes'
+import type { ThreadRecord } from '../scheduler/types'
 
 export interface OverviewActivity {
   id: string
@@ -11,6 +12,7 @@ export interface OverviewActivity {
   phaseLabel: string
   executor: string
   updatedAgo: string
+  thread: ThreadRecord
 }
 
 interface OverviewPageProps {
@@ -21,12 +23,14 @@ interface OverviewPageProps {
   frames: { active: number; retiring: number; retired: number }
   scheduling: { openThreads: number; pendingSignals: number; activeSchedules: number }
   execution: { activeJobs: number; activeActivations: number; pendingApprovals: number }
-  attention: { approvals: number; failedJobs: number; failedDeliveries: number; inactiveObjectives: number }
+  attention: { approvals: number; failedJobs: number; failedDeliveries: number; inactiveObjectives: number; waitingUser: number }
   activities: OverviewActivity[]
   canRefresh: boolean
+  mutatingThreadId: string
   onRefresh: () => void
   onNavigate: (view: DashboardView) => void
   onOpenMind: () => void
+  onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'close') => void
 }
 
 export function OverviewPage({
@@ -40,15 +44,18 @@ export function OverviewPage({
   attention,
   activities,
   canRefresh,
+  mutatingThreadId,
   onRefresh,
   onNavigate,
   onOpenMind,
+  onThreadControl,
 }: OverviewPageProps) {
   const { t } = useTranslation()
   const attentionCount = attention.approvals
     + attention.failedJobs
     + attention.failedDeliveries
     + attention.inactiveObjectives
+    + attention.waitingUser
 
   return (
     <section className="overview-view">
@@ -68,6 +75,7 @@ export function OverviewPage({
           <header><span>{t('overview.attention.title').toUpperCase()}</span><b>{attentionCount}</b><small>{t('overview.attention.subtitle')}</small></header>
           <div className="overview-attention-grid">
             {attention.approvals > 0 && <button type="button" onClick={() => onNavigate('scheduler')}><Clock3 size={17} /><span><strong>{t('overview.attention.approvals', { count: attention.approvals })}</strong><small>{t('overview.attention.approvalsHint')}</small></span></button>}
+            {attention.waitingUser > 0 && <button type="button" onClick={() => onNavigate('scheduler')}><MessageSquare size={17} /><span><strong>{t('overview.attention.waitingUser', { count: attention.waitingUser })}</strong><small>{t('overview.attention.waitingUserHint')}</small></span></button>}
             {attention.failedJobs > 0 && <button type="button" onClick={() => onNavigate('scheduler')}><Square size={17} /><span><strong>{t('overview.attention.failedJobs', { count: attention.failedJobs })}</strong><small>{t('overview.attention.failedJobsHint')}</small></span></button>}
             {attention.failedDeliveries > 0 && <button type="button" onClick={() => onNavigate('scheduler')}><Send size={17} /><span><strong>{t('overview.attention.deliveries', { count: attention.failedDeliveries })}</strong><small>{t('overview.attention.deliveriesHint')}</small></span></button>}
             {attention.inactiveObjectives > 0 && <button type="button" onClick={() => onNavigate('scheduler')}><Layers3 size={17} /><span><strong>{t('overview.attention.objectives', { count: attention.inactiveObjectives })}</strong><small>{t('overview.attention.objectivesHint')}</small></span></button>}
@@ -104,12 +112,19 @@ export function OverviewPage({
         <header><span>{t('overview.activity.title').toUpperCase()}</span><small>{t('overview.activity.subtitle')}</small><button type="button" onClick={() => onNavigate('scheduler')}>{t('overview.activity.openScheduler')}</button></header>
         <div>
           {activities.map(activity => (
-            <button key={activity.id} type="button" onClick={() => onNavigate('scheduler')}>
+            <article key={activity.id} className="overview-activity-row">
+              <button className="overview-activity-open" type="button" onClick={() => onNavigate('scheduler')}>
               <i className={`phase-${activity.phase}`} />
               <span><strong>{activity.kind}</strong><small>{activity.displayId} · {activity.executor}</small></span>
               <em>{activity.phaseLabel}</em>
               <time>{activity.updatedAgo}</time>
-            </button>
+              </button>
+              <div className="overview-thread-actions">
+                {activity.thread.lifecycle === 'open' && activity.thread.control_state === 'active' && <button disabled={mutatingThreadId === activity.id} type="button" title={t('work.causal.pauseThread')} onClick={() => onThreadControl(activity.thread, 'pause')}><Pause size={12} /></button>}
+                {activity.thread.lifecycle === 'open' && activity.thread.control_state === 'paused' && <button disabled={mutatingThreadId === activity.id} type="button" title={t('work.causal.resumeThread')} onClick={() => onThreadControl(activity.thread, 'resume')}><Play size={12} /></button>}
+                {activity.thread.lifecycle === 'open' && <button disabled={mutatingThreadId === activity.id} className="danger" type="button" title={t('work.causal.closeThread')} onClick={() => onThreadControl(activity.thread, 'close')}><X size={12} /></button>}
+              </div>
+            </article>
           ))}
           {activities.length === 0 && <div className="small-empty">{t('overview.activity.empty')}</div>}
         </div>

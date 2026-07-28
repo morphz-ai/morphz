@@ -312,6 +312,8 @@ impl PostgresStore {
                ON events(context_id, sequence)"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_events_session_sequence
                ON events(session_id, sequence)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_events_session_topic_sequence
+               ON events(session_id, topic, sequence DESC)"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_events_topic_sequence
                ON events(topic, sequence)"#,
             r#"CREATE INDEX IF NOT EXISTS idx_pg_events_context_topic_time
@@ -1482,6 +1484,14 @@ impl EventStore for PostgresStore {
                 }
             }
         }
+        if !filter.topics.is_empty() {
+            builder.push(" AND topic IN (");
+            let mut separated = builder.separated(", ");
+            for topic in &filter.topics {
+                separated.push_bind(topic);
+            }
+            builder.push(")");
+        }
         for topic in filter.excluded_topics {
             if topic == "*" {
                 builder.push(" AND FALSE");
@@ -1509,7 +1519,7 @@ impl EventStore for PostgresStore {
         }
         let latest_k = filter.latest_k;
         if latest_k.is_some() {
-            builder.push(" ORDER BY timestamp DESC, sequence DESC");
+            builder.push(" ORDER BY sequence DESC");
         } else {
             builder.push(" ORDER BY timestamp ASC, sequence ASC");
         }

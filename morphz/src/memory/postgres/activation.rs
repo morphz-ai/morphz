@@ -364,6 +364,10 @@ impl ActivationStore for PostgresStore {
             tx.commit().await?;
             return Ok(None);
         }
+        if thread.control_state == crate::memory::ThreadControlState::Paused {
+            tx.commit().await?;
+            return Ok(None);
+        }
         sqlx::query(
             r#"UPDATE thread_signals signals
                SET status = 'acknowledged', acknowledged_at = $1

@@ -48,8 +48,8 @@ use crate::memory::{
     ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, QueryFilter, RecallDocumentKind,
     RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord, ScheduleStatus,
     SessionRecord, SessionStore, SessionUpdate, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadKind, ThreadLifecycle, ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus,
-    TimerStore,
+    ThreadControlAction, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadPhase, ThreadRecord,
+    ThreadSignalRecord, ThreadSignalStatus, TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -1105,9 +1105,9 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
     registry.register(Arc::new(SearchTool::new_with_permissions(Arc::clone(
         permissions,
     ))));
-    registry.register(Arc::new(crate::artifact::TransferArtifactTool::new(
-        Arc::clone(permissions),
-    )));
+    registry.register(Arc::new(crate::artifact::TransferTool::new(Arc::clone(
+        permissions,
+    ))));
     registry.register(Arc::new(RecallTool::new(Arc::clone(context_engine))));
     registry.register(Arc::new(
         ExecuteCommandTool::new_with_permissions_and_scheduler(
@@ -2508,7 +2508,7 @@ impl MorphzRuntime {
             .inner
             .registry
             .get(ARTIFACT_TRANSFER_TOOL_NAME)
-            .ok_or("Runtime 未注册 transfer_artifact 工具")?;
+            .ok_or("Runtime 未注册 transfer 工具")?;
         let tool_context = crate::tool::ToolExecutionJobContext {
             parent_job_id: job.id.clone(),
             activation_id: job.activation_id.clone(),
@@ -4465,6 +4465,52 @@ impl MorphzRuntime {
             },
             model_attempt_events,
         }))
+    }
+
+    /// Applies an operator control command to one exact Thread revision.
+    ///
+    /// Pause is an admission control operation: already-running external side
+    /// effects are not pretended to be frozen, while pending mailbox signals
+    /// remain durable. Close advances the Thread generation and cancels every
+    /// Activation from the generation that was visible to the operator.
+    pub async fn control_thread(
+        &self,
+        context_id: &str,
+        thread_id: &str,
+        expected_revision: u64,
+        action: ThreadControlAction,
+        reason: &str,
+    ) -> Result<ThreadMutation, RuntimeError> {
+        let Some(current) = self.inner.store.get_thread(thread_id).await? else {
+            return Ok(ThreadMutation::NotFound);
+        };
+        if current.context_id != context_id {
+            return Ok(ThreadMutation::NotFound);
+        }
+
+        let mutation = self
+            .inner
+            .store
+            .control_thread(thread_id, expected_revision, action)
+            .await?;
+        if let ThreadMutation::Updated(updated) = &mutation {
+            match action {
+                ThreadControlAction::Pause => {}
+                ThreadControlAction::Resume => {
+                    self.inner
+                        .orchestrator
+                        .wake_resumed_thread(&updated.root_turn_id)
+                        .await?;
+                }
+                ThreadControlAction::Close => {
+                    self.inner
+                        .orchestrator
+                        .cancel_thread_activations(&current, reason)
+                        .await?;
+                }
+            }
+        }
+        Ok(mutation)
     }
 
     pub async fn query_ledger(&self, query: LedgerQuery) -> Result<LedgerQueryPage, RuntimeError> {

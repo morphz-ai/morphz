@@ -26,7 +26,8 @@ use crate::memory::{
     ExecutionTargetMutation, ExecutionTargetRecord, ExecutionTargetRegistration,
     ExecutionTargetStatus, NewCognitiveContext, NewExecutionNodeChallenge,
     NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewSession, ObjectiveRecord,
-    PairExecutionNode, QueryFilter, SessionRecord, SessionUpdate,
+    PairExecutionNode, QueryFilter, SessionRecord, SessionUpdate, ThreadControlAction,
+    ThreadMutation,
 };
 use crate::orchestrator::context::MindProjectionAudit;
 use crate::runtime::{
@@ -123,7 +124,22 @@ pub struct SessionEventsQuery {
     /// Stable backward cursor over the immutable Event Ledger. Mutually
     /// exclusive with `after_sequence`.
     pub before_sequence: Option<u64>,
+    /// Restrict the page to Events rendered by the human-facing Dialogue
+    /// transcript. The limit then means "latest N messages", not "latest N
+    /// arbitrary Ledger Events".
+    pub conversation_only: bool,
     pub limit: usize,
+}
+
+fn conversation_event_topics() -> &'static [&'static str] {
+    &[
+        "chat/user_message",
+        "chat/reply",
+        "chat/outbound_message",
+        "chat/progress",
+        "chat/assistant_call",
+        "chat/cancelled",
+    ]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -363,6 +379,20 @@ impl MorphzSdk {
                     format!("Thread '{thread_id}' 在 Context '{context_id}' 中不存在"),
                 )
             })
+    }
+
+    pub async fn control_thread(
+        &self,
+        context_id: &str,
+        thread_id: &str,
+        expected_revision: u64,
+        action: ThreadControlAction,
+        reason: &str,
+    ) -> SdkResult<ThreadMutation> {
+        self.runtime
+            .control_thread(context_id, thread_id, expected_revision, action, reason)
+            .await
+            .map_err(SdkError::internal)
     }
 
     pub async fn query_ledger(&self, query: LedgerQuery) -> SdkResult<LedgerQueryPage> {
@@ -1695,6 +1725,11 @@ impl MorphzSdk {
                 session_id: Some(query.session_id),
                 after_sequence: Some(after_sequence),
                 top_k: Some(limit),
+                topics: query
+                    .conversation_only
+                    .then(conversation_event_topics)
+                    .map(|topics| topics.iter().map(|topic| (*topic).to_string()).collect())
+                    .unwrap_or_default(),
                 excluded_topics: vec!["chat/context_inspect".to_string()],
                 ..QueryFilter::default()
             }
@@ -1703,6 +1738,11 @@ impl MorphzSdk {
                 session_id: Some(query.session_id),
                 before_sequence: query.before_sequence,
                 latest_k: Some(limit),
+                topics: query
+                    .conversation_only
+                    .then(conversation_event_topics)
+                    .map(|topics| topics.iter().map(|topic| (*topic).to_string()).collect())
+                    .unwrap_or_default(),
                 excluded_topics: vec!["chat/context_inspect".to_string()],
                 ..QueryFilter::default()
             }

@@ -63,13 +63,14 @@ export function schedulerApprovalAnomalies(snapshot: SchedulerSnapshot | null): 
 
 export function schedulerAttentionJobs(snapshot: SchedulerSnapshot | null): SchedulerJobSnapshot[] {
   if (!snapshot) return []
+  // A failed tool call is part of the causal execution trace. The Agent can
+  // normally correct its parameters, choose another capability, or retry it
+  // without human help. Only a lost side-effect boundary is intrinsically
+  // actionable because the external outcome is unknown and replay is unsafe.
   const jobs = snapshot.threads.flatMap(thread => thread.activations.flatMap(activation => (
-    activation.jobs.filter(job => (
-      job.job.status === 'lost'
-      || (thread.thread.lifecycle === 'open' && job.job.status === 'failed')
-    ))
+    activation.jobs.filter(job => job.job.status === 'lost')
   )))
-  jobs.push(...snapshot.orphan_jobs.filter(job => job.job.status === 'failed' || job.job.status === 'lost'))
+  jobs.push(...snapshot.orphan_jobs.filter(job => job.job.status === 'lost'))
   return jobs
 }
 
@@ -94,6 +95,20 @@ export function activeSchedulerThreads(snapshot: SchedulerSnapshot | null): Sche
 }
 
 /**
+ * Activations shown as current work must belong to a Thread whose projected
+ * phase is still active. Terminal history can retain an older `running`
+ * Activation row for causal inspection; treating that row as present work
+ * leaves the composer status stuck until a full page reload.
+ */
+export function activeSchedulerActivations(snapshot: SchedulerSnapshot | null) {
+  return activeSchedulerThreads(snapshot)
+    .filter(thread => thread.thread.lifecycle === 'open')
+    .flatMap(thread => thread.activations)
+    .map(item => item.activation)
+    .filter(activation => activation.status === 'queued' || activation.status === 'running')
+}
+
+/**
  * Composer activity must not collapse model evaluation and physical work into
  * one ambiguous "running" number. Dialogue counts active DialogueTurn
  * Activations; execution counts authoritative non-terminal ExecutionJobs.
@@ -103,7 +118,8 @@ export function schedulerActivityCounts(snapshot: SchedulerSnapshot | null): {
   execution: number
 } {
   if (!snapshot) return { dialogue: 0, execution: 0 }
-  const dialogue = snapshot.threads.reduce((count, thread) => {
+  const dialogue = activeSchedulerThreads(snapshot).reduce((count, thread) => {
+    if (thread.thread.lifecycle !== 'open') return count
     if (thread.thread.kind !== 'dialogue_turn') return count
     return count + thread.activations.filter(item => (
       item.activation.status === 'queued' || item.activation.status === 'running'

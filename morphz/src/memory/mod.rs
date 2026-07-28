@@ -2327,6 +2327,33 @@ pub enum ThreadLifecycle {
     Cancelled,
 }
 
+/// Operator control is orthogonal to the semantic Thread lifecycle. A paused
+/// Thread remains open and keeps its durable mailbox, but the scheduler must
+/// not create another Activation until it is resumed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadControlState {
+    Active,
+    Paused,
+}
+
+impl ThreadControlState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Paused => "paused",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadControlAction {
+    Pause,
+    Resume,
+    Close,
+}
+
 impl ThreadLifecycle {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -2396,6 +2423,7 @@ pub struct ThreadRecord {
     pub root_turn_id: String,
     pub kind: ThreadKind,
     pub lifecycle: ThreadLifecycle,
+    pub control_state: ThreadControlState,
     pub executor_kind: String,
     pub executor_id: Option<String>,
     /// Stable physical destination inherited by physical actions in this
@@ -2706,6 +2734,11 @@ pub struct QueryFilter {
     pub actors: Vec<String>,
     pub types: Vec<String>,
     pub topic: Option<String>, // 支持精准或前缀通配符过滤
+    /// Exact topic allow-list. This is intentionally separate from `topic`,
+    /// whose single value also supports prefix matching. Read models such as
+    /// the Dialogue transcript use it to page the newest presentation Events
+    /// without first scanning unrelated scheduler and diagnostic history.
+    pub topics: Vec<String>,
     /// Topics which must never be materialized by this query. Exact topics and
     /// `prefix/*` patterns are supported, matching `topic` semantics.
     pub excluded_topics: Vec<String>,
@@ -2914,7 +2947,7 @@ pub trait TimerStore: Send + Sync {
 /// every physical capability back into the generic chat topic.
 pub(crate) fn execution_job_result_topic_matches(tool_name: &str, topic: &str) -> bool {
     topic == "chat/tool_output"
-        || (tool_name == "transfer_artifact"
+        || (tool_name == crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME
             && matches!(
                 topic,
                 "runtime/artifact_transfer_completed"
@@ -3610,6 +3643,15 @@ pub trait ThreadStore: Send + Sync {
         result_event_id: Option<&str>,
         delivery_status: Option<DeliveryStatus>,
         delivery_event_id: Option<&str>,
+    ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
+    /// Revision-fenced operator control. Pause/resume only changes scheduler
+    /// admission; close is terminal and advances the generation fence so late
+    /// outcomes from already-running Activations cannot revive the Thread.
+    async fn control_thread(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        action: ThreadControlAction,
     ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>>;
     /// Revision-fenced first binding of a Thread to one physical destination.
     /// A bound Thread cannot be silently moved to a different Target.

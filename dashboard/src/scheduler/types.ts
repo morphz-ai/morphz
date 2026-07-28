@@ -41,6 +41,7 @@ export interface ThreadRecord {
   root_turn_id: string
   kind: 'dialogue_turn' | 'execution' | 'objective' | 'delivery'
   lifecycle: 'open' | 'completed' | 'failed' | 'cancelled'
+  control_state: 'active' | 'paused'
   executor_kind: string
   executor_id?: string
   result_text?: string

@@ -1,4 +1,4 @@
-import { Brain, Check, ChevronDown, CircleDot, Clock3, LoaderCircle, Radio, Square } from 'lucide-react'
+import { Brain, Check, ChevronDown, CircleDot, Clock3, LoaderCircle, Pause, Play, Radio, Square, X } from 'lucide-react'
 import type { TFunction } from 'i18next'
 import type { LiveModelAttempt } from '../modelStream'
 import type {
@@ -8,6 +8,7 @@ import type {
   SchedulerJobSnapshot,
   SchedulerThreadSnapshot,
   ThreadDetailResponse,
+  ThreadRecord,
 } from '../scheduler/types'
 import { formatTime, shortId, statusLabel, summarizeToolCall, threadKindLabel } from '../app/presentation'
 
@@ -184,8 +185,10 @@ export function ThreadCausalCard({
   locale,
   decidingApprovalId,
   mutatingScheduleId,
+  mutatingThreadId,
   onApproval,
   onSchedule,
+  onThreadControl,
   onInspect,
 }: {
   snapshot: SchedulerThreadSnapshot
@@ -195,15 +198,18 @@ export function ThreadCausalCard({
   locale: string
   decidingApprovalId: string
   mutatingScheduleId: string
+  mutatingThreadId: string
   onApproval: (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => void
   onSchedule: (schedule: ScheduleRecord, action: 'pause' | 'resume' | 'reschedule' | 'cancel') => void
+  onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'close') => void
   onInspect?: (threadId: string) => void
 }) {
   const { thread } = snapshot
   // `open` is a semantic lifecycle (the Thread may accept a later Signal),
   // not evidence of physical activity. Only the Scheduler projection decides
   // whether this aggregate is currently runnable/running/waiting.
-  const active = snapshot.phase !== 'idle'
+  const displayPhase = thread.control_state === 'paused' ? 'paused' : snapshot.phase
+  const active = displayPhase !== 'idle'
   const activationIds = new Set(snapshot.activations.map(item => item.activation.id))
   const unattachedModelAttemptEvents = modelAttemptEvents.filter(event => {
     const activationId = modelAttemptActivationId(event)
@@ -211,20 +217,27 @@ export function ThreadCausalCard({
   })
   const unattachedLiveModelAttempts = liveModelAttempts.filter(attempt => !activationIds.has(attempt.activationId))
   return (
-    <details className={`causal-thread ${snapshot.phase}`} open={active}>
+    <details className={`causal-thread ${displayPhase}`} open={active}>
       <summary>
-        <span className={`status-pill ${snapshot.phase}`}>{statusLabel(snapshot.phase, t)}</span>
+        <span className={`status-pill ${displayPhase}`}>{statusLabel(displayPhase, t)}</span>
         <div><strong>{threadKindLabel(thread.kind, t)}</strong><small>{shortId(thread.id, 30)} · {t('header.session')} {shortId(thread.session_id, 18)} · {t('work.causal.executor')} {thread.executor_kind}{thread.executor_id ? `/${shortId(thread.executor_id, 16)}` : ''}</small></div>
         <span className="causal-counts">{snapshot.activations.length}A · {snapshot.activations.reduce((sum, item) => sum + item.jobs.length, 0)}J</span>
         <em>{statusLabel(thread.delivery_status, t)}</em>
         <ChevronDown size={14} />
       </summary>
       <div className="causal-thread-body">
-        {onInspect && (
-          <div className="causal-thread-actions">
-            <button type="button" onClick={() => onInspect(thread.id)}>{t('work.causal.inspect')}</button>
-          </div>
-        )}
+        <div className="causal-thread-actions">
+          {onInspect && <button type="button" onClick={() => onInspect(thread.id)}>{t('work.causal.inspect')}</button>}
+          {thread.lifecycle === 'open' && thread.control_state === 'active' && (
+            <button disabled={mutatingThreadId === thread.id} type="button" title={t('work.causal.pauseThreadHint')} onClick={() => onThreadControl(thread, 'pause')}><Pause size={12} /> {t('work.causal.pauseThread')}</button>
+          )}
+          {thread.lifecycle === 'open' && thread.control_state === 'paused' && (
+            <button disabled={mutatingThreadId === thread.id} type="button" onClick={() => onThreadControl(thread, 'resume')}><Play size={12} /> {t('work.causal.resumeThread')}</button>
+          )}
+          {thread.lifecycle === 'open' && (
+            <button disabled={mutatingThreadId === thread.id} className="danger" type="button" onClick={() => onThreadControl(thread, 'close')}><X size={12} /> {t('work.causal.closeThread')}</button>
+          )}
+        </div>
         {snapshot.pending_signals.map(signal => (
           <div className="causal-signal pending" key={signal.id}>
             <Radio size={12} /><span>{signal.kind}</span><code>#{signal.sequence} · {shortId(signal.event_id, 20)}</code>

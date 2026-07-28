@@ -21,6 +21,8 @@
       "subtitle": "只提升需要人类决定、恢复或处理的事实",
       "approvals": "{{count}} 项审批等待决定",
       "approvalsHint": "现实能力扩张尚未获得许可",
+      "waitingUser": "{{count}} 个目标等待你的输入",
+      "waitingUserHint": "代理已暂停在明确的人类输入边界",
       "failedJobs": "{{count}} 个执行作业失败",
       "failedJobsHint": "查看错误、退出码和重试安全性",
       "deliveries": "{{count}} 项结果尚未交付",
@@ -59,7 +61,7 @@
       "recall": "召回"
     },
     "recall": {
-      "emptyTitle": "从事实账本和认知框架中召回",
+      "emptyTitle": "从事实账本和认知中召回",
       "emptyDescription": "输入查询后，结果会保留来源、修订和退役状态。"
     }
   },
@@ -97,7 +99,7 @@
     "topic": "主题",
     "openThread": "打开线程",
     "openSession": "打开会话",
-    "openFrame": "打开认知框架",
+    "openFrame": "打开认知",
     "pagination": {
       "label": "账本分页",
       "newer": "较新的事件",
@@ -197,6 +199,8 @@
     "runtimeVerified": "运行时权威绑定",
     "attention": "需要关注",
     "globalAttention": "查看所有需要人工关注的运行时事实",
+    "enterImmersive": "进入沉浸模式",
+    "exitImmersive": "退出沉浸模式",
     "noContext": "未选择上下文",
     "noSession": "未选择会话",
     "visibleContexts": "可用上下文",
@@ -340,6 +344,15 @@
     "threadToolChain": "工具调用链",
     "threadToolChainEmpty": "线程已经建立，尚未产生工具调用。",
     "threadToolChainHint": "点击打开完整因果链",
+    "toolCalls": {
+      "title": "工具调用",
+      "count": "{{count}} 个调用",
+      "arguments": "调用参数",
+      "output": "执行结果",
+      "target": "执行节点",
+      "noOutput": "尚未收到工具结果",
+      "truncated": "参数已由运行时截断"
+    },
     "retryTurn": {
       "title": "本轮模型求值失败",
       "description": "保留原消息与因果身份，在同一对话轮次中启动新一代求值。",
@@ -360,7 +373,7 @@
       "mobileTitle": "选择当前轨道",
       "dialogueLane": "对话",
       "executionLane": "执行输出",
-      "executionLaneHint": "执行线程的推理、进度与交付",
+      "executionLaneHint": "执行线程的推理、工具调用、进度与交付",
       "executionEmpty": "当前没有执行线程输出"
     },
     "activity": {
@@ -403,7 +416,7 @@
   "work": {
     "title": "运行时任务",
     "heading": "任务与执行",
-    "description": "这里只展示运行时可验证的目标、求值、后台进程和委派；普通认知框架不会被猜成任务。",
+    "description": "这里只展示运行时可验证的目标、求值、后台进程和委派；普通认知不会被猜成任务。",
     "kernelDiagnostics": "内核诊断",
     "refresh": "刷新",
     "backToChat": "返回对话",
@@ -475,6 +488,8 @@
       "title": "需要关注",
       "subtitle": "只有需要用户决定或执行失败的事实才会提升到这里",
       "jobFailed": "执行作业失败，但没有记录错误正文",
+      "waitingUser": "等待你的输入",
+      "answerNow": "前往回答",
       "deliveryFailed": "工作已完成，但结果尚未成功交付",
       "stateMismatch": "状态异常",
       "approvedWithoutOwner": "审批已经通过，但对应的求值或线程已经结束，结果已无处交付；运行时将在恢复阶段安全收口该作业。",
@@ -536,25 +551,29 @@
       "loadMore": "加载更早的线程",
       "diagnostics": "未挂接的调度诊断数据",
       "modelAttempts": "模型求值尝试",
-      "modelAttemptsCount": "{{count}} 条持久状态与推理摘要"
+      "modelAttemptsCount": "{{count}} 条持久状态与推理摘要",
+      "pauseThread": "暂停线程",
+      "pauseThreadHint": "暂停后续调度；已经开始的外部副作用不会被伪装为冻结",
+      "resumeThread": "继续线程",
+      "closeThread": "关闭线程"
     }
   },
   "mindView": {
     "title": "认知上下文",
     "heading": "共享认知",
-    "description": "认知框架的业务结构由代理自主形成；运行时只呈现身份、来源、版本、关系与生命周期。",
+    "description": "认知内容的业务结构由代理自主形成；运行时只呈现身份、来源、版本、关系与生命周期。",
     "backToChat": "返回对话",
     "metrics": {
-      "frames": "框架",
+      "frames": "认知",
       "relations": "关系",
       "observations": "观察",
       "residentSessions": "驻留会话",
       "cognitiveTick": "认知活动时钟",
       "frameLifecycle": {
-        "summary": "{{active}} 个活跃框架，{{retiring}} 个退役中框架，{{retired}} 个已退役框架",
-        "active": "{{count}} 个活跃框架：仍会进入当前 Mind 和上下文编码",
-        "retiring": "{{count}} 个退役中框架：已进入退役流程，但生命周期尚未完成",
-        "retired": "{{count}} 个已退役框架：保留在历史账本中，默认不再进入当前认知"
+        "summary": "{{active}} 条活跃认知，{{retiring}} 条整理中认知，{{retired}} 条已退役认知",
+        "active": "{{count}} 条活跃认知：仍会进入当前 Mind 和上下文编码",
+        "retiring": "{{count}} 条整理中认知：已进入退役流程，但生命周期尚未完成",
+        "retired": "{{count}} 条已退役认知：保留在历史账本中，默认不再进入当前认知"
       }
     },
     "contextInspect": {
@@ -575,6 +594,17 @@
       },
       "copy": "复制",
       "copied": "已复制",
+      "reader": {
+        "open": "阅读",
+        "eyebrow": "CONTEXT ENCODING",
+        "title": "上下文编码阅读器",
+        "description": "以缩进和语法高亮阅读 S 表达式；实际模型输入仍保持原始紧凑编码。",
+        "highlighted": "已格式化 · 语法高亮",
+        "formatOnly": "已格式化 · 大型编码采用纯文本",
+        "invalid": "原文结构不完整 · 未改写",
+        "notice": "阅读器只改变浏览器中的展示形式，不会修改 Context、缓存前缀或后续模型输入。",
+        "close": "关闭上下文编码阅读器"
+      },
       "empty": "当前没有可查看的求值上下文。",
       "notRetained": "这一精确请求组成属于此前或页面未在线时发生的求值，没有在持久存储中重复保存。发送新消息后，可在这里捕获下一次精确请求。",
       "ephemeralNotice": "这是当前会话最近一次通过实时事件观察到的精确模型输入。浏览器仅在内存中保留；账本只保存哈希、尺寸和因果元数据。",
@@ -587,7 +617,7 @@
     "retired": "已退役",
     "retiring": "整理中",
     "active": "活跃",
-    "frame": "认知框架",
+    "frame": "认知",
     "revision": "修订 {{revision}}",
     "created": "创建",
     "updated": "更新",
@@ -623,7 +653,7 @@
     "searchPlaceholder": "搜索中文、Frame ID、工具证据或历史经验…",
     "search": "召回",
     "searching": "检索中",
-    "emptyFrame": "还没有可查看的认知框架",
+    "emptyFrame": "还没有可查看的认知",
     "sessionWindow": "会话窗口",
     "sessionWindowDetail": "最多 {{count}} 个完整会话",
     "pressure": "压力",
@@ -672,6 +702,7 @@
       "noWork": "当前没有进行中的工作",
       "executing": "正在执行",
       "approvalRequired": "需要审批",
+      "userInputRequired": "等待你的输入",
       "approvalGranted": "审批已通过，等待执行",
       "approvalReviewing": "自动审批中",
       "approvalStateInvalid": "审批状态异常",
@@ -817,6 +848,9 @@
     "pauseByUser": "用户通过控制台显式暂停目标",
     "resumeByUser": "用户通过控制台显式恢复目标",
     "deleteByUser": "用户通过控制台删除目标",
+    "pauseThreadByUser": "用户通过控制台暂停线程后续调度",
+    "resumeThreadByUser": "用户通过控制台继续线程调度",
+    "closeThreadByUser": "用户通过控制台关闭线程",
     "attentionAcknowledged": "用户已查看该精确版本的问题并确认已知；保留审计历史",
     "approval": {
       "allow_once": "用户通过控制台仅批准这一次能力申请",
@@ -834,6 +868,8 @@
     "archiveSession": "归档会话“{{title}}”？\n\n历史消息与审计记录仍会保留。",
     "deleteObjectiveTitle": "删除这个目标？",
     "deleteObjectiveBody": "{{objective}}\n\n删除会立即停止它的自动续跑；审计历史仍会保留。",
+    "closeThreadTitle": "关闭这个线程？",
+    "closeThreadBody": "{{thread}}（{{id}}）\n\n关闭会停止后续调度并取消当前代次的求值；已经发生的外部副作用和审计历史仍会保留。",
     "denyApprovalTitle": "拒绝能力申请？",
     "denyApproval": "拒绝后该执行作业将无法使用申请的能力。确定拒绝？",
     "cancelScheduleTitle": "取消调度计划？",

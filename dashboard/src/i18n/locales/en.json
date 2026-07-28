@@ -21,6 +21,8 @@
       "subtitle": "Only facts requiring a human decision, recovery or intervention are promoted",
       "approvals": "{{count}} approvals need a decision",
       "approvalsHint": "A real-world capability expansion has not been authorized",
+      "waitingUser": "{{count}} Objectives need your input",
+      "waitingUserHint": "The Agent is paused at an explicit human-input boundary",
       "failedJobs": "{{count}} Execution Jobs failed",
       "failedJobsHint": "Inspect errors, exit codes and retry safety",
       "deliveries": "{{count}} results are not delivered",
@@ -197,6 +199,8 @@
     "runtimeVerified": "Runtime authoritative binding",
     "attention": "Attention",
     "globalAttention": "Inspect all Runtime facts that require human attention",
+    "enterImmersive": "Enter focus mode",
+    "exitImmersive": "Exit focus mode",
     "noContext": "No Context selected",
     "noSession": "No Session selected",
     "visibleContexts": "Available Contexts",
@@ -341,6 +345,16 @@
     "threadToolChain": "Tool call chain",
     "threadToolChainEmpty": "The Thread exists but has not produced a tool call yet.",
     "threadToolChainHint": "Open the complete causal chain",
+    "toolCalls": {
+      "title": "Tool calls",
+      "count_one": "{{count}} call",
+      "count_other": "{{count}} calls",
+      "arguments": "Arguments",
+      "output": "Result",
+      "target": "Execution target",
+      "noOutput": "No tool result received yet",
+      "truncated": "Arguments were truncated by Runtime"
+    },
     "retryTurn": {
       "title": "Model evaluation failed for this turn",
       "description": "Keep the original message and causal identity, then start a new evaluation generation in place.",
@@ -361,7 +375,7 @@
       "mobileTitle": "Choose the active track",
       "dialogueLane": "Dialogue",
       "executionLane": "Execution output",
-      "executionLaneHint": "Reasoning, progress and deliveries from Execution Threads",
+      "executionLaneHint": "Reasoning, tool calls, progress and deliveries from Execution Threads",
       "executionEmpty": "No Execution Thread output yet"
     },
     "activity": {
@@ -475,6 +489,8 @@
       "title": "Needs Attention",
       "subtitle": "Only user decisions and verified failures are promoted here",
       "jobFailed": "Execution Job failed without a recorded error message",
+      "waitingUser": "Waiting for your input",
+      "answerNow": "Respond now",
       "deliveryFailed": "Work completed, but its result has not been delivered",
       "stateMismatch": "State mismatch",
       "approvedWithoutOwner": "Approval was granted, but the owning evaluation or Thread has already ended and can no longer receive the result. Runtime recovery will safely close this Job.",
@@ -536,7 +552,11 @@
       "loadMore": "Load older Threads",
       "diagnostics": "Unattached scheduler diagnostics",
       "modelAttempts": "Model Attempts",
-      "modelAttemptsCount": "{{count}} durable state transitions and reasoning summaries"
+      "modelAttemptsCount": "{{count}} durable state transitions and reasoning summaries",
+      "pauseThread": "Pause Thread",
+      "pauseThreadHint": "Pause future scheduling; already-started external side effects are not presented as frozen",
+      "resumeThread": "Resume Thread",
+      "closeThread": "Close Thread"
     }
   },
   "mindView": {
@@ -575,6 +595,17 @@
       },
       "copy": "Copy",
       "copied": "Copied",
+      "reader": {
+        "open": "Reader",
+        "eyebrow": "CONTEXT ENCODING",
+        "title": "Context Encoding Reader",
+        "description": "Read the S-expression with indentation and syntax highlighting while the model input remains compact.",
+        "highlighted": "Formatted · syntax highlighted",
+        "formatOnly": "Formatted · plain text for large encoding",
+        "invalid": "Incomplete source structure · unchanged",
+        "notice": "The reader only changes browser presentation. It never changes the Context, prefix cache or subsequent model input.",
+        "close": "Close Context Encoding Reader"
+      },
       "empty": "No evaluation context is available.",
       "notRetained": "This exact request component belongs to a previous or missed live evaluation and was intentionally not duplicated in durable storage. Send a new message to capture the next exact request here.",
       "ephemeralNotice": "This is the latest exact input observed live for this Session. The browser retains it in memory; the Ledger stores only hashes, sizes and causal metadata.",
@@ -671,6 +702,7 @@
       "noWork": "No work in progress",
       "executing": "Executing",
       "approvalRequired": "Approval required",
+      "userInputRequired": "Waiting for your input",
       "approvalGranted": "Approved, waiting to execute",
       "approvalReviewing": "Automatic review in progress",
       "approvalStateInvalid": "Approval state mismatch",
@@ -811,6 +843,9 @@
     "pauseByUser": "User explicitly paused Objective via Dashboard",
     "resumeByUser": "User explicitly resumed Objective via Dashboard",
     "deleteByUser": "User deleted Objective via Dashboard",
+    "pauseThreadByUser": "User paused future Thread scheduling via Dashboard",
+    "resumeThreadByUser": "User resumed Thread scheduling via Dashboard",
+    "closeThreadByUser": "User closed Thread via Dashboard",
     "attentionAcknowledged": "User reviewed and acknowledged this exact issue revision; audit history is retained",
     "approval": {
       "allow_once": "User allowed this capability request once via Dashboard",
@@ -828,6 +863,8 @@
     "archiveSession": "Archive Session “{{title}}”?\n\nMessage history and audit records remain intact.",
     "deleteObjectiveTitle": "Delete this Objective?",
     "deleteObjectiveBody": "{{objective}}\n\nDeletion will stop automatic reruns immediately; audit history is retained.",
+    "closeThreadTitle": "Close this Thread?",
+    "closeThreadBody": "{{thread}} ({{id}})\n\nClosing stops future scheduling and cancels the current generation's evaluations. Existing external side effects and audit history remain intact.",
     "denyApprovalTitle": "Deny capability request?",
     "denyApproval": "Denying prevents this Execution Job from using the requested capability. Continue?",
     "cancelScheduleTitle": "Cancel this Schedule?",

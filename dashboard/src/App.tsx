@@ -10,6 +10,7 @@ import {
   ArrowLeft,
   Archive,
   Bell,
+  BookOpen,
   Brain,
   Check,
   ChevronDown,
@@ -27,6 +28,8 @@ import {
   ListTree,
   LoaderCircle,
   MessageSquare,
+  Maximize2,
+  Minimize2,
   Monitor,
   Moon,
   Palette,
@@ -38,6 +41,7 @@ import {
   RefreshCw,
   Search,
   Send,
+  Server,
   Square,
   Sun,
   Trash2,
@@ -64,6 +68,7 @@ import {
   attentionDeliveryKey,
   attentionJobKey,
   actionableSchedulerJobs,
+  activeSchedulerActivations,
   currentSchedulerSchedules,
   pendingHumanApprovals,
   schedulerApprovalAnomalies,
@@ -110,6 +115,7 @@ import {
   type TintDimension,
 } from './app/objectiveLineage'
 import {
+  assistantToolCalls,
   compactTokens,
   conversationEventKind,
   conversationEventLane,
@@ -119,7 +125,11 @@ import {
   statusLabel,
   summarizeToolCall,
   threadKindLabel,
+  newestConversationEventsForLane,
+  type ConversationWindowLane,
 } from './app/presentation'
+import { buildToolTimeline, executionTargetIds, type ToolTimelineItem } from './app/executionTools'
+import { prettyPrintSExpression } from './app/sexpr'
 
 /**
  * Resolves the colour for one causal id. Slots are allocated per live entity
@@ -398,6 +408,26 @@ function initialBooleanPreference(key: string, fallback: boolean): boolean {
 
 type ConversationLayout = 'merged' | 'split'
 type ConversationMobileLane = 'dialogue' | 'execution'
+interface MessageWindowState {
+  sessionId: string
+  merged: number
+  dialogue: number
+  execution_output: number
+}
+
+interface PendingScrollRestore {
+  lane: ConversationWindowLane
+  previousHeight: number
+}
+
+function freshMessageWindow(sessionId = ''): MessageWindowState {
+  return {
+    sessionId,
+    merged: MESSAGE_PAGE_SIZE,
+    dialogue: MESSAGE_PAGE_SIZE,
+    execution_output: MESSAGE_PAGE_SIZE,
+  }
+}
 
 function initialConversationLayout(): ConversationLayout {
   try {
@@ -426,6 +456,7 @@ const MODEL_STREAM_RENDER_INTERVAL_MS = 50
 const WORK_HISTORY_THREAD_LIMIT = 60
 const SCHEDULER_HISTORY_PAGE_SIZE = 60
 const DIALOGUE_ACTIVITY_HISTORY_LIMIT = 12
+const CONTEXT_READER_HIGHLIGHT_TOKEN_LIMIT = 16_000
 
 function MarkdownInline({ children }: { children: string }) {
   return (
@@ -553,6 +584,102 @@ function AppDialog({
     </div>
   )
 }
+
+const ContextEncodingReader = memo(function ContextEncodingReader({
+  source,
+  exact,
+  onClose,
+  t,
+}: {
+  source: string
+  exact: boolean
+  onClose: () => void
+  t: TFunction
+}) {
+  const closeRef = useRef<HTMLButtonElement>(null)
+  const [copied, setCopied] = useState(false)
+  const pretty = useMemo(() => prettyPrintSExpression(source), [source])
+  const highlighted = pretty.tokens.length <= CONTEXT_READER_HIGHLIGHT_TOKEN_LIMIT
+
+  useEffect(() => {
+    closeRef.current?.focus()
+  }, [])
+
+  const copy = () => {
+    void copyTextToClipboard(pretty.text)
+      .then(() => {
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1400)
+      })
+      .catch(() => setCopied(false))
+  }
+
+  return (
+    <div
+      className="app-dialog-backdrop context-encoding-reader-backdrop"
+      onMouseDown={event => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+      onKeyDown={event => {
+        event.stopPropagation()
+        if (event.key === 'Escape') {
+          event.preventDefault()
+          onClose()
+        }
+      }}
+    >
+      <section
+        aria-labelledby="context-encoding-reader-title"
+        aria-modal="true"
+        className="context-encoding-reader"
+        role="dialog"
+      >
+        <header>
+          <div>
+            <small>{t('mindView.contextInspect.reader.eyebrow')}</small>
+            <h2 id="context-encoding-reader-title">{t('mindView.contextInspect.reader.title')}</h2>
+            <p>{t('mindView.contextInspect.reader.description')}</p>
+          </div>
+          <div className="context-encoding-reader-actions">
+            <button type="button" onClick={copy}>
+              {copied ? <Check size={14} /> : <Copy size={14} />}
+              {copied ? t('mindView.contextInspect.copied') : t('mindView.contextInspect.copy')}
+            </button>
+            <button
+              ref={closeRef}
+              className="context-encoding-reader-close"
+              type="button"
+              aria-label={t('mindView.contextInspect.reader.close')}
+              onClick={onClose}
+            >
+              <X size={16} />
+            </button>
+          </div>
+        </header>
+        <div className="context-encoding-reader-meta">
+          <span className={exact ? 'exact' : 'current'}>
+            {exact ? t('mindView.contextInspect.exact') : t('mindView.contextInspect.current')}
+          </span>
+          <span>
+            {pretty.valid
+              ? highlighted
+                ? t('mindView.contextInspect.reader.highlighted')
+                : t('mindView.contextInspect.reader.formatOnly')
+              : t('mindView.contextInspect.reader.invalid')}
+          </span>
+        </div>
+        <pre className={highlighted ? 'is-highlighted' : ''}>
+          {highlighted
+            ? pretty.tokens.map((token, index) => token.kind === 'whitespace'
+              ? token.text
+              : <span className={`sexpr-token ${token.kind}`} key={`${index}-${token.kind}`}>{token.text}</span>)
+            : pretty.text}
+        </pre>
+        <footer>{t('mindView.contextInspect.reader.notice')}</footer>
+      </section>
+    </div>
+  )
+})
 
 // Markdown rendering is the expensive part of a message row. Memoizing it by
 // text keeps every historical message from re-parsing on each stream delta.
@@ -1167,19 +1294,89 @@ interface DelegationRecord {
   updated_at: string
 }
 
-interface ToolCallPreview {
-  id: string
-  name: string
-  arguments: string
-  arguments_chars?: number
-  truncated?: boolean
+function toolCallTone(status: string): 'running' | 'succeeded' | 'failed' {
+  if (['success', 'succeeded', 'completed'].includes(status)) return 'succeeded'
+  if (['running', 'queued', 'pending'].includes(status)) return 'running'
+  return 'failed'
 }
 
-interface ToolTimelineItem extends ToolCallPreview {
-  timestamp: string
-  status: string
-  result?: string
-}
+const ExecutionToolCalls = memo(function ExecutionToolCalls({
+  calls,
+  targetNames,
+  t,
+}: {
+  calls: ToolTimelineItem[]
+  targetNames: ReadonlyMap<string, string>
+  t: TFunction
+}) {
+  const [expandedCallId, setExpandedCallId] = useState('')
+  if (calls.length === 0) return null
+  return (
+    <section className="execution-tool-calls">
+      <header>
+        <span><ListTree size={13} />{t('conversation.toolCalls.title')}</span>
+        <small>{t('conversation.toolCalls.count', { count: calls.length })}</small>
+      </header>
+      <ol>
+        {calls.map(call => {
+          const summary = summarizeToolCall(call.name, call.arguments, t)
+          const tone = toolCallTone(call.status)
+          const expanded = expandedCallId === call.id
+          const targetIds = executionTargetIds(call.arguments)
+          const targetLabel = targetIds
+            .map(targetId => targetNames.get(targetId) ?? shortId(targetId, 22))
+            .join(' → ')
+          return (
+            <li className={tone} key={call.id}>
+              <button
+                type="button"
+                aria-expanded={expanded}
+                onClick={() => setExpandedCallId(current => current === call.id ? '' : call.id)}
+              >
+                <span className="execution-tool-state" aria-hidden="true">
+                  {tone === 'running'
+                    ? <LoaderCircle size={12} />
+                    : tone === 'succeeded'
+                      ? <Check size={12} />
+                      : <X size={12} />}
+                </span>
+                <span className="execution-tool-copy">
+                  <strong>{summary.title}</strong>
+                  <small>
+                    <span>{summary.target || shortId(call.id, 18)}</span>
+                    {targetLabel && (
+                      <span
+                        className="execution-tool-target"
+                        title={`${t('conversation.toolCalls.target')}: ${targetIds.join(' → ')}`}
+                      >
+                        <Server size={10} />{targetLabel}
+                      </span>
+                    )}
+                  </small>
+                </span>
+                <em>{statusLabel(call.status, t)}</em>
+                <ChevronDown className="execution-tool-expand" size={13} aria-hidden="true" />
+              </button>
+              {expanded && (
+                <div className="execution-tool-detail">
+                  <section>
+                    <strong>{t('conversation.toolCalls.arguments')}</strong>
+                    <pre>{call.arguments || '{}'}</pre>
+                    {call.truncated && <small>{t('conversation.toolCalls.truncated')}</small>}
+                  </section>
+                  <section>
+                    <strong>{t('conversation.toolCalls.output')}</strong>
+                    <pre>{call.result || t('conversation.toolCalls.noOutput')}</pre>
+                  </section>
+                </div>
+              )}
+            </li>
+          )
+        })}
+      </ol>
+    </section>
+  )
+})
 
 function DialogueActivityDock({
   open,
@@ -1203,6 +1400,7 @@ function DialogueActivityDock({
   resumingObjectiveId,
   editingObjectiveId,
   deletingObjectiveId,
+  mutatingThreadId,
   t,
   onOpenChange,
   onThreadToggle,
@@ -1217,6 +1415,7 @@ function DialogueActivityDock({
   onResumeObjective,
   onEditObjective,
   onDeleteObjective,
+  onThreadControl,
 }: {
   open: boolean
   objectives: ObjectiveRecord[]
@@ -1239,6 +1438,7 @@ function DialogueActivityDock({
   resumingObjectiveId: string
   editingObjectiveId: string
   deletingObjectiveId: string
+  mutatingThreadId: string
   t: TFunction
   onOpenChange: (open: boolean) => void
   onThreadToggle: (threadId: string) => void
@@ -1253,6 +1453,7 @@ function DialogueActivityDock({
   onResumeObjective: (objective: ObjectiveRecord) => void
   onEditObjective: (objective: ObjectiveRecord) => void
   onDeleteObjective: (objective: ObjectiveRecord) => void
+  onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'close') => void
 }) {
   const [objectivesOpen, setObjectivesOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.objectives', false)
   const [threadsOpen, setThreadsOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.threads', true)
@@ -1426,7 +1627,9 @@ function DialogueActivityDock({
                   ? summarizeToolCall(activeJob.job.tool_name, JSON.stringify(activeJob.job.request), t)
                   : null
                 const currentSession = effective.thread.session_id === currentSessionId
-                const displayState = effective.phase === 'idle' ? effective.thread.lifecycle : effective.phase
+                const displayState = effective.thread.control_state === 'paused'
+                  ? 'paused'
+                  : effective.phase === 'idle' ? effective.thread.lifecycle : effective.phase
                 const objectiveIds = objectiveIdsByThread.get(effective.thread.id) ?? []
                 return (
                   <article
@@ -1455,6 +1658,16 @@ function DialogueActivityDock({
                       )}
                       <time>{formatAgo(effective.thread.updated_at, t)}</time>
                     </div>
+                    {effective.thread.lifecycle === 'open' && (
+                      <div className="dialogue-thread-card-actions">
+                        {effective.thread.control_state === 'paused' ? (
+                          <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.resumeThread')} aria-label={t('work.causal.resumeThread')} onClick={() => onThreadControl(effective.thread, 'resume')}><Play size={12} /></button>
+                        ) : (
+                          <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.pauseThread')} aria-label={t('work.causal.pauseThread')} onClick={() => onThreadControl(effective.thread, 'pause')}><Pause size={12} /></button>
+                        )}
+                        <button disabled={mutatingThreadId === effective.thread.id} className="danger" type="button" title={t('work.causal.closeThread')} aria-label={t('work.causal.closeThread')} onClick={() => onThreadControl(effective.thread, 'close')}><X size={12} /></button>
+                      </div>
+                    )}
 
                     {expanded && (
                       <div className="dialogue-thread-runtime">
@@ -1936,6 +2149,7 @@ export default function App() {
   const [schedulerHistoryLimit, setSchedulerHistoryLimit] = useState(SCHEDULER_HISTORY_PAGE_SIZE)
   const [threadDetail, setThreadDetail] = useState<ThreadDetailResponse | null>(null)
   const [dialogueActivityOpen, setDialogueActivityOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.open', true)
+  const [immersiveMode, setImmersiveMode] = useStoredDisclosure('morphz.dashboard.immersiveMode', false)
   const [expandedDialogueThreadId, setExpandedDialogueThreadId] = useState('')
   const [dialogueThreadDetail, setDialogueThreadDetail] = useState<ThreadDetailResponse | null>(null)
   const [projectionAudit, setProjectionAudit] = useState<MindProjectionAudit | null>(null)
@@ -1954,6 +2168,7 @@ export default function App() {
   const [latestContextInspect, setLatestContextInspect] = useState<MorphzEvent | null>(null)
   const [contextInspectTab, setContextInspectTab] = useState<ContextInspectTab>('encoding')
   const [contextInspectCopied, setContextInspectCopied] = useState(false)
+  const [contextEncodingReaderOpen, setContextEncodingReaderOpen] = useState(false)
   const [liveModelState, dispatchModelStream] = useReducer(modelStreamReducer, createLiveModelState())
   const [selectedAgentId, setSelectedAgentId] = useState('')
   const [selectedContextId, setSelectedContextId] = useState('')
@@ -1973,6 +2188,7 @@ export default function App() {
   const [mutatingFrameId, setMutatingFrameId] = useState('')
   const [contextMenuOpen, setContextMenuOpen] = useState(false)
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
+  const [conversationSessionMenuOpen, setConversationSessionMenuOpen] = useState(false)
   const [creatingContext, setCreatingContext] = useState(false)
   const [creatingSession, setCreatingSession] = useState(false)
   const [catalogMutationKey, setCatalogMutationKey] = useState('')
@@ -1984,6 +2200,7 @@ export default function App() {
   const [resumingObjectiveId, setResumingObjectiveId] = useState('')
   const [editingObjectiveId, setEditingObjectiveId] = useState('')
   const [deletingObjectiveId, setDeletingObjectiveId] = useState('')
+  const [mutatingThreadId, setMutatingThreadId] = useState('')
   const [expandedObjectiveIds, setExpandedObjectiveIds] = useState<Set<string>>(() => new Set())
   const [decidingApprovalId, setDecidingApprovalId] = useState('')
   const [mutatingScheduleId, setMutatingScheduleId] = useState('')
@@ -2002,7 +2219,7 @@ export default function App() {
   const executionOutputListRef = useRef<HTMLDivElement>(null)
   const executionOutputPinnedToEnd = useRef(true)
   const composerInputRef = useRef<HTMLTextAreaElement>(null)
-  const [messageWindow, setMessageWindow] = useState({ sessionId: '', count: MESSAGE_PAGE_SIZE })
+  const [messageWindow, setMessageWindow] = useState<MessageWindowState>(() => freshMessageWindow())
   const [eventHistoryCursor, setEventHistoryCursor] = useState<number | null>(null)
   const [loadingOlderEvents, setLoadingOlderEvents] = useState(false)
   const loadingOlder = useRef(false)
@@ -2011,7 +2228,7 @@ export default function App() {
     nextBeforeSequence: null,
   })
   const locatingDialogueSearchEvent = useRef('')
-  const pendingScrollRestore = useRef<number | null>(null)
+  const pendingScrollRestore = useRef<PendingScrollRestore | null>(null)
   const wasSending = useRef(false)
   const conversationPinnedToEnd = useRef(true)
   const lastProgrammaticScroll = useRef(0)
@@ -2022,6 +2239,7 @@ export default function App() {
   const loadSessionRef = useRef<(sessionId: string, contextId: string) => Promise<void>>(async () => {})
   const contextSelectorRef = useRef<HTMLDivElement>(null)
   const sessionSelectorRef = useRef<HTMLDivElement>(null)
+  const conversationSessionSelectorRef = useRef<HTMLDivElement>(null)
   const themeSelectorRef = useRef<HTMLDivElement>(null)
   const appDialogRef = useRef<AppDialogRequest | null>(null)
   const appDialogSequence = useRef(0)
@@ -2315,7 +2533,7 @@ export default function App() {
             setAttentionAcknowledgements(result.acknowledgements ?? [])
           }
         }),
-        DASHBOARD_API.tryGet<SessionEventsPage>(`/api/sessions/${encodeURIComponent(sessionId)}/events?limit=1000`)
+        DASHBOARD_API.tryGet<SessionEventsPage>(`/api/sessions/${encodeURIComponent(sessionId)}/events?conversation_only=true&limit=1000`)
           .then(eventsResult => {
             if (!eventsResult || !isCurrentScope()) return
             const nextEvents = eventsResult.events ?? []
@@ -2689,7 +2907,7 @@ export default function App() {
       locatingDialogueSearchEvent.current = ''
       setEventHistoryCursor(null)
       setLoadingOlderEvents(false)
-      setMessageWindow({ sessionId: selectedSessionId, count: MESSAGE_PAGE_SIZE })
+      setMessageWindow(freshMessageWindow(selectedSessionId))
       setEventsSessionId('')
       setLatestContextInspect(null)
       setContextView(null)
@@ -2697,6 +2915,7 @@ export default function App() {
       setContextOverview(current => current?.active_session_id === selectedSessionId ? current : null)
       setContextInspectTab('encoding')
       setContextInspectCopied(false)
+      setContextEncodingReaderOpen(false)
       setSchedulerHistoryLimit(SCHEDULER_HISTORY_PAGE_SIZE)
       setExpandedDialogueThreadId('')
       setDialogueThreadDetail(null)
@@ -3091,15 +3310,21 @@ export default function App() {
         event.preventDefault()
         setView(current => current === 'cognition' ? 'dialogue' : 'cognition')
       } else if (event.key === 'Escape') {
+        if (immersiveMode) {
+          event.preventDefault()
+          setImmersiveMode(false)
+          return
+        }
         setView('dialogue')
         setContextMenuOpen(false)
         setSessionMenuOpen(false)
+        setConversationSessionMenuOpen(false)
         setThemeMenuOpen(false)
       }
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
-  }, [setView])
+  }, [immersiveMode, setImmersiveMode, setView])
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -3110,13 +3335,18 @@ export default function App() {
       if (sessionMenuOpen && sessionSelectorRef.current && !sessionSelectorRef.current.contains(target)) {
         setSessionMenuOpen(false)
       }
+      if (conversationSessionMenuOpen
+        && conversationSessionSelectorRef.current
+        && !conversationSessionSelectorRef.current.contains(target)) {
+        setConversationSessionMenuOpen(false)
+      }
       if (themeMenuOpen && themeSelectorRef.current && !themeSelectorRef.current.contains(target)) {
         setThemeMenuOpen(false)
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [contextMenuOpen, sessionMenuOpen, themeMenuOpen])
+  }, [contextMenuOpen, conversationSessionMenuOpen, sessionMenuOpen, themeMenuOpen])
 
   const selectedSession = sessions.find(item => item.id === selectedSessionId)
   const selectedContext = contexts.find(item => item.id === selectedContextId)
@@ -3127,6 +3357,10 @@ export default function App() {
   const visibleSessions = sessions
     .filter(item => item.context_id === selectedContextId && item.status === 'active')
     .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))
+  const executionTargetNames = useMemo(
+    () => new Map(executionTargets.map(target => [target.id, target.name] as const)),
+    [executionTargets],
+  )
   const sessionEvents = useMemo(
     () => eventsSessionId === selectedSessionId ? events : [],
     [events, eventsSessionId, selectedSessionId],
@@ -3171,55 +3405,90 @@ export default function App() {
     () => sessionEvents.filter(event => eventKind(event) !== null),
     [sessionEvents],
   )
-  const visibleCount = messageWindow.sessionId === selectedSessionId
-    ? messageWindow.count
-    : MESSAGE_PAGE_SIZE
-  // Windowing: only the newest MESSAGE_PAGE_SIZE messages are rendered;
-  // scrolling to the top pages older ones in without remounting the list.
-  const visibleEvents = useMemo(
-    () => conversationEvents.slice(-visibleCount),
-    [conversationEvents, visibleCount],
-  )
-  const visibleEventsForObjective = useMemo(
+  const messageWindowForSession = messageWindow.sessionId === selectedSessionId
+    ? messageWindow
+    : freshMessageWindow(selectedSessionId)
+  const conversationEventsForObjective = useMemo(
     () => selectedObjectiveFilterId
-      ? visibleEvents.filter(event => objectiveLineage.forEvent(event).objectiveIds.includes(selectedObjectiveFilterId))
-      : visibleEvents,
-    [objectiveLineage, selectedObjectiveFilterId, visibleEvents],
+      ? conversationEvents.filter(event => objectiveLineage.forEvent(event).objectiveIds.includes(selectedObjectiveFilterId))
+      : conversationEvents,
+    [conversationEvents, objectiveLineage, selectedObjectiveFilterId],
+  )
+  const dialogueEventsForObjective = useMemo(
+    () => conversationEventsForObjective.filter(event => conversationEventLane(event.topic, event.payload) === 'dialogue'),
+    [conversationEventsForObjective],
+  )
+  const executionEventsForObjective = useMemo(
+    () => conversationEventsForObjective.filter(event => conversationEventLane(event.topic, event.payload) === 'execution_output'),
+    [conversationEventsForObjective],
+  )
+  // Split lanes are independent presentation surfaces. Each receives a full
+  // window so high-volume tool calls cannot evict dialogue (or vice versa).
+  const visibleMergedEvents = useMemo(
+    () => newestConversationEventsForLane(conversationEventsForObjective, 'merged', messageWindowForSession.merged),
+    [conversationEventsForObjective, messageWindowForSession.merged],
   )
   const visibleDialogueEvents = useMemo(
     () => conversationLayout === 'split'
-      ? visibleEventsForObjective.filter(event => {
-          return conversationEventLane(event.topic, event.payload) === 'dialogue'
-        })
-      : visibleEventsForObjective,
-    [conversationLayout, visibleEventsForObjective],
+      ? newestConversationEventsForLane(conversationEventsForObjective, 'dialogue', messageWindowForSession.dialogue)
+      : visibleMergedEvents,
+    [conversationEventsForObjective, conversationLayout, messageWindowForSession.dialogue, visibleMergedEvents],
   )
   const visibleExecutionOutputEvents = useMemo(
     () => conversationLayout === 'split'
-      ? visibleEventsForObjective.filter(event => {
-          return conversationEventLane(event.topic, event.payload) === 'execution_output'
-        })
+      ? newestConversationEventsForLane(conversationEventsForObjective, 'execution_output', messageWindowForSession.execution_output)
       : [],
-    [conversationLayout, visibleEventsForObjective],
+    [conversationEventsForObjective, conversationLayout, messageWindowForSession.execution_output],
   )
-  const hiddenEventCount = selectedObjectiveFilterId
-    ? conversationEvents.filter(event => objectiveLineage.forEvent(event).objectiveIds.includes(selectedObjectiveFilterId)).length - visibleEventsForObjective.length
-    : conversationEvents.length - visibleEvents.length
+  const visibleEventsForObjective = useMemo(
+    () => conversationLayout === 'split'
+      ? mergeSessionEvents(visibleDialogueEvents, visibleExecutionOutputEvents)
+      : visibleMergedEvents,
+    [conversationLayout, visibleDialogueEvents, visibleExecutionOutputEvents, visibleMergedEvents],
+  )
+  const hiddenEventCounts = useMemo<Record<ConversationWindowLane, number>>(() => ({
+    merged: Math.max(0, conversationEventsForObjective.length - visibleMergedEvents.length),
+    dialogue: Math.max(0, dialogueEventsForObjective.length - visibleDialogueEvents.length),
+    execution_output: Math.max(0, executionEventsForObjective.length - visibleExecutionOutputEvents.length),
+  }), [
+    conversationEventsForObjective.length,
+    dialogueEventsForObjective.length,
+    executionEventsForObjective.length,
+    visibleDialogueEvents.length,
+    visibleExecutionOutputEvents.length,
+    visibleMergedEvents.length,
+  ])
+  const dialogueHistoryLane: 'merged' | 'dialogue' = conversationLayout === 'split' ? 'dialogue' : 'merged'
+  const dialogueHiddenEventCount = hiddenEventCounts[dialogueHistoryLane]
+  const executionHiddenEventCount = hiddenEventCounts.execution_output
 
   useEffect(() => {
     const hit = pendingDialogueSearchHit
     if (!hit || hit.session_id !== selectedSessionId || eventsSessionId !== selectedSessionId) return
 
-    const eventIndex = conversationEvents.findIndex(event => event.id === hit.event_id)
-    if (eventIndex >= 0) {
-      const requiredCount = conversationEvents.length - eventIndex
-      if (visibleCount < requiredCount) {
+    const hitEvent = conversationEvents.find(event => event.id === hit.event_id)
+    if (hitEvent) {
+      const hitLane: ConversationWindowLane = conversationLayout === 'split'
+        ? conversationEventLane(hitEvent.topic, hitEvent.payload) === 'execution_output'
+          ? 'execution_output'
+          : 'dialogue'
+        : 'merged'
+      const laneEvents = hitLane === 'execution_output'
+        ? executionEventsForObjective
+        : hitLane === 'dialogue'
+          ? dialogueEventsForObjective
+          : conversationEventsForObjective
+      const eventIndex = laneEvents.findIndex(event => event.id === hit.event_id)
+      const requiredCount = eventIndex >= 0 ? laneEvents.length - eventIndex : MESSAGE_PAGE_SIZE
+      if (messageWindowForSession[hitLane] < requiredCount) {
         const revealFrame = window.requestAnimationFrame(() => {
-          setMessageWindow({ sessionId: selectedSessionId, count: requiredCount })
+          setMessageWindow(current => ({
+            ...(current.sessionId === selectedSessionId ? current : freshMessageWindow(selectedSessionId)),
+            [hitLane]: requiredCount,
+          }))
         })
         return () => window.cancelAnimationFrame(revealFrame)
       }
-      const hitEvent = conversationEvents[eventIndex]
       const firstFrame = window.requestAnimationFrame(() => {
         if (conversationLayout === 'split') {
           setConversationMobileLane(conversationEventLane(hitEvent.topic, hitEvent.payload) === 'execution_output'
@@ -3242,7 +3511,7 @@ export default function App() {
     locatingDialogueSearchEvent.current = hit.event_id
     let cancelled = false
     void DASHBOARD_API.get<SessionEventsPage>(
-      `/api/sessions/${encodeURIComponent(selectedSessionId)}/events?before_sequence=${hit.sequence + 1}&limit=100`,
+      `/api/sessions/${encodeURIComponent(selectedSessionId)}/events?conversation_only=true&before_sequence=${hit.sequence + 1}&limit=100`,
     ).then(page => {
       if (cancelled || selectedScopeRef.current.sessionId !== selectedSessionId) return
       if (!page.events.some(event => event.id === hit.event_id)) {
@@ -3264,12 +3533,15 @@ export default function App() {
     return () => { cancelled = true }
   }, [
     conversationEvents,
+    conversationEventsForObjective,
     conversationLayout,
+    dialogueEventsForObjective,
     eventsSessionId,
+    executionEventsForObjective,
+    messageWindowForSession,
     pendingDialogueSearchHit,
     selectedSessionId,
     t,
-    visibleCount,
   ])
 
   const visibleReasoningSummaries = useMemo(() => {
@@ -3333,45 +3605,17 @@ export default function App() {
   }, [pendingTurn?.rootTurnId, turnSettlement])
 
   const toolTimeline = useMemo(() => {
-    const calls = new Map<string, ToolTimelineItem>()
-    for (const event of sessionEvents) {
-      if (event.topic === 'runtime/tool_calls_selected' && Array.isArray(event.payload.calls)) {
-        for (const value of event.payload.calls as unknown[]) {
-          if (!value || typeof value !== 'object') continue
-          const call = value as Partial<ToolCallPreview>
-          if (!call.id || !call.name) continue
-          calls.set(call.id, {
-            id: call.id,
-            name: call.name,
-            arguments: typeof call.arguments === 'string' ? call.arguments : '{}',
-            arguments_chars: call.arguments_chars,
-            truncated: call.truncated,
-            timestamp: event.timestamp,
-            status: 'running',
-            ...calls.get(call.id),
-          })
-        }
-      } else if (event.topic === 'chat/tool_output') {
-        const id = typeof event.payload.tool_call_id === 'string' ? event.payload.tool_call_id : event.id
-        const previous = calls.get(id)
-        calls.set(id, {
-          id,
-          name: typeof event.payload.tool_name === 'string' ? event.payload.tool_name : previous?.name ?? 'tool',
-          arguments: previous?.arguments ?? '{}',
-          arguments_chars: previous?.arguments_chars,
-          truncated: previous?.truncated,
-          timestamp: previous?.timestamp ?? event.timestamp,
-          status: typeof event.payload.tool_status === 'string' ? event.payload.tool_status : 'success',
-          result: typeof event.payload.text === 'string' ? event.payload.text : '',
-        })
-      }
-    }
-    return [...calls.values()].sort((left, right) => left.timestamp.localeCompare(right.timestamp))
+    return buildToolTimeline(sessionEvents)
   }, [sessionEvents])
+  const toolTimelineById = useMemo(
+    () => new Map(toolTimeline.map(call => [call.id, call])),
+    [toolTimeline],
+  )
   const activeObjectives = objectives.filter(item => !terminalObjectiveStatuses.has(item.status))
   const runningObjectives = activeObjectives.filter(item => item.status === 'active')
   const blockedObjectives = activeObjectives.filter(item => item.status === 'blocked')
   const pausedObjectives = activeObjectives.filter(item => item.status === 'paused')
+  const waitingUserObjectives = runningObjectives.filter(item => item.wait_condition?.kind === 'user_input')
   const acknowledgedAttentionKeys = useMemo(
     () => new Set(
       attentionAcknowledgements
@@ -3501,7 +3745,7 @@ export default function App() {
       const jobs = snapshot.activations.flatMap(activation => activation.jobs)
       const needsAttention = jobs.some(job => (
         job.approval?.status === 'pending_human' || (
-          (job.job.status === 'failed' || job.job.status === 'lost')
+          job.job.status === 'lost'
           && !acknowledgedAttentionKeys.has(attentionJobKey('execution_job', job))
         )
       )) || (
@@ -3512,7 +3756,7 @@ export default function App() {
       if (needsAttention) groups.attention.push(snapshot)
       else if (snapshot.phase === 'running') groups.running.push(snapshot)
       else if (snapshot.phase === 'runnable') groups.runnable.push(snapshot)
-      else if (snapshot.phase === 'waiting') groups.waiting.push(snapshot)
+      else if (snapshot.thread.control_state === 'paused' || snapshot.phase === 'waiting') groups.waiting.push(snapshot)
       else groups.recent.push(snapshot)
     }
     return (Object.entries(groups) as Array<[keyof typeof groups, SchedulerThreadSnapshot[]]>)
@@ -3538,7 +3782,6 @@ export default function App() {
     )
     return streamingAttempts.filter(attempt => activationIds.has(attempt.activationId))
   }, [streamingAttempts, threadDetail])
-  const activations = schedulerThreads.flatMap(thread => thread.activations.map(item => item.activation))
   // Terminal Schedule history remains available inside each causal Thread;
   // this board and the composer status describe only present control state.
   const schedules = currentSchedulerSchedules(schedulerSnapshot)
@@ -3559,7 +3802,8 @@ export default function App() {
     + approvalAnomalies.length
     + failedSchedulerJobs.length
     + failedDeliveries.length
-  const runningActivations = activations.filter(item => item.status === 'queued' || item.status === 'running')
+    + waitingUserObjectives.length
+  const runningActivations = activeSchedulerActivations(schedulerSnapshot)
   const contextDelegations = delegations.filter(item => item.parent_context_id === selectedContextId)
   const liveDelegations = contextDelegations.filter(item => !terminalTaskStatuses.has(item.status))
   const runningDelegations = liveDelegations.filter(item => item.status === 'queued' || item.status === 'running')
@@ -3653,14 +3897,23 @@ export default function App() {
   useEffect(() => {
     // Older messages were prepended; keep the viewport anchored to the same
     // message by shifting scrollTop down by the added height.
-    if (pendingScrollRestore.current === null) return
-    const container = conversationLayout === 'split' ? conversationLaneRef.current : viewFrameRef.current
-    const previousHeight = pendingScrollRestore.current
+    const pending = pendingScrollRestore.current
+    if (pending === null) return
+    const container = pending.lane === 'execution_output'
+      ? executionOutputLaneRef.current
+      : pending.lane === 'dialogue'
+        ? conversationLaneRef.current
+        : viewFrameRef.current
     pendingScrollRestore.current = null
-    if (container) container.scrollTop += container.scrollHeight - previousHeight
+    if (container) container.scrollTop += container.scrollHeight - pending.previousHeight
     loadingOlder.current = false
     setLoadingOlderEvents(false)
-  }, [conversationLayout, visibleCount])
+  }, [
+    conversationLayout,
+    messageWindow.dialogue,
+    messageWindow.execution_output,
+    messageWindow.merged,
+  ])
 
   useEffect(() => {
     if (view !== 'dialogue') {
@@ -3759,24 +4012,31 @@ export default function App() {
     }
   }, [conversationLayout, selectedSessionId, view])
 
-  const loadOlderConversationEvents = useCallback(async (container: HTMLDivElement) => {
+  const loadOlderConversationEvents = useCallback(async (
+    lane: ConversationWindowLane,
+    container: HTMLDivElement,
+  ) => {
     if (!selectedSessionId || loadingOlder.current) return
 
     loadingOlder.current = true
     setLoadingOlderEvents(true)
-    pendingScrollRestore.current = container.scrollHeight
+    pendingScrollRestore.current = { lane, previousHeight: container.scrollHeight }
 
-    // First reveal messages that are already resident in the browser. Once
-    // that finite window is exhausted, continue from the durable Ledger
-    // cursor instead of pretending the latest 1,000 Events are all history.
-    if (hiddenEventCount > 0) {
-      setMessageWindow(current => ({
-        sessionId: selectedSessionId,
-        count: Math.min(
-          (current.sessionId === selectedSessionId ? current.count : MESSAGE_PAGE_SIZE) + MESSAGE_PAGE_SIZE,
-          conversationEvents.length,
-        ),
-      }))
+    // First reveal lane-local items already resident in the browser. Once that
+    // lane is exhausted, continue from the shared durable Ledger cursor.
+    if (hiddenEventCounts[lane] > 0) {
+      const availableCount = lane === 'merged'
+        ? conversationEventsForObjective.length
+        : lane === 'dialogue'
+          ? dialogueEventsForObjective.length
+          : executionEventsForObjective.length
+      setMessageWindow(current => {
+        const base = current.sessionId === selectedSessionId ? current : freshMessageWindow(selectedSessionId)
+        return {
+          ...base,
+          [lane]: Math.min(base[lane] + MESSAGE_PAGE_SIZE, availableCount),
+        }
+      })
       return
     }
 
@@ -3790,12 +4050,15 @@ export default function App() {
 
     try {
       const page = await DASHBOARD_API.get<SessionEventsPage>(
-        `/api/sessions/${encodeURIComponent(selectedSessionId)}/events?before_sequence=${cursorState.nextBeforeSequence}&limit=1000`,
+        `/api/sessions/${encodeURIComponent(selectedSessionId)}/events?conversation_only=true&before_sequence=${cursorState.nextBeforeSequence}&limit=1000`,
       )
       if (selectedScopeRef.current.sessionId !== selectedSessionId) return
 
-      const existingIds = new Set(conversationEvents.map(event => event.id))
-      const newlyLoadedMessages = page.events.filter(event => eventKind(event) !== null && !existingIds.has(event.id)).length
+      const existingIds = new Set(sessionEvents.map(event => event.id))
+      const newlyLoadedMessages = page.events.filter(event => {
+        if (existingIds.has(event.id) || eventKind(event) === null) return false
+        return lane === 'merged' || conversationEventLane(event.topic, event.payload) === lane
+      }).length
       const nextCursor = page.next_before_sequence ?? null
       eventHistoryCursorRef.current = { sessionId: selectedSessionId, nextBeforeSequence: nextCursor }
       setEventHistoryCursor(nextCursor)
@@ -3803,10 +4066,10 @@ export default function App() {
       setEventsSessionId(selectedSessionId)
 
       if (newlyLoadedMessages > 0) {
-        setMessageWindow(current => ({
-          sessionId: selectedSessionId,
-          count: (current.sessionId === selectedSessionId ? current.count : MESSAGE_PAGE_SIZE) + newlyLoadedMessages,
-        }))
+        setMessageWindow(current => {
+          const base = current.sessionId === selectedSessionId ? current : freshMessageWindow(selectedSessionId)
+          return { ...base, [lane]: base[lane] + newlyLoadedMessages }
+        })
       } else {
         pendingScrollRestore.current = null
         loadingOlder.current = false
@@ -3819,16 +4082,34 @@ export default function App() {
       setLoadingOlderEvents(false)
       setError(reason instanceof Error ? reason.message : String(reason))
     }
-  }, [conversationEvents, hiddenEventCount, selectedSessionId])
+  }, [
+    conversationEventsForObjective.length,
+    dialogueEventsForObjective.length,
+    executionEventsForObjective.length,
+    hiddenEventCounts,
+    selectedSessionId,
+    sessionEvents,
+  ])
 
-  const handleConversationScroll = useCallback((container: HTMLDivElement) => {
+  const handleConversationScroll = useCallback((
+    lane: 'merged' | 'dialogue',
+    container: HTMLDivElement,
+  ) => {
     // Ignore the scroll events fired by our own programmatic scrolling;
     // content growth between the scroll and the event would otherwise look
     // like the user scrolled away from the bottom.
     if (Date.now() - lastProgrammaticScroll.current < 120) return
     conversationPinnedToEnd.current = container.scrollHeight - container.scrollTop - container.clientHeight < 48
     if (container.scrollTop < 80) {
-      void loadOlderConversationEvents(container)
+      void loadOlderConversationEvents(lane, container)
+    }
+  }, [loadOlderConversationEvents])
+
+  const handleExecutionOutputScroll = useCallback((container: HTMLDivElement) => {
+    if (Date.now() - lastExecutionProgrammaticScroll.current < 120) return
+    executionOutputPinnedToEnd.current = container.scrollHeight - container.scrollTop - container.clientHeight < 48
+    if (container.scrollTop < 80) {
+      void loadOlderConversationEvents('execution_output', container)
     }
   }, [loadOlderConversationEvents])
 
@@ -3925,6 +4206,7 @@ export default function App() {
     setSelectedContextId(session.context_id)
     setSelectedSessionId(session.id)
     setSessionMenuOpen(false)
+    setConversationSessionMenuOpen(false)
     navigate(dashboardPath('dialogue', session.context_id, session.id))
   }
 
@@ -4358,6 +4640,45 @@ export default function App() {
     }
   }
 
+  const controlThread = async (thread: ThreadRecord, action: 'pause' | 'resume' | 'close') => {
+    if (!selectedContextId || mutatingThreadId) return
+    if (action === 'close') {
+      const confirmed = await requestConfirmation({
+        title: t('dialog.closeThreadTitle'),
+        description: t('dialog.closeThreadBody', { thread: threadKindLabel(thread.kind, t), id: shortId(thread.id, 28) }),
+        confirmLabel: t('work.causal.closeThread'),
+        cancelLabel: t('dialog.actions.cancel'),
+        tone: 'danger',
+      })
+      if (!confirmed) return
+    }
+    setMutatingThreadId(thread.id)
+    try {
+      await DASHBOARD_API.command(
+        `/api/contexts/${encodeURIComponent(selectedContextId)}/threads/${encodeURIComponent(thread.id)}`,
+        'POST',
+        {
+          action,
+          expected_revision: thread.revision,
+          reason: t(`reason.${action}ThreadByUser`),
+        },
+      )
+      await Promise.all([
+        loadSession(selectedSessionId, selectedContextId),
+        loadOverview(selectedContextId, selectedSessionId),
+      ])
+      if (threadDetail?.snapshot.thread.id === thread.id) {
+        await loadThreadDetail(selectedContextId, thread.id)
+      }
+      setError('')
+    } catch (reason) {
+      await loadSession(selectedSessionId, selectedContextId).catch(() => {})
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setMutatingThreadId('')
+    }
+  }
+
   const decideApproval = async (approval: ApprovalRecord, decision: 'allow_once' | 'deny') => {
     if (decision === 'deny') {
       const confirmed = await requestConfirmation({
@@ -4511,6 +4832,8 @@ export default function App() {
   ))
   const taskStrip = pendingApprovals[0]
     ? { state: 'waiting', label: t('composer.status.approvalRequired'), summary: pendingApprovals[0].justification }
+    : waitingUserObjectives[0]
+      ? { state: 'waiting', label: t('composer.status.userInputRequired'), summary: waitingUserObjectives[0].stated_objective }
     : failedDelivery
       ? { state: 'blocked', label: t('composer.status.deliveryFailed'), summary: failedDelivery.thread.result_text ?? failedDelivery.thread.id }
       : primaryJob
@@ -4621,6 +4944,7 @@ export default function App() {
       resumingObjectiveId={resumingObjectiveId}
       editingObjectiveId={editingObjectiveId}
       deletingObjectiveId={deletingObjectiveId}
+      mutatingThreadId={mutatingThreadId}
       t={t}
       onOpenChange={setDialogueActivityOpen}
       onThreadToggle={threadId => {
@@ -4638,12 +4962,13 @@ export default function App() {
       onResumeObjective={objective => void resumeObjective(objective)}
       onEditObjective={objective => void editObjective(objective)}
       onDeleteObjective={objective => void deleteObjective(objective)}
+      onThreadControl={(thread, action) => void controlThread(thread, action)}
     />
   )
 
   return (
     <main className="page-shell" data-accent={accentTheme} data-color-mode={resolvedAppearanceMode}>
-      <section className="morphz-shell" data-accent={accentTheme} data-view={view}>
+      <section className={`morphz-shell ${immersiveMode ? 'is-immersive' : ''}`} data-accent={accentTheme} data-view={view}>
         <header className="runtime-header">
           <button className="brand" type="button" onClick={() => setView('overview')}>
             <span className="brand-mark">◆</span>
@@ -4828,9 +5153,51 @@ export default function App() {
           </nav>
           {view === 'dialogue' && selectedSessionId && (
             <div className="conversation-toolbar">
-              <span className="conversation-toolbar-title">
-                {t('conversation.heading', { title: selectedSession?.title ?? shortId(selectedSessionId) })}
-              </span>
+              <div className="conversation-toolbar-session" ref={conversationSessionSelectorRef}>
+                <button
+                  className="conversation-toolbar-title"
+                  type="button"
+                  aria-expanded={conversationSessionMenuOpen}
+                  title={selectedSession?.title ?? selectedSessionId}
+                  onClick={() => setConversationSessionMenuOpen(open => !open)}
+                >
+                  <MessageSquare size={12} />
+                  <span>{t('conversation.heading', { title: selectedSession?.title ?? shortId(selectedSessionId) })}</span>
+                  <ChevronDown size={11} />
+                </button>
+                {conversationSessionMenuOpen && (
+                  <div className="session-popover conversation-session-popover">
+                    <header>
+                      <strong>{t('header.sessionCount', { count: visibleSessions.length })}</strong>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConversationSessionMenuOpen(false)
+                          void createSession()
+                        }}
+                        disabled={creatingSession || !selectedContextId}
+                      >
+                        <Plus size={13} />{creatingSession ? t('header.creatingSession') : t('header.createSession')}
+                      </button>
+                    </header>
+                    <div className="session-options">
+                      {visibleSessions.map(session => (
+                        <div className={`catalog-option ${session.id === selectedSessionId ? 'is-current' : ''}`} key={session.id}>
+                          <button className="catalog-option-main" type="button" onClick={() => chooseSession(session)}>
+                            <i className={`presence ${session.attention_state ?? 'active'}`} />
+                            <span>
+                              <strong>{session.title}</strong>
+                              <small>{shortId(session.id, 25)} · {formatAgo(session.last_activity_at, t)}</small>
+                            </span>
+                            <em>{session.id === selectedSessionId ? t('header.active').toUpperCase() : ''}</em>
+                          </button>
+                        </div>
+                      ))}
+                      {visibleSessions.length === 0 && <div className="catalog-empty">{t('header.noVisibleSessions')}</div>}
+                    </div>
+                  </div>
+                )}
+              </div>
               <div className="conversation-history-search">
                 <form onSubmit={event => { event.preventDefault(); void searchDialogueHistory() }}>
                   <button type="submit" disabled={dialogueSearchBusy || !dialogueSearchQuery.trim()} title={t('conversation.search.action')} aria-label={t('conversation.search.action')}>
@@ -4915,6 +5282,18 @@ export default function App() {
               </div>
             </div>
           )}
+          <div className="immersive-controls">
+            <button
+              className={`immersive-toggle ${immersiveMode ? 'is-active' : ''}`}
+              type="button"
+              aria-pressed={immersiveMode}
+              title={immersiveMode ? t('header.exitImmersive') : t('header.enterImmersive')}
+              aria-label={immersiveMode ? t('header.exitImmersive') : t('header.enterImmersive')}
+              onClick={() => setImmersiveMode(value => !value)}
+            >
+              {immersiveMode ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            </button>
+          </div>
         </div>
 
         <div
@@ -4922,12 +5301,12 @@ export default function App() {
           ref={viewFrameRef}
           onScroll={event => {
             if (view === 'dialogue' && conversationLayout === 'merged') {
-              handleConversationScroll(event.currentTarget)
+              handleConversationScroll('merged', event.currentTarget)
             }
           }}
           onWheel={event => {
             if (view === 'dialogue' && conversationLayout === 'merged' && event.deltaY < 0 && event.currentTarget.scrollTop < 80) {
-              void loadOlderConversationEvents(event.currentTarget)
+              void loadOlderConversationEvents('merged', event.currentTarget)
             }
           }}
         >
@@ -4962,10 +5341,11 @@ export default function App() {
                 approvals: pendingApprovals.length,
                 failedJobs: failedSchedulerJobs.length,
                 failedDeliveries: failedDeliveries.length,
-                inactiveObjectives: blockedObjectives.length + pausedObjectives.length,
+                inactiveObjectives: blockedObjectives.length,
+                waitingUser: waitingUserObjectives.length,
               }}
               activities={schedulerThreads
-                .filter(item => item.phase !== 'idle')
+                .filter(item => item.phase !== 'idle' || (item.thread.lifecycle === 'open' && item.thread.control_state === 'paused'))
                 .sort((left, right) => right.thread.updated_at.localeCompare(left.thread.updated_at))
                 .slice(0, 8)
                 .map(snapshot => ({
@@ -4976,11 +5356,14 @@ export default function App() {
                   phaseLabel: statusLabel(snapshot.phase, t),
                   executor: snapshot.thread.executor_kind,
                   updatedAgo: formatAgo(snapshot.thread.updated_at, t),
+                  thread: snapshot.thread,
                 }))}
               canRefresh={Boolean(selectedContextId)}
+              mutatingThreadId={mutatingThreadId}
               onRefresh={() => void loadOverview(selectedContextId, selectedSessionId)}
               onNavigate={setView}
               onOpenMind={() => selectCognitionView('mind')}
+              onThreadControl={(thread, action) => void controlThread(thread, action)}
             />
           )}
 
@@ -5019,11 +5402,11 @@ export default function App() {
                   className="conversation-dialogue-lane"
                   ref={conversationLaneRef}
                   onScroll={event => {
-                    if (conversationLayout === 'split') handleConversationScroll(event.currentTarget)
+                    if (conversationLayout === 'split') handleConversationScroll('dialogue', event.currentTarget)
                   }}
                   onWheel={event => {
                     if (conversationLayout === 'split' && event.deltaY < 0 && event.currentTarget.scrollTop < 80) {
-                      void loadOlderConversationEvents(event.currentTarget)
+                      void loadOlderConversationEvents('dialogue', event.currentTarget)
                     }
                   }}
                 >
@@ -5038,7 +5421,7 @@ export default function App() {
                     </button>
                   </div>
                 )}
-                {(hiddenEventCount > 0 || eventHistoryCursor !== null) && (
+                {(dialogueHiddenEventCount > 0 || eventHistoryCursor !== null) && (
                   <button
                     className="history-hint"
                     type="button"
@@ -5047,14 +5430,14 @@ export default function App() {
                       const container = conversationLayout === 'split'
                         ? conversationLaneRef.current
                         : viewFrameRef.current
-                      if (container) void loadOlderConversationEvents(container)
+                      if (container) void loadOlderConversationEvents(dialogueHistoryLane, container)
                       event.currentTarget.blur()
                     }}
                   >
                     {loadingOlderEvents
                       ? t('conversation.historyLoading')
-                      : hiddenEventCount > 0
-                        ? t('conversation.historyHint', { count: hiddenEventCount })
+                      : dialogueHiddenEventCount > 0
+                        ? t('conversation.historyHint', { count: dialogueHiddenEventCount })
                         : t('conversation.historyMore')}
                   </button>
                 )}
@@ -5067,19 +5450,45 @@ export default function App() {
                   }
                   const persistedReasoningSummary = visibleReasoningSummaries.get(event.id) ?? ''
                   if (kind === 'reasoning') {
-                    if (!persistedReasoningSummary) return null
+                    const assistantText = typeof event.payload.text === 'string' ? event.payload.text.trim() : ''
+                    const eventToolCalls = assistantToolCalls(event.payload).map(call => (
+                      toolTimelineById.get(call.id) ?? {
+                        ...call,
+                        timestamp: event.timestamp,
+                        status: 'running',
+                      }
+                    ))
+                    // In merged mode the Assistant Call is the durable home of
+                    // Execution output as well as reasoning. Do not discard a
+                    // call merely because the provider emitted no reasoning
+                    // summary: tool-only calls are common and still need to be
+                    // visible alongside the dialogue that caused them.
+                    if (!persistedReasoningSummary && !assistantText && eventToolCalls.length === 0) return null
                     return (
-                      <article className={`message-row agent persisted-reasoning ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}>
+                      <article
+                        className={`message-row agent persisted-reasoning merged-execution-output ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`}
+                        style={tintStyle}
+                        key={event.id}
+                        data-event-id={event.id}
+                        data-event-actor={event.actor}
+                        data-event-time={event.timestamp}
+                      >
                         <CausalIdentifierBadges lineage={lineage} t={t} tintStyleFor={tintStyleFor} />
-                        <ReasoningSummaryBlock
-                          summary={persistedReasoningSummary}
-                          live={false}
-                          open={showReasoningSummary}
-                          onOpenChange={setShowReasoningSummary}
-                          title={t('reasoningSummary.title')}
-                          liveLabel={t('reasoningSummary.live')}
-                          persistedLabel={t('reasoningSummary.persisted')}
-                        />
+                        {persistedReasoningSummary && (
+                          <ReasoningSummaryBlock
+                            summary={persistedReasoningSummary}
+                            live={false}
+                            open={showReasoningSummary}
+                            onOpenChange={setShowReasoningSummary}
+                            title={t('reasoningSummary.title')}
+                            liveLabel={t('reasoningSummary.live')}
+                            persistedLabel={t('reasoningSummary.persisted')}
+                          />
+                        )}
+                        {assistantText && (
+                          <div className="message-body"><MarkdownBody text={assistantText} /></div>
+                        )}
+                        <ExecutionToolCalls calls={eventToolCalls} targetNames={executionTargetNames} t={t} />
                       </article>
                     )
                   }
@@ -5251,19 +5660,38 @@ export default function App() {
                     className="conversation-execution-lane"
                     ref={executionOutputLaneRef}
                     onWheel={event => {
-                      if (event.deltaY < 0) executionOutputPinnedToEnd.current = false
+                      if (event.deltaY < 0) {
+                        executionOutputPinnedToEnd.current = false
+                        if (event.currentTarget.scrollTop < 80) {
+                          void loadOlderConversationEvents('execution_output', event.currentTarget)
+                        }
+                      }
                     }}
-                    onScroll={event => {
-                      const container = event.currentTarget
-                      if (Date.now() - lastExecutionProgrammaticScroll.current < 120) return
-                      executionOutputPinnedToEnd.current = container.scrollHeight - container.scrollTop - container.clientHeight < 48
-                    }}
+                    onScroll={event => handleExecutionOutputScroll(event.currentTarget)}
                   >
                     <header className="conversation-lane-heading">
                       <span><GitBranch size={13} /> {t('conversation.layout.executionLane')}</span>
                       <small>{t('conversation.layout.executionLaneHint')}</small>
                     </header>
                     <div className="message-list execution-output-list" ref={executionOutputListRef}>
+                      {(executionHiddenEventCount > 0 || eventHistoryCursor !== null) && (
+                        <button
+                          className="history-hint"
+                          type="button"
+                          disabled={loadingOlderEvents}
+                          onClick={event => {
+                            const container = executionOutputLaneRef.current
+                            if (container) void loadOlderConversationEvents('execution_output', container)
+                            event.currentTarget.blur()
+                          }}
+                        >
+                          {loadingOlderEvents
+                            ? t('conversation.historyLoading')
+                            : executionHiddenEventCount > 0
+                              ? t('conversation.historyHint', { count: executionHiddenEventCount })
+                              : t('conversation.historyMore')}
+                        </button>
+                      )}
                       {visibleExecutionOutputEvents.length === 0 && executionOutputStreamingAttempts.length === 0 && (
                         <div className="conversation-lane-empty">
                           <GitBranch size={20} />
@@ -5279,13 +5707,26 @@ export default function App() {
                           return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <div className="progress-note-body"><MarkdownBody text={typeof event.payload.text === 'string' ? event.payload.text : ''} /></div><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                         }
                         if (kind === 'reasoning') {
-                          const summary = persistedReasoningSummary || String(event.payload.text ?? '')
-                          if (!summary) return null
+                          const assistantText = typeof event.payload.text === 'string' ? event.payload.text.trim() : ''
+                          const eventToolCalls = assistantToolCalls(event.payload).map(call => (
+                            toolTimelineById.get(call.id) ?? {
+                              ...call,
+                              timestamp: event.timestamp,
+                              status: 'running',
+                            }
+                          ))
                           return (
-                            <article className={`message-row agent persisted-reasoning execution-output ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}>
+                            <article
+                              className={`message-row agent persisted-reasoning execution-output ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`}
+                              style={tintStyle}
+                              key={event.id}
+                              data-event-id={event.id}
+                              data-event-actor={event.actor}
+                              data-event-time={event.timestamp}
+                            >
                               <CausalIdentifierBadges lineage={lineage} t={t} tintStyleFor={tintStyleFor} />
                               <ReasoningSummaryBlock
-                                summary={summary}
+                                summary={persistedReasoningSummary}
                                 live={false}
                                 open={showReasoningSummary}
                                 onOpenChange={setShowReasoningSummary}
@@ -5293,6 +5734,13 @@ export default function App() {
                                 liveLabel={t('reasoningSummary.live')}
                                 persistedLabel={t('reasoningSummary.persisted')}
                               />
+                              {assistantText && (
+                                <div className="message-body"><MarkdownBody text={assistantText} /></div>
+                              )}
+                              <ExecutionToolCalls calls={eventToolCalls} targetNames={executionTargetNames} t={t} />
+                              {!persistedReasoningSummary && !assistantText && eventToolCalls.length === 0 && (
+                                <div className="message-body">{t('conversation.noText')}</div>
+                              )}
                             </article>
                           )
                         }
@@ -5419,8 +5867,10 @@ export default function App() {
                       locale={i18n.language}
                       decidingApprovalId={decidingApprovalId}
                       mutatingScheduleId={mutatingScheduleId}
+                      mutatingThreadId={mutatingThreadId}
                       onApproval={(approval, decision) => void decideApproval(approval, decision)}
                       onSchedule={(schedule, action) => void mutateSchedule(schedule, action)}
+                      onThreadControl={(thread, action) => void controlThread(thread, action)}
                     />
                   ) : <div className="small-empty">{t('work.causal.loadingDetail')}</div>}
                 </section>
@@ -5439,6 +5889,22 @@ export default function App() {
                 <section className="attention-board">
                   <header><span>{t('work.attention.title').toUpperCase()}</span><b>{attentionCount}</b><small>{t('work.attention.subtitle')}</small></header>
                   <div className="attention-list">
+                    {waitingUserObjectives.map(objective => {
+                      const waitingSessionId = typeof objective.wait_condition?.session_id === 'string'
+                        ? objective.wait_condition.session_id
+                        : objective.coordinator_session_id
+                      return <article className="attention-card user-input" key={`waiting-user-${objective.id}`}>
+                        <div><span className="status-pill pending_human">{t('work.attention.waitingUser')}</span><time>{formatAgo(objective.updated_at, t)}</time></div>
+                        <h2>{objective.stated_objective}</h2>
+                        {objective.status_reason && <p>{objective.status_reason}</p>}
+                        <div className="attention-actions">
+                          <button type="button" onClick={() => {
+                            if (waitingSessionId) setSelectedSessionId(waitingSessionId)
+                            navigate(dashboardPath('dialogue', selectedContextId, waitingSessionId))
+                          }}><MessageSquare size={12} /> {t('work.attention.answerNow')}</button>
+                        </div>
+                      </article>
+                    })}
                     {pendingApprovals.map(approval => (
                       <article className="attention-card approval" key={approval.id}>
                         <div><span className="status-pill pending_human">{t('work.approvals.needsYou')}</span><time>{formatAgo(approval.created_at, t)}</time></div>
@@ -5529,6 +5995,7 @@ export default function App() {
                           />
                         </header>
                         <h2 title={objective.stated_objective}><MarkdownInline>{objective.stated_objective}</MarkdownInline></h2>
+                        {objective.wait_condition?.kind === 'user_input' && <div className="objective-wait-user"><MessageSquare size={12} /> {t('work.attention.waitingUser')}</div>}
                         {expanded && (
                           <div className="objective-work-details">
                             {objective.status_reason && <p title={objective.status_reason}><MarkdownInline>{objective.status_reason}</MarkdownInline></p>}
@@ -5599,8 +6066,10 @@ export default function App() {
                           locale={i18n.language}
                           decidingApprovalId={decidingApprovalId}
                           mutatingScheduleId={mutatingScheduleId}
+                          mutatingThreadId={mutatingThreadId}
                           onApproval={(approval, decision) => void decideApproval(approval, decision)}
                           onSchedule={(schedule, action) => void mutateSchedule(schedule, action)}
+                          onThreadControl={(thread, action) => void controlThread(thread, action)}
                           onInspect={(threadId) => navigate(threadPath(selectedContextId, threadId))}
                         />
                       ))}
@@ -5776,21 +6245,33 @@ export default function App() {
                         </button>
                       ))}
                     </nav>
-                    <button
-                      className="context-inspect-copy"
-                      type="button"
-                      onClick={() => {
-                        void copyTextToClipboard(contextInspectContent)
-                          .then(() => {
-                            setContextInspectCopied(true)
-                            window.setTimeout(() => setContextInspectCopied(false), 1400)
-                          })
-                          .catch(() => setError(t('errors.copyFailed')))
-                      }}
-                    >
-                      {contextInspectCopied ? <Check size={13} /> : <Copy size={13} />}
-                      {contextInspectCopied ? t('mindView.contextInspect.copied') : t('mindView.contextInspect.copy')}
-                    </button>
+                    <div className="context-inspect-actions">
+                      {contextInspectTab === 'encoding' && Boolean(contextInspectContent) && (
+                        <button
+                          className="context-inspect-reader"
+                          type="button"
+                          onClick={() => setContextEncodingReaderOpen(true)}
+                        >
+                          <BookOpen size={13} />
+                          {t('mindView.contextInspect.reader.open')}
+                        </button>
+                      )}
+                      <button
+                        className="context-inspect-copy"
+                        type="button"
+                        onClick={() => {
+                          void copyTextToClipboard(contextInspectContent)
+                            .then(() => {
+                              setContextInspectCopied(true)
+                              window.setTimeout(() => setContextInspectCopied(false), 1400)
+                            })
+                            .catch(() => setError(t('errors.copyFailed')))
+                        }}
+                      >
+                        {contextInspectCopied ? <Check size={13} /> : <Copy size={13} />}
+                        {contextInspectCopied ? t('mindView.contextInspect.copied') : t('mindView.contextInspect.copy')}
+                      </button>
+                    </div>
                   </header>
                   <pre>{contextInspectContent || t('mindView.contextInspect.empty')}</pre>
                   <footer>
@@ -6023,6 +6504,14 @@ export default function App() {
         </footer>
         <SelectionQuotePopup label={t('conversation.addToChat')} onAdd={addQuote} />
       </section>
+      {contextEncodingReaderOpen && contextInspectContent && (
+        <ContextEncodingReader
+          exact={hasExactContextInspect}
+          source={contextInspectContent}
+          t={t}
+          onClose={() => setContextEncodingReaderOpen(false)}
+        />
+      )}
       {appDialog && <AppDialog key={appDialog.id} request={appDialog} onResolve={resolveAppDialog} />}
     </main>
   )

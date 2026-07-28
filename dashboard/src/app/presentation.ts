@@ -7,8 +7,22 @@ export interface ToolCallSummary {
   detail: string
 }
 
+export interface PresentedToolCall {
+  id: string
+  name: string
+  arguments: string
+  arguments_chars?: number
+  truncated?: boolean
+}
+
 export type ConversationEventKind = 'user' | 'agent' | 'background' | 'progress' | 'reasoning' | 'system'
 export type ConversationLane = 'dialogue' | 'execution_output'
+export type ConversationWindowLane = 'merged' | ConversationLane
+
+export interface ConversationPresentationEvent {
+  topic: string
+  payload: Record<string, unknown>
+}
 
 export function conversationEventKind(
   topic: string,
@@ -43,6 +57,17 @@ export function conversationEventLane(
   return kind === 'background' || kind === 'progress' || kind === 'reasoning'
     ? 'execution_output'
     : 'dialogue'
+}
+
+export function newestConversationEventsForLane<T extends ConversationPresentationEvent>(
+  events: ReadonlyArray<T>,
+  lane: ConversationWindowLane,
+  count: number,
+): T[] {
+  const laneEvents = lane === 'merged'
+    ? events
+    : events.filter(event => conversationEventLane(event.topic, event.payload) === lane)
+  return laneEvents.slice(-Math.max(0, count))
 }
 
 export function formatTime(value: string | undefined, locale: string) {
@@ -92,6 +117,36 @@ function objectFromJson(value: string): Record<string, unknown> {
   } catch {
     return {}
   }
+}
+
+/**
+ * Assistant Call events use the provider-shaped `function` envelope while
+ * Runtime selection events use a flattened call. Normalising both here keeps
+ * the execution lane independent from provider wire formats.
+ */
+export function assistantToolCalls(payload: Record<string, unknown>): PresentedToolCall[] {
+  if (!Array.isArray(payload.tool_calls)) return []
+  const calls: PresentedToolCall[] = []
+  for (const value of payload.tool_calls) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const call = value as Record<string, unknown>
+    const functionValue = call.function && typeof call.function === 'object' && !Array.isArray(call.function)
+      ? call.function as Record<string, unknown>
+      : {}
+    const id = typeof call.id === 'string' ? call.id.trim() : ''
+    const nameValue = typeof call.name === 'string' ? call.name : functionValue.name
+    const argumentsValue = typeof call.arguments === 'string' ? call.arguments : functionValue.arguments
+    const name = typeof nameValue === 'string' ? nameValue.trim() : ''
+    if (!id || !name) continue
+    calls.push({
+      id,
+      name,
+      arguments: typeof argumentsValue === 'string' ? argumentsValue : '{}',
+      arguments_chars: typeof call.arguments_chars === 'number' ? call.arguments_chars : undefined,
+      truncated: typeof call.truncated === 'boolean' ? call.truncated : undefined,
+    })
+  }
+  return calls
 }
 
 function stringField(value: Record<string, unknown>, ...names: string[]) {

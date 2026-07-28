@@ -32,6 +32,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
             root_turn_id TEXT NOT NULL UNIQUE,
             kind TEXT NOT NULL,
             status TEXT NOT NULL,
+            control_state TEXT NOT NULL DEFAULT 'active',
             executor_kind TEXT NOT NULL,
             executor_id TEXT,
             target_id TEXT,
@@ -65,6 +66,7 @@ pub(super) async fn migrate(pool: &PgPool) -> Result<(), StoreError> {
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS target_id TEXT"#,
         r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
+        r#"ALTER TABLE threads ADD COLUMN IF NOT EXISTS control_state TEXT NOT NULL DEFAULT 'active'"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS initiating_principal_id TEXT"#,
         r#"ALTER TABLE thread_activations ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1"#,
         r#"CREATE TABLE IF NOT EXISTS execution_jobs (

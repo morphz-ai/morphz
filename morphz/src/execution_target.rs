@@ -639,6 +639,14 @@ pub fn remote_target_approval_requirement(
             if let Some(path) = path.clone() {
                 requested.read_roots.push(path);
             }
+            if tool_name == "search" {
+                for path in json_string_array(object.get("paths")) {
+                    let path = std::path::PathBuf::from(path);
+                    if !requested.read_roots.contains(&path) {
+                        requested.read_roots.push(path);
+                    }
+                }
+            }
         }
         "write" | "edit" => {
             if let Some(path) = path.clone() {
@@ -1887,9 +1895,12 @@ impl ExecutionTargetBackend for ManagedSshBackend {
             )
             .into());
         }
-        if tool.name() != "exec" {
+        if !matches!(
+            tool.name(),
+            "exec" | "read" | "write" | "edit" | "list_files" | "search"
+        ) {
             return Err(format!(
-                "Managed SSH v1 只支持 exec，Target '{}' 收到不受支持的工具 '{}'",
+                "Managed SSH Target '{}' 尚未实现工具 '{}' 的远端执行协议",
                 context.target.id,
                 tool.name()
             )
@@ -1907,12 +1918,6 @@ impl ExecutionTargetBackend for ManagedSshBackend {
             .get(endpoint_ref)
             .cloned()
             .ok_or_else(|| format!("Runtime 未配置 Managed SSH endpoint '{endpoint_ref}'"))?;
-        let prepared = prepare_managed_ssh_exec_arguments(
-            endpoint_ref,
-            &endpoint,
-            &context.target.id,
-            arguments,
-        )?;
         if self.approval_required {
             let requires_ssh_agent =
                 std::env::var_os("SSH_AUTH_SOCK").is_some_and(|value| !value.is_empty());
@@ -1933,7 +1938,8 @@ impl ExecutionTargetBackend for ManagedSshBackend {
                                     tool,
                                     operation,
                                     ..
-                                } if tool == "exec" && operation == "execute_on_remote_target"
+                                } if tool == context.job.tool_name.as_str()
+                                    && operation == "execute_on_remote_target"
                             )
                     })
                 })
@@ -1945,9 +1951,29 @@ impl ExecutionTargetBackend for ManagedSshBackend {
                 );
             }
         }
-        crate::tool::CURRENT_RUNTIME_MANAGED_SSH
-            .scope(true, tool.execute(&prepared))
-            .await
+        match tool.name() {
+            "exec" => {
+                let prepared = prepare_managed_ssh_exec_arguments(
+                    endpoint_ref,
+                    &endpoint,
+                    &context.target.id,
+                    arguments,
+                )?;
+                crate::tool::CURRENT_RUNTIME_MANAGED_SSH
+                    .scope(true, tool.execute(&prepared))
+                    .await
+            }
+            "read" | "write" | "edit" | "list_files" | "search" => {
+                execute_managed_ssh_file_tool(
+                    &endpoint,
+                    context.target.workspace_root.as_deref(),
+                    tool.name(),
+                    arguments,
+                )
+                .await
+            }
+            _ => unreachable!("Managed SSH tool support is checked above"),
+        }
     }
 }
 
@@ -3185,6 +3211,387 @@ async fn run_managed_ssh_output(
     Ok(command.output().await?)
 }
 
+/// Small provider-side protocol for the core file tools. The program is sent
+/// as an OpenSSH command while the model-authored arguments travel over stdin
+/// as JSON, so paths and file contents never become shell syntax.
+const MANAGED_SSH_FILE_TOOL_SCRIPT: &str = r#"
+import fnmatch
+import hashlib
+import json
+import os
+import pathlib
+import sys
+import tempfile
+
+def emit(ok, output=None, error=None):
+    print(json.dumps({"ok": ok, "output": output, "error": error}, ensure_ascii=False))
+
+def resolve_path(value, workspace_root):
+    path = os.path.expanduser(value)
+    if not os.path.isabs(path) and workspace_root:
+        path = os.path.join(workspace_root, path)
+    return os.path.abspath(path)
+
+def path_matches(relative, pattern):
+    relative = relative.replace(os.sep, "/")
+    if pattern in ("*", "**/*"):
+        return True
+    pure = pathlib.PurePosixPath(relative)
+    return pure.match(pattern) or fnmatch.fnmatch(relative, pattern) or (
+        pattern.startswith("**/") and fnmatch.fnmatch(relative, pattern[3:])
+    )
+
+def read_tool(args, workspace_root):
+    original = args["path"]
+    path = resolve_path(original, workspace_root)
+    if not os.path.exists(path):
+        return "系统报错：读取失败。指定的文件路径 '{}' 不存在，请检查路径是否正确。".format(original)
+    with open(path, "rb") as handle:
+        data = handle.read()
+    text = data.decode("utf-8")
+    digest = hashlib.sha256(data).hexdigest()
+    header = "[path={}, bytes={}, sha256={}]\n".format(original, len(data), digest)
+    if args.get("query") is None and args.get("start_line") is None and args.get("end_line") is None:
+        return header + text
+
+    lines = text.splitlines()
+    total = len(lines)
+    start = args.get("start_line") or 1
+    end = min(args.get("end_line") or total, total)
+    if start == 0 or (total > 0 and start > total) or end < start:
+        raise ValueError("无效行范围：start_line={}，end_line={}，文件共 {} 行".format(start, end, total))
+    selected = set()
+    query = args.get("query")
+    match_count = 0
+    shown_matches = 0
+    if query is not None:
+        query = query.strip()
+        if not query:
+            raise ValueError("query 不能为空字符串")
+        needle = query.lower()
+        context = min(args.get("context_lines", 3), 20)
+        max_matches = min(max(args.get("max_matches", 20), 1), 100)
+        for line_number in range(start, end + 1):
+            if needle in lines[line_number - 1].lower():
+                match_count += 1
+                if shown_matches < max_matches:
+                    shown_matches += 1
+                    context_start = max(start, line_number - context)
+                    context_end = min(end, line_number + context)
+                    selected.update(range(context_start, context_end + 1))
+        body = "[query={}, matches={}, shown={}, lines={}..{}, total-lines={}]\n".format(
+            json.dumps(query, ensure_ascii=False), match_count, shown_matches, start, end, total
+        )
+    else:
+        if total > 0:
+            selected.update(range(start, end + 1))
+        body = "[lines={}..{}, total-lines={}]\n".format(start, end, total)
+    for line_number in sorted(selected):
+        body += "{:>6} | {}\n".format(line_number, lines[line_number - 1])
+    return header + body
+
+def write_tool(args, workspace_root):
+    original = args["path"]
+    path = resolve_path(original, workspace_root)
+    content = args["content"]
+    data = content.encode("utf-8")
+    mode = args["mode"]
+    current_mode = None
+    if mode == "create":
+        if os.path.exists(path):
+            raise ValueError("create 拒绝覆盖已存在文件 '{}'；请先 read，再使用 edit 或 overwrite".format(original))
+        operation = "create"
+    elif mode == "overwrite":
+        if not os.path.exists(path):
+            raise ValueError("overwrite 目标 '{}' 不存在；创建新文件请使用 mode=create".format(original))
+        with open(path, "rb") as handle:
+            before = handle.read()
+        current = hashlib.sha256(before).hexdigest()
+        expected = args.get("expected_sha256")
+        if not expected:
+            raise ValueError("overwrite 必须提供最近一次 read 返回的 expected_sha256")
+        if expected != current:
+            raise ValueError("文件版本冲突：'{}' 当前 sha256={}，expected_sha256={}。请重新 read 后再修改".format(original, current, expected))
+        current_mode = os.stat(path).st_mode & 0o7777
+        operation = "overwrite"
+    else:
+        raise ValueError("write.mode 只支持 create 或 overwrite，实际为 '{}'".format(mode))
+
+    parent = os.path.dirname(path) or "."
+    if not os.path.isdir(parent):
+        raise ValueError("父目录 '{}' 不存在".format(parent))
+    descriptor, temporary = tempfile.mkstemp(prefix=".morphz-write-", dir=parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if current_mode is not None:
+            os.chmod(temporary, current_mode)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    digest = hashlib.sha256(data).hexdigest()
+    return "文件写入成功：operation={} path={} bytes={} sha256={}".format(operation, original, len(data), digest)
+
+def edit_tool(args, workspace_root):
+    original = args["path"]
+    path = resolve_path(original, workspace_root)
+    if not os.path.isfile(path):
+        raise ValueError("edit 目标 '{}' 不存在或不是文件".format(original))
+    with open(path, "rb") as handle:
+        before = handle.read()
+    digest = hashlib.sha256(before).hexdigest()
+    expected = args.get("expected_sha256")
+    if expected != digest:
+        raise ValueError("文件版本冲突：'{}' 当前 sha256={}，expected_sha256={}。请重新 read 后再编辑".format(original, digest, expected))
+    text = before.decode("utf-8")
+    edits = args.get("edits") or []
+    if not edits:
+        raise ValueError("edit.edits 至少需要一项")
+    replacements = []
+    for index, edit in enumerate(edits):
+        old = edit.get("old_text", "")
+        new = edit.get("new_text", "")
+        if not old:
+            raise ValueError("edit.edits[{}].old_text 不能为空".format(index))
+        starts = []
+        cursor = 0
+        while True:
+            found = text.find(old, cursor)
+            if found < 0:
+                break
+            starts.append(found)
+            cursor = found + len(old)
+        if not starts:
+            raise ValueError("edit.edits[{}] 的 old_text 在 '{}' 中没有精确匹配；请重新 read 并扩大上下文".format(index, original))
+        replace_all = bool(edit.get("replace_all", False))
+        if not replace_all and len(starts) != 1:
+            raise ValueError("edit.edits[{}] 的 old_text 匹配 {} 次；请扩大上下文，或设置 replace_all=true".format(index, len(starts)))
+        for start in starts if replace_all else starts[:1]:
+            replacements.append((start, start + len(old), new))
+    replacements.sort(key=lambda item: item[0])
+    for left, right in zip(replacements, replacements[1:]):
+        if left[1] > right[0]:
+            raise ValueError("edit 中的两个替换范围发生重叠；请合并为一个更大的精确替换")
+    parts = []
+    cursor = 0
+    for start, end, new in replacements:
+        parts.append(text[cursor:start])
+        parts.append(new)
+        cursor = end
+    parts.append(text[cursor:])
+    updated = "".join(parts)
+    if updated == text:
+        raise ValueError("edit 没有产生任何内容变化")
+    data = updated.encode("utf-8")
+    parent = os.path.dirname(path) or "."
+    descriptor, temporary = tempfile.mkstemp(prefix=".morphz-edit-", dir=parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, os.stat(path).st_mode & 0o7777)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    after_digest = hashlib.sha256(data).hexdigest()
+    return "文件编辑成功：path={} replacements={} bytes={} sha256={}".format(original, len(replacements), len(data), after_digest)
+
+def list_files_tool(args, workspace_root):
+    original = args.get("path", ".")
+    root = resolve_path(original, workspace_root)
+    if not os.path.isdir(root):
+        raise ValueError("list_files.path '{}' 不是目录".format(original))
+    pattern = args.get("glob", "**/*")
+    limit = min(max(args.get("max_results", 500), 1), 2000)
+    include_hidden = bool(args.get("include_hidden", False))
+    include_directories = bool(args.get("include_directories", False))
+    entries = []
+    truncated = False
+    for directory, directories, files in os.walk(root, followlinks=False):
+        if not include_hidden:
+            directories[:] = sorted(name for name in directories if not name.startswith("."))
+            files = [name for name in files if not name.startswith(".")]
+        else:
+            directories.sort()
+        candidates = []
+        if include_directories:
+            candidates.extend((os.path.join(directory, name), "dir") for name in directories)
+        candidates.extend((os.path.join(directory, name), "file") for name in sorted(files))
+        for path, kind in candidates:
+            relative = os.path.relpath(path, root).replace(os.sep, "/")
+            if not path_matches(relative, pattern):
+                continue
+            if len(entries) == limit:
+                truncated = True
+                break
+            size = os.path.getsize(path) if kind == "file" else None
+            entries.append({"path": relative, "kind": kind, "bytes": size})
+        if truncated:
+            break
+    return json.dumps({"root": original, "glob": pattern, "count": len(entries), "truncated": truncated, "entries": entries}, ensure_ascii=False, indent=2)
+
+def search_tool(args, workspace_root):
+    query = args["query"].strip()
+    if not query:
+        raise ValueError("search.query 不能为空")
+    inputs = args.get("paths") or []
+    if not inputs:
+        raise ValueError("search.paths 至少需要一个路径")
+    pattern = args.get("glob", "**/*")
+    limit = min(max(args.get("max_matches", 100), 1), 1000)
+    context_lines = min(max(args.get("context_lines", 2), 0), 20)
+    case_sensitive = bool(args.get("case_sensitive", False))
+    include_hidden = bool(args.get("include_hidden", False))
+    needle = query if case_sensitive else query.lower()
+    matches = []
+    truncated = False
+
+    for original in inputs:
+        root = resolve_path(original, workspace_root)
+        if os.path.isfile(root):
+            candidates = [(root, os.path.basename(root))]
+        elif os.path.isdir(root):
+            candidates = []
+            for directory, directories, files in os.walk(root, followlinks=False):
+                if not include_hidden:
+                    directories[:] = sorted(name for name in directories if not name.startswith("."))
+                    files = [name for name in files if not name.startswith(".")]
+                else:
+                    directories.sort()
+                for name in sorted(files):
+                    path = os.path.join(directory, name)
+                    candidates.append((path, os.path.relpath(path, root)))
+        else:
+            raise ValueError("search 路径 '{}' 不存在".format(original))
+
+        for path, relative in candidates:
+            if not path_matches(relative, pattern):
+                continue
+            try:
+                if os.path.getsize(path) > 2 * 1024 * 1024:
+                    continue
+                with open(path, "r", encoding="utf-8") as handle:
+                    lines = handle.read().splitlines()
+            except (OSError, UnicodeError):
+                continue
+            for index, line in enumerate(lines):
+                haystack = line if case_sensitive else line.lower()
+                if needle not in haystack:
+                    continue
+                if len(matches) == limit:
+                    truncated = True
+                    break
+                number = index + 1
+                start = max(1, number - context_lines)
+                end = min(len(lines), number + context_lines)
+                display_path = original if os.path.isfile(root) else original.rstrip("/") + "/" + relative.replace(os.sep, "/")
+                matches.append({
+                    "path": display_path,
+                    "line": number,
+                    "context": [{"line": row, "text": lines[row - 1]} for row in range(start, end + 1)],
+                })
+            if truncated:
+                break
+        if truncated:
+            break
+    return json.dumps({"query": args["query"], "count": len(matches), "truncated": truncated, "matches": matches}, ensure_ascii=False, indent=2)
+
+try:
+    request = json.load(sys.stdin)
+    operation = request["operation"]
+    arguments = request["arguments"]
+    workspace_root = request.get("workspace_root")
+    if operation == "read":
+        result = read_tool(arguments, workspace_root)
+    elif operation == "write":
+        result = write_tool(arguments, workspace_root)
+    elif operation == "edit":
+        result = edit_tool(arguments, workspace_root)
+    elif operation == "list_files":
+        result = list_files_tool(arguments, workspace_root)
+    elif operation == "search":
+        result = search_tool(arguments, workspace_root)
+    else:
+        raise ValueError("不支持的 Managed SSH 核心工具 '{}'".format(operation))
+    emit(True, output=result)
+except Exception as error:
+    emit(False, error="{}: {}".format(type(error).__name__, error))
+"#;
+
+async fn execute_managed_ssh_file_tool(
+    endpoint: &ManagedSshEndpoint,
+    workspace_root: Option<&str>,
+    operation: &str,
+    arguments: &str,
+) -> Result<String, TargetExecutionError> {
+    let arguments: serde_json::Value = serde_json::from_str(arguments)?;
+    let request = serde_json::to_vec(&serde_json::json!({
+        "operation": operation,
+        "arguments": arguments,
+        "workspace_root": workspace_root,
+    }))?;
+    let script = shell_quote(MANAGED_SSH_FILE_TOOL_SCRIPT);
+    let command = format!(
+        "if command -v python3 >/dev/null 2>&1; then exec python3 -c {script}; elif command -v python >/dev/null 2>&1; then exec python -c {script}; else echo 'Managed SSH Target 缺少 Python 3，不能执行核心文件工具' >&2; exit 127; fi"
+    );
+    let output = run_managed_ssh_output_with_input(endpoint, &command, &request).await?;
+    if !output.status.success() {
+        return Err(format!(
+            "Managed SSH 工具 '{}' 执行失败：{}",
+            operation,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+        .into());
+    }
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        format!(
+            "Managed SSH 工具 '{}' 返回无效协议：{error}；stdout={}；stderr={}",
+            operation,
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    })?;
+    if envelope.get("ok").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Ok(envelope
+            .get("output")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string());
+    }
+    Err(format!(
+        "Managed SSH 工具 '{}' 被远端拒绝：{}",
+        operation,
+        envelope
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("未知错误")
+    )
+    .into())
+}
+
+async fn run_managed_ssh_output_with_input(
+    endpoint: &ManagedSshEndpoint,
+    remote_command: &str,
+    input: &[u8],
+) -> Result<std::process::Output, TargetExecutionError> {
+    let mut command = managed_ssh_command(endpoint, remote_command)?;
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let mut stdin = child.stdin.take().ok_or("无法打开 Managed SSH stdin")?;
+    stdin.write_all(input).await?;
+    stdin.shutdown().await?;
+    drop(stdin);
+    Ok(child.wait_with_output().await?)
+}
+
 struct RemoteTransferStagingGuard {
     endpoint: ManagedSshEndpoint,
     path: String,
@@ -3816,7 +4223,15 @@ pub fn runtime_managed_ssh_registration(
         status: ExecutionTargetStatus::Online,
         platform: config.platform.clone(),
         workspace_root: config.workspace_root.clone(),
-        capabilities: vec!["exec".to_string()],
+        capabilities: vec![
+            "exec".to_string(),
+            "read".to_string(),
+            "write".to_string(),
+            "edit".to_string(),
+            "list_files".to_string(),
+            "search".to_string(),
+            crate::artifact::ARTIFACT_TRANSFER_TOOL_NAME.to_string(),
+        ],
         metadata: serde_json::json!({
             "backend": "managed_ssh",
             "execution_location": "runtime",
@@ -4581,10 +4996,23 @@ mod tests {
             ApprovalAction::ToolOperation { ref operation, .. }
                 if operation == "execute_on_remote_target"
         ));
+        let search = remote_target_approval_requirement(
+            &target,
+            "search",
+            r#"{"query":"needle","paths":["src","tests"]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            search.requested.read_roots,
+            vec![
+                std::path::PathBuf::from("src"),
+                std::path::PathBuf::from("tests")
+            ]
+        );
     }
 
     #[test]
-    fn runtime_managed_ssh_registration_is_online_and_exec_only() {
+    fn runtime_managed_ssh_registration_publishes_core_tools_and_transfer() {
         let temp = tempfile::TempDir::new().unwrap();
         let known_hosts = temp.path().join("known_hosts");
         std::fs::write(&known_hosts, "server.example ssh-ed25519 AAAA\n").unwrap();
@@ -4617,7 +5045,18 @@ mod tests {
             Some("principal-a")
         );
         assert_eq!(registration.provider_node_id, None);
-        assert_eq!(registration.capabilities, vec!["exec"]);
+        assert_eq!(
+            registration.capabilities,
+            vec![
+                "exec",
+                "read",
+                "write",
+                "edit",
+                "list_files",
+                "search",
+                "transfer"
+            ]
+        );
         assert_eq!(registration.metadata["execution_location"], "runtime");
         assert_eq!(registration.metadata["endpoint_ref"], "server");
     }
@@ -4965,6 +5404,102 @@ mod tests {
         publish_spooled_local_directory(&request, &first_archive, &destination)
             .await
             .unwrap();
+    }
+
+    #[test]
+    fn managed_ssh_protocol_supports_core_file_tools() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        fn invoke(request: serde_json::Value) -> serde_json::Value {
+            let mut child = std::process::Command::new("python3")
+                .arg("-c")
+                .arg(MANAGED_SSH_FILE_TOOL_SCRIPT)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            std::io::Write::write_all(
+                child.stdin.as_mut().unwrap(),
+                serde_json::to_string(&request).unwrap().as_bytes(),
+            )
+            .unwrap();
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success());
+            serde_json::from_slice(&output.stdout).unwrap()
+        }
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().display().to_string();
+        let written = invoke(serde_json::json!({
+            "operation": "write",
+            "workspace_root": &workspace,
+            "arguments": {"path": "src/lib.rs", "content": "pub fn generated() {}\n", "mode": "create"}
+        }));
+        // The protocol deliberately does not create missing parent directories.
+        assert_eq!(written["ok"], false);
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        let written = invoke(serde_json::json!({
+            "operation": "write",
+            "workspace_root": &workspace,
+            "arguments": {"path": "src/lib.rs", "content": "pub fn generated() {}\n", "mode": "create"}
+        }));
+        assert_eq!(written["ok"], true);
+
+        let read = invoke(serde_json::json!({
+            "operation": "read",
+            "workspace_root": &workspace,
+            "arguments": {"path": "src/lib.rs", "query": "generated"}
+        }));
+        assert_eq!(read["ok"], true);
+        assert!(read["output"].as_str().unwrap().contains("sha256="));
+        assert!(read["output"].as_str().unwrap().contains("generated"));
+
+        let digest = read["output"]
+            .as_str()
+            .unwrap()
+            .split("sha256=")
+            .nth(1)
+            .unwrap()
+            .split(']')
+            .next()
+            .unwrap();
+        let edited = invoke(serde_json::json!({
+            "operation": "edit",
+            "workspace_root": &workspace,
+            "arguments": {
+                "path": "src/lib.rs",
+                "expected_sha256": digest,
+                "edits": [{"old_text": "generated", "new_text": "remote_generated"}]
+            }
+        }));
+        assert_eq!(edited["ok"], true);
+
+        let listed = invoke(serde_json::json!({
+            "operation": "list_files",
+            "workspace_root": &workspace,
+            "arguments": {"path": "src", "glob": "**/*.rs"}
+        }));
+        assert_eq!(listed["ok"], true);
+        let listing: serde_json::Value =
+            serde_json::from_str(listed["output"].as_str().unwrap()).unwrap();
+        assert_eq!(listing["count"], 1);
+        assert_eq!(listing["entries"][0]["path"], "lib.rs");
+
+        let search = invoke(serde_json::json!({
+            "operation": "search",
+            "workspace_root": &workspace,
+            "arguments": {"paths": ["src"], "query": "remote_generated", "glob": "**/*.rs"}
+        }));
+        assert_eq!(search["ok"], true);
+        let payload: serde_json::Value =
+            serde_json::from_str(search["output"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["count"], 1);
+        assert_eq!(payload["matches"][0]["path"], "src/lib.rs");
     }
 
     #[test]

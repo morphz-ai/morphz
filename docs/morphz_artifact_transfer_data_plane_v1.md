@@ -90,7 +90,7 @@ ArtifactTransferReceipt
 
 ## 3. 单一权威生命周期：Execution Job
 
-Transfer 不建立平行的 `TransferJob` 状态机。每一次物理传输就是一个 `tool_name=transfer_artifact` 的持久化 `ExecutionJob`：
+Transfer 不建立平行的 `TransferJob` 状态机。每一次物理传输就是一个 `tool_name=transfer` 的持久化 `ExecutionJob`：
 
 ```text
 model / SDK / HTTP transfer intent
@@ -241,7 +241,7 @@ destination_target_id
 }
 ```
 
-工具名使用 `transfer_artifact`，避免让模型把它理解为一般消息传递。模型不传 backend、私钥、Token、源大小或最终摘要。
+模型可见的工具与 Execution Target capability 统一使用 `transfer`，与 `read`、`write`、`exec` 保持同一层次的紧凑操作原语；Artifact 仍是 Runtime 内部带摘要、来源和可追溯性的领域对象。模型不传 backend、私钥、Token、源大小或最终摘要。
 
 ### 8.2 Rust SDK
 
@@ -304,7 +304,7 @@ Dashboard/TUI 至少展示：
 
 ### Phase B：本机完整闭环
 
-- 注册 `transfer_artifact` Physical Tool；
+- 注册 `transfer` Physical Tool；
 - 复用 Execution Job 生命周期；
 - Local→Local 文件/目录传输、摘要、覆盖、取消和回执；
 - SDK 与 HTTP API。**已完成。**

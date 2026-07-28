@@ -5,6 +5,7 @@ import {
   attentionDeliveryKey,
   attentionJobKey,
   actionableSchedulerJobs,
+  activeSchedulerActivations,
   activeSchedulerThreads,
   currentSchedulerSchedules,
   pendingHumanApprovals,
@@ -181,6 +182,21 @@ test('open lifecycle does not make an idle Thread physically active', () => {
   snapshot.threads[0].thread.lifecycle = 'open'
 
   assert.deepEqual(activeSchedulerThreads(snapshot), [])
+  assert.deepEqual(activeSchedulerActivations(snapshot), [])
+})
+
+test('terminal Thread history cannot keep composer activity alive', () => {
+  const snapshot = fixture()
+  snapshot.threads[0].thread.lifecycle = 'completed'
+  snapshot.threads[0].phase = 'idle'
+  // A legacy or partially recovered causal row may still say running. It is
+  // useful history, but it is not current work.
+  snapshot.threads[0].activations[0].activation.status = 'running'
+  snapshot.threads[0].thread.kind = 'dialogue_turn'
+  snapshot.summary.active_jobs = 0
+
+  assert.deepEqual(activeSchedulerActivations(snapshot), [])
+  assert.deepEqual(schedulerActivityCounts(snapshot), { dialogue: 0, execution: 0 })
 })
 
 test('composer activity distinguishes dialogue evaluation from physical execution', () => {
@@ -215,8 +231,8 @@ test('attention fingerprints reopen when their source revision changes', () => {
   assert.notEqual(attentionDeliveryKey(delivery), originalDelivery)
 })
 
-test('attention counts pending approval and durable failures, not ordinary activity', () => {
-  assert.equal(schedulerAttentionCount(fixture()), 2)
+test('attention counts pending approval, not recoverable tool failures', () => {
+  assert.equal(schedulerAttentionCount(fixture()), 1)
   assert.equal(schedulerAttentionCount(null), 0)
 })
 
@@ -232,8 +248,8 @@ test('terminal owners make waiting approvals invariant violations rather than us
   assert.deepEqual(actionableSchedulerJobs(snapshot), [])
   assert.deepEqual(pendingHumanApprovals(snapshot), [])
   assert.deepEqual(schedulerApprovalAnomalies(snapshot).map(item => item.job.id), ['job-1'])
-  assert.deepEqual(schedulerAttentionJobs(snapshot).map(item => item.job.id), ['job-orphan'])
-  assert.equal(schedulerAttentionCount(snapshot), 2)
+  assert.deepEqual(schedulerAttentionJobs(snapshot).map(item => item.job.id), [])
+  assert.equal(schedulerAttentionCount(snapshot), 1)
 })
 
 test('handled failures in terminal Thread history do not remain in needs-attention forever', () => {
@@ -245,7 +261,7 @@ test('handled failures in terminal Thread history do not remain in needs-attenti
   snapshot.threads[0].thread.lifecycle = 'completed'
   snapshot.threads[0].activations[0].activation.status = 'succeeded'
 
-  assert.deepEqual(schedulerAttentionJobs(snapshot).map(item => item.job.id), ['job-orphan'])
+  assert.deepEqual(schedulerAttentionJobs(snapshot).map(item => item.job.id), [])
 })
 
 test('dialogue Threads become visible task activity when they carry Execution Jobs', () => {

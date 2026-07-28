@@ -37,8 +37,8 @@ use crate::memory::{
     SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
     SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
     SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSignalRecord,
-    ThreadSignalStatus, ThreadStore, TimerStore,
+    ThreadControlAction, ThreadControlState, ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
 // SQLx supplies the Rust FFI surface; hotbundle supplies a current SQLite
@@ -267,6 +267,8 @@ impl SqliteStore {
         CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
         CREATE INDEX IF NOT EXISTS idx_events_topic ON events(topic);
         CREATE INDEX IF NOT EXISTS idx_events_session_time ON events(session_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_events_session_topic
+            ON events(session_id, topic);
         CREATE INDEX IF NOT EXISTS idx_events_context_time ON events(context_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_events_context_topic_time
             ON events(context_id, topic, timestamp);
@@ -576,6 +578,7 @@ impl SqliteStore {
             root_turn_id TEXT NOT NULL UNIQUE,
             kind TEXT NOT NULL CHECK(kind IN ('dialogue_turn', 'execution', 'objective', 'delivery')),
             status TEXT NOT NULL CHECK(status IN ('open', 'completed', 'failed', 'cancelled')),
+            control_state TEXT NOT NULL DEFAULT 'active' CHECK(control_state IN ('active', 'paused')),
             executor_kind TEXT NOT NULL,
             executor_id TEXT,
             target_id TEXT,
@@ -1088,6 +1091,19 @@ impl SqliteStore {
                 .execute(&pool)
                 .await?;
             }
+        }
+        let thread_columns = sqlx::query("PRAGMA table_info(threads)")
+            .fetch_all(&pool)
+            .await?
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<std::collections::HashSet<_>>();
+        if !thread_columns.contains("control_state") {
+            sqlx::query(
+                "ALTER TABLE threads ADD COLUMN control_state TEXT NOT NULL DEFAULT 'active' CHECK(control_state IN ('active', 'paused'))",
+            )
+            .execute(&pool)
+            .await?;
         }
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_thread_activations_root_generation_status
@@ -2113,6 +2129,16 @@ fn parse_thread_lifecycle(
     }
 }
 
+fn parse_thread_control_state(
+    value: &str,
+) -> Result<ThreadControlState, Box<dyn std::error::Error + Send + Sync>> {
+    match value {
+        "active" => Ok(ThreadControlState::Active),
+        "paused" => Ok(ThreadControlState::Paused),
+        other => Err(format!("未知 Thread control state：'{other}'").into()),
+    }
+}
+
 fn parse_delivery_status(
     value: &str,
 ) -> Result<DeliveryStatus, Box<dyn std::error::Error + Send + Sync>> {
@@ -2319,6 +2345,7 @@ fn thread_from_row(
         root_turn_id: row.get("root_turn_id"),
         kind: parse_thread_kind(&row.get::<String, _>("kind"))?,
         lifecycle: parse_thread_lifecycle(&row.get::<String, _>("status"))?,
+        control_state: parse_thread_control_state(&row.get::<String, _>("control_state"))?,
         executor_kind: row.get("executor_kind"),
         executor_id: row.get("executor_id"),
         target_id: row.get("target_id"),
@@ -4827,6 +4854,13 @@ impl ActivationStore for SqliteStore {
             tx.commit().await?;
             return Ok(None);
         }
+        if thread.control_state == ThreadControlState::Paused {
+            // Keep every pending Signal durable. Resume only re-opens
+            // scheduler admission; it must not require the user to resend the
+            // event that originally made this Thread runnable.
+            tx.commit().await?;
+            return Ok(None);
+        }
 
         // Signals produced by a physical Activation belong to that exact
         // Evaluation generation.  A late tool result from an old generation
@@ -6240,6 +6274,42 @@ impl ThreadStore for SqliteStore {
         if result.rows_affected() == 1 {
             return Ok(ThreadMutation::Updated(
                 self.get_thread(id).await?.ok_or("Thread 更新后无法读取")?,
+            ));
+        }
+        Ok(match self.get_thread(id).await? {
+            Some(current) => ThreadMutation::Conflict { current },
+            None => ThreadMutation::NotFound,
+        })
+    }
+
+    async fn control_thread(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        action: ThreadControlAction,
+    ) -> Result<ThreadMutation, Box<dyn std::error::Error + Send + Sync>> {
+        let expected_revision = i64::try_from(expected_revision)
+            .map_err(|_| "Thread revision 超出 SQLite INTEGER 范围")?;
+        let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let (control_state, lifecycle, generation_delta, predicate) = match action {
+            ThreadControlAction::Pause => ("paused", "open", 0_i64, "control_state = 'active'"),
+            ThreadControlAction::Resume => ("active", "open", 0_i64, "control_state = 'paused'"),
+            ThreadControlAction::Close => ("active", "cancelled", 1_i64, "status = 'open'"),
+        };
+        let result = sqlx::query(&format!(
+            "UPDATE threads SET revision = revision + 1, generation = generation + ?, control_state = ?, status = ?, updated_at = ? WHERE id = ? AND revision = ? AND status = 'open' AND {predicate}"
+        ))
+        .bind(generation_delta)
+        .bind(control_state)
+        .bind(lifecycle)
+        .bind(now)
+        .bind(id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await?;
+        if result.rows_affected() == 1 {
+            return Ok(ThreadMutation::Updated(
+                self.get_thread(id).await?.ok_or("Thread 控制后无法读取")?,
             ));
         }
         Ok(match self.get_thread(id).await? {
@@ -11637,6 +11707,15 @@ impl EventStore for SqliteStore {
             }
         }
 
+        if !filter.topics.is_empty() {
+            builder.push(" AND topic IN (");
+            let mut separated = builder.separated(", ");
+            for topic in &filter.topics {
+                separated.push_bind(topic);
+            }
+            builder.push(")");
+        }
+
         for topic in filter.excluded_topics {
             if topic == "*" {
                 builder.push(" AND 0=1");
@@ -11674,8 +11753,11 @@ impl EventStore for SqliteStore {
 
         let latest_k = filter.latest_k;
         if latest_k.is_some() {
-            // Limit the tail in SQLite, then restore chronological order below.
-            builder.push(" ORDER BY timestamp DESC, rowid DESC");
+            // A Ledger tail is defined by immutable append sequence, never by
+            // producer timestamps (which can be stale or arrive out of order).
+            // Limit that physical tail in SQLite, then restore append order
+            // below.
+            builder.push(" ORDER BY rowid DESC");
         } else {
             // 强制按时间戳升序排序，并在时间戳相同时按 rowid 物理插入顺序升序
             builder.push(" ORDER BY timestamp ASC, rowid ASC");
@@ -17943,6 +18025,90 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn thread_control_is_revision_checked_and_persisted() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "control-context".to_string(),
+                agent_id: "control-agent".to_string(),
+                title: "Control Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "control-session".to_string(),
+                agent_id: "control-agent".to_string(),
+                context_id: "control-context".to_string(),
+                parent_session_id: None,
+                title: "Control Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+        let thread = store
+            .ensure_thread(NewThread {
+                id: "control-thread".to_string(),
+                agent_id: "control-agent".to_string(),
+                context_id: "control-context".to_string(),
+                session_id: "control-session".to_string(),
+                initiating_principal_id: None,
+                root_turn_id: "control-root".to_string(),
+                kind: ThreadKind::Execution,
+                executor_kind: "self".to_string(),
+                executor_id: None,
+                target_id: None,
+            })
+            .await
+            .unwrap();
+
+        let paused = match store
+            .control_thread(&thread.id, thread.revision, ThreadControlAction::Pause)
+            .await
+            .unwrap()
+        {
+            ThreadMutation::Updated(thread) => thread,
+            other => panic!("unexpected pause mutation: {other:?}"),
+        };
+        assert_eq!(paused.control_state, ThreadControlState::Paused);
+        assert_eq!(paused.lifecycle, ThreadLifecycle::Open);
+
+        assert!(matches!(
+            store
+                .control_thread(&paused.id, thread.revision, ThreadControlAction::Resume,)
+                .await
+                .unwrap(),
+            ThreadMutation::Conflict { .. }
+        ));
+
+        let resumed = match store
+            .control_thread(&paused.id, paused.revision, ThreadControlAction::Resume)
+            .await
+            .unwrap()
+        {
+            ThreadMutation::Updated(thread) => thread,
+            other => panic!("unexpected resume mutation: {other:?}"),
+        };
+        assert_eq!(resumed.control_state, ThreadControlState::Active);
+        assert_eq!(resumed.lifecycle, ThreadLifecycle::Open);
+
+        let closed = match store
+            .control_thread(&resumed.id, resumed.revision, ThreadControlAction::Close)
+            .await
+            .unwrap()
+        {
+            ThreadMutation::Updated(thread) => thread,
+            other => panic!("unexpected close mutation: {other:?}"),
+        };
+        assert_eq!(closed.lifecycle, ThreadLifecycle::Cancelled);
+        assert_eq!(closed.generation, resumed.generation + 1);
+        assert_eq!(closed.control_state, ThreadControlState::Active);
     }
 
     #[tokio::test]

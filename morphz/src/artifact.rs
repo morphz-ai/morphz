@@ -53,7 +53,11 @@ pub fn artifact_transfer_relay_leg_job_id(parent_job_id: &str, leg: &str) -> Str
     format!("job_{:x}", Sha256::digest(id_material.as_bytes()))
 }
 
-pub const ARTIFACT_TRANSFER_TOOL_NAME: &str = "transfer_artifact";
+/// Model-visible Tool and Execution Target capability name. The Runtime keeps
+/// `ArtifactTransfer*` as its internal domain vocabulary, while the external
+/// operation stays consistent with the compact `read`/`write`/`exec` tool
+/// namespace.
+pub const ARTIFACT_TRANSFER_TOOL_NAME: &str = "transfer";
 pub const ARTIFACT_TRANSFER_ROUTES_REQUEST_KEY: &str = "_morphz_artifact_transfer_routes";
 /// Runtime-private idempotency key carried inside the frozen Execution Job
 /// request. It is intentionally absent from the model-visible Tool schema.
@@ -545,12 +549,12 @@ pub fn execution_arguments_from_transfer_request(
 /// Model-visible intent boundary. It never accepts a transport/backend or
 /// credentials. Runtime planning freezes both Target routes before this Tool
 /// is allowed to execute.
-pub struct TransferArtifactTool {
+pub struct TransferTool {
     permissions: Arc<PermissionBroker>,
     transports: Arc<ArtifactTransferRegistry>,
 }
 
-impl TransferArtifactTool {
+impl TransferTool {
     pub fn new(permissions: Arc<PermissionBroker>) -> Self {
         let transports = Arc::new(ArtifactTransferRegistry::default());
         transports.register(Arc::new(LocalArtifactTransferBackend::new(Arc::clone(
@@ -578,7 +582,7 @@ impl TransferArtifactTool {
 }
 
 #[async_trait::async_trait]
-impl Tool for TransferArtifactTool {
+impl Tool for TransferTool {
     fn name(&self) -> &str {
         ARTIFACT_TRANSFER_TOOL_NAME
     }
