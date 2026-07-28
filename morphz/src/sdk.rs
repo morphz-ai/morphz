@@ -406,6 +406,34 @@ impl MorphzSdk {
         self.runtime.runtime_status()
     }
 
+    pub fn secret_backend_id(&self) -> &'static str {
+        self.runtime.secret_backend_id()
+    }
+
+    pub fn list_managed_secrets(&self) -> SdkResult<Vec<crate::secret_store::ManagedSecret>> {
+        self.runtime
+            .list_managed_secrets()
+            .map_err(SdkError::internal)
+    }
+
+    pub fn put_managed_secret(
+        &self,
+        name: &str,
+        value: &str,
+        scope_kind: crate::secret_store::SecretScopeKind,
+        scope_id: Option<String>,
+    ) -> SdkResult<crate::secret_store::ManagedSecret> {
+        self.runtime
+            .put_managed_secret(name, value, scope_kind, scope_id)
+            .map_err(SdkError::internal)
+    }
+
+    pub fn delete_managed_secret(&self, name: &str) -> SdkResult<bool> {
+        self.runtime
+            .delete_managed_secret(name)
+            .map_err(SdkError::internal)
+    }
+
     /// Explicit integrity audit. This intentionally remains a command rather
     /// than a hot-path status query because it replays the immutable Ledger.
     pub async fn audit_mind_projection(&self, context_id: &str) -> SdkResult<MindProjectionAudit> {

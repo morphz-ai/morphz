@@ -39,6 +39,7 @@ const MAX_SCHEDULE_INTENT_CHARS: usize = 1_000_000;
 tokio::task_local! {
     pub static CURRENT_SESSION_ID: String;
     pub static CURRENT_CONTEXT_ID: String;
+    pub static CURRENT_OBJECTIVE_ID: Option<String>;
     pub static CURRENT_PRINCIPAL_ID: Option<String>;
     pub static CURRENT_ATTEMPT_ID: String;
     pub static CURRENT_CAUSAL_ROUTE: Option<ToolCausalRoute>;
@@ -4202,6 +4203,7 @@ pub struct ExecuteCommandTool {
     background_config: Arc<BackgroundTaskConfig>,
     background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
     permissions: Arc<PermissionBroker>,
+    secret_store: Arc<crate::secret_store::SecretStore>,
     sandbox: NativeSandbox,
     max_sync_wait: tokio::time::Duration,
 }
@@ -4279,6 +4281,28 @@ impl ExecuteCommandTool {
         tool_timeout_secs: u64,
         background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
     ) -> Self {
+        let secret_store = Arc::new(
+            crate::secret_store::SecretStore::native_default()
+                .expect("无法初始化默认 Secret Store metadata catalog"),
+        );
+        Self::new_with_permissions_scheduler_and_secret_store(
+            bus,
+            background_config,
+            permissions,
+            tool_timeout_secs,
+            background_scheduler,
+            secret_store,
+        )
+    }
+
+    pub fn new_with_permissions_scheduler_and_secret_store(
+        bus: Arc<crate::event::InMemoryEventBus>,
+        background_config: Arc<BackgroundTaskConfig>,
+        permissions: Arc<PermissionBroker>,
+        tool_timeout_secs: u64,
+        background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
+        secret_store: Arc<crate::secret_store::SecretStore>,
+    ) -> Self {
         let max_sync_wait_ms = tool_timeout_secs
             .saturating_mul(1000)
             .saturating_sub(250)
@@ -4288,9 +4312,26 @@ impl ExecuteCommandTool {
             background_config,
             background_scheduler,
             permissions,
+            secret_store,
             sandbox: NativeSandbox::for_current_platform(),
             max_sync_wait: tokio::time::Duration::from_millis(max_sync_wait_ms),
         }
+    }
+
+    fn validate_secret_aliases(
+        &self,
+        names: &[String],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for name in validate_secret_env_names(names)? {
+            if !self.secret_store.contains_alias(&name)? {
+                return Err(format!(
+                    "secret_env '{}' 在 Secret Store 或 Runtime bootstrap 环境中不存在",
+                    name
+                )
+                .into());
+            }
+        }
+        Ok(())
     }
 }
 
@@ -4359,9 +4400,6 @@ fn validate_secret_env_names(
                 .all(|character| character.is_ascii_alphanumeric() || character == '_')
         {
             return Err(format!("secret_env 包含非法环境变量名 '{name}'").into());
-        }
-        if std::env::var_os(normalized).is_none() {
-            return Err(format!("secret_env '{}' 在 Runtime 环境中不存在", normalized).into());
         }
         if !validated.iter().any(|existing| existing == normalized) {
             validated.push(normalized.to_string());
@@ -4652,6 +4690,7 @@ impl Tool for ExecuteCommandTool {
         arguments: &str,
     ) -> Result<Option<ApprovalRequirement>, Box<dyn std::error::Error + Send + Sync>> {
         let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
+        self.validate_secret_aliases(&args.requested_permissions.secret_env)?;
         let command = args.command.trim();
         validate_managed_shell_command(command)?;
         let profile = self.permissions.profile();
@@ -4732,6 +4771,7 @@ impl Tool for ExecuteCommandTool {
         // child is still in `Starting`, before its background watcher has been installed.
         let sync_budget_started_at = tokio::time::Instant::now();
         let args: ExecuteCommandArgs = serde_json::from_str(arguments)?;
+        self.validate_secret_aliases(&args.requested_permissions.secret_env)?;
         let cmd_trimmed = args.command.trim();
         validate_managed_shell_command(cmd_trimmed)?;
 
@@ -4905,14 +4945,39 @@ impl Tool for ExecuteCommandTool {
             }
         }
         let effective_secret_env = approved_secret_env.clone();
-        let mut injected_secret_values = Vec::new();
-        for name in approved_secret_env {
-            if let Some(value) = std::env::var_os(&name) {
-                if let Some(value) = value.to_str().filter(|value| !value.is_empty()) {
-                    injected_secret_values.push(value.to_string());
-                }
-                cmd.env(name, value);
-            }
+        let objective_id = CURRENT_OBJECTIVE_ID.try_with(Clone::clone).ok().flatten();
+        let target_id = execution_job_context
+            .as_ref()
+            .map(|job| job.target_id.clone());
+        let secret_store = Arc::clone(&self.secret_store);
+        let secret_context_id = context_id.clone();
+        let secret_session_id = session_id.clone();
+        let resolved_secret_env =
+            tokio::task::spawn_blocking(move || -> Result<Vec<(String, String)>, String> {
+                approved_secret_env
+                    .into_iter()
+                    .map(|name| {
+                        let value = secret_store
+                            .resolve(
+                                &name,
+                                crate::secret_store::SecretUseContext {
+                                    context_id: Some(&secret_context_id),
+                                    session_id: Some(&secret_session_id),
+                                    objective_id: objective_id.as_deref(),
+                                    target_id: target_id.as_deref(),
+                                },
+                            )?
+                            .ok_or_else(|| format!("secret_env '{}' 在 Runtime 中不存在", name))?;
+                        Ok((name, value))
+                    })
+                    .collect()
+            })
+            .await
+            .map_err(|error| format!("Secret Store 阻塞任务异常终止：{error}"))??;
+        let mut injected_secret_values = Vec::with_capacity(resolved_secret_env.len());
+        for (name, value) in resolved_secret_env {
+            cmd.env(&name, &value);
+            injected_secret_values.push(value);
         }
 
         // 必须通过 pre_exec 分配独立的进程组，以便于进程组强杀
@@ -6021,6 +6086,64 @@ impl Tool for DelegateTool {
 // 7. ListSkillsTool 传统技能自动发现工具
 // ==========================================
 pub struct ListSkillsTool;
+
+pub struct ListSecretsTool {
+    secret_store: Arc<crate::secret_store::SecretStore>,
+}
+
+impl ListSecretsTool {
+    pub fn new(secret_store: Arc<crate::secret_store::SecretStore>) -> Self {
+        Self { secret_store }
+    }
+}
+
+#[async_trait::async_trait]
+impl Tool for ListSecretsTool {
+    fn name(&self) -> &str {
+        "list_secrets"
+    }
+
+    fn execution_class(&self) -> ToolExecutionClass {
+        ToolExecutionClass::LogicalInline
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name().to_string(),
+            description: "列出当前 Context/Session 可引用的受管凭证别名和作用域元数据。此工具永远不返回凭证值；需要执行命令时，只把别名放入 exec.requested_permissions.secret_env，由 Runtime 审批并向单个子进程注入。".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }),
+        }
+    }
+
+    async fn execute(
+        &self,
+        _arguments: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let context_id = CURRENT_CONTEXT_ID.try_with(Clone::clone).ok();
+        let session_id = CURRENT_SESSION_ID.try_with(Clone::clone).ok();
+        let objective_id = CURRENT_OBJECTIVE_ID.try_with(Clone::clone).ok().flatten();
+        let execution_job = CURRENT_EXECUTION_JOB.try_with(Clone::clone).ok().flatten();
+        let secrets = self
+            .secret_store
+            .list_authorized(crate::secret_store::SecretUseContext {
+                context_id: context_id.as_deref(),
+                session_id: session_id.as_deref(),
+                objective_id: objective_id.as_deref(),
+                target_id: execution_job.as_ref().map(|job| job.target_id.as_str()),
+            })?;
+        Ok(serde_json::json!({
+            "status": if secrets.is_empty() { "empty" } else { "ok" },
+            "secrets": secrets,
+            "value_backend": self.secret_store.backend_id(),
+            "guidance": "这里只包含别名。不要索要、读取或回显值；将所需别名放入 exec.requested_permissions.secret_env。"
+        })
+        .to_string())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct SkillCatalogEntry {

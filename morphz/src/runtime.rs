@@ -63,11 +63,12 @@ use crate::orchestrator::orchestrator::{DurableApprovalServices, Orchestrator};
 use crate::permission::{
     ApprovalRequirement, PermissionBroker, PermissionProfile, ReviewerKind, SandboxMode,
 };
+use crate::secret_store::{ManagedSecret, SecretScopeKind, SecretStore};
 use crate::timer::TimerEngine;
 use crate::tool::{
     BackgroundTaskScheduler, CheckTaskAfterTool, DelegateTool, EditFileTool, ExecuteCommandTool,
-    KillTaskTool, ListFilesTool, ListSkillsTool, ListTasksTool, ReadFileTool, Registry,
-    ScheduleTxTool, SearchTool, SendMessageTool, TaskStatusTool, ThreadScheduler,
+    KillTaskTool, ListFilesTool, ListSecretsTool, ListSkillsTool, ListTasksTool, ReadFileTool,
+    Registry, ScheduleTxTool, SearchTool, SendMessageTool, TaskStatusTool, ThreadScheduler,
     VerifyIdentityTool, WriteFileTool,
 };
 use serde::{Deserialize, Serialize};
@@ -534,6 +535,7 @@ pub struct MorphzRuntimeBuilder {
     tool_policy: RuntimeToolPolicy,
     approval_provider: Option<Arc<dyn ApprovalProvider>>,
     identity_provider: Option<Arc<dyn IdentityProvider>>,
+    secret_store: Option<Arc<SecretStore>>,
     execution_target_backends: Vec<Arc<dyn crate::execution_target::ExecutionTargetBackend>>,
     harness_packages: Vec<HarnessPackage>,
 }
@@ -548,6 +550,7 @@ impl MorphzRuntimeBuilder {
             tool_policy: RuntimeToolPolicy::from_environment(),
             approval_provider: None,
             identity_provider: None,
+            secret_store: None,
             execution_target_backends: Vec::new(),
             harness_packages: Vec::new(),
             config,
@@ -585,6 +588,13 @@ impl MorphzRuntimeBuilder {
 
     pub fn identity_provider(mut self, provider: Arc<dyn IdentityProvider>) -> Self {
         self.identity_provider = Some(provider);
+        self
+    }
+
+    /// Injects a secret authority. Public services and Edge hosts can provide
+    /// Vault/KMS/target-local backends without changing the tool or HTTP API.
+    pub fn secret_store(mut self, secret_store: Arc<SecretStore>) -> Self {
+        self.secret_store = Some(secret_store);
         self
     }
 
@@ -636,6 +646,10 @@ impl MorphzRuntimeBuilder {
                 display_name: None,
             })) as Arc<dyn IdentityProvider>
         });
+        let secret_store = match self.secret_store {
+            Some(secret_store) => secret_store,
+            None => Arc::new(SecretStore::native_default()?),
+        };
         let bus = Arc::new(InMemoryEventBus::with_concurrency_limit(
             self.config.orchestrator.event_bus.max_in_flight,
         ));
@@ -789,6 +803,7 @@ impl MorphzRuntimeBuilder {
             bus: &bus,
             thread_scheduler: &thread_scheduler,
             background_scheduler: &background_scheduler,
+            secret_store: &secret_store,
             config: &self.config,
             policy: self.tool_policy,
         });
@@ -1004,6 +1019,7 @@ impl MorphzRuntimeBuilder {
                 execution_targets,
                 artifact_transfer_stages,
                 background_scheduler,
+                secret_store,
                 timer_engine,
                 human_approval_hub,
                 process_started_at: chrono::Utc::now(),
@@ -1026,6 +1042,7 @@ struct DefaultToolDependencies<'a> {
     bus: &'a Arc<InMemoryEventBus>,
     thread_scheduler: &'a Arc<ThreadScheduler>,
     background_scheduler: &'a Arc<BackgroundTaskScheduler>,
+    secret_store: &'a Arc<SecretStore>,
     config: &'a AppConfig,
     policy: RuntimeToolPolicy,
 }
@@ -1042,6 +1059,7 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
         bus,
         thread_scheduler,
         background_scheduler,
+        secret_store,
         config,
         policy,
     } = dependencies;
@@ -1085,6 +1103,7 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
             .session_store()
             .expect("Runtime ContextEngine 必须配置 SessionStore"),
     )));
+    registry.register(Arc::new(ListSecretsTool::new(Arc::clone(secret_store))));
     if policy.context_only {
         return;
     }
@@ -1110,12 +1129,13 @@ fn register_default_tools(dependencies: DefaultToolDependencies<'_>) {
     ))));
     registry.register(Arc::new(RecallTool::new(Arc::clone(context_engine))));
     registry.register(Arc::new(
-        ExecuteCommandTool::new_with_permissions_and_scheduler(
+        ExecuteCommandTool::new_with_permissions_scheduler_and_secret_store(
             Arc::clone(bus),
             Arc::new(config.background_task.clone()),
             Arc::clone(permissions),
             config.orchestrator.tool_timeout_secs,
             Some(Arc::clone(background_scheduler)),
+            Arc::clone(secret_store),
         ),
     ));
     registry.register(Arc::new(ListTasksTool::new(Arc::clone(
@@ -1159,6 +1179,7 @@ struct RuntimeInner {
     execution_targets: Arc<crate::execution_target::ExecutionTargetDispatcher>,
     artifact_transfer_stages: crate::artifact::ArtifactTransferStageStore,
     background_scheduler: Arc<BackgroundTaskScheduler>,
+    secret_store: Arc<SecretStore>,
     timer_engine: Arc<TimerEngine>,
     human_approval_hub: HumanApprovalHub,
     process_started_at: chrono::DateTime<chrono::Utc>,
@@ -1393,6 +1414,31 @@ impl MorphzRuntime {
 
     pub fn identity(&self) -> &RuntimeIdentity {
         &self.inner.identity
+    }
+
+    pub fn secret_backend_id(&self) -> &'static str {
+        self.inner.secret_store.backend_id()
+    }
+
+    pub fn list_managed_secrets(&self) -> Result<Vec<ManagedSecret>, RuntimeError> {
+        self.inner.secret_store.list().map_err(Into::into)
+    }
+
+    pub fn put_managed_secret(
+        &self,
+        name: &str,
+        value: &str,
+        scope_kind: SecretScopeKind,
+        scope_id: Option<String>,
+    ) -> Result<ManagedSecret, RuntimeError> {
+        self.inner
+            .secret_store
+            .put(name, value, scope_kind, scope_id)
+            .map_err(Into::into)
+    }
+
+    pub fn delete_managed_secret(&self, name: &str) -> Result<bool, RuntimeError> {
+        self.inner.secret_store.delete(name).map_err(Into::into)
     }
 
     pub async fn authenticate_identity(

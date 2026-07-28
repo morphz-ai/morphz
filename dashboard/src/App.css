@@ -1239,6 +1239,20 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
   border-radius: var(--radius-md);
   background: var(--surface-soft);
 }
+
+.managed-secrets { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-soft); }
+.managed-secrets > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 13px; border-bottom: 1px solid var(--line); }
+.managed-secrets > header span { display: inline-flex; align-items: center; gap: 7px; color: var(--accent); font: 700 10px/1 var(--mono); }
+.managed-secrets > header small { display: flex; align-items: center; justify-content: flex-end; gap: 7px; color: var(--faint); font-size: 9px; }
+.managed-secrets > header small code { color: var(--text-soft); font: inherit; }
+.managed-secrets form { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); }
+.managed-secrets input, .managed-secrets select { min-width: 150px; flex: 1; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text); background: var(--surface); font: 10px var(--mono); }
+.managed-secrets button { padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-soft); background: var(--surface); font-size: 9px; cursor: pointer; }
+.managed-secret-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.managed-secret-list article span { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.managed-secret-list code, .managed-secret-list small { overflow: hidden; color: var(--faint); font-size: 9px; text-overflow: ellipsis; }
+.managed-secret-list > p, .managed-secret-error { margin: 0; padding: 12px; color: var(--faint); font-size: 10px; }
+.managed-secret-error { color: var(--danger); }
 .overview-attention > header,
 .overview-activity > header,
 .runtime-panels > section > header {

@@ -27,6 +27,7 @@ pub mod provider;
 pub mod runtime;
 pub mod sandbox;
 pub mod sdk;
+pub mod secret_store;
 pub mod setup;
 pub mod sexpr;
 pub mod sexpr_eval;

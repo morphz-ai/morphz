@@ -135,6 +135,23 @@
     "disable": "Disable",
     "revoke": "Revoke",
     "cancel": "Cancel",
+    "secrets": "Managed credentials",
+    "secretsHint": "Values go directly to this host's system credential store. Lists and models see references only. Morphz uses Keychain on macOS, Credential Manager on Windows, and Secret Service on Linux, with no plaintext fallback.",
+    "secretBackend": "Value backend",
+    "secretName": "Environment variable name",
+    "secretValue": "Credential value (write-only)",
+    "secretScope": "Scope",
+    "scopeId": "Scope ID",
+    "saveSecret": "Save securely",
+    "saving": "Saving…",
+    "noSecrets": "No managed credentials configured",
+    "secretScopes": {
+      "runtime": "Runtime",
+      "context": "Context",
+      "session": "Session",
+      "objective": "Objective",
+      "execution_target": "Execution Target"
+    },
     "artifactPhase": {
       "copying": "Copying",
       "copying_directory": "Copying directory",

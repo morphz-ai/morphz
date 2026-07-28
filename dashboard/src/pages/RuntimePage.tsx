@@ -1,4 +1,5 @@
 import { Brain, CheckCircle2, Database, GitBranch, Layers3, Radio, RefreshCw, Server, ShieldCheck, Terminal, TriangleAlert } from 'lucide-react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { statusLabel } from '../app/presentation'
@@ -53,12 +54,16 @@ interface RuntimePageProps {
   executionNodes: Array<{ id: string; revision: number; name: string; status: string; platform?: string; protocol_version: number; capabilities: string[]; last_seen_at?: string }>
   capabilityLeases: Array<{ id: string; revision: number; thread_id: string; target_id: string; capabilities: string[]; status: string; expires_at: string }>
   executionJobs: Array<{ id: string; revision: number; thread_id: string; target_id: string; tool_name: string; status: string; claimed_by?: string; progress_ref?: string; created_at: string }>
+  managedSecrets: Array<{ name: string; secret_ref: string; scope_kind: string; scope_id?: string; value_backend: string; updated_at: string }>
+  secretBackendId: string
   onRefresh: () => void
   onAuditProjection: () => void
   onSetTargetStatus: (targetId: string, revision: number, status: 'online' | 'disabled') => void
   onRevokeNode: (nodeId: string, revision: number) => void
   onRevokeLease: (leaseId: string, revision: number) => void
   onCancelJob: (jobId: string, revision: number) => void
+  onPutSecret: (secret: { name: string; value: string; scope_kind: string; scope_id?: string }) => Promise<void>
+  onDeleteSecret: (name: string) => Promise<void>
 }
 
 interface ArtifactProgress {
@@ -91,6 +96,30 @@ function formatBytes(value: number) {
 
 export function RuntimePage(props: RuntimePageProps) {
   const { t } = useTranslation()
+  const [secretName, setSecretName] = useState('')
+  const [secretValue, setSecretValue] = useState('')
+  const [scopeKind, setScopeKind] = useState('runtime')
+  const [scopeId, setScopeId] = useState('')
+  const [secretBusy, setSecretBusy] = useState(false)
+  const [secretError, setSecretError] = useState('')
+  const submitSecret = async () => {
+    setSecretBusy(true)
+    setSecretError('')
+    try {
+      await props.onPutSecret({
+        name: secretName.trim(),
+        value: secretValue,
+        scope_kind: scopeKind,
+        scope_id: scopeKind === 'runtime' ? undefined : scopeId.trim(),
+      })
+      setSecretValue('')
+      setSecretName('')
+    } catch (error) {
+      setSecretError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSecretBusy(false)
+    }
+  }
   return (
     <section className="runtime-view">
       <header className="workspace-heading">
@@ -178,6 +207,30 @@ export function RuntimePage(props: RuntimePageProps) {
               {props.capabilityLeases.length === 0 && <p>{t('runtime.noCapabilityLeases')}</p>}
             </div>
           </section>
+        </div>
+      </section>
+      <section className="managed-secrets">
+        <header>
+          <span><ShieldCheck size={16} /><strong>{t('runtime.secrets')}</strong></span>
+          <small>{t('runtime.secretsHint')} {props.secretBackendId && <code>{t('runtime.secretBackend')}: {props.secretBackendId}</code>}</small>
+        </header>
+        <form onSubmit={event => { event.preventDefault(); void submitSecret() }}>
+          <input aria-label={t('runtime.secretName')} autoComplete="off" placeholder="SERVICE_API_TOKEN" value={secretName} onChange={event => setSecretName(event.target.value.toUpperCase())} />
+          <input aria-label={t('runtime.secretValue')} autoComplete="new-password" placeholder={t('runtime.secretValue')} type="password" value={secretValue} onChange={event => setSecretValue(event.target.value)} />
+          <select aria-label={t('runtime.secretScope')} value={scopeKind} onChange={event => setScopeKind(event.target.value)}>
+            {['runtime', 'context', 'session', 'objective', 'execution_target'].map(scope => <option key={scope} value={scope}>{t(`runtime.secretScopes.${scope}`)}</option>)}
+          </select>
+          {scopeKind !== 'runtime' && <input aria-label={t('runtime.scopeId')} placeholder={t('runtime.scopeId')} value={scopeId} onChange={event => setScopeId(event.target.value)} />}
+          <button disabled={secretBusy || !secretName.trim() || !secretValue} type="submit">{secretBusy ? t('runtime.saving') : t('runtime.saveSecret')}</button>
+        </form>
+        {secretError && <p className="managed-secret-error">{secretError}</p>}
+        <div className="managed-secret-list">
+          {props.managedSecrets.map(secret => <article key={secret.name}>
+            <span><strong>{secret.name}</strong><code>{secret.secret_ref}</code></span>
+            <small>{t(`runtime.secretScopes.${secret.scope_kind}`)}{secret.scope_id ? ` · ${secret.scope_id}` : ''} · {secret.value_backend}</small>
+            <button type="button" onClick={() => void props.onDeleteSecret(secret.name)}>{t('runtime.revoke')}</button>
+          </article>)}
+          {props.managedSecrets.length === 0 && <p>{t('runtime.noSecrets')}</p>}
         </div>
       </section>
       <div className="runtime-panels">

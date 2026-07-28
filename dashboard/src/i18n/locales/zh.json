@@ -135,6 +135,23 @@
     "disable": "禁用",
     "revoke": "撤销",
     "cancel": "取消",
+    "secrets": "受管凭证",
+    "secretsHint": "值直接进入当前主机的系统凭证库；列表和模型只看到引用。macOS 使用钥匙串，Windows 使用凭据管理器，Linux 使用系统秘密服务，绝不降级为明文文件。",
+    "secretBackend": "值后端",
+    "secretName": "环境变量名",
+    "secretValue": "凭证值（保存后不可读取）",
+    "secretScope": "作用域",
+    "scopeId": "作用域 ID",
+    "saveSecret": "安全保存",
+    "saving": "正在保存…",
+    "noSecrets": "尚未配置受管凭证",
+    "secretScopes": {
+      "runtime": "运行时",
+      "context": "上下文",
+      "session": "会话",
+      "objective": "目标",
+      "execution_target": "执行目标"
+    },
     "artifactPhase": {
       "copying": "正在复制",
       "copying_directory": "正在复制目录",
