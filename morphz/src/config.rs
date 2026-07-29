@@ -637,6 +637,9 @@ pub struct LlmConfig {
     pub provider: Option<String>,
     /// 主要模型名称
     pub model: String,
+    /// 当前 Provider 允许在运行期切换的模型目录。`model` 会自动并入该目录，
+    /// 因此旧配置无需迁移；Dashboard 只能选择这里声明过的模型。
+    pub models: Vec<String>,
     /// 重试最大次数
     pub max_retries: u32,
     /// 初始重试退避秒数
@@ -660,6 +663,7 @@ impl Default for LlmConfig {
         Self {
             provider: None,
             model: "gpt-4o-mini".to_string(),
+            models: Vec::new(),
             max_retries: 5,
             initial_backoff_secs: 1,
             connect_timeout_secs: 30,

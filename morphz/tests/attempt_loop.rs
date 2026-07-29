@@ -4104,7 +4104,8 @@ async fn attached_delegate_waits_for_result_without_model_polling() {
     let config = morphz::config::OrchestratorConfig::default();
     let engine = Arc::new(
         ContextEngine::new(Arc::clone(&store) as Arc<dyn EventStore>, config.clone())
-            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>),
+            .with_session_store(Arc::clone(&store) as Arc<dyn SessionStore>)
+            .with_session_projection_store(Arc::clone(&store) as Arc<dyn SessionProjectionStore>),
     );
     let client = Arc::new(MockClient::new(vec![
         Response {

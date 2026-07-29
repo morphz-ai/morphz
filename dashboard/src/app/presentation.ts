@@ -24,6 +24,31 @@ export interface ConversationPresentationEvent {
   payload: Record<string, unknown>
 }
 
+export interface DelegatedContextReference {
+  child_context_id?: string
+}
+
+export function delegatedContextIds(
+  delegations: ReadonlyArray<DelegatedContextReference>,
+  candidateContextIds: ReadonlyArray<string> = [],
+): ReadonlySet<string> {
+  const ids = new Set(
+    delegations
+      .map(delegation => delegation.child_context_id?.trim() ?? '')
+      .filter(Boolean),
+  )
+  // Delegation rows describe the live relationship, but old or interrupted
+  // recovery paths can leave an active child Context after that row has gone.
+  // Runtime-issued child Context ids retain their origin, so keep those
+  // orphaned Contexts grouped with sub-agents without inventing Delegation
+  // state that no longer exists.
+  for (const contextId of candidateContextIds) {
+    const normalized = contextId.trim()
+    if (normalized.startsWith('delegate-context-')) ids.add(normalized)
+  }
+  return ids
+}
+
 export function conversationEventKind(
   topic: string,
   payload: Record<string, unknown>,
@@ -125,9 +150,17 @@ function objectFromJson(value: string): Record<string, unknown> {
  * the execution lane independent from provider wire formats.
  */
 export function assistantToolCalls(payload: Record<string, unknown>): PresentedToolCall[] {
-  if (!Array.isArray(payload.tool_calls)) return []
+  // A normal Assistant Call uses `tool_calls`; a continued reasoning attempt
+  // is persisted as `continuation_tool_calls`. Both describe the same durable
+  // call lifecycle and must survive a Dashboard refresh.
+  const rawCalls = [
+    ...(Array.isArray(payload.tool_calls) ? payload.tool_calls : []),
+    ...(Array.isArray(payload.continuation_tool_calls) ? payload.continuation_tool_calls : []),
+  ]
+  if (rawCalls.length === 0) return []
   const calls: PresentedToolCall[] = []
-  for (const value of payload.tool_calls) {
+  const seen = new Set<string>()
+  for (const value of rawCalls) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) continue
     const call = value as Record<string, unknown>
     const functionValue = call.function && typeof call.function === 'object' && !Array.isArray(call.function)
@@ -137,7 +170,8 @@ export function assistantToolCalls(payload: Record<string, unknown>): PresentedT
     const nameValue = typeof call.name === 'string' ? call.name : functionValue.name
     const argumentsValue = typeof call.arguments === 'string' ? call.arguments : functionValue.arguments
     const name = typeof nameValue === 'string' ? nameValue.trim() : ''
-    if (!id || !name) continue
+    if (!id || !name || seen.has(id)) continue
+    seen.add(id)
     calls.push({
       id,
       name,

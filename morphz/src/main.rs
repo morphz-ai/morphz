@@ -2986,6 +2986,7 @@ async fn run_once(
             text: prompt,
             actor: "User".to_string(),
             client_message_id: Some(generated_id("cli")),
+            attachments: Vec::new(),
             harness,
         },
     )
@@ -3210,6 +3211,7 @@ async fn run_interactive(
                     text,
                     actor: "User-Shafreeck".to_string(),
                     client_message_id: Some(client_message_id),
+                    attachments: Vec::new(),
                     // `--harness` selects the first real Evaluation, whether
                     // its prompt came from argv or was typed interactively.
                     // Console-only commands above do not consume it.

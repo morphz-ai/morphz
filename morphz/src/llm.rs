@@ -286,6 +286,33 @@ pub struct Message {
     pub tool_calls: Option<Vec<ToolCall>>,
 }
 
+/// Ephemeral provider-envelope marker. This message is assembled from
+/// Ledger-backed attachment metadata immediately before a model request and is
+/// never persisted as conversational text.
+pub const MODEL_ATTACHMENT_MESSAGE_NAME: &str = "__morphz_model_attachments__";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelAttachment {
+    pub name: String,
+    pub media_type: String,
+    pub data_base64: String,
+}
+
+pub fn attachment_message(attachments: Vec<ModelAttachment>) -> Result<Message, serde_json::Error> {
+    Ok(Message {
+        role: "user".to_string(),
+        content: serde_json::to_string(&attachments)?,
+        name: Some(MODEL_ATTACHMENT_MESSAGE_NAME.to_string()),
+        tool_call_id: None,
+        tool_calls: None,
+    })
+}
+
+pub fn model_attachments(message: &Message) -> Option<Vec<ModelAttachment>> {
+    (message.name.as_deref() == Some(MODEL_ATTACHMENT_MESSAGE_NAME))
+        .then(|| serde_json::from_str(&message.content).unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCall {
     pub id: String,
@@ -515,6 +542,17 @@ pub trait Client: Send + Sync {
     /// actual HTTP request rather than merely abandoning a receiver.
     fn supports_async_cancellation(&self) -> bool {
         false
+    }
+
+    /// Current process-local model selected for subsequent requests.
+    fn model(&self) -> Option<String> {
+        None
+    }
+
+    /// Change the model for subsequent requests. Runtime callers must validate
+    /// the requested value against the operator-configured model catalog.
+    fn set_model(&self, _model: &str) -> Result<(), String> {
+        Err("当前模型客户端不支持运行期切换模型".to_string())
     }
 
     /// Current process-local reasoning override. `None` means provider/model

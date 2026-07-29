@@ -2,6 +2,7 @@ import { assistantToolCalls, type PresentedToolCall } from './presentation.ts'
 
 export interface ToolTimelineEvent {
   timestamp: string
+  type?: string
   topic: string
   payload: Record<string, unknown>
 }
@@ -55,7 +56,12 @@ export function buildToolTimeline(events: ReadonlyArray<ToolTimelineEvent>): Too
       }
       continue
     }
-    if (event.topic !== 'chat/tool_output') continue
+    // Runtime-owned physical capabilities may expose a domain-specific topic
+    // (for example artifact_transfer_completed) while retaining the canonical
+    // tool_output Event type. The type is the lifecycle contract; restricting
+    // this projection to the legacy chat/tool_output topic strands the
+    // matching call in a permanent running state.
+    if (event.type !== 'tool_output' && event.topic !== 'chat/tool_output') continue
     const id = typeof event.payload.tool_call_id === 'string' ? event.payload.tool_call_id : ''
     if (!id) continue
     const previous = calls.get(id)

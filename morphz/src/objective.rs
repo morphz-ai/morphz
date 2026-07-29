@@ -3,10 +3,10 @@ use crate::harness::{ExactHarnessRef, HarnessRegistry};
 use crate::harness_package::{load_objective_harness_binding, objective_harness_binding_event};
 use crate::llm::ToolDefinition;
 use crate::memory::{
-    ActivationStore, EventStore, ExecutionJobRecord, ExecutionJobStore, NewObjective,
-    NewRuntimeTimer, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus, ObjectiveStore,
-    ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind, RuntimeTimerRecord,
-    ThreadActivationMutation, ThreadActivationStatus,
+    ActivationStore, DelegationStatus, DelegationStore, EventStore, ExecutionJobRecord,
+    ExecutionJobStore, NewObjective, NewRuntimeTimer, ObjectiveMutation, ObjectiveRecord,
+    ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, QueryFilter, RuntimeTimerKind,
+    RuntimeTimerRecord, ThreadActivationMutation, ThreadActivationStatus,
 };
 use crate::orchestrator::context::ContextEngine;
 use crate::timer::{TimerDisposition, TimerEngine};
@@ -877,6 +877,7 @@ pub struct ObjectiveSupervisor {
     store: Arc<dyn ObjectiveStore>,
     audit_store: Arc<dyn EventStore>,
     execution_jobs: Option<Arc<dyn ExecutionJobStore>>,
+    delegations: Option<Arc<dyn DelegationStore>>,
     activation_store: Option<Arc<dyn ActivationStore>>,
     bus: Arc<InMemoryEventBus>,
     evaluations: Arc<ObjectiveEvaluationRegistry>,
@@ -902,6 +903,7 @@ impl ObjectiveSupervisor {
             store,
             audit_store,
             execution_jobs: None,
+            delegations: None,
             activation_store: None,
             bus,
             evaluations,
@@ -919,6 +921,14 @@ impl ObjectiveSupervisor {
     /// real Runtime-managed background ExecutionJob.
     pub fn with_execution_job_store(mut self, store: Arc<dyn ExecutionJobStore>) -> Self {
         self.execution_jobs = Some(store);
+        self
+    }
+
+    /// Attach the authoritative Delegation projection. An Objective may only
+    /// wait for one live, correctly routed child; terminal or missing
+    /// Delegations are facts to consume, not conditions that can be awaited.
+    pub fn with_delegation_store(mut self, store: Arc<dyn DelegationStore>) -> Self {
+        self.delegations = Some(store);
         self
     }
 
@@ -986,21 +996,69 @@ impl ObjectiveSupervisor {
         objective: &ObjectiveRecord,
         wait: &ObjectiveWaitCondition,
     ) -> Result<(), DynError> {
-        let ObjectiveWaitCondition::ToolTask { task_id } = wait else {
-            return Ok(());
-        };
-        let job = self.resolve_tool_task_wait(objective, task_id).await?;
-        if job.status.is_terminal() {
-            return Err(format!(
-                "tool_task '{}' 已经结束（status={}{}），不能再登记等待；请根据现有结果继续推进 Objective",
-                task_id,
-                job.status.as_str(),
-                job.result_event_id
-                    .as_deref()
-                    .map(|event_id| format!(", result_event_id={event_id}"))
-                    .unwrap_or_default()
-            )
-            .into());
+        match wait {
+            ObjectiveWaitCondition::ToolTask { task_id } => {
+                let job = self.resolve_tool_task_wait(objective, task_id).await?;
+                if job.status.is_terminal() {
+                    return Err(format!(
+                        "tool_task '{}' 已经结束（status={}{}），不能再登记等待；请根据现有结果继续推进 Objective",
+                        task_id,
+                        job.status.as_str(),
+                        job.result_event_id
+                            .as_deref()
+                            .map(|event_id| format!(", result_event_id={event_id}"))
+                            .unwrap_or_default()
+                    )
+                    .into());
+                }
+            }
+            ObjectiveWaitCondition::Delegation { delegation_id } => {
+                let Some(store) = self.delegations.as_ref() else {
+                    return Ok(());
+                };
+                let delegation = store
+                    .get_delegation(delegation_id)
+                    .await?
+                    .ok_or_else(|| format!("delegation '{}' 不存在", delegation_id))?;
+                if delegation.parent_context_id != objective.context_id
+                    || delegation.parent_session_id != objective.coordinator_session_id
+                    || delegation.agent_id != objective.agent_id
+                {
+                    return Err(format!(
+                        "delegation '{}' 不属于当前 Objective 的 Agent/Context/Session，拒绝建立跨路由等待",
+                        delegation_id
+                    )
+                    .into());
+                }
+                if objective.initiating_principal_id.is_some()
+                    && delegation.initiating_principal_id != objective.initiating_principal_id
+                {
+                    return Err(format!(
+                        "delegation '{}' 不属于当前 Objective 的身份主体，拒绝建立跨身份等待",
+                        delegation_id
+                    )
+                    .into());
+                }
+                if matches!(
+                    delegation.status,
+                    DelegationStatus::Completed
+                        | DelegationStatus::Failed
+                        | DelegationStatus::Cancelled
+                ) {
+                    return Err(format!(
+                        "delegation '{}' 已经结束（status={}{}），不能再登记等待；请根据现有结果继续推进 Objective",
+                        delegation_id,
+                        delegation.status.as_str(),
+                        delegation
+                            .result_event_id
+                            .as_deref()
+                            .map(|event_id| format!(", result_event_id={event_id}"))
+                            .unwrap_or_default()
+                    )
+                    .into());
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -1375,14 +1433,15 @@ impl ObjectiveSupervisor {
         self: &Arc<Self>,
         event: &Event,
         activation_id: &str,
-    ) -> Result<(), DynError> {
+    ) -> Result<bool, DynError> {
         let Some(context_id) = event
             .payload
             .get("context_id")
             .and_then(|value| value.as_str())
         else {
-            return Ok(());
+            return Ok(false);
         };
+        let mut wait_satisfied = false;
         let route_session_id = event
             .payload
             .get("session_id")
@@ -1411,6 +1470,7 @@ impl ObjectiveSupervisor {
             let ObjectiveMutation::Updated(woken) = mutation else {
                 continue;
             };
+            wait_satisfied = true;
             self.publish_state_event("wait_satisfied", &woken, Some(&event.id))
                 .await?;
             if route_session_id == Some(woken.coordinator_session_id.as_str()) {
@@ -1420,7 +1480,7 @@ impl ObjectiveSupervisor {
                 self.reconcile(woken).await?;
             }
         }
-        Ok(())
+        Ok(wait_satisfied)
     }
 
     async fn wake_non_routed_event(self: &Arc<Self>, event: &Event) -> Result<(), DynError> {
@@ -1736,6 +1796,17 @@ impl ObjectiveSupervisor {
                         return Ok(());
                     }
                 }
+                ObjectiveWaitCondition::Delegation { delegation_id } => {
+                    let delegation_id = delegation_id.clone();
+                    self.cancel_wait_timer(&objective.id).await?;
+                    self.remove_external_wait_subscription(&objective.id);
+                    if self
+                        .reconcile_delegation_wait(objective.clone(), &delegation_id)
+                        .await?
+                    {
+                        return Ok(());
+                    }
+                }
                 ObjectiveWaitCondition::Timer { deadline } => {
                     self.remove_external_wait_subscription(&objective.id);
                     self.schedule_wait_timer(&objective, *deadline).await?;
@@ -1765,6 +1836,111 @@ impl ObjectiveSupervisor {
             self.revoke_local_evaluation(&objective).await?;
         }
         self.schedule(objective.id).await
+    }
+
+    /// Reconcile a Delegation wait against its durable parent/child projection.
+    /// This makes completion authoritative even when the routed result was
+    /// already covered by a newer Context view, or when a process restarted
+    /// between committing the child result and clearing the Objective wait.
+    async fn reconcile_delegation_wait(
+        self: &Arc<Self>,
+        objective: ObjectiveRecord,
+        delegation_id: &str,
+    ) -> Result<bool, DynError> {
+        let Some(store) = self.delegations.as_ref() else {
+            return Ok(false);
+        };
+        let delegation = store.get_delegation(delegation_id).await?;
+        let (event_kind, caused_by, reason) = match delegation {
+            Some(delegation)
+                if delegation.parent_context_id == objective.context_id
+                    && delegation.parent_session_id == objective.coordinator_session_id
+                    && delegation.agent_id == objective.agent_id
+                    && (objective.initiating_principal_id.is_none()
+                        || delegation.initiating_principal_id
+                            == objective.initiating_principal_id)
+                    && matches!(
+                        delegation.status,
+                        DelegationStatus::Queued | DelegationStatus::Running
+                    ) =>
+            {
+                return Ok(false);
+            }
+            Some(delegation)
+                if delegation.parent_context_id == objective.context_id
+                    && delegation.parent_session_id == objective.coordinator_session_id
+                    && delegation.agent_id == objective.agent_id
+                    && (objective.initiating_principal_id.is_none()
+                        || delegation.initiating_principal_id
+                            == objective.initiating_principal_id)
+                    && matches!(
+                        delegation.status,
+                        DelegationStatus::Completed
+                            | DelegationStatus::Failed
+                            | DelegationStatus::Cancelled
+                    ) =>
+            {
+                (
+                    "wait_satisfied",
+                    delegation.result_event_id.clone(),
+                    format!(
+                        "子代理委派 '{}' 已处于终态 {}{}；Runtime 已解除等待并继续求值",
+                        delegation_id,
+                        delegation.status.as_str(),
+                        delegation
+                            .result_event_id
+                            .as_deref()
+                            .map(|event_id| format!("，结果事件 {event_id}"))
+                            .unwrap_or_default()
+                    ),
+                )
+            }
+            Some(delegation) => (
+                "wait_invalidated",
+                None,
+                format!(
+                    "delegation '{}' 不属于当前 Objective 的 Agent/Context/Session/Principal；Runtime 已取消无效等待",
+                    delegation.id
+                ),
+            ),
+            None => (
+                "wait_invalidated",
+                None,
+                format!(
+                    "delegation '{}' 不存在；Runtime 已取消旧版或无效等待",
+                    delegation_id
+                ),
+            ),
+        };
+        let mutation = self
+            .store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Active,
+                None,
+                Some(&reason),
+            )
+            .await?;
+        match mutation {
+            ObjectiveMutation::Updated(woken) => {
+                tracing::warn!(
+                    objective_id = %woken.id,
+                    delegation_id,
+                    event_kind,
+                    reason,
+                    "Objective delegation 等待已由 Delegation 权威状态收口"
+                );
+                self.publish_state_event(event_kind, &woken, caused_by.as_deref())
+                    .await?;
+                Box::pin(self.reconcile(woken)).await?;
+            }
+            ObjectiveMutation::Conflict { current } => {
+                Box::pin(self.reconcile(current)).await?;
+            }
+            ObjectiveMutation::NotFound => {}
+        }
+        Ok(true)
     }
 
     /// Reconcile the durable Objective wait against the authoritative
@@ -2497,9 +2673,9 @@ mod tests {
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{
         ExecutionJobStatus, ExecutionJobTerminal, ExecutionRetrySafety, NewAgent,
-        NewCognitiveContext, NewExecutionJob, NewSession, NewThread, NewThreadActivation,
-        SessionDirectoryStore as _, SessionMountKind, ThreadActivationStatus, ThreadKind,
-        ThreadStore as _, TimerStore,
+        NewCognitiveContext, NewDelegation, NewExecutionJob, NewSession, NewThread,
+        NewThreadActivation, SessionDirectoryStore as _, SessionMountKind, ThreadActivationStatus,
+        ThreadKind, ThreadStore as _, TimerStore,
     };
     use tempfile::NamedTempFile;
 
@@ -2607,6 +2783,49 @@ mod tests {
                 request: json!({"kind":"background_exec"}),
                 retry_safety: ExecutionRetrySafety::ReconcileRequired,
                 requires_approval: false,
+            })
+            .await
+            .unwrap()
+    }
+
+    async fn seed_delegation(
+        store: &SqliteStore,
+        objective: &ObjectiveRecord,
+        suffix: &str,
+    ) -> crate::memory::DelegationRecord {
+        let child_context_id = format!("child-context-{suffix}");
+        let child_session_id = format!("child-session-{suffix}");
+        store
+            .create_context(NewCognitiveContext {
+                id: child_context_id.clone(),
+                agent_id: objective.agent_id.clone(),
+                title: "Delegated Objective Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: child_session_id.clone(),
+                agent_id: objective.agent_id.clone(),
+                context_id: child_context_id.clone(),
+                parent_session_id: None,
+                title: "Delegated Objective Session".to_string(),
+                mount_kind: SessionMountKind::DelegationProjection,
+            })
+            .await
+            .unwrap();
+        store
+            .create_delegation(NewDelegation {
+                id: format!("delegation-{suffix}"),
+                agent_id: objective.agent_id.clone(),
+                parent_context_id: objective.context_id.clone(),
+                parent_session_id: objective.coordinator_session_id.clone(),
+                child_context_id,
+                child_session_id,
+                initiating_principal_id: objective.initiating_principal_id.clone(),
+                task: "核验父 Objective 的一个切片".to_string(),
+                success_when: Some("返回可引用的核验结论".to_string()),
+                context_scope: "current_session".to_string(),
             })
             .await
             .unwrap()
@@ -3136,6 +3355,153 @@ mod tests {
             .to_string();
         assert!(ended.contains("已经结束"));
         assert!(ended.contains("result-tool-wait-live"));
+    }
+
+    #[tokio::test]
+    async fn delegation_wait_accepts_only_live_routed_delegations() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "delegation-wait-validation").await;
+        let delegation = seed_delegation(&store, &objective, "delegation-wait-live").await;
+        let supervisor = ObjectiveSupervisor::new(
+            Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+            Arc::clone(&store) as Arc<dyn EventStore>,
+            Arc::new(InMemoryEventBus::new()),
+            Arc::new(ObjectiveEvaluationRegistry::default()),
+            Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+            std::time::Duration::from_secs(600),
+        )
+        .with_delegation_store(Arc::clone(&store) as Arc<dyn DelegationStore>);
+
+        supervisor
+            .validate_wait_condition(
+                &objective,
+                &ObjectiveWaitCondition::Delegation {
+                    delegation_id: delegation.id.clone(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let result = Event::new(
+            "delegation-wait-result".to_string(),
+            "Sub-Agent".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            [
+                ("context_id".to_string(), json!(&objective.context_id)),
+                (
+                    "session_id".to_string(),
+                    json!(&objective.coordinator_session_id),
+                ),
+                ("delegation_id".to_string(), json!(&delegation.id)),
+                ("tool_status".to_string(), json!("success")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert!(store
+            .commit_delegation_result(&delegation.id, &result)
+            .await
+            .unwrap());
+        let ended = supervisor
+            .validate_wait_condition(
+                &objective,
+                &ObjectiveWaitCondition::Delegation {
+                    delegation_id: delegation.id,
+                },
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(ended.contains("已经结束"));
+        assert!(ended.contains("delegation-wait-result"));
+    }
+
+    #[tokio::test]
+    async fn startup_consumes_a_terminal_delegation_wait_from_projection() {
+        let database = NamedTempFile::new().unwrap();
+        let store = Arc::new(
+            SqliteStore::new(&database.path().to_string_lossy())
+                .await
+                .unwrap(),
+        );
+        let objective = seed_objective_bundle(&store, "terminal-delegation-wait").await;
+        let delegation = seed_delegation(&store, &objective, "terminal-delegation-wait").await;
+        let result = Event::new(
+            "terminal-delegation-result".to_string(),
+            "Sub-Agent".to_string(),
+            TYPE_TOOL_OUTPUT.to_string(),
+            "chat/tool_output".to_string(),
+            [
+                ("context_id".to_string(), json!(&objective.context_id)),
+                (
+                    "session_id".to_string(),
+                    json!(&objective.coordinator_session_id),
+                ),
+                ("delegation_id".to_string(), json!(&delegation.id)),
+                ("tool_status".to_string(), json!("success")),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        assert!(store
+            .commit_delegation_result(&delegation.id, &result)
+            .await
+            .unwrap());
+        store
+            .update_objective_state(
+                &objective.id,
+                objective.revision,
+                ObjectiveStatus::Active,
+                Some(ObjectiveWaitCondition::Delegation {
+                    delegation_id: delegation.id,
+                }),
+                Some("模拟委派终态与等待登记竞态"),
+            )
+            .await
+            .unwrap();
+
+        let supervisor = Arc::new(
+            ObjectiveSupervisor::new(
+                Arc::clone(&store) as Arc<dyn ObjectiveStore>,
+                Arc::clone(&store) as Arc<dyn EventStore>,
+                Arc::new(InMemoryEventBus::new()),
+                Arc::new(ObjectiveEvaluationRegistry::default()),
+                Arc::new(TimerEngine::new(Arc::clone(&store) as Arc<dyn TimerStore>)),
+                std::time::Duration::from_secs(600),
+            )
+            .with_delegation_store(Arc::clone(&store) as Arc<dyn DelegationStore>),
+        );
+        supervisor.start().await.unwrap();
+
+        let recovered = store.get_objective(&objective.id).await.unwrap().unwrap();
+        assert!(recovered.wait_condition.is_none());
+        assert!(recovered.active_evaluation_id.is_some());
+        assert!(recovered
+            .status_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("terminal-delegation-result")));
+        let satisfied = store
+            .query(QueryFilter {
+                context_id: Some(objective.context_id),
+                topic: Some("objective/wait_satisfied".to_string()),
+                ..QueryFilter::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(satisfied.len(), 1);
+        assert_eq!(
+            satisfied[0]
+                .payload
+                .get("reason")
+                .and_then(serde_json::Value::as_str),
+            Some("terminal-delegation-result")
+        );
     }
 
     #[tokio::test]

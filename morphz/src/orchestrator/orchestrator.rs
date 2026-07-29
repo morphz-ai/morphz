@@ -23,8 +23,8 @@ use crate::harness_package::{
     persist_evaluation_harness_binding,
 };
 use crate::llm::{
-    Client, Message, ModelFailure, ModelFailureKind, ModelUsage, PromptTokenAccuracy,
-    PromptTokenCount, ToolDefinition,
+    attachment_message, Client, Message, ModelAttachment, ModelFailure, ModelFailureKind,
+    ModelUsage, PromptTokenAccuracy, PromptTokenCount, ToolDefinition,
 };
 use crate::memory::{
     ActionGroupMemberStatus, ActionGroupStore, ActivationOutcomeCommit, ApprovalFilter,
@@ -56,11 +56,13 @@ use crate::tool::{
     active_background_task_count, active_background_task_count_for_root, BackgroundTaskScheduler,
     Registry, ThreadScheduler, Tool,
 };
+use base64::Engine;
 use chrono::Utc;
 use dashmap::DashMap;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -1565,6 +1567,21 @@ impl ReadTurnGuard {
         };
         self.files.remove(&path);
     }
+
+    fn release_failed_reservation(&mut self, evidence_event_id: &str) {
+        self.files.retain(|_, coverage| {
+            if coverage.full.as_deref() == Some(evidence_event_id) {
+                coverage.full = None;
+            }
+            coverage
+                .ranges
+                .retain(|(_, _, event_id)| event_id != evidence_event_id);
+            coverage
+                .queries
+                .retain(|(_, event_id)| event_id != evidence_event_id);
+            coverage.full.is_some() || !coverage.ranges.is_empty() || !coverage.queries.is_empty()
+        });
+    }
 }
 
 pub struct Orchestrator {
@@ -1648,6 +1665,7 @@ pub struct Orchestrator {
     background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
     durable_approvals: Option<DurableApprovalServices>,
     harness_registry: Arc<DomainHarnessRegistry>,
+    message_attachment_root: PathBuf,
 }
 
 /// Append one immutable transition of a physical Model Attempt. These Events
@@ -2151,6 +2169,7 @@ impl Orchestrator {
         background_scheduler: Option<Arc<BackgroundTaskScheduler>>,
         durable_approvals: Option<DurableApprovalServices>,
         harness_registry: Option<Arc<DomainHarnessRegistry>>,
+        message_attachment_root: PathBuf,
     ) -> Result<Arc<Self>, DynError> {
         let model_provider_semaphore = Arc::new(tokio::sync::Semaphore::new(
             orchestrator_config.model_provider_max_in_flight.max(1),
@@ -2210,6 +2229,7 @@ impl Orchestrator {
             background_scheduler,
             durable_approvals,
             harness_registry: harness_registry.unwrap_or_default(),
+            message_attachment_root,
         });
         // Established here rather than in `start`, so an Orchestrator built for
         // a test can evaluate `infer` without first being started.
@@ -2254,6 +2274,7 @@ impl Orchestrator {
             None,
             None,
             None,
+            std::env::temp_dir().join("morphz-test-message-attachments"),
         )?;
         orchestrator.timer_engine.start();
         Ok(orchestrator)
@@ -3956,8 +3977,14 @@ impl Orchestrator {
                 .get("runtime_force_evaluation")
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false);
+            let objective_wait_satisfied = if let Some(supervisor) = &self.objective_supervisor {
+                supervisor.prepare_routed_event(&event, &activation.id).await?
+            } else {
+                false
+            };
             if event.event_type == TYPE_TOOL_OUTPUT
                 && !force_evaluation
+                && !objective_wait_satisfied
                 && self
                     .activation_signals_already_covered(&session_id, &activation, &event)
                     .await?
@@ -3970,9 +3997,6 @@ impl Orchestrator {
                 self.release_dialogue_thread(&session_id, &activation.root_turn_id)
                     .await;
                 return Ok(());
-            }
-            if let Some(supervisor) = &self.objective_supervisor {
-                supervisor.prepare_routed_event(&event, &activation.id).await?;
             }
             self.run_attempt(&session_id, &activation).await
             } => (Some(result), None, None),
@@ -5707,6 +5731,70 @@ impl Orchestrator {
         Ok(true)
     }
 
+    async fn model_attachment_message(
+        &self,
+        context_id: &str,
+        root_turn_id: &str,
+    ) -> Result<Option<Message>, DynError> {
+        let Some(event) = self
+            .context_engine
+            .find_event(context_id, root_turn_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let Some(items) = event
+            .payload
+            .get("attachments")
+            .and_then(serde_json::Value::as_array)
+        else {
+            return Ok(None);
+        };
+        if items.is_empty() {
+            return Ok(None);
+        }
+
+        let root = tokio::fs::canonicalize(&self.message_attachment_root).await?;
+        let mut attachments = Vec::with_capacity(items.len());
+        for item in items {
+            let name = item
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("消息附件缺少 name")?;
+            let media_type = item
+                .get("media_type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("application/octet-stream");
+            let expected_digest = item
+                .get("sha256")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("消息附件缺少 sha256")?;
+            let storage_path = item
+                .get("storage_path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("消息附件缺少 storage_path")?;
+            let path = tokio::fs::canonicalize(storage_path).await?;
+            if !path.starts_with(&root) {
+                return Err(format!(
+                    "消息附件 '{}' 位于 Artifact Store 之外，拒绝读取",
+                    path.display()
+                )
+                .into());
+            }
+            let data = tokio::fs::read(&path).await?;
+            let actual_digest = format!("{:x}", Sha256::digest(&data));
+            if actual_digest != expected_digest {
+                return Err(format!("消息附件 '{}' 摘要校验失败", name).into());
+            }
+            attachments.push(ModelAttachment {
+                name: name.to_string(),
+                media_type: media_type.to_string(),
+                data_base64: base64::engine::general_purpose::STANDARD.encode(data),
+            });
+        }
+        Ok(Some(attachment_message(attachments)?))
+    }
+
     async fn run_attempt(
         &self,
         session_id: &str,
@@ -5860,6 +5948,9 @@ impl Orchestrator {
             )
             .await?;
         let continuation_messages = continuation.messages.clone();
+        let attachment_message = self
+            .model_attachment_message(&context_id, &activation.root_turn_id)
+            .await?;
         if !continuation.delivered_output_ids.is_empty() {
             context = self
                 .context_engine
@@ -5959,6 +6050,9 @@ impl Orchestrator {
             },
         ];
         measurement_messages.extend(continuation.messages.clone());
+        if let Some(message) = attachment_message.clone() {
+            measurement_messages.push(message);
+        }
         let mut measurement_tools = self.tool_definitions.clone();
         if thread_kind == "delivery" {
             measurement_tools.clear();
@@ -6071,6 +6165,9 @@ impl Orchestrator {
         ];
         if !bounded_critical_projection {
             messages.extend(continuation_messages.clone());
+        }
+        if let Some(message) = attachment_message {
+            messages.push(message);
         }
 
         let mut tools = self.tool_definitions.clone();
@@ -10860,6 +10957,33 @@ impl Orchestrator {
         if outputs.is_empty() {
             return Err("所有工具任务都在产生结果前异常终止".into());
         }
+        // Read coverage is reserved before physical execution so concurrent
+        // duplicate calls in one model response cannot race each other. A
+        // failed read, however, produced no evidence and must not poison later
+        // corrected ranges or queries in the same root turn.
+        let failed_read_reservations = outputs
+            .iter()
+            .filter_map(|(output, _)| {
+                let is_read = output
+                    .payload
+                    .get("tool_name")
+                    .and_then(|value| value.as_str())
+                    == Some("read");
+                let succeeded = output
+                    .payload
+                    .get("tool_status")
+                    .and_then(|value| value.as_str())
+                    == Some("success");
+                (is_read && !succeeded).then(|| output.id.clone())
+            })
+            .collect::<Vec<_>>();
+        if !failed_read_reservations.is_empty() {
+            let guard = self.read_guard(&read_guard_key);
+            let mut guard = guard.lock().await;
+            for event_id in failed_read_reservations {
+                guard.release_failed_reservation(&event_id);
+            }
+        }
         if let Some(plan_execution_id) = options.plan_execution_id.as_deref() {
             for (output, _) in &mut outputs {
                 output
@@ -14318,6 +14442,41 @@ mod tests {
         assert_eq!(query_duplicate.evidence_event_id, "read-query-1");
         assert!(guard
             .reserve(r#"{"path":"src/main.rs"}"#, "read-other-file")
+            .is_none());
+    }
+
+    #[test]
+    fn adjacent_read_ranges_are_not_mistaken_for_duplicate_file_reads() {
+        let mut guard = ReadTurnGuard::default();
+        assert!(guard
+            .reserve(
+                r#"{"path":"src/lib.rs","start_line":1,"end_line":10}"#,
+                "read-lines-1-10"
+            )
+            .is_none());
+        assert!(guard
+            .reserve(
+                r#"{"path":"src/lib.rs","start_line":11,"end_line":20}"#,
+                "read-lines-11-20"
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn failed_read_reservation_does_not_block_a_corrected_retry() {
+        let mut guard = ReadTurnGuard::default();
+        assert!(guard
+            .reserve(
+                r#"{"path":"src/lib.rs","start_line":11,"end_line":20}"#,
+                "failed-read"
+            )
+            .is_none());
+        guard.release_failed_reservation("failed-read");
+        assert!(guard
+            .reserve(
+                r#"{"path":"src/lib.rs","start_line":11,"end_line":20}"#,
+                "corrected-read"
+            )
             .is_none());
     }
 

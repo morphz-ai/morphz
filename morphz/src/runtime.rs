@@ -75,9 +75,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
+use tokio::io::AsyncWriteExt;
 
 pub type RuntimeError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -88,8 +89,122 @@ const ARTIFACT_TRANSFER_REQUEST_TOPIC: &str = "runtime/artifact_transfer_request
 const ARTIFACT_TRANSFER_PROGRESS_TOPIC: &str = "runtime/artifact_transfer_progress";
 const ARTIFACT_TRANSFER_COMPLETED_TOPIC: &str = "runtime/artifact_transfer_completed";
 const ARTIFACT_TRANSFER_FAILED_TOPIC: &str = "runtime/artifact_transfer_failed";
+const MAX_MESSAGE_ATTACHMENTS: usize = 8;
+const MAX_MESSAGE_ATTACHMENT_BYTES: usize = 20 * 1024 * 1024;
+const MAX_MESSAGE_ATTACHMENTS_TOTAL_BYTES: usize = 40 * 1024 * 1024;
 const ARTIFACT_TRANSFER_CANCELLED_TOPIC: &str = "runtime/artifact_transfer_cancelled";
 const ARTIFACT_TRANSFER_WORKER_LEASE_SECS: i64 = 300;
+
+async fn persist_message_attachments(
+    configured_root: &str,
+    session_id: &str,
+    event_id: &str,
+    attachments: Vec<crate::sdk::MessageAttachmentInput>,
+) -> Result<Vec<Value>, RuntimeError> {
+    if attachments.len() > MAX_MESSAGE_ATTACHMENTS {
+        return Err(format!("单条消息最多允许 {MAX_MESSAGE_ATTACHMENTS} 个附件").into());
+    }
+    let total_bytes = attachments
+        .iter()
+        .try_fold(0usize, |total, attachment| {
+            if attachment.data.len() > MAX_MESSAGE_ATTACHMENT_BYTES {
+                return Err(format!(
+                    "附件 '{}' 超过单文件 {} MiB 限制",
+                    attachment.name,
+                    MAX_MESSAGE_ATTACHMENT_BYTES / 1024 / 1024
+                ));
+            }
+            total
+                .checked_add(attachment.data.len())
+                .ok_or_else(|| "附件总大小溢出".to_string())
+        })
+        .map_err(|error| -> RuntimeError { error.into() })?;
+    if total_bytes > MAX_MESSAGE_ATTACHMENTS_TOTAL_BYTES {
+        return Err(format!(
+            "单条消息附件总大小超过 {} MiB 限制",
+            MAX_MESSAGE_ATTACHMENTS_TOTAL_BYTES / 1024 / 1024
+        )
+        .into());
+    }
+    if attachments.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let root = PathBuf::from(configured_root);
+    let root = if root.is_absolute() {
+        root
+    } else {
+        std::env::current_dir()?.join(root)
+    };
+    let session_key = format!("{:x}", Sha256::digest(session_id.as_bytes()));
+    let directory = root.join("message-inputs").join(session_key);
+    tokio::fs::create_dir_all(&directory).await?;
+    let directory = tokio::fs::canonicalize(&directory).await?;
+    let mut metadata = Vec::with_capacity(attachments.len());
+
+    for (index, attachment) in attachments.into_iter().enumerate() {
+        let name = Path::new(attachment.name.trim())
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if name.is_empty() || name.chars().count() > 255 {
+            return Err("附件名称不能为空且不能超过 255 个字符".into());
+        }
+        let media_type = attachment.media_type.trim();
+        let media_type = if media_type.is_empty() {
+            "application/octet-stream"
+        } else {
+            media_type
+        };
+        if media_type.chars().count() > 128
+            || !media_type
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || "/.+-".contains(character))
+        {
+            return Err(format!("附件 '{}' 的 media type 非法", name).into());
+        }
+
+        let digest = format!("{:x}", Sha256::digest(&attachment.data));
+        let final_path = directory.join(&digest);
+        if !tokio::fs::try_exists(&final_path).await? {
+            let temporary_path = directory.join(format!(".{digest}.{event_id}.{index}.partial"));
+            let mut file = tokio::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary_path)
+                .await?;
+            file.write_all(&attachment.data).await?;
+            file.sync_data().await?;
+            drop(file);
+            match tokio::fs::rename(&temporary_path, &final_path).await {
+                Ok(()) => {}
+                Err(error) if tokio::fs::try_exists(&final_path).await.unwrap_or(false) => {
+                    let _ = tokio::fs::remove_file(&temporary_path).await;
+                    tracing::debug!(
+                        path = %final_path.display(),
+                        error = %error,
+                        "消息附件已由并发写入复用"
+                    );
+                }
+                Err(error) => {
+                    let _ = tokio::fs::remove_file(&temporary_path).await;
+                    return Err(error.into());
+                }
+            }
+        }
+        metadata.push(json!({
+            "id": format!("attachment_{digest}"),
+            "name": name,
+            "media_type": media_type,
+            "size_bytes": attachment.data.len(),
+            "sha256": digest,
+            "storage_path": final_path.to_string_lossy(),
+        }));
+    }
+    Ok(metadata)
+}
 
 struct ArtifactTransferExecutionIdentity {
     event_id: String,
@@ -456,6 +571,7 @@ pub struct RuntimeStatus {
     pub context_id: String,
     pub principal_id: String,
     pub model: String,
+    pub models: Vec<String>,
     pub provider: Option<String>,
     pub reasoning_effort: Option<String>,
     pub tool_count: usize,
@@ -774,6 +890,7 @@ impl MorphzRuntimeBuilder {
                 std::time::Duration::from_secs(objective_lease_secs),
             )
             .with_execution_job_store(Arc::clone(&store) as Arc<dyn ExecutionJobStore>)
+            .with_delegation_store(Arc::clone(&store) as Arc<dyn crate::memory::DelegationStore>)
             .with_activation_store(Arc::clone(&store) as Arc<dyn crate::memory::ActivationStore>),
         );
         objective_supervisor.register_timer_handlers()?;
@@ -971,6 +1088,12 @@ impl MorphzRuntimeBuilder {
             execution_targets.register_backend(backend);
         }
         let runtime_client = Arc::clone(&self.client);
+        let message_attachment_root = PathBuf::from(&self.config.background_task.artifact_dir);
+        let message_attachment_root = if message_attachment_root.is_absolute() {
+            message_attachment_root
+        } else {
+            std::env::current_dir()?.join(message_attachment_root)
+        };
         let orchestrator = Orchestrator::assemble_with_scheduler_kernel(
             Arc::clone(&bus),
             Arc::clone(&store) as Arc<dyn EventStore>,
@@ -997,6 +1120,7 @@ impl MorphzRuntimeBuilder {
                 self.config.edge_execution.capability_lease_ttl.as_secs(),
             )),
             Some(Arc::clone(&harness_registry)),
+            message_attachment_root,
         )?;
         Ok(MorphzRuntime {
             inner: Arc::new(RuntimeInner {
@@ -1594,6 +1718,45 @@ impl MorphzRuntime {
     /// This is deliberately not persisted when changed through Dashboard.
     pub fn reasoning_effort(&self) -> Option<ReasoningEffort> {
         self.inner.client.reasoning_effort()
+    }
+
+    pub fn model(&self) -> String {
+        self.inner
+            .client
+            .model()
+            .unwrap_or_else(|| self.inner.config.llm.model.clone())
+    }
+
+    pub fn configured_models(&self) -> Vec<String> {
+        let mut models = self
+            .inner
+            .config
+            .llm
+            .models
+            .iter()
+            .map(|model| model.trim())
+            .filter(|model| !model.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let configured = self.inner.config.llm.model.trim();
+        if !configured.is_empty() && !models.iter().any(|model| model == configured) {
+            models.insert(0, configured.to_string());
+        }
+        models.sort();
+        models.dedup();
+        models
+    }
+
+    pub fn set_model(&self, model: &str) -> Result<(), RuntimeError> {
+        let model = model.trim();
+        if !self
+            .configured_models()
+            .iter()
+            .any(|allowed| allowed == model)
+        {
+            return Err(format!("模型 '{model}' 未在 llm.models 中配置，拒绝运行期切换").into());
+        }
+        self.inner.client.set_model(model).map_err(Into::into)
     }
 
     pub fn set_reasoning_effort(
@@ -4704,7 +4867,8 @@ impl MorphzRuntime {
             agent_id: self.inner.identity.agent_id.clone(),
             context_id: self.inner.identity.context_id.clone(),
             principal_id: self.inner.identity.principal_id.clone(),
-            model: self.inner.config.llm.model.clone(),
+            model: self.model(),
+            models: self.configured_models(),
             provider: self.inner.config.llm.provider.clone(),
             reasoning_effort: self
                 .reasoning_effort()
@@ -5011,6 +5175,26 @@ impl SessionHandle {
         client_message_id: Option<String>,
         requested_harness: Option<crate::harness::ExactHarnessRef>,
     ) -> Result<MessageReceipt, RuntimeError> {
+        self.send_as_principal_with_harness_and_attachments(
+            text,
+            actor,
+            principal_id,
+            client_message_id,
+            requested_harness,
+            Vec::new(),
+        )
+        .await
+    }
+
+    pub async fn send_as_principal_with_harness_and_attachments(
+        &self,
+        text: impl Into<String>,
+        actor: impl Into<String>,
+        principal_id: impl Into<String>,
+        client_message_id: Option<String>,
+        requested_harness: Option<crate::harness::ExactHarnessRef>,
+        attachments: Vec<crate::sdk::MessageAttachmentInput>,
+    ) -> Result<MessageReceipt, RuntimeError> {
         let session = self
             .runtime
             .get_session(&self.id)
@@ -5020,8 +5204,8 @@ impl SessionHandle {
             return Err("归档 Session 不能接收新消息".into());
         }
         let text = text.into().trim().to_string();
-        if text.is_empty() {
-            return Err("消息正文不能为空".into());
+        if text.is_empty() && attachments.is_empty() {
+            return Err("消息正文和附件不能同时为空".into());
         }
         if text.chars().count() > 1_000_000 {
             return Err("消息正文超过 1,000,000 字符".into());
@@ -5042,6 +5226,13 @@ impl SessionHandle {
         }
         let client_message_id = client_message_id.unwrap_or_else(|| runtime_id("client"));
         let event_id = runtime_id("msg");
+        let attachment_metadata = persist_message_attachments(
+            &self.runtime.inner.config.background_task.artifact_dir,
+            &self.id,
+            &event_id,
+            attachments,
+        )
+        .await?;
         let mut payload = serde_json::Map::from_iter([
             ("context_id".to_string(), json!(session.context_id)),
             ("session_id".to_string(), json!(self.id)),
@@ -5049,6 +5240,9 @@ impl SessionHandle {
             ("client_message_id".to_string(), json!(client_message_id)),
             ("text".to_string(), json!(text)),
         ]);
+        if !attachment_metadata.is_empty() {
+            payload.insert("attachments".to_string(), Value::Array(attachment_metadata));
+        }
         if let Some(reference) = requested_harness {
             let id = reference.id.trim();
             let version = reference.version.trim();
@@ -5372,9 +5566,42 @@ mod tests {
     use crate::llm::{Message, Response, ToolCallRepr, ToolDefinition};
     use crate::memory::SessionDirectoryStore as _;
     use crate::permission::PermissionMode;
+    use crate::sdk::MessageAttachmentInput;
     use tempfile::NamedTempFile;
 
     struct ReplyClient;
+
+    #[tokio::test]
+    async fn message_attachments_store_bytes_outside_the_ledger_by_digest() {
+        let artifact_root = tempfile::tempdir().unwrap();
+        let input = MessageAttachmentInput {
+            name: "../diagram.png".to_string(),
+            media_type: "image/png".to_string(),
+            data: b"image-bytes".to_vec(),
+        };
+        let metadata = persist_message_attachments(
+            artifact_root.path().to_str().unwrap(),
+            "session-attachment-test",
+            "event-attachment-test",
+            vec![input.clone(), input],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(metadata.len(), 2);
+        assert_eq!(metadata[0]["name"], "diagram.png");
+        assert_eq!(metadata[0]["media_type"], "image/png");
+        assert_eq!(metadata[0]["size_bytes"], 11);
+        assert_eq!(metadata[0]["sha256"], metadata[1]["sha256"]);
+        assert_eq!(metadata[0]["storage_path"], metadata[1]["storage_path"]);
+        let stored_path = metadata[0]["storage_path"].as_str().unwrap();
+        assert_eq!(tokio::fs::read(stored_path).await.unwrap(), b"image-bytes");
+
+        let metadata_json = serde_json::to_vec(&metadata).unwrap();
+        assert!(!metadata_json
+            .windows(b"image-bytes".len())
+            .any(|window| window == b"image-bytes"));
+    }
 
     struct BlockingArtifactTransferBackend {
         entered: Arc<tokio::sync::Notify>,

@@ -10,7 +10,7 @@ import {
   tintIdForLineage,
   toneForSlot,
 } from '../src/app/objectiveLineage.ts'
-import { assistantToolCalls, compactTokens, conversationEventKind, conversationEventLane, newestConversationEventsForLane, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
+import { assistantToolCalls, compactTokens, conversationEventKind, conversationEventLane, delegatedContextIds, newestConversationEventsForLane, shortId, statusLabel, summarizeToolCall } from '../src/app/presentation.ts'
 
 const translations: Record<string, string> = {
   'status.running': 'Running',
@@ -38,6 +38,36 @@ test('presentation helpers keep identifiers and token counts compact', () => {
   assert.equal(shortId('thread-1234567890', 10), '…234567890')
   assert.equal(statusLabel('running', t), 'Running')
   assert.equal(statusLabel('provider_specific', t), 'provider_specific')
+})
+
+test('delegated Contexts are classified from authoritative child Context ids', () => {
+  assert.deepEqual(
+    [...delegatedContextIds([
+      { child_context_id: 'context-child-a' },
+      { child_context_id: 'context-child-b' },
+      { child_context_id: 'context-child-a' },
+      { child_context_id: '' },
+    ])],
+    ['context-child-a', 'context-child-b'],
+  )
+})
+
+test('orphaned Runtime delegation Contexts remain grouped without a Delegation row', () => {
+  assert.deepEqual(
+    [...delegatedContextIds(
+      [{ child_context_id: 'context-child-a' }],
+      [
+        'context-default',
+        'delegate-context-legacy-child',
+        ' delegate-context-recovered-child ',
+      ],
+    )],
+    [
+      'context-child-a',
+      'delegate-context-legacy-child',
+      'delegate-context-recovered-child',
+    ],
+  )
 })
 
 test('tool summaries expose the physical target without rendering raw argument blobs', () => {
@@ -87,6 +117,22 @@ test('Assistant Call tool payloads normalize provider and Runtime call shapes', 
     arguments: '{"command":"cargo test"}',
     arguments_chars: 24,
     truncated: false,
+  }])
+})
+
+test('continued Assistant Calls expose their durable tool lifecycle after refresh', () => {
+  assert.deepEqual(assistantToolCalls({
+    continuation_tool_calls: [{
+      id: 'call-list-skills',
+      type: 'function',
+      function: { name: 'list_skills', arguments: '{}' },
+    }],
+  }), [{
+    id: 'call-list-skills',
+    name: 'list_skills',
+    arguments: '{}',
+    arguments_chars: undefined,
+    truncated: undefined,
   }])
 })
 

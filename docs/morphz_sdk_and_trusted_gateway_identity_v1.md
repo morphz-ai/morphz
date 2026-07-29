@@ -42,7 +42,15 @@ provider_id = "morphz-site"
 service_token_env = "MORPHZ_API_TOKEN"
 ```
 
-启动前设置 `MORPHZ_API_TOKEN`。该配置属于宿主控制面，项目目录中的 `.morphz/config.toml` 不能覆盖它。
+启动前设置两个相互独立的凭证：
+
+```text
+MORPHZ_DASHBOARD_TOKEN  Dashboard / Operator 管理面凭证
+MORPHZ_API_TOKEN        Site Gateway 服务凭证
+```
+
+`MORPHZ_API_TOKEN` 的变量名由 `service_token_env` 决定。两种凭证都属于宿主控制面，
+项目目录中的 `.morphz/config.toml` 不能覆盖它们，也不能配置为相同值。
 
 可信请求同时携带：
 
@@ -54,7 +62,16 @@ X-Morphz-Principal-Name: Alice
 
 服务令牌证明“这是受信 Gateway”；Principal Header 表示“Gateway 已认证出的当前用户”。`provider_id` 固定来自 Morphz 宿主配置，不允许请求自行指定。显示名称只是描述字段，不参与授权。
 
+Principal ID 是 Identity Provider 所有的 opaque identifier，不使用 Morphz
+Session/Context 的资源名语法。邮件地址、IM 地址和带命名空间的 provider subject（例如
+`o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat`）均可直接使用；Runtime 只拒绝空值、首尾空白、
+控制字符和超过 512 字节的值。
+
 可信模式缺少 Principal 会失败，不会回退为 `principal-default`。
+
+Dashboard 管理令牌是例外：它证明当前请求来自 Runtime 自身的 Operator 面，而不是
+Gateway 用户请求，因此不要求附带 `X-Morphz-Principal`，也不会被当作 Gateway
+服务令牌使用。
 
 ## 3. Session 授权契约
 

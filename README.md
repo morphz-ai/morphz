@@ -180,7 +180,13 @@ Context Long-Run Eval 从 normal 开始连续注入六批历史，分别评估�
 系统控制面，项目配置不能修改。完整分层设计见
 [CLI 产品化 v1](docs/morphz_cli_productization_v1.md)。
 
-监听非本机地址时必须配置服务访问令牌。默认 Dashboard 模式使用 `MORPHZ_DASHBOARD_TOKEN`；可信 Gateway 模式使用 `[server.identity].service_token_env` 指向的环境变量，并要求每个 Session 请求携带 Runtime Principal。完整契约见 [SDK v1 与可信 Gateway 身份接入](docs/morphz_sdk_and_trusted_gateway_identity_v1.md)。Dashboard 可通过 `VITE_MORPHZ_TOKEN` 携带同一 token，也可分别用 `VITE_MORPHZ_HTTP_URL`、`VITE_MORPHZ_WS_URL` 指定 Core 地址。
+监听非本机地址时必须配置访问令牌。`MORPHZ_DASHBOARD_TOKEN` 始终是 Dashboard/Operator
+管理面凭证；可信 Gateway 模式还使用 `[server.identity].service_token_env` 指向的独立服务
+凭证，并要求 Gateway 的 Session 请求携带 Runtime Principal。这两个令牌必须不同，管理面
+认证也不会被解释成用户身份声明。完整契约见
+[SDK v1 与可信 Gateway 身份接入](docs/morphz_sdk_and_trusted_gateway_identity_v1.md)。
+Dashboard 可通过 `VITE_MORPHZ_TOKEN` 携带管理令牌，也可分别用
+`VITE_MORPHZ_HTTP_URL`、`VITE_MORPHZ_WS_URL` 指定 Core 地址。
 
 面向外部客户端或其他 AI agent 的最小接口、认证、幂等、事件轮询和 WebSocket
 恢复约定，见 [HTTP API：AI Agent 接入契约 v1](docs/http_api_agent_contract_v1.md)。

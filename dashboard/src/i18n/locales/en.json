@@ -223,6 +223,7 @@
     "visibleContexts": "Available Contexts",
     "contextsForAgent": "{{count}} for this Agent",
     "contextCount": "{{count}} Contexts",
+    "agentContexts": "Agent Contexts",
     "noVisibleContexts": "No available Contexts for this Agent",
     "inspectContext": "Inspect Mind",
     "inspectNamedContext": "Inspect the Mind of Context “{{title}}”",
@@ -299,6 +300,8 @@
     "toolCalls": "{{count}} tool calls"
   },
   "model": {
+    "selector": "Model",
+    "selectorTitle": "Switch the model for subsequent requests; active requests are unchanged",
     "unavailable": "model unavailable",
     "tokens": "{{used}} / {{limit}}",
     "pressureTokens": "Estimated prompt pressure: {{used}} / {{limit}} · {{source}}",
@@ -398,11 +401,16 @@
     "activity": {
       "title": "Task activity",
       "summary": "{{objectives}} objectives · {{threads}} executions · {{delegations}} sub-agents",
+      "hidePanel": "Hide task activity to the right",
+      "showPanel": "Show task activity",
       "objectives": "Objectives",
       "threads": "Current execution",
+      "expandThread": "Expand Thread",
+      "collapseThread": "Collapse Thread",
       "backgroundProcesses": "Background processes",
       "backgroundTask": "Background task",
       "delegations": "Sub-agents",
+      "openDelegationContext": "Open Context",
       "history": "Execution history",
       "currentSession": "Current Session",
       "otherSession": "Session {{id}}",
@@ -706,6 +714,13 @@
     "send": "Send",
     "inputAriaLabel": "Message input",
     "cancelTitle": "Cancel current Session execution",
+    "attachments": {
+      "add": "Add images or files",
+      "remove": "Remove attachment",
+      "tooMany": "A message can contain at most 8 attachments",
+      "fileTooLarge": "Each attachment must be 20 MiB or smaller",
+      "totalTooLarge": "Attachments in one message must total 40 MiB or less"
+    },
     "status": {
       "idle": "Idle",
       "active": "Objective auto-running",
@@ -843,6 +858,7 @@
     "createSession": "Create Session HTTP {{status}}",
     "noAgentForContext": "No Agent is available to create a Context",
     "noContextForSession": "Select or create a Context first",
+    "delegationContextUnavailable": "This sub-agent Context is unavailable or archived",
     "cancelSession": "Cancel Session HTTP {{status}}",
     "reasoning": "Set reasoning depth HTTP {{status}}",
     "pauseObjective": "Pause Objective HTTP {{status}}",

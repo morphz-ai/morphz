@@ -22,6 +22,7 @@ import {
   Database,
   Eye,
   Filter,
+  FileText,
   GitBranch,
   Globe,
   Layers3,
@@ -33,7 +34,10 @@ import {
   Monitor,
   Moon,
   Palette,
+  PanelRightClose,
+  PanelRightOpen,
   Pause,
+  Paperclip,
   Pencil,
   Play,
   Plus,
@@ -68,11 +72,9 @@ import {
   attentionDeliveryKey,
   attentionJobKey,
   actionableSchedulerJobs,
-  activeSchedulerActivations,
   currentSchedulerSchedules,
   pendingHumanApprovals,
   schedulerApprovalAnomalies,
-  schedulerActivityCounts,
   schedulerAttentionJobs,
   threadCarriesExecution,
   retryableDialogueThread,
@@ -119,6 +121,7 @@ import {
   compactTokens,
   conversationEventKind,
   conversationEventLane,
+  delegatedContextIds,
   formatAgo,
   formatTime,
   shortId,
@@ -790,6 +793,7 @@ interface RuntimeStatus {
   context_id: string
   principal_id: string
   model: string
+  models: string[]
   provider?: string
   reasoning_effort?: ReasoningEffortSetting | null
   tool_count: number
@@ -872,6 +876,13 @@ interface EventPayload {
   session_id?: string
   tool_name?: string
   status?: string
+  attachments?: Array<{
+    id?: string
+    name?: string
+    media_type?: string
+    size_bytes?: number
+    sha256?: string
+  }>
   [key: string]: unknown
 }
 
@@ -909,6 +920,15 @@ interface QuoteItem {
   comment: string
   badgeTop: number
   badgeLeft: number
+}
+
+interface ComposerAttachment {
+  id: string
+  name: string
+  mediaType: string
+  size: number
+  dataBase64: string
+  previewUrl?: string
 }
 
 interface SelectionPopup {
@@ -1285,8 +1305,10 @@ interface RecallIndexAudit {
 
 interface DelegationRecord {
   id: string
+  agent_id: string
   parent_context_id: string
   parent_session_id: string
+  child_context_id: string
   child_session_id: string
   task: string
   status: string
@@ -1303,10 +1325,12 @@ function toolCallTone(status: string): 'running' | 'succeeded' | 'failed' {
 const ExecutionToolCalls = memo(function ExecutionToolCalls({
   calls,
   targetNames,
+  locale,
   t,
 }: {
   calls: ToolTimelineItem[]
   targetNames: ReadonlyMap<string, string>
+  locale: string
   t: TFunction
 }) {
   const [expandedCallId, setExpandedCallId] = useState('')
@@ -1354,6 +1378,13 @@ const ExecutionToolCalls = memo(function ExecutionToolCalls({
                     )}
                   </small>
                 </span>
+                <time
+                  className="execution-tool-time"
+                  dateTime={call.timestamp}
+                  title={new Date(call.timestamp).toLocaleString(locale)}
+                >
+                  {formatTime(call.timestamp, locale)}
+                </time>
                 <em>{statusLabel(call.status, t)}</em>
                 <ChevronDown className="execution-tool-expand" size={13} aria-hidden="true" />
               </button>
@@ -1380,6 +1411,7 @@ const ExecutionToolCalls = memo(function ExecutionToolCalls({
 
 function DialogueActivityDock({
   open,
+  visible,
   objectives,
   threads,
   historyThreads,
@@ -1403,6 +1435,7 @@ function DialogueActivityDock({
   mutatingThreadId,
   t,
   onOpenChange,
+  onVisibleChange,
   onThreadToggle,
   onReasoningOpenChange,
   onInspectThread,
@@ -1416,8 +1449,10 @@ function DialogueActivityDock({
   onEditObjective,
   onDeleteObjective,
   onThreadControl,
+  onOpenDelegationContext,
 }: {
   open: boolean
+  visible: boolean
   objectives: ObjectiveRecord[]
   threads: SchedulerThreadSnapshot[]
   historyThreads: SchedulerThreadSnapshot[]
@@ -1441,6 +1476,7 @@ function DialogueActivityDock({
   mutatingThreadId: string
   t: TFunction
   onOpenChange: (open: boolean) => void
+  onVisibleChange: (visible: boolean) => void
   onThreadToggle: (threadId: string) => void
   onReasoningOpenChange: (open: boolean) => void
   onInspectThread: (threadId: string) => void
@@ -1454,6 +1490,7 @@ function DialogueActivityDock({
   onEditObjective: (objective: ObjectiveRecord) => void
   onDeleteObjective: (objective: ObjectiveRecord) => void
   onThreadControl: (thread: ThreadRecord, action: 'pause' | 'resume' | 'close') => void
+  onOpenDelegationContext: (delegation: DelegationRecord) => void
 }) {
   const [objectivesOpen, setObjectivesOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.objectives', false)
   const [threadsOpen, setThreadsOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.threads', true)
@@ -1469,19 +1506,36 @@ function DialogueActivityDock({
   ))
 
   return (
-    <aside className={`dialogue-activity-dock ${open ? 'is-open' : 'is-collapsed'}`} aria-label={t('conversation.activity.title')}>
-      <button
-        className="dialogue-activity-toggle"
-        type="button"
-        aria-expanded={open}
-        onClick={() => onOpenChange(!open)}
+    <>
+      <aside
+        className={`dialogue-activity-dock ${open ? 'is-open' : 'is-collapsed'} ${visible ? '' : 'is-hidden'}`}
+        aria-label={t('conversation.activity.title')}
+        aria-hidden={!visible}
+        inert={!visible}
       >
-        <span><Radio size={13} /><strong>{t('conversation.activity.title')}</strong></span>
-        <small>{t('conversation.activity.summary', { objectives: objectives.length, threads: threads.length, delegations: delegations.length })}</small>
-        <ChevronDown size={14} />
-      </button>
+        <header className="dialogue-activity-header">
+          <button
+            className="dialogue-activity-toggle"
+            type="button"
+            aria-expanded={open}
+            onClick={() => onOpenChange(!open)}
+          >
+            <span><Radio size={13} /><strong>{t('conversation.activity.title')}</strong></span>
+            <small>{t('conversation.activity.summary', { objectives: objectives.length, threads: threads.length, delegations: delegations.length })}</small>
+            <ChevronDown size={14} />
+          </button>
+          <button
+            className="dialogue-activity-hide"
+            type="button"
+            title={t('conversation.activity.hidePanel')}
+            aria-label={t('conversation.activity.hidePanel')}
+            onClick={() => onVisibleChange(false)}
+          >
+            <PanelRightClose size={15} />
+          </button>
+        </header>
 
-      {open && (
+        {open && (
         <>
           <div className="dialogue-activity-controls">
             <button
@@ -1637,20 +1691,45 @@ function DialogueActivityDock({
                     key={effective.thread.id}
                     style={tintStyleFor(snapshot.thread.id) ?? tintStyleFor(objectiveIds[0])}
                   >
-                    <button
-                      className="dialogue-thread-summary"
-                      type="button"
-                      aria-expanded={expanded}
-                      onClick={() => onThreadToggle(effective.thread.id)}
-                    >
-                      <span className={`activity-status ${displayState}`}><i />{statusLabel(displayState, t)}</span>
-                      <span className="dialogue-thread-identity">
-                        <strong>{threadKindLabel(effective.thread.kind, t)}</strong>
-                        <small>{jobSummary ? `${jobSummary.title}${jobSummary.target ? ` · ${jobSummary.target}` : ''}` : shortId(effective.thread.id, 20)}</small>
-                      </span>
-                      <span className="dialogue-thread-counts">{effective.activations.length}A · {jobs.length}J</span>
-                      <ChevronDown size={13} />
-                    </button>
+                    <header className="dialogue-thread-card-header">
+                      <button
+                        className="dialogue-thread-summary"
+                        type="button"
+                        aria-expanded={expanded}
+                        onClick={() => onThreadToggle(effective.thread.id)}
+                      >
+                        <span className={`activity-status ${displayState}`}><i />{statusLabel(displayState, t)}</span>
+                        <span className="dialogue-thread-identity">
+                          <strong>{threadKindLabel(effective.thread.kind, t)}</strong>
+                          <small title={effective.thread.id}>
+                            <code>{shortId(effective.thread.id, 18)}</code>
+                            {jobSummary && (
+                              <span>{jobSummary.title}{jobSummary.target ? ` · ${jobSummary.target}` : ''}</span>
+                            )}
+                          </small>
+                        </span>
+                        <span className="dialogue-thread-counts">{effective.activations.length}A · {jobs.length}J</span>
+                      </button>
+                      {effective.thread.lifecycle === 'open' && (
+                        <div className="dialogue-thread-card-actions">
+                          {effective.thread.control_state === 'paused' ? (
+                            <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.resumeThread')} aria-label={t('work.causal.resumeThread')} onClick={() => onThreadControl(effective.thread, 'resume')}><Play size={12} /></button>
+                          ) : (
+                            <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.pauseThread')} aria-label={t('work.causal.pauseThread')} onClick={() => onThreadControl(effective.thread, 'pause')}><Pause size={12} /></button>
+                          )}
+                          <button disabled={mutatingThreadId === effective.thread.id} className="danger" type="button" title={t('work.causal.closeThread')} aria-label={t('work.causal.closeThread')} onClick={() => onThreadControl(effective.thread, 'close')}><X size={12} /></button>
+                        </div>
+                      )}
+                      <button
+                        className="dialogue-thread-disclosure"
+                        type="button"
+                        aria-expanded={expanded}
+                        aria-label={expanded ? t('conversation.activity.collapseThread') : t('conversation.activity.expandThread')}
+                        onClick={() => onThreadToggle(effective.thread.id)}
+                      >
+                        <ChevronDown size={13} />
+                      </button>
+                    </header>
                     <div className="dialogue-thread-origin">
                       <span>{currentSession ? t('conversation.activity.currentSession') : t('conversation.activity.otherSession', { id: shortId(effective.thread.session_id, 14) })}</span>
                       {objectiveIds.length > 0 && (
@@ -1658,16 +1737,6 @@ function DialogueActivityDock({
                       )}
                       <time>{formatAgo(effective.thread.updated_at, t)}</time>
                     </div>
-                    {effective.thread.lifecycle === 'open' && (
-                      <div className="dialogue-thread-card-actions">
-                        {effective.thread.control_state === 'paused' ? (
-                          <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.resumeThread')} aria-label={t('work.causal.resumeThread')} onClick={() => onThreadControl(effective.thread, 'resume')}><Play size={12} /></button>
-                        ) : (
-                          <button disabled={mutatingThreadId === effective.thread.id} type="button" title={t('work.causal.pauseThread')} aria-label={t('work.causal.pauseThread')} onClick={() => onThreadControl(effective.thread, 'pause')}><Pause size={12} /></button>
-                        )}
-                        <button disabled={mutatingThreadId === effective.thread.id} className="danger" type="button" title={t('work.causal.closeThread')} aria-label={t('work.causal.closeThread')} onClick={() => onThreadControl(effective.thread, 'close')}><X size={12} /></button>
-                      </div>
-                    )}
 
                     {expanded && (
                       <div className="dialogue-thread-runtime">
@@ -1796,6 +1865,10 @@ function DialogueActivityDock({
                     <footer>
                       <span><GitBranch size={10} /> {shortId(delegation.child_session_id, 18)}</span>
                       <span>{currentSession ? t('conversation.activity.currentSession') : t('conversation.activity.otherSession', { id: shortId(delegation.parent_session_id, 14) })}</span>
+                      <button type="button" onClick={() => onOpenDelegationContext(delegation)}>
+                        {t('conversation.activity.openDelegationContext')}
+                        <ChevronRight size={10} />
+                      </button>
                     </footer>
                   </article>
                 )
@@ -1844,8 +1917,20 @@ function DialogueActivityDock({
           </details>
           </div>
         </>
-      )}
-    </aside>
+        )}
+      </aside>
+      <button
+        className={`dialogue-activity-restore ${visible ? '' : 'is-visible'}`}
+        type="button"
+        title={t('conversation.activity.showPanel')}
+        aria-label={t('conversation.activity.showPanel')}
+        aria-hidden={visible}
+        tabIndex={visible ? -1 : 0}
+        onClick={() => onVisibleChange(true)}
+      >
+        <PanelRightOpen size={16} />
+      </button>
+    </>
   )
 }
 
@@ -1988,6 +2073,33 @@ const SelectionQuotePopup = memo(function SelectionQuotePopup({
   )
 })
 
+const MessageAttachments = memo(function MessageAttachments({
+  attachments,
+}: {
+  attachments: EventPayload['attachments']
+}) {
+  if (!attachments?.length) return null
+  return (
+    <div className="message-attachments">
+      {attachments.map((attachment, index) => (
+        <span key={attachment.id ?? attachment.sha256 ?? `${attachment.name}-${index}`}>
+          <Paperclip size={12} />
+          <strong>{attachment.name ?? 'attachment'}</strong>
+          {typeof attachment.size_bytes === 'number' && (
+            <small>
+              {(attachment.size_bytes < 1024 * 1024
+                ? attachment.size_bytes / 1024
+                : attachment.size_bytes / 1024 / 1024
+              ).toFixed(attachment.size_bytes < 1024 * 1024 ? 0 : 1)}
+              {' '}{attachment.size_bytes < 1024 * 1024 ? 'KB' : 'MB'}
+            </small>
+          )}
+        </span>
+      ))}
+    </div>
+  )
+})
+
 // Keep draft input state below App. A keystroke should only reconcile the
 // composer, not the full event history and every dashboard view.
 const Composer = memo(function Composer({
@@ -2003,6 +2115,7 @@ const Composer = memo(function Composer({
   onUpdateQuoteComment,
   onSend,
   onCancel,
+  onError,
 }: {
   inputRef: RefObject<HTMLTextAreaElement | null>
   selectedSessionId: string
@@ -2014,20 +2127,119 @@ const Composer = memo(function Composer({
   onActiveQuoteIdChange: (quoteId: string) => void
   onRemoveQuote: (quoteId: string) => void
   onUpdateQuoteComment: (quoteId: string, comment: string) => void
-  onSend: (message: string) => Promise<boolean>
+  onSend: (message: string, attachments: ComposerAttachment[]) => Promise<boolean>
   onCancel: () => void
+  onError: (message: string) => void
 }) {
   const [message, setMessage] = useState('')
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
+  const [draggingFiles, setDraggingFiles] = useState(false)
   const composingInput = useRef(false)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const submit = useCallback(async () => {
-    if (await onSend(message)) setMessage('')
-  }, [message, onSend])
+    if (await onSend(message, attachments)) {
+      setMessage('')
+      setAttachments(current => {
+        current.forEach(attachment => attachment.previewUrl && URL.revokeObjectURL(attachment.previewUrl))
+        return []
+      })
+    }
+  }, [attachments, message, onSend])
+
+  const addFiles = useCallback(async (files: FileList | File[]) => {
+    const incoming = Array.from(files)
+    if (!incoming.length) return
+    if (attachments.length + incoming.length > 8) {
+      onError(t('composer.attachments.tooMany'))
+      return
+    }
+    if (incoming.some(file => file.size > 20 * 1024 * 1024)) {
+      onError(t('composer.attachments.fileTooLarge'))
+      return
+    }
+    const totalBytes = attachments.reduce((total, item) => total + item.size, 0)
+      + incoming.reduce((total, file) => total + file.size, 0)
+    if (totalBytes > 40 * 1024 * 1024) {
+      onError(t('composer.attachments.totalTooLarge'))
+      return
+    }
+    try {
+      const added = await Promise.all(incoming.map(async file => {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onerror = () => reject(reader.error ?? new Error('FileReader failed'))
+          reader.onload = () => resolve(String(reader.result ?? ''))
+          reader.readAsDataURL(file)
+        })
+        return {
+          id: `attachment-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          name: file.name,
+          mediaType: file.type || 'application/octet-stream',
+          size: file.size,
+          dataBase64: dataUrl.split(',', 2)[1] ?? '',
+          previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
+        } satisfies ComposerAttachment
+      }))
+      setAttachments(current => [...current, ...added])
+    } catch (reason) {
+      onError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [attachments, onError, t])
 
   return (
-    <div className="composer">
+    <div
+      className={`composer ${draggingFiles ? 'dragging-files' : ''}`}
+      onDragEnter={event => {
+        if (event.dataTransfer.types.includes('Files')) {
+          event.preventDefault()
+          setDraggingFiles(true)
+        }
+      }}
+      onDragOver={event => {
+        if (event.dataTransfer.types.includes('Files')) event.preventDefault()
+      }}
+      onDragLeave={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDraggingFiles(false)
+      }}
+      onDrop={event => {
+        event.preventDefault()
+        setDraggingFiles(false)
+        void addFiles(event.dataTransfer.files)
+      }}
+    >
       <span className="composer-prompt">›</span>
       <div className="composer-input-area">
+        {attachments.length > 0 && (
+          <div className="composer-attachments">
+            {attachments.map(attachment => (
+              <div className="composer-attachment" key={attachment.id}>
+                {attachment.previewUrl
+                  ? <img src={attachment.previewUrl} alt="" />
+                  : <FileText size={15} />}
+                <span>
+                  <strong>{attachment.name}</strong>
+                  <small>
+                    {(attachment.size < 1024 * 1024 ? attachment.size / 1024 : attachment.size / 1024 / 1024)
+                      .toFixed(attachment.size < 1024 * 1024 ? 0 : 1)}
+                    {' '}{attachment.size < 1024 * 1024 ? 'KB' : 'MB'}
+                  </small>
+                </span>
+                <button
+                  type="button"
+                  title={t('composer.attachments.remove')}
+                  onClick={() => setAttachments(current => {
+                    const removed = current.find(item => item.id === attachment.id)
+                    if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl)
+                    return current.filter(item => item.id !== attachment.id)
+                  })}
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         {quotes.length > 0 && (
           <div className="quote-badges">
             {quotes.map((quote, index) => (
@@ -2094,12 +2306,31 @@ const Composer = memo(function Composer({
           value={message}
         />
       </div>
+      <input
+        ref={fileInputRef}
+        className="composer-file-input"
+        type="file"
+        multiple
+        onChange={event => {
+          if (event.target.files) void addFiles(event.target.files)
+          event.target.value = ''
+        }}
+      />
+      <button
+        className="attachment-button"
+        type="button"
+        title={t('composer.attachments.add')}
+        disabled={sending}
+        onClick={() => fileInputRef.current?.click()}
+      >
+        <Paperclip size={15} />
+      </button>
       {activeWorkCount > 0 ? (
         <button className="cancel-button" type="button" title={t('composer.cancelTitle')} onClick={onCancel}><Square size={14} /></button>
       ) : null}
       <button
         className="send-button"
-        disabled={(!message.trim() && quotes.length === 0) || sending}
+        disabled={(!message.trim() && quotes.length === 0 && attachments.length === 0) || sending}
         type="button"
         onClick={() => void submit()}
       >
@@ -2151,6 +2382,8 @@ export default function App() {
   const [schedulerHistoryLimit, setSchedulerHistoryLimit] = useState(SCHEDULER_HISTORY_PAGE_SIZE)
   const [threadDetail, setThreadDetail] = useState<ThreadDetailResponse | null>(null)
   const [dialogueActivityOpen, setDialogueActivityOpen] = useStoredDisclosure('morphz.dashboard.dialogueActivity.open', true)
+  const [dialogueActivityVisible, setDialogueActivityVisible] = useStoredDisclosure('morphz.dashboard.dialogueActivity.visible', true)
+  const [agentContextsOpen, setAgentContextsOpen] = useStoredDisclosure('morphz.dashboard.contextMenu.agentContexts', false)
   const [immersiveMode, setImmersiveMode] = useStoredDisclosure('morphz.dashboard.immersiveMode', false)
   const [expandedDialogueThreadId, setExpandedDialogueThreadId] = useState('')
   const [dialogueThreadDetail, setDialogueThreadDetail] = useState<ThreadDetailResponse | null>(null)
@@ -2198,6 +2431,7 @@ export default function App() {
   const [wsStatus, setWsStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
   const [sending, setSending] = useState(false)
   const [changingReasoning, setChangingReasoning] = useState(false)
+  const [changingModel, setChangingModel] = useState(false)
   const [pausingObjectiveId, setPausingObjectiveId] = useState('')
   const [resumingObjectiveId, setResumingObjectiveId] = useState('')
   const [editingObjectiveId, setEditingObjectiveId] = useState('')
@@ -3359,6 +3593,13 @@ export default function App() {
   const visibleContexts = contexts
     .filter(item => item.agent_id === selectedAgentId && item.status === 'active')
     .sort((left, right) => left.title.localeCompare(right.title))
+  const visibleContextCount = visibleContexts.length
+  const agentContextIds = delegatedContextIds(
+    delegations,
+    visibleContexts.map(context => context.id),
+  )
+  const userVisibleContexts = visibleContexts.filter(context => !agentContextIds.has(context.id))
+  const agentVisibleContexts = visibleContexts.filter(context => agentContextIds.has(context.id))
   const visibleSessions = sessions
     .filter(item => item.context_id === selectedContextId && item.status === 'active')
     .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))
@@ -3619,7 +3860,6 @@ export default function App() {
   const activeObjectives = objectives.filter(item => !terminalObjectiveStatuses.has(item.status))
   const runningObjectives = activeObjectives.filter(item => item.status === 'active')
   const blockedObjectives = activeObjectives.filter(item => item.status === 'blocked')
-  const pausedObjectives = activeObjectives.filter(item => item.status === 'paused')
   const waitingUserObjectives = runningObjectives.filter(item => item.wait_condition?.kind === 'user_input')
   const acknowledgedAttentionKeys = useMemo(
     () => new Set(
@@ -3668,11 +3908,23 @@ export default function App() {
     }
   }, [dialogueCurrentSessionOnly, objectiveLineage, schedulerThreads, selectedObjectiveFilterId, selectedSessionId])
   const showDialogueActivity = Boolean(selectedContextId && selectedSessionId)
-  // Colours are allocated over what is currently on screen, in a stable order,
-  // so a slot belongs to one live entity at a time.
-  const tintCandidateIds = tintDimension === 'thread'
-    ? dialogueActivityThreads.map(snapshot => snapshot.thread.id)
-    : dialogueActivityObjectives.map(objective => objective.id)
+  // A completed Objective/Thread can disappear from the live activity
+  // projection while its durable messages remain on screen. Keep those causal
+  // ids in the palette candidate set so historical results do not lose their
+  // colour as soon as execution settles.
+  const visibleTintLineages = visibleEventsForObjective.map(event => objectiveLineage.forEvent(event))
+  const streamingTintLineages = visibleStreamingAttempts.map(attempt => objectiveLineage.forActivation(attempt.activationId))
+  const tintCandidateIds = [...new Set(tintDimension === 'thread'
+    ? [
+        ...dialogueActivityThreads.map(snapshot => snapshot.thread.id),
+        ...visibleTintLineages.flatMap(lineage => lineage.threadIds),
+        ...streamingTintLineages.flatMap(lineage => lineage.threadIds),
+      ]
+    : [
+        ...dialogueActivityObjectives.map(objective => objective.id),
+        ...visibleTintLineages.flatMap(lineage => lineage.objectiveIds),
+        ...streamingTintLineages.flatMap(lineage => lineage.objectiveIds),
+      ])]
   // Slot history has to survive re-renders for a colour to stay put, and the
   // key makes that history explicit rather than hiding it in a ref that is
   // read while rendering.
@@ -3808,7 +4060,6 @@ export default function App() {
     + failedSchedulerJobs.length
     + failedDeliveries.length
     + waitingUserObjectives.length
-  const runningActivations = activeSchedulerActivations(schedulerSnapshot)
   const contextDelegations = delegations.filter(item => item.parent_context_id === selectedContextId)
   const liveDelegations = contextDelegations.filter(item => !terminalTaskStatuses.has(item.status))
   const runningDelegations = liveDelegations.filter(item => item.status === 'queued' || item.status === 'running')
@@ -3825,15 +4076,43 @@ export default function App() {
   const activeWorkCount = schedulerSnapshot
     ? schedulerSnapshot.summary.running_activations + schedulerSnapshot.summary.queued_activations
     : 0
-  const {
-    dialogue: activeDialogueCount,
-    execution: activeExecutionCount,
-  } = schedulerActivityCounts(schedulerSnapshot)
-  const durableEventQueueDepth = Number(schedulerSnapshot?.event_writer?.queue_depth ?? 0)
-  const durableEventContentionRetries = Number(schedulerSnapshot?.event_writer?.contention_retries ?? 0)
   const waitingCount = schedulerSnapshot
     ? schedulerThreads.filter(item => item.phase === 'waiting').length
     : runningObjectives.filter(item => Boolean(item.wait_condition)).length
+  const composerThreads = schedulerThreads.filter(item => item.thread.session_id === selectedSessionId)
+  const composerActivations = composerThreads
+    .filter(item => item.phase !== 'idle' && item.thread.lifecycle === 'open')
+    .flatMap(item => item.activations)
+    .map(item => item.activation)
+    .filter(activation => activation.status === 'queued' || activation.status === 'running')
+  const composerJobs = actionableJobRows.filter(item => item.job.session_id === selectedSessionId)
+  const composerPendingApprovals = composerJobs
+    .flatMap(item => item.approval ? [item.approval] : [])
+    .filter(approval => approval.status === 'pending_human')
+  const composerDialogueCount = composerThreads.reduce((count, item) => {
+    if (item.phase === 'idle' || item.thread.lifecycle !== 'open' || item.thread.kind !== 'dialogue_turn') return count
+    return count + item.activations.filter(activation => (
+      activation.activation.status === 'queued' || activation.activation.status === 'running'
+    )).length
+  }, 0)
+  const composerExecutionCount = composerJobs.filter(item => (
+    item.job.status === 'queued'
+    || item.job.status === 'waiting_approval'
+    || item.job.status === 'running'
+  )).length
+  const composerWaitingCount = composerThreads.filter(item => item.phase === 'waiting').length
+  const composerObjectives = activeObjectives.filter(objective => (
+    objective.coordinator_session_id === selectedSessionId
+    || objective.delivery_session_id === selectedSessionId
+  ))
+  const composerRunningObjectives = composerObjectives.filter(item => item.status === 'active')
+  const composerBlockedObjectives = composerObjectives.filter(item => item.status === 'blocked')
+  const composerPausedObjectives = composerObjectives.filter(item => item.status === 'paused')
+  const composerWaitingUserObjectives = composerRunningObjectives
+    .filter(item => item.wait_condition?.kind === 'user_input')
+  const composerSchedules = composerThreads
+    .flatMap(item => item.schedules)
+    .filter(schedule => schedule.status === 'queued' || schedule.status === 'paused')
   const selectedFrame = contextView?.state.frames.find(frame => frame.id === selectedFrameId)
   const activePrincipalId = contextView?.active_principal_id
     ?? contextOverview?.sessions.find(session => session.session.id === selectedSessionId)?.principal_ids?.[0]
@@ -4152,7 +4431,7 @@ export default function App() {
     try {
       const context = await DASHBOARD_API.command<ContextRecord>('/api/contexts', 'POST', {
         agent_id: agentId,
-        title: t('header.newContextTitle', { count: visibleContexts.length + 1 }),
+        title: t('header.newContextTitle', { count: visibleContextCount + 1 }),
       })
       setContexts(current => [...current.filter(item => item.id !== context.id), context])
       activateContext(context)
@@ -4164,7 +4443,7 @@ export default function App() {
     } finally {
       setCreatingContext(false)
     }
-  }, [activateContext, agents, creatingContext, selectedAgentId, status?.agent_id, t, visibleContexts.length])
+  }, [activateContext, agents, creatingContext, selectedAgentId, status?.agent_id, t, visibleContextCount])
 
   const createSession = useCallback(async (targetContext?: ContextRecord): Promise<SessionRecord | null> => {
     if (creatingSession) return null
@@ -4384,10 +4663,13 @@ export default function App() {
     setQuotes(prev => prev.map(q => q.id === quoteId ? { ...q, comment } : q))
   }, [])
 
-  const sendMessage = useCallback(async (draftMessage: string): Promise<boolean> => {
+  const sendMessage = useCallback(async (
+    draftMessage: string,
+    attachments: ComposerAttachment[],
+  ): Promise<boolean> => {
     const hasQuotes = quotes.length > 0
     const text = draftMessage.trim()
-    if (!text && !hasQuotes) return false
+    if (!text && !hasQuotes && attachments.length === 0) return false
     if (sending) return false
     const composedText = hasQuotes
       ? quotes.map((q, i) => {
@@ -4417,6 +4699,11 @@ export default function App() {
         {
           text: composedText,
           client_message_id: `dashboard-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          attachments: attachments.map(attachment => ({
+            name: attachment.name,
+            media_type: attachment.mediaType,
+            data_base64: attachment.dataBase64,
+          })),
         },
       )
       setPendingTurn(current => current?.startedAt === startedAt
@@ -4504,6 +4791,40 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
       setChangingReasoning(false)
+    }
+  }
+
+  const changeModel = async (model: string) => {
+    if (changingModel || !model || model === status?.model) return
+    setChangingModel(true)
+    try {
+      const inference = await DASHBOARD_API.command<{
+        model: string
+        models: string[]
+        reasoning_effort?: ReasoningEffortSetting | null
+      }>(
+        '/api/runtime/inference',
+        'PUT',
+        {
+          model,
+          // Preserve the current inference profile while changing only the
+          // model. The backend deliberately applies both fields atomically.
+          reasoning_effort: status?.reasoning_effort ?? null,
+        },
+      )
+      setStatus(current => current
+        ? {
+            ...current,
+            model: inference.model,
+            models: inference.models,
+            reasoning_effort: inference.reasoning_effort,
+          }
+        : current)
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setChangingModel(false)
     }
   }
 
@@ -4818,11 +5139,11 @@ export default function App() {
     }
   }
 
-  const leadingActivation = runningActivations[0]
+  const leadingActivation = composerActivations[0]
   const activationSummary = leadingActivation
     ? summarizeActivation(leadingActivation, sessionEvents, toolTimeline, t).title
     : ''
-  const primaryJob = actionableJobRows.find(item => (
+  const primaryJob = composerJobs.find(item => (
     item.job.status === 'running'
     || item.job.status === 'queued'
     || item.job.status === 'waiting_approval'
@@ -4830,15 +5151,18 @@ export default function App() {
   const primaryJobSummary = primaryJob
     ? summarizeToolCall(primaryJob.job.tool_name, JSON.stringify(primaryJob.job.request), t)
     : undefined
-  const failedDelivery = schedulerThreads.find(item => (
+  const failedDelivery = composerThreads.find(item => (
     item.thread.lifecycle === 'completed'
     && item.thread.delivery_status !== 'none'
     && item.thread.delivery_status !== 'delivered'
   ))
-  const taskStrip = pendingApprovals[0]
-    ? { state: 'waiting', label: t('composer.status.approvalRequired'), summary: pendingApprovals[0].justification }
-    : waitingUserObjectives[0]
-      ? { state: 'waiting', label: t('composer.status.userInputRequired'), summary: waitingUserObjectives[0].stated_objective }
+  const composerRunningDelegations = runningDelegations.filter(item => (
+    item.parent_session_id === selectedSessionId || item.child_session_id === selectedSessionId
+  ))
+  const taskStrip = composerPendingApprovals[0]
+    ? { state: 'waiting', label: t('composer.status.approvalRequired'), summary: composerPendingApprovals[0].justification }
+    : composerWaitingUserObjectives[0]
+      ? { state: 'waiting', label: t('composer.status.userInputRequired'), summary: composerWaitingUserObjectives[0].stated_objective }
     : failedDelivery
       ? { state: 'blocked', label: t('composer.status.deliveryFailed'), summary: failedDelivery.thread.result_text ?? failedDelivery.thread.id }
       : primaryJob
@@ -4853,27 +5177,16 @@ export default function App() {
               : t('composer.status.executing'),
             summary: primaryJobSummary ? `${primaryJobSummary.title} · ${primaryJobSummary.target}` : primaryJob.job.tool_name,
           }
-        : durableEventQueueDepth > 0
-            ? {
-                state: 'waiting',
-                label: t('composer.status.persistingEvents'),
-                summary: t('composer.status.eventWriterQueue', {
-                  count: durableEventQueueDepth,
-                  retries: durableEventContentionRetries,
-                }),
-              }
-          : schedulerSnapshot && schedulerSnapshot.admission.context_deferred > 0
-            ? { state: 'waiting', label: t('composer.status.backpressure'), summary: t('composer.status.deferredCount', { count: schedulerSnapshot.admission.context_deferred }) }
-          : runningDelegations[0]
-        ? { state: 'running', label: t('composer.status.delegating'), summary: runningDelegations[0].task }
-        : waitingCount > 0
-          ? { state: 'waiting', label: t('composer.status.running'), summary: schedules[0]?.intent ?? runningObjectives.find(item => item.wait_condition)?.stated_objective ?? t('composer.status.waitingEvent') }
-          : blockedObjectives[0]
-            ? { state: 'blocked', label: t('composer.status.blocked'), summary: blockedObjectives[0].stated_objective }
-            : pausedObjectives[0]
-              ? { state: 'paused', label: t('composer.status.paused'), summary: pausedObjectives[0].stated_objective }
-              : runningObjectives[0]
-                ? { state: 'active', label: t('composer.status.active'), summary: runningObjectives[0].stated_objective }
+        : composerRunningDelegations[0]
+        ? { state: 'running', label: t('composer.status.delegating'), summary: composerRunningDelegations[0].task }
+        : composerWaitingCount > 0
+          ? { state: 'waiting', label: t('composer.status.running'), summary: composerSchedules[0]?.intent ?? composerRunningObjectives.find(item => item.wait_condition)?.stated_objective ?? t('composer.status.waitingEvent') }
+          : composerBlockedObjectives[0]
+            ? { state: 'blocked', label: t('composer.status.blocked'), summary: composerBlockedObjectives[0].stated_objective }
+            : composerPausedObjectives[0]
+              ? { state: 'paused', label: t('composer.status.paused'), summary: composerPausedObjectives[0].stated_objective }
+              : composerRunningObjectives[0]
+                ? { state: 'active', label: t('composer.status.active'), summary: composerRunningObjectives[0].stated_objective }
                 : leadingActivation
                   ? {
                       state: 'running',
@@ -4929,6 +5242,7 @@ export default function App() {
   const renderDialogueActivityDock = () => (
     <DialogueActivityDock
       open={dialogueActivityOpen}
+      visible={dialogueActivityVisible}
       objectives={dialogueActivityObjectives}
       threads={dialogueActivityThreads}
       historyThreads={dialogueActivityHistoryThreads}
@@ -4952,6 +5266,7 @@ export default function App() {
       mutatingThreadId={mutatingThreadId}
       t={t}
       onOpenChange={setDialogueActivityOpen}
+      onVisibleChange={setDialogueActivityVisible}
       onThreadToggle={threadId => {
         setExpandedDialogueThreadId(current => current === threadId ? '' : threadId)
         setDialogueThreadDetail(null)
@@ -4968,8 +5283,40 @@ export default function App() {
       onEditObjective={objective => void editObjective(objective)}
       onDeleteObjective={objective => void deleteObjective(objective)}
       onThreadControl={(thread, action) => void controlThread(thread, action)}
+      onOpenDelegationContext={delegation => {
+        const childSession = sessions.find(session => session.id === delegation.child_session_id)
+        if (childSession) {
+          chooseSession(childSession)
+          return
+        }
+        const childContext = contexts.find(context => context.id === delegation.child_context_id)
+        if (childContext) {
+          activateContext(childContext)
+          return
+        }
+        setError(t('errors.delegationContextUnavailable'))
+      }}
     />
   )
+
+  const renderContextCatalogOption = (context: ContextRecord) => {
+    const isRootContext = selectedAgent?.root_context_id === context.id
+    const isMutating = catalogMutationKey.startsWith(`context:${context.id}:`)
+    return (
+      <div className={`catalog-option ${context.id === selectedContextId ? 'is-current' : ''}`} key={context.id}>
+        <button className="catalog-option-main" disabled={isMutating} type="button" onClick={() => activateContext(context)}>
+          <i className={`presence ${context.status}`} />
+          <span><strong>{context.title}</strong><small>{shortId(context.id, 25)}</small></span>
+          <em>{context.id === selectedContextId ? t('header.active').toUpperCase() : ''}</em>
+        </button>
+        <div className="catalog-option-actions">
+          <button type="button" title={t('header.inspectContext')} aria-label={t('header.inspectNamedContext', { title: context.title })} onClick={() => activateContext(context, 'cognition')}><Eye size={13} /></button>
+          <button disabled={isMutating} type="button" title={t('header.renameContext')} aria-label={t('header.renameNamedContext', { title: context.title })} onClick={() => void renameContext(context)}><Pencil size={13} /></button>
+          <button disabled={isMutating || isRootContext} type="button" title={isRootContext ? t('header.rootContextCannotArchive') : t('header.archiveContext')} aria-label={t('header.archiveNamedContext', { title: context.title })} onClick={() => void archiveContext(context)}><Archive size={13} /></button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <main className="page-shell" data-accent={accentTheme} data-color-mode={resolvedAppearanceMode}>
@@ -4997,22 +5344,23 @@ export default function App() {
                     </button>
                   </header>
                   <div className="session-options">
-                    {visibleContexts.map(context => {
-                      const isRootContext = selectedAgent?.root_context_id === context.id
-                      const isMutating = catalogMutationKey.startsWith(`context:${context.id}:`)
-                      return <div className={`catalog-option ${context.id === selectedContextId ? 'is-current' : ''}`} key={context.id}>
-                        <button className="catalog-option-main" disabled={isMutating} type="button" onClick={() => activateContext(context)}>
-                          <i className={`presence ${context.status}`} />
-                          <span><strong>{context.title}</strong><small>{shortId(context.id, 25)}</small></span>
-                          <em>{context.id === selectedContextId ? t('header.active').toUpperCase() : ''}</em>
-                        </button>
-                        <div className="catalog-option-actions">
-                          <button type="button" title={t('header.inspectContext')} aria-label={t('header.inspectNamedContext', { title: context.title })} onClick={() => activateContext(context, 'cognition')}><Eye size={13} /></button>
-                          <button disabled={isMutating} type="button" title={t('header.renameContext')} aria-label={t('header.renameNamedContext', { title: context.title })} onClick={() => void renameContext(context)}><Pencil size={13} /></button>
-                          <button disabled={isMutating || isRootContext} type="button" title={isRootContext ? t('header.rootContextCannotArchive') : t('header.archiveContext')} aria-label={t('header.archiveNamedContext', { title: context.title })} onClick={() => void archiveContext(context)}><Archive size={13} /></button>
+                    {userVisibleContexts.map(renderContextCatalogOption)}
+                    {agentVisibleContexts.length > 0 && (
+                      <details
+                        className="catalog-context-group"
+                        open={agentContextsOpen}
+                        onToggle={event => setAgentContextsOpen(event.currentTarget.open)}
+                      >
+                        <summary>
+                          <span><GitBranch size={12} />{t('header.agentContexts')}</span>
+                          <b>{agentVisibleContexts.length}</b>
+                          <ChevronDown size={12} />
+                        </summary>
+                        <div className="catalog-context-group-list">
+                          {agentVisibleContexts.map(renderContextCatalogOption)}
                         </div>
-                      </div>
-                    })}
+                      </details>
+                    )}
                     {visibleContexts.length === 0 && <div className="catalog-empty">{t('header.noVisibleContexts')}</div>}
                   </div>
                 </div>
@@ -5087,6 +5435,19 @@ export default function App() {
                 </div>
               )}
             </div>
+            <label className="model-control" title={t('model.selectorTitle')}>
+              <span>{t('model.selector').toUpperCase()}</span>
+              <select
+                aria-label={t('model.selector')}
+                disabled={changingModel || !status?.models?.length}
+                value={status?.model ?? ''}
+                onChange={event => void changeModel(event.target.value)}
+              >
+                {(status?.models ?? (status?.model ? [status.model] : [])).map(model => (
+                  <option key={model} value={model}>{model}</option>
+                ))}
+              </select>
+            </label>
             <label className="reasoning-control" title={t('reasoning.title')}>
               <span>{t('reasoning.label').toUpperCase()}</span>
               <select
@@ -5493,7 +5854,12 @@ export default function App() {
                         {assistantText && (
                           <div className="message-body"><MarkdownBody text={assistantText} /></div>
                         )}
-                        <ExecutionToolCalls calls={eventToolCalls} targetNames={executionTargetNames} t={t} />
+                        <ExecutionToolCalls calls={eventToolCalls} targetNames={executionTargetNames} locale={i18n.language} t={t} />
+                        <div className="message-meta execution-output-meta">
+                          <time className="message-time" title={new Date(event.timestamp).toLocaleString(i18n.language)}>
+                            {formatTime(event.timestamp, i18n.language)}
+                          </time>
+                        </div>
                       </article>
                     )
                   }
@@ -5531,8 +5897,9 @@ export default function App() {
                       <div className="message-body">
                         {typeof event.payload.text === 'string' && event.payload.text.trim()
                           ? <MarkdownBody text={event.payload.text} />
-                          : t('conversation.noText')}
+                          : event.payload.attachments?.length ? null : t('conversation.noText')}
                       </div>
+                      <MessageAttachments attachments={event.payload.attachments} />
                       {retryableTurn && (
                         <div className="message-retry-panel">
                           <span>
@@ -5742,7 +6109,12 @@ export default function App() {
                               {assistantText && (
                                 <div className="message-body"><MarkdownBody text={assistantText} /></div>
                               )}
-                              <ExecutionToolCalls calls={eventToolCalls} targetNames={executionTargetNames} t={t} />
+                              <ExecutionToolCalls calls={eventToolCalls} targetNames={executionTargetNames} locale={i18n.language} t={t} />
+                              <div className="message-meta execution-output-meta">
+                                <time className="message-time" title={new Date(event.timestamp).toLocaleString(i18n.language)}>
+                                  {formatTime(event.timestamp, i18n.language)}
+                                </time>
+                              </div>
                               {!persistedReasoningSummary && !assistantText && eventToolCalls.length === 0 && (
                                 <div className="message-body">{t('conversation.noText')}</div>
                               )}
@@ -6432,35 +6804,35 @@ export default function App() {
         </div>
 
         <footer className="composer-area">
-          <div className={`composer-status ${pendingApprovals.length > 0 ? 'has-approval' : ''}`}>
+          <div className={`composer-status ${composerPendingApprovals.length > 0 ? 'has-approval' : ''}`}>
             <button className={`composer-task-status ${taskStrip.state}`} type="button" onClick={() => setView(current => current === 'scheduler' ? 'dialogue' : 'scheduler')} title={t('nav.toggleTasks')}>
-              <i className={activeWorkCount || turnPending ? 'busy' : taskStrip.state} />
+              <i className={composerActivations.length || turnPending ? 'busy' : taskStrip.state} />
               <strong>{turnPending ? turnStatus : taskStrip.label}</strong>
               {!turnPending && <span>{taskStrip.summary}</span>}
               <em>{t('composer.status.summary', {
-                dialogue: activeDialogueCount,
-                executing: activeExecutionCount,
-                waiting: waitingCount,
+                dialogue: composerDialogueCount,
+                executing: composerExecutionCount,
+                waiting: composerWaitingCount,
               })}</em>
             </button>
-            {pendingApprovals[0] && (
+            {composerPendingApprovals[0] && (
               <div className="composer-approval-actions" aria-label={t('work.approvals.quickActions')}>
                 <button
                   className="allow"
                   disabled={Boolean(decidingApprovalId)}
                   type="button"
-                  onClick={() => void decideApproval(pendingApprovals[0], 'allow_once')}
+                  onClick={() => void decideApproval(composerPendingApprovals[0], 'allow_once')}
                 >
                   <Check size={12} /> {t('work.approvals.allowOnce')}
                 </button>
                 <button type="button" onClick={() => setView('scheduler')}>
-                  {t('work.approvals.viewAll', { count: pendingApprovals.length })}
+                  {t('work.approvals.viewAll', { count: composerPendingApprovals.length })}
                 </button>
                 <button
                   className="deny"
                   disabled={Boolean(decidingApprovalId)}
                   type="button"
-                  onClick={() => void decideApproval(pendingApprovals[0], 'deny')}
+                  onClick={() => void decideApproval(composerPendingApprovals[0], 'deny')}
                 >
                   <Square size={11} /> {t('work.approvals.deny')}
                 </button>
@@ -6508,6 +6880,7 @@ export default function App() {
             onUpdateQuoteComment={updateQuoteComment}
             onSend={sendMessage}
             onCancel={cancelCurrentSession}
+            onError={setError}
           />
           <div className="shortcut-row"><span>{t('composer.shortcuts.send')}</span><span>{t('composer.shortcuts.newline')}</span><span>{t('composer.shortcuts.tasks')}</span><span>{t('composer.shortcuts.mind')}</span><span>{t('composer.shortcuts.back')}</span></div>
           {error && (

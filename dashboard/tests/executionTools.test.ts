@@ -66,6 +66,69 @@ test('a selected call remains running until its Tool Output arrives', () => {
   }])[0]?.status, 'running')
 })
 
+test('domain-specific Runtime Tool Outputs terminate the selected call', () => {
+  const timeline = buildToolTimeline([{
+    timestamp: '2026-07-28T02:35:10Z',
+    type: 'assistant_call',
+    topic: 'runtime/tool_calls_selected',
+    payload: {
+      calls: [{
+        id: 'call-transfer',
+        name: 'transfer',
+        arguments: '{"source":{"path":"build.zip"},"destination":{"target_id":"target-server","path":"/tmp/build.zip"}}',
+      }],
+    },
+  }, {
+    timestamp: '2026-07-28T02:35:12Z',
+    type: 'tool_output',
+    topic: 'runtime/artifact_transfer_completed',
+    payload: {
+      tool_call_id: 'call-transfer',
+      tool_name: 'transfer',
+      tool_status: 'success',
+      text: 'transfer completed',
+    },
+  }])
+
+  assert.equal(timeline[0]?.status, 'success')
+  assert.equal(timeline[0]?.result, 'transfer completed')
+})
+
+test('persisted continuation calls recover a completed list_skills result', () => {
+  const timeline = buildToolTimeline([{
+    timestamp: '2026-07-28T02:35:10Z',
+    type: 'assistant_call',
+    topic: 'chat/assistant_call',
+    payload: {
+      continuation_tool_calls: [{
+        id: 'call-list-skills',
+        type: 'function',
+        function: { name: 'list_skills', arguments: '{}' },
+      }],
+    },
+  }, {
+    timestamp: '2026-07-28T02:35:11Z',
+    type: 'tool_output',
+    topic: 'chat/tool_output',
+    payload: {
+      tool_call_id: 'call-list-skills',
+      tool_name: 'list_skills',
+      tool_status: 'success',
+      text: 'agent-reach\nsmart-search',
+    },
+  }])
+
+  assert.deepEqual(timeline.map(call => ({
+    name: call.name,
+    status: call.status,
+    result: call.result,
+  })), [{
+    name: 'list_skills',
+    status: 'success',
+    result: 'agent-reach\nsmart-search',
+  }])
+})
+
 test('remote target identities are projected without labelling the local target', () => {
   assert.deepEqual(executionTargetIds('{"path":"src/lib.rs","target":"target-server"}'), ['target-server'])
   assert.deepEqual(executionTargetIds('{"path":"src/lib.rs","target":"target-default"}'), [])

@@ -2,10 +2,11 @@ use crate::config::{
     AppConfig, CredentialConfig, CredentialSource, LlmConfig, ModelProtocol, ProviderConfig,
 };
 use crate::llm::{
-    Client, Message, ModelFailure, ModelFailureKind, ModelStreamEvent, ModelStreamSender,
-    ModelUsage, PromptTokenAccuracy, PromptTokenCount, ReasoningEffort, Response, ToolCallRepr,
-    ToolDefinition,
+    model_attachments, Client, Message, ModelAttachment, ModelFailure, ModelFailureKind,
+    ModelStreamEvent, ModelStreamSender, ModelUsage, PromptTokenAccuracy, PromptTokenCount,
+    ReasoningEffort, Response, ToolCallRepr, ToolDefinition,
 };
+use base64::Engine;
 use futures_util::StreamExt;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
 use serde_json::{json, Value};
@@ -177,7 +178,7 @@ pub struct ProtocolClient {
     http: reqwest::Client,
     protocol: ModelProtocol,
     base_url: String,
-    model: String,
+    model: RwLock<String>,
     credential: Option<String>,
     headers: HeaderMap,
     max_retries: u32,
@@ -312,7 +313,7 @@ impl ProtocolClient {
             http,
             protocol: provider.protocol,
             base_url: provider.base_url.trim_end_matches('/').to_string(),
-            model,
+            model: RwLock::new(model),
             credential,
             headers,
             max_retries: llm.max_retries.max(1),
@@ -325,11 +326,14 @@ impl ProtocolClient {
         })
     }
 
-    fn endpoint(&self) -> Result<String, ProviderError> {
-        self.endpoint_for(false)
+    fn model_snapshot(&self) -> String {
+        self.model
+            .read()
+            .map(|model| model.clone())
+            .unwrap_or_default()
     }
 
-    fn endpoint_for(&self, streaming: bool) -> Result<String, ProviderError> {
+    fn endpoint_for(&self, streaming: bool, model: &str) -> Result<String, ProviderError> {
         let endpoint = match self.protocol {
             ModelProtocol::OpenaiResponses => format!("{}/responses", self.base_url),
             ModelProtocol::OpenaiChat => format!("{}/chat/completions", self.base_url),
@@ -344,7 +348,7 @@ impl ProtocolClient {
                 url.path_segments_mut()
                     .map_err(|_| "Gemini Provider base_url 不能作为分层 URL")?
                     .push("models")
-                    .push(&format!("{}:{method}", self.model));
+                    .push(&format!("{model}:{method}"));
                 if streaming {
                     url.query_pairs_mut().append_pair("alt", "sse");
                 }
@@ -354,10 +358,15 @@ impl ProtocolClient {
         Ok(endpoint)
     }
 
-    fn request(&self, messages: &[Message], tools: &[ToolDefinition]) -> Value {
+    fn request_for_model(
+        &self,
+        model: &str,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Value {
         build_request(
             self.protocol,
-            &self.model,
+            model,
             self.max_output_tokens,
             self.reasoning_effort
                 .read()
@@ -386,8 +395,8 @@ impl ProtocolClient {
         request
     }
 
-    async fn send(&self, body: &Value) -> Result<Value, ProviderError> {
-        let endpoint = self.endpoint()?;
+    async fn send(&self, model: &str, body: &Value) -> Result<Value, ProviderError> {
+        let endpoint = self.endpoint_for(false, model)?;
         let mut attempt = 0;
         let mut backoff = Duration::from_secs(self.initial_backoff_secs);
         loop {
@@ -480,11 +489,12 @@ impl ProtocolClient {
 
     async fn send_stream(
         &self,
+        model: &str,
         body: &Value,
         measurement: Option<&PromptTokenCount>,
         stream: &ModelStreamSender,
     ) -> Result<Response, ProviderError> {
-        let endpoint = self.endpoint_for(true)?;
+        let endpoint = self.endpoint_for(true, model)?;
         let mut streaming_body = body.clone();
         if self.protocol != ModelProtocol::GeminiContent {
             streaming_body["stream"] = Value::Bool(true);
@@ -636,13 +646,14 @@ impl ProtocolClient {
         let response = accumulator.finish(stream)?;
         if let (Some(measurement), Some(actual_prompt_tokens)) = (measurement, actual_prompt_tokens)
         {
-            self.observe_completion_usage(body, measurement, actual_prompt_tokens);
+            self.observe_completion_usage(model, body, measurement, actual_prompt_tokens);
         }
         Ok(response)
     }
 
     fn observe_completion_usage(
         &self,
+        model: &str,
         body: &Value,
         measurement: &PromptTokenCount,
         actual_prompt_tokens: u64,
@@ -652,7 +663,7 @@ impl ProtocolClient {
         else {
             return;
         };
-        let actual_shape = prompt_calibration_shape(self.protocol, &self.model, body);
+        let actual_shape = prompt_calibration_shape(self.protocol, model, body);
         if measurement.accuracy == PromptTokenAccuracy::Exact || calibration_shape != actual_shape {
             return;
         }
@@ -670,7 +681,7 @@ impl ProtocolClient {
         }
         tracing::info!(
             protocol = self.protocol.as_str(),
-            model = %self.model,
+            model,
             predicted_prompt_tokens = measurement.tokens,
             actual_prompt_tokens,
             base_estimate_tokens,
@@ -838,16 +849,33 @@ pub async fn probe_provider(
 #[async_trait::async_trait]
 impl Client for ProtocolClient {
     fn provider_resource_key(&self) -> String {
+        let model = self.model_snapshot();
         format!(
             "model-provider:{}:{}:{}",
             self.protocol.as_str(),
             self.base_url,
-            self.model
+            model
         )
     }
 
     fn supports_async_cancellation(&self) -> bool {
         true
+    }
+
+    fn model(&self) -> Option<String> {
+        Some(self.model_snapshot())
+    }
+
+    fn set_model(&self, model: &str) -> Result<(), String> {
+        let model = model.trim();
+        if model.is_empty() {
+            return Err("模型名称不能为空".to_string());
+        }
+        *self
+            .model
+            .write()
+            .map_err(|_| "模型配置锁已损坏".to_string())? = model.to_string();
+        Ok(())
     }
 
     fn reasoning_effort(&self) -> Option<ReasoningEffort> {
@@ -871,9 +899,10 @@ impl Client for ProtocolClient {
         messages: &[Message],
         tools: &[ToolDefinition],
     ) -> Result<Option<PromptTokenCount>, ProviderError> {
-        let body = self.request(messages, tools);
+        let model = self.model_snapshot();
+        let body = self.request_for_model(&model, messages, tools);
         let base_estimate_tokens = serialized_request_token_estimate(&body);
-        let calibration_shape = prompt_calibration_shape(self.protocol, &self.model, &body);
+        let calibration_shape = prompt_calibration_shape(self.protocol, &model, &body);
         let calibration_key = prompt_calibration_key(scope, calibration_shape);
         let anchor = self
             .usage_anchors
@@ -901,7 +930,7 @@ impl Client for ProtocolClient {
         Ok(Some(PromptTokenCount {
             tokens,
             source,
-            model: self.model.clone(),
+            model,
             accuracy,
             base_estimate_tokens,
             calibration_key: Some(calibration_key),
@@ -914,7 +943,9 @@ impl Client for ProtocolClient {
         messages: Vec<Message>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Response, ProviderError> {
-        let response = self.send(&self.request(&messages, &tools)).await?;
+        let model = self.model_snapshot();
+        let request = self.request_for_model(&model, &messages, &tools);
+        let response = self.send(&model, &request).await?;
         parse_response(self.protocol, response)
     }
 
@@ -926,12 +957,10 @@ impl Client for ProtocolClient {
         stream: ModelStreamSender,
     ) -> Result<Response, ProviderError> {
         let _ = stream.send(ModelStreamEvent::Started);
+        let model = self.model_snapshot();
+        let request = self.request_for_model(&model, &messages, &tools);
         match self
-            .send_stream(
-                &self.request(&messages, &tools),
-                measurement.as_ref(),
-                &stream,
-            )
+            .send_stream(&model, &request, measurement.as_ref(), &stream)
             .await
         {
             Ok(response) => {
@@ -949,6 +978,7 @@ impl Client for ProtocolClient {
 
     async fn probe_health(&self) -> Result<(), ProviderError> {
         const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
+        let model = self.model_snapshot();
         let messages = [Message {
             role: "user".to_string(),
             content: "Reply with the plain text MORPHZ_OK.".to_string(),
@@ -959,8 +989,8 @@ impl Client for ProtocolClient {
         // This request is intentionally independent from every Activation and
         // never carries Context, tools, configured long reasoning, or the
         // application's output budget.
-        let body = build_request(self.protocol, &self.model, Some(64), None, &messages, &[]);
-        let endpoint = self.endpoint()?;
+        let body = build_request(self.protocol, &model, Some(64), None, &messages, &[]);
+        let endpoint = self.endpoint_for(false, &model)?;
         let response = tokio::time::timeout(
             HEALTH_PROBE_TIMEOUT,
             self.authorize(self.http.post(&endpoint)).json(&body).send(),
@@ -1644,7 +1674,20 @@ fn build_openai_chat_request(
     messages: &[Message],
     tools: &[ToolDefinition],
 ) -> Value {
-    let mut request = json!({"model": model, "messages": messages});
+    let converted = messages
+        .iter()
+        .map(|message| {
+            let Some(attachments) = model_attachments(message) else {
+                return serde_json::to_value(message).unwrap_or_else(|_| json!({}));
+            };
+            let content = attachments
+                .iter()
+                .map(openai_chat_attachment_block)
+                .collect::<Vec<_>>();
+            json!({"role": "user", "content": content})
+        })
+        .collect::<Vec<_>>();
+    let mut request = json!({"model": model, "messages": converted});
     if let Some(max_tokens) = max_output_tokens {
         request["max_completion_tokens"] = json!(max_tokens);
     }
@@ -1680,6 +1723,13 @@ fn build_openai_responses_request(
 ) -> Value {
     let mut input = Vec::new();
     for message in messages {
+        if let Some(attachments) = model_attachments(message) {
+            input.push(json!({
+                "role": "user",
+                "content": attachments.iter().map(openai_responses_attachment_block).collect::<Vec<_>>(),
+            }));
+            continue;
+        }
         if message.role == "tool" {
             input.push(json!({
                 "type": "function_call_output",
@@ -1735,12 +1785,22 @@ fn build_anthropic_request(
 ) -> Value {
     let system = messages
         .iter()
-        .filter(|message| message.role == "system")
+        .filter(|message| message.role == "system" && model_attachments(message).is_none())
         .map(|message| message.content.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
     let mut converted: Vec<Value> = Vec::new();
     for message in messages.iter().filter(|message| message.role != "system") {
+        if let Some(attachments) = model_attachments(message) {
+            let content = attachments
+                .iter()
+                .map(anthropic_attachment_block)
+                .collect::<Vec<_>>();
+            if !content.is_empty() {
+                converted.push(json!({"role": "user", "content": content}));
+            }
+            continue;
+        }
         let (role, mut content) = if message.role == "tool" {
             (
                 "user",
@@ -1821,12 +1881,29 @@ fn build_gemini_request(
 ) -> Value {
     let system = messages
         .iter()
-        .filter(|message| message.role == "system")
+        .filter(|message| message.role == "system" && model_attachments(message).is_none())
         .map(|message| message.content.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
     let mut contents: Vec<Value> = Vec::new();
     for message in messages.iter().filter(|message| message.role != "system") {
+        if let Some(attachments) = model_attachments(message) {
+            let parts = attachments
+                .iter()
+                .map(|attachment| {
+                    json!({
+                        "inlineData": {
+                            "mimeType": attachment.media_type,
+                            "data": attachment.data_base64,
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            if !parts.is_empty() {
+                contents.push(json!({"role": "user", "parts": parts}));
+            }
+            continue;
+        }
         let (role, mut parts) = if message.role == "tool" {
             let response = serde_json::from_str::<Value>(&message.content)
                 .unwrap_or_else(|_| json!({"output": message.content}));
@@ -1896,6 +1973,101 @@ fn build_gemini_request(
         }]);
     }
     request
+}
+
+fn data_url(attachment: &ModelAttachment) -> String {
+    format!(
+        "data:{};base64,{}",
+        attachment.media_type, attachment.data_base64
+    )
+}
+
+fn decoded_text_attachment(attachment: &ModelAttachment) -> Option<String> {
+    if !attachment.media_type.starts_with("text/")
+        && attachment.media_type != "application/json"
+        && attachment.media_type != "application/xml"
+    {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&attachment.data_base64)
+        .ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+fn openai_chat_attachment_block(attachment: &ModelAttachment) -> Value {
+    if attachment.media_type.starts_with("image/") {
+        return json!({
+            "type": "image_url",
+            "image_url": {"url": data_url(attachment), "detail": "auto"},
+        });
+    }
+    if let Some(text) = decoded_text_attachment(attachment) {
+        return json!({
+            "type": "text",
+            "text": format!("Attached file '{}':\n{}", attachment.name, text),
+        });
+    }
+    json!({
+        "type": "text",
+        "text": format!(
+            "Attached file '{}' ({}) is available to the Runtime, but this OpenAI Chat-compatible protocol cannot transmit arbitrary binary files.",
+            attachment.name, attachment.media_type
+        ),
+    })
+}
+
+fn openai_responses_attachment_block(attachment: &ModelAttachment) -> Value {
+    if attachment.media_type.starts_with("image/") {
+        json!({"type": "input_image", "image_url": data_url(attachment), "detail": "auto"})
+    } else if let Some(text) = decoded_text_attachment(attachment) {
+        json!({
+            "type": "input_text",
+            "text": format!("Attached file '{}':\n{}", attachment.name, text),
+        })
+    } else {
+        json!({
+            "type": "input_file",
+            "filename": attachment.name,
+            "file_data": data_url(attachment),
+        })
+    }
+}
+
+fn anthropic_attachment_block(attachment: &ModelAttachment) -> Value {
+    if attachment.media_type.starts_with("image/") {
+        json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": attachment.media_type,
+                "data": attachment.data_base64,
+            }
+        })
+    } else if attachment.media_type == "application/pdf" {
+        json!({
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": attachment.media_type,
+                "data": attachment.data_base64,
+            },
+            "title": attachment.name,
+        })
+    } else if let Some(text) = decoded_text_attachment(attachment) {
+        json!({
+            "type": "text",
+            "text": format!("Attached file '{}':\n{}", attachment.name, text),
+        })
+    } else {
+        json!({
+            "type": "text",
+            "text": format!(
+                "Attached file '{}' ({}) is not a natively supported Anthropic image/PDF/text input.",
+                attachment.name, attachment.media_type
+            ),
+        })
+    }
 }
 
 fn parse_response(protocol: ModelProtocol, value: Value) -> Result<Response, ProviderError> {
@@ -2151,7 +2323,7 @@ pub fn builtin_provider_catalog() -> BTreeMap<String, ProviderConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::llm::{FunctionCall, ToolCall};
+    use crate::llm::{attachment_message, FunctionCall, ToolCall};
     use axum::{
         body::Body,
         http::StatusCode,
@@ -2318,7 +2490,7 @@ mod tests {
         )
         .unwrap();
 
-        let error = client.send(&json!({})).await.unwrap_err();
+        let error = client.send("test-model", &json!({})).await.unwrap_err();
         let failure = error.downcast_ref::<ModelFailure>().unwrap();
         assert_eq!(failure.kind, ModelFailureKind::ContextLimit);
         assert_eq!(requests.load(Ordering::SeqCst), 1);
@@ -2365,7 +2537,7 @@ mod tests {
         )
         .unwrap();
 
-        let body = client.send(&json!({})).await.unwrap();
+        let body = client.send("test-model", &json!({})).await.unwrap();
         assert_eq!(
             body.pointer("/choices/0/message/content")
                 .and_then(Value::as_str),
@@ -2426,6 +2598,81 @@ mod tests {
         assert_eq!(
             gemini["contents"][1]["parts"][0]["functionResponse"]["name"],
             "read_file"
+        );
+    }
+
+    #[test]
+    fn protocol_requests_translate_image_attachments_to_native_multimodal_inputs() {
+        let attachment = ModelAttachment {
+            name: "diagram.png".to_string(),
+            media_type: "image/png".to_string(),
+            data_base64: "aW1hZ2U=".to_string(),
+        };
+        let messages = vec![
+            Message {
+                role: "user".to_string(),
+                content: "What is in this image?".to_string(),
+                name: None,
+                tool_call_id: None,
+                tool_calls: None,
+            },
+            attachment_message(vec![attachment]).expect("attachment marker must serialize"),
+        ];
+
+        let chat = build_request(ModelProtocol::OpenaiChat, "m", None, None, &messages, &[]);
+        assert_eq!(chat["messages"][1]["content"][0]["type"], "image_url");
+        assert_eq!(
+            chat["messages"][1]["content"][0]["image_url"]["url"],
+            "data:image/png;base64,aW1hZ2U="
+        );
+
+        let responses = build_request(
+            ModelProtocol::OpenaiResponses,
+            "m",
+            None,
+            None,
+            &messages,
+            &[],
+        );
+        assert_eq!(responses["input"][1]["content"][0]["type"], "input_image");
+        assert_eq!(
+            responses["input"][1]["content"][0]["image_url"],
+            "data:image/png;base64,aW1hZ2U="
+        );
+
+        let anthropic = build_request(
+            ModelProtocol::AnthropicMessages,
+            "m",
+            None,
+            None,
+            &messages,
+            &[],
+        );
+        assert_eq!(anthropic["messages"][1]["content"][0]["type"], "image");
+        assert_eq!(
+            anthropic["messages"][1]["content"][0]["source"]["media_type"],
+            "image/png"
+        );
+        assert_eq!(
+            anthropic["messages"][1]["content"][0]["source"]["data"],
+            "aW1hZ2U="
+        );
+
+        let gemini = build_request(
+            ModelProtocol::GeminiContent,
+            "m",
+            None,
+            None,
+            &messages,
+            &[],
+        );
+        assert_eq!(
+            gemini["contents"][1]["parts"][0]["inlineData"]["mimeType"],
+            "image/png"
+        );
+        assert_eq!(
+            gemini["contents"][1]["parts"][0]["inlineData"]["data"],
+            "aW1hZ2U="
         );
     }
 
@@ -2560,6 +2807,30 @@ mod tests {
         assert_eq!(selected.protocol, ModelProtocol::AnthropicMessages);
     }
 
+    #[test]
+    fn protocol_client_switches_models_without_rebuilding_the_provider() {
+        let client = ProtocolClient::new(
+            &ProviderConfig {
+                protocol: ModelProtocol::OpenaiResponses,
+                base_url: "http://127.0.0.1:1".to_string(),
+                ..ProviderConfig::default()
+            },
+            "model-a".to_string(),
+            None,
+            &LlmConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(Client::model(&client).as_deref(), Some("model-a"));
+        Client::set_model(&client, "model-b").unwrap();
+        assert_eq!(Client::model(&client).as_deref(), Some("model-b"));
+        let selected_model = Client::model(&client).unwrap();
+        assert_eq!(
+            client.request_for_model(&selected_model, &messages(), &[])["model"],
+            "model-b"
+        );
+    }
+
     #[tokio::test]
     async fn usage_calibration_is_isolated_by_scope_and_tool_shape() {
         let client = ProtocolClient::new(
@@ -2586,8 +2857,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let matching_body = client.request(&prompt, &[]);
-        client.observe_completion_usage(&matching_body, &first, 123);
+        let matching_body = client.request_for_model("test-model", &prompt, &[]);
+        client.observe_completion_usage("test-model", &matching_body, &first, 123);
 
         let calibrated = client
             .count_prompt_tokens("scope-a", &prompt, &[])
@@ -2615,7 +2886,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        client.observe_completion_usage(&matching_body, &tool_measurement, 999);
+        client.observe_completion_usage("test-model", &matching_body, &tool_measurement, 999);
         assert_eq!(
             client
                 .count_prompt_tokens("scope-a", &prompt, &tool_definitions)

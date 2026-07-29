@@ -94,11 +94,20 @@ impl std::error::Error for SdkError {}
 pub type SdkResult<T> = Result<T, SdkError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageAttachmentInput {
+    pub name: String,
+    pub media_type: String,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SendMessageCommand {
     pub session_id: String,
     pub text: String,
     pub actor: String,
     pub client_message_id: Option<String>,
+    #[serde(default)]
+    pub attachments: Vec<MessageAttachmentInput>,
     /// Optional exact Harness selection for this ordinary Evaluation. Omit to
     /// let the model either answer normally or discover/select one lazily.
     #[serde(default)]
@@ -124,8 +133,9 @@ pub struct SessionEventsQuery {
     /// Stable backward cursor over the immutable Event Ledger. Mutually
     /// exclusive with `after_sequence`.
     pub before_sequence: Option<u64>,
-    /// Restrict the page to Events rendered by the human-facing Dialogue
-    /// transcript. The limit then means "latest N messages", not "latest N
+    /// Restrict the page to Events required to reconstruct the human-facing
+    /// Dialogue presentation, including the durable tool-call lifecycle. The
+    /// limit then means "latest N presentation Events", not "latest N
     /// arbitrary Ledger Events".
     pub conversation_only: bool,
     pub limit: usize,
@@ -138,6 +148,14 @@ fn conversation_event_topics() -> &'static [&'static str] {
         "chat/outbound_message",
         "chat/progress",
         "chat/assistant_call",
+        // These Events are the durable fallback for the live WebSocket tool
+        // lifecycle. Omitting them makes a completed call remain "running"
+        // forever whenever the browser misses its live Tool Output.
+        "runtime/tool_calls_selected",
+        "chat/tool_output",
+        "runtime/artifact_transfer_completed",
+        "runtime/artifact_transfer_failed",
+        "runtime/artifact_transfer_cancelled",
         "chat/cancelled",
     ]
 }
@@ -1703,12 +1721,13 @@ impl MorphzSdk {
             .await?;
         self.runtime
             .session(command.session_id)
-            .send_as_principal_with_harness(
+            .send_as_principal_with_harness_and_attachments(
                 command.text,
                 command.actor,
                 principal.principal_id.clone(),
                 command.client_message_id,
                 command.harness,
+                command.attachments,
             )
             .await
             .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error.to_string()))

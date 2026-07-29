@@ -586,6 +586,25 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// Quotes a path for a remote POSIX shell while preserving the conventional
+/// current-user home shorthand. Artifact transfer commands do not run through
+/// an interactive shell, so quoting the whole `~/...` value would otherwise
+/// turn `~` into a literal directory name.
+fn shell_quote_remote_path(value: &str) -> String {
+    if value == "~" {
+        return "\"$HOME\"".to_string();
+    }
+    if let Some(relative) = value.strip_prefix("~/") {
+        if relative.is_empty() {
+            "\"$HOME\"".to_string()
+        } else {
+            format!("\"$HOME\"/{}", shell_quote(relative))
+        }
+    } else {
+        shell_quote(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetInvocation {
     pub target_id: String,
@@ -2435,7 +2454,7 @@ async fn download_managed_ssh_artifact(
     }
     let probe = format!(
         "if test -f {path}; then printf file; elif test -d {path}; then printf directory; else exit 44; fi",
-        path = shell_quote(remote_path)
+        path = shell_quote_remote_path(remote_path)
     );
     let probe_output = run_managed_ssh_output(endpoint, &probe).await?;
     if !probe_output.status.success() {
@@ -2452,11 +2471,14 @@ async fn download_managed_ssh_artifact(
     };
     let remote = match kind {
         StagedArtifactKind::File => {
-            format!("set -eu; cat -- {path}", path = shell_quote(remote_path))
+            format!(
+                "set -eu; cat -- {path}",
+                path = shell_quote_remote_path(remote_path)
+            )
         }
         StagedArtifactKind::DirectoryArchive => format!(
             "set -eu; command -v tar >/dev/null 2>&1; tar -C {path} -cf - .",
-            path = shell_quote(remote_path)
+            path = shell_quote_remote_path(remote_path)
         ),
     };
     let partial = spool.with_extension("partial");
@@ -3003,12 +3025,12 @@ async fn upload_managed_ssh_artifact(
         let probe = match kind {
             StagedArtifactKind::File => format!(
                 "if test -f {path}; then if command -v sha256sum >/dev/null 2>&1; then sha256sum -- {path}; else shasum -a 256 -- {path}; fi; elif test -e {path}; then printf wrong-type; fi",
-                path = shell_quote(remote_path)
+                path = shell_quote_remote_path(remote_path)
             ),
             StagedArtifactKind::DirectoryArchive => format!(
                 "if test -d {path}; then if test -f {marker}; then cat -- {marker}; else printf unknown-directory; fi; elif test -e {path}; then printf wrong-type; fi",
-                path = shell_quote(remote_path),
-                marker = shell_quote(&digest_marker)
+                path = shell_quote_remote_path(remote_path),
+                marker = shell_quote_remote_path(&digest_marker)
             ),
         };
         let output = run_managed_ssh_output(endpoint, &probe).await?;
@@ -3040,8 +3062,8 @@ async fn upload_managed_ssh_artifact(
     );
     let upload = format!(
         "set -eu; test -d {parent}; umask 077; trap 'rm -f -- {tmp}' EXIT HUP INT TERM; cat > {tmp}; trap - EXIT HUP INT TERM",
-        parent = shell_quote(parent),
-        tmp = shell_quote(&temporary),
+        parent = shell_quote_remote_path(parent),
+        tmp = shell_quote_remote_path(&temporary),
     );
     let mut command = managed_ssh_command(endpoint, &upload)?;
     command
@@ -3087,13 +3109,13 @@ async fn upload_managed_ssh_artifact(
     let publish = match (kind, overwrite) {
         (StagedArtifactKind::File, crate::artifact::ArtifactOverwritePolicy::Deny) => format!(
             "set -eu; ln -- {tmp} {dest}; rm -f -- {tmp}",
-            tmp = shell_quote(&temporary),
-            dest = shell_quote(remote_path)
+            tmp = shell_quote_remote_path(&temporary),
+            dest = shell_quote_remote_path(remote_path)
         ),
         (StagedArtifactKind::File, crate::artifact::ArtifactOverwritePolicy::Replace) => format!(
             "set -eu; mv -f -- {tmp} {dest}",
-            tmp = shell_quote(&temporary),
-            dest = shell_quote(remote_path)
+            tmp = shell_quote_remote_path(&temporary),
+            dest = shell_quote_remote_path(remote_path)
         ),
         (StagedArtifactKind::DirectoryArchive, overwrite) => {
             let temporary_tree = format!("{temporary}.tree");
@@ -3101,30 +3123,30 @@ async fn upload_managed_ssh_artifact(
             let backup = format!("{temporary}.backup");
             let prepublish = format!(
                 "command -v tar >/dev/null 2>&1; rm -rf -- {tree} {backup}; mkdir -- {tree}; tar -xf {tmp} -C {tree}; printf '%s\\n' {digest} > {marker_partial}",
-                tree = shell_quote(&temporary_tree),
-                backup = shell_quote(&backup),
-                tmp = shell_quote(&temporary),
+                tree = shell_quote_remote_path(&temporary_tree),
+                backup = shell_quote_remote_path(&backup),
+                tmp = shell_quote_remote_path(&temporary),
                 digest = shell_quote(logical_digest),
-                marker_partial = shell_quote(&marker_partial),
+                marker_partial = shell_quote_remote_path(&marker_partial),
             );
             match overwrite {
                 crate::artifact::ArtifactOverwritePolicy::Deny => format!(
                     "set -eu; test ! -e {dest}; {prepublish}; trap 'rm -rf -- {tree} {backup}; rm -f -- {tmp} {marker_partial}; if test ! -d {dest}; then rm -f -- {marker}; fi' EXIT HUP INT TERM; mv -- {marker_partial} {marker}; mv -- {tree} {dest}; rm -f -- {tmp}; trap - EXIT HUP INT TERM",
-                    dest = shell_quote(remote_path),
-                    tree = shell_quote(&temporary_tree),
-                    backup = shell_quote(&backup),
-                    tmp = shell_quote(&temporary),
-                    marker_partial = shell_quote(&marker_partial),
-                    marker = shell_quote(&digest_marker),
+                    dest = shell_quote_remote_path(remote_path),
+                    tree = shell_quote_remote_path(&temporary_tree),
+                    backup = shell_quote_remote_path(&backup),
+                    tmp = shell_quote_remote_path(&temporary),
+                    marker_partial = shell_quote_remote_path(&marker_partial),
+                    marker = shell_quote_remote_path(&digest_marker),
                 ),
                 crate::artifact::ArtifactOverwritePolicy::Replace => format!(
                     "set -eu; {prepublish}; trap 'rm -rf -- {tree}; rm -f -- {tmp} {marker_partial}; if test -e {backup} && test ! -e {dest}; then mv -- {backup} {dest}; fi' EXIT HUP INT TERM; if test -e {dest}; then mv -- {dest} {backup}; fi; mv -- {marker_partial} {marker}; mv -- {tree} {dest}; rm -rf -- {backup}; rm -f -- {tmp}; trap - EXIT HUP INT TERM",
-                    tree = shell_quote(&temporary_tree),
-                    tmp = shell_quote(&temporary),
-                    marker_partial = shell_quote(&marker_partial),
-                    backup = shell_quote(&backup),
-                    dest = shell_quote(remote_path),
-                    marker = shell_quote(&digest_marker),
+                    tree = shell_quote_remote_path(&temporary_tree),
+                    tmp = shell_quote_remote_path(&temporary),
+                    marker_partial = shell_quote_remote_path(&marker_partial),
+                    backup = shell_quote_remote_path(&backup),
+                    dest = shell_quote_remote_path(remote_path),
+                    marker = shell_quote_remote_path(&digest_marker),
                 ),
             }
         }
@@ -3178,7 +3200,7 @@ async fn remote_file_digest(
 ) -> Result<String, TargetExecutionError> {
     let command = format!(
         "set -eu; if command -v sha256sum >/dev/null 2>&1; then sha256sum -- {path}; elif command -v shasum >/dev/null 2>&1; then shasum -a 256 -- {path}; else exit 127; fi",
-        path = shell_quote(path)
+        path = shell_quote_remote_path(path)
     );
     let output = run_managed_ssh_output(endpoint, &command).await?;
     if !output.status.success() {
@@ -3618,7 +3640,7 @@ impl Drop for RemoteTransferStagingGuard {
             return;
         }
         let endpoint = self.endpoint.clone();
-        let command = format!("rm -f -- {}", shell_quote(&self.path));
+        let command = format!("rm -f -- {}", shell_quote_remote_path(&self.path));
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let _ = run_managed_ssh_output(&endpoint, &command).await;
@@ -4908,6 +4930,19 @@ mod tests {
     use super::*;
     use crate::memory::sqlite::SqliteStore;
     use crate::memory::{ExecutionJobStatus, ExecutionRetrySafety};
+
+    #[test]
+    fn managed_ssh_artifact_paths_expand_current_user_home_without_shell_injection() {
+        assert_eq!(shell_quote_remote_path("~"), "\"$HOME\"");
+        assert_eq!(
+            shell_quote_remote_path("~/Codes/miao-social/exports/recent 3d.pdf"),
+            "\"$HOME\"/'Codes/miao-social/exports/recent 3d.pdf'"
+        );
+        assert_eq!(
+            shell_quote_remote_path("/srv/data/recent 3d.pdf"),
+            "'/srv/data/recent 3d.pdf'"
+        );
+    }
 
     #[test]
     fn edge_route_carries_immutable_job_authority_scope() {

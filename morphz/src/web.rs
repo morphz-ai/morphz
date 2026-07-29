@@ -20,21 +20,22 @@ use crate::sdk::{
     AppendEdgeOutputCommand, AuthorizeExecutionTargetCommand, ClaimEdgeCommand,
     ConnectExecutionNodeCommand, CreateNodePairingCodeCommand, CreateObjectiveCommand,
     ExactHarnessRef, ExecutionJobQuery, ExecutionNodeHeartbeatCommand, FinishEdgeCommand,
-    HeartbeatEdgeCommand, MorphzSdk, PairExecutionNodeCommand, RetryDialogueTurnCommand,
-    RotateExecutionNodeKeyCommand, SdkError, SdkErrorCode, SendMessageCommand, SessionEventsQuery,
-    SubmitArtifactTransferCommand,
+    HeartbeatEdgeCommand, MessageAttachmentInput, MorphzSdk, PairExecutionNodeCommand,
+    RetryDialogueTurnCommand, RotateExecutionNodeKeyCommand, SdkError, SdkErrorCode,
+    SendMessageCommand, SessionEventsQuery, SubmitArtifactTransferCommand,
 };
 use axum::{
     body::Body,
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
-        Path, Query, State,
+        DefaultBodyLimit, Path, Query, State,
     },
     http::{header, HeaderMap, Method, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
     Json, Router,
 };
+use base64::Engine;
 use futures_util::StreamExt;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -68,7 +69,15 @@ struct AppState {
     runtime: MorphzRuntime,
     sdk: MorphzSdk,
     broadcast_tx: broadcast::Sender<Event>,
+    /// Privileged credential for the embedded Dashboard/operator surface.
+    ///
+    /// This credential never authorizes a gateway to assert an end-user
+    /// Principal. Keeping it separate from `gateway_token` prevents enabling
+    /// trusted-gateway mode from making the Dashboard unusable (or, worse,
+    /// turning the gateway service credential into an operator credential).
     auth_token: Option<String>,
+    /// Service credential accepted from a trusted identity gateway.
+    gateway_token: Option<String>,
     default_agent_id: String,
     default_context_id: String,
     identity: ServerIdentityConfig,
@@ -159,7 +168,16 @@ struct SendMessageRequest {
     text: String,
     client_message_id: Option<String>,
     #[serde(default)]
+    attachments: Vec<IncomingMessageAttachment>,
+    #[serde(default)]
     harness: Option<crate::harness::ExactHarnessRef>,
+}
+
+#[derive(serde::Deserialize)]
+struct IncomingMessageAttachment {
+    name: String,
+    media_type: String,
+    data_base64: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -193,6 +211,7 @@ struct MutateScheduleRequest {
 
 #[derive(serde::Deserialize)]
 struct UpdateInferenceRequest {
+    model: Option<String>,
     reasoning_effort: Option<String>,
 }
 
@@ -432,10 +451,12 @@ impl Server {
         &self,
         addr_str: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let auth_token = match self.identity.mode {
-            ServerIdentityMode::Default => std::env::var("MORPHZ_DASHBOARD_TOKEN")
-                .ok()
-                .filter(|token| !token.trim().is_empty()),
+        let dashboard_token = std::env::var("MORPHZ_DASHBOARD_TOKEN")
+            .ok()
+            .map(|token| token.trim().to_string())
+            .filter(|token| !token.is_empty());
+        let gateway_token = match self.identity.mode {
+            ServerIdentityMode::Default => None,
             ServerIdentityMode::TrustedGateway => {
                 if self.identity.provider_id.trim().is_empty() {
                     return Err("server.identity.provider_id 不能为空".into());
@@ -454,13 +475,30 @@ impl Server {
                 Some(token)
             }
         };
-        self.start_with_dashboard_token(addr_str, auth_token).await
+        if dashboard_token.is_some() && dashboard_token == gateway_token {
+            return Err(
+                "MORPHZ_DASHBOARD_TOKEN 不能与 trusted-gateway 服务令牌相同；管理面与用户身份网关必须使用独立凭证"
+                    .into(),
+            );
+        }
+        self.start_with_auth_tokens(addr_str, dashboard_token, gateway_token)
+            .await
     }
 
     pub async fn start_with_dashboard_token(
         &self,
         addr_str: &str,
         auth_token: Option<String>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.start_with_auth_tokens(addr_str, auth_token, None)
+            .await
+    }
+
+    async fn start_with_auth_tokens(
+        &self,
+        addr_str: &str,
+        auth_token: Option<String>,
+        gateway_token: Option<String>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let broadcast_tx_clone = self.broadcast_tx.clone();
         let runtime = self.runtime.clone();
@@ -532,6 +570,7 @@ impl Server {
             sdk,
             broadcast_tx: self.broadcast_tx.clone(),
             auth_token: auth_token.filter(|token| !token.trim().is_empty()),
+            gateway_token: gateway_token.filter(|token| !token.trim().is_empty()),
             default_agent_id: self.default_agent_id.clone(),
             default_context_id: self.default_context_id.clone(),
             identity: self.identity.clone(),
@@ -814,12 +853,13 @@ impl Server {
             .route("/api/schedules/:schedule_id", post(handle_mutate_schedule))
             .route("/ws", get(handle_ws_upgrade))
             .fallback(handle_dashboard_fallback)
+            .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
             .layer(CompressionLayer::new())
             .layer(cors)
             .with_state(Arc::clone(&state));
 
         let addr: SocketAddr = addr_str.parse()?;
-        if !addr.ip().is_loopback() && state.auth_token.is_none() {
+        if !addr.ip().is_loopback() && state.auth_token.is_none() && state.gateway_token.is_none() {
             return Err("非本机监听必须配置服务访问令牌，避免事件流和记忆图谱无认证暴露".into());
         }
         let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -1243,6 +1283,8 @@ async fn handle_get_inference(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     Json(json!({
+        "model": state.runtime.model(),
+        "models": state.runtime.configured_models(),
         "reasoning_effort": state.runtime.reasoning_effort().map(ReasoningEffort::as_str),
     }))
     .into_response()
@@ -1256,6 +1298,11 @@ async fn handle_update_inference(
 ) -> impl IntoResponse {
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if let Some(model) = request.model.as_deref() {
+        if let Err(error) = state.runtime.set_model(model) {
+            return error_response(StatusCode::BAD_REQUEST, error.to_string());
+        }
     }
     let effort = match request
         .reasoning_effort
@@ -1276,6 +1323,8 @@ async fn handle_update_inference(
     };
     match state.runtime.set_reasoning_effort(effort) {
         Ok(()) => Json(json!({
+            "model": state.runtime.model(),
+            "models": state.runtime.configured_models(),
             "reasoning_effort": effort.map(ReasoningEffort::as_str),
             "scope": "subsequent_requests",
             "persistent": false,
@@ -1360,6 +1409,25 @@ fn validate_identifier(kind: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validates an externally asserted Principal identifier.
+///
+/// A Principal ID is an opaque identifier owned by an Identity Provider, not
+/// a Morphz resource name. Provider-native values such as an email address,
+/// an IM address (`user@im.wechat`) or a namespaced subject must therefore not
+/// be forced through the narrow Session/Context identifier grammar.
+fn validate_principal_id(value: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > 512 {
+        return Err("principal_id 长度必须为 1..=512 字节".to_string());
+    }
+    if value.trim() != value {
+        return Err("principal_id 首尾不能包含空白字符".to_string());
+    }
+    if value.chars().any(|ch| ch.is_control()) {
+        return Err("principal_id 不能包含控制字符".to_string());
+    }
+    Ok(())
+}
+
 fn error_response(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
@@ -1390,6 +1458,12 @@ fn request_principal(
     headers: &HeaderMap,
     query_principal_id: Option<&str>,
 ) -> Result<PrincipalAssertion, SdkError> {
+    // Dashboard/operator authentication is independent from the trusted
+    // gateway. The operator surface uses the Runtime's administrative default
+    // identity unless it deliberately goes through a principal-scoped API.
+    if is_operator_authorized(state, headers, None) {
+        return Ok(state.sdk.default_principal());
+    }
     if state.identity.mode == ServerIdentityMode::Default {
         return Ok(state.sdk.default_principal());
     }
@@ -1411,17 +1485,13 @@ fn request_principal(
             ));
         }
     }
-    let principal_id = header_principal_id
-        .or(query_principal_id)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| {
-            SdkError::new(
-                SdkErrorCode::Unauthorized,
-                "trusted-gateway 请求缺少当前 Principal",
-            )
-        })?;
-    validate_identifier("principal_id", principal_id)
+    let principal_id = header_principal_id.or(query_principal_id).ok_or_else(|| {
+        SdkError::new(
+            SdkErrorCode::Unauthorized,
+            "trusted-gateway 请求缺少当前 Principal",
+        )
+    })?;
+    validate_principal_id(principal_id)
         .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error))?;
     let display_name = headers
         .get("x-morphz-principal-name")
@@ -3481,8 +3551,8 @@ async fn handle_send_message(
     if session.status == SessionStatus::Archived {
         return error_response(StatusCode::CONFLICT, "归档 Session 不能接收新消息");
     }
-    if request.text.trim().is_empty() {
-        return error_response(StatusCode::BAD_REQUEST, "消息正文不能为空");
+    if request.text.trim().is_empty() && request.attachments.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "消息正文和附件不能同时为空");
     }
     if request.text.chars().count() > 1_000_000 {
         return error_response(StatusCode::PAYLOAD_TOO_LARGE, "消息正文超过 1,000,000 字符");
@@ -3493,6 +3563,29 @@ async fn handle_send_message(
     if let Err(error) = validate_identifier("client_message_id", &client_message_id) {
         return error_response(StatusCode::BAD_REQUEST, error);
     }
+    let mut attachments = Vec::with_capacity(request.attachments.len());
+    for attachment in request.attachments {
+        let encoded = attachment
+            .data_base64
+            .split_once(',')
+            .filter(|(prefix, _)| prefix.starts_with("data:") && prefix.ends_with(";base64"))
+            .map(|(_, data)| data)
+            .unwrap_or(&attachment.data_base64);
+        let data = match base64::engine::general_purpose::STANDARD.decode(encoded) {
+            Ok(data) => data,
+            Err(_) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("附件 '{}' 不是有效的 base64 数据", attachment.name),
+                )
+            }
+        };
+        attachments.push(MessageAttachmentInput {
+            name: attachment.name,
+            media_type: attachment.media_type,
+            data,
+        });
+    }
     match state
         .sdk
         .send_message(
@@ -3502,6 +3595,7 @@ async fn handle_send_message(
                 text: request.text,
                 actor: "User-API".to_string(),
                 client_message_id: Some(client_message_id),
+                attachments,
                 harness: request.harness,
             },
         )
@@ -4165,18 +4259,22 @@ async fn handle_ws_upgrade(
         return StatusCode::UNAUTHORIZED.into_response();
     }
     if let Some(session_id) = query.session_id.as_deref() {
-        let principal = match request_principal(&state, &headers, query.principal_id.as_deref()) {
-            Ok(principal) => principal,
-            Err(error) => return sdk_error_response(error),
-        };
-        if let Err(error) = state
-            .sdk
-            .authorize_session(&principal.principal_id, session_id)
-            .await
-        {
-            return sdk_error_response(error);
+        if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+            let principal = match request_principal(&state, &headers, query.principal_id.as_deref())
+            {
+                Ok(principal) => principal,
+                Err(error) => return sdk_error_response(error),
+            };
+            if let Err(error) = state
+                .sdk
+                .authorize_session(&principal.principal_id, session_id)
+                .await
+            {
+                return sdk_error_response(error);
+            }
         }
     } else if state.identity.mode == ServerIdentityMode::TrustedGateway
+        && !is_operator_authorized(&state, &headers, query.token.as_deref())
         && query.principal_id.is_some()
     {
         return error_response(
@@ -4188,7 +4286,26 @@ async fn handle_ws_upgrade(
 }
 
 fn is_authorized(state: &AppState, headers: &HeaderMap, query_token: Option<&str>) -> bool {
-    token_is_authorized(state.auth_token.as_deref(), headers, query_token)
+    is_operator_authorized(state, headers, query_token)
+        || state
+            .gateway_token
+            .as_deref()
+            .is_some_and(|expected| token_is_authorized(Some(expected), headers, query_token))
+}
+
+fn is_operator_authorized(
+    state: &AppState,
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+) -> bool {
+    match state.auth_token.as_deref() {
+        Some(expected) => token_is_authorized(Some(expected), headers, query_token),
+        None => {
+            state.identity.mode == ServerIdentityMode::Default
+                && state.gateway_token.is_none()
+                && token_is_authorized(None, headers, query_token)
+        }
+    }
 }
 
 fn token_is_authorized(
@@ -4458,11 +4575,21 @@ mod tests {
 
     #[derive(Default)]
     struct ReplyClient {
+        model: std::sync::RwLock<Option<String>>,
         reasoning_effort: std::sync::RwLock<Option<ReasoningEffort>>,
     }
 
     #[async_trait::async_trait]
     impl Client for ReplyClient {
+        fn model(&self) -> Option<String> {
+            self.model.read().ok().and_then(|value| value.clone())
+        }
+
+        fn set_model(&self, model: &str) -> Result<(), String> {
+            *self.model.write().unwrap() = Some(model.to_string());
+            Ok(())
+        }
+
         fn reasoning_effort(&self) -> Option<ReasoningEffort> {
             self.reasoning_effort.read().map(|value| *value).unwrap()
         }
@@ -4510,21 +4637,22 @@ mod tests {
     }
 
     async fn test_state_at(path: &std::path::Path) -> (Arc<AppState>, MorphzRuntime) {
-        let runtime =
-            MorphzRuntime::builder(AppConfig::default(), Arc::new(ReplyClient::default()))
-                .database_path(path.to_str().unwrap())
-                .identity(RuntimeIdentity {
-                    agent_id: "agent-test".to_string(),
-                    context_id: "context-test".to_string(),
-                    principal_id: "principal-web-test".to_string(),
-                })
-                .tool_policy(RuntimeToolPolicy {
-                    context_only: true,
-                    coding_eval: false,
-                })
-                .build()
-                .await
-                .unwrap();
+        let mut config = AppConfig::default();
+        config.llm.models.push("fixture-model".to_string());
+        let runtime = MorphzRuntime::builder(config, Arc::new(ReplyClient::default()))
+            .database_path(path.to_str().unwrap())
+            .identity(RuntimeIdentity {
+                agent_id: "agent-test".to_string(),
+                context_id: "context-test".to_string(),
+                principal_id: "principal-web-test".to_string(),
+            })
+            .tool_policy(RuntimeToolPolicy {
+                context_only: true,
+                coding_eval: false,
+            })
+            .build()
+            .await
+            .unwrap();
         runtime.start().await.unwrap();
         let (broadcast_tx, _) = broadcast::channel(32);
         let sdk = MorphzSdk::new(runtime.clone());
@@ -4534,6 +4662,7 @@ mod tests {
                 sdk,
                 broadcast_tx,
                 auth_token: None,
+                gateway_token: None,
                 default_agent_id: "agent-test".to_string(),
                 default_context_id: "context-test".to_string(),
                 identity: ServerIdentityConfig::default(),
@@ -4878,6 +5007,14 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn external_principal_ids_accept_provider_native_opaque_values() {
+        assert!(validate_principal_id("o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat").is_ok());
+        assert!(validate_principal_id("github/user+release=bot%2F1").is_ok());
+        assert!(validate_principal_id(" principal").is_err());
+        assert!(validate_principal_id("principal\nforged").is_err());
+    }
+
     fn gateway_headers(principal_id: Option<&str>) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -4890,6 +5027,15 @@ mod tests {
                 principal_id.parse().unwrap(),
             );
         }
+        headers
+    }
+
+    fn dashboard_headers() -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer dashboard-secret".parse().unwrap(),
+        );
         headers
     }
 
@@ -5005,7 +5151,8 @@ mod tests {
             runtime: runtime.clone(),
             sdk: MorphzSdk::new(runtime.clone()),
             broadcast_tx: default_state.broadcast_tx.clone(),
-            auth_token: Some("gateway-secret".to_string()),
+            auth_token: Some("dashboard-secret".to_string()),
+            gateway_token: Some("gateway-secret".to_string()),
             default_agent_id: "agent-test".to_string(),
             default_context_id: "context-test".to_string(),
             identity: ServerIdentityConfig {
@@ -5080,12 +5227,45 @@ mod tests {
             Json(SendMessageRequest {
                 text: "I am user 1".to_string(),
                 client_message_id: Some("forged-identity-message".to_string()),
+                attachments: Vec::new(),
                 harness: None,
             }),
         )
         .await
         .into_response();
         assert_eq!(foreign_send.status(), StatusCode::FORBIDDEN);
+
+        let external_principal = handle_create_session(
+            State(Arc::clone(&state)),
+            gateway_headers(Some("o9cq80-lk788_j4zgPcOdjWMblvY@im.wechat")),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("gateway-session-wechat".to_string()),
+                agent_id: None,
+                parent_session_id: None,
+                title: Some("WeChat".to_string()),
+                mount: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(external_principal.status(), StatusCode::CREATED);
+
+        let operator = handle_create_session(
+            State(state),
+            dashboard_headers(),
+            Query(AuthQuery::default()),
+            Json(CreateSessionRequest {
+                id: Some("dashboard-session-in-trusted-mode".to_string()),
+                agent_id: None,
+                parent_session_id: None,
+                title: Some("Dashboard".to_string()),
+                mount: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(operator.status(), StatusCode::CREATED);
     }
 
     #[tokio::test]
@@ -5106,7 +5286,8 @@ mod tests {
             runtime: runtime.clone(),
             sdk: MorphzSdk::new(runtime),
             broadcast_tx: default_state.broadcast_tx.clone(),
-            auth_token: Some("gateway-secret".to_string()),
+            auth_token: Some("dashboard-secret".to_string()),
+            gateway_token: Some("gateway-secret".to_string()),
             default_agent_id: "agent-test".to_string(),
             default_context_id: "context-test".to_string(),
             identity: ServerIdentityConfig {
@@ -5145,6 +5326,7 @@ mod tests {
             HeaderMap::new(),
             Query(AuthQuery::default()),
             Json(UpdateInferenceRequest {
+                model: None,
                 reasoning_effort: Some("none".to_string()),
             }),
         )
@@ -5154,6 +5336,39 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(runtime.reasoning_effort(), Some(ReasoningEffort::Off));
         assert_eq!(runtime.config().llm.reasoning_effort, None);
+    }
+
+    #[tokio::test]
+    async fn dashboard_model_control_switches_only_to_the_configured_catalog() {
+        let (state, runtime) = test_state().await;
+        let response = handle_update_inference(
+            State(Arc::clone(&state)),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateInferenceRequest {
+                model: Some("fixture-model".to_string()),
+                reasoning_effort: None,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(runtime.model(), "fixture-model");
+
+        let rejected = handle_update_inference(
+            State(state),
+            HeaderMap::new(),
+            Query(AuthQuery::default()),
+            Json(UpdateInferenceRequest {
+                model: Some("unlisted-model".to_string()),
+                reasoning_effort: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(runtime.model(), "fixture-model");
     }
 
     #[tokio::test]
@@ -5184,6 +5399,7 @@ mod tests {
                 Json(SendMessageRequest {
                     text: "hello".to_string(),
                     client_message_id: Some("client-message-1".to_string()),
+                    attachments: Vec::new(),
                     harness: None,
                 }),
             )
@@ -5256,6 +5472,7 @@ mod tests {
             Json(SendMessageRequest {
                 text: "stream please".to_string(),
                 client_message_id: Some("stream-message-1".to_string()),
+                attachments: Vec::new(),
                 harness: None,
             }),
         )
@@ -5438,6 +5655,7 @@ mod tests {
             Json(SendMessageRequest {
                 text: "persist summary".to_string(),
                 client_message_id: Some("summary-restart-message".to_string()),
+                attachments: Vec::new(),
                 harness: None,
             }),
         )
@@ -6240,6 +6458,119 @@ mod tests {
                 .map(|event| event["id"].as_str().unwrap())
                 .collect::<Vec<_>>(),
             vec!["dialogue-page-2", "dialogue-page-3"]
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_events_include_durable_tool_lifecycle() {
+        let (state, runtime) = test_state().await;
+        runtime
+            .ensure_session(NewSession {
+                id: "dialogue-tool-lifecycle-session".to_string(),
+                agent_id: runtime.identity().agent_id.clone(),
+                context_id: runtime.identity().context_id.clone(),
+                parent_session_id: None,
+                title: "Dialogue Tool Lifecycle".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+
+        for (id, event_type, topic, payload) in [
+            (
+                "dialogue-tool-selected",
+                "assistant_call",
+                "runtime/tool_calls_selected",
+                json!({
+                    "context_id": "context-test",
+                    "session_id": "dialogue-tool-lifecycle-session",
+                    "calls": [{
+                        "id": "call-list-skills",
+                        "name": "list_skills",
+                        "arguments": "{}"
+                    }]
+                }),
+            ),
+            (
+                "dialogue-tool-output",
+                "tool_output",
+                "chat/tool_output",
+                json!({
+                    "context_id": "context-test",
+                    "session_id": "dialogue-tool-lifecycle-session",
+                    "tool_call_id": "call-list-skills",
+                    "tool_name": "list_skills",
+                    "tool_status": "success",
+                    "text": "agent-reach"
+                }),
+            ),
+            (
+                "dialogue-transfer-output",
+                "tool_output",
+                "runtime/artifact_transfer_completed",
+                json!({
+                    "context_id": "context-test",
+                    "session_id": "dialogue-tool-lifecycle-session",
+                    "tool_call_id": "call-transfer",
+                    "tool_name": "transfer",
+                    "tool_status": "success",
+                    "text": "transfer completed"
+                }),
+            ),
+            (
+                "dialogue-internal-projection",
+                "tool_output",
+                "context/projected_observation",
+                json!({
+                    "context_id": "context-test",
+                    "session_id": "dialogue-tool-lifecycle-session",
+                    "tool_call_id": "internal-projection"
+                }),
+            ),
+        ] {
+            runtime
+                .publish(Event::new(
+                    id.to_string(),
+                    "Dialogue-Tool-Lifecycle-Test".to_string(),
+                    event_type.to_string(),
+                    topic.to_string(),
+                    payload.as_object().unwrap().clone(),
+                ))
+                .await
+                .unwrap();
+        }
+
+        let response = handle_get_session_events(
+            State(state),
+            Path("dialogue-tool-lifecycle-session".to_string()),
+            HeaderMap::new(),
+            Query(EventQuery {
+                token: None,
+                after_sequence: None,
+                before_sequence: None,
+                conversation_only: true,
+                limit: Some(10),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            body["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|event| event["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec![
+                "dialogue-tool-selected",
+                "dialogue-tool-output",
+                "dialogue-transfer-output"
+            ]
         );
     }
 
