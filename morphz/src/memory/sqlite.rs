@@ -30,15 +30,16 @@ use crate::memory::{
     NewMindProjection, NewNodePairingCode, NewObjective, NewPrincipal, NewRuntimeTimer,
     NewSchedule, NewSession, NewThread, NewThreadActivation, NewThreadSignal, ObjectiveMutation,
     ObjectiveRecord, ObjectiveStatus, ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode,
-    PrincipalRecord, QueryFilter, RecallDocument, RecallDocumentKind, RecallIndexAudit,
-    RecallIndexCapability, RecallProjectionBatch, RecallProjectionStore, RecallSearchHit,
-    RuntimeTimerKind, RuntimeTimerRecord, RuntimeTimerStatus, ScheduleMutation, ScheduleRecord,
-    ScheduleStatus, ScheduleStore, SessionAttentionState, SessionAttentionUpdate,
-    SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding, SessionProjectionMutation,
-    SessionProjectionStore, SessionRecord, SessionStatus, SessionUpdate, SignalOutboxRecord,
-    SignalOutboxStatus, ThreadActivationMutation, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadControlAction, ThreadControlState, ThreadKind, ThreadLifecycle, ThreadMutation,
-    ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, ThreadStore, TimerStore,
+    PrincipalDirectoryEntry, PrincipalDirectoryPage, PrincipalRecord, QueryFilter, RecallDocument,
+    RecallDocumentKind, RecallIndexAudit, RecallIndexCapability, RecallProjectionBatch,
+    RecallProjectionStore, RecallSearchHit, RuntimeTimerKind, RuntimeTimerRecord,
+    RuntimeTimerStatus, ScheduleMutation, ScheduleRecord, ScheduleStatus, ScheduleStore,
+    SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind,
+    SessionPrincipalBinding, SessionProjectionMutation, SessionProjectionStore, SessionRecord,
+    SessionStatus, SessionUpdate, SignalOutboxRecord, SignalOutboxStatus, ThreadActivationMutation,
+    ThreadActivationRecord, ThreadActivationStatus, ThreadControlAction, ThreadControlState,
+    ThreadKind, ThreadLifecycle, ThreadMutation, ThreadRecord, ThreadSignalRecord,
+    ThreadSignalStatus, ThreadStore, TimerStore,
 };
 use chrono::{DateTime, Utc};
 // SQLx supplies the Rust FFI surface; hotbundle supplies a current SQLite
@@ -418,6 +419,12 @@ impl SqliteStore {
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+        CREATE INDEX IF NOT EXISTS idx_principals_id_nocase
+            ON principals(id COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_principals_display_name_nocase
+            ON principals(display_name COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_principals_provider_id_nocase
+            ON principals(provider_id COLLATE NOCASE);
 
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
@@ -3921,6 +3928,82 @@ impl SessionDirectoryStore for SqliteStore {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.as_ref().map(principal_from_row))
+    }
+
+    async fn search_principals(
+        &self,
+        query: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<PrincipalDirectoryPage, Box<dyn std::error::Error + Send + Sync>> {
+        let normalized = query.trim().to_lowercase();
+        let escaped = normalized
+            .replace('\\', r"\\")
+            .replace('%', r"\%")
+            .replace('_', r"\_");
+        let prefix = format!("{escaped}%");
+        let fetch_limit = limit.clamp(1, 100).saturating_add(1);
+        let rows = sqlx::query(
+            r#"WITH matched AS (
+                 SELECT id, provider_id, assurance, display_name, created_at, updated_at
+                 FROM principals
+                 WHERE (? = ''
+                    OR id LIKE ? ESCAPE '\' COLLATE NOCASE
+                    OR COALESCE(display_name, '') LIKE ? ESCAPE '\' COLLATE NOCASE
+                    OR provider_id LIKE ? ESCAPE '\' COLLATE NOCASE)
+                   AND (? IS NULL OR id > ?)
+                 ORDER BY id
+                 LIMIT ?
+               )
+               SELECT m.id, m.provider_id, m.assurance, m.display_name,
+                      m.created_at, m.updated_at,
+                      COUNT(DISTINCT b.session_id) AS session_count,
+                      COUNT(DISTINCT CASE WHEN s.status = 'active' THEN b.session_id END)
+                        AS active_session_count,
+                      COUNT(DISTINCT s.context_id) AS context_count,
+                      MAX(s.last_activity_at) AS last_activity_at
+               FROM matched m
+               LEFT JOIN session_principal_bindings b
+                 ON b.principal_id = m.id AND b.unbound_at IS NULL
+               LEFT JOIN sessions s ON s.id = b.session_id
+               GROUP BY m.id, m.provider_id, m.assurance, m.display_name,
+                        m.created_at, m.updated_at
+               ORDER BY m.id"#,
+        )
+        .bind(&normalized)
+        .bind(&prefix)
+        .bind(&prefix)
+        .bind(&prefix)
+        .bind(cursor)
+        .bind(cursor)
+        .bind(i64::try_from(fetch_limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        let has_more = rows.len() > fetch_limit.saturating_sub(1);
+        let mut entries = rows
+            .iter()
+            .take(fetch_limit.saturating_sub(1))
+            .map(|row| {
+                let last_activity_at = row
+                    .get::<Option<String>, _>("last_activity_at")
+                    .as_deref()
+                    .map(parse_time);
+                Ok(PrincipalDirectoryEntry {
+                    principal: principal_from_row(row),
+                    session_count: u64::try_from(row.get::<i64, _>("session_count"))?,
+                    active_session_count: u64::try_from(row.get::<i64, _>("active_session_count"))?,
+                    context_count: u64::try_from(row.get::<i64, _>("context_count"))?,
+                    last_activity_at,
+                })
+            })
+            .collect::<Result<Vec<_>, Box<dyn std::error::Error + Send + Sync>>>()?;
+        let next_cursor = has_more
+            .then(|| entries.last().map(|entry| entry.principal.id.clone()))
+            .flatten();
+        Ok(PrincipalDirectoryPage {
+            entries: std::mem::take(&mut entries),
+            next_cursor,
+        })
     }
 
     async fn bind_session_principal(
@@ -12997,6 +13080,72 @@ mod tests {
                 .as_deref(),
             Some("Alice")
         );
+    }
+
+    #[tokio::test]
+    async fn principal_directory_search_is_prefix_scoped_and_paginated() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        seed_identity_directory(&store).await;
+        for (id, display_name, provider_id) in [
+            ("principal:alice", "Alice Example", "github"),
+            ("principal:alina", "Alina Example", "google"),
+            ("principal:bob", "Bob Example", "github"),
+        ] {
+            store
+                .ensure_principal(NewPrincipal {
+                    id: id.to_string(),
+                    provider_id: provider_id.to_string(),
+                    assurance: "verified".to_string(),
+                    display_name: Some(display_name.to_string()),
+                })
+                .await
+                .unwrap();
+        }
+        store
+            .bind_session_principal("identity-session-a1", "principal:alice")
+            .await
+            .unwrap();
+        store
+            .bind_session_principal("identity-session-a2", "principal:alice")
+            .await
+            .unwrap();
+        store
+            .bind_session_principal("identity-session-a1", "principal:alina")
+            .await
+            .unwrap();
+
+        let alice = store.search_principals("ALI", None, 20).await.unwrap();
+        assert_eq!(
+            alice
+                .entries
+                .iter()
+                .map(|entry| entry.principal.id.as_str())
+                .collect::<Vec<_>>(),
+            ["principal:alice", "principal:alina"]
+        );
+        assert_eq!(alice.entries[0].session_count, 2);
+        assert_eq!(alice.entries[0].active_session_count, 2);
+        assert_eq!(alice.entries[0].context_count, 1);
+        assert!(alice.entries[0].last_activity_at.is_some());
+
+        let first = store.search_principals("", None, 2).await.unwrap();
+        assert_eq!(first.entries.len(), 2);
+        assert!(first.next_cursor.is_some());
+        let second = store
+            .search_principals("", first.next_cursor.as_deref(), 2)
+            .await
+            .unwrap();
+        assert!(!second.entries.is_empty());
+        assert!(first.entries.last().unwrap().principal.id < second.entries[0].principal.id);
+
+        let provider = store.search_principals("GITH", None, 20).await.unwrap();
+        assert!(provider
+            .entries
+            .iter()
+            .all(|entry| entry.principal.provider_id == "github"));
     }
 
     #[tokio::test]

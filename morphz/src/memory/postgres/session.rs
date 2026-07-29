@@ -1,9 +1,9 @@
 use super::{now_text, parse_time, PostgresStore, StoreError};
 use crate::memory::{
     AgentBootstrapRecord, AgentRecord, CognitiveContextRecord, ContextUpdate, NewAgent,
-    NewCognitiveContext, NewPrincipal, NewSession, PrincipalRecord, SessionAttentionState,
-    SessionAttentionUpdate, SessionDirectoryStore, SessionMountKind, SessionPrincipalBinding,
-    SessionRecord, SessionStatus, SessionUpdate,
+    NewCognitiveContext, NewPrincipal, NewSession, PrincipalDirectoryEntry, PrincipalDirectoryPage,
+    PrincipalRecord, SessionAttentionState, SessionAttentionUpdate, SessionDirectoryStore,
+    SessionMountKind, SessionPrincipalBinding, SessionRecord, SessionStatus, SessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use sqlx::postgres::PgRow;
@@ -160,6 +160,80 @@ impl SessionDirectoryStore for PostgresStore {
         .fetch_optional(&self.pool)
         .await?;
         row.as_ref().map(principal_from_row).transpose()
+    }
+
+    async fn search_principals(
+        &self,
+        query: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<PrincipalDirectoryPage, StoreError> {
+        let normalized = query.trim().to_lowercase();
+        let escaped = normalized
+            .replace('\\', r"\\")
+            .replace('%', r"\%")
+            .replace('_', r"\_");
+        let prefix = format!("{escaped}%");
+        let fetch_limit = limit.clamp(1, 100).saturating_add(1);
+        let rows = sqlx::query(
+            r#"WITH matched AS (
+                 SELECT id, provider_id, assurance, display_name, created_at, updated_at
+                 FROM principals
+                 WHERE ($1 = ''
+                    OR lower(id) LIKE $2 ESCAPE '\'
+                    OR lower(COALESCE(display_name, '')) LIKE $2 ESCAPE '\'
+                    OR lower(provider_id) LIKE $2 ESCAPE '\')
+                   AND ($3::text IS NULL OR id > $3)
+                 ORDER BY id
+                 LIMIT $4
+               )
+               SELECT m.id, m.provider_id, m.assurance, m.display_name,
+                      m.created_at, m.updated_at,
+                      COUNT(DISTINCT b.session_id)::BIGINT AS session_count,
+                      COUNT(DISTINCT CASE WHEN s.status = 'active' THEN b.session_id END)::BIGINT
+                        AS active_session_count,
+                      COUNT(DISTINCT s.context_id)::BIGINT AS context_count,
+                      MAX(s.last_activity_at) AS last_activity_at
+               FROM matched m
+               LEFT JOIN session_principal_bindings b
+                 ON b.principal_id = m.id AND b.unbound_at IS NULL
+               LEFT JOIN sessions s ON s.id = b.session_id
+               GROUP BY m.id, m.provider_id, m.assurance, m.display_name,
+                        m.created_at, m.updated_at
+               ORDER BY m.id"#,
+        )
+        .bind(&normalized)
+        .bind(&prefix)
+        .bind(cursor)
+        .bind(i64::try_from(fetch_limit)?)
+        .fetch_all(&self.pool)
+        .await?;
+        let page_limit = fetch_limit.saturating_sub(1);
+        let has_more = rows.len() > page_limit;
+        let entries = rows
+            .iter()
+            .take(page_limit)
+            .map(|row| {
+                Ok(PrincipalDirectoryEntry {
+                    principal: principal_from_row(row)?,
+                    session_count: u64::try_from(row.get::<i64, _>("session_count"))?,
+                    active_session_count: u64::try_from(row.get::<i64, _>("active_session_count"))?,
+                    context_count: u64::try_from(row.get::<i64, _>("context_count"))?,
+                    last_activity_at: row
+                        .get::<Option<String>, _>("last_activity_at")
+                        .as_deref()
+                        .map(parse_time)
+                        .transpose()?,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        let next_cursor = has_more
+            .then(|| entries.last().map(|entry| entry.principal.id.clone()))
+            .flatten();
+        Ok(PrincipalDirectoryPage {
+            entries,
+            next_cursor,
+        })
     }
 
     async fn bind_session_principal(

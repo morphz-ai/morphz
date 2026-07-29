@@ -45,11 +45,11 @@ use crate::memory::{
     NewArtifactTransferExecution, NewCognitiveContext, NewDelegation, NewExecutionNodeChallenge,
     NewExecutionTargetAuthorization, NewNodePairingCode, NewObjective, NewPrincipal, NewSession,
     NewThread, NewThreadActivation, ObjectiveMutation, ObjectiveRecord, ObjectiveStatus,
-    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, QueryFilter, RecallDocumentKind,
-    RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord, ScheduleStatus,
-    SessionRecord, SessionStore, SessionUpdate, ThreadActivationRecord, ThreadActivationStatus,
-    ThreadControlAction, ThreadKind, ThreadLifecycle, ThreadMutation, ThreadPhase, ThreadRecord,
-    ThreadSignalRecord, ThreadSignalStatus, TimerStore,
+    ObjectiveStore, ObjectiveWaitCondition, PairExecutionNode, PrincipalDirectoryPage, QueryFilter,
+    RecallDocumentKind, RecallProjectionStore, RuntimeStore, ScheduleMutation, ScheduleRecord,
+    ScheduleStatus, SessionRecord, SessionStore, SessionUpdate, ThreadActivationRecord,
+    ThreadActivationStatus, ThreadControlAction, ThreadKind, ThreadLifecycle, ThreadMutation,
+    ThreadPhase, ThreadRecord, ThreadSignalRecord, ThreadSignalStatus, TimerStore,
 };
 use crate::objective::{
     ObjectiveCreateTool, ObjectiveEvaluationRegistry, ObjectiveSupervisor, ObjectiveUpdateTool,
@@ -1626,6 +1626,18 @@ impl MorphzRuntime {
         self.inner
             .store
             .list_principal_sessions(principal_id, archived)
+            .await
+    }
+
+    pub async fn search_principals(
+        &self,
+        query: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<PrincipalDirectoryPage, RuntimeError> {
+        self.inner
+            .store
+            .search_principals(query, cursor, limit)
             .await
     }
 

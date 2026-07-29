@@ -601,6 +601,26 @@ pub struct PrincipalRecord {
     pub updated_at: DateTime<Utc>,
 }
 
+/// A bounded row in the operator-facing Principal directory.
+///
+/// The directory is deliberately a search API rather than a complete list:
+/// a public Runtime may contain millions of Principals, while an operator only
+/// needs enough identity and activity metadata to choose an observation scope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrincipalDirectoryEntry {
+    pub principal: PrincipalRecord,
+    pub session_count: u64,
+    pub active_session_count: u64,
+    pub context_count: u64,
+    pub last_activity_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PrincipalDirectoryPage {
+    pub entries: Vec<PrincipalDirectoryEntry>,
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct NewPrincipal {
     pub id: String,
@@ -3221,6 +3241,12 @@ pub trait SessionDirectoryStore: Send + Sync {
         &self,
         id: &str,
     ) -> Result<Option<PrincipalRecord>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn search_principals(
+        &self,
+        query: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<PrincipalDirectoryPage, Box<dyn std::error::Error + Send + Sync>>;
     async fn bind_session_principal(
         &self,
         session_id: &str,

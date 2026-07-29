@@ -97,6 +97,22 @@ struct SessionListQuery {
     token: Option<String>,
 }
 
+#[derive(Default, serde::Deserialize)]
+struct PrincipalDirectoryQuery {
+    token: Option<String>,
+    #[serde(default)]
+    query: String,
+    cursor: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Default, serde::Deserialize)]
+struct OperatorPrincipalSessionsQuery {
+    token: Option<String>,
+    #[serde(default)]
+    include_archived: bool,
+}
+
 #[derive(serde::Deserialize)]
 struct CreateSessionRequest {
     id: Option<String>,
@@ -345,6 +361,7 @@ struct RecallSearchHttpQuery {
 #[derive(Default, serde::Deserialize)]
 struct DialogueHistorySearchHttpQuery {
     token: Option<String>,
+    principal_id: Option<String>,
     query: String,
     limit: Option<usize>,
 }
@@ -371,6 +388,7 @@ struct MutateFrameLifecycleRequest {
 #[derive(Default, serde::Deserialize)]
 struct EventQuery {
     token: Option<String>,
+    principal_id: Option<String>,
     after_sequence: Option<u64>,
     before_sequence: Option<u64>,
     #[serde(default)]
@@ -787,6 +805,14 @@ impl Server {
                 get(handle_list_sessions).post(handle_create_session),
             )
             .route(
+                "/api/operator/principals",
+                get(handle_search_operator_principals),
+            )
+            .route(
+                "/api/operator/principals/:principal_id/sessions",
+                get(handle_list_operator_principal_sessions),
+            )
+            .route(
                 "/api/sessions/independent",
                 post(handle_create_independent_session),
             )
@@ -1034,7 +1060,12 @@ async fn handle_search_dialogue_history(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let principal = match request_principal(&state, &headers, None) {
+    let principal = match request_read_principal(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+    ) {
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
     };
@@ -1514,6 +1545,32 @@ fn request_principal(
     })
 }
 
+/// Resolve the authority used by a read-only Session API.
+///
+/// Operator authentication may select another Principal as an observation
+/// scope, but that scope is never reused by message delivery or other writes.
+/// Trusted-gateway callers continue to be bound to their asserted identity.
+fn request_read_principal(
+    state: &AppState,
+    headers: &HeaderMap,
+    operator_token: Option<&str>,
+    query_principal_id: Option<&str>,
+) -> Result<PrincipalAssertion, SdkError> {
+    if is_operator_authorized(state, headers, operator_token) {
+        if let Some(principal_id) = query_principal_id {
+            validate_principal_id(principal_id)
+                .map_err(|error| SdkError::new(SdkErrorCode::InvalidArgument, error))?;
+            return Ok(PrincipalAssertion {
+                principal_id: principal_id.to_string(),
+                provider_id: "operator-directory".to_string(),
+                assurance: "operator-read".to_string(),
+                display_name: None,
+            });
+        }
+    }
+    request_principal(state, headers, query_principal_id)
+}
+
 fn bounded_title(value: Option<String>, fallback: &str) -> String {
     value
         .unwrap_or_else(|| fallback.to_string())
@@ -1778,6 +1835,65 @@ async fn handle_list_sessions(
     {
         Ok(sessions) => Json(json!({ "sessions": sessions })).into_response(),
         Err(error) => sdk_error_response(error),
+    }
+}
+
+async fn handle_search_operator_principals(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<PrincipalDirectoryQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let query_text = query.query.trim();
+    if query_text.chars().count() > 200 {
+        return error_response(StatusCode::BAD_REQUEST, "Principal 搜索词超过 200 字符");
+    }
+    if query
+        .cursor
+        .as_deref()
+        .is_some_and(|cursor| cursor.is_empty() || cursor.len() > 512)
+    {
+        return error_response(StatusCode::BAD_REQUEST, "Principal cursor 无效");
+    }
+    match state
+        .runtime
+        .search_principals(
+            query_text,
+            query.cursor.as_deref(),
+            query.limit.unwrap_or(20).clamp(1, 100),
+        )
+        .await
+    {
+        Ok(page) => Json(page).into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
+    }
+}
+
+async fn handle_list_operator_principal_sessions(
+    State(state): State<Arc<AppState>>,
+    Path(principal_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<OperatorPrincipalSessionsQuery>,
+) -> impl IntoResponse {
+    if !is_operator_authorized(&state, &headers, query.token.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if let Err(error) = validate_principal_id(&principal_id) {
+        return error_response(StatusCode::BAD_REQUEST, error);
+    }
+    match state
+        .runtime
+        .list_principal_sessions(&principal_id, query.include_archived)
+        .await
+    {
+        Ok(sessions) => Json(json!({
+            "principal_id": principal_id,
+            "sessions": sessions,
+        }))
+        .into_response(),
+        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     }
 }
 
@@ -3475,7 +3591,12 @@ async fn handle_get_session(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let principal = match request_principal(&state, &headers, None) {
+    let principal = match request_read_principal(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+    ) {
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
     };
@@ -3704,7 +3825,12 @@ async fn handle_get_session_events(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let principal = match request_principal(&state, &headers, None) {
+    let principal = match request_read_principal(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+    ) {
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
     };
@@ -3752,7 +3878,12 @@ async fn handle_get_session_context(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let principal = match request_principal(&state, &headers, None) {
+    let principal = match request_read_principal(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+    ) {
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
     };
@@ -3783,7 +3914,12 @@ async fn handle_get_session_context_projection(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let principal = match request_principal(&state, &headers, None) {
+    let principal = match request_read_principal(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+    ) {
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
     };
@@ -3814,7 +3950,12 @@ async fn handle_get_session_context_encoding(
     if !is_authorized(&state, &headers, query.token.as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let principal = match request_principal(&state, &headers, None) {
+    let principal = match request_read_principal(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        query.principal_id.as_deref(),
+    ) {
         Ok(principal) => principal,
         Err(error) => return sdk_error_response(error),
     };
@@ -5251,6 +5392,79 @@ mod tests {
         .into_response();
         assert_eq!(external_principal.status(), StatusCode::CREATED);
 
+        let principal_search = handle_search_operator_principals(
+            State(Arc::clone(&state)),
+            dashboard_headers(),
+            Query(PrincipalDirectoryQuery {
+                token: None,
+                query: "site-user".to_string(),
+                cursor: None,
+                limit: Some(20),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(principal_search.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(principal_search.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(body["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["principal"]["id"] == "site-user-1"));
+
+        let observed_sessions = handle_list_operator_principal_sessions(
+            State(Arc::clone(&state)),
+            Path("site-user-1".to_string()),
+            dashboard_headers(),
+            Query(OperatorPrincipalSessionsQuery {
+                token: None,
+                include_archived: true,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(observed_sessions.status(), StatusCode::OK);
+
+        let operator_read = handle_get_session(
+            State(Arc::clone(&state)),
+            Path("gateway-session-a".to_string()),
+            dashboard_headers(),
+            Query(AuthQuery {
+                token: None,
+                session_id: None,
+                principal_id: Some("site-user-1".to_string()),
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(operator_read.status(), StatusCode::OK);
+
+        // Observation scope is intentionally ignored by write endpoints. An
+        // Operator may inspect a Principal's Session, but may not send a
+        // message while impersonating that Principal.
+        let operator_impersonated_send = handle_send_message(
+            State(Arc::clone(&state)),
+            Path("gateway-session-a".to_string()),
+            dashboard_headers(),
+            Query(AuthQuery {
+                token: None,
+                session_id: None,
+                principal_id: Some("site-user-1".to_string()),
+            }),
+            Json(SendMessageRequest {
+                text: "operator must not impersonate".to_string(),
+                client_message_id: Some("operator-impersonation-message".to_string()),
+                attachments: Vec::new(),
+                harness: None,
+            }),
+        )
+        .await
+        .into_response();
+        assert_eq!(operator_impersonated_send.status(), StatusCode::FORBIDDEN);
+
         let operator = handle_create_session(
             State(state),
             dashboard_headers(),
@@ -6324,6 +6538,7 @@ mod tests {
             HeaderMap::new(),
             Query(DialogueHistorySearchHttpQuery {
                 token: None,
+                principal_id: None,
                 query: "dialogue-search-sentinel".to_string(),
                 limit: Some(20),
             }),
@@ -6407,6 +6622,7 @@ mod tests {
             HeaderMap::new(),
             Query(EventQuery {
                 token: None,
+                principal_id: None,
                 after_sequence: None,
                 before_sequence: None,
                 conversation_only: true,
@@ -6437,6 +6653,7 @@ mod tests {
             HeaderMap::new(),
             Query(EventQuery {
                 token: None,
+                principal_id: None,
                 after_sequence: None,
                 before_sequence: Some(cursor),
                 conversation_only: true,
@@ -6546,6 +6763,7 @@ mod tests {
             HeaderMap::new(),
             Query(EventQuery {
                 token: None,
+                principal_id: None,
                 after_sequence: None,
                 before_sequence: None,
                 conversation_only: true,

@@ -284,6 +284,12 @@ impl PostgresStore {
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_principals_id_lower
+               ON principals(lower(id) text_pattern_ops)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_principals_display_name_lower
+               ON principals(lower(display_name) text_pattern_ops)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_principals_provider_id_lower
+               ON principals(lower(provider_id) text_pattern_ops)"#,
             r#"CREATE TABLE IF NOT EXISTS session_principal_bindings (
                 session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
                 principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,
@@ -531,13 +537,19 @@ impl PostgresStore {
     async fn migrate_principal_identity(&self) -> Result<(), StoreError> {
         for statement in [
             r#"CREATE TABLE IF NOT EXISTS principals (
-                 id TEXT PRIMARY KEY,
-                 provider_id TEXT NOT NULL,
-                 assurance TEXT NOT NULL,
-                 display_name TEXT,
-                 created_at TEXT NOT NULL,
-                 updated_at TEXT NOT NULL
-               )"#,
+                id TEXT PRIMARY KEY,
+                provider_id TEXT NOT NULL,
+                assurance TEXT NOT NULL,
+                display_name TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_principals_id_lower
+               ON principals(lower(id) text_pattern_ops)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_principals_display_name_lower
+               ON principals(lower(display_name) text_pattern_ops)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_pg_principals_provider_id_lower
+               ON principals(lower(provider_id) text_pattern_ops)"#,
             r#"CREATE TABLE IF NOT EXISTS session_principal_bindings (
                  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
                  principal_id TEXT NOT NULL REFERENCES principals(id) ON DELETE CASCADE,

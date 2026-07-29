@@ -775,6 +775,31 @@ interface SessionRecord {
   last_activity_at: string
 }
 
+interface PrincipalDirectoryEntry {
+  principal: {
+    id: string
+    provider_id: string
+    assurance: string
+    display_name?: string
+    created_at: string
+    updated_at: string
+  }
+  session_count: number
+  active_session_count: number
+  context_count: number
+  last_activity_at?: string
+}
+
+interface PrincipalDirectoryPage {
+  entries: PrincipalDirectoryEntry[]
+  next_cursor?: string
+}
+
+function scopedSessionReadPath(path: string, principalId?: string): string {
+  if (!principalId) return path
+  return `${path}${path.includes('?') ? '&' : '?'}principal_id=${encodeURIComponent(principalId)}`
+}
+
 type ReasoningEffortSetting = 'none' | 'low' | 'medium' | 'high' | 'max'
 
 interface RuntimeStatus {
@@ -2426,6 +2451,12 @@ export default function App() {
   const [contextMenuOpen, setContextMenuOpen] = useState(false)
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
   const [conversationSessionMenuOpen, setConversationSessionMenuOpen] = useState(false)
+  const [principalMenuOpen, setPrincipalMenuOpen] = useState(false)
+  const [principalSearchQuery, setPrincipalSearchQuery] = useState('')
+  const [principalSearchEntries, setPrincipalSearchEntries] = useState<PrincipalDirectoryEntry[]>([])
+  const [principalSearchCursor, setPrincipalSearchCursor] = useState('')
+  const [principalSearchBusy, setPrincipalSearchBusy] = useState(false)
+  const [principalScope, setPrincipalScope] = useState<PrincipalDirectoryEntry | null>(null)
   const [creatingContext, setCreatingContext] = useState(false)
   const [creatingSession, setCreatingSession] = useState(false)
   const [catalogMutationKey, setCatalogMutationKey] = useState('')
@@ -2478,10 +2509,12 @@ export default function App() {
   const contextSelectorRef = useRef<HTMLDivElement>(null)
   const sessionSelectorRef = useRef<HTMLDivElement>(null)
   const conversationSessionSelectorRef = useRef<HTMLDivElement>(null)
+  const principalSelectorRef = useRef<HTMLDivElement>(null)
   const themeSelectorRef = useRef<HTMLDivElement>(null)
   const appDialogRef = useRef<AppDialogRequest | null>(null)
   const appDialogSequence = useRef(0)
   const selectedScopeRef = useRef({ sessionId: '', contextId: '' })
+  const principalScopeRef = useRef<PrincipalDirectoryEntry | null>(null)
   const activeViewRef = useRef(view)
   const schedulerHistoryLimitRef = useRef(schedulerHistoryLimit)
 
@@ -2591,6 +2624,10 @@ export default function App() {
     schedulerHistoryLimitRef.current = schedulerHistoryLimit
   }, [schedulerHistoryLimit])
 
+  useEffect(() => {
+    principalScopeRef.current = principalScope
+  }, [principalScope])
+
   const setView = useCallback((next: DashboardView | ((current: DashboardView) => DashboardView)) => {
     const resolved = typeof next === 'function' ? next(view) : next
     // Navigation and an incoming Runtime event can occur in the same browser
@@ -2607,11 +2644,15 @@ export default function App() {
 
   const loadCatalog = useCallback(async () => {
     try {
+      const observedPrincipalId = principalScopeRef.current?.principal.id
+      const sessionsPath = observedPrincipalId
+        ? `/api/operator/principals/${encodeURIComponent(observedPrincipalId)}/sessions?include_archived=true`
+        : '/api/sessions?include_archived=true'
       const [nextStatus, agentsResult, contextsResult, sessionsResult, delegationsResult, targetsResult, nodesResult, leasesResult, jobsResult, secretsResult] = await Promise.all([
         DASHBOARD_API.get<RuntimeStatus>('/api/status'),
         DASHBOARD_API.tryGet<{ agents?: AgentRecord[] }>('/api/agents?include_archived=true'),
         DASHBOARD_API.tryGet<{ contexts?: ContextRecord[] }>('/api/contexts?include_archived=true'),
-        DASHBOARD_API.tryGet<{ sessions?: SessionRecord[] }>('/api/sessions?include_archived=true'),
+        DASHBOARD_API.tryGet<{ sessions?: SessionRecord[] }>(sessionsPath),
         DASHBOARD_API.tryGet<{ delegations?: DelegationRecord[] }>('/api/delegations'),
         DASHBOARD_API.tryGet<{ targets?: ExecutionTargetSummary[] }>('/api/execution-targets'),
         DASHBOARD_API.tryGet<{ nodes?: ExecutionNodeSummary[] }>('/api/edge/nodes'),
@@ -2654,6 +2695,110 @@ export default function App() {
       setCatalogReady(true)
     }
   }, [])
+
+  const searchPrincipalDirectory = useCallback(async (
+    query: string,
+    cursor = '',
+    append = false,
+  ) => {
+    setPrincipalSearchBusy(true)
+    try {
+      const params = new URLSearchParams({ query, limit: '20' })
+      if (cursor) params.set('cursor', cursor)
+      const page = await DASHBOARD_API.get<PrincipalDirectoryPage>(
+        `/api/operator/principals?${params.toString()}`,
+      )
+      setPrincipalSearchEntries(current => append ? [...current, ...page.entries] : page.entries)
+      setPrincipalSearchCursor(page.next_cursor ?? '')
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setPrincipalSearchBusy(false)
+    }
+  }, [])
+
+  const observePrincipal = useCallback(async (entry: PrincipalDirectoryEntry) => {
+    const principalId = entry.principal.id
+    if (principalId === status?.principal_id) {
+      principalScopeRef.current = null
+      setPrincipalScope(null)
+    } else {
+      principalScopeRef.current = entry
+      setPrincipalScope(entry)
+    }
+    try {
+      const sessionsPath = principalId === status?.principal_id
+        ? '/api/sessions?include_archived=true'
+        : `/api/operator/principals/${encodeURIComponent(principalId)}/sessions?include_archived=true`
+      const response = await DASHBOARD_API.get<{ sessions?: SessionRecord[] }>(sessionsPath)
+      const nextSessions = response.sessions ?? []
+      const nextSession = nextSessions
+        .filter(item => item.status === 'active')
+        .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))[0]
+      setSessions(nextSessions)
+      setPendingTurn(null)
+      setPrincipalMenuOpen(false)
+      setSessionMenuOpen(false)
+      setConversationSessionMenuOpen(false)
+      if (nextSession) {
+        setSelectedAgentId(nextSession.agent_id)
+        setSelectedContextId(nextSession.context_id)
+        setSelectedSessionId(nextSession.id)
+        navigate(dashboardPath('dialogue', nextSession.context_id, nextSession.id))
+      } else {
+        setSelectedSessionId('')
+        navigate(dashboardPath('overview', selectedContextId))
+      }
+      setError('')
+    } catch (reason) {
+      principalScopeRef.current = null
+      setPrincipalScope(null)
+      setSessions([])
+      setSelectedSessionId('')
+      setPendingTurn(null)
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [navigate, selectedContextId, status])
+
+  const clearPrincipalScope = useCallback(async () => {
+    principalScopeRef.current = null
+    setPrincipalScope(null)
+    try {
+      const response = await DASHBOARD_API.get<{ sessions?: SessionRecord[] }>(
+        '/api/sessions?include_archived=true',
+      )
+      const nextSessions = response.sessions ?? []
+      const nextSession = nextSessions
+        .filter(item => item.status === 'active')
+        .sort((left, right) => right.last_activity_at.localeCompare(left.last_activity_at))[0]
+      setSessions(nextSessions)
+      setPrincipalMenuOpen(false)
+      setPendingTurn(null)
+      if (nextSession) {
+        setSelectedAgentId(nextSession.agent_id)
+        setSelectedContextId(nextSession.context_id)
+        setSelectedSessionId(nextSession.id)
+        navigate(dashboardPath('dialogue', nextSession.context_id, nextSession.id))
+      } else {
+        setSelectedSessionId('')
+        navigate(dashboardPath('overview', selectedContextId))
+      }
+      setError('')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [navigate, selectedContextId])
+
+  useEffect(() => {
+    if (!principalMenuOpen) return
+    const query = principalSearchQuery.trim()
+    if (!query) return
+    const timer = window.setTimeout(() => {
+      void searchPrincipalDirectory(query)
+    }, 220)
+    return () => window.clearTimeout(timer)
+  }, [principalMenuOpen, principalSearchQuery, searchPrincipalDirectory])
 
   const setExecutionTargetStatus = useCallback(async (targetId: string, revision: number, status: 'online' | 'disabled') => {
     try {
@@ -2774,7 +2919,10 @@ export default function App() {
             setAttentionAcknowledgements(result.acknowledgements ?? [])
           }
         }),
-        DASHBOARD_API.tryGet<SessionEventsPage>(`/api/sessions/${encodeURIComponent(sessionId)}/events?conversation_only=true&limit=1000`)
+        DASHBOARD_API.tryGet<SessionEventsPage>(scopedSessionReadPath(
+          `/api/sessions/${encodeURIComponent(sessionId)}/events?conversation_only=true&limit=1000`,
+          principalScopeRef.current?.principal.id,
+        ))
           .then(eventsResult => {
             if (!eventsResult || !isCurrentScope()) return
             const nextEvents = eventsResult.events ?? []
@@ -2833,9 +2981,10 @@ export default function App() {
   const loadContextProjection = useCallback(async (sessionId: string, contextId: string) => {
     if (!sessionId || !contextId) return
     try {
-      const projection = await DASHBOARD_API.get<ContextViewResponse>(
+      const projection = await DASHBOARD_API.get<ContextViewResponse>(scopedSessionReadPath(
         `/api/sessions/${encodeURIComponent(sessionId)}/context/projection`,
-      )
+        principalScopeRef.current?.principal.id,
+      ))
       const selectedScope = selectedScopeRef.current
       if (selectedScope.sessionId !== sessionId || selectedScope.contextId !== contextId) return
       setContextView(projection)
@@ -2851,9 +3000,10 @@ export default function App() {
   const loadContextEncoding = useCallback(async (sessionId: string, contextId: string) => {
     if (!sessionId || !contextId) return
     try {
-      const encoding = await DASHBOARD_API.get<ContextEncodingResponse>(
+      const encoding = await DASHBOARD_API.get<ContextEncodingResponse>(scopedSessionReadPath(
         `/api/sessions/${encodeURIComponent(sessionId)}/context/encoding`,
-      )
+        principalScopeRef.current?.principal.id,
+      ))
       const selectedScope = selectedScopeRef.current
       if (selectedScope.sessionId !== sessionId || selectedScope.contextId !== contextId) return
       setContextEncoding(encoding)
@@ -2958,9 +3108,10 @@ export default function App() {
     setDialogueSearchBusy(true)
     setDialogueSearchOpen(true)
     try {
-      const page = await DASHBOARD_API.get<{ matches: DialogueHistorySearchHit[] }>(
+      const page = await DASHBOARD_API.get<{ matches: DialogueHistorySearchHit[] }>(scopedSessionReadPath(
         `/api/contexts/${encodeURIComponent(selectedContextId)}/dialogue/search?query=${encodeURIComponent(query)}&limit=60`,
-      )
+        principalScopeRef.current?.principal.id,
+      ))
       setDialogueSearchMatches(page.matches)
       setDialogueSearchSubmitted(true)
       setError('')
@@ -3578,6 +3729,7 @@ export default function App() {
         setContextMenuOpen(false)
         setSessionMenuOpen(false)
         setConversationSessionMenuOpen(false)
+        setPrincipalMenuOpen(false)
         setThemeMenuOpen(false)
       }
     }
@@ -3599,13 +3751,18 @@ export default function App() {
         && !conversationSessionSelectorRef.current.contains(target)) {
         setConversationSessionMenuOpen(false)
       }
+      if (principalMenuOpen
+        && principalSelectorRef.current
+        && !principalSelectorRef.current.contains(target)) {
+        setPrincipalMenuOpen(false)
+      }
       if (themeMenuOpen && themeSelectorRef.current && !themeSelectorRef.current.contains(target)) {
         setThemeMenuOpen(false)
       }
     }
     document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
-  }, [contextMenuOpen, conversationSessionMenuOpen, sessionMenuOpen, themeMenuOpen])
+  }, [contextMenuOpen, conversationSessionMenuOpen, principalMenuOpen, sessionMenuOpen, themeMenuOpen])
 
   const selectedSession = sessions.find(item => item.id === selectedSessionId)
   const selectedContext = contexts.find(item => item.id === selectedContextId)
@@ -3805,9 +3962,10 @@ export default function App() {
     if (hit.sequence === undefined || locatingDialogueSearchEvent.current === hit.event_id) return
     locatingDialogueSearchEvent.current = hit.event_id
     let cancelled = false
-    void DASHBOARD_API.get<SessionEventsPage>(
+    void DASHBOARD_API.get<SessionEventsPage>(scopedSessionReadPath(
       `/api/sessions/${encodeURIComponent(selectedSessionId)}/events?conversation_only=true&before_sequence=${hit.sequence + 1}&limit=100`,
-    ).then(page => {
+      principalScopeRef.current?.principal.id,
+    )).then(page => {
       if (cancelled || selectedScopeRef.current.sessionId !== selectedSessionId) return
       if (!page.events.some(event => event.id === hit.event_id)) {
         setPendingDialogueSearchHit(null)
@@ -4162,10 +4320,12 @@ export default function App() {
   const composerSchedules = composerThreads
     .flatMap(item => item.schedules)
     .filter(schedule => schedule.status === 'queued' || schedule.status === 'paused')
-  const activePrincipalId = contextView?.active_principal_id
+  const activePrincipalId = principalScope?.principal.id
+    ?? contextView?.active_principal_id
     ?? contextOverview?.sessions.find(session => session.session.id === selectedSessionId)?.principal_ids?.[0]
     ?? contextView?.sessions.find(session => session.session.id === selectedSessionId)?.principal_ids?.[0]
     ?? status?.principal_id
+  const observingForeignPrincipal = Boolean(principalScope)
   const selectedFrameLineage = frameLineage?.root_frame_id === effectiveSelectedFrameId ? frameLineage : null
   const retiring = contextView?.state.retiring ?? {}
   const selectedFrame = visibleFrames.find(frame => frame.id === effectiveSelectedFrameId)
@@ -4382,9 +4542,10 @@ export default function App() {
     }
 
     try {
-      const page = await DASHBOARD_API.get<SessionEventsPage>(
+      const page = await DASHBOARD_API.get<SessionEventsPage>(scopedSessionReadPath(
         `/api/sessions/${encodeURIComponent(selectedSessionId)}/events?conversation_only=true&before_sequence=${cursorState.nextBeforeSequence}&limit=1000`,
-      )
+        principalScopeRef.current?.principal.id,
+      ))
       if (selectedScopeRef.current.sessionId !== selectedSessionId) return
 
       const existingIds = new Set(sessionEvents.map(event => event.id))
@@ -4496,6 +4657,10 @@ export default function App() {
 
   const createSession = useCallback(async (targetContext?: ContextRecord): Promise<SessionRecord | null> => {
     if (creatingSession) return null
+    if (principalScopeRef.current) {
+      setError(t('header.principalScopeReadOnly'))
+      return null
+    }
     const context = targetContext ?? selectedContext
     const contextId = context?.id ?? selectedContextId
     if (!contextId) {
@@ -4613,6 +4778,10 @@ export default function App() {
   }
 
   const renameSession = async (session: SessionRecord) => {
+    if (principalScopeRef.current) {
+      setError(t('header.principalScopeReadOnly'))
+      return
+    }
     const requested = await requestText({
       title: t('header.renameSession'),
       description: t('dialog.renameSession'),
@@ -4641,6 +4810,10 @@ export default function App() {
   }
 
   const archiveSession = async (session: SessionRecord) => {
+    if (principalScopeRef.current) {
+      setError(t('header.principalScopeReadOnly'))
+      return
+    }
     const confirmed = await requestConfirmation({
       title: t('header.archiveSession'),
       description: t('dialog.archiveSession', { title: session.title }),
@@ -4720,6 +4893,10 @@ export default function App() {
     const text = draftMessage.trim()
     if (!text && !hasQuotes && attachments.length === 0) return false
     if (sending) return false
+    if (principalScopeRef.current) {
+      setError(t('header.principalScopeReadOnly'))
+      return false
+    }
     const composedText = hasQuotes
       ? quotes.map((q, i) => {
           const block = `> [${i + 1}] ${q.text.replace(/\n/g, '\n> ')}\n> — ${q.eventActor}, ${q.eventTime}, ${q.eventId}`
@@ -4771,7 +4948,7 @@ export default function App() {
     } finally {
       setSending(false)
     }
-  }, [createContext, createSession, loadSession, quotes, selectedContext, selectedSession, sending])
+  }, [createContext, createSession, loadSession, quotes, selectedContext, selectedSession, sending, t])
 
   const retryDialogueTurn = useCallback(async (
     failureEvent: MorphzEvent,
@@ -5427,7 +5604,7 @@ export default function App() {
                 <div className="session-popover">
                   <header>
                     <strong>{t('header.sessionCount', { count: visibleSessions.length })}</strong>
-                    <button type="button" onClick={() => void createSession()} disabled={creatingSession || !selectedContextId}>
+                    <button type="button" onClick={() => void createSession()} disabled={creatingSession || !selectedContextId || observingForeignPrincipal}>
                       <Plus size={13} />{creatingSession ? t('header.creatingSession') : t('header.createSession')}
                     </button>
                   </header>
@@ -5441,8 +5618,8 @@ export default function App() {
                           <em>{session.id === selectedSessionId ? t('header.active').toUpperCase() : statusLabel(session.attention_state ?? 'resident', t).toUpperCase()}</em>
                         </button>
                         <div className="catalog-option-actions">
-                          <button disabled={isMutating} type="button" title={t('header.renameSession')} aria-label={t('header.renameNamedSession', { title: session.title })} onClick={() => void renameSession(session)}><Pencil size={13} /></button>
-                          <button disabled={isMutating} type="button" title={t('header.archiveSession')} aria-label={t('header.archiveNamedSession', { title: session.title })} onClick={() => void archiveSession(session)}><Archive size={13} /></button>
+                          <button disabled={isMutating || observingForeignPrincipal} type="button" title={t('header.renameSession')} aria-label={t('header.renameNamedSession', { title: session.title })} onClick={() => void renameSession(session)}><Pencil size={13} /></button>
+                          <button disabled={isMutating || observingForeignPrincipal} type="button" title={t('header.archiveSession')} aria-label={t('header.archiveNamedSession', { title: session.title })} onClick={() => void archiveSession(session)}><Archive size={13} /></button>
                         </div>
                       </div>
                     })}
@@ -5452,10 +5629,93 @@ export default function App() {
               )}
             </div>
             <span className="trail-separator">/</span>
-            <div className={`identity-chip principal-chip ${activePrincipalId ? '' : 'unset'}`}>
-              <small>{t('header.principal').toUpperCase()}</small>
-              <strong>{activePrincipalId ? shortId(activePrincipalId, 26) : t('header.noPrincipal')}</strong>
-              <span>{t('header.runtimeVerified')}</span>
+            <div className="principal-selector" ref={principalSelectorRef}>
+              <button
+                className={`identity-chip principal-chip ${activePrincipalId ? '' : 'unset'} ${principalScope ? 'is-observing' : ''}`}
+                type="button"
+                aria-expanded={principalMenuOpen}
+                onClick={() => setPrincipalMenuOpen(open => !open)}
+              >
+                <Globe className="principal-directory-icon" size={14} />
+                <small>{t('header.principal').toUpperCase()}</small>
+                <strong>{activePrincipalId ? shortId(activePrincipalId, 26) : t('header.noPrincipal')}</strong>
+                <span>{principalScope ? t('header.observingPrincipal') : t('header.runtimeVerified')}</span>
+                <ChevronDown size={13} />
+              </button>
+              {principalMenuOpen && (
+                <div className="session-popover principal-popover">
+                  <header>
+                    <strong>{t('header.principalDirectory')}</strong>
+                    {principalScope && (
+                      <button type="button" onClick={() => void clearPrincipalScope()}>
+                        <ArrowLeft size={13} />{t('header.returnToOperator')}
+                      </button>
+                    )}
+                  </header>
+                  <div className="principal-search">
+                    <Search size={14} />
+                    <input
+                      autoFocus
+                      type="search"
+                      value={principalSearchQuery}
+                      placeholder={t('header.searchPrincipalPlaceholder')}
+                      aria-label={t('header.searchPrincipals')}
+                      onChange={event => {
+                        const value = event.target.value
+                        setPrincipalSearchQuery(value)
+                        if (!value.trim()) {
+                          setPrincipalSearchEntries([])
+                          setPrincipalSearchCursor('')
+                        }
+                      }}
+                    />
+                    {principalSearchBusy && <LoaderCircle size={13} className="spin" />}
+                  </div>
+                  <div className="principal-results">
+                    {!principalSearchQuery.trim() && (
+                      <p>{t('header.principalSearchHint')}</p>
+                    )}
+                    {principalSearchQuery.trim() && !principalSearchBusy && principalSearchEntries.length === 0 && (
+                      <p>{t('header.noPrincipalMatches')}</p>
+                    )}
+                    {principalSearchEntries.map(entry => (
+                      <button
+                        className={entry.principal.id === activePrincipalId ? 'is-current' : ''}
+                        type="button"
+                        key={entry.principal.id}
+                        onClick={() => void observePrincipal(entry)}
+                      >
+                        <i className="presence active" />
+                        <span>
+                          <strong>{entry.principal.display_name || entry.principal.id}</strong>
+                          <small>{entry.principal.display_name ? entry.principal.id : entry.principal.provider_id}</small>
+                        </span>
+                        <em>
+                          {t('header.principalSessionSummary', {
+                            sessions: entry.active_session_count,
+                            contexts: entry.context_count,
+                          })}
+                        </em>
+                      </button>
+                    ))}
+                    {principalSearchCursor && (
+                      <button
+                        className="principal-load-more"
+                        type="button"
+                        disabled={principalSearchBusy}
+                        onClick={() => void searchPrincipalDirectory(
+                          principalSearchQuery.trim(),
+                          principalSearchCursor,
+                          true,
+                        )}
+                      >
+                        {t('header.loadMorePrincipals')}
+                      </button>
+                    )}
+                  </div>
+                  <footer>{t('header.operatorReadOnlyHint')}</footer>
+                </div>
+              )}
             </div>
           </div>
 
@@ -6944,7 +7204,7 @@ export default function App() {
           <Composer
             inputRef={composerInputRef}
             selectedSessionId={selectedSessionId}
-            sending={sending}
+            sending={sending || observingForeignPrincipal}
             activeWorkCount={activeWorkCount}
             quotes={quotes}
             activeQuoteId={activeQuoteId}
