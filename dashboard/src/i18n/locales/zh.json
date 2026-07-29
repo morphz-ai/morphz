@@ -636,6 +636,8 @@
       "reconstructedNotice": "当前没有保留实时精确请求；这里展示的是根据最新投影重新编译的结果，可能不同于此前某次模型请求。"
     },
     "frameLibrary": "认知库",
+    "activeFramesOnly": "仅活跃",
+    "emptyActiveFrames": "当前没有活跃认知",
     "sourceCount": "{{count}} 来源",
     "sourceCount_one": "{{count}} 来源",
     "sourceCount_other": "{{count}} 来源",

@@ -28,6 +28,7 @@ import {
   Layers3,
   ListTree,
   LoaderCircle,
+  LockKeyhole,
   MessageSquare,
   Maximize2,
   Minimize2,
@@ -2409,6 +2410,7 @@ export default function App() {
   const [selectedContextId, setSelectedContextId] = useState('')
   const [selectedSessionId, setSelectedSessionId] = useState('')
   const [selectedFrameId, setSelectedFrameId] = useState('')
+  const [activeFramesOnly, setActiveFramesOnly] = useState(true)
   const [recallQuery, setRecallQuery] = useState('')
   const [recallMatches, setRecallMatches] = useState<RecallSearchHit[]>([])
   const [dialogueSearchQuery, setDialogueSearchQuery] = useState('')
@@ -3014,6 +3016,24 @@ export default function App() {
     }
   }, [contextView, loadContextProjection, loadOverview, selectedContextId, selectedSessionId])
 
+  const retired = useMemo(
+    () => new Set(contextView?.state.retired ?? []),
+    [contextView?.state.retired],
+  )
+  const visibleFrames = useMemo(
+    () => (contextView?.state.frames ?? []).filter(frame => (
+      !activeFramesOnly || !retired.has(frame.id)
+    )),
+    [activeFramesOnly, contextView?.state.frames, retired],
+  )
+  const effectiveSelectedFrameId = visibleFrames.some(frame => frame.id === selectedFrameId)
+    ? selectedFrameId
+    : visibleFrames[0]?.id ?? ''
+  const protectedFrames = useMemo(
+    () => new Set(contextView?.state.protected ?? []),
+    [contextView?.state.protected],
+  )
+
   useEffect(() => {
     if (view !== 'cognition' || !selectedContextId) return
     let cancelled = false
@@ -3026,15 +3046,15 @@ export default function App() {
   }, [selectedContextId, view])
 
   useEffect(() => {
-    if (view !== 'cognition' || !selectedContextId || !selectedFrameId) return
+    if (view !== 'cognition' || !selectedContextId || !effectiveSelectedFrameId) return
     let cancelled = false
     void DASHBOARD_API.tryGet<FrameRecallPage>(
-      `/api/contexts/${encodeURIComponent(selectedContextId)}/frames/${encodeURIComponent(selectedFrameId)}/recall?depth=2&direction=both&include_bodies=false&max_nodes=64`,
+      `/api/contexts/${encodeURIComponent(selectedContextId)}/frames/${encodeURIComponent(effectiveSelectedFrameId)}/recall?depth=2&direction=both&include_bodies=false&max_nodes=64`,
     ).then(result => {
       if (result && !cancelled) setFrameLineage(result)
     }).catch(() => {})
     return () => { cancelled = true }
-  }, [selectedContextId, selectedFrameId, view])
+  }, [effectiveSelectedFrameId, selectedContextId, view])
 
   useEffect(() => {
     try {
@@ -4113,18 +4133,18 @@ export default function App() {
   const composerSchedules = composerThreads
     .flatMap(item => item.schedules)
     .filter(schedule => schedule.status === 'queued' || schedule.status === 'paused')
-  const selectedFrame = contextView?.state.frames.find(frame => frame.id === selectedFrameId)
   const activePrincipalId = contextView?.active_principal_id
     ?? contextOverview?.sessions.find(session => session.session.id === selectedSessionId)?.principal_ids?.[0]
     ?? contextView?.sessions.find(session => session.session.id === selectedSessionId)?.principal_ids?.[0]
     ?? status?.principal_id
-  const selectedFrameLineage = frameLineage?.root_frame_id === selectedFrameId ? frameLineage : null
-  const retired = new Set(contextView?.state.retired ?? [])
+  const selectedFrameLineage = frameLineage?.root_frame_id === effectiveSelectedFrameId ? frameLineage : null
   const retiring = contextView?.state.retiring ?? {}
+  const selectedFrame = visibleFrames.find(frame => frame.id === effectiveSelectedFrameId)
   const activeFrameCount = contextOverview?.active_frames
     ?? (contextView?.state.frames ?? []).filter(frame => !retired.has(frame.id)).length
   const retiringFrameCount = Object.keys(retiring).length
   const selectedRetirement = selectedFrame ? retiring[selectedFrame.id] : undefined
+
   const hasExactContextInspect = latestContextInspect !== null
     && latestContextInspect.payload.session_id === selectedSessionId
     && typeof latestContextInspect.payload.text === 'string'
@@ -6687,14 +6707,32 @@ export default function App() {
               {cognitionView === 'mind' && <>
               <div className="mind-grid">
                 <div className="frame-library">
-                  <header><span>{t('mindView.frameLibrary').toUpperCase()}</span><b>r{contextView?.state.version ?? 0}</b></header>
+                  <header>
+                    <span>{t('mindView.frameLibrary').toUpperCase()}</span>
+                    <div>
+                      <button
+                        aria-pressed={activeFramesOnly}
+                        className={activeFramesOnly ? 'is-active' : ''}
+                        type="button"
+                        onClick={() => setActiveFramesOnly(current => !current)}
+                      >
+                        <Filter size={11} />
+                        {t('mindView.activeFramesOnly')}
+                      </button>
+                      <b>r{contextView?.state.version ?? 0}</b>
+                    </div>
+                  </header>
                   <div className="frame-list">
-                    {(contextView?.state.frames ?? []).map(frame => (
-                      <button className={frame.id === selectedFrameId ? 'is-selected' : ''} key={frame.id} type="button" onClick={() => setSelectedFrameId(frame.id)}>
+                    {visibleFrames.map(frame => (
+                      <button className={frame.id === effectiveSelectedFrameId ? 'is-selected' : ''} key={frame.id} type="button" onClick={() => setSelectedFrameId(frame.id)}>
                         <span><strong>{frame.id}</strong><small>r{frame.revision} · v{frame.updated_version} · {t('mindView.sourceCount', { count: frame.sources.length })}</small></span>
-                        {retired.has(frame.id) ? <em>{t('mindView.retired').toUpperCase()}</em> : retiring[frame.id] ? <em className="retiring">{t('mindView.retiring').toUpperCase()}</em> : null}
+                        <div className="frame-badges">
+                          {protectedFrames.has(frame.id) && <em className="protected" title={t('mindView.protected')}><LockKeyhole size={9} /> {t('mindView.protected')}</em>}
+                          {retired.has(frame.id) ? <em>{t('mindView.retired').toUpperCase()}</em> : retiring[frame.id] ? <em className="retiring">{t('mindView.retiring').toUpperCase()}</em> : null}
+                        </div>
                       </button>
                     ))}
+                    {visibleFrames.length === 0 && <div className="frame-list-empty">{activeFramesOnly ? t('mindView.emptyActiveFrames') : t('mindView.emptyFrame')}</div>}
                   </div>
                 </div>
 
@@ -6707,7 +6745,7 @@ export default function App() {
                         {selectedRetirement && <span>{t('mindView.remainingTicks', { count: Math.max(0, selectedRetirement.eligible_at_tick - (contextView?.cognitive_clock.tick ?? 0)) })} · {selectedRetirement.reason}</span>}
                         <div>
                           {(retired.has(selectedFrame.id) || selectedRetirement) && <button type="button" disabled={mutatingFrameId === selectedFrame.id} onClick={() => void mutateFrameLifecycle(selectedFrame.id, 'restore')}>{t('mindView.restore')}</button>}
-                          <button type="button" disabled={mutatingFrameId === selectedFrame.id} onClick={() => void mutateFrameLifecycle(selectedFrame.id, contextView?.state.protected.includes(selectedFrame.id) ? 'unprotect' : 'protect')}>{contextView?.state.protected.includes(selectedFrame.id) ? t('mindView.unprotect') : t('mindView.protect')}</button>
+                          <button type="button" disabled={mutatingFrameId === selectedFrame.id} onClick={() => void mutateFrameLifecycle(selectedFrame.id, protectedFrames.has(selectedFrame.id) ? 'unprotect' : 'protect')}>{protectedFrames.has(selectedFrame.id) ? t('mindView.unprotect') : t('mindView.protect')}</button>
                         </div>
                       </div>
                       <pre>{selectedFrame.body}</pre>
@@ -6715,7 +6753,7 @@ export default function App() {
                         <div><small>{t('mindView.created').toUpperCase()}</small><strong>v{selectedFrame.created_version}</strong></div>
                         <div><small>{t('mindView.updated').toUpperCase()}</small><strong>v{selectedFrame.updated_version}</strong></div>
                         <div><small>{t('mindView.sources').toUpperCase()}</small><strong>{selectedFrame.sources.length}</strong></div>
-                        <div><small>{t('mindView.protected').toUpperCase()}</small><strong>{contextView?.state.protected.includes(selectedFrame.id) ? t('mindView.yes') : t('mindView.no')}</strong></div>
+                        <div><small>{t('mindView.protected').toUpperCase()}</small><strong>{protectedFrames.has(selectedFrame.id) ? t('mindView.yes') : t('mindView.no')}</strong></div>
                         <div><small>{t('mindView.provenance.state').toUpperCase()}</small><strong>{t(`mindView.provenance.states.${selectedFrame.provenance.state}`)}</strong></div>
                         <div><small>{t('mindView.provenance.formedPrincipal').toUpperCase()}</small><strong>{selectedFrame.provenance.formed_principal_id ? shortId(selectedFrame.provenance.formed_principal_id, 24) : '—'}</strong></div>
                         <div><small>{t('mindView.provenance.formedSession').toUpperCase()}</small><strong>{selectedFrame.provenance.formed_session_id ? shortId(selectedFrame.provenance.formed_session_id, 24) : '—'}</strong></div>

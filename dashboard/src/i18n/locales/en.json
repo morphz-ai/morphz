@@ -637,6 +637,8 @@
       "reconstructedNotice": "No exact live request is currently retained. This view is freshly compiled from the current Projection and may differ from an earlier model request."
     },
     "frameLibrary": "Frame Library",
+    "activeFramesOnly": "Active only",
+    "emptyActiveFrames": "No active cognition",
     "sourceCount_one": "{{count}} source",
     "sourceCount_other": "{{count}} sources",
     "retired": "Retired",
