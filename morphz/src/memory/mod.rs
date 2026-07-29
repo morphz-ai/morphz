@@ -3419,6 +3419,19 @@ pub trait ActivationStore: Send + Sync {
         Vec<(ThreadActivationRecord, crate::admission::AdmissionClass)>,
         Box<dyn std::error::Error + Send + Sync>,
     >;
+    /// Whether a queued Activation may attempt the durable `running`
+    /// transition now. Non-dialogue Threads are always runnable here.
+    ///
+    /// DialogueTurns are serialized per Session: a candidate waits while
+    /// another DialogueTurn is running and, when several principals have
+    /// distinct queued turns in one Session, only the oldest candidate may
+    /// enter. The final transition remains protected by
+    /// `update_thread_activation`; this query keeps blocked rows out of the
+    /// in-memory admission window so they do not busy-loop.
+    async fn dialogue_turn_activation_runnable(
+        &self,
+        activation_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>>;
     async fn update_thread_activation(
         &self,
         id: &str,

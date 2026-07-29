@@ -4697,7 +4697,7 @@ impl ActivationStore for SqliteStore {
 
     async fn claim_thread_signal_batch(
         &self,
-        signal: NewThreadSignal,
+        mut signal: NewThreadSignal,
         activation: NewThreadActivation,
         max_signals: usize,
     ) -> Result<Option<ThreadActivationRecord>, Box<dyn std::error::Error + Send + Sync>> {
@@ -4711,10 +4711,86 @@ impl ActivationStore for SqliteStore {
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
 
+        // A user may send several messages while the current DialogueTurn is
+        // still evaluating. They are distinct immutable Ledger facts, but
+        // they belong to one *next* model input batch. Serialize by Session
+        // before choosing that queued batch so two Runtime workers cannot
+        // create parallel DialogueTurns for consecutive input.
+        //
+        // `ensure_thread` has already created the candidate root for this
+        // Event. When a queued batch exists we route the Signal to that
+        // Thread and remove the now-empty candidate below.
+        let candidate_thread_id = signal.thread_id.clone();
+        let mut joined_dialogue_activation = None;
+        if signal.kind == "chat/user_message" {
+            // A no-op write obtains SQLite's single-writer ownership before
+            // the read/route decision. WAL permits concurrent readers, while
+            // competing dialogue enqueues for this Session are serialized.
+            sqlx::query("UPDATE sessions SET updated_at = updated_at WHERE id = ?")
+                .bind(&activation.session_id)
+                .execute(&mut *tx)
+                .await?;
+
+            let preexisting_signal_thread: Option<String> =
+                sqlx::query_scalar("SELECT thread_id FROM thread_signals WHERE event_id = ?")
+                    .bind(&signal.event_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            if let Some(thread_id) = preexisting_signal_thread.as_ref() {
+                signal.thread_id = thread_id.clone();
+            }
+            let candidate_thread = sqlx::query("SELECT * FROM threads WHERE id = ?")
+                .bind(&signal.thread_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let candidate_thread = thread_from_row(&candidate_thread)?;
+            if preexisting_signal_thread.is_none()
+                && candidate_thread.kind == ThreadKind::DialogueTurn
+            {
+                let queued = sqlx::query(
+                    r#"SELECT queued.*, thread.id AS routed_thread_id
+                   FROM thread_activations queued
+                   JOIN threads thread
+                     ON thread.root_turn_id = queued.root_turn_id
+                    AND thread.generation = queued.generation
+                   WHERE queued.session_id = ?
+                     AND queued.status = 'queued'
+                     AND queued.trigger_kind = 'chat/user_message'
+                     AND thread.kind = 'dialogue_turn'
+                     AND thread.status = 'open'
+                     AND thread.control_state = 'active'
+                     AND (
+                       SELECT COUNT(*)
+                       FROM activation_signals links
+                       WHERE links.activation_id = queued.id
+                     ) < ?
+                     AND (
+                       queued.initiating_principal_id = ?
+                       OR (
+                         queued.initiating_principal_id IS NULL
+                         AND ? IS NULL
+                       )
+                     )
+                   ORDER BY queued.trigger_sequence, queued.id
+                   LIMIT 1"#,
+                )
+                .bind(&activation.session_id)
+                .bind(max_signals)
+                .bind(&signal.principal_id)
+                .bind(&signal.principal_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                if let Some(row) = queued {
+                    signal.thread_id = row.get("routed_thread_id");
+                    joined_dialogue_activation = Some(thread_activation_from_row(&row)?);
+                }
+            }
+        }
+
         // This first write serializes competing claims under SQLite WAL. The
         // immutable Event has already crossed the Ledger boundary before the
         // Orchestrator asks the scheduler to materialize its mailbox Signal.
-        sqlx::query(
+        let inserted_signal = sqlx::query(
             r#"INSERT OR IGNORE INTO thread_signals
                (id, thread_id, event_id, principal_id, sequence, kind, parent_activation_id,
                 status, created_at)
@@ -4729,13 +4805,22 @@ impl ActivationStore for SqliteStore {
         .bind(&signal.parent_activation_id)
         .bind(&now)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .rows_affected()
+            == 1;
 
         let stored_signal = sqlx::query("SELECT * FROM thread_signals WHERE event_id = ?")
             .bind(&signal.event_id)
             .fetch_one(&mut *tx)
             .await?;
         let mut stored_signal = thread_signal_from_row(&stored_signal)?;
+        if !inserted_signal {
+            // A retried claim may reconstruct the unused candidate Thread
+            // before discovering that this immutable Event was already routed.
+            // Follow the durable route and let the cleanup paths below remove
+            // that empty candidate instead of rejecting an idempotent replay.
+            signal.thread_id = stored_signal.thread_id.clone();
+        }
         if stored_signal.principal_id.is_none() && signal.principal_id.is_some() {
             sqlx::query(
                 "UPDATE thread_signals SET principal_id = ? WHERE id = ? AND principal_id IS NULL",
@@ -4801,7 +4886,73 @@ impl ActivationStore for SqliteStore {
         .await?
         {
             let existing = thread_activation_from_row(&row)?;
+            if candidate_thread_id != stored_signal.thread_id {
+                sqlx::query(
+                    r#"DELETE FROM threads
+                       WHERE id = ?
+                         AND NOT EXISTS (
+                           SELECT 1 FROM thread_signals WHERE thread_id = ?
+                         )
+                         AND NOT EXISTS (
+                           SELECT 1 FROM thread_activations
+                           WHERE root_turn_id = threads.root_turn_id
+                         )"#,
+                )
+                .bind(&candidate_thread_id)
+                .bind(&candidate_thread_id)
+                .execute(&mut *tx)
+                .await?;
+            }
             tx.commit().await?;
+            return Ok(Some(existing));
+        }
+
+        if let Some(existing) = joined_dialogue_activation {
+            let next_ordinal: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM activation_signals WHERE activation_id = ?",
+            )
+            .bind(&existing.id)
+            .fetch_one(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO activation_signals (activation_id, signal_id, ordinal) VALUES (?, ?, ?)",
+            )
+            .bind(&existing.id)
+            .bind(&stored_signal.id)
+            .bind(next_ordinal)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "UPDATE thread_signals SET status = 'claimed', claimed_at = ? WHERE id = ? AND status = 'pending'",
+            )
+            .bind(&now)
+            .bind(&stored_signal.id)
+            .execute(&mut *tx)
+            .await?;
+            if candidate_thread_id != signal.thread_id {
+                sqlx::query(
+                    r#"DELETE FROM threads
+                       WHERE id = ?
+                         AND NOT EXISTS (
+                           SELECT 1 FROM thread_signals WHERE thread_id = ?
+                         )
+                         AND NOT EXISTS (
+                           SELECT 1 FROM thread_activations
+                           WHERE root_turn_id = threads.root_turn_id
+                         )"#,
+                )
+                .bind(&candidate_thread_id)
+                .bind(&candidate_thread_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
+            tracing::debug!(
+                session_id = %activation.session_id,
+                activation_id = %existing.id,
+                signal_id = %stored_signal.id,
+                "连续用户输入已加入下一批 DialogueTurn"
+            );
             return Ok(Some(existing));
         }
 
@@ -5322,6 +5473,40 @@ impl ActivationStore for SqliteStore {
                  JOIN threads ON threads.root_turn_id = activations.root_turn_id
                  WHERE activations.status = 'queued'
                    AND threads.executor_kind != 'artifact_transfer'
+                   AND (
+                     threads.kind != 'dialogue_turn'
+                     OR (
+                       NOT EXISTS (
+                         SELECT 1
+                         FROM thread_activations running
+                         JOIN threads running_thread
+                           ON running_thread.root_turn_id = running.root_turn_id
+                          AND running_thread.generation = running.generation
+                         WHERE running.session_id = activations.session_id
+                           AND running.status = 'running'
+                           AND running.id != activations.id
+                           AND running_thread.kind = 'dialogue_turn'
+                       )
+                       AND NOT EXISTS (
+                         SELECT 1
+                         FROM thread_activations older
+                         JOIN threads older_thread
+                           ON older_thread.root_turn_id = older.root_turn_id
+                          AND older_thread.generation = older.generation
+                         WHERE older.session_id = activations.session_id
+                           AND older.status = 'queued'
+                           AND older.id != activations.id
+                           AND older_thread.kind = 'dialogue_turn'
+                           AND (
+                             older.trigger_sequence < activations.trigger_sequence
+                             OR (
+                               older.trigger_sequence = activations.trigger_sequence
+                               AND older.id < activations.id
+                             )
+                           )
+                       )
+                     )
+                   )
                ), aged AS (
                  SELECT classified.*,
                         MAX(
@@ -5381,6 +5566,56 @@ impl ActivationStore for SqliteStore {
             .collect()
     }
 
+    async fn dialogue_turn_activation_runnable(
+        &self,
+        activation_id: &str,
+    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+        let runnable = sqlx::query_scalar::<_, i64>(
+            r#"SELECT CASE
+                 WHEN candidate_thread.kind != 'dialogue_turn' THEN 1
+                 WHEN EXISTS (
+                   SELECT 1
+                   FROM thread_activations running
+                   JOIN threads running_thread
+                     ON running_thread.root_turn_id = running.root_turn_id
+                    AND running_thread.generation = running.generation
+                   WHERE running.session_id = candidate.session_id
+                     AND running.status = 'running'
+                     AND running.id != candidate.id
+                     AND running_thread.kind = 'dialogue_turn'
+                 ) THEN 0
+                 WHEN EXISTS (
+                   SELECT 1
+                   FROM thread_activations older
+                   JOIN threads older_thread
+                     ON older_thread.root_turn_id = older.root_turn_id
+                    AND older_thread.generation = older.generation
+                   WHERE older.session_id = candidate.session_id
+                     AND older.status = 'queued'
+                     AND older.id != candidate.id
+                     AND older_thread.kind = 'dialogue_turn'
+                     AND (
+                       older.trigger_sequence < candidate.trigger_sequence
+                       OR (
+                         older.trigger_sequence = candidate.trigger_sequence
+                         AND older.id < candidate.id
+                       )
+                     )
+                 ) THEN 0
+                 ELSE 1
+               END
+               FROM thread_activations candidate
+               JOIN threads candidate_thread
+                 ON candidate_thread.root_turn_id = candidate.root_turn_id
+                AND candidate_thread.generation = candidate.generation
+               WHERE candidate.id = ?"#,
+        )
+        .bind(activation_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(runnable.map(|value| value != 0).unwrap_or(true))
+    }
+
     async fn update_thread_activation(
         &self,
         id: &str,
@@ -5400,6 +5635,72 @@ impl ActivationStore for SqliteStore {
             lease_expires_at.map(|value| value.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true));
         let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
         let mut tx = self.pool.begin().await?;
+        if status == ThreadActivationStatus::Running {
+            // Dialogue admission is a durable Session invariant, not merely
+            // an in-process mutex. Acquire SQLite writer ownership before the
+            // cross-row check so multiple Runtime processes cannot run two
+            // ordinary DialogueTurns for the same Session.
+            sqlx::query("UPDATE thread_activations SET revision = revision WHERE id = ?")
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            let route = sqlx::query(
+                r#"SELECT activation.session_id, activation.status, thread.kind
+                   FROM thread_activations activation
+                   JOIN threads thread
+                     ON thread.root_turn_id = activation.root_turn_id
+                    AND thread.generation = activation.generation
+                   WHERE activation.id = ?"#,
+            )
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(route) = route {
+                let queued_dialogue_turn = route.get::<String, _>("status") == "queued"
+                    && route.get::<String, _>("kind") == "dialogue_turn";
+                if queued_dialogue_turn {
+                    let session_id = route.get::<String, _>("session_id");
+                    let running_other: Option<String> = sqlx::query_scalar(
+                        r#"SELECT activation.id
+                           FROM thread_activations activation
+                           JOIN threads thread
+                             ON thread.root_turn_id = activation.root_turn_id
+                            AND thread.generation = activation.generation
+                           WHERE activation.session_id = ?
+                             AND activation.status = 'running'
+                             AND activation.id != ?
+                             AND thread.kind = 'dialogue_turn'
+                           LIMIT 1"#,
+                    )
+                    .bind(&session_id)
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                    let oldest_queued: Option<String> = sqlx::query_scalar(
+                        r#"SELECT activation.id
+                           FROM thread_activations activation
+                           JOIN threads thread
+                             ON thread.root_turn_id = activation.root_turn_id
+                            AND thread.generation = activation.generation
+                           WHERE activation.session_id = ?
+                             AND activation.status = 'queued'
+                             AND thread.kind = 'dialogue_turn'
+                           ORDER BY activation.trigger_sequence, activation.id
+                           LIMIT 1"#,
+                    )
+                    .bind(&session_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                    if running_other.is_some() || oldest_queued.as_deref() != Some(id) {
+                        tx.commit().await?;
+                        return Ok(match self.get_thread_activation(id).await? {
+                            Some(current) => ThreadActivationMutation::Conflict { current },
+                            None => ThreadActivationMutation::NotFound,
+                        });
+                    }
+                }
+            }
+        }
         let result = sqlx::query(
             r#"UPDATE thread_activations
                SET revision = revision + 1, status = ?, claimed_by = ?,
@@ -18025,6 +18326,277 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[tokio::test]
+    async fn consecutive_unread_user_messages_share_the_next_dialogue_turn() {
+        let tmp_file = NamedTempFile::new().unwrap();
+        let store = SqliteStore::new(tmp_file.path().to_str().unwrap())
+            .await
+            .unwrap();
+        store
+            .create_context(NewCognitiveContext {
+                id: "dialogue-batch-context".to_string(),
+                agent_id: "dialogue-batch-agent".to_string(),
+                title: "Dialogue Batch Context".to_string(),
+            })
+            .await
+            .unwrap();
+        store
+            .create_session(NewSession {
+                id: "dialogue-batch-session".to_string(),
+                agent_id: "dialogue-batch-agent".to_string(),
+                context_id: "dialogue-batch-context".to_string(),
+                parent_session_id: None,
+                title: "Dialogue Batch Session".to_string(),
+                mount_kind: SessionMountKind::ExistingContext,
+            })
+            .await
+            .unwrap();
+
+        for index in 1..=3 {
+            store
+                .ensure_thread(NewThread {
+                    id: format!("dialogue-batch-thread-{index}"),
+                    agent_id: "dialogue-batch-agent".to_string(),
+                    context_id: "dialogue-batch-context".to_string(),
+                    session_id: "dialogue-batch-session".to_string(),
+                    initiating_principal_id: Some("principal-reader".to_string()),
+                    root_turn_id: format!("dialogue-batch-event-{index}"),
+                    kind: ThreadKind::DialogueTurn,
+                    executor_kind: "self".to_string(),
+                    executor_id: None,
+                    target_id: None,
+                })
+                .await
+                .unwrap();
+            store
+                .append(Event::new(
+                    format!("dialogue-batch-event-{index}"),
+                    "fixture".to_string(),
+                    crate::event::TYPE_USER_MESSAGE.to_string(),
+                    "chat/user_message".to_string(),
+                    [
+                        (
+                            "context_id".to_string(),
+                            serde_json::json!("dialogue-batch-context"),
+                        ),
+                        (
+                            "session_id".to_string(),
+                            serde_json::json!("dialogue-batch-session"),
+                        ),
+                        (
+                            "root_turn_id".to_string(),
+                            serde_json::json!(format!("dialogue-batch-event-{index}")),
+                        ),
+                        (
+                            "principal_id".to_string(),
+                            serde_json::json!("principal-reader"),
+                        ),
+                        (
+                            "text".to_string(),
+                            serde_json::json!(format!("message {index}")),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+                .await
+                .unwrap();
+        }
+        let events = store
+            .query(QueryFilter {
+                context_id: Some("dialogue-batch-context".to_string()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let sequence = |index: usize| {
+            events
+                .iter()
+                .find(|event| event.id == format!("dialogue-batch-event-{index}"))
+                .and_then(|event| event.sequence)
+                .unwrap()
+        };
+        let signal = |index: usize| NewThreadSignal {
+            id: format!("dialogue-batch-signal-{index}"),
+            thread_id: format!("dialogue-batch-thread-{index}"),
+            event_id: format!("dialogue-batch-event-{index}"),
+            principal_id: Some("principal-reader".to_string()),
+            sequence: sequence(index),
+            kind: "chat/user_message".to_string(),
+            parent_activation_id: None,
+        };
+        let activation = |index: usize| NewThreadActivation {
+            id: format!("dialogue-batch-activation-{index}"),
+            agent_id: "dialogue-batch-agent".to_string(),
+            context_id: "dialogue-batch-context".to_string(),
+            session_id: "dialogue-batch-session".to_string(),
+            initiating_principal_id: Some("principal-reader".to_string()),
+            trigger_event_id: format!("dialogue-batch-event-{index}"),
+            trigger_sequence: sequence(index),
+            trigger_kind: "chat/user_message".to_string(),
+            parent_activation_id: None,
+            root_turn_id: format!("dialogue-batch-event-{index}"),
+        };
+
+        let first = store
+            .claim_thread_signal_batch(signal(1), activation(1), 32)
+            .await
+            .unwrap()
+            .unwrap();
+        let first = match store
+            .update_thread_activation(
+                &first.id,
+                first.revision,
+                ThreadActivationStatus::Running,
+                Some("worker-a"),
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(updated) => updated,
+            other => panic!("unexpected first activation mutation: {other:?}"),
+        };
+
+        let next = store
+            .claim_thread_signal_batch(signal(2), activation(2), 32)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(next.id, "dialogue-batch-activation-2");
+        let first = match store
+            .update_thread_activation(
+                &first.id,
+                first.revision,
+                ThreadActivationStatus::Running,
+                Some("worker-a"),
+                Some(Utc::now() + chrono::Duration::seconds(30)),
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(updated) => updated,
+            other => panic!("running DialogueTurn heartbeat was rejected: {other:?}"),
+        };
+        assert!(matches!(
+            store
+                .update_thread_activation(
+                    &next.id,
+                    next.revision,
+                    ThreadActivationStatus::Running,
+                    Some("worker-b"),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap(),
+            ThreadActivationMutation::Conflict { .. }
+        ));
+        assert!(
+            !store
+                .dialogue_turn_activation_runnable(&next.id)
+                .await
+                .unwrap(),
+            "the next DialogueTurn must stay outside admission while the current turn runs",
+        );
+        assert!(
+            store
+                .list_queued_thread_activations_for_admission(32, 8, 60_000)
+                .await
+                .unwrap()
+                .iter()
+                .all(|(activation, _)| activation.id != next.id),
+            "a blocked DialogueTurn must not busy-loop through the admission refill window",
+        );
+
+        let joined = store
+            .claim_thread_signal_batch(signal(3), activation(3), 32)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(joined.id, next.id);
+        assert_eq!(
+            store
+                .list_activation_signals(&next.id)
+                .await
+                .unwrap()
+                .iter()
+                .map(|signal| signal.event_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dialogue-batch-event-2", "dialogue-batch-event-3"],
+            "all unread messages must retain Ledger order in one next DialogueTurn",
+        );
+        assert!(
+            store
+                .get_thread("dialogue-batch-thread-3")
+                .await
+                .unwrap()
+                .is_none(),
+            "the unused candidate Thread must not leak into the scheduler",
+        );
+
+        let duplicate = store
+            .claim_thread_signal_batch(signal(3), activation(3), 32)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(duplicate.id, next.id);
+        assert_eq!(
+            store.list_activation_signals(&next.id).await.unwrap().len(),
+            2,
+            "redelivery must not duplicate a batched input",
+        );
+
+        let first = match store
+            .update_thread_activation(
+                &first.id,
+                first.revision,
+                ThreadActivationStatus::Succeeded,
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+        {
+            ThreadActivationMutation::Updated(updated) => updated,
+            other => panic!("unexpected first completion mutation: {other:?}"),
+        };
+        assert!(first.status.is_terminal());
+        assert!(
+            store
+                .dialogue_turn_activation_runnable(&next.id)
+                .await
+                .unwrap(),
+            "the queued DialogueTurn becomes runnable after the current turn leaves the lane",
+        );
+        assert!(
+            store
+                .list_queued_thread_activations_for_admission(32, 8, 60_000)
+                .await
+                .unwrap()
+                .iter()
+                .any(|(activation, _)| activation.id == next.id),
+            "the refill source must expose the next turn once its predecessor finishes",
+        );
+        assert!(matches!(
+            store
+                .update_thread_activation(
+                    &next.id,
+                    next.revision,
+                    ThreadActivationStatus::Running,
+                    Some("worker-b"),
+                    None,
+                    None,
+                )
+                .await
+                .unwrap(),
+            ThreadActivationMutation::Updated(_)
+        ));
     }
 
     #[tokio::test]

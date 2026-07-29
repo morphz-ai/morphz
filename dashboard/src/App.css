@@ -787,6 +787,9 @@ button.history-hint:disabled { cursor: wait; opacity: .7; }
 .message-row.background.objective-tinted { border-left-color: var(--objective-color); background: linear-gradient(90deg, color-mix(in srgb, var(--objective-color) 14%, transparent), transparent 72%); }
 .message-row.agent.objective-tinted:not(.streaming) { padding-left: 12px; border-left: 2px solid var(--objective-color); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: linear-gradient(90deg, color-mix(in srgb, var(--objective-color) 7%, transparent), transparent 68%); }
 .message-row.user.objective-tinted .message-body { border-color: color-mix(in srgb, var(--objective-color) 40%, var(--line)); box-shadow: inset 2px 0 0 var(--objective-color); }
+.message-row.user.awaiting-model-read .message-body { border-color: color-mix(in srgb, var(--yellow) 36%, var(--line)); background: linear-gradient(105deg, color-mix(in srgb, var(--yellow-soft) 50%, var(--surface-elevated)), var(--surface-elevated)); box-shadow: inset 2px 0 0 color-mix(in srgb, var(--yellow) 72%, transparent); }
+.message-input-queue-state { display: inline-flex; align-items: center; gap: 5px; margin-top: 6px; padding: 3px 7px; border: 1px solid color-mix(in srgb, var(--yellow) 25%, var(--line)); border-radius: 999px; background: color-mix(in srgb, var(--yellow-soft) 42%, var(--surface)); color: color-mix(in srgb, var(--yellow) 72%, var(--text-soft)); font: 600 9px/1.3 var(--mono); }
+.message-input-queue-state svg { opacity: .82; }
 .message-row.user { align-items: flex-end; }
 .message-row.agent { align-items: flex-start; }
 .message-row.background { padding: 14px 16px; border-left: 2px solid var(--accent); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; background: linear-gradient(90deg, var(--accent-soft), transparent 72%); }

@@ -5388,7 +5388,7 @@ fn render_evaluation_directive(
             ),
             pair(
                 "terminal",
-                atom("每个 user-request 都必须独立产生面向当前 Session 的普通文本回复，除非语义上确实应静默并显式调用 no_reply"),
+                atom("每个 DialogueTurn input batch 都必须产生一条面向当前 Session、覆盖其中全部连续输入的连贯普通文本回复，除非语义上确实应静默并显式调用 no_reply"),
             ),
         ];
     if !objective_context.is_empty() {
@@ -7957,6 +7957,45 @@ fn bounded_event_preview(event: Option<&Event>, max_chars: usize) -> String {
     )
 }
 
+fn dialogue_input_batch_preview(
+    effective_root: Option<&Event>,
+    signals: &[ThreadSignalRecord],
+    events: &[Event],
+) -> String {
+    let inputs = signals
+        .iter()
+        .filter(|signal| signal.kind == "chat/user_message")
+        .filter_map(|signal| {
+            events
+                .iter()
+                .find(|event| event.id == signal.event_id)
+                .map(|event| (signal, event))
+        })
+        .collect::<Vec<_>>();
+
+    if inputs.len() <= 1 {
+        return bounded_event_preview(
+            inputs.first().map(|(_, event)| *event).or(effective_root),
+            1_200,
+        );
+    }
+
+    inputs
+        .iter()
+        .enumerate()
+        .map(|(index, (signal, event))| {
+            format!(
+                "[input {} · event {} · sequence {}]\n{}",
+                index + 1,
+                signal.event_id,
+                signal.sequence,
+                bounded_event_preview(Some(*event), 1_200)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 fn activation_focus(
     activation: &ThreadActivationRecord,
     signals: &[ThreadSignalRecord],
@@ -8001,13 +8040,18 @@ fn activation_focus(
     } else {
         "execution"
     };
+    let root_preview = if root_kind == "chat/user_message" {
+        dialogue_input_batch_preview(effective_root, signals, events)
+    } else {
+        bounded_event_preview(effective_root, 1_200)
+    };
     ActivationFocus {
         activation_id: activation.id.clone(),
         session_id: activation.session_id.clone(),
         root_turn_id: activation.root_turn_id.clone(),
         thread_kind: thread_kind.to_string(),
         root_kind,
-        root_preview: bounded_event_preview(effective_root, 1_200),
+        root_preview,
         trigger_event_id: activation.trigger_event_id.clone(),
         trigger_kind: activation.trigger_kind.clone(),
         trigger_preview: if trigger.is_some_and(|event| event.event_type == TYPE_TOOL_OUTPUT) {
@@ -10712,6 +10756,56 @@ mod tests {
     }
 
     #[test]
+    fn dialogue_input_batch_preserves_message_order_and_boundaries() {
+        let events = [
+            ("user:b", "先把标题改短一点", 42),
+            ("user:c", "另外不要改变正文结构", 43),
+        ]
+        .into_iter()
+        .map(|(id, text, sequence)| {
+            let mut event = Event::new(
+                id.to_string(),
+                "User".to_string(),
+                TYPE_USER_MESSAGE.to_string(),
+                "chat/user_message".to_string(),
+                vec![("text".to_string(), json!(text))]
+                    .into_iter()
+                    .collect(),
+            );
+            event.sequence = Some(sequence);
+            event
+        })
+        .collect::<Vec<_>>();
+        let now = Utc::now();
+        let signals = events
+            .iter()
+            .map(|event| ThreadSignalRecord {
+                id: format!("signal:{}", event.id),
+                thread_id: "thread:next-dialogue".to_string(),
+                event_id: event.id.clone(),
+                principal_id: Some("principal-default".to_string()),
+                sequence: event.sequence.unwrap(),
+                kind: "chat/user_message".to_string(),
+                parent_activation_id: None,
+                status: ThreadSignalStatus::Claimed,
+                created_at: now,
+                claimed_at: Some(now),
+                acknowledged_at: None,
+            })
+            .collect::<Vec<_>>();
+
+        let preview = dialogue_input_batch_preview(events.first(), &signals, &events);
+        assert!(preview.contains("[input 1 · event user:b · sequence 42]"));
+        assert!(preview.contains("先把标题改短一点"));
+        assert!(preview.contains("[input 2 · event user:c · sequence 43]"));
+        assert!(preview.contains("另外不要改变正文结构"));
+        assert!(
+            preview.find("先把标题改短一点").unwrap()
+                < preview.find("另外不要改变正文结构").unwrap()
+        );
+    }
+
+    #[test]
     fn chronology_and_causality_are_runtime_facts() {
         let mut user = Event::new(
             "user:1".to_string(),
@@ -11436,7 +11530,7 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            store
+            let activation = store
                 .claim_thread_signal_batch(
                     crate::memory::NewThreadSignal {
                         id: format!("retirement-mail-{tick}"),
@@ -11477,6 +11571,21 @@ mod tests {
                 assert!(!view.state.retiring.contains_key("recent-memory"));
                 assert!(view.state.retired.contains("recent-memory"));
             }
+            let completed = store
+                .update_thread_activation(
+                    &activation.id,
+                    activation.revision,
+                    crate::memory::ThreadActivationStatus::Succeeded,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                completed,
+                crate::memory::ThreadActivationMutation::Updated(_)
+            ));
         }
 
         engine

@@ -354,6 +354,7 @@
     "copied": "已复制",
     "streaming": "正在生成",
     "waitingForModel": "等待模型求值",
+    "awaitingModelRead": "待模型读取",
     "reasoningCompleted": "推理已结束 · 等待最终输出",
     "waitingFinalOutput": "推理已经结束，模型尚未产生最终正文或工具调用。",
     "streamFailed": "流式响应失败",

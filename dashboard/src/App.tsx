@@ -3636,6 +3636,35 @@ export default function App() {
     () => schedulerSnapshot?.threads ?? [],
     [schedulerSnapshot],
   )
+  const queuedUserInputEventIds = useMemo(() => {
+    const eventIds = new Set<string>()
+    const collectPending = (signals: ThreadSignalRecord[]) => {
+      for (const signal of signals) {
+        if (signal.kind === 'chat/user_message' && signal.status === 'pending') {
+          eventIds.add(signal.event_id)
+        }
+      }
+    }
+    const collectActivation = (snapshot: SchedulerSnapshot['orphan_activations'][number]) => {
+      if (snapshot.activation.status !== 'queued') return
+      for (const signal of snapshot.signals) {
+        if (signal.kind === 'chat/user_message') eventIds.add(signal.event_id)
+      }
+    }
+    for (const snapshot of schedulerThreads) {
+      collectPending(snapshot.pending_signals)
+      for (const activation of snapshot.activations) collectActivation(activation)
+    }
+    for (const signal of schedulerSnapshot?.orphan_signals ?? []) {
+      if (signal.kind === 'chat/user_message' && signal.status !== 'acknowledged') {
+        eventIds.add(signal.event_id)
+      }
+    }
+    for (const activation of schedulerSnapshot?.orphan_activations ?? []) {
+      collectActivation(activation)
+    }
+    return eventIds
+  }, [schedulerSnapshot?.orphan_activations, schedulerSnapshot?.orphan_signals, schedulerThreads])
   const objectives = useMemo(
     () => contextOverview?.objectives ?? contextView?.objectives ?? [],
     [contextOverview?.objectives, contextView?.objectives],
@@ -5831,6 +5860,7 @@ export default function App() {
                   const kind = eventKind(event) ?? 'system'
                   const lineage = objectiveLineage.forEvent(event)
                   const tintStyle = tintStyleForLineage(lineage)
+                  const waitingForModelRead = kind === 'user' && queuedUserInputEventIds.has(event.id)
                   if (kind === 'progress') {
                     return <div className={`progress-note ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id}><i /> <div className="progress-note-body"><MarkdownBody text={typeof event.payload.text === 'string' ? event.payload.text : ''} /></div><time>{formatTime(event.timestamp, i18n.language)}</time></div>
                   }
@@ -5894,7 +5924,7 @@ export default function App() {
                   const derivedThreads = derivedThreadsByRootTurn.get(event.id) ?? []
                   const retryableTurn = retryableDialogueThread(schedulerThreads, event.id, event.payload)
                   return (
-                    <article className={`message-row ${kind} ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
+                    <article className={`message-row ${kind} ${waitingForModelRead ? 'awaiting-model-read' : ''} ${tintStyleForLineage(lineage) ? 'objective-tinted' : ''}`} style={tintStyle} key={event.id} data-event-id={event.id} data-event-actor={event.actor} data-event-time={event.timestamp}>
                       {showRole && (
                         <div className="message-role">
                           <strong>{role}</strong>
@@ -5920,6 +5950,12 @@ export default function App() {
                           : event.payload.attachments?.length ? null : t('conversation.noText')}
                       </div>
                       <MessageAttachments attachments={event.payload.attachments} />
+                      {waitingForModelRead && (
+                        <div className="message-input-queue-state" role="status">
+                          <Clock3 size={11} />
+                          <span>{t('conversation.awaitingModelRead')}</span>
+                        </div>
+                      )}
                       {retryableTurn && (
                         <div className="message-retry-panel">
                           <span>

@@ -223,13 +223,13 @@ v7 新增的 checkpoint 在该轨迹中调用 0 次，因此效率差异不能�
 
 首次运行还暴露并定位了一个通用 Runtime 缺陷：含英文单引号的 SExpr Atom 在 canonical serialization 时没有重新加双引号，导致事务已提交后无法确定性重放。修复后新增了 Atom 与完整 transaction 的 round-trip 回归测试，并在干净运行中实现 7 次 commit、0 次失败。
 
-## 12. 由真实轨迹驱动的通用工具反馈
+## 12. 重复读取实验的结论
 
 Operations Continuity 的 v7 诊断样本出现 5 次 `READ_ALREADY_COVERED`，Autonomous Transfer 首样本出现 1 次。这说明重复读取不是新闻系统或某个业务场景的特例。
 
-Read guard 现在为每一种 full/range/query 覆盖记录最初 read 的 tool-output Event ID。后续重复 read 被拒绝时，如果原证据已经进入 Ledger，反馈会提供其稳定短引用（例如 `@e27`），使模型能回到已有 read 结果与 sha256，而不是只收到“已经读过”的否定信息。同一批并行调用尚未写入 Ledger 时，反馈明确指向本批较早的 read 输出。
+早期 Runtime 曾通过 Read guard 拒绝同一 Root Turn 内的重复 `read`，并把模型导向已有 Ledger 证据。后续真实运行证明，这种成本优化启发式不应成为工具执行规则：Context maintenance 可能已经 retire 原证据，模型也可能有意重新聚焦当前文件内容。硬拒绝会迫使模型额外调用 recall，反而增加求值轮次与 Token，并且让 Runtime 越权替模型判断“是否还需要读取”。
 
-该改动只改善证据寻址，不替模型摘要、不判断业务真伪，也不把特定任务规则写入 Runtime。其效率收益仍需 5 次配对样本验证。
+因此该机制已从执行路径移除。`read` 恢复为稳定、直接的工具契约：模型请求读取，Runtime 就返回当前内容。重复读取仍可通过普通工具事件观测和评测，但不再被 Runtime 拒绝；真正的无进展循环应由更高层诊断处理。
 
 评测报告同时修正了一个指标语义问题：`stage_completion_rate` 现在表示已执行阶段/计划阶段；新增 `strict_stage_pass_rate` 表示严格通过阶段/已执行阶段，避免把“全部执行但一项回复扣分”误报为未完成。
 

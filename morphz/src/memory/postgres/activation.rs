@@ -222,7 +222,7 @@ impl ActivationStore for PostgresStore {
 
     async fn claim_thread_signal_batch(
         &self,
-        signal: NewThreadSignal,
+        mut signal: NewThreadSignal,
         activation: NewThreadActivation,
         max_signals: usize,
     ) -> Result<Option<ThreadActivationRecord>, StoreError> {
@@ -232,6 +232,66 @@ impl ActivationStore for PostgresStore {
         let max_signals = i64::try_from(max_signals)?;
         let now = now_text();
         let mut tx = self.pool.begin().await?;
+        let candidate_thread_id = signal.thread_id.clone();
+        if signal.kind == "chat/user_message" {
+            // Lock the Session, rather than one candidate Thread, because the
+            // dialogue lane is shared by every consecutive user input in that
+            // Session and by every Runtime worker.
+            sqlx::query("SELECT id FROM sessions WHERE id = $1 FOR UPDATE")
+                .bind(&activation.session_id)
+                .fetch_one(&mut *tx)
+                .await?;
+        }
+        let preexisting_signal_thread: Option<String> =
+            sqlx::query_scalar("SELECT thread_id FROM thread_signals WHERE event_id = $1")
+                .bind(&signal.event_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        if let Some(thread_id) = preexisting_signal_thread.as_ref() {
+            signal.thread_id = thread_id.clone();
+        }
+        let candidate_thread = sqlx::query("SELECT * FROM threads WHERE id = $1")
+            .bind(&signal.thread_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let candidate_thread = thread_from_row(&candidate_thread)?;
+        let mut joined_dialogue_activation = None;
+        if preexisting_signal_thread.is_none()
+            && signal.kind == "chat/user_message"
+            && candidate_thread.kind == ThreadKind::DialogueTurn
+        {
+            if let Some(row) = sqlx::query(
+                r#"SELECT queued.*, thread.id AS routed_thread_id
+                   FROM thread_activations queued
+                   JOIN threads thread
+                     ON thread.root_turn_id = queued.root_turn_id
+                    AND thread.generation = queued.generation
+                   WHERE queued.session_id = $1
+                     AND queued.status = 'queued'
+                     AND queued.trigger_kind = 'chat/user_message'
+                     AND thread.kind = 'dialogue_turn'
+                     AND thread.status = 'open'
+                     AND thread.control_state = 'active'
+                     AND (
+                       SELECT COUNT(*)
+                       FROM activation_signals links
+                       WHERE links.activation_id = queued.id
+                     ) < $2
+                     AND queued.initiating_principal_id IS NOT DISTINCT FROM $3
+                   ORDER BY queued.trigger_sequence, queued.id
+                   LIMIT 1
+                   FOR UPDATE OF queued, thread"#,
+            )
+            .bind(&activation.session_id)
+            .bind(max_signals)
+            .bind(&signal.principal_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            {
+                signal.thread_id = row.get("routed_thread_id");
+                joined_dialogue_activation = Some(activation_from_row(&row)?);
+            }
+        }
         sqlx::query(
             r#"INSERT INTO thread_signals
                (id, thread_id, event_id, principal_id, sequence, kind, parent_activation_id,
@@ -316,7 +376,72 @@ impl ActivationStore for PostgresStore {
         .await?
         {
             let existing = activation_from_row(&row)?;
+            if candidate_thread_id != stored_signal.thread_id {
+                sqlx::query(
+                    r#"DELETE FROM threads candidate
+                       WHERE candidate.id = $1
+                         AND NOT EXISTS (
+                           SELECT 1 FROM thread_signals WHERE thread_id = candidate.id
+                         )
+                         AND NOT EXISTS (
+                           SELECT 1 FROM thread_activations
+                           WHERE root_turn_id = candidate.root_turn_id
+                         )"#,
+                )
+                .bind(&candidate_thread_id)
+                .execute(&mut *tx)
+                .await?;
+            }
             tx.commit().await?;
+            return Ok(Some(existing));
+        }
+
+        if let Some(existing) = joined_dialogue_activation {
+            let next_ordinal: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(ordinal), -1) + 1 FROM activation_signals WHERE activation_id = $1",
+            )
+            .bind(&existing.id)
+            .fetch_one(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO activation_signals (activation_id, signal_id, ordinal) VALUES ($1, $2, $3)",
+            )
+            .bind(&existing.id)
+            .bind(&stored_signal.id)
+            .bind(next_ordinal)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"UPDATE thread_signals SET status = 'claimed', claimed_at = $1
+                   WHERE id = $2 AND status = 'pending'"#,
+            )
+            .bind(&now)
+            .bind(&stored_signal.id)
+            .execute(&mut *tx)
+            .await?;
+            if candidate_thread_id != signal.thread_id {
+                sqlx::query(
+                    r#"DELETE FROM threads candidate
+                       WHERE candidate.id = $1
+                         AND NOT EXISTS (
+                           SELECT 1 FROM thread_signals WHERE thread_id = candidate.id
+                         )
+                         AND NOT EXISTS (
+                           SELECT 1 FROM thread_activations
+                           WHERE root_turn_id = candidate.root_turn_id
+                         )"#,
+                )
+                .bind(&candidate_thread_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            tx.commit().await?;
+            tracing::debug!(
+                session_id = %activation.session_id,
+                activation_id = %existing.id,
+                signal_id = %stored_signal.id,
+                "连续用户输入已加入下一批 DialogueTurn"
+            );
             return Ok(Some(existing));
         }
 
@@ -789,6 +914,40 @@ impl ActivationStore for PostgresStore {
                  JOIN threads ON threads.root_turn_id = activations.root_turn_id
                  WHERE activations.status = 'queued'
                    AND threads.executor_kind != 'artifact_transfer'
+                   AND (
+                     threads.kind != 'dialogue_turn'
+                     OR (
+                       NOT EXISTS (
+                         SELECT 1
+                         FROM thread_activations running
+                         JOIN threads running_thread
+                           ON running_thread.root_turn_id = running.root_turn_id
+                          AND running_thread.generation = running.generation
+                         WHERE running.session_id = activations.session_id
+                           AND running.status = 'running'
+                           AND running.id != activations.id
+                           AND running_thread.kind = 'dialogue_turn'
+                       )
+                       AND NOT EXISTS (
+                         SELECT 1
+                         FROM thread_activations older
+                         JOIN threads older_thread
+                           ON older_thread.root_turn_id = older.root_turn_id
+                          AND older_thread.generation = older.generation
+                         WHERE older.session_id = activations.session_id
+                           AND older.status = 'queued'
+                           AND older.id != activations.id
+                           AND older_thread.kind = 'dialogue_turn'
+                           AND (
+                             older.trigger_sequence < activations.trigger_sequence
+                             OR (
+                               older.trigger_sequence = activations.trigger_sequence
+                               AND older.id < activations.id
+                             )
+                           )
+                       )
+                     )
+                   )
                ), aged AS (
                  SELECT classified.*,
                    GREATEST(0, admission_rank - FLOOR(
@@ -828,6 +987,56 @@ impl ActivationStore for PostgresStore {
             .collect()
     }
 
+    async fn dialogue_turn_activation_runnable(
+        &self,
+        activation_id: &str,
+    ) -> Result<bool, StoreError> {
+        let runnable = sqlx::query_scalar::<_, bool>(
+            r#"SELECT CASE
+                 WHEN candidate_thread.kind != 'dialogue_turn' THEN TRUE
+                 WHEN EXISTS (
+                   SELECT 1
+                   FROM thread_activations running
+                   JOIN threads running_thread
+                     ON running_thread.root_turn_id = running.root_turn_id
+                    AND running_thread.generation = running.generation
+                   WHERE running.session_id = candidate.session_id
+                     AND running.status = 'running'
+                     AND running.id != candidate.id
+                     AND running_thread.kind = 'dialogue_turn'
+                 ) THEN FALSE
+                 WHEN EXISTS (
+                   SELECT 1
+                   FROM thread_activations older
+                   JOIN threads older_thread
+                     ON older_thread.root_turn_id = older.root_turn_id
+                    AND older_thread.generation = older.generation
+                   WHERE older.session_id = candidate.session_id
+                     AND older.status = 'queued'
+                     AND older.id != candidate.id
+                     AND older_thread.kind = 'dialogue_turn'
+                     AND (
+                       older.trigger_sequence < candidate.trigger_sequence
+                       OR (
+                         older.trigger_sequence = candidate.trigger_sequence
+                         AND older.id < candidate.id
+                       )
+                     )
+                 ) THEN FALSE
+                 ELSE TRUE
+               END
+               FROM thread_activations candidate
+               JOIN threads candidate_thread
+                 ON candidate_thread.root_turn_id = candidate.root_turn_id
+                AND candidate_thread.generation = candidate.generation
+               WHERE candidate.id = $1"#,
+        )
+        .bind(activation_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(runnable.unwrap_or(true))
+    }
+
     async fn update_thread_activation(
         &self,
         id: &str,
@@ -839,6 +1048,68 @@ impl ActivationStore for PostgresStore {
     ) -> Result<ThreadActivationMutation, StoreError> {
         let now = now_text();
         let mut tx = self.pool.begin().await?;
+        if status == ThreadActivationStatus::Running {
+            let route = sqlx::query(
+                r#"SELECT activation.session_id, activation.status, thread.kind
+                   FROM thread_activations activation
+                   JOIN threads thread
+                     ON thread.root_turn_id = activation.root_turn_id
+                    AND thread.generation = activation.generation
+                   WHERE activation.id = $1"#,
+            )
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            if let Some(route) = route {
+                let queued_dialogue_turn = route.get::<String, _>("status") == "queued"
+                    && route.get::<String, _>("kind") == "dialogue_turn";
+                if queued_dialogue_turn {
+                    let session_id = route.get::<String, _>("session_id");
+                    sqlx::query("SELECT id FROM sessions WHERE id = $1 FOR UPDATE")
+                        .bind(&session_id)
+                        .fetch_one(&mut *tx)
+                        .await?;
+                    let running_other: Option<String> = sqlx::query_scalar(
+                        r#"SELECT activation.id
+                           FROM thread_activations activation
+                           JOIN threads thread
+                             ON thread.root_turn_id = activation.root_turn_id
+                            AND thread.generation = activation.generation
+                           WHERE activation.session_id = $1
+                             AND activation.status = 'running'
+                             AND activation.id != $2
+                             AND thread.kind = 'dialogue_turn'
+                           LIMIT 1"#,
+                    )
+                    .bind(&session_id)
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                    let oldest_queued: Option<String> = sqlx::query_scalar(
+                        r#"SELECT activation.id
+                           FROM thread_activations activation
+                           JOIN threads thread
+                             ON thread.root_turn_id = activation.root_turn_id
+                            AND thread.generation = activation.generation
+                           WHERE activation.session_id = $1
+                             AND activation.status = 'queued'
+                             AND thread.kind = 'dialogue_turn'
+                           ORDER BY activation.trigger_sequence, activation.id
+                           LIMIT 1"#,
+                    )
+                    .bind(&session_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                    if running_other.is_some() || oldest_queued.as_deref() != Some(id) {
+                        tx.commit().await?;
+                        return Ok(match self.get_thread_activation(id).await? {
+                            Some(current) => ThreadActivationMutation::Conflict { current },
+                            None => ThreadActivationMutation::NotFound,
+                        });
+                    }
+                }
+            }
+        }
         let result = sqlx::query(
             r#"UPDATE thread_activations SET revision = revision + 1, status = $1,
                claimed_by = $2, lease_expires_at = $3,

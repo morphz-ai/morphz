@@ -7797,7 +7797,7 @@ Body
     }
 
     #[tokio::test]
-    async fn test_file_tools() {
+    async fn test_file_tools_allow_repeated_reads() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("note.txt");
         let path_str = path.to_str().unwrap().to_string();
@@ -7820,6 +7820,8 @@ Body
 
         let read_res = read_tool.execute(&read_args.to_string()).await.unwrap();
         assert!(read_res.ends_with("hello rust tool"));
+        let repeated_read_res = read_tool.execute(&read_args.to_string()).await.unwrap();
+        assert_eq!(repeated_read_res, read_res);
         let hash = hash_from_read(&read_res).to_string();
 
         let overwrite_res = write_tool
@@ -9463,7 +9465,7 @@ Body
 
         let output = Event::new(
             format!("output_{}_{}", route.activation_id, tool_call_id),
-            "System-ReadGuard".to_string(),
+            "System-Tool".to_string(),
             TYPE_TOOL_OUTPUT.to_string(),
             "chat/tool_output".to_string(),
             serde_json::Map::from_iter([
@@ -9487,14 +9489,14 @@ Body
                 ("tool_call_id".to_string(), serde_json::json!(tool_call_id)),
                 ("caused_by".to_string(), serde_json::json!(tool_call_id)),
                 ("tool_name".to_string(), serde_json::json!("read")),
-                ("tool_status".to_string(), serde_json::json!("guarded")),
+                ("tool_status".to_string(), serde_json::json!("success")),
                 (
                     "action_group_id".to_string(),
                     serde_json::json!("group-result-first"),
                 ),
                 (
                     "text".to_string(),
-                    serde_json::json!("READ_ALREADY_COVERED"),
+                    serde_json::json!("[path=README.md]\ncontents"),
                 ),
             ]),
         );
@@ -9525,7 +9527,7 @@ Body
         assert_eq!(queued_job.status, ExecutionJobStatus::Queued);
         let queued_output = Event::new(
             format!("output_{}_{}", route.activation_id, queued_call_id),
-            "System-ReadGuard".to_string(),
+            "System-Tool".to_string(),
             TYPE_TOOL_OUTPUT.to_string(),
             "chat/tool_output".to_string(),
             serde_json::Map::from_iter([
@@ -9552,14 +9554,14 @@ Body
                 ),
                 ("caused_by".to_string(), serde_json::json!(queued_call_id)),
                 ("tool_name".to_string(), serde_json::json!("read")),
-                ("tool_status".to_string(), serde_json::json!("guarded")),
+                ("tool_status".to_string(), serde_json::json!("success")),
                 (
                     "action_group_id".to_string(),
                     serde_json::json!("group-result-first"),
                 ),
                 (
                     "text".to_string(),
-                    serde_json::json!("READ_ALREADY_COVERED"),
+                    serde_json::json!("[path=Cargo.toml]\ncontents"),
                 ),
             ]),
         );

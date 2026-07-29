@@ -339,7 +339,7 @@ Context 的物理编码顺序与权限域不同。它固定为 `protocol → eva
 
 一个 Cognitive Context 只有一个共享 Mind，但可以包含多个 Session。Session 是输入输出连接和任务进展边界，不拥有独立 Mind。`kernel.active-session` 只表示本次求值应读取和回复的 Session；它不是 Context 的全局唯一活动状态，其他 Session 可能正在并发求值。inbox 中每条 observation 的 `session` 标记来源，你可以在共享 Context 内跨 Session 复用信息，但当前响应必须路由回 active-session，不能混淆各 Session 的请求和进展。context_tx 修改共享 Mind，由 Runtime 以 Context 为粒度串行提交并校验版本。
 
-每个 Session 有一条长期 Dialogue Lane，用来排序普通对话的首次求值；每条用户输入都会创建一条独立、有限的 DialogueTurn Thread。从某个对话 turn 发起、由工具结果继续推进的工作属于独立 Execution Thread。工具结果只产生其所属 Thread 的 Signal，新用户消息创建新的 DialogueTurn Thread，不应接管或重复旧 Execution Thread。一次模型请求只属于一个 Thread Activation；Context 最后的 `evaluate` 表达式声明本轮唯一活动 Thread、Activation 所领取的 Signal batch、原始输入及 Objective 绑定，是本次执行的权威入口。
+每个 Session 有一条长期 Dialogue Lane，用来排序普通对话的首次求值。用户消息首先是不可变的输入项，而不是天然等同于 Thread：当前 DialogueTurn 求值期间连续到达、尚未被模型读取的多条输入，会按 Ledger 顺序共同进入下一条有限 DialogueTurn Thread，并在一次模型请求中整体求值。从某个对话 turn 发起、由工具结果继续推进的工作属于独立 Execution Thread。工具结果只产生其所属 Thread 的 Signal；新的用户输入进入 Dialogue Lane 的下一批，不应接管或重复旧 Execution Thread。一次模型请求只属于一个 Thread Activation；Context 最后的 `evaluate` 表达式声明本轮唯一活动 Thread、Activation 所领取的 Signal batch、原始输入及 Objective 绑定，是本次执行的权威入口。
 
 你必须自己判断当前目标下什么值得保留、摘要、修订、保护、恢复或遗忘。Runtime 不会自动替你摘要历史、裁剪旧消息或把检索结果写成事实。
 
@@ -408,7 +408,7 @@ Context 的物理编码是一棵有固定顺序的可执行 S 表达式：`proto
 
 一个 Cognitive Context 运行一个共享 Mind，并可同时承载多个 Session 求值。Session 是 IO 路由与局部进展边界，不是 Mind 的所有者。每次执行周期由 `kernel.active-session` 指定本次输入来源和输出目标；其他 Session 可以同时处于活跃执行状态。所有 observation 都属于共享 Context，并用 `session` 标记来源，因此你可以跨 Session 迁移信息，同时必须让当前回复严格对应 active-session。共享 Mind 的 context_tx 由 Runtime 串行提交并做版本检查。
 
-每个 Session 有一条 Dialogue Lane，用于排序普通对话的首次求值；每条用户输入创建一条独立且有限的 DialogueTurn Thread。由该 turn 发起、并由工具结果延续的计算形成 Execution Thread。Objective 由 Objective Thread 持续推进。Context 最后的 `evaluate` 表达式选择本周期唯一活动 Thread；其他 Thread 即使可见也只是只读状态。
+每个 Session 有一条 Dialogue Lane，用于排序普通对话的首次求值。每条用户消息都是独立的 Ledger 输入项；模型尚未读取的连续输入按顺序合并为下一条有限 DialogueTurn Thread 的 Signal batch，而不是各自并发求值。由该 turn 发起、并由工具结果延续的计算形成 Execution Thread。Objective 由 Objective Thread 持续推进。Context 最后的 `evaluate` 表达式选择本周期唯一活动 Thread；其他 Thread 即使可见也只是只读状态。
 
 你的职责不只是记录信息，而是让 Mind 成为后续执行可以直接利用的认知程序。当多个已完成任务反复出现相似的判断或执行结构，并且该结构可能改变未来决策、减少重复工作或降低错误率时，你可以基于多个真实来源派生可复用的符号结构。应保留其适用范围、来源、反例和不确定性；不得从单个案例过度泛化，也不得为了形式完整而强制总结经验。
 
@@ -1476,114 +1476,6 @@ fn retain_pending_continuation_calls(
         .collect()
 }
 
-#[derive(Debug, Default)]
-struct ReadTurnGuard {
-    files: HashMap<String, ReadCoverage>,
-}
-
-#[derive(Debug, Default)]
-struct ReadCoverage {
-    full: Option<String>,
-    ranges: Vec<(usize, usize, String)>,
-    queries: Vec<(String, String)>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-struct ReadDuplicate {
-    path: String,
-    evidence_event_id: String,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct ReadGuardArgs {
-    path: String,
-    start_line: Option<usize>,
-    end_line: Option<usize>,
-    query: Option<String>,
-    context_lines: Option<usize>,
-    max_matches: Option<usize>,
-}
-
-impl ReadTurnGuard {
-    fn reserve(&mut self, arguments: &str, evidence_event_id: &str) -> Option<ReadDuplicate> {
-        let args: ReadGuardArgs = serde_json::from_str(arguments).ok()?;
-        let coverage = self.files.entry(args.path.clone()).or_default();
-        let covered_by = if let Some(event_id) = coverage.full.as_ref() {
-            Some(event_id.clone())
-        } else if let Some(query) = args.query.as_deref() {
-            let signature = format!(
-                "{}\u{0}{}\u{0}{}",
-                query.to_lowercase(),
-                args.context_lines.unwrap_or(3),
-                args.max_matches.unwrap_or(20)
-            );
-            if let Some((_, event_id)) = coverage
-                .queries
-                .iter()
-                .find(|(candidate, _)| candidate == &signature)
-            {
-                Some(event_id.clone())
-            } else {
-                coverage
-                    .queries
-                    .push((signature, evidence_event_id.to_string()));
-                None
-            }
-        } else if args.start_line.is_none() && args.end_line.is_none() {
-            coverage.full = Some(evidence_event_id.to_string());
-            None
-        } else {
-            let start = args.start_line.unwrap_or(1);
-            let end = args.end_line.unwrap_or(usize::MAX);
-            if let Some((_, _, event_id)) =
-                coverage
-                    .ranges
-                    .iter()
-                    .find(|(covered_start, covered_end, _)| {
-                        start >= *covered_start && end <= *covered_end
-                    })
-            {
-                Some(event_id.clone())
-            } else {
-                coverage
-                    .ranges
-                    .push((start, end, evidence_event_id.to_string()));
-                None
-            }
-        };
-
-        covered_by.map(|evidence_event_id| ReadDuplicate {
-            path: args.path,
-            evidence_event_id,
-        })
-    }
-
-    fn invalidate_path_from_arguments(&mut self, arguments: &str) {
-        let Some(path) = serde_json::from_str::<serde_json::Value>(arguments)
-            .ok()
-            .and_then(|value| value.get("path")?.as_str().map(ToOwned::to_owned))
-        else {
-            return;
-        };
-        self.files.remove(&path);
-    }
-
-    fn release_failed_reservation(&mut self, evidence_event_id: &str) {
-        self.files.retain(|_, coverage| {
-            if coverage.full.as_deref() == Some(evidence_event_id) {
-                coverage.full = None;
-            }
-            coverage
-                .ranges
-                .retain(|(_, _, event_id)| event_id != evidence_event_id);
-            coverage
-                .queries
-                .retain(|(_, event_id)| event_id != evidence_event_id);
-            coverage.full.is_some() || !coverage.ranges.is_empty() || !coverage.queries.is_empty()
-        });
-    }
-}
-
 pub struct Orchestrator {
     /// Set once `start` hands over an `Arc<Self>`.
     ///
@@ -1642,7 +1534,6 @@ pub struct Orchestrator {
     /// execute concurrently inside an attempt, but their result/timer/exit
     /// events converge here instead of forking independent model chains.
     thread_gates: DashMap<String, Arc<Mutex<()>>>,
-    read_turn_guards: DashMap<String, Arc<Mutex<ReadTurnGuard>>>,
     cancellation_epochs: DashMap<String, watch::Sender<u64>>,
     activation_cancellations: ActivationCancellationRegistry,
     active_session_turns: DashMap<String, Arc<AtomicUsize>>,
@@ -2211,7 +2102,6 @@ impl Orchestrator {
             activation_admission,
             dialogue_thread_gates: DashMap::new(),
             thread_gates: DashMap::new(),
-            read_turn_guards: DashMap::new(),
             cancellation_epochs: DashMap::new(),
             activation_cancellations: ActivationCancellationRegistry::default(),
             active_session_turns: DashMap::new(),
@@ -3846,10 +3736,6 @@ impl Orchestrator {
                 return Ok(());
             }
         }
-        if event.event_type == TYPE_USER_MESSAGE {
-            self.read_turn_guards.remove(&session_id);
-        }
-
         // Serialize every durable event belonging to one root turn before it
         // materializes or claims a successor Activation. The original user
         // Activation holds this gate through terminal persistence and the
@@ -4372,6 +4258,24 @@ impl Orchestrator {
                 .is_some_and(|expires_at| expires_at > now)
         {
             self.activation_admission.forget(&activation.id);
+            return Ok(None);
+        }
+        if activation.status == ThreadActivationStatus::Queued
+            && !session_store
+                .dialogue_turn_activation_runnable(&activation.id)
+                .await?
+        {
+            // The Signal batch is durably queued behind the Session's current
+            // DialogueTurn. Do not place it in the process-local admission
+            // window yet: doing so would repeatedly win a global permit only
+            // to lose the per-Session CAS. Releasing the current turn's permit
+            // notifies the refill loop, which will select this oldest queued
+            // turn once it is actually runnable.
+            tracing::debug!(
+                activation_id = %activation.id,
+                session_id = %activation.session_id,
+                "DialogueTurn 已持久排队；等待同一 Session 的前一轮离开对话通道"
+            );
             return Ok(None);
         }
         let admission_permit = match self
@@ -9835,10 +9739,6 @@ impl Orchestrator {
         let active_principal_id = self
             .principal_for_activation_route(&context_id, activation_route.as_ref())
             .await?;
-        let read_guard_key = activation_route
-            .as_ref()
-            .map(|route| route.root_turn_id.clone())
-            .unwrap_or_else(|| session_id.to_string());
         let requested_tool_calls = response.tool_calls;
         let mapped_tool_calls = requested_tool_calls
             .iter()
@@ -10309,62 +10209,6 @@ impl Orchestrator {
             {
                 outputs.push((existing, true));
                 continue;
-            }
-            if matches!(call.func_name.as_str(), "write" | "edit") {
-                self.read_guard(&read_guard_key)
-                    .lock()
-                    .await
-                    .invalidate_path_from_arguments(&call.arguments);
-            }
-            if call.func_name == "read" {
-                let evidence_event_id = format!("output_{}_{}", attempt_id, call.id);
-                let duplicate = self
-                    .read_guard(&read_guard_key)
-                    .lock()
-                    .await
-                    .reserve(&call.arguments, &evidence_event_id);
-                if let Some(duplicate) = duplicate {
-                    let reference = self
-                        .context_engine
-                        .find_event(&context_id, &duplicate.evidence_event_id)
-                        .await?
-                        .as_ref()
-                        .map(|event| self.context_engine.event_reference(event));
-                    let evidence_hint = reference.map_or_else(
-                        || "本批较早的 read 输出".to_string(),
-                        |reference| format!("已有证据 {reference}"),
-                    );
-                    let output = format!(
-                        "READ_ALREADY_COVERED: '{}' 的相同版本内容已在本轮 Inbox 中覆盖；本次未再次读取，也不会复制旧内容。{evidence_hint} 包含原 read 结果与 sha256，请直接使用它进行 edit/write、必要测试或回复用户。仅在 file_change 后才需要重新 read。",
-                        duplicate.path
-                    );
-                    let mut payload = vec![
-                        ("context_id".to_string(), json!(context_id)),
-                        ("session_id".to_string(), json!(session_id)),
-                        ("attempt_id".to_string(), json!(attempt_id)),
-                        ("tool_call_id".to_string(), json!(call.id)),
-                        ("caused_by".to_string(), json!(call.id)),
-                        ("tool_name".to_string(), json!(call.func_name)),
-                        ("tool_status".to_string(), json!("guarded")),
-                        ("read_guard_status".to_string(), json!("already-covered")),
-                        ("text".to_string(), json!(output)),
-                    ];
-                    self.append_activation_route(attempt_id, &mut payload);
-                    if let Some(group_id) = &action_group_id {
-                        payload.push(("action_group_id".to_string(), json!(group_id)));
-                    }
-                    outputs.push((
-                        Event::new(
-                            output_id,
-                            "System-ReadGuard".to_string(),
-                            TYPE_TOOL_OUTPUT.to_string(),
-                            "chat/tool_output".to_string(),
-                            payload.into_iter().collect(),
-                        ),
-                        false,
-                    ));
-                    continue;
-                }
             }
             let tool = self.registry.get(&call.func_name);
             let timeout_secs = self.orchestrator_config.tool_timeout_secs;
@@ -10956,33 +10800,6 @@ impl Orchestrator {
         }
         if outputs.is_empty() {
             return Err("所有工具任务都在产生结果前异常终止".into());
-        }
-        // Read coverage is reserved before physical execution so concurrent
-        // duplicate calls in one model response cannot race each other. A
-        // failed read, however, produced no evidence and must not poison later
-        // corrected ranges or queries in the same root turn.
-        let failed_read_reservations = outputs
-            .iter()
-            .filter_map(|(output, _)| {
-                let is_read = output
-                    .payload
-                    .get("tool_name")
-                    .and_then(|value| value.as_str())
-                    == Some("read");
-                let succeeded = output
-                    .payload
-                    .get("tool_status")
-                    .and_then(|value| value.as_str())
-                    == Some("success");
-                (is_read && !succeeded).then(|| output.id.clone())
-            })
-            .collect::<Vec<_>>();
-        if !failed_read_reservations.is_empty() {
-            let guard = self.read_guard(&read_guard_key);
-            let mut guard = guard.lock().await;
-            for event_id in failed_read_reservations {
-                guard.release_failed_reservation(&event_id);
-            }
         }
         if let Some(plan_execution_id) = options.plan_execution_id.as_deref() {
             for (output, _) in &mut outputs {
@@ -11866,13 +11683,6 @@ impl Orchestrator {
         self.cancelled_at.remove(session_id);
     }
 
-    fn read_guard(&self, session_id: &str) -> Arc<Mutex<ReadTurnGuard>> {
-        self.read_turn_guards
-            .entry(session_id.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(ReadTurnGuard::default())))
-            .clone()
-    }
-
     pub async fn get_current_context(
         &self,
         session_id: &str,
@@ -12465,7 +12275,7 @@ fn infer_tool_status(text: &str) -> &'static str {
         "error"
     } else if text.starts_with("执行超时:") {
         "timeout"
-    } else if text.starts_with("执行拒绝:") || text.starts_with("READ_ALREADY_COVERED:") {
+    } else if text.starts_with("执行拒绝:") {
         "rejected"
     } else {
         "success"
@@ -13354,7 +13164,7 @@ mod tests {
         should_force_final_for_maintenance, tool_call_activity_preview, DialogueThreadGate,
         DialogueThreadLease, DurableEventWriter, DurableEventWriterMetrics, DynError,
         EvaluationContextOverlay, ModelCompletionError, ModelCompletionErrorOrigin,
-        ModelReasoningSummaryAccumulator, NoReplyMode, ReadTurnGuard, TerminalDecision,
+        ModelReasoningSummaryAccumulator, NoReplyMode, TerminalDecision,
         AGENT_OWNED_CONTEXT_PROMPT_BASE,
     };
     use crate::admission::AdmissionClass;
@@ -14373,111 +14183,6 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("参数预览已截断"));
-    }
-
-    #[test]
-    fn full_file_read_blocks_rephrased_reads_until_file_changes() {
-        let mut guard = ReadTurnGuard::default();
-        assert!(guard
-            .reserve(r#"{"path":"src/lib.rs"}"#, "read-full")
-            .is_none());
-        let range_duplicate = guard
-            .reserve(
-                r#"{"path":"src/lib.rs","start_line":1,"end_line":20}"#,
-                "read-range",
-            )
-            .unwrap();
-        assert_eq!(range_duplicate.evidence_event_id, "read-full");
-        let query_duplicate = guard
-            .reserve(
-                r#"{"path":"src/lib.rs","query":"struct App"}"#,
-                "read-query",
-            )
-            .unwrap();
-        assert_eq!(query_duplicate.evidence_event_id, "read-full");
-
-        guard.invalidate_path_from_arguments(r#"{"path":"src/lib.rs","edits":[]}"#);
-        assert!(guard
-            .reserve(
-                r#"{"path":"src/lib.rs","start_line":1,"end_line":20}"#,
-                "read-after-edit"
-            )
-            .is_none());
-    }
-
-    #[test]
-    fn covered_ranges_and_queries_are_deduplicated_per_path() {
-        let mut guard = ReadTurnGuard::default();
-        assert!(guard
-            .reserve(
-                r#"{"path":"src/lib.rs","start_line":10,"end_line":40}"#,
-                "read-range-1"
-            )
-            .is_none());
-        let range_duplicate = guard
-            .reserve(
-                r#"{"path":"src/lib.rs","start_line":15,"end_line":25}"#,
-                "read-range-2",
-            )
-            .unwrap();
-        assert_eq!(range_duplicate.evidence_event_id, "read-range-1");
-        assert!(guard
-            .reserve(
-                r#"{"path":"src/lib.rs","start_line":41,"end_line":60}"#,
-                "read-range-3"
-            )
-            .is_none());
-        assert!(guard
-            .reserve(
-                r#"{"path":"src/lib.rs","query":"TODO","context_lines":2}"#,
-                "read-query-1"
-            )
-            .is_none());
-        let query_duplicate = guard
-            .reserve(
-                r#"{"path":"src/lib.rs","query":"todo","context_lines":2}"#,
-                "read-query-2",
-            )
-            .unwrap();
-        assert_eq!(query_duplicate.evidence_event_id, "read-query-1");
-        assert!(guard
-            .reserve(r#"{"path":"src/main.rs"}"#, "read-other-file")
-            .is_none());
-    }
-
-    #[test]
-    fn adjacent_read_ranges_are_not_mistaken_for_duplicate_file_reads() {
-        let mut guard = ReadTurnGuard::default();
-        assert!(guard
-            .reserve(
-                r#"{"path":"src/lib.rs","start_line":1,"end_line":10}"#,
-                "read-lines-1-10"
-            )
-            .is_none());
-        assert!(guard
-            .reserve(
-                r#"{"path":"src/lib.rs","start_line":11,"end_line":20}"#,
-                "read-lines-11-20"
-            )
-            .is_none());
-    }
-
-    #[test]
-    fn failed_read_reservation_does_not_block_a_corrected_retry() {
-        let mut guard = ReadTurnGuard::default();
-        assert!(guard
-            .reserve(
-                r#"{"path":"src/lib.rs","start_line":11,"end_line":20}"#,
-                "failed-read"
-            )
-            .is_none());
-        guard.release_failed_reservation("failed-read");
-        assert!(guard
-            .reserve(
-                r#"{"path":"src/lib.rs","start_line":11,"end_line":20}"#,
-                "corrected-read"
-            )
-            .is_none());
     }
 
     #[test]
